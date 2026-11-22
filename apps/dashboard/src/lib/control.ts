@@ -94,25 +94,26 @@ export type ControlClient = {
   post<T>(route: string, body: Record<string, unknown>): Promise<T>;
 };
 
-export function createControlClient(options: Options): ControlClient {
+export function createControlClient(options: Options) {
+  async function request<T>(route: string, method: "POST" | "DELETE", body?: Record<string, unknown>): Promise<T> {
+    const { response, parsed } = await transport(options, `/api/v1/${route}`, body, method);
+    if (response.status === 401) throw new ControlError("The Armada server refused this session. Sign in again.", 401);
+    if (!response.ok) {
+      const failure = isRecord(parsed) ? parsed.error : undefined;
+      if (isRecord(failure) && typeof failure.message === "string")
+        throw new ControlError(
+          failure.message,
+          response.status,
+          typeof failure.code === "string" ? failure.code : undefined,
+        );
+      if (typeof failure === "string") throw new ControlError(failure, response.status);
+      throw new ControlError(controlFallback(response.status), response.status);
+    }
+    return parsed as T;
+  }
   return {
-    async post<T>(route: string, body: Record<string, unknown>): Promise<T> {
-      const { response, parsed } = await transport(options, `/api/v1/${route}`, body);
-      if (response.status === 401)
-        throw new ControlError("The Armada server refused this session. Sign in again.", 401);
-      if (!response.ok) {
-        const failure = isRecord(parsed) ? parsed.error : undefined;
-        if (isRecord(failure) && typeof failure.message === "string")
-          throw new ControlError(
-            failure.message,
-            response.status,
-            typeof failure.code === "string" ? failure.code : undefined,
-          );
-        if (typeof failure === "string") throw new ControlError(failure, response.status);
-        throw new ControlError(controlFallback(response.status), response.status);
-      }
-      return parsed as T;
-    },
+    post: <T>(route: string, body: Record<string, unknown>) => request<T>(route, "POST", body),
+    deleteSandbox: (id: string) => request<unknown>(`sandboxes/${encodeURIComponent(id)}`, "DELETE"),
   };
 }
 
@@ -191,9 +192,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type GoldenBuildResult = { name: string; visibility: "org" | "private"; snapshot: string };
+type GoldenBuildResult = { name: string; visibility: "org" | "private"; snapshot: string };
 
-export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult {
+function isGoldenBuildResult(value: unknown): value is GoldenBuildResult {
   return (
     isRecord(value) &&
     typeof value.name === "string" &&
@@ -209,7 +210,7 @@ export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult 
  * org, an older server, an answer for another provider): the limit is then not known here, and the server still
  * checks it when it builds.
  */
-export type GoldenBinding = {
+type GoldenBinding = {
   goldenId: string;
   relation: "current_backend" | "other_backend" | "unbound";
 };
@@ -257,7 +258,7 @@ export async function readGoldenCapabilities(
   return { ok: false, reason: "The Armada server sent an unexpected answer." };
 }
 
-export const MCP_CONTROL_PATH = "/api/v1/mcp/";
+const MCP_CONTROL_PATH = "/api/v1/mcp/";
 
 export type ArmadaApiOptions = {
   /** Any URL on the Armada server, such as `ARMADA_MCP_URL`; only its origin is used. */
@@ -374,10 +375,12 @@ function failure(status: number, payload: Record<string, unknown> | null, featur
   const make = (text: string, withCode = true) => new ControlError(text, status, withCode ? code : undefined, detail);
   if (status === 401) return make("The Armada server refused this session. Sign in again.", false);
   if (status === 403) return make(message ?? "You are not allowed to do that.");
-  if ((status === 404 || status === 405) && (!message || message === "Unknown route.") && !detail.reason) {
-    return make(`This Armada server does not offer ${feature} yet.`, false);
+  if (
+    (status === 404 && code === "unknown_route") ||
+    ((status === 404 || status === 405) && !message && !code && !detail.reason)
+  ) {
+    return make(`This Armada server does not offer ${feature} yet.`);
   }
-  if (status >= 500) return make(message ?? controlFallback(status));
   return make(message ?? controlFallback(status));
 }
 
@@ -394,7 +397,7 @@ export function isGoldenBuildStatus(value: unknown): value is GoldenBuildStatus 
 }
 
 /** `golden/remove {id, org?}`'s answer: the golden is retired; its sandboxes and provider artifacts are kept. */
-export type GoldenRemoval = { id: string; removedAt: string; artifacts: "retained" };
+type GoldenRemoval = { id: string; removedAt: string; artifacts: "retained" };
 
 export function isGoldenRemoval(value: unknown): value is GoldenRemoval {
   return (

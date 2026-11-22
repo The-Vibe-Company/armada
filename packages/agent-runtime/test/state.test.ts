@@ -121,3 +121,53 @@ test("same-generation native restore redacts retired authority text without its 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("checkpoint transcript copies mask embedded short application values and preserve native metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-short-checkpoint-"));
+  const journal = new Journal(":memory:", (text) => text);
+  const state = new HarnessState(root, journal.redact, (text) => journal.redact(text, "transcript"));
+  try {
+    journal.registerApplicationSecrets(["session", "value", "42"]);
+    const dir = join(root, "codex/sessions");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, "fixture.jsonl");
+    const frame = {
+      type: "session_meta",
+      payload: { id: "session-fixture", text: "prefixvalue", result: { type: { id: "prefixvalue" } } },
+    };
+    await writeFile(file, `${JSON.stringify(frame)}\n`);
+    const toolDir = join(root, "claude/projects/fixture/tool-results");
+    await mkdir(toolDir, { recursive: true });
+    const toolFile = join(toolDir, "result.txt");
+    await writeFile(toolFile, JSON.stringify({ type: "prefixvalue", prefixvalue: 42 }));
+    await state.checkpoint();
+    await state.restore();
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      ...frame,
+      payload: { ...frame.payload, text: "prefix[REDACTED]", result: { type: { id: "prefix[REDACTED]" } } },
+    });
+    expect(JSON.parse(await readFile(toolFile, "utf8"))).toEqual({
+      type: "prefix[REDACTED]",
+      "prefix[REDACTED]": "[REDACTED]",
+    });
+  } finally {
+    journal.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint leaves the Antigravity profile outside the saved native state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-state-"));
+  const state = new HarnessState(root, createRedactor([]));
+  try {
+    await state.restore();
+    const profile = join(root, "antigravity");
+    await mkdir(join(profile, "projects"), { recursive: true });
+    await writeFile(join(profile, "projects", "session.jsonl"), "{}\n");
+    await state.checkpoint();
+    await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(profile, "projects", "session.jsonl"), "utf8")).toBe("{}\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

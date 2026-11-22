@@ -1,5 +1,5 @@
 import { ProviderError } from "@armada/core";
-import { decryptSecret, type Sql } from "@armada/core/server";
+import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { createDockerQueuedPrompts } from "./docker-queued-prompts.ts";
@@ -7,7 +7,8 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { DOCKER_DISPATCH_REQUEST, DOCKER_SEND_REFUSAL } from "./docker-send-request-schema.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { ToolError } from "./tools.ts";
+import type { RuntimeTurnClaim } from "./runtime-resume.ts";
+import { ToolError } from "./tool-error.ts";
 
 /** Normal send shares the preview's fenced, idempotent native admission boundary. */
 export function createDockerNormalSend(
@@ -44,6 +45,8 @@ export function createDockerNormalSend(
         docker_snapshot_id?: string | null;
       },
       wake?: () => Promise<typeof row>,
+      queuedConversationId?: string,
+      claim?: Pick<RuntimeTurnClaim, "canDispatch">,
     ) {
       if (!options.enabled) throw failure("unavailable", "Docker send is not enabled.");
       if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
@@ -53,11 +56,16 @@ export function createDockerNormalSend(
       // guidance (a ProviderError invalid_request would be replaced by generic launch help).
       if (!parsed.success) throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
       const input = parsed.data;
+      const assertClaim = claim
+        ? async (tx?: Sql) => {
+            if (!(await claim.canDispatch(tx)))
+              throw new VaultError("conflict", "Queued Docker turn lease is no longer current.");
+          }
+        : undefined;
       if (!options.dispatchQueued) {
         const queued = await createDockerQueuedPrompts(sql, key).accept(caller, row.id, row.org_id, {
           request_id: input.request_id,
           prompt: input.prompt,
-          ...(input.conversation_id === undefined ? {} : { conversation_id: input.conversation_id }),
         });
         if (queued) return queued;
         const current = (
@@ -98,8 +106,9 @@ export function createDockerNormalSend(
         if (!["ready", "running"].includes(row.status))
           throw failure("conflict", "Docker sandbox resume is still pending.");
       }
-      await options.prepareMcp?.(caller, row.id);
-      let conversationId = input.conversation_id ?? row.conversation_ids.at(-1);
+      await assertClaim?.();
+      await options.prepareMcp?.(caller, row.id, undefined, assertClaim);
+      let conversationId = queuedConversationId ?? row.conversation_ids.at(-1);
       if (conversationId === undefined && !previous) {
         const launch = (
           await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -114,21 +123,26 @@ export function createDockerNormalSend(
       }
       // Reconcile durable admission without requiring GitHub to be healthy again.
       // runtime.prompt still validates exact input, current owner and epoch.
-      if (input.conversation_id === undefined && previous)
-        conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
+      if (previous) conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
       if (!previous) {
-        await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
-        await options.github?.prepareTurn(caller, row.id);
+        await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id, assertClaim);
+        await options.github?.prepareTurn(caller, row.id, assertClaim);
       }
-      if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
+      if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id, assertClaim);
       for (;;) {
         let result: Awaited<ReturnType<typeof runtime.prompt>>;
         try {
-          result = await runtime.prompt({ userId: caller.userId, orgId: row.org_id }, row.id, {
-            requestId: input.request_id,
-            text: input.prompt,
-            ...(conversationId === undefined ? {} : { conversationId: conversationId as string }),
-          });
+          result = await runtime.prompt(
+            { userId: caller.userId, orgId: row.org_id },
+            row.id,
+            {
+              requestId: input.request_id,
+              text: input.prompt,
+              ...(conversationId === undefined ? {} : { conversationId: conversationId as string }),
+            },
+            undefined,
+            assertClaim,
+          );
         } catch {
           throw failure(
             "conflict",

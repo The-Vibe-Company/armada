@@ -1,11 +1,13 @@
 /** Coordinator-only staging check: exactly one Modal allocation, never retried. */
 import { createHash } from "node:crypto";
+import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import { validateReadableVariables } from "../packages/core/src/readable-variables.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { shellQuote } from "../packages/core/src/shell-quote.ts";
 import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { parseExplicitPinnedAdmission } from "./modal-pinned-smoke-receipt.ts";
 import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_modal_launch")
@@ -19,34 +21,40 @@ const org = process.env.ARMADA_RUNTIME_ORG;
 const credentialId = process.env.ARMADA_RUNTIME_CREDENTIAL_ID;
 if (!token || !golden || !org || !credentialId) throw Error("Missing coordinator staging inputs.");
 
+interface TemplateManifest {
+  templateId?: string;
+  requestKey?: string;
+  revision?: number;
+  revisionId?: string;
+  golden?: { id?: string; orgId?: string; provider?: string };
+  account?: { id?: string; version?: number };
+  definition?: TemplateDefinition;
+  variables?: unknown;
+  skillReceipts?: unknown;
+  resolvedSkills?: unknown;
+}
+
 interface Reply {
   id?: string;
   state?: string;
-  manifest?: {
-    templateId?: string;
-    requestKey?: string;
-    revision?: number;
-    revisionId?: string;
-    golden?: { id?: string; orgId?: string; provider?: string };
-    account?: { id?: string; version?: number };
-    definition?: TemplateDefinition;
-    variables?: unknown;
-    skillReceipts?: unknown;
-  };
+  manifest?: TemplateManifest;
+  envelope?: unknown;
+  golden?: { id?: string; orgId?: string; provider?: string };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
   runtimeTransport?: "dialout";
   githubReady?: boolean;
   mcpReady?: boolean;
   status?: string;
+  statusMessage?: string | null;
+  settled?: boolean;
   conversationIds?: string[];
-  prompt?: unknown;
+  prompt?: { promptId?: string; state?: string } | null;
   revision?: string;
   configured?: boolean;
   credentialRequests?: number;
   goldens?: { id: string; name: string; provider: string; orgId: string }[];
   modalRuntime?: {
     defaultPath?: "native" | "runtime";
-    version?: number;
     enabled?: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -73,6 +81,8 @@ interface Reply {
     skills?: unknown;
     provider?: string;
     runtimeTransport?: string;
+    externalRef?: string;
+    templateManifest?: TemplateManifest;
   };
   runtime?: { kind?: string; epoch?: string };
   promptId?: string;
@@ -83,11 +93,21 @@ interface Reply {
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   cursor?: string | null;
+  hasMore?: boolean;
   events?: AgentEvent[];
   runtimeFailure?: unknown;
-  sandboxes?: { id: string; status: string; stoppedAt?: string | null }[];
+  sandboxes?: {
+    id: string;
+    status: string;
+    provider?: string;
+    harness?: string;
+    externalRef?: string;
+    stoppedAt?: string | null;
+  }[];
 }
-async function api<T = Reply>(path: string, body: object): Promise<T> {
+const launchBudgetMs = 600_000;
+const launchProvider = "modal";
+async function api<T = Reply>(path: string, body: object, timeoutMs = launchBudgetMs): Promise<T> {
   let response: Response;
   try {
     response = await fetch(new URL(`/api/v1/${path}`, origin), {
@@ -95,7 +115,7 @@ async function api<T = Reply>(path: string, body: object): Promise<T> {
       redirect: "error",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(600000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw Error(`Staging ${path} transport outcome unknown; inspect existing allocations before retrying.`);
@@ -108,11 +128,7 @@ async function api<T = Reply>(path: string, body: object): Promise<T> {
   }
 }
 const options = await api("launch/options", {});
-if (
-  options.modalRuntime?.version !== 1 ||
-  options.modalRuntime.enabled !== true ||
-  options.modalRuntime.followupVersion !== 1
-)
+if (options.modalRuntime?.enabled !== true || options.modalRuntime.followupVersion !== 1)
   throw Error("Modal dial-out v1 with same-conversation follow-up is unavailable; no launch attempted.");
 const ordinaryMode = process.argv.includes("--ordinary");
 if (ordinaryMode && options.modalRuntime.defaultPath !== "runtime")
@@ -355,6 +371,7 @@ let followupPromptId: string | undefined;
 let checkpointRequestId: string | undefined;
 let checkpointReceipt: Reply | undefined;
 let shouldStop = false;
+let jobAdmission = false;
 let initialGitHubRevision: string | undefined;
 let launchSkills: unknown;
 const verifySkillStatus = async () => {
@@ -402,7 +419,12 @@ const verifyGitHub = async (expectedPromptId: string, expectedEpoch: string, rev
   )
     throw Error("Missing archived gh command and current-epoch credential acquisition proof.");
 };
-const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) => {
+const verifyPrompt = async (
+  expectedPromptId: string,
+  expectedAnswer: string,
+  expectedConversationId?: string,
+  waitForPublicPrompt = false,
+) => {
   let cursor: string | undefined;
   let foundAnswer = false;
   let finished = false;
@@ -410,17 +432,36 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
   let foundVariables = !variablesMode;
   const claudeCalls = new Map<string, ToolCall>();
   const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
-  const deadline = Date.now() + 300000;
+  const deadline = Date.now() + 300_000;
+  if (waitForPublicPrompt) {
+    while (Date.now() < deadline) {
+      const turn = await api("sandbox/status", { id, prompt_id: expectedPromptId }, Math.max(1, deadline - Date.now()));
+      if (turn.id !== id || turn.prompt?.promptId !== expectedPromptId)
+        throw Error("Queued Modal turn does not match its status.");
+      if (turn.settled === true) {
+        if (turn.prompt.state !== "finished" || !["ready", "running"].includes(turn.status ?? ""))
+          throw Error("Queued Modal turn did not finish on an active sandbox.");
+        break;
+      }
+      await Bun.sleep(1000);
+    }
+  }
   while (
     Date.now() < deadline &&
     (!foundAnswer || !finished || !foundMcp || !foundVariables || (usageMode && !usageCheck.has(expectedPromptId)))
   ) {
-    const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
+    const page = await api(
+      "logs/read",
+      { id, limit: 1000, ...(cursor ? { cursor } : {}) },
+      Math.max(1, deadline - Date.now()),
+    );
     if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
     for (const event of page.events ?? []) {
       if (usageMode) usageCheck.observe(event);
       if (event.promptId !== expectedPromptId) continue;
+      if (expectedConversationId && event.kind === "prompt" && event.conversationId !== expectedConversationId)
+        throw Error("Admitted Modal prompt archive does not match its conversation.");
       if (harness === "opencode" && mcpMode && event.kind === "other" && event.type === "armada/opencodeMcp") {
         const proof = event.data as Record<string, unknown> | undefined;
         const result = proof?.result as { output?: unknown; isError?: unknown } | undefined;
@@ -569,15 +610,19 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string) =>
 
 function validateCheckpoint(
   receipt: Reply,
-  expectedEpoch: string,
+  expectedEpoch: string | undefined,
   requestId: string,
   watermark?: number,
-): asserts receipt is Reply & { checkpoint: { state: "complete"; watermark: number; acknowledgedSequence: number } } {
+): asserts receipt is Reply & {
+  runtime: { kind: "armada"; epoch: string };
+  checkpoint: { state: "complete"; watermark: number; acknowledgedSequence: number };
+} {
   const proof = receipt.checkpoint;
   if (
     receipt.requestId !== requestId ||
     receipt.runtime?.kind !== "armada" ||
-    receipt.runtime.epoch !== expectedEpoch ||
+    !/^[1-9][0-9]{0,18}$/.test(receipt.runtime.epoch ?? "") ||
+    (expectedEpoch !== undefined && receipt.runtime.epoch !== expectedEpoch) ||
     proof?.state !== "complete" ||
     !Number.isSafeInteger(proof.watermark) ||
     (proof.watermark ?? -1) < 0 ||
@@ -586,41 +631,116 @@ function validateCheckpoint(
   )
     throw Error("Modal checkpoint lacks the current epoch and durable journal ACK.");
 }
-const checkpoint = async (expectedEpoch: string) => {
+const checkpoint = async (expectedEpoch: string | undefined) => {
   const requestId = crypto.randomUUID();
   console.log(JSON.stringify({ operation: "runtime_checkpoint", sandboxId: id, requestId }));
   const receipt = await api("sandbox/checkpoint-runtime-v1", { id, runtimeVersion: 1, request_id: requestId });
   validateCheckpoint(receipt, expectedEpoch, requestId);
   return { requestId, receipt };
 };
+function acceptsFollowup(receipt: Reply, requestId: string, expectedEpoch: string | undefined) {
+  if (receipt.requestId !== requestId || receipt.conversationId !== conversationId) return false;
+  if (jobAdmission && receipt.status === "queued") return receipt.id === id && receipt.promptId === requestId;
+  return (
+    receipt.runtime?.kind === "armada" &&
+    /^[1-9][0-9]{0,18}$/.test(receipt.runtime.epoch ?? "") &&
+    (expectedEpoch === undefined || receipt.runtime.epoch === expectedEpoch)
+  );
+}
+const terminalLaunchStates = ["failed", "stopped", "stopping", "deleted"];
+
+async function correlateAdmittedLaunch(sandboxId: string, externalRef: string, timeoutMs: number) {
+  const listed = await api(
+    "sandbox/list",
+    {
+      owner: "me",
+      org: templateSource?.org ?? org,
+      externalRef,
+      golden: templateSource?.goldenId ?? defaultGoldenId,
+    },
+    timeoutMs,
+  );
+  const row = listed.sandboxes?.[0];
+  if (
+    listed.sandboxes?.length !== 1 ||
+    row?.id !== sandboxId ||
+    row.provider !== launchProvider ||
+    row.harness !== harness ||
+    row.externalRef !== externalRef
+  )
+    throw Error("Admitted Modal sandbox does not match the owner inventory.");
+  return row;
+}
+
+async function observeAdmittedLaunch(sandboxId: string, deadline: number) {
+  const remaining = () => Math.max(1, deadline - Date.now());
+  while (Date.now() < deadline) {
+    const current = await api("sandbox/status", { id: sandboxId }, remaining());
+    if (current.id !== sandboxId) throw Error("Admitted Modal status does not match the sandbox.");
+    if (terminalLaunchStates.includes(current.status ?? "") || (current.settled === true && current.statusMessage))
+      throw Error("Admitted Modal launch or initial turn failed.");
+    if (idleMode && current.settled === true && current.status === "ready" && current.statusMessage === null) {
+      if (current.prompt !== null || !Array.isArray(current.conversationIds) || current.conversationIds.length)
+        throw Error("Admitted promptless Modal sandbox is not empty.");
+      return { skills: current.skills };
+    }
+    const turn = current.prompt;
+    if (!idleMode && current.settled === true && turn) {
+      const conversation = current.conversationIds?.[0];
+      if (
+        !["ready", "running"].includes(current.status ?? "") ||
+        turn.state !== "finished" ||
+        typeof turn.promptId !== "string" ||
+        !turn.promptId ||
+        current.conversationIds?.length !== 1 ||
+        typeof conversation !== "string" ||
+        !conversation
+      )
+        throw Error("Admitted Modal initial turn did not finish with a verified conversation.");
+      return { promptId: turn.promptId, conversationId: conversation, skills: current.skills };
+    }
+    if (Date.now() < deadline) await Bun.sleep(1000);
+  }
+  throw Error("Timed out waiting for the admitted Modal launch setup or initial turn.");
+}
 try {
-  const templateRequestKey = templateSource ? crypto.randomUUID() : undefined;
+  const launchRef = crypto.randomUUID();
+  const ordinaryTemplate = Boolean(templateSource && ordinaryMode);
   if (templateSource)
     console.log(
       JSON.stringify({
         operation: "runtime_template_launch",
         templateId,
         revision: templateSource.revision,
-        requestKey: templateRequestKey,
+        externalRef: launchRef,
+        ...(ordinaryTemplate ? { requestKey: launchRef } : { idempotencyKey: launchRef }),
       }),
     );
   const initialPrompt =
     mcpMode || variablesMode
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
-  const route = templateSource && ordinaryMode ? "templates/launch" : "sandbox/launch";
+  const route = ordinaryTemplate ? "templates/launch" : "sandbox/launch";
+  if (!templateSource) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: launchRef }));
   const raw = await api(route, {
     ...(!ordinaryMode
-      ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: "modal", harness }
+      ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: launchProvider, harness }
       : templateSource
         ? {}
-        : { provider: "modal", harness }),
+        : { provider: launchProvider, harness }),
     ...(templateSource
-      ? { org: templateSource.org, id: templateId, revision: templateSource.revision, requestKey: templateRequestKey }
+      ? {
+          org: templateSource.org,
+          id: templateId,
+          revision: templateSource.revision,
+          externalRef: launchRef,
+          ...(ordinaryTemplate ? { requestKey: launchRef } : { idempotencyKey: launchRef }),
+        }
       : {
           org,
           golden,
           credentialId,
+          externalRef: launchRef,
           ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
           connections: mcpMode ? [mcpConnection] : [],
         }),
@@ -628,22 +748,74 @@ try {
     ttlSeconds: 900,
     ...(!idleMode ? { prompt: initialPrompt } : {}),
   });
-  id = templateSource ? raw.id : raw.sandbox?.id;
-  shouldStop = Boolean(id);
-  if (templateSource) {
-    const m = raw.manifest;
-    if (
+  const launched: Reply =
+    ordinaryTemplate && templateSource
+      ? {
+          ...raw,
+          sandbox: {
+            ...(raw.id ? { id: raw.id } : {}),
+            goldenId: templateSource.goldenId,
+            provider: "modal",
+            ...(raw.runtimeTransport ? { runtimeTransport: raw.runtimeTransport } : {}),
+            ...(raw.status ? { status: raw.status } : {}),
+            skills: raw.manifest?.skillReceipts,
+          },
+        }
+      : raw;
+  const explicitPinnedAdmission = templateSource && !ordinaryTemplate ? parseExplicitPinnedAdmission(raw) : undefined;
+  const admission =
+    explicitPinnedAdmission ??
+    parseLaunchAdmissionReceipt(launchProvider, ordinaryTemplate ? raw.envelope : templateSource ? undefined : raw);
+  let queuedFirstTurn = false;
+  if (
+    ordinaryTemplate &&
+    raw.envelope !== undefined &&
+    (!admission ||
+      raw.provider !== launchProvider ||
       raw.state !== "succeeded" ||
+      raw.manifest?.requestKey !== launchRef ||
+      raw.id !== admission.sandbox.id)
+  )
+    throw Error("Modal template admission does not match its recorded request.");
+  const observationDeadline = Date.now() + launchBudgetMs;
+  const correlate = async (sandboxId: string) => {
+    const row = await correlateAdmittedLaunch(sandboxId, launchRef, Math.max(1, observationDeadline - Date.now()));
+    shouldStop = true;
+    if (terminalLaunchStates.includes(row.status))
+      throw Error("Admitted Modal sandbox entered a terminal lifecycle state.");
+  };
+  if (admission) {
+    jobAdmission = true;
+    id = admission.sandbox.id;
+    shouldStop = !explicitPinnedAdmission;
+    if (ordinaryTemplate && (raw.status !== admission.sandbox.status || admission.sandbox.status !== "starting"))
+      throw Error("Modal template admission has inconsistent starting status.");
+    if (explicitPinnedAdmission) await correlate(id);
+  } else {
+    if (launched.sandbox?.provider !== "modal")
+      throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+    if (templateSource && !ordinaryTemplate && launched.sandbox.externalRef !== launchRef)
+      throw Error("Pinned Modal launch response does not match its reference; inspect the original allocation.");
+    id = launched.sandbox.id;
+    shouldStop = Boolean(id);
+  }
+  if (templateSource) {
+    const m = ordinaryTemplate
+      ? raw.manifest
+      : explicitPinnedAdmission
+        ? explicitPinnedAdmission.templateManifest
+        : raw.sandbox?.templateManifest;
+    const selectedGolden = ordinaryTemplate || explicitPinnedAdmission ? m?.golden : raw.golden;
+    if (
       !id ||
-      raw.provider !== "modal" ||
+      (ordinaryTemplate && (raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== launchRef)) ||
       !m ||
       m.templateId !== templateId ||
-      m.requestKey !== templateRequestKey ||
       m.revision !== templateSource.revision ||
       m.revisionId !== templateSource.revisionId ||
-      m.golden?.id !== templateSource.goldenId ||
-      m.golden.orgId !== templateSource.org ||
-      m.golden.provider !== "modal" ||
+      selectedGolden?.id !== templateSource.goldenId ||
+      selectedGolden.orgId !== templateSource.org ||
+      selectedGolden.provider !== "modal" ||
       m.account?.id !== templateSource.definition.modelAccount?.id ||
       m.account?.version !== templateSource.definition.modelAccount?.version ||
       canonical(m.definition) !== canonical(templateSource.definition)
@@ -651,6 +823,8 @@ try {
       throw Error(
         "Modal template launch manifest identity is unavailable; cleanup the known allocation, never launch again.",
       );
+    if (explicitPinnedAdmission && canonical(m.resolvedSkills) !== canonical(defaultPins))
+      throw Error("Modal frozen skill pins differ from the selected launch policy; no allocation retry.");
     let values: Record<string, string>;
     try {
       values = validateReadableVariables(m.variables);
@@ -663,72 +837,63 @@ try {
       .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
       .digest("hex");
   }
-  const launched: Reply = templateSource
-    ? {
-        ...raw,
-        sandbox: {
-          ...(id ? { id } : {}),
-          goldenId: templateSource.goldenId,
-          provider: "modal",
-          ...(raw.runtimeTransport
-            ? { runtimeTransport: raw.runtimeTransport }
-            : ordinaryMode
-              ? {}
-              : { runtimeTransport: "dialout" }),
-          skills: raw.manifest?.skillReceipts,
-        },
-      }
-    : raw;
-  conversationId = launched.conversationId ?? undefined;
-  epoch = launched.runtime?.epoch;
-  promptId = launched.promptId ?? undefined;
-  if (
-    !id ||
-    launched.sandbox?.provider !== "modal" ||
-    launched.sandbox.runtimeTransport !== "dialout" ||
-    launched.runtime?.kind !== "armada" ||
-    !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
-    (!idleMode && (!promptId || !launched.conversationId))
-  )
-    throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
-  if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
-    throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
-  launchSkills = launched.sandbox.skills;
-  if (idleMode && templateSource) {
-    const current = await api("sandbox/status", { id });
+  if (admission) {
+    if (!explicitPinnedAdmission) await correlate(admission.sandbox.id);
+    const turn = await observeAdmittedLaunch(admission.sandbox.id, observationDeadline);
+    ({ promptId, conversationId, skills: launchSkills } = turn);
+  } else {
+    if (!launched.sandbox) throw Error("Missing Modal launch sandbox.");
+    conversationId = launched.conversationId ?? undefined;
+    epoch = launched.runtime?.epoch;
+    promptId = launched.promptId ?? undefined;
     if (
-      raw.status !== "ready" ||
-      current.id !== id ||
-      current.status !== "ready" ||
-      !Array.isArray(current.conversationIds) ||
-      current.conversationIds.length ||
-      current.prompt !== null
+      !id ||
+      launched.sandbox.runtimeTransport !== "dialout" ||
+      launched.runtime?.kind !== "armada" ||
+      !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
+      (!idleMode && (!promptId || !launched.conversationId))
     )
-      throw Error("Promptless template current status is not empty and ready; no first send attempted.");
-    // Status evidence comes from the actual sandbox, never a synthesized empty list.
-    launched.sandbox.status = current.status;
-    launched.sandbox.conversationIds = current.conversationIds;
+      throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
+    if (skillsMode && launched.sandbox.goldenId !== defaultGoldenId)
+      throw Error("Modal launch selected a different golden than the default-skill policy; no retry.");
+    launchSkills = launched.sandbox.skills;
+    if (idleMode && templateSource) {
+      const current = await api("sandbox/status", { id });
+      if (
+        launched.sandbox.status !== "ready" ||
+        current.id !== id ||
+        current.status !== "ready" ||
+        !Array.isArray(current.conversationIds) ||
+        current.conversationIds.length ||
+        current.prompt !== null
+      )
+        throw Error("Promptless template current status is not empty and ready; no first send attempted.");
+      // Status evidence comes from the actual sandbox, never a synthesized empty list.
+      launched.sandbox.status = current.status;
+      launched.sandbox.conversationIds = current.conversationIds;
+    }
   }
   if (idleMode) {
     if (
-      launched.sandbox.status !== "ready" ||
-      !Array.isArray(launched.sandbox.conversationIds) ||
-      launched.sandbox.conversationIds.length ||
-      promptId !== undefined ||
-      conversationId !== undefined
+      !admission &&
+      (launched.sandbox?.status !== "ready" ||
+        !Array.isArray(launched.sandbox.conversationIds) ||
+        launched.sandbox.conversationIds.length ||
+        promptId !== undefined ||
+        conversationId !== undefined)
     )
       throw Error("Idle Modal launch did not publish an empty ready sandbox.");
     const history = await api("logs/read", { id, limit: 1000 });
     if (
       history.source !== "armada-runtime" ||
+      history.hasMore !== false ||
       history.runtimeFailure ||
       !Array.isArray(history.events) ||
       history.events.some((event) => event.kind === "prompt" || event.kind === "message")
     )
-      throw Error("Idle archive already contains inference or lacks common-runtime provenance.");
+      throw Error("Idle archive already contains inference or lacks complete common-runtime provenance.");
     let emptySource: { epoch: string; watermark: number; file: string; nonce: string } | undefined;
     if (emptyResumeMode) {
-      if (!epoch) throw Error("Missing empty source epoch.");
       const file = `/home/user/.retained-${crypto.randomUUID()}`,
         nonce = `EMPTY_${crypto.randomUUID().replaceAll("-", "")}`;
       const written = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
@@ -738,31 +903,46 @@ try {
       if (written.exitCode !== 0 || written.stdout !== "" || written.timedOut !== false || written.truncated !== false)
         throw Error("Empty checkpoint file witness could not be written.");
       const sealed = await checkpoint(epoch);
+      const sourceEpoch = sealed.receipt.runtime.epoch;
       await stopKnown(true);
       const stopped = await api("sandbox/checkpoint-runtime-v1", {
         id,
         runtimeVersion: 1,
         request_id: sealed.requestId,
       });
-      validateCheckpoint(stopped, epoch, sealed.requestId, sealed.receipt.checkpoint?.watermark);
+      validateCheckpoint(stopped, sourceEpoch, sealed.requestId, sealed.receipt.checkpoint?.watermark);
       const history = await api("logs/read", { id, limit: 1000 });
       if (
         history.source !== "armada-runtime" ||
+        history.hasMore !== false ||
         history.runtimeFailure ||
         !Array.isArray(history.events) ||
         history.events.some((event) => event.kind === "prompt" || event.kind === "message")
       )
-        throw Error("Stopped empty checkpoint contains inference or lost archive provenance.");
-      emptySource = { epoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
+        throw Error("Stopped empty checkpoint contains inference or lost complete archive provenance.");
+      emptySource = { epoch: sourceEpoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
       shouldStop = true; // The known sandbox may activate even if its first-send response is lost.
     }
     const firstRequestId = crypto.randomUUID();
     console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId: firstRequestId }));
-    const first = await api("sandbox/send", { id, request_id: firstRequestId, prompt: initialPrompt });
+    const first = await api(admission && emptySource ? "sandbox/resume-runtime-v1" : "sandbox/send", {
+      id,
+      request_id: firstRequestId,
+      prompt: initialPrompt,
+      ...(admission && emptySource ? { runtimeVersion: 1 } : {}),
+    });
+    queuedFirstTurn = jobAdmission && !emptySource && first.status === "queued";
+    const firstEpoch = first.runtime?.epoch;
+    const expectedEpoch = emptySource ? String(BigInt(emptySource.epoch) + 1n) : epoch;
+    const validDispatch = queuedFirstTurn
+      ? first.id === id && first.promptId === firstRequestId
+      : first.runtime?.kind === "armada" &&
+        /^[1-9][0-9]{0,18}$/.test(firstEpoch ?? "") &&
+        (expectedEpoch === undefined || firstEpoch === expectedEpoch);
     if (
       first.requestId !== firstRequestId ||
-      first.runtime?.kind !== "armada" ||
-      first.runtime.epoch !== (emptySource ? String(BigInt(emptySource.epoch) + 1n) : epoch) ||
+      !validDispatch ||
+      (jobAdmission && (first.id !== id || first.conversationId !== `first_${firstRequestId}`)) ||
       typeof first.promptId !== "string" ||
       !first.promptId ||
       typeof first.conversationId !== "string" ||
@@ -779,7 +959,6 @@ try {
         first.sourceCheckpoint.watermark !== emptySource.watermark
       )
         throw Error("Missing verified empty-checkpoint resume receipt; never retry activation.");
-      epoch = first.runtime.epoch;
       const read = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
         "sandbox/exec",
         { id, command: `cat ${shellQuote(emptySource.file)} && rm ${shellQuote(emptySource.file)}` },
@@ -792,20 +971,30 @@ try {
       )
         throw Error("Empty checkpoint did not preserve the file witness.");
     }
-    epoch = first.runtime.epoch;
-    launched.promptId = promptId = first.promptId;
-    launched.conversationId = conversationId = first.conversationId;
+    epoch = firstEpoch;
+    promptId = first.promptId;
+    conversationId = first.conversationId;
   }
   if (!promptId || !conversationId) throw Error("Missing admitted initial Modal conversation.");
   await verifySkillStatus();
-  await verifyPrompt(promptId, answer);
+  await verifyPrompt(promptId, answer, admission ? conversationId : undefined, queuedFirstTurn);
+  if (admission && githubMode) {
+    const current = await api("github/runtime-status", { id });
+    if (
+      current.id !== id ||
+      current.runtime?.kind !== "armada" ||
+      !/^[1-9][0-9]{0,18}$/.test(current.runtime.epoch ?? "")
+    )
+      throw Error("Admitted Modal sandbox has no verified GitHub runtime epoch.");
+    epoch = current.runtime.epoch;
+  }
   initialGitHubRevision = githubMode ? await configureGitHub(epoch ?? "") : undefined;
   const followupRequestId = crypto.randomUUID();
   console.log(
     JSON.stringify({
       operation: "runtime_followup",
       sandboxId: id,
-      conversationId: launched.conversationId,
+      conversationId,
       requestId: followupRequestId,
     }),
   );
@@ -816,23 +1005,22 @@ try {
         ? toolsInstruction
         : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
-    conversation_id: launched.conversationId,
   });
-  if (
-    followed.requestId !== followupRequestId ||
-    followed.runtime?.kind !== "armada" ||
-    followed.runtime.epoch !== epoch ||
-    !followed.promptId ||
-    followed.promptId === promptId ||
-    followed.conversationId !== launched.conversationId
-  )
+  if (!acceptsFollowup(followed, followupRequestId, epoch) || !followed.promptId || followed.promptId === promptId)
     throw Error(
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
-  await verifyPrompt(followed.promptId, memory);
+  epoch ??= followed.runtime?.epoch;
+  await verifyPrompt(
+    followed.promptId,
+    memory,
+    jobAdmission ? conversationId : undefined,
+    jobAdmission && followed.status === "queued",
+  );
   if (initialGitHubRevision) await verifyGitHub(followed.promptId, epoch ?? "", initialGitHubRevision);
   followupPromptId = followed.promptId;
-  const firstCheckpoint = await checkpoint(epoch ?? "");
+  const firstCheckpoint = await checkpoint(epoch);
+  epoch ??= firstCheckpoint.receipt.runtime?.epoch;
   checkpointRequestId = firstCheckpoint.requestId;
   checkpointReceipt = firstCheckpoint.receipt;
   console.log(
@@ -840,7 +1028,7 @@ try {
       sandboxId: id,
       promptId,
       followupPromptId: followed.promptId,
-      conversationId: launched.conversationId,
+      conversationId,
       followup: "verified",
       epoch,
       source: "armada-runtime",
@@ -867,7 +1055,7 @@ async function stopKnown(requireRetained = false) {
       let stopped = false;
       const deadline = Date.now() + 180000;
       while (Date.now() < deadline && !stopped) {
-        const listed = await api("sandbox/list", { owner: "me", org, limit: 200 });
+        const listed = await api("sandbox/list", { owner: "me", org: templateSource?.org ?? org, limit: 200 });
         stopped =
           listed.sandboxes?.some(
             (row) =>
@@ -886,7 +1074,7 @@ async function stopKnown(requireRetained = false) {
       // Cleanup uncertainty is never hidden behind an earlier inference failure.
       throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
     }
-    await verifySkillStatus();
+    if (!jobAdmission || !failure || launchSkills !== undefined) await verifySkillStatus();
     if (!failure && usageProof) await verifyUsageStatus();
   }
 }
@@ -925,7 +1113,6 @@ if (
       id,
       runtimeVersion: 1,
       request_id: requestId,
-      conversation_id: conversationId,
       prompt:
         mcpMode || variablesMode
           ? `${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} ${recallInstruction}`
@@ -969,19 +1156,20 @@ if (
       const sent = await api("sandbox/send", {
         id,
         request_id: requestId,
-        conversation_id: conversationId,
         prompt: toolsInstruction,
       });
       if (
-        sent.requestId !== requestId ||
-        sent.runtime?.epoch !== currentEpoch ||
-        sent.runtime.kind !== "armada" ||
-        sent.conversationId !== conversationId ||
+        !acceptsFollowup(sent, requestId, currentEpoch) ||
         !sent.promptId ||
         [promptId, followupPromptId, resumed.promptId].includes(sent.promptId)
       )
         throw Error("Missing current-epoch GitHub follow-up acknowledgement.");
-      await verifyPrompt(sent.promptId, memory);
+      await verifyPrompt(
+        sent.promptId,
+        memory,
+        jobAdmission ? conversationId : undefined,
+        jobAdmission && sent.status === "queued",
+      );
       await verifyGitHub(sent.promptId, currentEpoch, revision);
     }
     await checkpoint(resumed.runtime.epoch ?? "");

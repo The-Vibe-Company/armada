@@ -9,7 +9,7 @@ export async function viewerRoutines() {
     url = mcpUrl();
   return url && viewer.token ? createRoutineControl({ serverUrl: url, token: viewer.token }) : null;
 }
-export type RoutineList =
+type RoutineList =
   | { state: "ready"; userId: string; items: RoutineItem[] }
   | { state: "no-org" | "not-configured" }
   | { state: "error" | "unsupported"; message: string };
@@ -26,12 +26,12 @@ export async function listSelectedRoutines(): Promise<RoutineList> {
     };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
+    const unsupported = error.status === 404 && (error.code === "unknown_route" || error.code === undefined);
     return {
-      state: error.status === 404 && error.code === undefined ? "unsupported" : "error",
-      message:
-        error.status === 404 && error.code === undefined
-          ? "This Armada server does not offer routines yet. Update it before scheduling."
-          : routineFailure(error.status),
+      state: unsupported ? "unsupported" : "error",
+      message: unsupported
+        ? "This Armada server does not offer routines yet. Update it before scheduling."
+        : routineFailure(error.status),
     };
   }
 }

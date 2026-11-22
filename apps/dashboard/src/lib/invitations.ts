@@ -24,10 +24,10 @@ export const isInviteRole = (value: unknown): value is InviteRole => value === "
  * The server's delivery state. `sent` means the mail service accepted the message, not that it reached the inbox;
  * `not_configured` means this server has no mail transport, so nothing was sent.
  */
-export type DeliveryState = OrganizationInvitation["delivery"];
+type DeliveryState = OrganizationInvitation["delivery"];
 const DELIVERY = ["not_configured", "pending", "sent", "failed"] as const satisfies readonly DeliveryState[];
 
-export type InvitationStatus = OrganizationInvitation["status"];
+type InvitationStatus = OrganizationInvitation["status"];
 const STATUS = ["pending", "accepted", "revoked"] as const satisfies readonly InvitationStatus[];
 
 /** One invitation as the admin's list shows it: the server's DTO, fields checked. */
@@ -153,7 +153,7 @@ const WITHOUT_CONTEXT = [
 ] as const satisfies readonly InvitationRecipientState[];
 
 /** The org, role and expiry, shown only once the server matched the signed-in, verified address. */
-export type ConsentContext = InvitationConsentContext;
+type ConsentContext = InvitationConsentContext;
 
 /** What the server's recipient preview says about this invitation for the signed-in person. */
 export type RecipientPreview = InvitationPreview;
@@ -233,7 +233,7 @@ export function refusalMessage(
 export const INVITATION_ACCEPT_PATH = "/invitations/accept";
 export const INVITATION_COOKIE = "armada_invitation";
 /** Long enough to sign in with an emailed code; the invitation's own expiry still applies on the server. */
-export const INVITATION_COOKIE_MAX_AGE = 60 * 60;
+const INVITATION_COOKIE_MAX_AGE = 60 * 60;
 
 /** A token as a cookie may carry it: URL-safe characters only, bounded. Anything else is dropped, not stored. */
 export function isInvitationToken(value: string | null | undefined): value is string {

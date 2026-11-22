@@ -6,9 +6,10 @@ const org = "11111111-1111-4111-8111-111111111111";
 const host = "22222222-2222-4222-8222-222222222222";
 const credential = "33333333-3333-4333-8333-333333333333";
 const requestId = "44444444-4444-4444-8444-444444444444";
+const idempotencyKey = "Launch_Key_With_Case";
 const image = `worker@sha256:${"a".repeat(64)}`;
 const args = [
-  "launch",
+  "new",
   "--provider",
   "docker",
   "--agent",
@@ -19,8 +20,8 @@ const args = [
   host,
   "--credential-id",
   credential,
-  "--request-id",
-  requestId,
+  "--idempotency-key",
+  idempotencyKey,
 ];
 async function capture(argv: string[], fetcher: (request: Request) => Promise<Response>, config?: unknown) {
   let out = "",
@@ -51,7 +52,6 @@ async function capture(argv: string[], fetcher: (request: Request) => Promise<Re
   return { code, out, err };
 }
 
-// CLI owns translating flags and preserving recovery identity, not host/runtime sequencing.
 test.each(["codex", "claude", "opencode"] as const)(
   "Docker %s CLI uses normal authenticated launch without golden or provider secrets",
   async (harness) => {
@@ -60,6 +60,10 @@ test.each(["codex", "claude", "opencode"] as const)(
       sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "running" },
       golden: null,
       runtime: { kind: "armada", epoch: "1" },
+      helper: null,
+      ttlSeconds: 1800,
+      expiresAt: null,
+      github: { status: "not_connected" },
       promptId: "prompt",
       conversationId: "conversation",
     };
@@ -71,7 +75,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       },
     );
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.out)).toMatchObject({ ...receipt, id: requestId, provider: "docker", status: "running" });
+    expect(JSON.parse(result.out)).toEqual(receipt);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/sandbox/launch");
     expect(calls[0]?.headers.get("authorization")).toStartWith("Bearer armada_sk_");
@@ -81,7 +85,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       hostId: host,
       harness,
       credentialId: credential,
-      requestId,
+      idempotencyKey,
       ttlSeconds: 1800,
       prompt: "answer once",
     });
@@ -109,6 +113,7 @@ test("Docker incompatible or malformed options fail before HTTP", async () => {
   const calls: Request[] = [];
   for (const flags of [
     ["--agent", "unknown"],
+    ["--request-id", requestId],
     ["--variable", "PATH:33333333-3333-4333-8333-333333333333:1"],
     ["--variable", "APP_REGION:not-a-uuid:1"],
     ["--image", image],
@@ -141,7 +146,7 @@ test.each([
   expect(result.code).not.toBe(0);
   expect(result.out).toBe("");
   expect(result.err).toContain(message);
-  expect(result.err).not.toContain("Docker launch request ");
+  expect(result.err).not.toContain("Docker launch key ");
   expect(result.err).not.toContain("outcome is unknown");
 });
 
@@ -160,17 +165,18 @@ test("Docker routing refusals retain the server diagnosis in JSON", async () => 
   expect(result.err).not.toContain("Private image diagnostics");
 });
 
-test("unknown Docker launch outcome retains a stable request UUID for exact retry", async () => {
-  for (const mode of ["lost", "wrong-sandbox", "server-failure", "explicit-unknown"]) {
+test("unknown Docker launch outcome retains a stable replay key for exact retry", async () => {
+  for (const mode of ["lost", "missing-sandbox-id", "server-failure", "explicit-unknown"]) {
     const result = await capture(args, async () => {
       if (mode === "lost") throw Error("offline");
       if (mode === "server-failure") return new Response("Gateway unavailable", { status: 503 });
       if (mode === "explicit-unknown") return Response.json({ error: { code: "outcome_unknown" } }, { status: 409 });
-      return Response.json({ sandbox: { provider: "docker", id: host }, golden: null, runtime: { epoch: "1" } });
+      return Response.json({ sandbox: { provider: "docker" }, golden: null, runtime: { epoch: "1" } });
     });
     expect(result.code).not.toBe(0);
     expect(result.out).toBe("");
-    expect(result.err).toContain(`--request-id ${requestId}`);
+    expect(result.err).toContain(JSON.stringify(idempotencyKey));
+    expect(result.err).toContain("--idempotency-key");
     expect(result.err).toContain("do not create a replacement");
   }
 });
@@ -207,6 +213,8 @@ test("Docker launch resolves an exact unique non-revoked host name and refuses m
     lastSeenAt: null,
     revokedAt: null,
     version: "2.27.0",
+    protocol: 1,
+    upgradeRequired: false,
     sandboxes: 0,
   };
   for (const mode of ["unique", "missing", "ambiguous"]) {
@@ -306,8 +314,8 @@ test("Docker snapshots build through the normal golden command and launch throug
   };
   const build = await capture(
     [
-      "golden",
-      "create",
+      "snapshot",
+      "new",
       "owned",
       "--provider",
       "docker",
@@ -340,13 +348,13 @@ test("Docker snapshots build through the normal golden command and launch throug
   expect(build.out).toContain("building");
   expect(build.out).toContain("Built on Armada: 2.28.0");
   for (const builtOnVersion of ["2.28.0", null]) {
-    const listed = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+    const listed = await capture(["snapshot", "ls", "--provider", "docker", "--org", org], async () =>
       Response.json({ snapshots: [{ ...snapshot, builtOnVersion }] }),
     );
     expect(listed.code).toBe(0);
     expect(listed.out).toContain(`Built on Armada ${builtOnVersion ?? "unknown version"}`);
   }
-  const offered = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+  const offered = await capture(["snapshot", "ls", "--provider", "docker", "--org", org], async () =>
     Response.json({
       currentVersion: "2.29.0",
       snapshots: [{ ...snapshot, status: "ready", image: `sha256:${"a".repeat(64)}` }],
@@ -354,7 +362,7 @@ test("Docker snapshots build through the normal golden command and launch throug
   );
   expect(offered.out).toContain(`armada snapshot rebuild ${id} --provider docker --org ${org}`);
   const rebuilt = await capture(
-    ["golden", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
+    ["snapshot", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
     async (request) => {
       expect(new URL(request.url).pathname).toBe("/api/v1/docker/snapshots/rebuild");
       expect(await request.json()).toEqual({ org, id, requestId });

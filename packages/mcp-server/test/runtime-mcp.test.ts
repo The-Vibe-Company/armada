@@ -1,7 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore } from "@armada/core/server";
+import type { Provider } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
+import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,6 +12,7 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
+import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -17,104 +20,159 @@ import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(provider: "boat" | "modal" = "boat") {
-  const f = await runtimeFixture(await sharedDatabase(), provider),
-    registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
-  const secret = `upstream-private-${crypto.randomUUID()}`;
-  const c = await registry.save(f.people.owner, f.people.org, {
-    name: "Runtime remote",
-    scope: "personal",
-    transport: "http",
-    url: "https://upstream.example/mcp",
-    authType: "bearer",
-    authentication: secret,
-  });
-  // Seed an already-connected remote definition; the SDK gateway call below verifies actual delivery.
-  await f.db.query("update mcp_grants set status='connected' where connection_id=$1", [c.id]);
-  const service = createRuntimeMcp({
-    sql: f.sql,
-    key: ENCRYPTION_KEY,
-    origin: "https://armada.test",
-    commands: f.bridge,
-    probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
-  });
-  const input = { id: f.row.id, connections: [c.id] };
-  await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
-  await service.connections.bind(f.row.id, [c.id]);
-  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
-  const authStore = createMemoryAuthStore();
-  authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
-  const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
-  return {
-    f,
-    c,
-    secret,
-    service,
-    input,
-    registry,
-    send,
-    authStore,
-    async api(path: string, body: object) {
-      const response = await handleControlRequest(
-        new Request(`https://armada.test/api/v1/${path}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify(body),
-        }),
-        {
-          authStore,
-          store: createSqlVaultStore(f.sql),
-          encryptionKey: ENCRYPTION_KEY,
-          supabase: {
-            supabaseUrl: "https://supabase.test",
-            anonKey: "fixture",
-            fetch: async () => Response.json({ id: f.people.owner }),
-          },
-          data: createSqlData(f.sql),
-          runtimeMcp: service,
-          runtimeSend: send,
-          providers: {
-            async resolve() {
-              throw Error("MCP must not resolve native/provider tools");
+async function fixture(provider: "boat" | "modal" = "boat", commandGrantExpiresAt?: number) {
+  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt);
+  return configureRuntimeFixture(f, async () => {
+    const registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
+    const secret = `upstream-private-${crypto.randomUUID()}`;
+    const c = await registry.save(f.people.owner, f.people.org, {
+      name: "Runtime remote",
+      scope: "personal",
+      transport: "http",
+      url: "https://upstream.example/mcp",
+      authType: "bearer",
+      authentication: secret,
+    });
+    // Seed an already-connected remote definition; the SDK gateway call below verifies actual delivery.
+    await f.db.query("update mcp_grants set status='connected' where connection_id=$1", [c.id]);
+    const service = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: f.bridge,
+      probe: async () => ({ status: "connected", toolNames: ["read_counter"] }),
+    });
+    const input = { id: f.row.id, connections: [c.id] };
+    await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [c.id], "org");
+    await service.connections.bind(f.row.id, [c.id]);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare);
+    const authStore = createMemoryAuthStore();
+    authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
+    return {
+      f,
+      close: f.close,
+      c,
+      secret,
+      service,
+      input,
+      registry,
+      send,
+      authStore,
+      async api(path: string, body: object) {
+        const response = await handleControlRequest(
+          new Request(`https://armada.test/api/v1/${path}`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}` },
+            body: JSON.stringify(body),
+          }),
+          {
+            authStore,
+            store: createSqlVaultStore(f.sql),
+            encryptionKey: ENCRYPTION_KEY,
+            supabase: {
+              supabaseUrl: "https://supabase.test",
+              anonKey: "fixture",
+              fetch: async () => Response.json({ id: f.people.owner }),
+            },
+            data: createSqlData(f.sql),
+            runtimeMcp: service,
+            runtimeSend: send,
+            providers: {
+              async resolve() {
+                throw Error("MCP must not resolve native/provider tools");
+              },
             },
           },
-        },
-      );
-      if (!response) throw Error("Missing API route");
-      return response;
-    },
-    configuration() {
-      const snapshot = f.mcpSnapshots.at(-1);
-      if (!snapshot) throw Error("Runner did not pass MCP to driver");
-      const server = Object.values(snapshot.servers)[0];
-      if (!server || server.type !== "http") throw Error("Missing HTTP gateway snapshot");
-      return {
-        snapshot,
-        server,
-        hash: createHash("sha256").update(server.headers!.Authorization!.slice(7)).digest("hex"),
-      };
-    },
-  };
+        );
+        if (!response) throw Error("Missing API route");
+        return response;
+      },
+      configuration() {
+        const snapshot = f.mcpSnapshots.at(-1);
+        if (!snapshot) throw Error("Runner did not pass MCP to driver");
+        const server = Object.values(snapshot.servers)[0];
+        if (!server || server.type !== "http") throw Error("Missing HTTP gateway snapshot");
+        return {
+          snapshot,
+          server,
+          hash: createHash("sha256").update(server.headers!.Authorization!.slice(7)).digest("hex"),
+        };
+      },
+    };
+  });
 }
 
+test("Boat runtime MCP leases expire at the committed sandbox deadline", async () => {
+  const x = await fixture("boat", Date.now() + 6 * 60 * 60_000);
+  const { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    const { expires_at } = (
+      await f.db.query<{ expires_at: Date }>("select expires_at from sandboxes where id=$1", [f.row.id])
+    ).rows[0]!;
+    expect((await f.db.query("select expires_at from mcp_leases where hash=$1", [hash])).rows[0]).toEqual({
+      expires_at,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Modal runtime MCP lease spans the command ceiling but follows live sandbox admission", async () => {
+  const ceiling = new Date(Date.now() + 6 * 60 * 60_000);
+  const x = await fixture("modal", ceiling.getTime()),
+    { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    expect((await f.db.query("select expires_at from mcp_leases where hash=$1", [hash])).rows[0]).toEqual({
+      expires_at: ceiling,
+    });
+    const leases = createSqlMcpLeasePort(f.sql);
+    expect(await leases.validate(hash, "tools")).not.toBeNull();
+    await f.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.row.id]);
+    expect(await leases.validate(hash, "tools")).toBeNull();
+  } finally {
+    await f.close();
+  }
+});
+
+test("native lease renewal leaves an epoch-bound runtime gateway lease active", async () => {
+  const x = await fixture("modal"),
+    { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      registry: x.registry,
+    });
+    const provider = {
+      id: "modal",
+      async get() {
+        return { state: "stopped" };
+      },
+    } as unknown as Provider;
+    await lifecycle.renewLeases(provider, f.row.id);
+    expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).not.toBeNull();
+  } finally {
+    await f.close();
+  }
+});
+
 describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
-  let current: Awaited<ReturnType<typeof fixture>> | undefined;
-  beforeAll(async () => {
-    current = await fixture(provider);
-  }, 20_000);
-  afterAll(async () => {
-    const x = current;
-    current = undefined;
-    await x?.f.close();
-  });
+  const prepared = scopedRuntimeFixture(() => fixture(provider), { timeout: 20_000 });
   test("authenticated setup reaches the real Runner and real MCP gateway; only scoped leases reach the driver", async () => {
-    const x = current;
-    if (!x) throw new Error("Runtime fixture is not open");
+    const x = await prepared();
     const { f } = x;
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
@@ -125,7 +183,9 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
       connections: [x.c.id],
       toolInventory: true,
     });
-    expect(await inventory.json()).toMatchObject({
+    expect(sandboxCheckOperations.postSandboxMcpPreflightV1.output.parse(await inventory.json())).toEqual({
+      mcpReady: true,
+      connections: [x.c.id],
       mcpToolInventory: [{ connectionId: x.c.id, tools: ["read_counter"] }],
     });
     const oldProbe = createRuntimeMcp({
@@ -249,6 +309,7 @@ test.each(["boat", "modal"] as const)(
         f.bridge,
         async () => ({
           start: async (_signal, restore) => f.reboot(restore),
+          async checkDispatchCoverage() {},
           stop: async () => {
             throw Error("Healthy resume must not stop");
           },
@@ -259,7 +320,6 @@ test.each(["boat", "modal"] as const)(
         id: f.row.id,
         request_id: crypto.randomUUID(),
         runtimeVersion: 1,
-        conversation_id: f.first.conversationId,
         prompt: "first resumed MCP turn",
       });
       const next = x.configuration();
@@ -391,20 +451,18 @@ test("old runtime health cannot receive newly enabled MCP capabilities", async (
 });
 
 describe("automatic MCP authority updates", () => {
-  let current: Awaited<ReturnType<typeof fixture>> | undefined;
-  beforeAll(async () => {
-    const x = await fixture();
-    current = x;
-    await x.send(x.f.caller, x.f.input());
-  }, 20_000);
-  afterAll(async () => {
-    const x = current;
-    current = undefined;
-    await x?.f.close();
-  });
+  const prepared = scopedRuntimeFixture(
+    async () => {
+      const x = await fixture();
+      return configureRuntimeFixture(x.f, async () => {
+        await x.send(x.f.caller, x.f.input());
+        return x;
+      });
+    },
+    { timeout: 20_000 },
+  );
   test("ordinary turns adopt reconnected grants and clear deleted bindings without a setup API", async () => {
-    const x = current;
-    if (!x) throw new Error("Runtime fixture is not open");
+    const x = await prepared();
     const { f } = x,
       old = x.configuration();
     await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);
@@ -469,9 +527,11 @@ test("configuration preparation commits queue order before waiting; an older ACK
   }
 });
 
-test("connection admission rejects unsupported stdio before launch binding or compute", async () => {
+test("pinned stdio delivers its encrypted environment privately without a gateway lease", async () => {
   const x = await fixture(),
     { f } = x;
+  const secret = crypto.randomUUID().slice(0, 7);
+  const lines: string[] = [];
   try {
     const local = await x.registry.save(f.people.owner, f.people.org, {
       name: "local",
@@ -479,22 +539,194 @@ test("connection admission rejects unsupported stdio before launch binding or co
       transport: "stdio",
       command: "npx",
       args: ["-y", "@example/mcp@1.2.3", "/workspace"],
-      authType: "none",
+      stdioEnv: { MCP_PRIVATE_VALUE: secret },
     });
+    await expect(x.service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).resolves.toEqual({
+      mcpReady: true,
+      connections: [local.id],
+    });
+    await x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
+    await x.service.connections.bind(f.row.id, [local.id]);
+    const response = await observeRequest(
+      () => x.api("sandbox/send", f.input("use configured MCP")),
+      (line) => lines.push(line),
+    );
+    expect(response.status).toBe(200);
+    const receipt = await x.service.prepare(f.caller, f.row.id);
+    const server = f.mcpSnapshots.at(-1)?.servers[`armada_${local.id.replaceAll("-", "_")}`];
+    expect(server).toMatchObject({
+      type: "stdio",
+      command: "npx",
+      args: ["--yes", "--", "@example/mcp@1.2.3", "/workspace"],
+    });
+    expect(server?.type === "stdio" && server.env?.MCP_PRIVATE_VALUE === secret).toBe(true);
+    f.journal.append({
+      id: "mcp-stderr",
+      at: 1,
+      kind: "other",
+      type: "harness_stderr",
+      data: { text: `prefix${secret}suffix` },
+    });
+    f.journal.append({
+      id: "mcp-tool-result",
+      at: 1,
+      kind: "message",
+      text: "",
+      partial: false,
+      tools: [
+        {
+          id: "tool-call",
+          name: "test-tool",
+          result: { output: [{ text: `prefix${secret}suffix` }], isError: false },
+        },
+      ],
+    });
+    f.journal.append({
+      id: "mcp-opencode-proof",
+      at: 1,
+      kind: "other",
+      type: "armada/opencodeMcp",
+      data: {
+        configurationRevision: receipt?.revision,
+        callId: "native-call",
+        result: { output: `prefix${secret}suffix`, isError: false },
+      },
+    });
+    expect(f.journal.events().find(({ event }) => event.id === "mcp-opencode-proof")?.event).toMatchObject({
+      data: { configurationRevision: receipt?.revision, callId: "native-call", result: { isError: false } },
+    });
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({ event: "provider_call", operation: "runtime.configureMcp", outcome: "ok" }),
+    );
+    expect(JSON.stringify([receipt, await response.json(), lines, f.journal.events()]).includes(secret)).toBe(false);
+    expect((await f.db.query("select 1 from mcp_leases where connection_id=$1", [local.id])).rows).toEqual([]);
+    const replacement = crypto.randomUUID();
+    await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+      local.id,
+      await encryptSecret(JSON.stringify({ MCP_PRIVATE_VALUE: replacement }), ENCRYPTION_KEY),
+    ]);
+    expect((await x.service.prepare(f.caller, f.row.id))?.revision).not.toBe(receipt?.revision);
+    await x.registry.setEnabled(f.people.owner, f.people.org, local.id, false);
+    await expect(x.service.prepare(f.caller, f.row.id)).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("runtimes without stdio environment support cannot receive vault values", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3"],
+      stdioEnv: { MCP_PRIVATE_VALUE: crypto.randomUUID() },
+    });
+    await service.connections.bind(f.row.id, [local.id]);
+    const old = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        async call(owner, command, options) {
+          const reply = await f.bridge.call(owner, command, options);
+          if (command.op !== "health") return reply;
+          return { ...reply, body: { ...reply.body, result: { ready: true, generation: reply.epoch, mcpVersion: 1 } } };
+        },
+      },
+    });
+    await expect(old.prepare(f.caller, f.row.id)).rejects.toThrow(
+      "Stdio MCP environment requires an updated runtime artifact.",
+    );
+    expect((await f.db.query("select 1 from mcp_bootstraps where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("dispatch rejects a bound stdio environment changed to launcher settings after health", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3"],
+    });
+    await service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org");
+    await service.connections.bind(f.row.id, [local.id]);
+    const marker = crypto.randomUUID();
+    const raced = createRuntimeMcp({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        async call(owner, command, options) {
+          const reply = await f.bridge.call(owner, command, options);
+          if (command.op === "health")
+            await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+              local.id,
+              await encryptSecret(JSON.stringify({ PREFIX: marker }), ENCRYPTION_KEY),
+            ]);
+          return reply;
+        },
+      },
+    });
+    await expect(raced.prepare(f.caller, f.row.id)).rejects.toThrow(
+      /^MCP stdio environment cannot override launcher settings\.$/,
+    );
+    expect((await f.db.query("select 1 from mcp_bootstraps where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("preflight and launch reject stdio grant env that exceeds the runtime limit", async () => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3"],
+    });
+    const secret = "x".repeat(8193);
+    await f.db.query("update mcp_grants set value_enc=$2 where connection_id=$1", [
+      local.id,
+      await encryptSecret(JSON.stringify({ MCP_PRIVATE_VALUE: secret }), ENCRYPTION_KEY),
+    ]);
+    const input = { org: f.people.org, connections: [local.id] };
+    await expect(service.preflight(f.caller, input)).rejects.toMatchObject({ code: "invalid" });
     await expect(
-      x.service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, [local.id], "org"),
-    ).rejects.toMatchObject({
-      code: "invalid",
-      message: "Enrolled runtimes do not support pinned stdio MCP; no native fallback.",
+      service.connections.validate({ userId: f.people.owner, orgId: f.people.org }, input.connections, "org"),
+    ).rejects.toMatchObject({ code: "invalid" });
+  } finally {
+    await f.close();
+  }
+});
+
+test.each([
+  ["argument count", Array(62).fill("input")],
+  ["configuration bytes including the built-in service", Array(16).fill("x".repeat(4080))],
+])("runtime admission rejects pinned stdio beyond the limit for %s", async (_limit, args) => {
+  const { f, registry, service } = await fixture();
+  try {
+    const local = await registry.save(f.people.owner, f.people.org, {
+      name: "oversized local",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.2.3", ...args],
     });
-    expect(
-      (
-        await f.db.query<{ n: number }>(
-          "select count(*)::int as n from mcp_bindings where sandbox_id=$1 and connection_id=$2",
-          [f.row.id, local.id],
-        )
-      ).rows[0]?.n,
-    ).toBe(0);
+    await expect(service.preflight(f.caller, { org: f.people.org, connections: [local.id] })).rejects.toMatchObject({
+      code: "invalid",
+    });
   } finally {
     await f.close();
   }

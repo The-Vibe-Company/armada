@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_MANAGED_PROBE, withGoldenDirs } from "../src/server.ts";
@@ -73,47 +73,10 @@ test("real shell: the baseline tolerates a repo with no package.json, pins acros
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("FAKE npm called with: install --global --prefix");
     expect(result.stdout).toContain("bun@9.9.9");
+    expect(readlinkSync(join(bin, "bun"))).toBe(join(home, ".bun-npm", "bin", "bun"));
     expect(result.stdout).toContain("@playwright/test@2.0.0");
     expect(result.stdout).toContain("@anthropic-ai/claude-code@2.1.322");
     expect(result.stdout).toContain("FAKE npm called with: install --global @openai/codex");
-  } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
-test("real shell: pinned Bun persists for a fresh shell", () => {
-  const base = mkdtempSync(join(tmpdir(), "armada-baseline-"));
-  try {
-    const home = join(base, "home");
-    const bin = join(base, "bin");
-    mkdirSync(join(home, "web"), { recursive: true });
-    writeFileSync(join(home, "web", "package.json"), JSON.stringify({ packageManager: "bun@9.9.9" }));
-    fakeBin(bin, ["npm", "bunx", "bun", "claude", "codex"]);
-    // Mimic npm's installed binary without touching host globals.
-    mkdirSync(join(home, ".bun-npm", "bin"), { recursive: true });
-    writeFileSync(join(home, ".bun-npm", "bin", "bun"), "#!/bin/sh\necho PINNED\n", { mode: 0o755 });
-    const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2, branch: "main" }]);
-    const block = extract(
-      goldenScript(prepared)
-        .replace(/\/home\/user/g, home)
-        .replaceAll("/usr/local", join(home, "system")),
-      'bun_pin=""',
-      "npm install --global @openai/codex",
-    );
-    expect(
-      spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
-        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home },
-        encoding: "utf8",
-      }).status,
-    ).toBe(0);
-    // An old system Bun comes first, matching provider native exec PATH precedence.
-    const old = bin;
-    const fresh = spawnSync("/bin/sh", ["-c", "bun"], {
-      env: { PATH: `${old}:${home}/.local/bin:${home}/.bun/bin:/usr/bin:/bin`, HOME: home },
-      encoding: "utf8",
-    });
-    expect(fresh.status).toBe(0);
-    expect(fresh.stdout).toContain("PINNED");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

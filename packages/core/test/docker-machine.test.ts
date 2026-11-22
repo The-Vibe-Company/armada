@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError, requireDockerDiskSpace } from "../src/docker-disk-policy.ts";
 import { DOCKER_LOCAL_IMAGE_LABELS } from "../src/docker-image.ts";
 import {
   createDockerMachineExecutor,
@@ -22,6 +23,7 @@ const request: DockerMachineRequest = {
 function fixture(
   limits?: () => { cpus: number; memoryBytes: number; pids: number },
   sharedArtifacts?: { dir: string; ensure(): Promise<boolean> },
+  beforeRestoreAllocation?: () => Promise<void>,
 ) {
   const containers = new Map<string, any>();
   const volumes = new Map<string, any>();
@@ -31,10 +33,12 @@ function fixture(
     options?: { timeoutMs?: number };
   }[] = [];
   const copies = new Map<string, Uint8Array>();
+  const workspaces = new Map<string, string>();
   let time = 1000;
   let failCommand = "";
   let retainRemoved = false;
   let refuseBinds = false;
+  let nextContainerId = 1;
   // Images present on the host (by reference, as `docker image inspect` reports them), and those its registry serves.
   const images = new Map<string, unknown>([[request.image, { Id: request.image }]]);
   const registry = new Set<string>();
@@ -49,6 +53,32 @@ function fixture(
           exitCode: images.has(image) ? 0 : 1,
           stdout: action === "inspect" ? JSON.stringify([images.get(image)]) : "",
         };
+      }
+      if (kind === "run") {
+        const name = argv[argv.indexOf("--name") + 1];
+        if (!name || containers.has(name)) return { exitCode: 1, stdout: "" };
+        const sourceId = argv[argv.indexOf("--volumes-from") + 1]?.replace(/:ro$/, "");
+        const source = [...containers.values()].find((container) => container.Id === sourceId);
+        const destination = argv[argv.indexOf("--mount") + 1]?.match(/^type=volume,src=([^,]+),/)?.[1];
+        if (!source || !destination || !volumes.has(destination)) return { exitCode: 1, stdout: "" };
+        if (failCommand === "copy helper start") {
+          const label = argv[argv.indexOf("--label") + 1] ?? "";
+          const equals = label.indexOf("=");
+          containers.set(name, {
+            Id: String(nextContainerId++).padStart(64, "0"),
+            Name: `/${name}`,
+            Config: {
+              Image: argv[argv.indexOf("--entrypoint") + 2],
+              Labels: { [label.slice(0, equals)]: label.slice(equals + 1) },
+            },
+            State: { Status: "created", Running: false },
+            Mounts: [{ Name: source.Mounts[0].Name }, { Name: destination }],
+          });
+          return { exitCode: 1, stdout: "" };
+        }
+        const workspace = workspaces.get(source.Mounts[0].Name) ?? "";
+        workspaces.set(destination, failCommand === "copy" ? workspace.slice(0, 1) : workspace);
+        return { exitCode: failCommand === "copy" ? 1 : 0, stdout: "" };
       }
       if (`${kind} ${action}` === failCommand) return { exitCode: 1, stdout: "SECRET Docker diagnostic" };
       if (kind === "cp") {
@@ -70,7 +100,11 @@ function fixture(
         }
       });
       if (action === "ls") {
-        return { exitCode: 0, stdout: [...store.keys()].map((name) => JSON.stringify(name)).join("\n") };
+        const rows =
+          kind === "container" && value("--format") === "{{.ID}}"
+            ? [...containers.values()].map((container) => container.Id)
+            : [...store.keys()].map((name) => JSON.stringify(name));
+        return { exitCode: 0, stdout: rows.join("\n") };
       }
       if (action === "inspect") return { exitCode: store.has(last) ? 0 : 1, stdout: JSON.stringify([store.get(last)]) };
       if (action === "create" && kind === "volume") {
@@ -80,32 +114,45 @@ function fixture(
         if (store.has(name)) return { exitCode: 1, stdout: "name already exists" };
         if (refuseBinds && argv.some((arg) => arg.startsWith("type=bind,")))
           return { exitCode: 1, stdout: "bind source path does not exist" };
-        const mounts = argv
+        const mountOptions = argv
           .flatMap((arg, i) => (arg === "--mount" ? [argv[i + 1]!] : []))
-          .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))))
-          .map((mount) =>
-            mount.type === "bind"
-              ? { Type: "bind", Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }
-              : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
-          );
+          .map((spec) => Object.fromEntries(spec.split(",").map((part) => part.split("="))));
+        const home = mountOptions.find((mount) => mount.type === "volume")?.src;
+        if (home && !workspaces.get(home) && !mountOptions.some((mount) => "volume-nocopy" in mount))
+          workspaces.set(home, "image default workspace");
+        const mounts = mountOptions.map((mount) =>
+          mount.type === "bind"
+            ? { Type: "bind", Source: mount.src, Destination: mount.dst, RW: !("readonly" in mount) }
+            : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
+        );
         store.set(name, {
+          Id: String(nextContainerId++).padStart(64, "0"),
           Name: `/${name}`,
           Config: { Image: argv[argv.indexOf("--entrypoint") + 2], User: value("--user"), Labels: labels },
           HostConfig: { Privileged: false },
           Mounts: mounts,
           State: { Status: "created", Running: false },
         });
-      } else if (action === "start" || action === "stop") {
-        const container = store.get(last);
+      } else if (action === "start" || action === "stop" || action === "update") {
+        const container = store.get(last) ?? [...containers.values()].find((container) => container.Id === last);
         if (!container) return { exitCode: 1, stdout: "missing" };
-        container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
+        if (action === "update") container.resourcesUpdated = true;
+        else container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
-        if (!retainRemoved) store.delete(last);
-      } else if (action !== "exec" && action !== "update") throw new Error("Unexpected fake Docker operation");
+        if (
+          kind === "volume" &&
+          [...containers.values()].some((c) => c.Mounts.some((m: { Name?: string }) => m.Name === last))
+        )
+          return { exitCode: 1, stdout: "" };
+        const name =
+          kind === "container" ? ([...containers].find(([, container]) => container.Id === last)?.[0] ?? last) : last;
+        if (!retainRemoved) store.delete(name);
+      } else if (action !== "exec") throw new Error("Unexpected fake Docker operation");
       return { exitCode: 0, stdout: "" };
     },
   };
   const executor = createDockerMachineExecutor({
+    ...(beforeRestoreAllocation ? { beforeRestoreAllocation } : {}),
     installationId: "11111111-1111-1111-1111-111111111111",
     hostId: "22222222-2222-2222-2222-222222222222",
     cli,
@@ -119,6 +166,7 @@ function fixture(
     volumes,
     calls,
     copies,
+    workspaces,
     images,
     setTime: (v: number) => {
       time = v;
@@ -138,6 +186,135 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
+  test.each(["update", "start"])(
+    "allocation cannot %s a different container that takes the verified name",
+    async (action) => {
+      const f = fixture();
+      const run = f.cli.run;
+      f.cli.run = async (argv, stdin, options) => {
+        if (argv[0] === "container" && argv[1] === action) {
+          const [name, container] = [...f.containers.entries()][0]!;
+          f.containers.set(name, { ...container, Id: "f".repeat(64), resourcesUpdated: false });
+        }
+        return run(argv, stdin, options);
+      };
+      await expect(f.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
+      expect([...f.containers.values()][0]).toMatchObject({
+        resourcesUpdated: false,
+        State: { Running: false },
+      });
+    },
+  );
+
+  test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
+    let free = 0;
+    const f = fixture(undefined, undefined, async () => requireDockerDiskSpace(free));
+    const source = await f.executor.create(request);
+    const sourceContainer = f.containers.get(source.containerName);
+    expect(source.machineId).toBe(sourceContainer.Id);
+    const predecessor = { request, machineId: source.machineId };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    f.workspaces.set(source.volumeName, "retained workspace");
+    await f.executor.stop(request);
+
+    await expect(f.executor.restore(target, predecessor)).rejects.toBeInstanceOf(DockerDiskFloorError);
+    expect(f.volumes.size).toBe(1);
+    free = DOCKER_DISK_FLOOR_BYTES;
+    f.fail("copy");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    expect(f.containers.size).toBe(1);
+    await expect(f.executor.create(target)).rejects.toThrow("ownership_mismatch");
+
+    f.fail("copy helper start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    expect(f.containers.size).toBe(2);
+
+    f.fail("container start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    const replacement = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
+    expect(replacement?.State.Status).toBe("created");
+    free = 0;
+    f.fail("copy");
+    const restored = await f.executor.restore(target, predecessor);
+    expect(f.containers.get(restored.containerName).Id).toBe(replacement?.Id);
+    expect(restored.machineId).toBe(replacement?.Id);
+    expect(await f.executor.restore(target, predecessor)).toEqual(restored);
+    expect(await f.executor.isRunning(target)).toBe(true);
+    expect(await f.executor.isStopped(request)).toBe(true);
+    expect(f.workspaces.get(restored.volumeName)).toBe("retained workspace");
+    expect(f.workspaces.get(source.volumeName)).toBe("retained workspace");
+    expect(f.copies.size).toBe(0);
+  });
+
+  test("restore rejects a running or different predecessor and cannot adopt an unrelated target", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    await expect(f.executor.restore(request, predecessor)).rejects.toThrow("invalid_request");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("ownership_mismatch");
+    await f.executor.stop(request);
+    await expect(f.executor.restore(target, { ...predecessor, machineId: "a".repeat(64) })).rejects.toThrow(
+      "ownership_mismatch",
+    );
+    expect(f.volumes.size).toBe(1);
+    await f.executor.create(target);
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("ownership_mismatch");
+  });
+
+  test("restore preserves an empty workspace even when the image has home contents", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    f.workspaces.set(source.volumeName, "");
+    await f.executor.stop(request);
+    const restored = await f.executor.restore(target, predecessor);
+    expect(f.workspaces.get(restored.volumeName)).toBe("");
+  });
+
+  test("full cleanup reclaims a dead restore helper after the target expires", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555", expiresAt: 2000 };
+    await f.executor.stop(request);
+    f.fail("copy helper start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    const helper = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
+    expect(helper).toBeDefined();
+    helper.State = { Status: "dead", Running: false };
+    f.setTime(2000);
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("expired");
+    await f.executor.delete(target);
+    expect(await f.executor.isAbsent(target)).toBe(true);
+    expect(f.containers.size).toBe(1);
+    expect(f.volumes.size).toBe(1);
+    expect(await f.executor.isStopped(request)).toBe(true);
+  });
+
+  test("restore refuses to start after its deadline expires during cache preparation", async () => {
+    let prepare = () => {};
+    const f = fixture(undefined, {
+      dir: "/state/artifact-cache",
+      ensure: async () => {
+        prepare();
+        return true;
+      },
+    });
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555", expiresAt: 2000 };
+    await f.executor.stop(request);
+    let preparations = 0;
+    prepare = () => {
+      if (++preparations === 2) f.setTime(2000);
+    };
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("expired");
+    expect(await f.executor.isRunning(target)).toBe(false);
+    expect(await f.executor.isStopped(request)).toBe(true);
+  });
+
   test("new containers mount the host's shared artifact cache read-only; retained ones without it stay owned", async () => {
     const shared = "/state/artifact-cache";
     let ensured = 0;
@@ -462,7 +639,7 @@ describe("Docker machine executor", () => {
 
   test("ignores unrelated listed resources without inspecting or mutating them", async () => {
     const f = fixture();
-    const unrelatedContainer = { Name: "/someone-else" };
+    const unrelatedContainer = { Name: "/someone-else", Mounts: [{ Name: "someone-else-home" }] };
     const unrelatedVolume = { Name: "someone-else-home" };
     f.containers.set("someone-else", unrelatedContainer);
     f.volumes.set("someone-else-home", unrelatedVolume);
@@ -657,4 +834,36 @@ test("absence requires successful owned inventories and container-only loss stil
   expect(await f.executor.isAbsent(request)).toBe(true);
   f.fail("volume ls");
   await expect(f.executor.isAbsent(request)).rejects.toThrow();
+});
+
+test("physical-only deletion preserves the workspace across replay and refuses a replacement container", async () => {
+  const f = fixture();
+  const { containerName, volumeName } = await f.executor.create(request);
+  const target = { scope: "physical-only", machineId: f.containers.get(containerName).Id } as const;
+  await f.executor.delete(request, target);
+  expect(f.containers.has(containerName)).toBe(false);
+  expect(f.volumes.has(volumeName)).toBe(true);
+  expect(f.calls.find(({ argv }) => argv[0] === "container" && argv[1] === "rm")?.argv.at(-1)).toBe(target.machineId);
+
+  await f.executor.delete(request, target);
+  expect(f.volumes.has(volumeName)).toBe(true);
+
+  await f.executor.create(request);
+  await expect(f.executor.delete(request, target)).rejects.toMatchObject({ code: "ownership_mismatch" });
+  expect(f.containers.has(containerName)).toBe(true);
+  expect(f.volumes.has(volumeName)).toBe(true);
+});
+
+test("physical-only deletion refuses to confirm absence when the target was renamed", async () => {
+  const f = fixture();
+  const { containerName, volumeName } = await f.executor.create(request);
+  const container = f.containers.get(containerName);
+  f.containers.delete(containerName);
+  f.containers.set("renamed", { ...container, Name: "/renamed" });
+
+  await expect(f.executor.delete(request, { scope: "physical-only", machineId: container.Id })).rejects.toMatchObject({
+    code: "ownership_mismatch",
+  });
+  expect(f.containers.has("renamed")).toBe(true);
+  expect(f.volumes.has(volumeName)).toBe(true);
 });

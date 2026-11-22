@@ -3,54 +3,44 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; name?: string; run?: string };
+type Step = {
+  id?: string;
+  name?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, string>;
+  "continue-on-error"?: boolean;
+};
+type Job = {
+  steps: Step[];
+  needs?: string | string[];
+  if?: string;
+  environment?: string;
+  permissions?: Record<string, string>;
+  outputs?: Record<string, string>;
+  env?: Record<string, string>;
+};
 const workflow = Bun.YAML.parse(
-  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
-) as { jobs: Record<string, { steps: Step[] }> };
+  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release-pipeline.yml"), "utf8"),
+) as { jobs: Record<string, Job> };
 
-function script(step: Step | undefined): string {
+function script(step: Step | undefined) {
   if (!step?.run) throw new Error("The selected workflow step must execute its preflight");
   return step.run;
 }
-const intentScript = script(workflow.jobs["publication-intent"]?.steps.find((step) => step.id === "intent"));
 const configurationScript = script(workflow.jobs["release-configuration"]?.steps[0]);
 const productionScript = script(workflow.jobs.production?.steps[0]);
 
-// Execute the workflow's Bash, not a TypeScript imitation. Only external GitHub
-// metadata and Git commit evidence are replaced; no real credentials are inherited.
-function execute(command: string, overrides: Record<string, string> = {}, version = "1.2.3") {
+// Execute the workflow preflight without inheriting real credentials.
+function execute(command: string, overrides: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "release-configuration-"));
   try {
     const bin = join(directory, "bin");
     mkdirSync(bin);
-    mkdirSync(join(directory, "packages/core"), { recursive: true });
-    writeFileSync(join(directory, "packages/core/package.json"), JSON.stringify({ version }));
     const calls = join(directory, "calls");
     const output = join(directory, "outputs");
     writeFileSync(calls, "");
     writeFileSync(output, "");
-    const executable = (name: string, body: string) =>
-      writeFileSync(join(bin, name), `#!/bin/bash\nset -eu\n${body}\n`, { mode: 0o755 });
-    executable(
-      "gh",
-      `printf 'gh %s\\n' "$*" >> "$CALLS"
-[[ "$*" == 'api --include repos/fixture/armada/releases/tags/v1.2.3' ]] || exit 90
-if [[ "$HTTP_STATUS" == network ]]; then exit 1; fi
-printf 'HTTP/2 %s\\n\\n{}\\n' "$HTTP_STATUS"
-[[ "$HTTP_STATUS" == 200 ]]`,
-    );
-    executable(
-      "git",
-      `printf 'git %s\\n' "$*" >> "$CALLS"
-case "$*" in
-  'rev-parse HEAD') printf '%s\\n' 'head-commit' ;;
-  'rev-parse refs/tags/v1.2.3^{commit}')
-    [[ "$TAG_EXISTS" == true ]] || exit 1
-    printf '%s\\n' "$TAG_COMMIT" ;;
-  'merge-base --is-ancestor HEAD origin/main') [[ "$ANCESTOR" == true ]] ;;
-  *) exit 91 ;;
-esac`,
-    );
     const result = Bun.spawnSync(["bash", "-eu", "-c", command], {
       cwd: directory,
       env: {
@@ -59,16 +49,6 @@ esac`,
         CALLS: calls,
         RUNNER_TEMP: directory,
         GITHUB_OUTPUT: output,
-        EVENT_NAME: "push",
-        SOURCE_REF: "refs/heads/main",
-        RELEASE_TAG: "",
-        REQUESTED_PUBLISH: "false",
-        GH_REPO: "fixture/armada",
-        GH_TOKEN: "metadata-only-canary",
-        HTTP_STATUS: "200",
-        TAG_EXISTS: "true",
-        TAG_COMMIT: "head-commit",
-        ANCESTOR: "true",
         ...overrides,
       },
     });
@@ -82,83 +62,6 @@ esac`,
     rmSync(directory, { recursive: true, force: true });
   }
 }
-
-test("main publication intent distinguishes missing releases from published releases and metadata failures", () => {
-  for (const [status, expected] of [
-    ["200", "publish=false\n"],
-    ["404", "publish=true\n"],
-    ["503", ""],
-    ["network", ""],
-  ] as const) {
-    const result = execute(intentScript, { HTTP_STATUS: status });
-    expect(result.code).toBe(expected ? 0 : 1);
-    expect(result.output).toBe(expected);
-    expect(result.calls).toEqual(["gh api --include repos/fixture/armada/releases/tags/v1.2.3"]);
-    expect(result.message).toBe(
-      expected ? "" : "::error::Cannot verify release publication intent; no publication authorized.\n",
-    );
-    expect(result.message).not.toContain("metadata-only-canary");
-  }
-});
-
-test("tag and explicit manual publication require the existing version tag to point at a main ancestor", () => {
-  for (const event of ["push", "workflow_dispatch"]) {
-    const result = execute(intentScript, {
-      EVENT_NAME: event,
-      SOURCE_REF: event === "push" ? "refs/tags/v1.2.3" : "refs/heads/main",
-      RELEASE_TAG: "v1.2.3",
-      REQUESTED_PUBLISH: "true",
-    });
-    expect(result.code).toBe(0);
-    expect(result.output).toBe("publish=true\n");
-    expect(result.calls).toEqual([
-      "git rev-parse HEAD",
-      "git rev-parse refs/tags/v1.2.3^{commit}",
-      "git merge-base --is-ancestor HEAD origin/main",
-    ]);
-    expect(result.message).toBe("");
-  }
-});
-
-test("unsafe refs, missing or mismatched tag evidence, and invalid versions never authorize publication", () => {
-  for (const overrides of [
-    { SOURCE_REF: "refs/heads/feature" },
-    { RELEASE_TAG: "" },
-    { RELEASE_TAG: "v9.9.9" },
-    { TAG_EXISTS: "false" },
-    { TAG_COMMIT: "another-commit" },
-    { ANCESTOR: "false" },
-  ]) {
-    const result = execute(intentScript, {
-      EVENT_NAME: "workflow_dispatch",
-      SOURCE_REF: "refs/heads/main",
-      RELEASE_TAG: "v1.2.3",
-      REQUESTED_PUBLISH: "true",
-      ...overrides,
-    });
-    expect(result.code).not.toBe(0);
-    expect(result.output).toBe("");
-    expect(result.calls.some((call) => call.startsWith("gh "))).toBe(false);
-    expect(result.message).toContain("::error::");
-  }
-  const invalidVersion = execute(intentScript, {}, "not-a-version");
-  expect(invalidVersion.code).toBe(1);
-  expect(invalidVersion.calls).toEqual([]);
-  expect(invalidVersion.output).toBe("");
-});
-
-test("manual dry runs need neither a tag, GitHub metadata nor deployment secrets", () => {
-  const result = execute(intentScript, {
-    EVENT_NAME: "workflow_dispatch",
-    SOURCE_REF: "refs/heads/feature",
-    REQUESTED_PUBLISH: "false",
-    GH_TOKEN: "",
-  });
-  expect(result.code).toBe(0);
-  expect(result.output).toBe("publish=false\n");
-  expect(result.calls).toEqual([]);
-  expect(result.message).toBe("");
-});
 
 const commonNames = [
   "SUPABASE_ACCESS_TOKEN",
@@ -236,11 +139,121 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
-test("npm publication installs workspace dependencies without lifecycle scripts before staging bundles the SDK", () => {
-  const steps = workflow.jobs.publish?.steps ?? [];
-  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
-  const stage = steps.findIndex((step) => step.name === "Stage and pack every package");
-  expect(stage).toBeGreaterThan(-1);
-  expect(install).toBeGreaterThan(-1);
-  expect(install).toBeLessThan(stage);
+test("production approval gates deployment after finalization accepts work or receipts", () => {
+  const approval = workflow.jobs["production-approval"];
+  expect(approval?.environment).toBe("production-deploy");
+  expect(approval?.needs).toEqual(["release-metadata", "finalize-release"]);
+  expect(workflow.jobs.production?.needs).toContain("production-approval");
+});
+
+test("a recovery that reuses check, binary and smoke receipts still reaches production", () => {
+  const approval = workflow.jobs["production-approval"]?.if ?? "";
+  const production = workflow.jobs.production?.if ?? "";
+  expect(approval).toContain("!cancelled()");
+  expect(approval).toContain("needs.finalize-release.result == 'success'");
+  expect(production).toContain("!cancelled()");
+  expect(production).toContain("needs.production-approval.result == 'success'");
+});
+
+test("the publishing token can write version PR labels through the reusable workflow", () => {
+  const caller = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  expect(caller.jobs["release-pipeline"]?.permissions?.["pull-requests"]).toBe("write");
+  expect(workflow.jobs["finalize-release"]?.permissions?.["pull-requests"]).toBe("write");
+});
+
+test("production approval requires publication verification even if PR labelling fails", () => {
+  const steps = workflow.jobs["finalize-release"]?.steps ?? [];
+  const verify = steps.findIndex((step) => step.name === "Verify the published release and tag");
+  const reconcile = steps.findIndex((step) => step.id === "reconcile");
+  expect(verify).toBeGreaterThanOrEqual(0);
+  expect(reconcile).toBeGreaterThan(verify);
+  expect(steps[verify]?.["continue-on-error"]).not.toBe(true);
+  expect(steps[reconcile]?.["continue-on-error"]).toBe(true);
+});
+
+test("binary and publish jobs use the validated release version for npm artifacts", () => {
+  const binary = workflow.jobs.binary;
+  const publish = workflow.jobs.publish;
+  if (!binary || !publish) throw new Error("Missing binary or publish job");
+
+  const collection = binary.steps.find((step) => step.name === "Collect smoke-tested npm tarballs");
+  const artifact = binary.steps.find((step) => step.with?.path === "dist/npm-artifact");
+  const download = publish.steps.find((step) => step.with?.path === "dist/tarballs");
+  const version = `\${{ needs.release-metadata.outputs.version }}`;
+
+  expect(workflow.jobs["release-metadata"]?.outputs?.version).toBeTruthy();
+  expect(binary.needs).toContain("release-metadata");
+  expect(publish.needs).toContain("release-metadata");
+  expect(collection?.env?.VERSION).toBe(version);
+  expect(publish.env?.VERSION).toBe(version);
+  const sha = `\${{ needs.release-metadata.outputs.sha }}`;
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-${sha}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-${sha}-*`);
+});
+
+const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
+
+test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs before publish (%s)", (scenario) => {
+  const directory = mkdtempSync(join(tmpdir(), "release-tarballs-"));
+  try {
+    const tarballDir = join(directory, "dist/tarballs");
+    mkdirSync(tarballDir, { recursive: true });
+    const toolsDir = join(directory, ".release-tools/scripts");
+    mkdirSync(toolsDir, { recursive: true });
+    writeFileSync(join(toolsDir, "publish-npm.sh"), 'printf "publish %s\\n" "$@"\n');
+
+    const version = "1.2.3";
+    const prefix = "the-vibe-company-armada";
+    for (const target of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]) {
+      const packages =
+        target === "linux-x64" ? [`${prefix}-${target}`, prefix, `${prefix}-sdk`] : [`${prefix}-${target}`];
+      const entries = packages.flatMap((name) => {
+        const filename = `${name}-${version}.tgz`;
+        if (name === prefix && scenario === "incomplete artifact") return [];
+        writeFileSync(join(tarballDir, filename), name === prefix && scenario === "tampered" ? "changed" : name);
+        return [`${new Bun.CryptoHasher("sha256").update(name).digest("hex")}  ${filename}\n`];
+      });
+      writeFileSync(join(tarballDir, `SHA256SUMS-${target}`), entries.join(""));
+    }
+
+    const result = Bun.spawnSync(["bash", "-c", script(verifiedPublish)], {
+      cwd: directory,
+      env: { PATH: "/usr/bin:/bin", VERSION: version },
+    });
+    if (scenario === "intact") {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split("\n")).toHaveLength(6);
+    } else {
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout.toString()).not.toContain("publish ");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("candidate configuration failure blocks production migrations", () => {
+  const steps = workflow.jobs.production?.steps ?? [];
+  const validate = steps.findIndex((step) => step.run?.includes("armada-server --check-config"));
+  const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+  expect(validate).toBeGreaterThanOrEqual(0);
+  expect(deploy).toBeGreaterThan(validate);
+  expect(steps[validate]?.["continue-on-error"]).not.toBe(true);
+});
+
+test("device login configuration is checked before staging and production deployment", () => {
+  const stagingWorkflow = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/staging-gated-production.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  for (const steps of [workflow.jobs.production?.steps ?? [], stagingWorkflow.jobs.staging?.steps ?? []]) {
+    const check = steps.findIndex((step) => step.run?.includes("/device-login-configuration.ts"));
+    const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(deploy).toBeGreaterThan(check);
+    expect(steps[check]?.["continue-on-error"]).not.toBe(true);
+  }
 });

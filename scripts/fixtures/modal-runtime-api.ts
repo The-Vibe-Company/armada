@@ -1,17 +1,21 @@
 interface RequestBody {
   command: string;
   connections: string[];
-  conversation_id: string;
   cursor?: string;
+  golden?: string;
   goldenId: string;
   harness: string;
   id: string;
   org: string;
+  owner?: string;
   prompt: string;
+  prompt_id?: string;
   provider: string;
   repository: string;
   request_id: string;
-  requestKey: string;
+  requestKey?: string;
+  idempotencyKey?: string;
+  externalRef?: string;
   revision: number;
   runtimeTransport: string;
   runtimeVersion: number;
@@ -32,6 +36,7 @@ interface FixtureEvent {
   id: string;
   at: number;
   promptId: string;
+  conversationId?: string;
   kind: string;
   text?: string;
   partial?: boolean;
@@ -57,6 +62,16 @@ const ordinary = args.includes("--ordinary"),
   variables = args.includes("--variables"),
   usage = args.includes("--usage"),
   resume = args.includes("--resume");
+const admission = defects.includes("job-admission");
+const sandboxId = admission ? "88888888-8888-4888-8888-888888888888" : "worker";
+let launchRef: string | undefined;
+let admissionInventoryRead = false;
+let admissionStatusReads = 0;
+let initialPromptId = "prompt";
+let conversationId = "conversation";
+let initialAliasPublished = false;
+let followupId = "followup";
+let followupAliasPublished = false;
 const shellOld = defects.includes("opencode-shell-old");
 const inventoryReject = defects.some((d) =>
   ["opencode-mcp-collision", "opencode-mcp-duplicate-name", "opencode-mcp-inventory-missing"].includes(d),
@@ -243,7 +258,7 @@ const readPrompt = (prompt: string) => {
 const templateReceipt = (body: RequestBody, idle: boolean) => ({
   state: "succeeded",
   status: idle ? "ready" : "running",
-  id: "worker",
+  id: sandboxId,
   provider: "modal",
   ...(defects.includes("ordinary-template-missing-transport") ? {} : { runtimeTransport: "dialout" }),
   runtime: { kind: "armada", epoch: "1" },
@@ -263,6 +278,50 @@ const templateReceipt = (body: RequestBody, idle: boolean) => ({
     skillReceipts: receipts,
   },
 });
+const admittedLaunch = (body: RequestBody) => {
+  launchRef = body.externalRef;
+  const envelope = { sandbox: { id: sandboxId, status: "starting" } };
+  if (!variables) return envelope;
+  const manifest = templateReceipt(body, idle).manifest;
+  if (!ordinary) {
+    const { requestKey: _requestKey, skillReceipts: _skillReceipts, ...templateManifest } = manifest;
+    return { sandbox: { ...envelope.sandbox, templateManifest: { ...templateManifest, resolvedSkills: [] } } };
+  }
+  return {
+    requestId: "99999999-9999-4999-8999-999999999999",
+    state: "succeeded",
+    id: sandboxId,
+    provider: "modal",
+    status: defects.includes("idle-bad-receipt") ? "running" : "starting",
+    envelope,
+    manifest,
+  };
+};
+const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
+  const receipt = templateReceipt(body, idle);
+  const { requestKey: _requestKey, golden, skillReceipts, ...templateManifest } = receipt.manifest;
+  return {
+    sandbox: {
+      id: receipt.id,
+      provider: receipt.provider,
+      providerSandboxId: "modal-worker",
+      status: receipt.status,
+      goldenId: golden.id,
+      runtimeTransport: receipt.runtimeTransport,
+      externalRef: body.externalRef,
+      skills: skillReceipts,
+      templateManifest,
+    },
+    golden: { ...golden, name: "golden" },
+    runtime: receipt.runtime,
+    promptId: receipt.promptId,
+    conversationId: receipt.conversationId,
+    ttlSeconds: 900,
+    expiresAt: null,
+    github: { status: "none" },
+    helper: null,
+  };
+};
 const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Promise<Response> => {
   if (!options || typeof options.body !== "string") throw Error("Missing JSON request body");
   const path = new URL(url instanceof Request ? url.url : url).pathname,
@@ -272,7 +331,6 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     return Response.json({
       modalRuntime: {
         defaultPath: defects.includes("ordinary-default-off") ? "native" : "runtime",
-        version: 1,
         enabled: !defects.includes("disabled"),
         followupVersion: defects.includes("old-followup") && !claude && !opencode && !idle && !ordinary ? 0 : 1,
         claudeVersion: defects.includes("claude-old-version") ? 0 : 1,
@@ -346,12 +404,41 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
           }[body.scope],
     });
   }
+  if (path.endsWith("/sandbox/status") && admission && body.prompt_id) {
+    if (body.id !== sandboxId) throw Error("wrong queued turn sandbox");
+    if (idle && firstSends && body.prompt_id === initialPromptId) initialAliasPublished = true;
+    else if (sends && body.prompt_id === followupId) followupAliasPublished = true;
+    else throw Error("wrong queued turn status");
+    return Response.json({
+      id: sandboxId,
+      status: defects.includes("idle-stopped-first-turn") ? "stopped" : "ready",
+      settled: true,
+      prompt: { promptId: body.prompt_id, state: "finished" },
+    });
+  }
   if (path.endsWith("/sandbox/status")) {
+    if (admission) {
+      if (body.id !== sandboxId || !admissionInventoryRead || stops) throw Error("wrong admitted sandbox status");
+      const settled = ++admissionStatusReads > 1;
+      return Response.json({
+        id: sandboxId,
+        status: "ready",
+        settled,
+        statusMessage: settled
+          ? defects.includes("idle-setup-failed")
+            ? "Modal launch setup failed."
+            : null
+          : "Modal launch setup is still in progress.",
+        prompt: settled && !idle ? { promptId: "prompt", conversationId: null, state: "finished" } : null,
+        conversationIds: settled && !idle ? ["conversation"] : [],
+        skills: receipts,
+      });
+    }
     skillStatuses++;
     return Response.json({
       ...(idle && variables && !firstSends
         ? {
-            id: defects.includes("idle-template-foreign-status") ? "foreign" : "worker",
+            id: defects.includes("idle-template-foreign-status") ? "foreign" : sandboxId,
             status: defects.includes("idle-template-wrong-status") ? "running" : "ready",
             conversationIds: defects.includes("idle-template-active-conversation") ? ["foreign"] : [],
             prompt: null,
@@ -374,6 +461,8 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/github/refresh")) {
+    if (admission && (body.id !== sandboxId || admissionStatusReads < 2))
+      throw Error("GitHub refresh before settlement");
     githubRevision++;
     return Response.json({
       status: "connected",
@@ -385,6 +474,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     const configured =
       !resumes || githubRevision > (emptyResume ? 0 : 1) || defects.includes("github-resume-old-config");
     return Response.json({
+      id: sandboxId,
       configured,
       runtime: { kind: "armada", epoch: resumes ? "2" : "1" },
       revision: defects.includes("github-stale-revision")
@@ -428,7 +518,9 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       if (
         body.id !== templateId ||
         body.revision !== 2 ||
-        !body.requestKey ||
+        (ordinary
+          ? !body.requestKey || body.externalRef !== body.requestKey || Object.hasOwn(body, "idempotencyKey")
+          : Object.hasOwn(body, "requestKey") || !body.idempotencyKey || body.externalRef !== body.idempotencyKey) ||
         body.org !== orgId ||
         ["golden", "credentialId", "model", "connections"].some((key) => Object.hasOwn(body, key))
       )
@@ -437,13 +529,14 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("unsafe direct connections");
     if (idle) {
       if (Object.hasOwn(body, "prompt")) throw Error("Idle launch must omit prompt");
-      if (variables) return Response.json(templateReceipt(body, true));
+      if (admission) return Response.json(admittedLaunch(body));
+      if (variables) return Response.json(ordinary ? templateReceipt(body, true) : pinnedLaunchEnvelope(body, true));
       return Response.json({
         sandbox: {
-          id: "worker",
+          id: sandboxId,
           provider: "modal",
           runtimeTransport: "dialout",
-          status: defects.includes("idle-bad-receipt") ? "running" : "ready",
+          status: "ready",
           conversationIds: [],
           goldenId: "golden-id",
           ...(skills ? { skills: receipts } : {}),
@@ -454,11 +547,12 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       });
     }
     readPrompt(body.prompt);
+    if (admission) return Response.json(admittedLaunch(body));
     if (defects.includes("lost-launch")) throw Error("private transport diagnostics must not surface");
-    if (variables) return Response.json(templateReceipt(body, false));
+    if (variables) return Response.json(ordinary ? templateReceipt(body, false) : pinnedLaunchEnvelope(body, false));
     return Response.json({
       sandbox: {
-        id: "worker",
+        id: sandboxId,
         provider: "modal",
         ...(defects.includes("ordinary-missing-transport") ? {} : { runtimeTransport: "dialout" }),
         goldenId: defects.includes("skills-wrong-golden") ? "foreign" : "golden-id",
@@ -470,7 +564,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/sandbox/exec")) {
-    if (!emptyResume || body.id !== "worker") throw Error("Unexpected exec");
+    if (!emptyResume || body.id !== sandboxId) throw Error("Unexpected exec");
     if (body.command.startsWith("printf %s ")) {
       if (++diskWrites !== 1 || stops || firstSends) throw Error("Unsafe witness write");
       diskValue = body.command.match(/EMPTY_[a-f0-9]+/)![0]!;
@@ -488,8 +582,21 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   if (path.endsWith("/sandbox/send")) {
     if (idle && !firstSends) {
       firstSends++;
-      if (Object.hasOwn(body, "conversation_id") || body.id !== "worker" || !/^[a-f0-9-]{36}$/.test(body.request_id))
+      if (Object.hasOwn(body, "conversation_id") || body.id !== sandboxId || !/^[a-f0-9-]{36}$/.test(body.request_id))
         throw Error("Unsafe first send");
+      if (admission) {
+        if (emptyResume || admissionStatusReads < 2) throw Error("first send before settled live setup");
+        readPrompt(body.prompt);
+        initialPromptId = body.request_id;
+        conversationId = `first_${body.request_id}`;
+        return Response.json({
+          id: sandboxId,
+          requestId: body.request_id,
+          promptId: initialPromptId,
+          conversationId,
+          status: "queued",
+        });
+      }
       if (emptyResume) {
         if (stops !== 1 || checkpoints !== 2 || ++resumes !== 1) throw Error("Unsafe empty activation");
       }
@@ -522,8 +629,8 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     }
     if (
       ++sends > (github && resume ? 2 : 1) ||
-      body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      body.id !== sandboxId ||
+      Object.hasOwn(body, "conversation_id") ||
       !/^[a-f0-9-]{36}$/.test(body.request_id) ||
       body.prompt.includes(memory)
     )
@@ -537,6 +644,16 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         Object.values(variableValues).some((value) => value && body.prompt.includes(value)))
     )
       throw Error("invalid readable followup instruction");
+    if (admission) {
+      followupId = body.request_id;
+      return Response.json({
+        id: sandboxId,
+        requestId: body.request_id,
+        promptId: followupId,
+        conversationId,
+        status: "queued",
+      });
+    }
     if (defects.includes("lost-followup")) throw Error("private transport diagnostics must not surface");
     return Response.json({
       requestId: defects.includes("wrong-request") ? "wrong" : body.request_id,
@@ -546,9 +663,12 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/logs/read")) {
+    if (admission && variables && admissionStatusReads < 2) throw Error("template archive read before settlement");
+    const archivedFollowup = admission && !followupAliasPublished ? "native-followup" : followupId;
     if (idle && !firstSends)
       return Response.json({
         source: "armada-runtime",
+        hasMore: defects.includes("idle-incomplete-history"),
         events:
           defects.includes("idle-running-history") || (defects.includes("empty-hidden-history") && stops > 0)
             ? [{ id: "unexpected", at: 1, kind: "prompt", promptId: "unexpected", status: "finished", text: "" }]
@@ -565,15 +685,23 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         tools: [],
         text,
       },
-      { id: "finished-" + promptId, at: 2, promptId, kind: "prompt", text: "", status: "finished" },
+      {
+        id: "finished-" + promptId,
+        at: 2,
+        promptId,
+        conversationId,
+        kind: "prompt",
+        text: "",
+        status: "finished",
+      },
     ];
     let events: FixtureEvent[] = [
       ...pair(
-        defects.includes("wrong-prompt") ? "foreign" : "prompt",
+        defects.includes("wrong-prompt") ? "foreign" : initialAliasPublished ? initialPromptId : "prompt",
         answer,
         defects.includes("tool-result") ? "tool_result" : "assistant",
       ),
-      ...(sends ? pair("followup", memory) : []),
+      ...(sends ? pair(archivedFollowup, memory) : []),
       ...(resumes && !emptyResume
         ? pair("resumed", memory, defects.includes("resume-tool-result") ? "tool_result" : "assistant")
         : []),
@@ -583,7 +711,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       sends &&
       !(defects.includes("github-missing-tool") && !defects.includes("opencode-github-display-only"))
     ) {
-      const toolPrompt = resumes && !emptyResume && sends > 1 ? "github-resumed" : "followup";
+      const toolPrompt = resumes && !emptyResume && sends > 1 ? "github-resumed" : archivedFollowup;
       events.push(...pair("github-resumed", memory).filter(() => resumes && !emptyResume && sends > 1));
       events.push({
         id: "gh-tool",
@@ -782,7 +910,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   }
   if (path.endsWith("/sandbox/checkpoint-runtime-v1")) {
     checkpoints++;
-    if (body.id !== "worker" || body.runtimeVersion !== 1 || !body.request_id) throw Error("bad checkpoint input");
+    if (body.id !== sandboxId || body.runtimeVersion !== 1 || !body.request_id) throw Error("bad checkpoint input");
     if (checkpoints === 1) firstCheckpoint = body.request_id;
     else if ((!resumes && body.request_id !== firstCheckpoint) || (resumes && body.request_id === firstCheckpoint))
       throw Error("wrong checkpoint replay identity");
@@ -803,12 +931,36 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       },
     });
   }
+  if (path.endsWith("/sandbox/resume-runtime-v1") && admission && emptyResume) {
+    if (
+      ++resumes !== 1 ||
+      ++firstSends !== 1 ||
+      stops !== 1 ||
+      checkpoints !== 2 ||
+      body.id !== sandboxId ||
+      body.runtimeVersion !== 1 ||
+      !body.request_id ||
+      Object.hasOwn(body, "conversation_id")
+    )
+      throw Error("Unsafe explicit empty activation");
+    readPrompt(body.prompt);
+    conversationId = `first_${body.request_id}`;
+    return Response.json({
+      id: sandboxId,
+      requestId: body.request_id,
+      resumed: true,
+      runtime: { kind: "armada", epoch: "2" },
+      sourceCheckpoint: { epoch: "1", watermark: 4, empty: true },
+      promptId: "prompt",
+      conversationId,
+    });
+  }
   if (path.endsWith("/sandbox/resume-runtime-v1")) {
     if (
       ++resumes !== 1 ||
       stops !== 1 ||
-      body.id !== "worker" ||
-      body.conversation_id !== "conversation" ||
+      body.id !== sandboxId ||
+      Object.hasOwn(body, "conversation_id") ||
       !body.request_id ||
       body.runtimeVersion !== 1 ||
       body.prompt.includes(memory)
@@ -845,7 +997,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/sandbox/stop")) {
-    if (++stops > (resume || emptyResume ? 2 : 1) || body.id !== "worker") throw Error("repeated or foreign stop");
+    if (++stops > (resume || emptyResume ? 2 : 1) || body.id !== sandboxId) throw Error("repeated or foreign stop");
     if (
       (stops === 2 && defects.includes("resume-stop-unknown")) ||
       (stops === 1 && defects.includes("empty-stop-unknown"))
@@ -853,7 +1005,31 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("private transport diagnostics must not surface");
     return Response.json({});
   }
-  if (path.endsWith("/sandbox/list")) return Response.json({ sandboxes: [{ id: "worker", status: "stopped" }] });
+  if (path.endsWith("/sandbox/list") && admission && !stops) {
+    if (
+      body.externalRef !== launchRef ||
+      !launchRef ||
+      body.owner !== "me" ||
+      (variables && (body.org !== orgId || body.golden !== "golden-id"))
+    )
+      throw Error("unsafe inventory lookup");
+    admissionInventoryRead = true;
+    return Response.json({
+      sandboxes: [
+        {
+          id: defects.includes("variables-unrelated-launch") ? "foreign" : sandboxId,
+          provider: "modal",
+          harness: "codex",
+          status: "starting",
+          externalRef: launchRef,
+        },
+      ],
+    });
+  }
+  if (path.endsWith("/sandbox/list")) {
+    if (variables && stops && body.org !== orgId) throw Error("wrong template cleanup organization");
+    return Response.json({ sandboxes: [{ id: sandboxId, status: "stopped" }] });
+  }
   throw Error("unexpected operation");
 };
 

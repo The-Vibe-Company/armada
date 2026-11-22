@@ -44,18 +44,12 @@ const CORS_PATHS = new Set([
 
 const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 
-/**
- * MCP OAuth 2.1 routes (metadata, dynamic registration, authorize, token, refresh, revoke).
- * Returns null when the path is not an auth route, so #464 can try this before the MCP endpoint.
- * Issued Armada tokens are stored as lowercase sha-256 hex on `mcp_tokens`.
- */
 export interface OAuthServerOptions {
   store: AuthStore;
   fetch: AuthFetch;
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
-  /** Origin only, for example `https://armada.example.com`. */
   publicUrl: string;
   now: () => Date;
 }

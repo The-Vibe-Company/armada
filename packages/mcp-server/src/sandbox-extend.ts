@@ -7,11 +7,12 @@ import {
   type SandboxStore,
   sandboxActivity,
 } from "@armada/core/server";
-import { ToolError } from "./tools.ts";
+import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { ToolError } from "./tool-error.ts";
 
 /** Caller resolves owner/admin interior access (or scoped own-child authority) before entry. */
 export async function extendSandbox(
-  store: SandboxStore,
+  store: Omit<SandboxStore, "update"> & Pick<ServerSandboxStore, "update">,
   sandbox: SandboxRecord,
   provider: Provider,
   ttlSeconds: number,
@@ -26,10 +27,37 @@ export async function extendSandbox(
     refuse(`TTL must be a whole number of seconds from 1 to ${max}.`);
   if (!["ready", "running"].includes(sandbox.status))
     throw new ToolError("extension_state", "Only running or idle sandboxes can be extended.");
-  if (!provider.extendLifetime) throw new ToolError("extension_state", "Provider does not support lifetime extension.");
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
     throw new ToolError("extension_state", "The requested deadline must extend the existing lifetime.");
+  if (sandbox.boatRuntime)
+    throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
+  if (sandbox.runtimeTransport === "dialout") {
+    // Modal's compute deadline is fixed. Observe it, then publish only the logical
+    // deadline, since advancing the lifecycle generation would revoke the enrolled epoch.
+    if (sandbox.lifecycleGeneration === undefined)
+      throw new ToolError("extension_state", "The runtime lifecycle generation is unavailable.");
+    const physical = await provider.get(sandbox.providerSandboxId);
+    if (
+      physical.providerState !== "active" ||
+      !["ready", "running"].includes(physical.state) ||
+      physical.physicalExitConfirmed
+    )
+      throw new ToolError("extension_state", "Only running compute can be extended.");
+    const hard = physical.expiresAt?.getTime() ?? NaN;
+    if (!Number.isFinite(hard)) throw new ToolError("extension_state", "The physical Modal deadline is unavailable.");
+    if (hard < requested.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000)
+      throw new ToolError("extension_maximum", "Requested lifetime exceeds the physical provider deadline.");
+    const expiresAt = requested.toISOString();
+    await store.update(sandbox.id, {
+      modalRuntimeExtensionTarget: sandbox.providerSandboxId,
+      expectedGeneration: sandbox.lifecycleGeneration,
+      expiresAt,
+      effectiveTtlSeconds: ttlSeconds,
+    });
+    return { id: sandbox.id, expiresAt, ttlSeconds };
+  }
+  if (!provider.extendLifetime) throw new ToolError("extension_state", "Provider does not support lifetime extension.");
   const result = await sandboxActivity<{ id: string; expiresAt: string; ttlSeconds: number } | ToolError | null>(
     store,
     sandbox,
@@ -57,23 +85,12 @@ export async function extendSandbox(
         !Number.isFinite(hard.getTime()) ||
         hard.getTime() < requested.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000
       ) {
-        // A capped PATCH may have shortened the old physical deadline. Never leave a
-        // later SQL deadline behind or retain an activity lease that blocks preservation.
         const unsafe =
           !Number.isFinite(hard.getTime()) ||
           !sandbox.expiresAt ||
           hard.getTime() < new Date(sandbox.expiresAt).getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000;
-        return {
-          result: null,
-          patch: unsafe
-            ? {
-                status: "stopping" as const,
-                statusReason: "expired",
-                expiresAt: new Date().toISOString(),
-                stopRequested: true,
-              }
-            : {},
-        };
+        const patch: ServerSandboxPatch = unsafe ? { expireAfterExtension: true } : {};
+        return { result: null, patch };
       }
       await renewLeases?.();
       const expiresAt = requested.toISOString();

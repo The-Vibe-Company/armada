@@ -794,6 +794,7 @@ test("membership changes permanently fence only the actor's org leases, with fre
 test("stdio is configured locally from a pinned definition, then explicitly reconfigured after enable", async () => {
   const { close, db, people: p } = await fixture();
   try {
+    const { decryptSecret } = await import("@armada/core");
     const { createSqlVaultStore } = await import("@armada/core/server");
     const { handleControlRequest } = await import("../src/control.ts");
     const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
@@ -829,17 +830,35 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
       command: "npx",
       args: ["--yes", "@modelcontextprotocol/server-filesystem@2026.1.0", "/workspace"],
     };
-    const saved = await call("create", { org: p.org, ...definition });
+    const stdioEnv = { SERVICE_KEY: "fixture" };
+    const saved = await call("create", { org: p.org, ...definition, stdioEnv });
     expect(saved.status).toBe(200);
     expect(saved.body.connection).toMatchObject({ transport: "stdio", authType: "none", status: "connected" });
     expect(saved.body.connection.toolCount).toBeUndefined();
     const id = saved.body.connection.id;
+    const readEnvironment = async () => {
+      const grant = (
+        await db.query<{ value_enc: Uint8Array<ArrayBuffer> | null }>(
+          "select value_enc from public.mcp_grants where connection_id=$1",
+          [id],
+        )
+      ).rows[0];
+      return grant?.value_enc ? JSON.parse(await decryptSecret(grant.value_enc, ENCRYPTION_KEY)) : null;
+    };
+    expect(JSON.stringify(saved.body)).not.toContain(stdioEnv.SERVICE_KEY);
+    expect(saved.body.connection).not.toHaveProperty("stdioEnv");
+    expect(await readEnvironment()).toEqual(stdioEnv);
+    expect((await call("connect", { org: p.org, id })).status).toBe(200);
+    expect(await readEnvironment()).toEqual(stdioEnv);
     const grants = createSqlMcpGrantPort(db);
+    expect(await grants.begin(id)).toBeNull();
+    expect(await readEnvironment()).toEqual(stdioEnv);
     const refreshOwner = crypto.randomUUID();
     const snapshot = await grants.acquire(id, refreshOwner);
     if (!snapshot) throw new Error("Missing stdio grant");
     const disabled = await call("set-enabled", { org: p.org, id, enabled: false });
     expect(disabled.body.connection.status).toBe("disabled");
+    expect(await readEnvironment()).toBeNull();
     expect((await call("connect", { org: p.org, id })).status).toBe(409);
     expect((await call("set-enabled", { org: p.org, id, enabled: true })).body.connection.status).toBe("not_connected");
     expect((await call("status", { org: p.org, id })).body.connection.status).toBe("not_connected");
@@ -854,6 +873,12 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
       { command: "uvx", args: ["server"] },
       { authType: "bearer", authentication: "not-supported" },
       { authType: "none", authentication: "not-supported" },
+      { stdioEnv: null },
+      { stdioEnv: { "invalid-name": "fixture" } },
+      { stdioEnv: { SERVICE_KEY: 1 } },
+      { stdioEnv: { SERVICE_KEY: "a".repeat(8193) } },
+      { stdioEnv: JSON.parse('{"__proto__":"fixture"}') },
+      { transport: "http", command: undefined, args: undefined, url: "https://mcp.example.com", stdioEnv },
     ]) {
       expect((await call("create", { org: p.org, ...definition, ...invalid })).status).toBe(400);
     }
@@ -862,9 +887,13 @@ test("stdio is configured locally from a pinned definition, then explicitly reco
         .connection.status,
     ).toBe("connected");
     expect((await call("update", { org: p.org, id, name: "Incomplete edit" })).status).toBe(400);
-    expect((await call("update", { org: p.org, id, ...definition, name: "Renamed" })).body.connection.status).toBe(
-      "connected",
-    );
+    const updated = await call("update", { org: p.org, id, ...definition, stdioEnv: { SERVICE_KEY: "replacement" } });
+    expect(updated.body.connection.status).toBe("connected");
+    expect(updated.body.connection).not.toHaveProperty("stdioEnv");
+    expect(JSON.stringify(updated.body)).not.toContain("replacement");
+    expect(await readEnvironment()).toEqual({ SERVICE_KEY: "replacement" });
+    expect((await call("update", { org: p.org, id, ...definition })).status).toBe(200);
+    expect(await readEnvironment()).toBeNull();
   } finally {
     await close();
   }
@@ -944,5 +973,72 @@ test("metadata UPDATE refuses authority revoked after its pre-read", async () =>
     } finally {
       await close();
     }
+  }
+});
+
+test("stdio grant writes refuse authority revoked after the registry pre-read", async () => {
+  for (const scope of ["personal", "org"] as const) {
+    const { close, db, people: p } = await fixture();
+    try {
+      const actor = scope === "personal" ? p.owner : p.admin;
+      if (scope === "org")
+        await db.query("update members set role='admin' where user_id=$1 and org_id=$2", [p.member, p.org]);
+      const input = {
+        name: "Unchanged stdio",
+        scope,
+        transport: "stdio" as const,
+        command: "npx",
+        args: ["server@1.2.3"],
+      };
+      const connection = await createSqlMcpRegistry(db, ENCRYPTION_KEY).save(actor, p.org, input);
+      let revoked = false;
+      const boundary: Sql = {
+        async query<T>(statement: string, params?: unknown[]) {
+          if (!revoked && statement.includes("insert into public.mcp_grants")) {
+            revoked = true;
+            if (scope === "personal")
+              await db.query("delete from members where user_id=$1 and org_id=$2", [actor, p.org]);
+            else await db.query("update members set role='member' where user_id=$1 and org_id=$2", [actor, p.org]);
+          }
+          return db.query<T>(statement, params);
+        },
+      };
+      const registry = createSqlMcpRegistry(boundary, ENCRYPTION_KEY);
+      await expect(
+        registry.save(actor, p.org, { ...input, stdioEnv: { SERVICE_KEY: "fixture" } }, connection.id),
+      ).rejects.toThrow(/permission changed/);
+      expect(revoked).toBe(true);
+      expect(
+        (await db.query("select value_enc from public.mcp_grants where connection_id=$1", [connection.id])).rows,
+      ).toEqual([{ value_enc: null }]);
+    } finally {
+      await close();
+    }
+  }
+});
+
+test("stdio configure cannot reconnect a grant revoked after the registry pre-read", async () => {
+  const { close, db, people: p } = await fixture();
+  try {
+    const registry = createSqlMcpRegistry(db, ENCRYPTION_KEY);
+    const { id } = await registry.save(p.owner, p.org, {
+      name: "Local tools",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["server@1.2.3"],
+    });
+    const boundary: Sql = {
+      async query<T>(statement: string, params?: unknown[]) {
+        if (statement.includes("set status='connected',generation=")) await registry.revoke(p.owner, p.org, id);
+        return db.query<T>(statement, params);
+      },
+    };
+    await expect(createSqlMcpRegistry(boundary, ENCRYPTION_KEY).configureStdio(p.owner, p.org, id)).rejects.toThrow(
+      /definition changed/,
+    );
+    expect((await registry.get(p.owner, p.org, id)).status).toBe("not_connected");
+  } finally {
+    await close();
   }
 });

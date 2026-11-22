@@ -70,7 +70,7 @@ opener = urllib.request.build_opener(NoRedirect())
 
 # Fixed allowlist: do not print arbitrary server headers (or reflected secret strings).
 SERVER_PHASES = {
-    "tool_register", "tool_connect", "tool_call", "tool_close",
+    "tool_call",
     "auth", "dispatch", "provider", "stored_provider", "sandbox_read",
     "logs_target", "events", "state", "prompt",
     "send_credentials", "send_state", "send_turn_auth", "send_submit",
@@ -168,7 +168,7 @@ signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 exit_code = 0
 try:
-    for command in [["--version"], ["--help"], ["list", "--org", org, "--json"],
+    for command in [["--version"], ["--help"], ["ls", "--org", org, "--json"],
                     ["golden", "list", "--org", org, "--json"]]:
         cli(command)
     goldens, _, _, _, _ = api("golden/list", {})
@@ -191,7 +191,7 @@ try:
         raise Failure("Launch response missing sandbox ID; do not retry launch, inspect staging")
     # ID only, useful for recovery if the process is killed during cleanup.
     print(json.dumps({"disposableSandboxId": sandbox_id}).replace(token, "[REDACTED]"), file=sys.stderr, flush=True)
-    sample("sandbox/detail", {"id": sandbox_id})
+    sample("sandbox/status", {"id": sandbox_id})
     sample("logs/read", {"id": sandbox_id, "limit": 100})
     cli(["detail", sandbox_id, "--org", org, "--json"])
     prompt_start = time.monotonic()

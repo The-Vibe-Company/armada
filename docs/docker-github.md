@@ -16,7 +16,7 @@ and owned by the sandbox user. Native Boat's legacy integration is unchanged.
 
 `POST /api/v1/github/refresh` with `{ "org": "...", "id": "..." }` repairs an
 owner's already-running repository sandbox without a new allocation or prompt.
-The existing `github_refresh` MCP tool uses the same path. Only the owner can
+Only the owner can
 refresh; an org administrator cannot acquire another owner's GitHub access.
 `github/runtime-status` reports safe epoch, revision and credential delivery
 counts, never credentials. Normal follow-up and resume automatically rebind

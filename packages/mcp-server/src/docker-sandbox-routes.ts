@@ -9,7 +9,7 @@ import type { Route } from "./http.ts";
 import { observeProvider } from "./request-observability.ts";
 
 const prefix = "/api/v1/docker/sandboxes/";
-const operations = new Set(["launch", "get", "bootstrap", "ready", "prompt", "journal", "stop", "delete", "job"]);
+const operations = new Set(["launch", "get", "bootstrap", "ready", "journal", "stop", "delete", "job"]);
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 class InvalidInput extends Error {}
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -92,27 +92,15 @@ export function createDockerSandboxRoutes(
           { headers },
         );
       }
-      fields(
-        body,
-        ["org", "sandboxId", "requestId", ...(operation === "prompt" ? ["text"] : [])],
-        operation === "prompt" ? ["conversationId"] : [],
-      );
-      if (Object.hasOwn(body, "conversationId") && !uuid.test(string(body.conversationId))) throw new InvalidInput();
+      fields(body, ["org", "sandboxId", "requestId"]);
       const requestId = string(body.requestId);
       if (!uuid.test(requestId)) throw new InvalidInput();
       if (operation === "bootstrap") {
         if (!bootstrap) return Response.json({ error: "docker_placement_disabled" }, { status: 503, headers });
         return Response.json(await bootstrap.bootstrap(actor, sandboxId, requestId), { status: 202, headers });
       }
-      if (operation === "ready" || operation === "prompt") {
-        const result =
-          operation === "ready"
-            ? await runtime.ready(actor, sandboxId, requestId)
-            : await runtime.prompt(actor, sandboxId, {
-                requestId,
-                text: string(body.text),
-                ...(body.conversationId === undefined ? {} : { conversationId: string(body.conversationId) }),
-              });
+      if (operation === "ready") {
+        const result = await runtime.ready(actor, sandboxId, requestId);
         return Response.json(result, { status: result.state === "pending" ? 202 : 200, headers });
       }
       if (operation === "job")

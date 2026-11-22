@@ -83,7 +83,7 @@ outcomes. Runtime receipts are validated against the shared closed DTO before
 returning `{id,test:{ok,status,error,code}}`.
 
 ```sh
-armada creds test PUBLIC_SANDBOX_UUID --model AZURE_DEPLOYMENT --json
+armada account test PUBLIC_SANDBOX_UUID --model AZURE_DEPLOYMENT --json
 ```
 
 A probe rejection is an HTTP200 API response with `test.ok:false`, because
@@ -107,15 +107,14 @@ must fail closed. No model key leaves the existing private bootstrap. The Models
 The CLI/API also accepts an eligible Boat shared-runtime sandbox. This is
 product support, not an instruction to probe Boat on staging: Boat is not part
 of the release gate, and on-demand Boat verification is coordinator-only.
-The Models page picker remains Modal-only; API support does not imply a Boat
-dashboard picker.
+The Models page picker includes eligible Modal and Boat shared-runtime sandboxes.
 
 ## Models page
 
 Each active Claude Code or Codex API-key account and each custom OpenCode account
 with declared models on Models offers **Test connection**, for both standard
 vendor keys and custom endpoints. Subscription and OpenCode plan-key checks are
-not supported. Open the dialog, choose an already-running Modal sandbox bound to
+not supported. Open the dialog, choose an already-running Modal or Boat shared-runtime sandbox bound to
 this account and enter the deployment/model, then **Send tiny check**. Launch an idle
 sandbox with this account first if needed; the action never creates/resumes one.
 The dashboard checks user-JWT sandbox metadata for the exact selected account,
@@ -132,7 +131,7 @@ Coordinator staging addition: on Models open Test connection for the owner
 Foundry/gateway account, choose its idle Modal sandbox and deployment, and
 expect connectivity accepted. A newly launched invalid-key sandbox must show
 HTTP401/safe provider code, not credential text. Wrong owner/account/version/org
-or stopped/non-Modal sandbox must refuse without runtime I/O. Inspect that no
+or stopped sandbox must refuse without runtime I/O. Inspect that no
 prompt/conversation is created. Check mobile layout and keyboard focus in the
 centered dialog. Repeat with standard OpenAI and Anthropic API-key accounts and
 supported vendor model names. Requires the deployed public server and updated runtime; no

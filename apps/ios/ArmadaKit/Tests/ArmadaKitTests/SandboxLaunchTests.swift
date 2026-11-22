@@ -48,7 +48,7 @@ private let optionsJSON = #"""
 
 private func golden(id: String, name: String, provider: String = "boat", org: String = "org-a", snapshot: Bool = true, dirs: [String] = ["web"]) -> String {
     let repos = dirs.map { #"{"url":"https://github.com/acme/\#($0)","branch":"main","dir":"\#($0)"}"# }.joined(separator: ",")
-    return #"{"id":"\#(id)","name":"\#(name)","provider":"\#(provider)","modal":null,"orgId":"\#(org)","visibility":"org","ownerId":"u1","providerSnapshotId":\#(snapshot ? #""snap""# : "null"),"providerSandboxId":null,"boatSnapshotId":null,"boatSandboxId":null,"repos":\#(dirs.count),"config":{"repos":[\#(repos)],"init":[]}}"#
+    return #"{"id":"\#(id)","name":"\#(name)","provider":"\#(provider)","modal":null,"orgId":"\#(org)","visibility":"org","ownerId":"u1","providerSnapshotId":\#(snapshot ? #""snap""# : "null"),"providerSandboxId":null,"repos":\#(dirs.count),"config":{"repos":[\#(repos)],"init":[]}}"#
 }
 
 private let goldensJSON = #"{"goldens":[\#(golden(id: "g-draft", name: "aaa", snapshot: false)),\#(golden(id: "g-web", name: "web", dirs: ["web", "api"])),\#(golden(id: "g-web-modal", name: "web", provider: "modal")),\#(golden(id: "g-other", name: "elsewhere", org: "org-b"))]}"#
@@ -224,18 +224,71 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
 // MARK: Launching and refusals
 
 @Test func launchIsSentOnceOnTheSizedRouteAndReturnsTheNewSandbox() async throws {
-    let receipt = #"{"sandbox":{"id":"\#(newSandbox)","provider":"boat","providerSandboxId":"bx_1","goldenId":"g-web","orgId":"org-a","ownerId":"u1","harness":"claude","status":"running","conversationIds":["c1"],"createdAt":"2026-11-10T10:00:00.000Z","stoppedAt":null,"deletedAt":null,"statusReason":null,"repositoryDir":null,"model":"model-a","reasoningEffort":"medium","boatId":"bx_1"},"golden":{},"promptId":"p1","conversationId":"c1","ttlSeconds":14400,"expiresAt":"2026-11-10T14:00:00.000Z","github":{"status":"connected","login":null,"message":null}}"#
+    let receipt = #"{"sandbox":{"id":"\#(newSandbox)","provider":"boat","providerSandboxId":"bx_1","goldenId":"g-web","orgId":"org-a","ownerId":"u1","harness":"claude","status":"running","conversationIds":["c1"],"createdAt":"2026-11-10T10:00:00.000Z","stoppedAt":null,"deletedAt":null,"statusReason":null,"repositoryDir":null,"model":"model-a","reasoningEffort":"medium"},"golden":{},"promptId":"p1","conversationId":"c1","ttlSeconds":14400,"expiresAt":"2026-11-10T14:00:00.000Z","github":{"status":"connected","login":null,"message":null}}"#
     let (client, transport) = try await signedIn([.init(status: 200, body: receipt)])
     let catalog = try catalog()
     var draft = SandboxLaunchDraft(catalog: catalog)
     draft.prompt = "Go"
     let result = try await client.launchSandbox(try draft.request(catalog: catalog).get())
-    #expect(result.sandbox.id == newSandbox)
-    #expect(result.promptId == "p1")
+    guard case .allocated(let allocation) = result else {
+        Issue.record("Expected a full launch envelope")
+        return
+    }
+    #expect(result.sandboxID == newSandbox)
+    #expect(allocation.promptId == "p1")
     let request = try #require(await transport.requests.last)
     #expect(request.url?.path == "/api/v1/sandbox/launch")
     #expect(request.timeoutInterval == 600)
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
+}
+
+@Test(arguments: ["starting", "ready"])
+func modalAdmissionReturnsTheAcknowledgedSandbox(status: String) async throws {
+    let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"\#(status)"}}"#
+    let (client, transport) = try await signedIn([.init(status: 202, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.goldenID = "g-web-modal"
+    draft.prompt = "Go"
+
+    let result = try await client.launchSandbox(try draft.request(catalog: catalog).get())
+
+    guard case .admitted(let admission) = result else {
+        Issue.record("Expected a Modal admission receipt")
+        return
+    }
+    #expect(result.sandboxID == newSandbox)
+    #expect(admission.status.rawValue == status)
+    #expect(await transport.requests.count == 3)
+}
+
+@Test(arguments: [
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"starting"},"promptId":null}"#,
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"starting","provider":"modal"}}"#,
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"unknown"}}"#,
+    #"{"sandbox":{"id":"not-a-uuid","status":"starting"}}"#,
+    #"{"sandbox":{"id":"7d1c2b4a-5d6e-0f70-1a9b-0c1d2e3f4a5b","status":"starting"}}"#,
+])
+func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
+    let (client, _) = try await signedIn([.init(status: 200, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.goldenID = "g-web-modal"
+    draft.prompt = "Go"
+    let request = try draft.request(catalog: catalog).get()
+
+    await #expect(throws: SandboxLaunchFailure.unconfirmed) { _ = try await client.launchSandbox(request) }
+}
+
+@Test func aBoatLaunchDoesNotAcceptTheModalAdmissionReceipt() async throws {
+    let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"starting"}}"#
+    let (client, _) = try await signedIn([.init(status: 200, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.prompt = "Go"
+    let request = try draft.request(catalog: catalog).get()
+
+    await #expect(throws: SandboxLaunchFailure.unconfirmed) { _ = try await client.launchSandbox(request) }
 }
 
 @Test func aLostAnswerIsUnconfirmedAndNeverResent() async throws {
@@ -259,11 +312,11 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     }
     #expect(invalid.detail == "That reasoning effort is not available for model-b. Use one of: low, high.")
     // Status and code pairs as the control API answers them (VaultError STATUS, ProviderError).
-    guard case .refused(let missing) = classify(404, #"{"error":{"code":"missing_credential","message":"Run 'armada creds set claude-oauth'."}}"#) else {
+    guard case .refused(let missing) = classify(404, #"{"error":{"code":"missing_credential","message":"Run 'armada account add claude-oauth'."}}"#) else {
         Issue.record("Expected a refusal"); return
     }
     #expect(missing.title == "No model account for this agent")
-    #expect(missing.detail == "Run 'armada creds set claude-oauth'.")
+    #expect(missing.detail == "Run 'armada account add claude-oauth'.")
     // Credential-resolution messages are authored by Armada, not provider or init output.
     // A provider credential failure must not be explained as merely a missing model account.
     let credentialCases: [(String, String, String?)] = [

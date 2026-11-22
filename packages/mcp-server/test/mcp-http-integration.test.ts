@@ -257,6 +257,8 @@ test("actual MCP integration construction preserves explicitly configured develo
   try {
     const config = configFromEnv({
       NODE_ENV: "development",
+      ARMADA_MODAL_DIALOUT: "1",
+      ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
       ARMADA_DATABASE_URL: "postgres://fixture",
       SUPABASE_URL: "https://auth.example",
       SUPABASE_ANON_KEY: "public",

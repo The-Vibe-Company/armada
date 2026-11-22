@@ -1,38 +1,75 @@
-// PR typechecking resolves the workspace source. The npm smoke resolves the installed declarations.
-import { Armada, type FailureCode } from "@the-vibe-company/armada-sdk";
+import {
+  Armada,
+  type FailureCode,
+  type GoldenLaunchInput,
+  type LaunchResult,
+  type ModalLaunchReceipt,
+  type SendInput,
+} from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
+export type ContractFailureCode = Assert<Equal<Extract<FailureCode, "provider_mismatch">, "provider_mismatch">>;
+export type UnknownCodesExcluded = Assert<Equal<Extract<"arbitrary_failure", FailureCode>, never>>;
 
-export async function golden(provider: "boat" | "modal") {
-  const receipt = await new Armada({ token: code }).launch({ provider, golden: "worker", harness: "codex" });
-  return { golden: receipt.golden.id, prompt: receipt.promptId, conversation: receipt.conversationId };
-}
-
-export async function docker() {
-  const receipt = await new Armada({ token: code }).launch({
+const client = new Armada({ token: code });
+const boat = () => client.launch({ provider: "boat", golden: "worker", harness: "codex" });
+const modal = () => client.launch({ provider: "modal", golden: "worker", harness: "codex" });
+const pinnedModal = () =>
+  client.launch({
+    provider: "modal",
+    runtimeVersion: 1,
+    runtimeTransport: "dialout",
+    harness: "codex",
+    id: "revision-owner-template-id",
+    revision: 1,
+    idempotencyKey: "pinned-modal-smoke",
+    externalRef: "test:modal",
+  });
+const docker = () =>
+  client.launch({
     org: "o",
     provider: "docker",
     hostId: "h",
     harness: "codex",
-    requestId: "r",
+    idempotencyKey: "saved-launch-key-0001",
   });
-  return {
-    golden: receipt.golden,
-    host: receipt.sandbox.hostId,
-    prompt: receipt.promptId,
-    conversation: receipt.conversationId,
-  };
-}
+
+const invalidBoatRuntime = () =>
+  // @ts-expect-error A launch with runtimeVersion requires the complete explicit runtime variant.
+  client.launch({ provider: "boat", golden: "worker", harness: "codex", runtimeVersion: 1 });
+void invalidBoatRuntime;
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 
-export type GoldenReceiptContract = Assert<
-  Equal<Awaited<ReturnType<typeof golden>>, { golden: string; prompt: string | null; conversation: string | null }>
+export type LogsInputContract = Assert<
+  Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
 >;
-export type DockerReceiptContract = Assert<
+
+export type SendInputContract = Assert<Equal<Extract<"conversationId" | "conversation_id", keyof SendInput>, never>>;
+
+type FullLaunchResult = Exclude<LaunchResult, ModalLaunchReceipt>;
+export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, FullLaunchResult>>;
+export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, FullLaunchResult>>;
+export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, LaunchResult>>;
+export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, FullLaunchResult>>;
+export type LaunchFields = Assert<
   Equal<
-    Awaited<ReturnType<typeof docker>>,
-    { golden: null; host: string; prompt: string | null | undefined; conversation: string | null | undefined }
+    Pick<FullLaunchResult, "promptId" | "conversationId" | "expiresAt" | "runtime">,
+    {
+      promptId: string | null;
+      conversationId: string | null;
+      expiresAt: string | null;
+      runtime: { kind: "armada"; epoch: string } | null;
+    }
   >
 >;
+export type LaunchSandboxIdentity = Assert<Equal<FullLaunchResult["sandbox"]["providerSandboxId"], string>>;
+
+export type GoldenProviderIsRequired = Assert<Equal<GoldenLaunchInput["provider"], "boat" | "modal">>;
+
+type SandboxListItem = Awaited<ReturnType<Armada["list"]>>["sandboxes"][number];
+export type ListSandboxIdentity = Assert<Equal<SandboxListItem["providerSandboxId"], string | null>>;
+export type ListBoatAliasRemoved = Assert<Equal<Extract<"boatId", keyof SandboxListItem>, never>>;
+
+export type ModalReceiptFields = Assert<Equal<keyof ModalLaunchReceipt, "sandbox">>;

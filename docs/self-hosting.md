@@ -96,7 +96,7 @@ contributions.
 
 ## The server: `armada-server`
 
-`Dockerfile` compiles the standalone `armada-server` binary and runs it; `railway.json` deploys it on Railway with `/healthz` as the health check. It listens on `PORT` (default 8080) and answers:
+`Dockerfile` compiles the standalone `armada-server` binary and runs it; [Railway service settings](../.railway/README.md) configure the Dockerfile build and the `/healthz` health check. It listens on `PORT` (default 8080) and answers:
 
 - `/healthz`: `{"ok": true, "version": …}`, without a token.
 - The OAuth routes (`/.well-known/*`, `/authorize`, `/token`, `/register`, …).
@@ -113,17 +113,72 @@ Required environment (the server refuses to start without it):
 | `ARMADA_PUBLIC_URL` | The origin clients reach. |
 | `ARMADA_ENCRYPTION_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`). Seals every stored credential with AES-256-GCM. |
 
+Required for CLI device login:
+
+| Variable | Role |
+| --- | --- |
+| `ARMADA_CLI_OAUTH_CLIENT_ID` | ID of the dedicated confidential Supabase OAuth client. |
+| `ARMADA_CLI_OAUTH_CLIENT_SECRET` | Secret for the dedicated CLI OAuth client. Set it on Armada server only. |
+| `ARMADA_CLI_CONSENT_KEY` | 32 random bytes encoded as 64 lowercase hex characters. Generate a separate key per environment and set the same value on its Armada server and dashboard server. |
+
+Enable Supabase OAuth 2.1, set the Authorization Path to `/cli-login`, disable
+dynamic client registration, and set the Auth Site URL to your dashboard origin.
+Register the exact dashboard URL ending in `/cli-login` as the confidential
+client's redirect URI and use `client_secret_post` for token endpoint authentication.
+
 Optional:
 
 | Variable | Role |
 | --- | --- |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` | The GitHub App: golden creation clones over the person's connection, and sandboxes get their GitHub identity. The server starts without them, but goldens cannot be built. See [github-app.md](github-app.md). |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | A scoped installation token for golden checkouts. See [golden-create.md](golden-create.md#server-environment). |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` | The GitHub App: snapshot builds clone over the person's connection, and sandboxes get their GitHub identity. The server starts without them, but GitHub-backed snapshots cannot be built. See [github-app.md](github-app.md). |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | A scoped installation token for snapshot checkouts. See [golden-create.md](golden-create.md#server-environment). |
 | `ARMADA_GITHUB_RUNTIME_ENABLED` | Managed GitHub broker/wrappers; default off. Only exact `true` enables it. See [github-runtime.md](github-runtime.md) for existing-worker limitations. |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
-| `ARMADA_AUTH_PROVIDERS` | Social login offered to CLI and MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
+| `ARMADA_AUTH_PROVIDERS` | Social login offered to MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
+| `ARMADA_BOAT_DEPLOYMENT_ID` | Nonsecret Boat inventory identifier containing the environment and Armada server identity, for example `staging-armada-eu`. Use the same value across replicas and redeploys of one installation, and distinct values for installations sharing a Boat account. New managed Boat launches carry its digest in the `armada.deployment` label. An unset value leaves launches untagged. |
 
-Boat and Modal keys are not server environment: org admins connect them (`armada org connect boat|modal`), and they are stored encrypted per org or per person.
+Organization admins connect Boat or Modal credentials through **Setup → Machines**
+or through the CLI. For CLI setup, keep credentials in a private file and use the
+command for your provider:
+
+```sh
+armada org connect boat --org acme --file /private/boat-key
+armada org connect modal --org acme --file /private/modal.json
+```
+
+Save the Boat API key as plain text. For Modal, provide a JSON object with
+`token_id` and `token_secret` fields. Armada stores provider credentials
+encrypted per organization or per person.
+For model accounts, see [Morph](morph.md) and
+[per-account agent limits](named-model-credentials.md).
+
+### Boat inventory reporting
+
+The Boat SDK lists logical sandboxes for the selected account. Armada requests
+the `armada.deployment` label using the SHA-256 digest of
+`ARMADA_BOAT_DEPLOYMENT_ID`, then verifies that label and `armada=sandbox` on
+each returned record. The report includes tagged managed sandboxes with a
+machine provider and a valid logical creation timestamp. Sandboxes launched
+without the deployment label are omitted.
+
+A coordinator can run the read-only report on demand from the repository root
+with the production deployment's `ARMADA_BOAT_DEPLOYMENT_ID`,
+`ARMADA_DATABASE_URL` and `ARMADA_ENCRYPTION_KEY` set:
+
+```sh
+bun packages/mcp-server/src/boat-inventory-report.ts --production-boat org <org-uuid>
+```
+
+Use `user <user-uuid>` in place of `org <org-uuid>` for a personal Boat
+account. The command counts logical sandboxes with and without matching
+Armada rows. A launch can appear unmatched until Armada records it.
+
+Boat resume can replace the underlying VM while retaining the sandbox ID and
+creation timestamp. The SDK exposes neither an immutable VM ID nor the VM's
+creation time, so Boat inventory remains report-only. Any future reaper
+deletion requires both fields and coordinator-only production evidence.
+Live Boat checks are reserved for the coordinator in production, outside CI
+and staging acceptance.
 
 ### Start a local development server
 
@@ -165,23 +220,24 @@ ARMADA_MCP_URL=http://localhost:8080 bun run dashboard
 
 Health confirms only that the HTTP process is running, not that a sandbox launch
 works. Follow the existing [provider setup](../README.md) and
-[GitHub App setup](github-app.md) before attempting launches or golden builds;
+[GitHub App setup](github-app.md) before attempting launches or snapshot builds;
 provider credentials still belong in Armada's encrypted store, not the CLI.
 
 ## The dashboard
 
-`apps/dashboard` talks to Supabase as the signed-in user (their JWT from the session cookie) and never holds a Supabase service key; launches, golden builds, provider setup and the CLI's `/api/v1` and `/.well-known/armada.json` go through `armada-server`. Writes row level security cannot express go through the functions in `supabase/migrations/*_dashboard_functions.sql`, which check `auth.uid()` themselves.
+`apps/dashboard` talks to Supabase as the signed-in user (their JWT from the session cookie) and never holds a Supabase service key; launches, snapshot builds, provider setup and the CLI's `/api/v1` and `/.well-known/armada.json` go through `armada-server`. Writes row level security cannot express go through the functions in `supabase/migrations/*_dashboard_functions.sql`, which check `auth.uid()` themselves.
 
 | Variable | Where | Role |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
-| `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Required in practice: without it the dashboard only lists what Supabase shows; it cannot launch, build goldens, set up providers, read live logs, stop or message sandboxes, and `/.well-known/armada.json` answers 503. |
+| `ARMADA_CLI_CONSENT_KEY` | runtime | Server-only secret matching Armada server. Required for CLI login consent. |
+| `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Required in practice: without it the dashboard only lists what Supabase shows; it cannot launch, build snapshots, set up providers, read live logs, stop or message sandboxes, and `/.well-known/armada.json` answers 503. |
 | `ARMADA_ENCRYPTION_KEY` | build and runtime | The same key as the server. Without it the dashboard refuses to save a credential. |
-| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | Connect GitHub in Your connections ([github-app.md](github-app.md)). |
+| `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | **Connect GitHub** in **Your connections** ([github-app.md](github-app.md)). |
 | `STATS_TOKEN`, `ARMADA_DATABASE_URL` | runtime | Optional, server only: the bearer and privileged Postgres connection of `GET /api/stats`. Never exposed to the browser. |
 
-Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs, and allow `http://127.0.0.1:**` for CLI login callbacks. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).
+Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).
 
 ```sh
 cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in

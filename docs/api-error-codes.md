@@ -38,7 +38,7 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 | sandbox_not_ready, no_running_turn | 409 via shared tool; 503 for direct ProviderError | Wait for readiness, or avoid steering an absent turn. |
 | invalid_request | 400 | Invalid provider/tool/launch request. |
 | no_credentials, start_failed, init_failed, prompt_failed | 400 | Launch refused or recorded failure; inspect existing sandbox before a new launch. |
-| setup_failed, snapshot_failed, build_failed | 502 | Golden build/setup failed. |
+| setup_failed, snapshot_failed, build_failed | 502 | Snapshot build or setup failed. |
 | provider_not_configured | 503 | Provider adapter/account unavailable. |
 | provider_mismatch | 503 direct control; 400 via shared tool | Persisted routing disagrees; do not switch providers. |
 | payment_required, rate_limited | 400 via shared tool; 402/429 respectively for direct ProviderError | Resolve billing/quota or back off; surface-dependent legacy status. |
@@ -51,7 +51,7 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 Vault/Invitation errors use invalid/forbidden/not_found/missing_credential/
 conflict/unavailable/credential_refused and credential binding codes. Invitation
 errors can additionally carry a closed `reason` and `retryAfterSeconds`.
-Golden errors use the explicit golden mappings above. The shared-tool adapter
+Snapshot errors use the explicit mappings above. The shared-tool adapter
 defaults unrecognized marker codes to 400; this is a fallback, not a new code.
 
 ## Auth and token routes under `/api/v1/`
@@ -70,10 +70,10 @@ protocol endpoints outside this namespace remain outside this catalogue.
 | `auth/exchange`, `auth/refresh`: LaunchError | 400, original launch code | Inspect the code; shared failure categories are not remapped here. |
 | `auth/exchange`, `auth/refresh`: VaultError | 400, original vault code | Original code survives even for missing_credential, conflict, credential_refused or unavailable. |
 | `auth/exchange`, `auth/refresh`: any other caught failure | 401 unauthorized | Login exchange/refresh refused; this can mask a dependency failure. |
-| `token/list`: any caught failure | 401 unauthorized | Authenticate again; catch also covers non-auth failures. |
-| `token/create`: invalid/conflicting org selectors | 400 invalid or 403 forbidden | Correct selectors and caller scope. |
-| `token/create`: any caught failure | 401 unauthorized | Token creation refused. |
-| `token/revoke`: scope rejection or any caught failure | 403 forbidden | Revocation refused. |
+| `token/list`, `token/create`, `token/revoke`, `token/whoami`: absent or refused bearer | 401 unauthorized | Sign in again or replace an invalid, expired, or revoked API key. |
+| `token/create`: invalid input or ambiguous organization | 400 invalid | Supply a valid name, expiry and organization. |
+| Token management with an API key or MCP token, out-of-scope organization, or revocation refused | 403 forbidden | Use a personal login and select an organization you belong to or a key you own. |
+| Token routes: auth or token store unavailable | 503 dependency_unavailable | Check service availability. If creation might have succeeded, inspect the key list before retrying. |
 | All above: unsupported method | 405 invalid | Use GET for auth/authorize, POST for the others. |
 
 The exchange/refresh VaultError catch maps **every** VaultError code to 400,

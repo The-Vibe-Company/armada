@@ -125,7 +125,7 @@ private actor RefreshTransport: ArmadaTransport {
 }
 
 @Test func metadataMissingPermissionHintsFailsClosedWithoutInteriorRequest() async throws {
-    let row = #"{"id":"sandbox-a","orgId":"org-a","ownerId":"other","provider":"boat","providerSandboxId":"bx_display","boatId":"bx_display","harness":"codex","model":null,"reasoningEffort":null,"status":"ready","createdAt":"2026-11-09T00:00:00Z","stoppedAt":null,"expiresAt":null,"effectiveTtlSeconds":null,"machineSize":"small","displayLabel":"Sandbox sandbox-a"}"#
+    let row = #"{"id":"sandbox-a","orgId":"org-a","ownerId":"other","provider":"boat","providerSandboxId":"bx_display","harness":"codex","model":null,"reasoningEffort":null,"status":"ready","createdAt":"2026-11-09T00:00:00Z","stoppedAt":null,"expiresAt":null,"effectiveTtlSeconds":null,"machineSize":"small","displayLabel":"Sandbox sandbox-a"}"#
     let transport = ScriptedTransport([
         .init(status: 200, body: login),
         .init(status: 200, body: #"{"orgs":[{"id":"org-a","name":"Team","role":"member"}]}"#),

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { HARNESS_CATALOG } from "@armada/core";
-import { launchPickerGroups } from "./launch-picker";
+import { MODEL_CATALOG } from "@armada/core";
+import { initialLaunchSelection, launchHarnessForSource, launchPickerGroups } from "./launch-picker";
 import type { ModelAccount } from "./model-accounts";
 
 const account: ModelAccount = {
@@ -27,7 +27,7 @@ test("launch picker retains expired and full accounts with refusal reasons and c
         models: [{ model: "morph-custom", input: null, output: null }],
       },
     ],
-    HARNESS_CATALOG,
+    MODEL_CATALOG,
     "codex",
     Date.parse("2026-01-01"),
   );
@@ -35,4 +35,21 @@ test("launch picker retains expired and full accounts with refusal reasons and c
   expect(groups[0]!.options[0]!.harness).toBe("claude");
   expect(groups[1]!.reason).toContain("2 of 2 agents running. Stop one");
   expect(groups[1]!.options.map((row) => [row.id, row.harness])).toEqual([["morph-custom", "codex"]]);
+});
+
+test("a Morph account without model metadata offers no model and initializes no model", () => {
+  const morph = { ...account, kind: "morph" } satisfies ModelAccount;
+  const now = Date.parse("2026-01-01");
+  const [group] = launchPickerGroups([morph], MODEL_CATALOG, "codex", now);
+  expect(group?.options).toEqual([]);
+  expect(group?.reason).toContain("Reload");
+  expect(
+    initialLaunchSelection({ state: "ready", accounts: [morph], now, orgName: "Example" }, MODEL_CATALOG, "codex"),
+  ).toEqual({ credentialId: morph.id, model: "" });
+});
+
+test("a rebuilt starting point retains the current agent only while it can run it", () => {
+  expect(launchHarnessForSource("opencode", undefined, true)).toBe("claude");
+  expect(launchHarnessForSource("opencode", undefined, false)).toBe("opencode");
+  expect(launchHarnessForSource("claude", ["codex", "opencode"], false)).toBe("codex");
 });

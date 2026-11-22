@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { CODEX_ENDPOINT_ENV, OPENCODE_ENDPOINT_ENV, parseCodexEndpoint, parseOpenCodeEndpoint } from "@armada/core";
+import {
+  CODEX_ENDPOINT_ENV,
+  HARNESS_CAPABILITIES,
+  isHarness,
+  OPENCODE_ENDPOINT_ENV,
+  parseCodexEndpoint,
+  parseOpenCodeEndpoint,
+} from "@armada/core";
 import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { runtimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
+import { AntigravityDriver } from "./antigravity.ts";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
 import { configureCodexEndpoint } from "./codex-endpoint.ts";
@@ -15,6 +23,7 @@ import {
   validateExecReadables,
 } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
+import { runGitHubClient } from "./github-client.ts";
 import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
@@ -49,6 +58,7 @@ async function main(dialout = false) {
     grant: Grant;
     opencodeExecutable?: string;
     opencodeEnv?: Record<string, string>;
+    antigravityCredential?: unknown;
     claudeExecutable: string;
     codexExecutable: string;
     selectedHarness?: unknown;
@@ -73,11 +83,17 @@ async function main(dialout = false) {
     readableVariables?: Record<string, string>;
     credentialFreeBuilder?: boolean;
   };
+  let antigravity: Awaited<ReturnType<typeof prepareEnrolledHarness>>["antigravity"];
   if (enrolled) {
     // Enrolment owns selection and credentials. Never trust a preinstalled CLI
     // path from the image, or install/change harness versions during commands.
     startupReason = "artifact_preparation";
-    Object.assign(config, await prepareEnrolledHarness(input.serverUrl, config));
+    const { antigravity: preparedAntigravity, ...preparedHarness } = await prepareEnrolledHarness(
+      input.serverUrl,
+      config,
+    );
+    antigravity = preparedAntigravity;
+    Object.assign(config, preparedHarness);
     config.grant = {
       token: enrolled.runtimeToken,
       sandboxId: enrolled.sandboxId,
@@ -117,6 +133,7 @@ async function main(dialout = false) {
   if (
     config.credentialFreeBuilder &&
     (codexEndpoint ||
+      antigravity ||
       config.codexAuthJson ||
       [config.claudeEnv, config.codexEnv, opencodeEnv].some((env) =>
         [
@@ -139,8 +156,15 @@ async function main(dialout = false) {
       : value && typeof value === "object"
         ? Object.values(value).flatMap(authStrings)
         : [];
+  const antigravityCredential = antigravity?.credential;
+  const antigravitySecrets = antigravityCredential
+    ? antigravityCredential.method === "google"
+      ? authStrings(antigravityCredential.token)
+      : [antigravityCredential.apiKey]
+    : [];
   const modelSecrets = [
     config.grant.token,
+    ...antigravitySecrets,
     ...[config.claudeEnv, config.codexEnv, opencodeEnv].flatMap((env) =>
       ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
         .map((key) => env[key])
@@ -152,6 +176,7 @@ async function main(dialout = false) {
     throw Error("invalid_exec_environment");
   const secrets = [
     ...(config.nativeAuthSecrets ?? []),
+    ...antigravitySecrets,
     ...(config.subscription ? [config.subscription.capability] : []),
     config.grant.token,
     ...execCredentialValues(execEnv),
@@ -254,13 +279,14 @@ async function main(dialout = false) {
       if (!committed) throw Error("native_auth_publication_conflict");
     }
   };
-  const state = new HarnessState(config.root, journal.redact);
+  const state = new HarnessState(config.root, journal.redact, (text) => journal.redact(text, "transcript"));
   const sourceIdentity = journal.assertRestoreSource(config.grant);
   const restore = config.restoreCheckpoint;
   if (restore) {
     if (
       !enrolled ||
-      !["codex", "claude", "opencode"].includes(config.selectedHarness as string) ||
+      !isHarness(config.selectedHarness) ||
+      !HARNESS_CAPABILITIES[config.selectedHarness].resume ||
       !/^[1-9][0-9]{0,18}$/.test(restore.epoch) ||
       (restore.conversationId !== null && (typeof restore.conversationId !== "string" || !restore.conversationId)) ||
       typeof restore.model !== "string" ||
@@ -418,12 +444,22 @@ async function main(dialout = false) {
     journal,
     config.grant,
     {
+      ...(antigravity && !fenced
+        ? {
+            antigravity: new AntigravityDriver({
+              ...antigravity,
+              root: config.root,
+              cwd: config.cwd,
+              journal,
+            }),
+          }
+        : {}),
       opencode: new OpenCodeDriver({
         executable: opencodeExecutable,
         root: `${config.root}/opencode`,
         cwd: config.cwd,
         env: opencodeEnv,
-        redact,
+        redact: (text) => journal.redact(text, "transcript"),
       }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({
@@ -469,6 +505,7 @@ async function main(dialout = false) {
       configureGitHub,
       ...(channel
         ? {
+            enrolled: true,
             reportHarnessFailure: (stage, error, requestId, reason) => {
               void channel
                 .progress(stage, undefined, runtimeOperatorDiagnostic(error, reason), requestId)
@@ -547,10 +584,7 @@ async function main(dialout = false) {
     )
       throw Error("runtime_native_restore_failed");
   }
-  const flush = setInterval(() => {
-    void runner.flushOutbox().catch(() => {});
-  }, 1000);
-  flush.unref();
+  runner.startOutboxDelivery();
   if (channel) {
     const stop = new AbortController();
     const shutdown = () => stop.abort();
@@ -593,7 +627,6 @@ async function main(dialout = false) {
         closeNative,
       );
     } finally {
-      clearInterval(flush);
       process.removeListener("SIGTERM", shutdown);
       process.removeListener("SIGINT", shutdown);
       await closeNative();
@@ -609,17 +642,20 @@ async function main(dialout = false) {
     });
   }
 }
-void (
-  process.argv[2] === "github-install"
-    ? runGitHubInstallMode()
-    : process.argv[2] === "install-artifact"
-      ? runArtifactInstallMode()
-      : process.argv[2] === "install-harness"
-        ? runHarnessInstallMode()
-        : main(process.argv[2] === "dialout")
-).catch(async (error: unknown) => {
-  startupReason = runtimeStartupFailure(error, startupReason);
-  await reportRuntimeFailure?.(error).catch(() => {});
-  process.stderr.write("runner_boot_failed\n");
-  process.exitCode = 1;
-});
+if (process.argv[2] === "github-client") {
+  process.exitCode = await runGitHubClient(process.argv.slice(3));
+} else
+  void (
+    process.argv[2] === "github-install"
+      ? runGitHubInstallMode()
+      : process.argv[2] === "install-artifact"
+        ? runArtifactInstallMode()
+        : process.argv[2] === "install-harness"
+          ? runHarnessInstallMode()
+          : main(process.argv[2] === "dialout")
+  ).catch(async (error: unknown) => {
+    startupReason = runtimeStartupFailure(error, startupReason);
+    await reportRuntimeFailure?.(error).catch(() => {});
+    process.stderr.write("runner_boot_failed\n");
+    process.exitCode = 1;
+  });

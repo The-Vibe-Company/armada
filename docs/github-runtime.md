@@ -15,10 +15,10 @@ When off, launch, send, steer and exec do not prepare the managed GitHub runtime
 No managed-runtime wrapper, broker or credential socket is installed, and the
 internal GitHub credential-acquisition route is not mounted. The separate legacy
 Boat recovery path in #879 can install file-backed git/gh wrappers through
-`armada github refresh`, or before prompts only with the separate default-off
+`armada api github/refresh`, or before prompts only with the separate default-off
 `ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED=true` opt-in. It does not install this broker or enable its
 route. See [legacy lifecycle/recovery](github-token-lifecycle.md). This gate does
-not disable GitHub OAuth, golden checkout, MCP bindings or model authentication.
+not disable GitHub OAuth, snapshot checkout, MCP bindings or model authentication.
 The #703 implementation and migration `20261110121300_github_runtime.sql` remain.
 
 **Existing-worker limitation:** disabling the server setting does not undo files
@@ -26,8 +26,8 @@ already installed inside a worker while it was enabled, stop its broker, or rest
 its binaries. Its managed credential acquisitions will fail once all replicas are
 off, so git/gh may still fail there. Do not treat this switch as an in-place repair:
 retire affected workers through the normal lifecycle and launch replacements from
-a clean golden that has never had managed wrappers installed. Do not snapshot an
-affected worker into a golden. No automatic command replay or guest mutation is
+a clean snapshot that has never had managed wrappers installed. Do not snapshot an
+affected worker. No automatic command replay or guest mutation is
 performed by the off path. Root-cause repair and automated restoration are separate work.
 
 The sections below describe the opt-in path only.
@@ -68,7 +68,7 @@ model `refreshNativeSecrets` hook. Epoch install/scrub remains a distinct quiesc
 
 The server derives the original sandbox owner and organization from SQL. A capability pins provider,
 backend, physical generation, immutable Modal workspace/environment/App, owner membership epoch,
-GitHub connection epoch, source golden and allowed repositories. No guest owner/provider/App override
+GitHub connection epoch, source snapshot and allowed repositories. No guest owner/provider/App override
 is accepted. SQL independently checks active membership, resource identity, lifecycle/deadline,
 connection revocation and repository/operation authority before and after resolving the token. An
 activity lifecycle counter is sampled per acquisition; it is **not** relabeled as a physical runtime
@@ -89,7 +89,7 @@ replay is attempted. An explicit cached-access 401 can refresh once under the ow
 not trigger that access-rejection retry. Concurrent workers reuse the latest cached owner material,
 not one frozen access token per VM.
 
-Acquisition is limited to repositories in the persisted golden and gh/git operations. It does not
+Acquisition is limited to repositories in the persisted snapshot and gh/git operations. It does not
 cryptographically attenuate a GitHub user token beyond GitHub's App/user permissions. Owner/admin
 **guest exec** inherently can observe guest-resident capabilities; that does not grant control-plane
 refresh/vault access or a personal-credential listing API. Arbitrary non-GitHub hosts and direct
@@ -122,8 +122,8 @@ and the runtime repair in #719 passes process-level regression coverage. A succe
 broker bootstrap or an isolated `gh auth status` is not sufficient evidence: neither
 exercises Git inside a native harness process tree.
 
-Before enabling it for general use, an authorized operator must run this smoke in a
-non-production environment with disposable repositories and credentials:
+Before enabling it for general use, run the Modal staging checks with disposable
+repositories and credentials. The coordinator owns on-demand Boat checks.
 
 1. With the setting off, launch both Claude and Codex and confirm stock Git/gh behavior.
 2. With the setting on, launch a fresh sandbox for each harness. In the first turn run
@@ -133,9 +133,10 @@ non-production environment with disposable repositories and credentials:
    run them again in a second agent turn. Confirm the original harness remains usable.
 4. Exercise access-token expiry/renewal without replacing the VM or native session;
    repeat the remote operation and verify it uses renewed authorization.
-5. Stop, stall, and restart the private broker. Local Git must continue to work;
-   authenticated network operations may fail with a sanitized, bounded error, but
-   neither harness may exit. Repeat exec and a second turn after recovery.
+5. For on-demand Boat verification, the coordinator checks private broker
+   stop, stall, and restart. Confirm local Git and the harness survive, then repeat
+   exec and a second turn. Record isolated broker-fault coverage as unsupported
+   for Modal.
 6. Remove scratch branches and stop disposable sandboxes. Do not copy personal or
    manager credentials into the guest, print tokens, or enable production as a test.
 
@@ -173,8 +174,9 @@ In addition to that page's `ARMADA_URL`, `ARMADA_TOKEN`, `ARMADA_SMOKE` and
 - Each case: `disposableRepository` set to the exact credential-free HTTPS origin
   URL, e.g. `https://github.com/your-org/disposable-runtime-smoke.git`. Use a
   dedicated, disposable repository and smoke identity with push permission. The
-  persisted golden must authorize this repository and its checkout must already
-  have this exact origin. Include all four Boat/Modal × Claude/Codex pairs.
+  persisted snapshot must authorize this repository and its checkout must already
+  have this exact origin. Include two Modal cases with distinct harnesses.
+  Use Claude and Codex for the baseline described below.
 
 The mode checks origin equality before asking the first native turn to run local
 Git, remote Git and a push of existing HEAD to a UUID scratch branch. It checks a
@@ -199,19 +201,20 @@ not a safe simulation of access expiry. Do not revoke credentials, manipulate th
 private socket, or copy tokens into the guest to manufacture renewal evidence.
 
 First run `bun scripts/post-deploy-smoke.ts` with the staging server gate off
-and all four cases to record the stock baseline (step 1). Retire these workers,
+and both Modal cases to record the stock baseline (step 1). Retire these workers,
 turn the gate on on every staging replica and run `--github-runtime` with fresh
 workers. The default smoke covers stock native harness completion and exec Git;
-it is not native-tool Git evidence. Use the procedures below for renewal (step 4)
-and Boat broker faults (step 5). Modal's isolated broker restart is unavailable
+it is not native-tool Git evidence. Use the staging procedure below for Modal
+renewal (step 4). Boat broker fault checks (step 5) are on demand and
+coordinator-only. Modal's isolated broker restart is unavailable
 for the architectural reason below; this is a concrete remaining #822/#825 gap,
 not a sanctioned reason to kill the Runner or enable production.
 
-Rollout order: staging gate on → automated slice **and all manual checks** green
-for every provider/harness pair → coordinator enables production → authorized
-read-only Git verification → rollback by turning the gate off on every replica
-and retiring affected workers as described above. A partial or failed smoke blocks
-this rollout. This script never deploys, applies migrations, or changes a gate.
+The rollout requires the automated Modal slice and staging renewal checks to
+pass. The coordinator tracks on-demand Boat evidence separately. After enabling
+production, the coordinator runs authorized read-only Git verification. To roll
+back, turn the gate off on every replica and retire affected workers as described
+above. A partial or failed smoke blocks this rollout. This script never deploys, applies migrations, or changes a gate.
 
 #### Manual renewal: force server cache expiry, not GitHub revocation
 
@@ -234,12 +237,12 @@ Git credential-helper invocation to refresh, even inside an existing harness.
 It simulates cache expiry, not the actual passage of eight hours at GitHub.
 
 1. The automated script cleans up its workers, so **do not use their stopped IDs**.
-   For each provider/harness pair, launch a separate fresh worker with the same
+   For each Modal harness, launch a separate fresh worker with the same
    case configuration using the API-only CLI (`ARMADA_URL` and `ARMADA_TOKEN`
    remain staging values):
 
    ```sh
-   armada launch "$GOLDEN" --org "$ORG" --provider "$PROVIDER" \
+   armada new "$SNAPSHOT" --org "$ORG" --provider modal \
      --agent "$HARNESS" --model "$MODEL" --credential-id "$MODEL_ACCOUNT_ID" \
      --no-connections --ttl 1h --json
    ```
@@ -248,7 +251,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    for `git status -sb` and `git ls-remote origin HEAD` in the disposable checkout,
    with stdout/stderr redirected and only numeric exit codes reported. Save its
    `conversationId` as `CONVERSATION` and `promptId`; use
-   `armada wait "$ID" --org "$ORG" --prompt-id "$PROMPT_ID" --timeout 600 --json`.
+   `armada info --wait "$ID" --org "$ORG" --prompt-id "$PROMPT_ID" --timeout 600 --json`.
    Keep this same worker and conversation throughout; never stop/resume/relaunch
    until the experiment finishes. Record server/runtime SHAs and gate assertion.
 2. Record VM and native identity before expiry and after every fault/recovery.
@@ -293,7 +296,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    beforehand: its shell waits for a marker file in the checkout or a short,
    bounded delay, then runs remote Git and records only its numeric result.
    Release the marker through the provider's authorized out-of-band command
-   console, or use the predetermined delay; do not invoke Armada send/exec between
+   console, or use the predetermined delay; do not invoke Armada prompt/exec between
    the SQL commit and the native remote operation. Otherwise refresh may happen
    during preparation rather than credential acquisition and the experiment does
    not prove in-harness renewal. Record the successful remote exit status.
@@ -310,7 +313,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 
    Require one row, all true, successful remote Git, unchanged boot/native identity
    and conversation. Repeat exec reads and a native turn with
-   `armada send "$ID" '<read-only Git prompt>' --org "$ORG" --conversation "$CONVERSATION" --json`,
+   `armada prompt "$ID" '<read-only Git prompt>' --org "$ORG" --json`,
    then wait for its specific prompt. Record numeric results and harness survival.
    A timeout/uncertain refresh is failure: do not restore old ciphertext or retry
    the consumed refresh. Follow the ordinary reconnect procedure for this smoke
@@ -318,9 +321,9 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 
 #### Manual broker fault/recovery: Boat; Modal limitation
 
-Use a separate dedicated **Boat** smoke worker per harness, after the first native
-Git turn above. The Boat broker is a detached `bun .../github-<generation>/broker.js`
-process (`packages/mcp-server/src/github-boat.ts`); the harness is a different
+For an on-demand check, the coordinator uses a separate dedicated **Boat**
+worker per harness after a successful native Git turn. The Boat broker is a
+detached `bun .../github-<generation>/broker.js` process (`packages/mcp-server/src/github-boat.ts`); the harness is a different
 process. Signal only that exact broker, never a native child or a process group.
 Do not use a broad `pkill bun`. Preflight `pgrep -f` for the generation's exact
 broker path and require **one** PID; abort on zero/multiple matches. The generation
@@ -342,7 +345,7 @@ suffix is the first 16 hex characters of SHA-256 of the boot ID, as implemented 
    Boat exec send `kill -TERM "$BROKER_PID"`, release its marker, run the same
    bounded local Git check, and return. Authenticated Git may fail with a closed,
    bounded diagnostic; do not print stderr or socket responses. Now run an
-   authorized `armada exec "$ID" 'true' --org "$ORG"`: the existing Boat prepare
+   authorized `armada exec "$ID" --org "$ORG" -- true`: the existing Boat prepare
    path reconnects, handles `ENOENT`/`ECONNREFUSED`, and recreates the broker through
    private SSH/stdin. It does **not** replace the VM or harness. Require a new
    broker PID, unchanged boot/native identity and conversation, resumed native

@@ -11,7 +11,7 @@ cannot become new pricing evidence.
 ## Returned fields
 
 `POST /api/v1/sandbox/status`, MCP `status`, API/MCP list, and
-`armada status <id> --json` return:
+`armada info <id> --json` return:
 
 - `usage.turns[].pricing.usd`: persisted exact decimal USD string or null.
 - `usage.turns[].pricing.snapshot`: the frozen applied rates and source revision.
@@ -43,11 +43,14 @@ refreshing the catalog. Tokens remain visible independently of pricing coverage.
 After normal server rollout (the #1205 admission migration must already be in
 place), launch **new** Modal sessions, one Claude and one Codex:
 
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
+
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id> --json
-armada status <id> --json | jq '{cost:.usage.cost, turns:.usage.turns}'
-armada list --json
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada info --wait SANDBOX_UUID --json
+armada info SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
+armada ls --json
 ```
 
 Repeat with `--agent codex`. Read the same IDs with MCP `status` and

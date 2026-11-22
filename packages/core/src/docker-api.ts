@@ -32,8 +32,9 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
-  /** Whether the host can verify the baseline required for new snapshot builds. */
-  snapshotBuildSupported?: boolean;
+  /** Last accepted daemon protocol, or null before its first protocol-aware poll. */
+  protocol: number | null;
+  upgradeRequired: boolean;
   /** Physical reservations, including pending starts until confirmed stopped. */
   running?: number;
   /** Missing on older servers; null until upgraded host hardware has been observed. */
@@ -53,7 +54,6 @@ export interface DockerHostSummary {
 /** Version metadata shared by the machine poll and the owner host list. Older servers omit it. */
 export interface DockerHostVersionOffer {
   targetVersion?: string;
-  minimumVersion?: string;
 }
 export interface DockerHostListResponse extends DockerHostVersionOffer {
   serverVersion?: string;
@@ -108,7 +108,6 @@ export interface LaunchOptionsResponse {
   providers: LaunchProviderOption[];
   modalRuntime?: {
     defaultPath?: "native" | "runtime";
-    version: number;
     enabled: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -129,7 +128,6 @@ export interface LaunchOptionsResponse {
   };
   boatRuntime: {
     defaultPath?: "native" | "runtime";
-    version: number;
     diagnosticsVersion: number;
     followupVersion: number;
     checkpointVersion: number;
@@ -212,7 +210,8 @@ export type DockerLaunchRequest = {
   connections?: string[];
   skipSkillDefaults?: boolean;
   stopWhenWorkMerged?: boolean;
-} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
+  idempotencyKey: string;
+};
 export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "goldenId" | "harness"> {
   provider: "docker";
   goldenId: null;
@@ -271,6 +270,7 @@ export interface DockerSandboxStatus {
   settled: boolean;
 }
 
+export const DOCKER_SNAPSHOT_PROVIDER = "docker";
 export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
 export interface DockerSnapshotRecord {
   /** Frozen server release version; null only for snapshots created before version recording. */
@@ -283,7 +283,7 @@ export interface DockerSnapshotRecord {
   orgId: string;
   ownerId: string;
   name: string;
-  provider: "docker";
+  provider: typeof DOCKER_SNAPSHOT_PROVIDER;
   visibility: "private" | "org";
   hostId: string;
   installationId: string;

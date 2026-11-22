@@ -5,13 +5,13 @@ import { selectedOrganization } from "./selected-org";
 
 // Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
 const GOLDENS_COLUMNS =
-  "id,org_id,name,visibility,owner_id,boat_snapshot_id,config,created_at,boat_sandbox_id,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,removed_at,size_policy,build_warnings,helper_receipt,baseline_version";
+  "id,org_id,name,visibility,owner_id,config,created_at,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,removed_at,size_policy,build_warnings,helper_receipt,baseline_version";
 
 /**
  * A golden row as read here. `removed_at` (#566) is set once the golden is retired: the row stays readable as a
  * tombstone so the sandboxes started from it keep their history. Absent before that migration.
  */
-export type GoldenRow = Golden & { removed_at?: string | null };
+export type GoldenRow = Omit<Golden, "boat_snapshot_id" | "boat_sandbox_id"> & { removed_at?: string | null };
 
 /**
  * The goldens of the selected org that can still be used: the Goldens page, launch and rebuild choose from these.

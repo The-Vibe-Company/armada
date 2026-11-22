@@ -11,7 +11,7 @@ import {
   VaultError,
 } from "@armada/core";
 import { admitLaunchPlan, isLaunchTtlSeconds } from "@armada/core/server";
-import { admitAccountCapacity } from "./account-capacity.ts";
+import { admitLaunchAccount } from "./account-capacity.ts";
 import {
   admitDockerCapacity,
   admitDockerDisk,
@@ -20,7 +20,7 @@ import {
   DockerLimitsRefused,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { createDockerHostStore } from "./docker-host-store.ts";
+import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
@@ -283,10 +283,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         // already-admitted request replays above: admission is historical, not current.
         if (host.draining) throw new DockerHostDraining();
         await admitLaunchPlan(
-          () =>
-            request.credentialId
-              ? admitAccountCapacity(tx, request.credentialId, request.requestId, request.model)
-              : undefined,
+          () => admitLaunchAccount(tx, request, request.requestId, request.model),
           async () => {
             await admitDockerDisk(tx, request.hostId);
             await admitDockerCapacity(tx, request.hostId);
@@ -345,7 +342,8 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         id(requestId);
         const job = (
           await tx.query<{ request_id: string; bound_operation: string; outcome: "completed" | "failed" | null }>(
-            `select request_id,bound_operation,outcome from public.docker_host_jobs where request_id=$1 and bound_sandbox_id=$2`,
+            `select request_id,bound_operation,${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome
+             from public.docker_host_jobs j where request_id=$1 and bound_sandbox_id=$2`,
             [requestId, sandboxId],
           )
         ).rows[0];

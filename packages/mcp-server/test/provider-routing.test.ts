@@ -1,19 +1,67 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
+import { createSqlVaultStore } from "@armada/core/server";
+import { handleControlRequest } from "../src/control.ts";
+import { createSqlData } from "../src/data.ts";
+import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, type TestServer } from "./support.ts";
+import {
+  bunLikeSql,
+  call,
+  ENCRYPTION_KEY,
+  fakeBoat,
+  harness,
+  launchSandboxId,
+  PUBLIC_URL,
+  type TestServer,
+} from "./support.ts";
 
 const database = rowOnlyDatabase();
-let server: TestServer | undefined;
+let pendingServer: Promise<TestServer> | undefined;
 
 afterEach(async () => {
+  const pending = pendingServer;
+  pendingServer = undefined;
+  const server = await pending?.catch(() => undefined);
   await server?.close();
-  server = undefined;
 });
+
+function start(options: Parameters<typeof harness>[0] = {}) {
+  const pending = database().then((fixture) => harness(options, fixture));
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
+}
 
 const BINDING: ModalBinding = { workspace: "ws-acme", environment: "main", appId: "ap-0123456789abcdef" };
 const PAIR = { token_id: "ak-orgtoken0001", token_secret: "as-orgsecret0001" };
 const ROTATED = { token_id: "ak-orgtoken0002", token_secret: "as-orgsecret0002" };
+
+const launchStages = [
+  "admission",
+  "account_resolution",
+  "provider_resolution",
+  "receipt_admission",
+  "shared_launcher",
+  "response_publication",
+];
+
+type LaunchTimingSample = {
+  event: string;
+  surface: string;
+  sandboxId: string;
+  sqlStatements: number;
+  stages: { name: string; sqlStatements: number }[];
+};
+
+function launchSamples(log: { mock: { calls: unknown[][] } }) {
+  return log.mock.calls
+    .map(([line]) => JSON.parse(String(line)) as LaunchTimingSample)
+    .filter(({ event }) => event === "modal_golden_launch_timing");
+}
 
 /** A Modal golden named like the Boat org golden 'shared', written as the server would (service role). */
 async function seedModal(target: TestServer) {
@@ -44,49 +92,62 @@ async function setOrgModalPair(target: TestServer, pair: typeof PAIR) {
 
 describe("provider routing", () => {
   test("a same-name Modal golden is listed apart, named explicitly, and never launched on Boat", async () => {
-    server = await harness({}, await database());
+    const server = await start();
     await seedModal(server);
-    const mcp = await server.client(await server.token(server.people.member));
-
-    const listed = await call(mcp, "golden_list");
-    const shared = (listed.data.goldens as Record<string, unknown>[]).filter((golden) => golden.name === "shared");
+    const token = await server.token(server.people.member);
+    const mcp = await server.client(token);
+    const listed = await handleControlRequest(
+      new Request(PUBLIC_URL + "/api/v1/golden/list", {
+        method: "POST",
+        headers: { authorization: "Bearer " + token },
+      }),
+      {
+        authStore: server.auth,
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+        store: createSqlVaultStore(server.db),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(server.db),
+      },
+    );
+    expect(listed?.status).toBe(200);
+    const body = (await listed?.json()) as { goldens: Record<string, unknown>[] };
+    const shared = body.goldens.filter((golden) => golden.name === "shared");
     expect(
-      shared.map(({ provider, boatSnapshotId, providerSnapshotId, modal }) => ({
+      shared.map(({ provider, providerSnapshotId, modal }) => ({
         provider,
-        boatSnapshotId: boatSnapshotId === null ? null : "set",
         providerSnapshotId: providerSnapshotId === null ? null : "set",
         modal,
       })),
     ).toEqual([
-      { provider: "boat", boatSnapshotId: "set", providerSnapshotId: "set", modal: null },
-      { provider: "modal", boatSnapshotId: null, providerSnapshotId: "set", modal: BINDING },
+      { provider: "boat", providerSnapshotId: "set", modal: null },
+      { provider: "modal", providerSnapshotId: "set", modal: BINDING },
     ]);
-    expect(listed.text).not.toContain(PAIR.token_secret);
+    expect(JSON.stringify(body)).not.toContain(PAIR.token_secret);
 
     const ambiguous = await call(mcp, "launch", { golden: "shared", harness: "claude" });
-    expect(ambiguous.text).toContain("exists on boat and modal");
+    expect(ambiguous.text).toContain("error code: invalid");
     const unconfigured = await call(mcp, "launch", { golden: "shared", provider: "modal", harness: "claude" });
     expect(unconfigured.isError).toBe(true);
     expect(unconfigured.text).toContain("error code: provider_routing_unavailable");
     expect(server.boat.forks).toEqual([]);
 
     const onBoat = await call(mcp, "launch", { golden: "shared", provider: "boat", harness: "claude" });
-    expect(onBoat.data).toMatchObject({ provider: "boat", providerSandboxId: "bx_1", boatId: "bx_1" });
+    expect(launchEnvelope.parse(onBoat.data).sandbox).toMatchObject({
+      provider: "boat",
+      providerSandboxId: "bx_1",
+    });
     expect(server.boat.forks).toHaveLength(1);
   });
 
   test("a Modal sandbox runs on the pinned App with the org's token pair, which a rotation never redirects", async () => {
     const modal = fakeBoat();
     const calls: { tokens: ModalTokenPair; binding: ModalBinding }[] = [];
-    server = await harness(
-      {
-        modalProviderFor: (tokens, binding) => {
-          calls.push({ tokens, binding });
-          return { ...modal.provider, id: "modal" } as Provider;
-        },
+    const server = await start({
+      modalProviderFor: (tokens, binding) => {
+        calls.push({ tokens, binding });
+        return { provider: { ...modal.provider, id: "modal" } as Provider };
       },
-      await database(),
-    );
+    });
     await seedModal(server);
     const mcp = await server.client(await server.token(server.people.member));
 
@@ -94,9 +155,10 @@ describe("provider routing", () => {
       golden: "shared",
       provider: "modal",
       harness: "claude",
-      ttl_seconds: 172_800,
+      ttlSeconds: 172_800,
     });
-    expect(tooLong.text).toContain("24 hours on modal");
+    expect(tooLong.text).toContain("error code: invalid");
+    expect(calls).toEqual([]);
     expect(modal.forks).toEqual([]);
 
     await server.db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'modal',$2)", [
@@ -106,38 +168,116 @@ describe("provider routing", () => {
         ENCRYPTION_KEY,
       ),
     ]);
-    const launched = await call(mcp, "launch", {
-      golden: "shared",
-      provider: "modal",
-      harness: "claude",
-      visibility: "private",
-    });
-    expect(launched.data.visibility).toBe("org");
+    const log = spyOn(console, "info");
+    let launched: Awaited<ReturnType<typeof call>>;
+    try {
+      launched = await call(mcp, "launch", {
+        golden: "shared",
+        provider: "modal",
+        harness: "claude",
+        visibility: "private",
+      });
+      const samples = launchSamples(log);
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toMatchObject({ surface: "mcp", sandboxId: launchSandboxId(launched.data) });
+      expect(samples[0]?.stages.map(({ name }) => name)).toEqual(launchStages);
+    } finally {
+      log.mockRestore();
+    }
+    expect(launchEnvelope.parse(launched.data).golden?.visibility).toBe("org");
     const source = (
       await server.db.query<{ source_golden_visibility: string }>(
         "select source_golden_visibility from sandboxes where id=$1",
-        [launched.data.id],
+        [launchSandboxId(launched.data)],
       )
     ).rows[0];
     expect(source?.source_golden_visibility).toBe("org");
     await expect(
-      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [launched.data.id]),
+      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [
+        launchSandboxId(launched.data),
+      ]),
     ).rejects.toThrow(/immutable/);
     const otherMember = await server.client(await server.token(server.people.owner));
-    const forbidden = await call(otherMember, "send", { id: launched.data.id, prompt: "impersonate" });
+    const forbidden = await call(otherMember, "send", {
+      id: launchSandboxId(launched.data),
+      prompt: "impersonate",
+    });
     expect(forbidden.isError).toBe(true);
-    expect(launched.data).toMatchObject({ provider: "modal", providerSandboxId: "bx_1", boatId: null });
+    expect(launchEnvelope.parse(launched.data).sandbox).toMatchObject({
+      provider: "modal",
+      providerSandboxId: "bx_1",
+    });
     expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_id);
     expect(server.boat.forks).toEqual([]);
 
     await setOrgModalPair(server, ROTATED);
-    await call(mcp, "send", { id: launched.data.id, prompt: "next" });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
     expect(modal.prompts.map((prompt) => prompt.text)).toEqual(["next"]);
     // Every call is pinned to the golden's App; only the token follows the rotation.
     expect(calls.every(({ binding }) => JSON.stringify(binding) === JSON.stringify(BINDING))).toBe(true);
-    expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, PAIR.token_id, ROTATED.token_id]);
+    expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, ROTATED.token_id]);
     expect(server.boat.prompts).toEqual([]);
+  });
+
+  test("REST attributes receipt SQL only to the fresh Modal launch", async () => {
+    const modal = fakeBoat();
+    const server = await start();
+    await seedModal(server);
+    const { db, people } = server;
+    const token = await server.token(people.member);
+    const sql = bunLikeSql(db);
+    const provider = {
+      ...modal.provider,
+      id: "modal" as const,
+      managementIdentity: async () => ({ scope: "org" as const, ownerId: people.org }),
+    };
+    const options = {
+      authStore: server.auth,
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "test" },
+      store: createSqlVaultStore(sql),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(sql),
+      providerFor: () => provider,
+      providers: { resolve: async () => provider },
+      ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
+    };
+    const launch = () =>
+      handleControlRequest(
+        new Request(PUBLIC_URL + "/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: "Bearer " + token },
+          body: JSON.stringify({
+            golden: "shared",
+            provider: "modal",
+            harness: "claude",
+            idempotencyKey: "modal-timing-request",
+          }),
+        }),
+        options,
+      );
+
+    const log = spyOn(console, "info");
+    try {
+      const fresh = await launch();
+      expect(fresh?.status).toBe(200);
+      const response = launchEnvelope.parse(await fresh?.json());
+      const replay = await launch();
+      expect(replay?.status).toBe(200);
+      expect(await replay?.json()).toEqual(response);
+      expect(modal.forks).toHaveLength(1);
+
+      const samples = launchSamples(log);
+      expect(samples).toHaveLength(1);
+      const sample = samples[0];
+      expect(sample).toMatchObject({ surface: "rest", sandboxId: response.sandbox.id });
+      expect(sample?.stages.map(({ name }) => name)).toEqual(launchStages);
+      expect(sample?.stages.find(({ name }) => name === "admission")?.sqlStatements).toBeGreaterThan(0);
+      expect(sample?.stages.find(({ name }) => name === "receipt_admission")?.sqlStatements).toBe(1);
+      expect(sample?.stages.find(({ name }) => name === "response_publication")?.sqlStatements).toBe(1);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

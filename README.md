@@ -1,11 +1,4 @@
-<p align="center">
-  <a href="https://armada.thevibecompany.co">
-    <picture>
-      <source media="(max-width: 600px)" srcset="docs/images/armada-masthead-mobile.svg">
-      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code, Codex and OpenCode on Boat, Modal and Docker.">
-    </picture>
-  </a>
-</p>
+# Armada
 
 <p align="center">
   <a href="https://armada.thevibecompany.co"><b>Open Armada in your browser</b></a>
@@ -41,19 +34,12 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 
 ## How it works
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
-    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Snapshot: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
-  </picture>
-</p>
-
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
-1. **Snapshot**: build once from your repositories (`armada snapshot create`).
-2. **Launch**: pick an agent, the model, the effort and the provider (`armada launch`).
+1. **Snapshot**: build once from your repositories (`armada snapshot new`).
+2. **Launch**: pick an agent, the model, the effort and the provider (`armada new`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
-4. **Drive**: follow, steer, stop and resume (`armada logs --follow`, `armada send`).
+4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada prompt`).
 
 The dashboard, the `armada` CLI and Armada's MCP server all call the same Armada server, so a sandbox launched from one is visible and controllable from the others, under the same permissions.
 
@@ -87,11 +73,10 @@ covers Tools, template versions and routines. CLI command names below are unchan
 armada login
 ```
 
-**2. Choose an organization and connect a sandbox provider.** Create one (you become its admin) or ask an admin to add you with `armada org members add <your-email> --org <org>` after your first sign-in. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
+**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada org create acme
-armada org use acme
+armada login --org acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
 armada org setup --org acme
@@ -100,13 +85,13 @@ armada org setup --org acme
 **3. Store your model credentials.** Your own credentials win over the organization's. Values are encrypted and never shown again.
 
 ```sh
-printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
-armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
-armada creds list
+printenv CLAUDE_CODE_OAUTH_TOKEN | armada account add claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
+armada account add codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
+armada account ls
 ```
 
-Morph is another model-account option for both Claude Code and Codex (not a sandbox provider):
-`armada creds connect morph --name shared --file /private/morph-key`.
+Morph is another model-account option for Claude Code, Codex and OpenCode:
+`armada account add --preset morph --name shared --file /private/morph-key`.
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
 See [Morph accounts](docs/morph.md) for supported models and restrictions.
@@ -114,43 +99,43 @@ See [Morph accounts](docs/morph.md) for supported models and restrictions.
 Model accounts have a per-account simultaneous-agent limit across sandbox providers.
 Morph defaults to **2**; other accounts default to unlimited. Set `--max-agents N`
 or `--unlimited` when adding an account, or change it with
-`armada creds limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
+`armada account limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
 before allocating a machine; lowering it does not stop existing agents.
 Follow-up sends to existing sandboxes can return a durable queued prompt receipt
 when the account is full; they dispatch FIFO per account after capacity frees.
-Queued is not running or completed: use wait/logs for that sandbox and correlate the returned prompt ID.
+Queued is not running or completed: use `armada info --wait` or `armada events` for that sandbox and correlate the returned prompt ID.
 
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
 ```sh
-armada github connect
+armada account login github
 ```
 
 **5. Build a snapshot.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization snapshots; members add `--private` to build one for themselves.
 
 ```sh
-armada snapshot create web --repo https://github.com/acme/web@main --init "bun install" --org acme
-armada snapshot list
+armada snapshot new web --repo https://github.com/acme/web@main --init "bun install" --org acme --wait
+armada snapshot ls
 ```
 
-A long build keeps running on the server: `armada snapshot build-status <job-id>` reports it.
+A long build keeps running on the server. Check it with `armada snapshot show --build <job-id>` and wait for `succeeded` before launching.
 
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
-armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+armada new web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
   "Find why the checkout test is flaky and fix it"
 ```
 
-**7. Drive it.**
+**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `events -f` is still running. Send a follow-up after the turn settles. The effort override below applies to a new turn on native Boat. On runtime-backed Boat, keep the launch effort by omitting the override.
 
 ```sh
-armada logs <sandbox-id> --follow
-armada steer <sandbox-id> "Keep the public API unchanged"   # Codex restarts the turn with it
-armada send <sandbox-id> "Now add a regression test" --reasoning-effort xhigh   # this turn only
-armada extend <sandbox-id> --ttl 270m        # extend the 4h launch to 4h30m from now
-armada stop <sandbox-id>                     # normally retains disk/conversation; Modal checkpoint failure does not
-armada send <sandbox-id> "Push the branch"   # resumes only if the stopped sandbox was retained
+armada events SANDBOX_ID -f
+armada prompt --steer SANDBOX_ID "Keep the public API unchanged"
+armada prompt SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
+armada api sandbox/extend '{"id":"SANDBOX_ID","ttlSeconds":16200}'   # extend the 4h launch to 4h30m from now
+armada stop SANDBOX_ID --after             # wait for settlement and stop if still idle; normally retains disk/conversation; Modal checkpoint failure does not
+armada prompt SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
 ```
 
 Extend an accessible running or idle sandbox as its owner or an org admin. The new deadline must be later than the current one and within server/provider limits. Boat resets its hard timer; Modal extensions must fit before the existing physical deadline minus a five-minute stop margin, without replacing the machine. Modal launch headroom is server-configured; see [sandbox lifetime limits](docs/sandbox-expiry-investigation.md#initial-delivery-scope).
@@ -163,28 +148,29 @@ Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is kno
 
 ## Bring your MCP servers
 
-Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below); an admin shares one with the whole organization with `--scope org`.
+Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Replace `CONNECTION_ID` with the ID from `armada mcp list` and `SANDBOX_ID` with the ID printed by launch. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below). An admin can register an organization-wide connection with `armada mcp add --scope org` using the same name and URL arguments.
 
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
-armada mcp connect <connection-id>
-armada launch private-web --agent codex --connections <connection-id> "Update the API reference"
-armada mcp sandbox-connections <sandbox-id>
+armada mcp list
+armada mcp connect CONNECTION_ID
+armada new private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
+armada mcp sandbox-connections SANDBOX_ID
 ```
 
 Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-mcp-shortcuts.md).
 
 ## Drive Armada from your own agent
 
-Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can list and build snapshots, launch sandboxes and drive them with `golden_list`, `golden_create`, `launch`, `list`, `status`, `wait`, `logs`, `send`, `steer`, `interrupt`, `exec`, `extend` and `stop`.
+Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your own coordinator, and that agent can launch and drive sandboxes with `launch`, `list`, `status`, `logs`, `send`, `report`, `exec` and `stop`. Use `status` with `wait: true` to wait for settlement, `send` with `steer: true` to redirect a turn, and `stop` with `turn: true` to interrupt the turn while keeping the machine up.
 
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
 ```sh
-armada token create --org acme --label ci   # printed once; Armada keeps only its hash
+armada api token/create '{"org":"acme","label":"ci"}'
 ```
 
-Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+The response contains the key once. Capture it in a secret store. Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
@@ -195,7 +181,7 @@ Your coordinator decides what to work on and when to merge; Armada gives each ta
 | Create private snapshots and private sandboxes | ✓ | ✓ |
 | Change organization snapshots, members and provider keys | ✓ | |
 
-Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with the `members/add` API route (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
@@ -209,73 +195,62 @@ This repository used to hold Armada v1, a fleet coordinator (Linear, merge queue
 
 [MIT](LICENSE)
 
-### Reading event pages
+### Reading events and outputs
 
-`armada logs ID` reads one page; `--since CURSOR` continues from a saved cursor.
-`--all` drains available pages immediately. `--follow` also drains the backlog
-without a polling delay, then polls once per second while the agent is active.
-Ctrl-C stops the local reader, not the agent.
-
-With `--json`, stdout is a stream of page objects (not one JSON array): each
-contains `events`, `cursor`, `hasMore` and `settled`. Existing fields and pretty
-formatting are unchanged. For scripts:
+`armada events [ID]` reads one page. Use `--tail N` for recent events or
+`-f` to follow until the sandbox settles. Piping stdout or passing `--json`
+produces one JSON object per event.
 
 ```sh
-armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+armada events SANDBOX_ID -f | jq -c 'select(.kind == "message")'
+armada outputs --id SANDBOX_ID
+armada outputs report.json --id SANDBOX_ID -o ./downloads
 ```
-
-Save the last page's `cursor` and pass it with `--since` to resume. Errors go to
-stderr and return a nonzero exit code.
 
 Command discovery works before signing in: use `armada COMMAND --help` (or
 `-h`) for sandbox, snapshot, authentication, organization, credential and MCP
 commands. These work without reading a session or contacting a server.
-Logs has a focused reader reference: `armada logs --help` explains cursor resume,
-tail constraints and the JSON pipe format. Other commands retain the shared
-reference; template, variable, secret and skill commands keep their dedicated help. Help is only intercepted when it is the sole argument after
+Help is only intercepted when it is the sole argument after
 the command; for example, `armada exec ID -- --help` remains remote command text.
 
 ### Sandbox errors and scripts
 
-Sandbox failures go to stderr; stdout remains available for successful output.
-Use `--json` for `{"error":{"code":"not_found","message":"…","legacyCode":"conflict"}}`.
-`code` now classifies missing/inaccessible sandboxes as `not_found`, access
-denials as `forbidden`, and lifecycle refusals as `conflict`,
-`sandbox_not_ready` or `no_running_turn` when the server supplies that reason.
-Only fixed, recognized reasons are displayed; arbitrary provider/guest text is
-never echoed. For an unknown failure the CLI gives safe status/selection guidance,
-not an invented underlying cause.
+Sandbox commands select an explicit ID first, then `ARMADA_SANDBOX`, then the
+ID in `.armada/sandbox` in the current directory. Successful launches record
+their sandbox ID in that file. A UUID prefix must match exactly one visible
+sandbox in the selected organization scope. For commands that take text, use
+`--` to mark where the payload starts when you omit the ID, as in
+`armada prompt -- Review the diff`.
 
-Existing `code` and `message` fields remain; when a sandbox code is corrected,
-the additive `legacyCode` field aliases the old CLI code. New integrations should
-use `error.code`; integrations migrating old code comparisons can use
-`error.legacyCode // error.code` in jq. Versioned API reasons (such as `extension_not_found`) are retained. Stop
-previously collapsed service/outcome reasons into `unavailable`; these now retain
-the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
+Sandbox commands default to JSON when stdout is redirected or piped. On a
+terminal, pass `--json` for machine output. A failed command in machine mode
+ends stderr with one JSON line, for example
+`{"error":{"code":"not_found","message":"Sandbox not found or not accessible.","hint":null}}`.
+Read the final line because stderr can also carry progress or recovery details.
+The exit code remains the script's success signal. Exit 2 means a usage/invalid-request
 failure. Exit 3 means authentication is required: any command exits 3 with
 `unauthorized` when there is no valid session or service token (or the API
 answers HTTP 401) and no interactive sign-in took place. For example, signed-out
-`armada list` and `armada list --json` exit 3, and so does bare `armada`.
+`armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
-Check `armada list --json` for visible IDs and state; verify your org selection
-with `armada org current` or pass `--org UUID`.
+Check `armada ls --json` for visible IDs and state; verify your org selection
+with `armada info --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and
 retry once after HTTP401. On a transport/server failure,
 check its outcome before retrying: a prompt or stop may already have been
 accepted. If status/detail cannot be read during a transition, inspect
-`armada list --json` instead; this guidance does not repair a stuck provider
+`armada ls --json` instead; this guidance does not repair a stuck provider
 lifecycle. `recovery --help` also works before login.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.
 
-### Variables and secrets help
+### Variables and secrets
 
-Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
-`--help`, before login or value input. The short alias does not reinterpret an
-option value such as `--file -h`, or literal arguments after `--`, as a help request.
-Secret values remain stdin/file-only and are never printed by help.
+Manage application variables and secrets in the dashboard or use the
+[vault API commands](docs/cli-admin.md#application-variables-and-secrets)
+for scripts.
 
 ## Contributing
 

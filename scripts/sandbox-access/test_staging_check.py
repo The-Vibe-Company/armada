@@ -22,6 +22,13 @@ ENV = {"STAGING_URL": "https://armada-staging.example.com", "STAGING_ORG": ID, "
 
 
 class Safety(unittest.TestCase):
+    def setUp(self):
+        # Offline fixtures replace the HTTP transport. Keep the real TLS
+        # context while skipping repeated reads of the host trust store.
+        trust_store = mock.patch.object(check.ssl.SSLContext, "set_default_verify_paths")
+        self.addCleanup(trust_store.stop)
+        trust_store.start()
+
     def test_production_or_nonroot_origins_fail_before_network_and_never_echo_arguments(self):
         for address in ("https://armada.thevibecompany.co", "https://staging.example/a", "http://staging.example", "https://staging.example/?secret=hidden"):
             output = io.StringIO()
@@ -211,6 +218,30 @@ class Safety(unittest.TestCase):
         with mock.patch.object(run, "listing", return_value=[]), mock.patch.object(run, "stop"):
             self.assertFalse(run.cleanup())
 
+    def test_explicit_status_and_stop_use_public_paths_with_owner_and_org(self):
+        origin, token = ENV["STAGING_URL"], ENV["ARMADA_TOKEN"]
+        run = check.Run(check.arguments(ARGS), origin, OTHER, token)
+
+        def respond(request, timeout):
+            response = io.BytesIO(b'{"status":"stopped"}')
+            response.code = 200
+            return response
+
+        with mock.patch.object(run.opener, "open", side_effect=respond) as opened, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            for action in ("status", "stop"):
+                self.assertEqual(run.tool(action, id=ID), {"status": "stopped"})
+        self.assertEqual(opened.call_count, 2)
+        for action, call in zip(("status", "stop"), opened.call_args_list):
+            request = call.args[0]
+            self.assertEqual(request.full_url, f"{origin}/api/v1/sandbox/{action}")
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(json.loads(request.data), {"id": ID, "org": OTHER})
+            self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+            self.assertEqual(request.get_header("Content-type"), "application/json")
+            self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertNotIn(token, output.getvalue())
+
     def test_owned_initial_status_retry_and_stop_first_cleanup_use_canonical_cli_routes(self):
         def response(body, status=200):
             result = io.BytesIO(json.dumps(body).encode())
@@ -333,7 +364,7 @@ class Safety(unittest.TestCase):
                     self.stopped.add(body["id"])
                     return {"id": body["id"], "status": "stopped"}
                 if route == "sandbox/send":
-                    self_test.assertEqual(body["conversation_id"], "same-conversation")
+                    self_test.assertNotIn("conversation_id", body)
                     self_test.assertNotIn(self.memory, body["prompt"])
                     self_test.assertNotIn(child, body["prompt"])
                     self.resumed = True

@@ -1,31 +1,41 @@
-# Orchestrator retirement (#1382)
+# Orchestrator retirement: deferred database plan (#1382, step 2)
 
-Step 1 (#1396) removed the owner-facing feature from the server, CLI, dashboard,
-and smoke tests. The coordinator recorded the production deployment and set
-November 14, 2026 as the earliest date for schema retirement. This allowed a
-full day to roll back step 1. [Coordinator record in #1382](https://github.com/The-Vibe-Company/armada/issues/1382)
+Step 1 removes the feature's server, CLI, dashboard, smoke and documentation
+surfaces. There is no compatibility route or feature flag. Ordinary sandboxes,
+templates, routines and scoped child access remain supported.
 
-## Retired schema
+## Authorization gate
 
-The #2718 migration drops the tables below and their table-owned policies,
-grants, indexes, constraints, and event identity sequence.
+Do not write or apply the step-2 migration until the coordinator confirms that
+step 1 has run in production for a full day. The coordinator must retain the
+ability to roll back step 1 during that observation window. Agents must not
+apply migrations or deploy either step.
 
-- `orchestrator_activity`
-- `orchestrator_lifecycle_mutations`
-- `orchestrator_operations`
-- `orchestrator_runtime`
-- `orchestrator_runtime_create_keys`
-- `orchestrator_runtime_events`
-- `orchestrator_waits`
+After deployment, the coordinator checks the non-tolerated staging smoke steps,
+confirms no `orchestrator_operation_failure` log entries and verifies the
+removed dashboard entry stays absent. This document is not deployment evidence.
 
-## Scoped child access
+## Separate migration PR
 
-Scoped access still uses `orchestrators`, `orchestrator_children`,
-`orchestrator_delegations`, `orchestrator_child_operations`, and
-`orchestrator_lifecycle`. These tables and their authorization and lifecycle
-guards preserve child ownership, operation receipts, and admission limits.
-Ordinary sandboxes, templates, and routines remain supported.
+Inventory the live schema and dependencies before authoring a new, uniquely
+versioned migration newer than main. Drop only obsolete orchestrator tables,
+columns, functions, policies and grants; preserve scoped-child access and its
+attribution, authority and lifecycle fences. Regenerate database types only
+after the schema change and run the real migration/security tests and full
+`bun run verify`. Historical applied migrations are immutable.
 
-The `armada_orchestrator` wire namespace and private `orchestrator-tools` paths
-are part of the scoped access contract. Managed-resource exclusions continue
-to fail closed.
+## Intentionally retained shared/schema identifiers in step 1
+
+The step-2 cleanup removes the retired tables' row aliases from the type
+generator first. The generated database contract still describes the tables
+while they exist. After the alias removal ships in a release, the drop-safety
+check must pass against main and that release before a separate migration
+drops the tables. The migration also removes the retired schema-only test
+references and regenerates the database contract.
+
+The existing scoped sandbox wire namespace `armada_orchestrator` and private
+`orchestrator-tools` paths remain shared access contracts, not the removed
+owner-facing feature. Their smoke probes must retain those exact identifiers
+until a separately authorized wire-contract change. Legacy managed-resource
+exclusions remain fail closed while their schema exists; this is not an active
+reconciler or a compatibility API.

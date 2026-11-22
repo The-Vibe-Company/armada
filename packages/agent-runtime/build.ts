@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { OPENCODE_ARTIFACT } from "./src/opencode-artifact.ts";
 
-if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch))
+if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64"))
   throw Error("Build runner artifact on target Linux architecture");
 const root = import.meta.dir;
 const out = join(root, "dist");
@@ -39,8 +39,7 @@ const opencode = join(dirname(opencodeRequire.resolve(`opencode-linux-${process.
 const opencodeDigest = createHash("sha256")
   .update(await Bun.file(opencode).bytes())
   .digest("hex");
-if (opencodeDigest !== OPENCODE_ARTIFACT.sha256[process.arch as "x64" | "arm64"])
-  throw Error("OpenCode artifact digest mismatch");
+if (opencodeDigest !== OPENCODE_ARTIFACT.sha256[process.arch]) throw Error("OpenCode artifact digest mismatch");
 await copyFile(opencode, join(out, "opencode"));
 await chmod(join(out, "opencode"), 0o755);
 await Bun.write(

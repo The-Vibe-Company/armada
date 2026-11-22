@@ -1,6 +1,8 @@
+import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
@@ -15,9 +17,10 @@ export interface TemplateSkillCase {
   publicSkill?: string | undefined;
   privateSkill?: string | undefined;
 }
-export type TemplateSkillCode =
+type TemplateSkillCode =
   | "invalid_response"
   | "template_launch_failed"
+  | "launch_observation_timeout"
   | "template_answer_mismatch"
   | "template_exec_inherited"
   | "invalid_receipt"
@@ -53,8 +56,22 @@ function fail(code: TemplateSkillCode): never {
   throw new TemplateSkillSmokeFailure(code);
 }
 export interface TemplateSkillIo {
-  request<T>(path: string, body: object): Promise<T>;
-  poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  deadline: number;
+  launchTimeout(step: string): number;
+  trackLaunch<T>(
+    action: (submit: (body: object, timeoutMs: number) => Promise<T>, claim: (id: string) => void) => Promise<T>,
+  ): Promise<T>;
+  recordSandbox?(id: string, requestKey: string): Promise<void>;
+  isAmbiguousLaunch(error: unknown): boolean;
+  poll<T>(
+    read: (remainingMs?: number) => Promise<T>,
+    done: (value: T) => boolean,
+    options: { step: string },
+  ): Promise<T>;
+  measuredStep<T>(name: string, action: () => Promise<T>): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
   stopSandbox(id: string): Promise<void>;
@@ -113,7 +130,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     uncertain: boolean;
     stopConfirmed: boolean;
   }[] = [];
-  const api = <T>(path: string, body: object = {}) => io.request<T>(path, { org: item.org, ...body });
+  const api = <T>(path: string, body: object = {}, timeoutMs?: number) =>
+    io.request<T>(path, { org: item.org, ...body }, timeoutMs);
   async function cleanup(name: string, action: () => Promise<void>) {
     try {
       await io.step(name, action);
@@ -124,14 +142,14 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     }
   }
   try {
-    const account = await io.step("template_model_account", async () => {
+    const account = await io.measuredStep("template_model_account", async () => {
       const rows = metadata(await api<Connections>("creds/list"), item.org);
       const matches = rows.filter((row) => row.id === item.modelAccountId);
       if (matches.length !== 1 || !positive(matches[0]?.version)) fail("invalid_response");
       return { id: item.modelAccountId, version: matches[0].version };
     });
     const privateConfigured = item.privateSkill
-      ? await io.step("private_skill_configuration", async () =>
+      ? await io.measuredStep("private_skill_configuration", async () =>
           metadata(await api<Connections>("skillpack/connection"), item.org).some((row) => row.kind === "skillpack"),
         )
       : false;
@@ -139,7 +157,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       io.out(JSON.stringify({ step: "public_skill", skip: true, reason: "skill_pin_not_configured" }));
     if (!item.privateSkill)
       io.out(JSON.stringify({ step: "private_skill", skip: true, reason: "skill_pin_not_configured" }));
-    await io.step("template_variable_create", async () => {
+    await io.measuredStep("template_variable_create", async () => {
       variableAttempted = true;
       const result = await api<{ item: Resource }>("variables/set", { scope: "personal", name: key, value });
       if (typeof result?.item?.id === "string" && result.item.id) variable = result.item;
@@ -151,12 +169,12 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         name: `smoke-${run}-${kind}`,
         attempted: false,
         launchAttempted: false,
-        requestKey: `smoke-${run}-${kind}`,
+        requestKey: `post-deploy-smoke:${crypto.randomUUID()}`,
         uncertain: false,
         stopConfirmed: false,
       };
       templates.push(record);
-      await io.step(`${label}_create`, async () => {
+      await io.measuredStep(`${label}_create`, async () => {
         record.attempted = true;
         const result = await api<{ item: Template }>("templates/create", {
           name: record.name,
@@ -176,65 +194,196 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         if (typeof result?.item?.id === "string" && result.item.id) record.resource = result.item;
         if (!record.resource || !positive(record.resource.currentRevision)) fail("invalid_response");
       });
-      const result = await io.step(`${label}_launch`, async () => {
-        record.launchAttempted = true;
-        record.uncertain = true;
-        const result = await api<{
-          state: string;
-          reason?: unknown;
-          requestId?: string;
-          id?: string;
-          promptId?: string;
-          provider?: string;
-          manifest?: { skillReceipts?: unknown };
-        }>("templates/launch", {
-          id: record.resource!.id,
-          revision: record.resource!.currentRevision,
-          requestKey: record.requestKey,
-          ttlSeconds: 900,
-          // Explicit template pins are isolated from the separate defaults probe.
-          skipSkillDefaults: true,
-          prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
-        });
-        if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
-        if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
-          record.requestId = result.requestId;
-        record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
-        if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
-        if (
-          !record.sandboxId ||
-          result.provider !== item.provider ||
-          typeof result.promptId !== "string" ||
-          !result.promptId
-        )
-          fail("invalid_response");
-        return result;
-      });
-      if (pin)
-        await io.step(`${kind}_skill_receipt`, async () => {
-          verifyReceipts(result.manifest?.skillReceipts, [pin]);
+      type LaunchReceipt = {
+        state: string;
+        reason?: unknown;
+        requestId?: string;
+        id?: string;
+        status?: string;
+        promptId?: string;
+        provider?: string;
+        envelope?: unknown;
+        manifest?: {
+          skillReceipts?: unknown;
+          resolvedSkills?: unknown;
+          templateId?: string;
+          revision?: number;
+          requestKey?: string;
+        };
+      };
+      let recovered = false;
+      let admitted = false;
+      const result = await io.step(`${label}_launch`, () =>
+        io.trackLaunch<LaunchReceipt>(async (submit, claim) => {
+          record.launchAttempted = true;
+          record.uncertain = true;
+          const body = {
+            org: item.org,
+            id: record.resource!.id,
+            revision: record.resource!.currentRevision,
+            requestKey: record.requestKey,
+            ...(item.provider === "modal" ? { externalRef: record.requestKey } : {}),
+            ttlSeconds: 900,
+            // Explicit template pins are isolated from the separate defaults probe.
+            skipSkillDefaults: true,
+            prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
+          };
+          const timeout = io.launchTimeout(`${label}_launch`);
+          const admissionDeadline = Math.min(io.deadline, io.now() + timeout);
+          async function observeLaunch(requirePrompt: boolean, until = Math.min(io.deadline, io.now() + timeout)) {
+            if (item.provider !== "modal") return;
+            let claimed = admitted;
+            return observeSmokeLaunch(until, io, async (remaining) => {
+              const inventory = await io
+                .request<{ sandboxes: { id: string; provider: string; externalRef: string }[] }>(
+                  "sandbox/list",
+                  { org: item.org, owner: "me", externalRef: record.requestKey },
+                  Math.min(5_000, remaining),
+                )
+                .catch((readError: unknown) => {
+                  if (io.isAmbiguousLaunch(readError)) return undefined;
+                  throw readError;
+                });
+              const sandboxes = inventory?.sandboxes;
+              const sandbox = sandboxes?.[0];
+              if (
+                sandboxes?.length === 1 &&
+                sandbox?.provider === item.provider &&
+                sandbox.externalRef === record.requestKey &&
+                (record.sandboxId === undefined || sandbox.id === record.sandboxId) &&
+                /^[a-f0-9]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sandbox.id)
+              ) {
+                if (!claimed) {
+                  claimed = true;
+                  record.sandboxId = sandbox.id;
+                  claim(sandbox.id);
+                  await io.recordSandbox?.(sandbox.id, record.requestKey);
+                }
+                const left = until - io.now();
+                if (!requirePrompt) return { id: sandbox.id, provider: sandbox.provider, promptId: undefined };
+                if (left <= 0) return;
+                const status = await api<{
+                  id: string;
+                  externalRef?: string;
+                  status: string;
+                  settled?: boolean;
+                  statusMessage?: string | null;
+                  prompt?: { promptId?: string; state?: string } | null;
+                }>("sandbox/status", { id: sandbox.id }, Math.min(5_000, left)).catch((error: unknown) => {
+                  if (io.isAmbiguousLaunch(error)) return undefined;
+                  throw error;
+                });
+                if (status?.id !== sandbox.id || status.externalRef !== record.requestKey) return;
+                if (
+                  admitted &&
+                  (["failed", "stopping", "stopped", "deleted"].includes(status.status) ||
+                    (status.settled === true && !!status.statusMessage))
+                )
+                  fail("turn_failed");
+                const promptId = status.prompt?.promptId;
+                if (
+                  ["ready", "running"].includes(status.status) &&
+                  typeof promptId === "string" &&
+                  promptId &&
+                  ["running", "finished", "failed", "interrupted"].includes(status.prompt?.state ?? "")
+                ) {
+                  return { id: sandbox.id, provider: sandbox.provider, promptId };
+                }
+              }
+            });
+          }
+          let result: LaunchReceipt;
+          try {
+            result = await submit(body, timeout);
+          } catch (error) {
+            if (!io.isAmbiguousLaunch(error)) throw error;
+            const observed = await observeLaunch(true);
+            if (!observed?.promptId) throw error;
+            record.uncertain = false;
+            recovered = true;
+            return { ...observed, state: "succeeded" };
+          }
+          const admission = parseLaunchAdmissionReceipt(item.provider, result?.envelope);
+          if (admission || (result?.state === "succeeded" && result.status === "starting")) {
+            if (
+              !admission ||
+              result.state !== "succeeded" ||
+              result.provider !== item.provider ||
+              result.id !== admission.sandbox.id ||
+              result.manifest?.requestKey !== record.requestKey
+            )
+              fail("invalid_response");
+            record.sandboxId = admission.sandbox.id;
+            record.uncertain = false;
+            claim(record.sandboxId);
+            await io.recordSandbox?.(record.sandboxId, record.requestKey);
+            if (
+              admission.sandbox.status !== "starting" ||
+              result.status !== admission.sandbox.status ||
+              result.manifest.templateId !== record.resource!.id ||
+              result.manifest.revision !== record.resource!.currentRevision
+            )
+              fail("invalid_response");
+            const pins = result.manifest.resolvedSkills;
+            if (!Array.isArray(pins) || pins.length !== (pin ? 1 : 0) || (pin && pins[0] !== pin))
+              fail("invalid_receipt");
+            admitted = true;
+            const observed = await observeLaunch(true, admissionDeadline);
+            if (!observed?.promptId) fail("launch_observation_timeout");
+            return { ...result, promptId: observed.promptId };
+          }
+          if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
+          if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
+            record.requestId = result.requestId;
+          record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
+          if (record.uncertain) {
+            const observed = await observeLaunch(["claimed", "allocating", "reconciling"].includes(result?.state));
+            if (observed?.promptId) {
+              record.uncertain = false;
+              recovered = true;
+              return { ...observed, state: "succeeded" };
+            }
+          }
+          if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
+          if (
+            typeof result.id !== "string" ||
+            !result.id ||
+            result.provider !== item.provider ||
+            typeof result.promptId !== "string" ||
+            !result.promptId
+          )
+            fail("invalid_response");
+          return result;
+        }),
+      );
+      if (pin || admitted)
+        await io.measuredStep(`${kind}_skill_receipt`, async () => {
+          const manifestSkills = result.manifest?.skillReceipts;
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
-          verifyReceipts(status.skills, [pin]);
+          verifyReceipts(status.skills, pin ? [pin] : []);
+          if (!pin || recovered || admitted) return;
+          verifyReceipts(manifestSkills, [pin]);
           for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
-            if (result.manifest!.skillReceipts[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
+            if (manifestSkills[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
         });
       await io.step(`${label}_wait`, () =>
         io.poll(
-          () =>
-            api<{ prompt: { promptId: string; state: string } | null }>("sandbox/wait", {
-              id: record.sandboxId,
-              prompt_id: result.promptId,
-              timeout_seconds: 0,
-            }),
+          (remainingMs) =>
+            api<{ prompt: { promptId: string; state: string } | null }>(
+              "sandbox/wait",
+              { id: record.sandboxId, prompt_id: result.promptId, timeout_seconds: 0 },
+              remainingMs,
+            ),
           (status) => {
             if (!status?.prompt || status.prompt.promptId !== result.promptId) fail("invalid_response");
             if (status.prompt.state === "failed" || status.prompt.state === "interrupted") fail("turn_failed");
             if (status.prompt.state !== "running" && status.prompt.state !== "finished") fail("invalid_response");
             return status.prompt.state === "finished";
           },
+          { step: `${label}_wait` },
         ),
       );
-      await io.step(`${label}_answer`, async () => {
+      await io.measuredStep(`${label}_answer`, async () => {
         type Event = {
           id: string;
           kind: string;
@@ -289,7 +438,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         const final = [...messages.values()].filter((message) => !message.partial && message.text.length).at(-1);
         if (final?.text !== value) fail("template_answer_mismatch");
       });
-      await io.step(`${label}_exec_isolation`, async () => {
+      await io.measuredStep(`${label}_exec_isolation`, async () => {
         const result = await api<{ exitCode: number | null; timedOut: boolean }>("sandbox/exec", {
           id: record.sandboxId,
           cwd: item.repo,
@@ -306,6 +455,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
   } catch {
     passed = false;
   } finally {
+    const leftoverTemplates: string[] = [];
+    let leftoverVariable: string | undefined;
     await io.withCleanup(async () => {
       for (const record of templates.toReversed()) {
         if (record.sandboxId)
@@ -317,34 +468,42 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             const list = await api<{ items: Template[] }>("templates/list");
             if (!Array.isArray(list?.items)) fail("invalid_response");
             const found = list.items.filter((entry) => entry.name === record.name);
-            if (found.length > 1) fail("cleanup_unconfirmed");
-            if (found[0]) record.resource = found[0];
+            if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
+            record.resource = found[0];
           });
-        if (record.resource)
-          await cleanup("cleanup_template", async () => {
+        if (!record.attempted) continue;
+        const resource = record.resource;
+        const deleted =
+          resource &&
+          (await cleanup("cleanup_template", async () => {
             const result = await api<{ item: { status: string } }>("templates/delete", {
-              id: record.resource!.id,
-              expectedRevision: record.resource!.currentRevision,
+              id: resource.id,
+              expectedRevision: resource.currentRevision,
             });
             if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-          });
+          }));
+        if (!deleted) leftoverTemplates.push(record.name);
       }
       if (!variable && variableAttempted)
         await cleanup("reconcile_template_variable", async () => {
           const list = await api<{ items: (Resource & { name: string })[] }>("variables/list");
           if (!Array.isArray(list?.items)) fail("invalid_response");
           const found = list.items.filter((entry) => entry.name === key);
-          if (found.length > 1) fail("cleanup_unconfirmed");
-          if (found[0]) variable = found[0];
+          if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
+          variable = found[0];
         });
-      if (variable)
-        await cleanup("cleanup_template_variable", async () => {
+      if (!variableAttempted) return;
+      const resource = variable;
+      const deleted =
+        resource &&
+        (await cleanup("cleanup_template_variable", async () => {
           const result = await api<{ item: { status: string } }>("variables/delete", {
-            id: variable!.id,
-            expectedVersion: variable!.version,
+            id: resource.id,
+            expectedVersion: resource.version,
           });
           if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-        });
+        }));
+      if (!deleted) leftoverVariable = key;
     });
     const leftoverSandboxIds = templates
       .filter((record) => record.sandboxId && !record.stopConfirmed)
@@ -361,9 +520,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     io.out(
       JSON.stringify({
         step: "template_cleanup_summary",
-        pass: !leftoverSandboxIds.length && !uncertainLaunches.length,
+        pass: !leftoverSandboxIds.length && !uncertainLaunches.length && !leftoverTemplates.length && !leftoverVariable,
         leftoverSandboxIds,
         uncertainLaunches,
+        ...(leftoverTemplates.length ? { leftoverTemplates } : {}),
+        ...(leftoverVariable ? { leftoverVariable } : {}),
       }),
     );
   }

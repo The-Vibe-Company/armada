@@ -1,18 +1,23 @@
 # Secure, server-orchestrated snapshots
 
 Snapshots (called golden in older versions) contain repositories, dependencies and non-secret configuration, **never secrets**.
-The CLI is an authenticated Armada API client: create, update, connect and snapshot all go
-through the server's authorization and provider routing. Callers need an Armada session
+The CLI sends create and update requests through the server’s authorization and
+provider routing. The REST maintenance routes below handle connect and manual snapshot saves. Callers need an Armada session
 (`armada login`) or `ARMADA_TOKEN`, and the appropriate `ARMADA_URL`, not provider keys.
 Connect is for non-secret maintenance, not for installing credentials or secret-bearing files.
 
 ## Create or rebuild with the CLI
 
+Replace `ORG_UUID` with the target organization UUID. Save separate idempotency keys
+for the create and update requests and substitute them for `CREATE_KEY` and `UPDATE_KEY`.
+Before updating, save the complete desired repository and initialization
+configuration in the local `snapshot.json` file.
+
 ```sh
-armada snapshot create web --repo https://github.com/acme/web --provider boat --org <org> \
-  --idempotency-key <saved-key> --timeout 60
-armada snapshot update web --replace --config golden.json --provider boat --org <org> \
-  --idempotency-key <new-saved-key> --timeout 60
+armada snapshot new web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
+  --idempotency-key CREATE_KEY --wait --timeout 60
+armada snapshot update web --replace --config snapshot.json --provider boat --org ORG_UUID \
+  --idempotency-key UPDATE_KEY --wait --timeout 60
 ```
 
 - Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`. Repeated
@@ -27,21 +32,17 @@ armada snapshot update web --replace --config golden.json --provider boat --org 
   between providers; Modal's workspace/environment/App binding is immutable. Boat compatibility
   IDs are not Modal IDs.
 - Save an idempotency key **before submission** (16–128 letters, digits, underscores or hyphens).
-  The CLI generates and prints one to stderr if omitted. It prints the admitted job ID, then
-  polls. `--timeout` is a local wait in seconds, 0–600 (default 60), not the build deadline;
-  `0` returns after admission. Acceptance or a successful exit after local waiting is **not
-  publication**. Only `state: succeeded` establishes completion.
-- When the job succeeds during the wait, the CLI prints the completed result (with `--json`,
-  the result object, not just a receipt). If still pending, it can print the current status (`--json` prints the job object),
-  or exit with a polling-stopped error and recovery guidance when its local deadline expires.
-  Very short waits such as `--timeout 1` can expire during the fixed two-second polling interval;
-  use `0` for admission-only output. Disconnecting does not cancel or resubmit the build.
+  The CLI generates and prints one to stderr if omitted. It returns after admission by default.
+  Pass `--wait` to poll for up to `--timeout` seconds (1–600, default 60).
+  A successful exit can still mean the job is pending. Use `snapshot show --build JOB_UUID`
+  to confirm publication (`state: succeeded`). Disconnecting leaves the admitted build running.
 
-Recover without starting another build:
+Recover with the returned build UUID (`JOB_UUID`) or the key saved for that
+request (`SAVED_KEY`).
 
 ```sh
-armada snapshot build-status <job-id> --json
-armada snapshot build-status --idempotency-key <saved-key> --org <org> --json
+armada snapshot show --build JOB_UUID --json
+armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID --json
 ```
 
 If admission's response is lost, recover by the saved key first. The same requester/org/key
@@ -51,9 +52,9 @@ switch to a fresh key to bypass an uncertain outcome or retained capacity. For
 See [Durable snapshot build jobs](golden-build-jobs.md) for exact client semantics, failure
 reasons and worker/recovery details; old synchronous create/update contracts are not supported.
 
-## API and MCP create/update
+## REST create and update
 
-Both surfaces admit durable jobs, not inline snapshots. Control API requests use
+The control API admits durable build jobs. Requests use
 `Authorization: Bearer <Armada bearer>` and `Content-Type: application/json`.
 
 `POST /api/v1/golden/create` example (replace placeholders, retaining the saved key):
@@ -74,16 +75,13 @@ Both surfaces admit durable jobs, not inline snapshots. Control API requests use
 | --- | --- |
 | API create | Required `name`, `idempotencyKey`, and `repos` unless `config` is supplied. Optional `org`, `provider`, `private` (default false), `setup`. `config` is the snapshot config object, not a file path. |
 | API update (`POST /api/v1/golden/update`) | Required `name`, `config`, `idempotencyKey`; optional `org`, `provider`, `setup`. Owner/visibility come from the existing snapshot. |
-| MCP `golden_create` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `private`, `setup`. No `config` field. |
-| MCP `golden_update` | Required `name`, `repos`, `idempotencyKey`; optional `org`, `provider`, `setup`. No `config` or `private` field. |
 
-MCP `repos` contains 1–16 `owner/repo` entries. Private repositories require a
+`repos` contains 1–16 `owner/repo` entries. Private repositories require a
 caller-visible GitHub App installation. Public repositories can pass authorization without
 one, but checkout is not guaranteed in that case (see the signing caveat below). `setup`
-is script text, not the CLI's local file path. MCP `org` is an org ID (needed when membership
-is ambiguous); API `org` accepts an ID or name. Use IDs for portable examples.
+is script text. `org` accepts an ID or name when membership is ambiguous. Use IDs for portable examples.
 
-API create/update return HTTP **202** with a status receipt; MCP returns the same job shape.
+Create and update return HTTP **202** with a status receipt.
 A typical admission receipt is:
 
 ```json
@@ -98,8 +96,7 @@ A typical admission receipt is:
 ```
 
 Poll `POST /api/v1/golden/build/status` with `{"jobId":"<job-uuid>"}`, or recover by
-`{"org":"<org-id>","idempotencyKey":"<saved-key>"}`. MCP callers use
-`golden_build_status` with those same fields. Reads authenticate and check current membership;
+`{"org":"<org-id>","idempotencyKey":"<saved-key>"}`. Reads authenticate and check current membership;
 private jobs remain owner-only, even against admins. States are `queued`, `running`,
 `succeeded`, `failed`, `recovery_required`. Only success supplies the terminal public result
 (`name`, `visibility`, `snapshot`, optional `warnings`). Polling errors never justify resubmission.
@@ -109,18 +106,11 @@ private jobs remain owner-only, even against admins. States are `queued`, `runni
 These are **not durable create/update jobs**. They perform the requested maintenance operation
 and return its result; they do not accept a build idempotency key or return a job receipt.
 
-```sh
-armada snapshot connect web --provider boat --org <org> --json
-# Maintain only non-secret repositories/dependencies/configuration in the canonical master.
-armada snapshot snapshot web --provider boat --org <org> --json
-```
-
 `POST /api/v1/golden/connect` takes `name`, optional `org` and `provider`, and returns
 `{golden, sandboxId, webUrl}` (`webUrl` is currently null). It opens/restores the canonical
 master through Armada; it is not a direct-provider CLI connection or a credential bypass.
 `POST /api/v1/golden/snapshot` takes the same fields, restores the master if necessary,
-runs the fail-closed scan, then saves and returns `{name, snapshot}`. MCP `golden_snapshot`
-accepts those same fields and returns that snapshot result; there is no `golden_connect` tool.
+runs the fail-closed scan, then saves and returns `{name, snapshot}`.
 Both maintenance routes enforce current mutation rights and the stored backend binding.
 A timeout is not proof that a snapshot was never saved: inspect the snapshot's current state
 before deciding what to do, rather than treating it as a durable build job to poll or replay.

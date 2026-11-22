@@ -1,0 +1,95 @@
+{
+  "harnesses": {
+    "claude": {
+      "defaultModel": "claude-opus-5-5",
+      "defaultReasoningEffort": "medium",
+      "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "label": "Claude Opus 5.5",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"]
+        },
+        {
+          "id": "claude-sonnet-5-5",
+          "label": "Claude Sonnet 5.5",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"]
+        }
+      ]
+    },
+    "codex": {
+      "defaultModel": "gpt-6.2-sol",
+      "defaultReasoningEffort": "medium",
+      "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "models": [
+        {
+          "id": "gpt-6.2-sol",
+          "label": "GPT-6.2 Sol",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "label": "GPT-6.2 Astra",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "label": "GPT-6.1 Sol",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "label": "GPT-6.1 Terra",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6-astra",
+          "label": "GPT-6 Astra",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6-sol",
+          "label": "GPT-6 Sol",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        },
+        {
+          "id": "gpt-6-luna",
+          "label": "GPT-6 Luna",
+          "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"]
+        }
+      ]
+    },
+    "opencode": {
+      "defaultModel": "armada/deepseek-flash",
+      "defaultReasoningEffort": "default",
+      "reasoningEfforts": ["default"],
+      "models": [
+        {
+          "id": "armada/deepseek-flash",
+          "label": "DeepSeek Flash (custom endpoint)",
+          "reasoningEfforts": ["default"]
+        }
+      ]
+    }
+  },
+  "compatibleProviders": {
+    "morph": {
+      "models": ["morph-kimik31", "morph-dsv41flash", "morph-dsv41flash-1017"],
+      "claude": {
+        "version": 1,
+        "baseUrl": "https://api.morphllm.com",
+        "auth": "api-key",
+        "aliases": {
+          "opus": "morph-kimik31",
+          "sonnet": "morph-kimik31",
+          "haiku": "morph-dsv41flash"
+        }
+      },
+      "codex": {
+        "version": 1,
+        "baseUrl": "https://api.morphllm.com/v1"
+      }
+    }
+  },
+  "vendorLimitHints": {}
+}

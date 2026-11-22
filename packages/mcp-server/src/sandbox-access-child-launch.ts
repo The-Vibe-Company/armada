@@ -1,27 +1,70 @@
 import {
   createSqlSandboxStore,
+  DelegatedAuthorityDenied,
+  failureDiagnostic,
   type GoldenActor,
+  GoldenError,
   type Harness,
   type HarnessCredentials,
   isNonMutatingProviderRefusal,
+  LaunchError,
+  type LaunchOptions,
   type LaunchStores,
   launchSandbox,
   type Provider,
+  ProviderError,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { ChildLaunchSelection, ChildOperation } from "./sandbox-access-children.ts";
 
 /** Local proof that this executor never attempted allocation, or the SDK explicitly refused
  * without mutation. Never reconstructed from guest JSON or absence in provider listings. */
 export class ChildLaunchNotAllocated extends Error {
-  constructor(readonly reason: "preallocation_rejected" | "provider_refused") {
-    super("Child launch was not allocated.");
+  constructor(
+    readonly reason: "preallocation_rejected" | "provider_refused",
+    readonly guard = "admission",
+    cause?: unknown,
+  ) {
+    super("Child launch was not allocated.", { cause });
+  }
+
+  record(operation: Pick<ChildOperation, "id" | "sandboxId">, code: string) {
+    const error = this.cause;
+    const authorityDenied = error instanceof DelegatedAuthorityDenied;
+    const refusalCode =
+      error instanceof VaultError ||
+      error instanceof LaunchError ||
+      error instanceof GoldenError ||
+      error instanceof ProviderError
+        ? error.code
+        : authorityDenied
+          ? "authority_denied"
+          : this.reason;
+    const diagnostic = failureDiagnostic(error ?? this);
+    const errorClass =
+      error instanceof GoldenError
+        ? "GoldenError"
+        : authorityDenied
+          ? "DelegatedAuthorityDenied"
+          : diagnostic.errorClass;
+    recordOperatorDiagnostic(
+      `scoped.child_launch.${this.guard}`,
+      { ...diagnostic, errorClass },
+      {
+        sandboxId: operation.sandboxId,
+        operationId: operation.id,
+        code,
+        refusalCode,
+      },
+    );
   }
 }
 
 /** Exact #612 af8a9c2 resolver projection. The binding MUST be returned and match;
  * a legacy resolver or incomplete #604 private-state pipeline is not support. */
-export interface PinnedModelAccountResolver {
+interface PinnedModelAccountResolver {
   resolve(
     actor: GoldenActor,
     harness: Harness,
@@ -41,12 +84,14 @@ export async function launchSandboxChild(input: {
   extensionHeadroomSeconds?: number;
   sql: Sql;
   provider: Provider;
+  runtime?: NonNullable<LaunchOptions["runtime"]>;
   stores: LaunchStores;
   namedCredentials: PinnedModelAccountResolver;
   operation: ChildOperation;
   selection: ChildLaunchSelection;
 }): Promise<{ providerSandboxId: string }> {
-  const { sql, provider, operation: op, selection } = input;
+  const { sql, provider, operation: op, selection, runtime } = input;
+  let guard = "reservation";
   let allocationAttempted = false;
   let providerRefused = false;
   try {
@@ -68,16 +113,16 @@ export async function launchSandboxChild(input: {
       if (!row) throw new Error("Child launch admission is no longer current.");
     };
     // Actual #612/202 binding columns must exist BEFORE any billable allocation.
-    try {
-      await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
-    } catch {
-      throw new Error("Child named account schema unavailable; no allocation was attempted.");
-    }
+    guard = "account_schema";
+    await sql.query(`select credential_id,credential_version from public.sandboxes limit 0`);
+    guard = "parent_authority";
     await assertCurrent();
+    guard = "golden";
     const actor: GoldenActor = { userId: op.ownerId, orgId: op.orgId, role: "member" };
     const golden = (await input.stores.goldens.list(op.orgId)).find((g) => g.id === selection.goldenId);
     if (!golden || golden.orgId !== op.orgId || provider.id !== golden.provider)
       throw new Error("Child golden unavailable.");
+    guard = "named_account";
     const credentials = await input.namedCredentials.resolve(
       actor,
       selection.harness,
@@ -94,7 +139,17 @@ export async function launchSandboxChild(input: {
       get(target, key) {
         if (key === "fork")
           return async (request: Parameters<Provider["fork"]>[0]) => {
-            await assertCurrent();
+            guard = "parent_authority";
+            await assertCurrent().catch((cause) => {
+              throw new ProviderError({
+                provider: target.id,
+                code: "forbidden",
+                message: "Child launch authority could not be confirmed.",
+                retryable: false,
+                cause,
+              });
+            });
+            guard = "provider_fork";
             allocationAttempted = true;
             const result = await target
               .fork({
@@ -113,7 +168,7 @@ export async function launchSandboxChild(input: {
             ]);
             return result;
           };
-        if (["exec", "prompt", "prepareNativeHarnessCwd", "configureMcp"].includes(String(key))) {
+        if (["exec", "prompt", "prepareNativeHarnessCwd", "configureMcp", "startRuntime"].includes(String(key))) {
           const method = Reflect.get(target, key);
           if (typeof method !== "function") return method;
           return async (...args: unknown[]) => {
@@ -181,6 +236,7 @@ export async function launchSandboxChild(input: {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
+    guard = "launch_admission";
     const launched = await launchSandbox(
       routed,
       {
@@ -202,6 +258,36 @@ export async function launchSandboxChild(input: {
       },
       {
         newId: () => op.sandboxId,
+        ...(runtime
+          ? {
+              privateVisibility: true as const,
+              runtime: {
+                async start(request) {
+                  await assertCurrent();
+                  const agent = await runtime.start(request);
+                  return {
+                    ...agent,
+                    async prompt(prompt) {
+                      await assertCurrent();
+                      return agent.prompt(prompt);
+                    },
+                    ...(agent.prepareWorkspace && {
+                      prepareWorkspace: async (...args: Parameters<NonNullable<typeof agent.prepareWorkspace>>) => {
+                        await assertCurrent();
+                        return agent.prepareWorkspace!(...args);
+                      },
+                    }),
+                    ...(agent.installSkills && {
+                      installSkills: async (...args: Parameters<NonNullable<typeof agent.installSkills>>) => {
+                        await assertCurrent();
+                        return agent.installSkills!(...args);
+                      },
+                    }),
+                  };
+                },
+              },
+            }
+          : {}),
         ...(input.extensionHeadroomSeconds === undefined
           ? {}
           : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
@@ -210,7 +296,7 @@ export async function launchSandboxChild(input: {
     return { providerSandboxId: launched.sandbox.providerSandboxId };
   } catch (error) {
     if (!allocationAttempted || providerRefused)
-      throw new ChildLaunchNotAllocated(providerRefused ? "provider_refused" : "preallocation_rejected");
+      throw new ChildLaunchNotAllocated(providerRefused ? "provider_refused" : "preallocation_rejected", guard, error);
     throw error;
   }
 }

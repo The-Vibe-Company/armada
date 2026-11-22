@@ -387,7 +387,7 @@ control replies stay private. Invalid config, refused reload or timeout produces
 a sanitized error for that request, not an app-server kill/restart. Other threads
 continue. No gateway header enters exec argv or control-request params.
 
-The publishing-only `mcp-codex-bridge.release.ts` contract proves actual native behavior, not just file effects:
+The publishing-only `mcp-codex-bridge.release.probe.ts` contract proves actual native behavior, not just file effects:
 with one unchanged Rust native PID and one persisted thread ID, real app-server
 RPC tools succeed initially, after rotated credentials + thread/resume, and after
 another rotation with turn/start ONLY. A second real loaded thread remains loaded
@@ -395,8 +395,7 @@ and successfully calls its own tools across every rotation: six successful nativ
 tool calls total, with both loaded thread IDs surviving refresh and removal. The real SDK HTTP server issues sessions
 bound to the credential epoch and rejects stale session reuse. At least three
 fresh authenticated sessions are created; removing the server then refuses tool
-admission. No model service or credentials are used: a local failed/interruptible
-turn against loopback port 1 only creates the genuine rollout required by resume.
+admission. No model service or credentials are used: a completed turn against a local Responses fixture creates the genuine rollout required by resume.
 The companion protocol-consumer test separately owns private reply filtering,
 peer notification/response preservation and fail-closed per-request errors.
 
@@ -404,15 +403,15 @@ Executable Linux offline check (use the preserved REAL native entrypoint, not an
 already managed wrapper, to avoid nesting a legacy bridge):
 
 ```
-CODEX_NATIVE_TEST_BINARY="$(pwd)/packages/agent-runtime/dist/codex" bun test \
-  ./packages/mcp-server/test/mcp-codex-bridge.release.ts
+CODEX_NATIVE_TEST_BINARY="$(pwd)/packages/agent-runtime/dist/codex" bun \
+  ./packages/mcp-server/test/mcp-codex-bridge.release.probe.ts
 ```
 
 This file is the only real-binary case. The unit files
 `mcp-codex-bridge.test.ts` and `native-cwd.test.ts` use synthetic stdio peers and
 pass without any native binary, so selecting them is not evidence about the real
 executable. The release step `python3 scripts/validate-release-contracts.py`
-runs this contract and rejects a skipped case. Phase 0 also requires the real
+runs this standalone probe and requires a successful exit. Phase 0 also requires the real
 native writer to hold an exclusive `FLOCK` on the managed writer lock, read
 from `/proc/<pid>/fdinfo`. A matching but unlocked descriptor fails the check.
 

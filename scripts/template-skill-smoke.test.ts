@@ -32,11 +32,21 @@ type Fault =
   | "lost_launch"
   | "lost_template"
   | "lost_variable"
+  | "unlisted_variable"
+  | "unlisted_template"
   | "cleanup"
   | "uncertain_launch"
   | "missing_handle";
 function fixture(
-  options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean; refusalReason?: string } = {},
+  options: {
+    key?: "user" | "org" | "absent";
+    fault?: Fault;
+    splitAnswer?: boolean;
+    refusalReason?: string;
+    lateInventory?: boolean;
+    recoverTemplates?: boolean;
+    jobAdmission?: "accepted" | "wrong_pin" | "failed_setup" | "late_ack" | "extra_skill";
+  } = {},
 ) {
   const { key = "user", fault = "none", splitAnswer = false } = options;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
@@ -51,6 +61,11 @@ function fixture(
     uncertainLaunches?: { templateId: string; templateName: string; requestKey: string; requestId?: string }[];
   }[] = [];
   const stopped: string[] = [];
+  const discovered: string[] = [];
+  const reservedId = "b0000000-0000-4000-8000-000000000001";
+  let clock = 0;
+  let inventoryReads = 0;
+  const recoveredLaunches = new Map<string, { id: string; key: unknown; pin?: string; statusReads: number }>();
   let cleaning = false;
   let variable: { id: string; version: number; name: string; value: string } | undefined;
   const templates: {
@@ -68,6 +83,20 @@ function fixture(
     origin: "https://skillpack.app/v1",
   });
   const io: TemplateSkillIo = {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    deadline: 10_000,
+    trackLaunch: (action) =>
+      action(
+        (body, timeout) => io.request("templates/launch", body, timeout),
+        (id) => {
+          discovered.push(id);
+        },
+      ),
+    launchTimeout: () => (options.jobAdmission === "late_ack" ? 2_000 : 600_000),
+    isAmbiguousLaunch: () => fault === "lost_launch",
     async request<T>(path: string, body: object) {
       const input = body as Record<string, unknown>;
       calls.push({ path, body: input });
@@ -87,10 +116,12 @@ function fixture(
                 orgs: [{ id: selected.org, credentials: key === "org" ? [{ kind: "skillpack" }] : [] }],
               };
       else if (path === "variables/set") {
+        if (fault === "unlisted_variable") throw new DOMException("create timed out", "TimeoutError");
         variable = { id: "variable", version: 1, name: String(input.name), value: String(input.value) };
         if (fault === "lost_variable") throw new Error("secret failed variable receipt");
         output = { item: variable };
       } else if (path === "templates/create") {
+        if (fault === "unlisted_template") throw new DOMException("create timed out", "TimeoutError");
         const template = {
           id: `template-${++creates}`,
           currentRevision: 1,
@@ -109,12 +140,33 @@ function fixture(
         expect(String(input.prompt)).not.toContain(variable.value);
         expect(input).not.toHaveProperty("repo");
         expect(input.skipSkillDefaults).toBe(true);
+        if ((options.recoverTemplates && pin) || options.jobAdmission) {
+          const id = `b0000000-0000-4000-8000-00000000000${creates}`;
+          recoveredLaunches.set(template.id, { id, key: input.externalRef, ...(pin ? { pin } : {}), statusReads: 0 });
+        }
         if (fault === "lost_launch") throw new Error("secret lost compute receipt");
+        if (options.jobAdmission) {
+          if (options.jobAdmission === "late_ack") clock += io.launchTimeout("template_launch");
+          const launch = recoveredLaunches.get(template.id)!;
+          return {
+            state: "succeeded",
+            id: launch.id,
+            provider: "modal",
+            status: "starting",
+            envelope: { sandbox: { id: launch.id, status: "starting" } },
+            manifest: {
+              requestKey: input.requestKey,
+              templateId: template.id,
+              revision: template.currentRevision,
+              resolvedSkills: options.jobAdmission === "wrong_pin" || !pin ? [] : [pin],
+            },
+          } as T;
+        }
         output =
           (fault === "key_refused" && pin === selected.privateSkill) || fault === "uncertain_launch"
             ? {
                 state: fault === "uncertain_launch" ? "reconciling" : "failed",
-                id: `sandbox-${template.id}`,
+                id: input.externalRef ? reservedId : `sandbox-${template.id}`,
                 requestId: "request-1",
                 reason:
                   options.refusalReason ??
@@ -123,10 +175,40 @@ function fixture(
             : {
                 state: "succeeded",
                 ...(fault === "missing_handle" ? {} : { id: `sandbox-${template.id}` }),
-                provider: selected.provider,
+                provider: input.externalRef ? "modal" : selected.provider,
                 promptId: `prompt-${template.id}`,
                 manifest: { skillReceipts: fault === "missing_receipt" || !pin ? [] : [receipt(pin)] },
               };
+      } else if (path === "sandbox/list" && (options.recoverTemplates || options.jobAdmission)) {
+        const launch = [...recoveredLaunches.values()].find((item) => item.key === input.externalRef);
+        expect(launch).toBeDefined();
+        expect(input.owner).toBe("me");
+        output = { sandboxes: [{ id: launch!.id, provider: "modal", externalRef: launch!.key }] };
+      } else if (path === "sandbox/list") {
+        const launch = calls.find((call) => call.path === "templates/launch");
+        if (options.lateInventory && inventoryReads === 1) clock = io.deadline + 1;
+        expect(input).toEqual({ org: selected.org, owner: "me", externalRef: launch?.body.requestKey });
+        output = {
+          sandboxes:
+            ++inventoryReads === 1 ? [] : [{ id: reservedId, provider: "modal", externalRef: input.externalRef }],
+        };
+      } else if (path === "sandbox/status" && (options.recoverTemplates || options.jobAdmission)) {
+        const match = [...recoveredLaunches].find(([, launch]) => launch.id === input.id);
+        expect(match).toBeDefined();
+        const [templateId, launch] = match!;
+        output = {
+          id: launch.id,
+          externalRef: launch.key,
+          status: options.jobAdmission === "failed_setup" ? "failed" : "ready",
+          prompt: ++launch.statusReads === 1 ? null : { promptId: `prompt-${templateId}`, state: "finished" },
+          skills: launch.pin
+            ? [receipt(launch.pin)]
+            : options.jobAdmission === "extra_skill"
+              ? [receipt(selected.publicSkill)]
+              : [],
+        };
+      } else if (path === "sandbox/status" && fault === "uncertain_launch") {
+        output = { id: reservedId, status: "starting", prompt: null };
       } else if (path === "sandbox/status") {
         const template = templates.find((item) => `sandbox-${item.id}` === input.id);
         output = {
@@ -136,7 +218,8 @@ function fixture(
       else if (path === "logs/read") {
         expect(input).not.toHaveProperty("since_cursor");
         if (input.cursor !== undefined) expect(input.cursor).toBe("next");
-        const prompt = `prompt-${String(input.id).replace("sandbox-", "")}`;
+        const recovered = [...recoveredLaunches].find(([, launch]) => launch.id === input.id);
+        const prompt = `prompt-${recovered?.[0] ?? String(input.id).replace("sandbox-", "")}`;
         const text = fault === "answer" ? "not-the-value" : variable!.value;
         if (splitAnswer && !input.cursor)
           output = {
@@ -194,6 +277,7 @@ function fixture(
       }
       throw new Error("poll limit");
     },
+    measuredStep: (name, action) => io.step(name, action),
     async step<T>(step: string, action: () => Promise<T>) {
       try {
         const result = await action();
@@ -226,7 +310,7 @@ function fixture(
       }
     },
   };
-  return { io, calls, lines, stopped, value: () => variable?.value };
+  return { discovered, reservedId, io, calls, lines, stopped, value: () => variable?.value };
 }
 
 test("template smoke pins the selected account, checks exact paginated assistant answer and both receipt copies, then cleans all resources", async () => {
@@ -334,6 +418,26 @@ test("lost metadata receipts reconcile by unique run name; lost compute is never
   }
 });
 
+test.each(["variable", "template"] as const)(
+  "empty inventory after an uncertain %s create reports unconfirmed cleanup",
+  async (kind) => {
+    const fake = fixture({ fault: `unlisted_${kind}`, key: "absent" });
+    expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
+    const createPath = kind === "variable" ? "variables/set" : "templates/create";
+    const creates = fake.calls.filter((call) => call.path === createPath);
+    expect(creates).toHaveLength(1);
+    expect(fake.lines).toContainEqual(
+      expect.objectContaining({
+        step: "template_cleanup_summary",
+        pass: false,
+        [kind === "variable" ? "leftoverVariable" : "leftoverTemplates"]:
+          kind === "variable" ? creates[0]!.body.name : [creates[0]!.body.name],
+      }),
+    );
+    if (kind === "template") expect(fake.calls.at(-1)?.path).toBe("variables/delete");
+  },
+);
+
 test("missing pins explicitly skip their checks while the template variable still reaches the agent", async () => {
   for (const missing of ["public", "private", "both"] as const) {
     const fake = fixture();
@@ -367,3 +471,77 @@ test("launch refusal diagnostics drop arbitrary remote text but retain closed un
   });
   expect(JSON.stringify(fake.lines)).not.toContain("secret-provider-detail");
 });
+
+test("a reserved template launch waits for keyed inventory before cleanup without resubmitting", async () => {
+  const fake = fixture({ fault: "uncertain_launch", key: "absent" });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+  expect(fake.calls.some((call) => call.path === "sandbox/status")).toBe(true);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a late inventory receipt still supplies a lost template launch cleanup handle", async () => {
+  const fake = fixture({ fault: "lost_launch", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a template response without its sandbox ID cannot use inventory as launch proof", async () => {
+  const fake = fixture({ fault: "missing_handle", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal", publicSkill: undefined }, fake.io)).toBe(false);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+  expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
+  expect(fake.lines).toContainEqual(
+    expect.objectContaining({ step: "template_launch", pass: false, code: "invalid_response" }),
+  );
+});
+
+test("both template install modes recover their original turns after a lost response without resubmitting", async () => {
+  const fake = fixture({ fault: "lost_launch", recoverTemplates: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(2);
+  expect(fake.lines).toContainEqual({ step: "public_skill_receipt", pass: true });
+  expect(fake.lines).toContainEqual({ step: "private_skill_receipt", pass: true });
+  expect(fake.lines).toContainEqual({ step: "template_answer", pass: true });
+  expect(fake.lines).toContainEqual({ step: "private_skill_answer", pass: true });
+  expect(fake.stopped).toEqual(["b0000000-0000-4000-8000-000000000002", fake.reservedId]);
+});
+
+test("Modal template admission resolves the original public prompt before proving the skill and answer", async () => {
+  const fake = fixture({ jobAdmission: "accepted", key: "absent" });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+  expect(fake.calls.find((call) => call.path === "sandbox/wait")?.body).toMatchObject({
+    id: fake.reservedId,
+    prompt_id: "prompt-template-1",
+  });
+  expect(fake.lines).toContainEqual({ step: "public_skill_receipt", pass: true });
+  expect(fake.lines).toContainEqual({ step: "template_answer", pass: true });
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test.each([
+  ["wrong_pin", "template_launch", "invalid_receipt"],
+  ["failed_setup", "template_launch", "turn_failed"],
+  ["late_ack", "template_launch", "launch_observation_timeout"],
+  ["extra_skill", "public_skill_receipt", "invalid_receipt"],
+] as const)(
+  "Modal template admission with %s stops the known allocation without using a prompt",
+  async (jobAdmission, step, code) => {
+    const fake = fixture({ jobAdmission, key: "absent" });
+    const item = { ...selected, provider: "modal" as const };
+    if (jobAdmission === "extra_skill") {
+      expect(await runTemplateSkillCase({ ...item, publicSkill: undefined }, fake.io)).toBe(false);
+    } else {
+      expect(await runTemplateSkillCase(item, fake.io)).toBe(false);
+    }
+    expect(fake.lines).toContainEqual({ step, pass: false, code });
+    if (jobAdmission === "late_ack") expect(fake.calls.some((call) => call.path === "sandbox/status")).toBe(false);
+    expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
+    expect(fake.stopped).toEqual([fake.reservedId]);
+  },
+);

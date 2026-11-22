@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { Sql } from "@armada/core";
+import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER, type Sql } from "@armada/core";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostUnavailable } from "../src/docker-host-store.ts";
 
@@ -32,7 +32,11 @@ test("store failures retain their cause and return sanitized unavailable respons
     const response = await route(
       new Request(`https://example.test${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${"a".repeat(64)}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${"a".repeat(64)}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+        },
         body: JSON.stringify(body),
       }),
     );

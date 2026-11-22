@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
+import { launch, launchEnvelope } from "@armada/core/contract";
 import { ProviderError } from "@armada/core/server";
 import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
-import { DOCKER_LAUNCH_REQUEST } from "../../mcp-server/src/docker-launch-request-schema.ts";
-import { REST_LAUNCH_RESPONSE } from "../../mcp-server/src/launch-response-schemas.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
 import { RuntimeCommandPending, RuntimeCommandRefused } from "../../mcp-server/src/runtime-commands.ts";
@@ -17,7 +16,6 @@ import {
   verifyWebhookSignature,
 } from "../src/index.ts";
 
-/** The SDK Docker launch input has exactly the fields of the server's Docker launch request. */
 const dockerInputMatchesCore: [
   Exclude<keyof DockerLaunchRequest, keyof DockerLaunchInput>,
   Exclude<keyof DockerLaunchInput, keyof DockerLaunchRequest>,
@@ -25,7 +23,6 @@ const dockerInputMatchesCore: [
   ? true
   : never = true;
 void dockerInputMatchesCore;
-/** The server's status prompt (including a queued Docker prompt) is assignable to the SDK's. */
 const dockerPrompt: SandboxStatus["prompt"] = null as DockerSandboxStatus["prompt"];
 void dockerPrompt;
 
@@ -40,7 +37,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       return Response.json({ id: "sandbox_placeholder" });
     }) as import("../src/index.ts").Fetch,
   });
-  await client.launch({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  await client.launch({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   await client.launchFromTemplate({
     org: "org_placeholder",
     id: "template_placeholder",
@@ -62,7 +59,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       "sandbox/stop",
     ].map((path) => `/api/v1/${path}`),
   );
-  expect(requests[0]?.body).toEqual({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  expect(requests[0]?.body).toEqual({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   expect(requests[2]?.body).toEqual({ id: "sandbox_placeholder", prompt: "Work", request_id: "request_placeholder" });
   expect(requests[5]?.body).toEqual({ id: "sandbox_placeholder", cursor: "cursor_placeholder" });
 });
@@ -93,14 +90,13 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     prompt: "Work",
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(input).success).toBe(true);
-  // Docker checkouts are always shallow, so the published contract does not offer golden-config history.
+  expect(launch.input.body.safeParse(input).success).toBe(true);
   const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
-  expect(DOCKER_LAUNCH_REQUEST.safeParse(history).success).toBe(false);
+  expect(launch.input.body.safeParse(history).success).toBe(false);
   const receipt = {
     sandbox: {
       id: "sandbox_placeholder",
@@ -118,7 +114,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     ttlSeconds: 3600,
     expiresAt: "2026-11-18T00:00:00.000Z",
   };
-  expect(REST_LAUNCH_RESPONSE.safeParse(receipt).success).toBe(true);
+  expect(launchEnvelope.safeParse(receipt).success).toBe(true);
   let sent: unknown;
   const client = new Armada({
     token: "service_placeholder",
@@ -128,10 +124,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     }) as import("../src/index.ts").Fetch,
   });
   const launched = await client.launch(input);
-  const golden: null = launched.golden;
-  expect(golden).toBeNull();
-  expect(launched.sandbox.hostId).toBe(input.hostId);
-  expect(launched.promptId).toBeNull();
+  expect(launched).toEqual(receipt);
   expect(sent).toEqual(input);
 });
 
@@ -145,7 +138,7 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     repos: [{ url: "https://github.com/acme/app" }],
   } as const;
   const snapshotId = "00000000-0000-4000-8000-000000000004";
@@ -155,16 +148,21 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     { ...common, snapshotId },
     { ...common, snapshotId, hostId },
   ];
-  for (const body of accepted) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(true);
+  for (const body of accepted) expect(launch.input.body.safeParse(body).success).toBe(true);
   // @ts-expect-error A Docker launch needs a host or a snapshot.
   const noSource: DockerLaunchInput = { ...common };
   // @ts-expect-error A snapshot carries its own workspace, so repos are refused.
   const snapshotRepos: DockerLaunchInput = { ...common, snapshotId, repos: [{ url: "https://github.com/acme/app" }] };
-  for (const body of [noSource, snapshotRepos]) expect(DOCKER_LAUNCH_REQUEST.safeParse(body).success).toBe(false);
+  for (const body of [noSource, snapshotRepos]) expect(launch.input.body.safeParse(body).success).toBe(false);
 });
 
 test("status exposes the selected prompt by its promptId", async () => {
-  const prompt = { promptId: "prompt_placeholder", conversationId: null, state: "queued", reason: null };
+  const prompt: SandboxStatus["prompt"] = {
+    promptId: "prompt_placeholder",
+    conversationId: null,
+    state: "queued",
+    reason: null,
+  };
   const client = new Armada({
     token: "service_placeholder",
     fetch: async () =>
@@ -217,20 +215,29 @@ test("retry policy replays only eligible reads and retains typed safe failures",
       token: "service_placeholder",
       fetch: async () => Response.json({ error: { code } }, { status: 400 }),
     });
-    await expect(typed.launch({ golden: "worker", harness: "codex" })).rejects.toMatchObject({
+    await expect(typed.launch({ provider: "boat", golden: "worker", harness: "codex" })).rejects.toMatchObject({
       code,
       serverCode: code,
     });
   }
+
+  for (const [serverCode, code] of [
+    ["provider_mismatch", "provider_mismatch"],
+    ["future_failure", "unknown_response"],
+  ]) {
+    const client = new Armada({
+      token: "service_placeholder",
+      fetch: async () => Response.json({ error: { code: serverCode } }, { status: 400 }),
+    });
+    await expect(client.logs({ id: "sandbox_placeholder" })).rejects.toMatchObject({ code, serverCode });
+  }
 });
 
 test("server-requested retry delays reach the caller and suppress early replays", async () => {
-  // The real drain handler: 503 with Retry-After while the server shuts down.
   const drain = createServerRequestDrain(async () => Response.json({}));
   drain.beginDrain();
   const failures = [
     { fetch: async (request: Request) => drain.fetch(request), retryAfterSeconds: 5 },
-    // The public provider rate-limit failure carries its delay in details, without a header.
     {
       fetch: async () =>
         Response.json(
@@ -266,7 +273,6 @@ test("server-requested retry delays reach the caller and suppress early replays"
     });
     const error = await client.status({ id: "sandbox_placeholder" }).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
-    // HTTP dates round to whole seconds, so the delay is within one second of the date.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(
       failure.retryAfterSeconds - 1,
       failure.retryAfterSeconds + 1,
@@ -284,7 +290,6 @@ test("server-requested retry delays reach the caller and suppress early replays"
 });
 
 test("server retry delays longer than one day reach the caller unchanged", async () => {
-  // Two days: above any one-day cap, within the server's one-year provider limit.
   const delay = 172_800;
   const limited = controlFailureResponse(
     new ProviderError({
@@ -310,36 +315,176 @@ test("server retry delays longer than one day reach the caller unchanged", async
   ];
   for (const respond of responses) {
     const client = new Armada({ token: "service_placeholder", fetch: async () => respond() });
-    const error = await client.launch({ golden: "worker", harness: "codex" }).catch((error: unknown) => error);
+    const error = await client
+      .launch({ provider: "boat", golden: "worker", harness: "codex" })
+      .catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
-    // HTTP dates round to whole seconds.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(delay - 1, delay + 1);
   }
 });
 
-test("file helpers quote paths and reject truncated exec receipts", async () => {
-  const commands: string[] = [];
-  let truncated = false;
+const outputSandboxId = "00000000-0000-4000-8000-000000000001";
+const requestId = "00000000-0000-4000-8000-000000000002";
+
+function testControl<Input>(
+  route: string,
+  input: Input,
+  receipt: object,
+  call: (client: Armada, input: Input) => Promise<unknown>,
+  readOnly = false,
+) {
+  test(`SDK POSTs the typed request and returns the receipt for ${route}`, async () => {
+    let calls = 0;
+    const client = new Armada({
+      token: "service_placeholder",
+      url: "https://direct.armada.test",
+      readRetries: 1,
+      fetch: async (url, init) => {
+        calls++;
+        expect(String(url)).toBe(`https://direct.armada.test/api/v1/${route}`);
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer service_placeholder");
+        expect(JSON.parse(String(init?.body))).toEqual(input);
+        return readOnly && calls === 1 ? new Response(null, { status: 502 }) : Response.json(receipt);
+      },
+    });
+    expect(await call(client, input)).toEqual(receipt);
+    expect(calls).toBe(readOnly ? 2 : 1);
+  });
+}
+
+testControl(
+  "sandbox/list",
+  { page: 2, limit: 1, externalRef: "work-item", org: "00000000-0000-4000-8000-000000000003" },
+  { sandboxes: [], total: 1, page: 2, limit: 1, hasMore: false, nextPage: null },
+  (client, input) => client.list(input),
+  true,
+);
+testControl(
+  "sandbox/interrupt",
+  { id: outputSandboxId, request_id: requestId },
+  { id: outputSandboxId, interrupted: true },
+  (client, input) => client.interrupt(input),
+);
+testControl(
+  "sandbox/steer",
+  { id: outputSandboxId, text: "Use the existing endpoint", request_id: requestId },
+  { id: outputSandboxId, promptId: "prompt", conversationId: "conversation", delivery: "restart", mode: null },
+  (client, input) => client.steer(input),
+);
+testControl(
+  "sandbox/exec",
+  { id: outputSandboxId, command: "pwd", cwd: "/home/user", timeout_seconds: 400, request_id: requestId },
+  { id: outputSandboxId, exitCode: 1, stdout: "", stderr: "failed", timedOut: false, truncated: false },
+  (client, input) => client.exec(input),
+);
+testControl(
+  "sandbox/viewer-token",
+  { id: outputSandboxId },
+  { token: "viewer_placeholder", expiresAt: "2026-11-20T15:00:00Z" },
+  (client, input) => client.createViewerToken(input),
+);
+
+test("viewer token denial preserves the server failure code", async () => {
   const client = new Armada({
     token: "service_placeholder",
-    fetch: (async (_url, init) => {
-      commands.push(JSON.parse(String(init?.body)).command);
-      return Response.json({
-        id: "sandbox_placeholder",
-        stdout: "hello",
-        stderr: "",
-        exitCode: 0,
-        timedOut: false,
-        truncated,
-      });
-    }) as import("../src/index.ts").Fetch,
+    url: "https://direct.armada.test",
+    fetch: async () => Response.json({ error: "viewer_access_denied" }, { status: 403 }),
   });
-  expect(await client.files.read({ id: "sandbox_placeholder", path: "a'$(touch nope)" })).toBe("hello");
-  expect(commands[0]).toBe(`cat < 'a'"'"'$(touch nope)'`);
-  await client.files.write({ id: "sandbox_placeholder", path: "file", content: "hello" });
-  expect(commands[1]).toBe("printf '%s' 'aGVsbG8=' | base64 -d > 'file'");
-  truncated = true;
-  await expect(client.files.read({ id: "sandbox_placeholder", path: "file" })).rejects.toBeInstanceOf(ArmadaError);
+  await expect(client.createViewerToken({ id: outputSandboxId })).rejects.toMatchObject({
+    code: "viewer_access_denied",
+    status: 403,
+    outcomeUnknown: false,
+  });
+});
+
+test("viewer token minting requires an explicit direct server origin", async () => {
+  const fetch = jest.fn(async () => new Response());
+  const client = new Armada({ token: "service_placeholder", fetch });
+  await expect(client.createViewerToken({ id: outputSandboxId })).rejects.toThrow("direct Armada server URL");
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("outputs.list uses the snapshot GET and forwards cancellation", async () => {
+  const receipt = {
+    directory: "/home/user/outputs",
+    limits: { maxFiles: 32 as const, maxFileBytes: 33554432, maxSandboxBytes: 67108864, maxOrgBytes: 1073741824 },
+    files: [{ name: "artifact.bin", size: 3, sha256: null, updatedAt: "2026-11-20T15:00:00Z" }],
+  };
+  const controller = new AbortController();
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async (url, init) => {
+      expect(new URL(String(url)).pathname).toBe(`/api/v1/sandboxes/${outputSandboxId}/outputs`);
+      expect(init?.method).toBe("GET");
+      expect(init?.body).toBeUndefined();
+      controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      return Response.json(receipt);
+    },
+  });
+  expect(await client.outputs.list({ id: outputSandboxId }, { signal: controller.signal })).toEqual(receipt);
+});
+
+test("outputs.get encodes the output name and preserves a streamed binary range and its headers", async () => {
+  const bytes = Uint8Array.of(0, 255, 128);
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async (url, init) => {
+      expect(new URL(String(url)).pathname).toBe(
+        `/api/v1/sandboxes/${outputSandboxId}/outputs/r%C3%A9sum%C3%A9%20%23.bin`,
+      );
+      expect(init?.method).toBe("GET");
+      expect(init?.body).toBeUndefined();
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer service_placeholder");
+      expect(headers.get("range")).toBe("bytes=0-2");
+      expect(headers.get("if-range")).toBe('"artifact"');
+      return new Response(bytes, {
+        status: 206,
+        headers: { "content-range": "bytes 0-2/5", etag: '"artifact"' },
+      });
+    },
+  });
+  const response = await client.outputs.get({
+    id: outputSandboxId,
+    name: "résumé #.bin",
+    range: "bytes=0-2",
+    ifRange: '"artifact"',
+  });
+  expect(response.status).toBe(206);
+  expect(response.headers.get("content-range")).toBe("bytes 0-2/5");
+  expect(response.headers.get("etag")).toBe('"artifact"');
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+});
+
+test("outputs.get rejects a dot path segment before sending a request", async () => {
+  const fetch = jest.fn(async () => new Response());
+  const client = new Armada({ token: "service_placeholder", fetch });
+  await expect(client.outputs.get({ id: outputSandboxId, name: ".." })).rejects.toThrow();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("outputs.get preserves the available length when a range is unsatisfiable", async () => {
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async () => new Response(null, { status: 416, headers: { "content-range": "bytes */5" } }),
+  });
+  const response = await client.outputs.get({ id: outputSandboxId, name: "artifact.bin", range: "bytes=8-" });
+  expect(response.status).toBe(416);
+  expect(response.headers.get("content-range")).toBe("bytes */5");
+});
+
+test("outputs.get maps a flat API error without exposing a success stream", async () => {
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async () => Response.json({ error: "not_found" }, { status: 404 }),
+  });
+  await expect(client.outputs.get({ id: outputSandboxId, name: "missing" })).rejects.toMatchObject({
+    code: "not_found",
+    status: 404,
+    outcomeUnknown: false,
+  });
 });
 
 test("webhook verification accepts the server signer and binds exact body, timestamp and delivery id and rejects stale signatures", async () => {
@@ -401,7 +546,6 @@ test("remote origins must use HTTPS so the service token never crosses the netwo
 test("the default transport calls fetch without the client as its receiver", async () => {
   const original = globalThis.fetch;
   const receivers: unknown[] = [];
-  // Mirrors browsers' native fetch, which throws "Illegal invocation" for any other receiver.
   const nativeLike = function (this: unknown) {
     receivers.push(this);
     if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
@@ -432,9 +576,7 @@ test("template launch exposes the HTTP 200 pre-admission refusal without a reque
     id: "template_placeholder",
     requestKey: "request_placeholder",
   });
-  // @ts-expect-error A refusal has no durable request; callers must narrow first.
-  expect(() => result.requestId.toUpperCase()).toThrow(TypeError);
-  if (result.requestId !== undefined) throw new Error("Expected a refusal");
+  if ("requestId" in result) throw new Error("Expected a refusal");
   expect(result).toEqual({ state: "failed", reason: "conflict", message: "Golden has no snapshot." });
 });
 
@@ -456,7 +598,6 @@ test("a draining server's refusal is a typed, admitted-nothing failure carrying 
     expect(error).toBeInstanceOf(ArmadaError);
     expect(error).toMatchObject({ code: "unavailable", status: 503, outcomeUnknown: false, retryAfterSeconds: 5 });
   }
-  // The caller owns the delay that Retry-After asks for: no immediate replay.
   expect(count).toBe(2);
 });
 
@@ -468,25 +609,34 @@ test("the SDK browser bundle reaches no Node builtin, server entry point or work
 });
 
 test("wait uses the per-call deadline, then the client deadline, then the server wait plus a margin", async () => {
-  const deadlines: number[] = [];
-  const timeout = AbortSignal.timeout;
-  AbortSignal.timeout = (milliseconds: number) => {
-    deadlines.push(milliseconds);
-    return new AbortController().signal;
+  let signal: AbortSignal | null | undefined;
+  const fetch: import("../src/index.ts").Fetch = async (_url, init) => {
+    signal = init?.signal;
+    return Response.json({ id: "sandbox_placeholder", timedOut: false });
   };
+  const expectDeadline = (milliseconds: number) => {
+    jest.advanceTimersByTime(milliseconds - 1);
+    expect(signal?.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(signal?.reason).toMatchObject({ name: "TimeoutError" });
+  };
+  const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
+  const unconfigured = new Armada({ token: "service_placeholder", fetch });
+
+  jest.useFakeTimers();
   try {
-    const fetch = (async () =>
-      Response.json({ id: "sandbox_placeholder", timedOut: false })) as import("../src/index.ts").Fetch;
-    const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
-    const unconfigured = new Armada({ token: "service_placeholder", fetch });
     await configured.status({ id: "sandbox_placeholder" });
+    expectDeadline(2000);
     await configured.wait({ id: "sandbox_placeholder" });
+    expectDeadline(2000);
     await configured.wait({ id: "sandbox_placeholder" }, { timeoutMs: 3000 });
+    expectDeadline(3000);
     await unconfigured.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
+    expectDeadline(40_000);
     await unconfigured.status({ id: "sandbox_placeholder" });
-    expect(deadlines).toEqual([2000, 2000, 3000, 40_000, 300_000]);
+    expectDeadline(300_000);
   } finally {
-    AbortSignal.timeout = timeout;
+    jest.useRealTimers();
   }
 });
 
@@ -560,8 +710,8 @@ test("a failure status whose body breaks keeps its HTTP status and Retry-After",
   expect(error).toMatchObject({ code: "unknown_response", status: 503, outcomeUnknown: true, retryAfterSeconds: 7 });
 });
 
-test("an exec admitted but still pending reaches files.write as outcome unknown; a pre-admission refusal stays definite", async () => {
-  const write = async (lost: Error) => {
+test("an exec admitted but still pending reaches the SDK as outcome unknown; a pre-admission refusal stays definite", async () => {
+  const exec = async (lost: Error) => {
     const agent = createRuntimeAgent(
       {
         call: async () => {
@@ -578,24 +728,29 @@ test("an exec admitted but still pending reaches files.write as outcome unknown;
         defaults: { model: "gpt-5.4", reasoningEffort: "high" },
       },
     );
+    let calls = 0;
     const client = new Armada({
       token: "service_placeholder",
-      fetch: (async (_url, init) => {
+      readRetries: 1,
+      fetch: async (_url, init) => {
+        calls++;
         const { command } = JSON.parse(String(init?.body)) as { command: string };
         return agent
           .exec({ sandboxId: "physical", command })
           .then((result) => Response.json(result))
           .catch(controlFailureResponse);
-      }) as typeof fetch,
+      },
     });
-    return client.files.write({ id: "logical", path: "app.txt", content: "x" }).catch((error: unknown) => error);
+    const failure = await client.exec({ id: "logical", command: "pwd" }).catch((error: unknown) => error);
+    expect(calls).toBe(1);
+    return failure;
   };
-  expect(await write(new RuntimeCommandPending())).toMatchObject({
+  expect(await exec(new RuntimeCommandPending())).toMatchObject({
     code: "outcome_unknown",
     status: 503,
     outcomeUnknown: true,
   });
-  expect(await write(new RuntimeCommandRefused())).toMatchObject({
+  expect(await exec(new RuntimeCommandRefused())).toMatchObject({
     code: "conflict",
     status: 409,
     outcomeUnknown: false,

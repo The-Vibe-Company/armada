@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
@@ -12,26 +12,14 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const key = Buffer.alloc(32, 17).toString("base64");
 const sql: Sql = {
   query: (q, p) => database().query(q, p),
   transaction: (work) => database().transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
 };
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 const manifest = {
   protocol: 1,
   platform: "linux",
@@ -121,8 +109,15 @@ test("Docker HTTP requires explicit placement, user bearer and bounded exact sha
   expect((await f.post("launch", { ...f.launch, configuration: { secret: "never-accepted" } })).status).toBe(400);
   expect((await f.post("launch", { ...f.launch, image: "x".repeat(32769) })).status).toBe(413);
   const prompt = { sandboxId: randomUUID(), requestId: randomUUID(), text: "Continue" };
-  for (const conversationId of [null, 7, {}, [], "", "not-a-uuid"])
-    expect((await f.post("prompt", { ...prompt, conversationId })).status).toBe(400);
+  expect(
+    await f.route(true)(
+      new Request("https://staging.example/api/v1/docker/sandboxes/prompt", {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-user" },
+        body: JSON.stringify({ org: f.actor.orgId, ...prompt }),
+      }),
+    ),
+  ).toBeNull();
   for (const operation of ["ready", "stop", "delete", "job", "bootstrap", "get", "journal"])
     expect(
       (
@@ -133,7 +128,6 @@ test("Docker HTTP requires explicit placement, user bearer and bounded exact sha
         })
       ).status,
     ).toBe(400);
-  expect((await f.post("prompt", { ...prompt, conversationId: randomUUID(), model: "override" })).status).toBe(400);
   expect((await f.route(true)(new Request("https://staging.example/api/v1/docker/sandboxes/launch")))?.status).toBe(
     405,
   );
@@ -141,7 +135,7 @@ test("Docker HTTP requires explicit placement, user bearer and bounded exact sha
   expect((await db.query(`select 1 from sandboxes where id=$1`, [f.launch.requestId])).rows).toHaveLength(0);
 });
 
-test("public Docker preview dispatches two same-conversation prompts through runtime commands and retains acknowledged answer/usage after cleanup", async () => {
+test("Docker preview journal retains acknowledged runtime answer and usage after cleanup", async () => {
   const f = await fixture();
   const launched = await f.post("launch", f.launch);
   expect(launched.status).toBe(201);
@@ -169,15 +163,15 @@ test("public Docker preview dispatches two same-conversation prompts through run
   });
   expect((await f.post("ready", { sandboxId, requestId: healthId })).status).toBe(200);
   const conversationId = randomUUID();
+  const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
   const events: Record<string, unknown>[] = [];
   for (let turn = 0; turn < 2; turn++) {
     const prompt = {
-      sandboxId,
       requestId: randomUUID(),
       text: turn ? "Now reply only FOLLOWUP_OK" : "Reply only DOCKER_OK",
       ...(turn ? { conversationId } : {}),
     };
-    expect((await f.post("prompt", prompt)).status).toBe(202);
+    expect((await runtime.prompt(f.actor, sandboxId, prompt)).state).toBe("pending");
     const request = (await commands.next(active.runtimeToken, active.epoch)).command;
     if (request?.op !== "prompt") throw Error("missing prompt");
     expect(request.input).toMatchObject({ harness: "codex", cwd: "/home/user", text: prompt.text });
@@ -189,9 +183,7 @@ test("public Docker preview dispatches two same-conversation prompts through run
       status: 200,
       body: { version: 1, requestId: request.requestId, result: { promptId, conversationId, status: "queued" } },
     });
-    const admitted = await f.post("prompt", prompt);
-    expect(admitted.status).toBe(200);
-    expect(await admitted.json()).toEqual({
+    expect(await runtime.prompt(f.actor, sandboxId, prompt)).toEqual({
       state: "admitted",
       epoch: active.epoch,
       receipt: { promptId, conversationId, status: "queued" },

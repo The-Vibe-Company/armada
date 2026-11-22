@@ -1,4 +1,4 @@
-import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
+import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG } from "@armada/core";
 import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -50,7 +50,7 @@ import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
-import { machineSizeLabel } from "@/lib/sandbox-access";
+import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -234,6 +234,7 @@ export default async function SandboxPage({ params }: Props) {
         <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
           <SandboxChat
             sandboxId={sandbox.id}
+            currentConversation={sandbox.conversation_ids.at(-1)}
             initialStatus={sandbox.status}
             provider={sandbox.provider}
             preservationNote={sandbox.preservation_note}
@@ -246,7 +247,6 @@ export default async function SandboxPage({ params }: Props) {
             harness={sandbox.harness}
             catalog={MODEL_CATALOG}
             launchedModel={sandbox.model}
-            conversations={sandbox.conversation_ids}
             configured={configured}
           />
           <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
@@ -524,6 +524,7 @@ function DockerSandbox({
           ) : (
             <SandboxChat
               sandboxId={sandbox.id}
+              currentConversation={sandbox.conversation_ids.at(-1)}
               initialStatus={sandbox.status}
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}
@@ -535,7 +536,6 @@ function DockerSandbox({
               harness={sandbox.harness}
               catalog={MODEL_CATALOG}
               launchedModel={sandbox.model}
-              conversations={sandbox.conversation_ids}
               configured={configured}
               composerUnavailable={reasons.followupPrompts}
               pinnedModel

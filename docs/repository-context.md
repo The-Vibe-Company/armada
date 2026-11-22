@@ -1,18 +1,39 @@
-# Persisted native repository context
+# Persisted repository context
 
-`armada launch <golden> --agent codex --repo <configured-dir|owner/repo>` selects a recorded repository as the native agent's initial working directory, including for an idle launch without a prompt. This is **not directory confinement or an authorization boundary**.
+For a Boat or Modal launch, select a repository configured on the starting snapshot. For a Boat snapshot named
+`my-snapshot` with the configured directory `web`, an idle launch looks like this.
+
+```sh
+armada new my-snapshot --provider boat --agent codex --repo web
+```
+
+You can also pass the repository's `owner/repo` identity, for example
+`--repo acme/web`. The selection sets the agent's initial working directory,
+including for a launch without a prompt. It does not restrict filesystem access.
 
 ## Public contract
 
 - HTTP: optional `repo` on authenticated `POST /api/v1/sandbox/launch`.
 - MCP: optional `repo` on `launch`.
 - Selectors: an exact configured `config.repos[].dir` (for the UI), or the existing `owner/repo` manifest identity (case-insensitive, through `resolveLaunchWorkdir`). Unknown, invalid and ambiguous selectors fail before allocation. Arbitrary paths are not accepted.
-- Canonical response: `repositoryDir: string | null`, always the configured directory, never the raw owner/repo selector. HTTP launch places it on `sandbox`; MCP/CLI launch and list/status/detail DTOs expose the same field. Omitted selection and legacy records return `null`.
-- Frontend label: **Repository context**. The hint can say “The agent starts in this repository.” Choices come from the visible selected golden's configured dirs. Omit `repo` for the default; do not send an empty string.
+- Canonical response: `repositoryDir: string | null`, always the configured directory, never the raw owner/repo selector. HTTP, MCP and CLI launch place it on `sandbox`. List, status and detail responses also expose the field. Omitted selection and legacy records return `null`.
+- Dashboard: choose a repository in the **Repository** picker to find starting
+  snapshots that already contain it. With a snapshot selected and no repository
+  picked, the **Folder** control lets you choose a configured directory when
+  shown. The sandbox detail page displays the persisted selection under
+  **Repository context**.
+- To use the API default, omit `repo` entirely.
 
-The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110030000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the golden cannot change an existing sandbox's selected repository.
+The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110050000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the snapshot cannot change an existing sandbox's selected repository.
 
-## Native behavior
+## Runtime and native behavior
+
+For Boat and Modal snapshot launches using the Armada runtime, sandbox configuration sets the
+working directory to `/home/user/<configured-dir>` from the stored
+`repositoryDir`. With no selection, the runtime starts in `/home/user`.
+
+On the native path, the provider must support repository working-directory
+preparation.
 
 After pulls/init and before either the first prompt **or returning an idle sandbox as ready**, launch calls the public provider method:
 
@@ -24,7 +45,7 @@ A selected repository requires that real preparation capability. An unavailable 
 
 Boat retains PR535/PR540's native executable wrappers. The Codex stdin app-server bridge also rewrites thread/start, thread/resume and turn/start cwd, because Boat's explicit JSON-RPC cwd overrides process cwd. The wrapper filesystem persists across stop/resume, subsequent sends, new conversations and steer. Prompts and steer instructions are **not prefixed with repository guidance**; model/effort/config fields remain independent and unchanged. See [native-repo-cwd.md](native-repo-cwd.md) for the upstream native regression and real-driver evidence.
 
-There is no unsupported SDK prompt-cwd cast, separate `exec cd` workaround, `--workdir` flag or confinement promise. Modal's actual preparation/runtime driver can use this trusted record through its supported contract; an absent driver must not fall back to Boat or claim preparation succeeded.
+Use the provider that owns the snapshot.
 
 ## Owner-boundary regressions
 
@@ -34,4 +55,4 @@ Upstream `launch-workdir.test.ts` owns legacy owner/repo resolution and ambiguit
 
 PR541's golden-capabilities operation and scoped read-only metadata contract are preserved alongside the union.
 
-Validation of the native union: full verify passed (419 pass, 4 skip, 0 fail; 423 tests across 73 files). Standalone CLI/server builds, linux-x64 artifacts and npm/Bun tarball/bin smoke passed. The optional real-Codex-binary test was skipped in this sandbox; upstream SDK-installed wrapper/stdio-bridge tests passed. This is not a claim of deployed provider confinement or a replacement for coordinator post-deployment acceptance.
+Historical validation of the native union: full verify passed (419 pass, 4 skip, 0 fail; 423 tests across 73 files). Standalone CLI/server builds, linux-x64 artifacts and npm/Bun tarball/bin smoke passed. The optional real-Codex-binary test was skipped in this sandbox; upstream SDK-installed wrapper/stdio-bridge tests passed. This is not a claim of deployed provider confinement or a replacement for coordinator post-deployment acceptance.

@@ -4,6 +4,12 @@
   "extends": ["../../biome.json"],
   "overrides": [
     {
+      "includes": ["test/fixtures/protocol.snapshot.d.ts"],
+      "formatter": { "enabled": false },
+      "linter": { "enabled": false },
+      "assist": { "enabled": false }
+    },
+    {
       "includes": ["src/codex-schema/**/*.ts"],
       "formatter": { "enabled": false },
       "linter": { "enabled": false },

@@ -3,8 +3,6 @@ import type { Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, ProcessBaseline } from "./ports.ts";
 
-// Runs only inside the SDK-selected physical sandbox. pidfds anchor signals to the inspected
-// incarnation where supported; gVisor fallback revalidates start identity before each owned-process signal.
 const controller = String.raw`
 import { readFileSync,readlinkSync,readdirSync,statSync } from "node:fs";
 import { dlopen,FFIType,read } from "bun:ffi";
@@ -146,13 +144,18 @@ const PROCESS_FAILURES: Readonly<Record<number, string>> = {
   44: "user_writer",
 };
 
-async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promise<string> {
+async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const child = await sandbox.exec(
     ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/opt/armada/runtime-bun/bun", "-e", controller],
     { env: {}, secrets: [], timeoutMs: 30_000, stdout: "pipe", stderr: "ignore" },
   );
-  await child.stdin.writeText(JSON.stringify(input));
-  await child.stdin.close();
+  try {
+    signal?.throwIfAborted();
+    await child.stdin.writeText(JSON.stringify(input));
+  } finally {
+    await child.stdin.close();
+  }
   const output = child.stdout?.readText?.() ?? Promise.resolve("");
   const [exit, text] = await Promise.all([child.wait(), output]);
   let inspection: string | undefined;
@@ -197,9 +200,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean): Promis
               value,
             ),
         );
-    } catch {
-      /* Never retain remote exception text. */
-    }
+    } catch {}
   }
   if (exit !== 0)
     throw new ProviderError({
@@ -248,7 +249,6 @@ function validateProcessBaseline(data: ProcessBaseline, machine: Machine): Proce
     throw refusal("conflict", "Invalid physical control baseline; admission refused.");
   return data;
 }
-/** Seals exact trusted bootstrap controls once, before the provider publishes ready. */
 export async function sealProcessBaseline(
   sandbox: Sandbox,
   machine: Machine,
@@ -293,7 +293,7 @@ export async function sealProcessBaseline(
   return data;
 }
 
-export async function quiesceSandboxProcesses(sandbox: Sandbox, machine: Machine): Promise<void> {
+export async function quiesceSandboxProcesses(sandbox: Sandbox, machine: Machine, signal?: AbortSignal): Promise<void> {
   if (
     !machine.processBaseline ||
     machine.processBaseline.physicalId !== machine.physicalId ||
@@ -313,5 +313,6 @@ export async function quiesceSandboxProcesses(sandbox: Sandbox, machine: Machine
       baseline: machine.processBaseline,
     },
     false,
+    signal,
   );
 }

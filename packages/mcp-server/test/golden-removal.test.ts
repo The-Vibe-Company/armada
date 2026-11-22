@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createSqlGoldenStore, launchSandbox, ProviderError } from "@armada/core/server";
+import { createSqlGoldenStore, launchSandbox } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -49,14 +49,14 @@ describe("golden removal authority", () => {
       reasoningEffort: "medium",
       repositoryDir: "web",
     });
-    await member.sandboxes.update(child.id, { status: "stopped", stoppedAt: new Date().toISOString() });
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [child.id]);
     const removed = await admin.removeGolden!(shared.id);
     expect(removed.artifacts).toBe("retained");
     expect(await admin.removeGolden!(shared.id)).toEqual(removed);
     expect(await member.goldens.findByName(people.org, "shared")).toEqual([]);
     expect((await member.sandboxes.get(child.id))?.providerSandboxId).toBe("bx_retained");
-    await member.sandboxes.update(child.id, { status: "running", stoppedAt: null });
-    expect((await member.sandboxes.get(child.id))?.status).toBe("running");
+    await member.sandboxes.update(child.id, { effectiveTtlSeconds: 300 });
+    expect((await member.sandboxes.get(child.id))?.effectiveTtlSeconds).toBe(300);
     const retained = await db.query("select provider_snapshot_id,owner_id from goldens where id=$1", [shared.id]);
     expect(retained.rows[0]).toEqual({ provider_snapshot_id: shared.providerSnapshotId, owner_id: shared.ownerId });
     expect((await db.query("select golden_id from golden_backend_slots")).rows).toEqual([{ golden_id: shared.id }]);
@@ -138,8 +138,6 @@ describe("golden removal during launch", () => {
       ),
     ).rejects.toMatchObject({ code: "not_found" });
     expect(boat.forks).toHaveLength(1);
-    // A crashed worker fence has no expiry: unknown physical state requires reconciliation,
-    // never a stop ACK or a timeout interpreted as deletion.
     const privateGolden = (
       await createSqlData(db)({
         userId: people.owner,
@@ -171,44 +169,12 @@ describe("golden removal during launch", () => {
       ),
     ).rejects.toMatchObject({ code: "outcome_unknown" });
     expect(unknownBoat.forks).toHaveLength(1);
-    expect((await db.query("select golden_id from golden_operation_fences")).rows).toEqual([
-      { golden_id: privateGolden.id },
+    expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
+    expect((await db.query("select golden_id, snapshot_id from ordinary_launch_snapshot_intents")).rows).toEqual([
+      { golden_id: privateGolden.id, snapshot_id: privateGolden.providerSnapshotId },
     ]);
-    await db.query("update golden_operation_fences set created_at='2000-01-01' where golden_id=$1", [privateGolden.id]);
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
     await expect(db.query("select remove_golden($1)", [privateGolden.id])).rejects.toThrow("unresolved");
-  });
-});
-
-describe("known launch refusal", () => {
-  test("known non-mutating launch refusal releases admission", async () => {
-    const { db, people } = await getFixture();
-    const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
-    const data = createSqlData(db)({
-      userId: people.admin,
-      orgs: [{ orgId: people.org, role: "admin" }],
-      via: "supabase",
-    });
-    const boat = fakeBoat();
-    const refused = {
-      ...boat.provider,
-      fork: async () => {
-        throw new ProviderError({
-          provider: "boat",
-          code: "payment_required",
-          retryable: false,
-          message: "Billing refusal",
-        });
-      },
-    };
-    const credentials = { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) };
-    await expect(
-      launchSandbox(refused, { goldens: data.goldens, sandboxes: data.sandboxes, credentials }, actor, {
-        golden: "shared",
-        harness: "claude",
-      }),
-    ).rejects.toMatchObject({ code: "payment_required" });
-    expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
   });
 });
 
@@ -280,7 +246,6 @@ describe("JWT fence authority", () => {
     await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.admin]);
     await db.exec("set role authenticated");
     try {
-      // Direct JWT physical operations must fail before any fork, not omit their fence.
       await expect(
         launchSandbox(
           boat.provider,

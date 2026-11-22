@@ -14,7 +14,7 @@ this recovery path.
 To retire the reported row after upgrading the server:
 
 ```sh
-armada status 631e164a-77e2-47b9-b152-c6a5d7433c25
+armada info 631e164a-77e2-47b9-b152-c6a5d7433c25
 armada stop 631e164a-77e2-47b9-b152-c6a5d7433c25
 ```
 
@@ -32,4 +32,4 @@ launch policy, so the row remained starting. No migration or fence bypass is
 needed.
 
 A lost launch HTTP response (including 502) now says the outcome is unknown and
-asks the caller to run `armada list` before retrying.
+asks the caller to run `armada ls` before retrying.

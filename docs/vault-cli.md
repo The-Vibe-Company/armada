@@ -1,26 +1,9 @@
-# Vault CLI
+# Application vault API
 
-`armada vars` manages readable application configuration; `armada secrets`
-manages write-only application secrets. These are separate from model credentials
-(`armada creds`, including Morph accounts and their simultaneous-agent limits).
-Configure those separately; vault entries do not select a model account or change
-its capacity. See [account setup](dave-onboarding.md). Values must be piped on stdin or loaded with `--file`, never
-passed as command arguments. The CLI does not cache values.
-
-For coordinator staging acceptance, use the disposable staging checks in
-[deployed checks](post-deploy-smoke.md#targeted-staging-checks), through the CLI as well as the API. Never
-use production or real application secrets. Verify personal and organization
-permissions, stale-version conflicts, reserved names, oversize input, revoked
-names, and absence of secret values in output. Vault management itself does not deliver values to sandboxes; template references
-use their separately documented raw-delivery path.
-
-When setting an entry with `--org`, explicitly choose `--scope personal` or
-`--scope org`; choosing organization context alone never opts into sharing.
-Without `--org`, set defaults to personal scope in the selected organization.
-Both `armada vars --help` and `armada vars set --help` show usage (likewise secrets).
-
-Explicit `armada vars read <id> --json` returns `{ item, value }`, including empty
-values. Variable lists/writes and every secret response remain metadata-only.
+Manage readable application configuration and write-only application secrets
+in the dashboard or use the [administrative CLI reference](cli-admin.md#application-variables-and-secrets)
+for scripts. Model credentials are managed separately with `armada account`.
+Template references use their [own delivery path](templates-cli.md).
 
 ## Control API and limits
 
@@ -40,7 +23,7 @@ existing encryption key; no extra key/provider authority is needed.
   is 409. `revoke`/`delete` take `{org,id,expectedVersion}` and clear ciphertext.
   Revoked names are terminal: delete before reuse; rotation cannot revive them.
 - `secrets/upload`: set/rotate fields plus `operation`, returning only an opaque
-  upload reference with 300-second lifetime. MCP `secret_commit` accepts
+  upload reference with 300-second lifetime. REST `secrets/commit` accepts
   `{org,uploadReference}`, never a raw value. Wrong actor/org, expiry or replay
   refuses without creating an active secret. Upload rotation preserves expiry
   by the same omitted/null rules.

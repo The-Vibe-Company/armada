@@ -30,7 +30,7 @@ final class NewSandboxModel {
     private(set) var outcome: Outcome?
     private(set) var outcomeExplanation: String?
     private(set) var loadIssue: String?
-    /// Set once a launch opened a sandbox: the list then starts a fresh form next time.
+    /// Set once a launch was acknowledged: the list then starts a fresh form next time.
     private(set) var didLaunch = false
     var draft: ArmadaKit.SandboxLaunchDraft?
     var customModel = false
@@ -71,9 +71,9 @@ final class NewSandboxModel {
         }
     }
 
-    /// The only place a launch is sent. Returns the new sandbox, or nil with `outcome` explaining why.
-    func launch() async -> SandboxSummary? {
-        guard let launcher, let catalog, let draft, !launching else { return nil }
+    /// The only place a launch is sent. Returns the destination after acknowledgement, or nil with `outcome` explaining why.
+    func launch() async -> SandboxLaunchDestination? {
+        guard let launcher, let catalog, let draft, !launching, !didLaunch else { return nil }
         outcomeExplanation = nil
         let request: ArmadaKit.SandboxLaunchRequest
         switch draft.request(catalog: catalog) {
@@ -87,9 +87,9 @@ final class NewSandboxModel {
         launching = true
         defer { launching = false }
         do throws(ArmadaKit.SandboxLaunchFailure) {
-            let sandbox = try await launcher.launch(request)
+            let destination = try await launcher.launch(request)
             didLaunch = true
-            return sandbox
+            return destination
         } catch {
             switch error {
             case .signedOut: onSignedOut()
@@ -114,11 +114,10 @@ final class NewSandboxModel {
 
 /// New sandbox, from the Sandboxes tab: a golden the person can launch (with its provider), the
 /// agent, model and effort the server offers, the model account when there is a choice, optional
-/// repository, machine size and lifetime, and the first prompt. Launch opens the new sandbox's
-/// conversation; a refusal keeps every field and says why.
+/// repository, machine size and lifetime, and the first prompt. Launch opens the conversation when available; a refusal keeps every field and says why.
 struct NewSandboxView: View {
     let model: NewSandboxModel
-    let onLaunched: (SandboxSummary) -> Void
+    let onLaunched: (SandboxLaunchDestination) -> Void
     let onShowList: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -476,7 +475,7 @@ struct NewSandboxView: View {
     private func launch() {
         promptFocused = false
         Task {
-            if let sandbox = await model.launch() { onLaunched(sandbox) }
+            if let destination = await model.launch() { onLaunched(destination) }
         }
     }
 }

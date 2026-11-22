@@ -38,16 +38,17 @@ const COMMON = {
   publishConfig: { access: "public" },
 };
 
-export function platformPackage(target: Target): string {
-  return `${NPM_PACKAGE}-${target}`;
+export function platformPackage(target: Target) {
+  const name: string = `${NPM_PACKAGE}-${target}`;
+  return name;
 }
 
-export interface StagedPackage {
+interface StagedPackage {
   name: string;
   dir: string;
 }
 
-export interface StageOptions {
+interface StageOptions {
   /** A directory holding `armada-<target>` binaries. */
   binaries: string;
   out: string;
@@ -55,7 +56,7 @@ export interface StageOptions {
   version?: string;
 }
 
-export function stageNpm(options: StageOptions): StagedPackage[] {
+export function stageNpm(options: StageOptions) {
   const version = options.version ?? VERSION;
   const targets = options.targets ?? TARGETS;
   rmSync(options.out, { recursive: true, force: true });
@@ -110,7 +111,7 @@ export function stageNpm(options: StageOptions): StagedPackage[] {
 }
 
 /** Bundles the SDK into `<out>/sdk`, which must contain no reference to a workspace package. */
-export async function stageSdk(options: { out: string; version?: string }): Promise<StagedPackage> {
+export async function stageSdk(options: { out: string; version?: string; declarations?: string }) {
   const version = options.version ?? VERSION;
   const entry = join(ROOT, "packages/sdk/src/index.ts");
   const dir = join(options.out, "sdk");
@@ -123,11 +124,15 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
   }
   const code = await output.text();
   // A bare import resolves against the consumer's node_modules, where no workspace package exists.
-  if (/^\s*import\b|\bfrom\s*["']|\bimport\(|\brequire\(/m.test(code)) {
-    throw new Error("The SDK bundle must not import other modules.");
+  const imports = new Bun.Transpiler({ loader: "js" }).scanImports(code);
+  if (imports.length) {
+    const dependencies = [...new Set(imports.map(({ path }) => path))].sort();
+    throw new Error(`The SDK bundle must not import other modules: ${dependencies.join(", ")}`);
   }
+  const runtimeImport = code.match(/\b(?:import|require)\s*\([^)]*\)/)?.[0];
+  if (runtimeImport) throw new Error(`The SDK bundle must not import other modules: ${runtimeImport}`);
   writeFileSync(join(dir, "index.js"), code);
-  writeFileSync(join(dir, "index.d.ts"), await sdkDeclarations(entry));
+  writeFileSync(join(dir, "index.d.ts"), options.declarations ?? (await sdkDeclarations(entry)));
   copyFileSync(LICENSE, join(dir, "LICENSE"));
   writeFileSync(
     join(dir, "README.md"),
@@ -136,7 +141,8 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
   writeJson(join(dir, "package.json"), {
     name: SDK_PACKAGE,
     version,
-    description: "TypeScript client for the Armada sandbox API: launch, send, wait, logs, stop, files and webhooks.",
+    description:
+      "TypeScript client for the Armada sandbox API, including sandbox control, output snapshots and webhook verification.",
     keywords: ["armada", "agents", "sandbox", "sdk"],
     ...COMMON,
     repository: { ...COMMON.repository, directory: "packages/sdk" },
@@ -147,11 +153,12 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
     sideEffects: false,
     engines: { node: ">=20.3" },
   });
-  return { name: SDK_PACKAGE, dir };
+  const staged: StagedPackage = { name: SDK_PACKAGE, dir };
+  return staged;
 }
 
-/** Emits the SDK declarations, replacing each imported core type by the literal union it names. */
-async function sdkDeclarations(entry: string): Promise<string> {
+/** Emits the SDK declarations, inlining the imported core type aliases. */
+export async function sdkDeclarations(entry: string) {
   const ts = (await import("typescript")).default;
   const program = ts.createProgram([entry], {
     target: ts.ScriptTarget.ES2022,
@@ -192,17 +199,19 @@ async function sdkDeclarations(entry: string): Promise<string> {
       aliases.set(element.name.text, `type ${element.name.text} = ${text};\n`);
     }
   }
-  const result = declarations.replace(/^import\s*\{([^}]*)\}\s*from\s*["'][^"']+["'];\n/gm, (_line, names: string) =>
-    names
-      .split(",")
-      .map((name) => name.replace(/^\s*type\s+/, "").trim())
-      .filter(Boolean)
-      .map((name) => {
-        const alias = aliases.get(name);
-        if (!alias) throw new Error(`The SDK declarations import ${name}, which is not a type alias.`);
-        return alias;
-      })
-      .join(""),
+  const result = declarations.replace(
+    /^import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["'][^"']+["'];\n/gm,
+    (_line, names: string) =>
+      names
+        .split(",")
+        .map((name) => name.replace(/^\s*type\s+/, "").trim())
+        .filter(Boolean)
+        .map((name) => {
+          const alias = aliases.get(name);
+          if (!alias) throw new Error(`The SDK declarations import ${name}, which is not a type alias.`);
+          return alias;
+        })
+        .join(""),
   );
   if (/^\s*import\b|\bfrom\s*["']|\bimport\(/m.test(result)) {
     throw new Error("The SDK declarations must not import other modules.");
@@ -210,7 +219,7 @@ async function sdkDeclarations(entry: string): Promise<string> {
   return result;
 }
 
-function writeJson(path: string, value: unknown): void {
+function writeJson(path: string, value: unknown) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 

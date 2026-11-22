@@ -18,6 +18,11 @@ on:
         type: boolean
         default: false
 
+      image_digest:
+        description: Immutable image digest covered by the pinned release smoke
+        type: string
+        default: ""
+
 permissions:
   contents: read
   actions: read
@@ -53,6 +58,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      statuses: write
     concurrency:
       group: ${{ inputs.source_sha != '' && 'post-deploy-smoke-staging-pinned' || 'release-production' }}
       queue: max
@@ -70,6 +80,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       ARMADA_SERVER_URL: ${{ secrets.ARMADA_SERVER_URL }}
       RELEASE_SHA: ${{ inputs.source_sha || github.sha }}
+      RELEASE_RESUME: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_FORWARD_HISTORY: 'true'
       STAGING_EXACT_HISTORY: ${{ inputs.source_sha != '' && 'true' || 'false' }}
       STAGING_LATEST_ONLY: ${{ inputs.source_sha == '' && 'true' || 'false' }}
@@ -81,6 +92,7 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || (github.event_name == 'workflow_run' && 'main') || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ inputs.source_sha == '' && 50 || 1 }}
       - uses: ./.github/actions/setup-bun
       - name: Authenticate ordinary staging source after acquiring admission
         id: admission
@@ -114,7 +126,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: (steps.evidence.outputs.reused != 'true' && inputs.official_image == true)
         with:
-          name: official-sandbox-image
+          name: official-sandbox-image-${{ inputs.source_sha }}
           path: packages/core/src
       - name: Validate configuration before any mutation
         if: (steps.evidence.outputs.reused != 'true')
@@ -144,9 +156,22 @@ jobs:
         if: (steps.evidence.outputs.reused != 'true')
         with:
           node-version: 24
-      - name: Install pinned deployment clients
+      - name: Install pinned deployment clients and validate CLI device login configuration
         if: (steps.evidence.outputs.reused != 'true')
-        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+        run: |
+          set -euo pipefail
+          npm install --global @railway/cli@5.71.0 vercel@65.14.0
+          if ! timeout 30s railway variable list --json --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" 2>/dev/null \
+              | bun .release-tools/scripts/release/device-login-configuration.ts; then
+            echo "::error::CLI device login configuration check failed; deployment was not started."
+            exit 1
+          fi
+      - name: Capture outgoing staging reaper failures
+        id: outgoing_reaper
+        continue-on-error: true
+        if: (steps.evidence.outputs.reused != 'true')
+        run: bash .release-tools/scripts/release/staging-reaper-evidence.sh
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
@@ -189,22 +214,84 @@ jobs:
             bun .release-tools/scripts/release/smoke-receipt.ts "$RUNNER_TEMP/receipt-run.json" "$GH_REPO" "${release_args[@]}"
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
+      - name: Check candidate staging reaper evidence
+        id: reaper
+        continue-on-error: true
+        if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true' && steps.outgoing_reaper.outcome == 'success')
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
+        run: bash .release-tools/scripts/release/staging-reaper-evidence.sh "${CANDIDATE_DEPLOYMENT_ID:?Missing candidate deployment ID}"
+      - name: Record staging smoke log window start
+        id: smoke_window
+        if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true' && steps.reaper.outcome == 'success')
+        continue-on-error: true
+        run: |
+          printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Smoke pinned staging
+        id: smoke
+        shell: bash
         if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true')
         env:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
+          REAPER_OUTCOME: ${{ steps.reaper.outcome }}
         run: |
+          if [[ "$REAPER_OUTCOME" != success ]]; then
+            if [[ -s "$RUNNER_TEMP/reaper-evidence.jsonl" ]]; then
+              cp "$RUNNER_TEMP/reaper-evidence.jsonl" "$RUNNER_TEMP/armada-smoke.jsonl"
+            else
+              printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_evidence_runner_failed"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
+            fi
+            : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
+            exit 1
+          fi
           # Read probes receive only the existing staging bearer, never deployment secrets.
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
-            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts &
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts | tee "$RUNNER_TEMP/dashboard-smoke.jsonl" &
           dashboard_pid=$!
           status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry || status=$?
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
+      - name: Correlate scoped smoke failures with candidate server diagnostics
+        if: ${{ !cancelled() && steps.smoke.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
+          SMOKE_STARTED_AT: ${{ steps.smoke_window.outputs.started_at }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARMADA_URL" != 'https://armada-mcp-staging.up.railway.app' ||
+              ! "$CANDIDATE_DEPLOYMENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+            echo '{"step":"scoped_server_evidence","code":"invalid_candidate_scope"}'
+            exit 1
+          fi
+          smoke="$RUNNER_TEMP/armada-smoke.jsonl"
+          collector=.release-tools/scripts/release/staging-scoped-evidence.ts
+          if ! filter=$(env -i PATH="$PATH" bun "$collector" "$smoke" --filter 2>/dev/null); then
+            echo '{"step":"scoped_server_evidence","code":"smoke_evidence_unavailable"}'
+            exit 1
+          fi
+          if [[ -z "$filter" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"no_scoped_correlation_ids"}'
+            exit 0
+          fi
+          if [[ -z "$SMOKE_STARTED_AT" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"smoke_window_unavailable"}'
+            exit 1
+          fi
+          if ! logs=$(timeout 15s railway logs "$CANDIDATE_DEPLOYMENT_ID" --deployment --json --since "$SMOKE_STARTED_AT" \
+              --lines 100 --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" \
+              --service "$RAILWAY_SERVICE_ID" --filter "$filter" 2>/dev/null); then
+            echo '{"step":"scoped_server_evidence","code":"candidate_log_query_failed"}'
+            exit 1
+          fi
+          if ! env -i PATH="$PATH" bun "$collector" "$smoke" <<< "$logs" 2>/dev/null; then
+            echo '{"step":"scoped_server_evidence","code":"candidate_log_decode_failed"}'
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: (steps.evidence.outputs.reused != 'true' && always() && hashFiles('.smoke/sandboxes.json') != '')
         with:
@@ -214,6 +301,31 @@ jobs:
             .smoke/release-trigger.json
           include-hidden-files: true
           retention-days: 30
+          overwrite: ${{ inputs.source_sha != '' }}
       - name: Report blocked production
         if: (steps.evidence.outputs.reused != 'true' && failure())
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
+
+      - name: Record ordinary main staging smoke result
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && inputs.source_sha == '' && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          if [[ "$SMOKE_OUTCOME" == failure ]]; then
+            STAGING_HISTORY=$(git rev-list --first-parent --max-count=50 "$RELEASE_SHA")
+            export STAGING_HISTORY
+          fi
+          bun .release-tools/scripts/release/staging-status.ts \
+            "$RUNNER_TEMP/armada-smoke.jsonl" "$RUNNER_TEMP/dashboard-smoke.jsonl"
+
+      - name: Record release/staging-smoke success (${{ inputs.source_sha }}, ${{ inputs.image_digest || 'none' }})
+        if: inputs.source_sha != '' && steps.smoke.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$RELEASE_SHA" -f state=success \
+            -f context=release/staging-smoke -f description="${IMAGE_DIGEST:-none}" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

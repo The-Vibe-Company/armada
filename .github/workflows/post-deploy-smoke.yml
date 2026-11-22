@@ -13,6 +13,11 @@ jobs:
   staging-main:
     name: Deploy and smoke pinned main on staging
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      statuses: write
     uses: ./.github/workflows/staging-gated-production.yml
     with:
       source_sha: ''

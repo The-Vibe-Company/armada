@@ -16,9 +16,12 @@ export function planLimitData(value: unknown): PlanLimit | undefined {
   return { code: value.code, ...(resetsAt ? { resetsAt } : {}) };
 }
 export function planLimitMessage(limit: PlanLimit): string {
-  return `${limit.code === "rate_limited" ? "Rate limit reached." : "Plan limit reached."}${limit.resetsAt ? ` Resets at ${limit.resetsAt}.` : " Try again after the limit resets."} Wait for the limit to reset, or switch to another account before sending the prompt again.`;
+  return `${limit.code === "rate_limited" ? "Rate limit reached." : "Plan limit reached."}${limit.resetsAt ? ` Resets at ${limit.resetsAt}.` : " Try again after the limit resets."}`;
 }
-/** Only our fixed bridge diagnosis can acquire structured public fields from a string. */
+/**
+ * Only our fixed bridge diagnosis can acquire structured public fields from a string.
+ * The prior runtime and retained outcomes can still include the old advice suffix.
+ */
 export function planLimitFromMessage(value: string | undefined): PlanLimit | undefined {
   const match =
     /^(Plan|Rate) limit reached\. (?:Resets at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z)\.|Try again after the limit resets\.)(?: Wait for the limit to reset, or switch to another account before sending the prompt again\.)?$/.exec(

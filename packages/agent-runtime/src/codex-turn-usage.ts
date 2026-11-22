@@ -30,3 +30,31 @@ export function codexTurnUsage(
     ...(Number.isSafeInteger(total.reasoningOutputTokens) ? { reasoningTokens: delta("reasoningOutputTokens") } : {}),
   };
 }
+
+export function settleCodexTurnUsage({
+  tokenTotals,
+  threadId,
+  dispatched,
+  terminalObserved,
+  latest,
+  model,
+}: {
+  tokenTotals: Map<string, Record<string, number>>;
+  threadId: string;
+  dispatched: boolean;
+  terminalObserved: boolean;
+  latest: Record<string, unknown> | null;
+  model: string | null;
+}) {
+  if (dispatched && !terminalObserved) tokenTotals.delete(threadId);
+  if (!latest) return null;
+  if (terminalObserved) return { ...latest, model };
+  return {
+    inputTokens: null,
+    outputTokens: null,
+    cachedTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    model,
+  };
+}

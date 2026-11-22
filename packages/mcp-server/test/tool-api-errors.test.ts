@@ -1,36 +1,35 @@
 import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError } from "@armada/core";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
+import { fakeBoat } from "./support.ts";
 
-function context(error: Error): ToolContext {
+function context(error: Error, conversationIds: readonly string[] = []): ToolContext {
   return {
     caller: { userId: "owner", orgs: [{ orgId: "org", role: "member" }], via: "service" },
     data: {
       sandboxes: {
+        list: async () => {
+          throw error;
+        },
         get: async () => ({
           id: "sandbox",
           ownerId: "owner",
           orgId: "org",
           provider: "boat",
           providerSandboxId: "bx",
+          harness: "claude",
           status: "running",
+          conversationIds: [...conversationIds],
         }),
       },
     },
     provider: async () => ({ id: "boat", get: async () => ({ state: "running" }) }),
-    launchCredentials: {
-      refreshGitHub: async () => {
-        throw error;
-      },
-    },
     logError: () => {},
     now: () => new Date(),
   } as unknown as ToolContext;
 }
 
-// Real MCP serialization and shared operation dispatch, not a mocked decoder result.
 test.each([
   {
     error: new LaunchError("start_failed", "Private skill installation failed.", {
@@ -53,7 +52,7 @@ test.each([
   },
 ])("shared tool preserves $error.code diagnostics and public status", async ({ error, details, status }) => {
   try {
-    await callSharedTool(context(error), "github_refresh", { id: "sandbox" });
+    await callSharedTool(context(error), "list", {});
     throw new Error("Expected a tool failure");
   } catch (caught) {
     expect(caught).toBeInstanceOf(ToolApiError);
@@ -69,57 +68,6 @@ test.each([
   }
 });
 
-// Hostile wire input tests the trust boundary separately from the real round trip.
-test.each([
-  {
-    details: { reason: "helper_missing", action: "rebuild_golden", secret: "private" },
-    expected: { reason: "helper_missing", action: "rebuild_golden" },
-  },
-  { details: { reason: "arbitrary-private-text", stage: "install" }, expected: undefined },
-  { details: { reason: "helper_missing", action: "arbitrary-private-text" }, expected: undefined },
-  { details: { reason: "helper_missing", stage: "arbitrary-private-text" }, expected: undefined },
-])("bridge only copies closed launch detail fields: $details", async ({ details, expected }) => {
-  const wire = spyOn(Client.prototype, "callTool").mockResolvedValue({
-    isError: true,
-    structuredContent: { error: { code: "outcome_unknown", message: "Check status before retrying.", details } },
-    content: [
-      { type: "text", text: "legacy message" },
-      { type: "text", text: "error code: internal" },
-    ],
-  });
-  try {
-    await expect(callSharedTool(context(new Error()), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
-      code: "outcome_unknown",
-      message: "Check status before retrying.",
-      status: 503,
-      details: expected,
-    });
-  } finally {
-    wire.mockRestore();
-  }
-});
-
-test("bridge falls back to legacy text when structured code/message is invalid", async () => {
-  const wire = spyOn(Client.prototype, "callTool").mockResolvedValue({
-    isError: true,
-    structuredContent: { error: { code: {}, message: 42, details: { reason: "helper_missing" } } },
-    content: [
-      { type: "text", text: "Legacy refusal." },
-      { type: "text", text: "error code: forbidden" },
-    ],
-  });
-  try {
-    await expect(callSharedTool(context(new Error()), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
-      code: "forbidden",
-      message: "Legacy refusal.",
-      status: 403,
-      details: undefined,
-    });
-  } finally {
-    wire.mockRestore();
-  }
-});
-
 test("start failures log missing-relation causes without changing the public error", async () => {
   const logs: string[] = [];
   const error = new LaunchError("start_failed", "The sandbox could not be started.", {
@@ -127,14 +75,14 @@ test("start failures log missing-relation causes without changing the public err
   });
   const ctx = context(error);
   ctx.logError = (line) => logs.push(line);
-  await expect(callSharedTool(ctx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(ctx, "list", {})).rejects.toMatchObject({
     code: "start_failed",
     message: "The sandbox could not start. Check its recorded status, correct the provider setup and launch again.",
   });
   expect(logs).toHaveLength(1);
   expect(JSON.parse(logs[0] ?? "")).toMatchObject({
     event: "operator_failure",
-    phase: "tool.github_refresh",
+    phase: "tool.list",
     message: 'relation "public.skill_defaults" does not exist',
   });
 
@@ -145,7 +93,7 @@ test("start failures log missing-relation causes without changing the public err
   });
   const unsafeCtx = context(unsafe);
   unsafeCtx.logError = (line) => logs.push(line);
-  await expect(callSharedTool(unsafeCtx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(unsafeCtx, "list", {})).rejects.toMatchObject({
     code: "start_failed",
   });
   expect(logs).toHaveLength(1);
@@ -153,7 +101,7 @@ test("start failures log missing-relation causes without changing the public err
   expect(logs[0]).not.toContain("hunter");
 });
 
-test("provider start-limit reset survives the real MCP to HTTP bridge", async () => {
+test("direct REST dispatch retains the provider start-limit reset and drops private diagnostics", async () => {
   const error = new ProviderError({
     provider: "boat",
     code: "rate_limited",
@@ -162,9 +110,52 @@ test("provider start-limit reset survives the real MCP to HTTP bridge", async ()
     message: "private_diagnostic",
     details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z", secret: "private_diagnostic" },
   });
-  await expect(callSharedTool(context(error), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(context(error), "list", {})).rejects.toMatchObject({
     code: "rate_limited",
     status: 429,
     details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z" },
   });
+});
+
+test.each([
+  { conversationIds: [], requested: "new" },
+  { conversationIds: ["current"], requested: "different" },
+  { conversationIds: ["previous", "current"], requested: "previous" },
+  { conversationIds: ["current"], requested: "current" },
+])("send refuses $requested before direct dispatch", async ({ conversationIds, requested }) => {
+  const ctx = context(new Error(), conversationIds);
+  const provider = spyOn(ctx, "provider");
+
+  await expect(
+    callSharedTool(ctx, "send", { id: "sandbox", prompt: "Continue", conversation_id: requested }),
+  ).rejects.toMatchObject({
+    code: "conflict",
+    status: 409,
+    message: "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
+  });
+  expect(provider).not.toHaveBeenCalled();
+});
+
+test("selector-free interrupt dispatches only to the current native conversation", async () => {
+  const ctx = context(new Error(), ["historical", "current"]);
+  const { provider } = fakeBoat();
+  const interrupt = spyOn(provider, "interrupt");
+  ctx.provider = async () => provider;
+
+  await callSharedTool(ctx, "interrupt", { id: "sandbox" });
+  expect(interrupt.mock.calls).toEqual([[{ sandboxId: "bx", conversationId: "current" }]]);
+});
+
+test.each(["steer", "interrupt"])("REST %s refuses a conversation selector before dispatch", async (operation) => {
+  const ctx = context(new Error(), ["current"]);
+  const provider = spyOn(ctx, "provider");
+
+  await expect(
+    callSharedTool(ctx, operation, { id: "sandbox", text: "Continue", conversation_id: "current" }),
+  ).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+    message: "Turn controls target the sandbox by ID. Omit conversation_id.",
+  });
+  expect(provider).not.toHaveBeenCalled();
 });

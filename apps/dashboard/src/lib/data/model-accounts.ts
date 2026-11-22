@@ -1,3 +1,4 @@
+import { isHarness } from "@armada/core";
 import { cache } from "react";
 import { type AccountControl, createAccountControl } from "@/lib/account-control";
 import { ControlError } from "@/lib/control";
@@ -31,11 +32,9 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const control = await viewerAccountControl();
   if (!control) return { state: "not-configured" };
   try {
-    const [{ accounts: listed, legacy, defaults }, models] = await Promise.all([
-      control.list(selected.org.id),
-      control.connectionModels(selected.org.id),
-    ]);
+    const { accounts: listed, legacy, defaults } = await control.list(selected.org.id);
     if (legacy && listed.length === 0) return { state: "legacy" };
+    const models = await control.connectionModels(selected.org.id);
     const accounts = listed.map((account) => {
       const declared = models.get(account.id);
       return declared ? { ...account, models: declared } : account;
@@ -60,7 +59,7 @@ export async function readAuthCapabilities(org: string): Promise<AuthCapabilitie
 }
 
 /** A usage read is metadata: the page does not wait on it for long. */
-export const USAGE_TIMEOUT_MS = 5_000;
+const USAGE_TIMEOUT_MS = 5_000;
 
 /**
  * The usage of each subscription account, read in parallel and bounded in time. API-key accounts are not asked:
@@ -139,6 +138,7 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
     state: "ready",
     sandboxes: reads.flatMap(({ data }, index) =>
       (data ?? []).flatMap((row) =>
+        isHarness(row.harness) &&
         matchesConnectionTestSandbox(row, {
           id: row.id,
           ownerId: viewer.id,

@@ -1,17 +1,43 @@
 import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
+import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+
+type RuntimeTtlPort = {
+  setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
+};
+
+type RuntimeWorkPort = {
+  captureRuntimeWork?: ModalRuntimeCapture;
+  observeCaptureBoot?(sandboxId: string, signal: AbortSignal): Promise<string | null>;
+};
+export type RuntimeWorkProvider = Provider & RuntimeTtlPort & RuntimeWorkPort;
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
  * to host agent methods, including optional ports added in future.
  */
 export function createRuntimeProvider(
-  host: Provider,
+  host: RuntimeWorkProvider,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
-): Provider {
-  if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
+  modalCapture?: ModalRuntimeCapture,
+): RuntimeWorkProvider {
+  let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
+  let captureRuntimeWork: RuntimeWorkPort["captureRuntimeWork"];
+  let observeCaptureBoot: RuntimeWorkPort["observeCaptureBoot"];
+  switch (host.id) {
+    case "boat":
+      setRuntimeTtl = host.setRuntimeTtl;
+      captureRuntimeWork = host.captureRuntimeWork?.bind(host);
+      observeCaptureBoot = host.observeCaptureBoot?.bind(host);
+      break;
+    case "modal":
+      captureRuntimeWork = modalCapture;
+      break;
+    default:
+      throw Error("boat_runtime_host_required");
+  }
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
@@ -64,6 +90,15 @@ export function createRuntimeProvider(
       target(request.sandboxId);
       return host.delete(request);
     },
+    ...(setRuntimeTtl
+      ? {
+          async setRuntimeTtl(request: Parameters<typeof setRuntimeTtl>[0]) {
+            target(request.sandboxId);
+            request.signal.throwIfAborted();
+            await setRuntimeTtl.call(host, request);
+          },
+        }
+      : {}),
     ...(operations?.testModelConnection
       ? {
           async testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
@@ -116,7 +151,25 @@ export function createRuntimeProvider(
           },
         }
       : {}),
-    // No quiescence/checkpoint/work-preservation/resume guarantee in this lane.
+    ...(observeCaptureBoot
+      ? {
+          observeCaptureBoot(id: string, signal: AbortSignal) {
+            target(id);
+            signal.throwIfAborted();
+            return observeCaptureBoot(id, signal);
+          },
+        }
+      : {}),
+    ...(captureRuntimeWork
+      ? {
+          captureRuntimeWork(request: Parameters<typeof captureRuntimeWork>[0]) {
+            target(request.sandboxId);
+            request.signal.throwIfAborted();
+            return captureRuntimeWork(request);
+          },
+        }
+      : {}),
+    // Ordinary runtime commands carry no stop-time or retained-resume authority.
     quiesce: unsupported,
     prompt: unsupported,
     steer: operations
@@ -143,6 +196,5 @@ export function createRuntimeProvider(
     getSnapshot: unsupported,
     deleteSnapshot: unsupported,
     fork: unsupported,
-    list: unsupported,
   };
 }

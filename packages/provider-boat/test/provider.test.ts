@@ -10,8 +10,9 @@ import {
   preserveWork,
   scanGoldenSandbox,
 } from "@armada/core/server";
+import { SandboxLastSnapshotStatusEnum, StopOperationStatusEnum } from "@boatdev/sdk";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
-import { errorBody, fakeBoat, KEY, sandbox } from "./support.ts";
+import { errorBody, fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
 
 const ID = "bx_23456789";
 
@@ -233,6 +234,141 @@ describe("native harness cwd preparation", () => {
 });
 
 describe("sandboxes", () => {
+  test.each([
+    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, null, "usable"],
+    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, null, "unconfirmed"],
+    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, null, "unconfirmed"],
+    ["a newer snapshot attempt", "2026-11-21T19:42:24Z", 1795290158322, "2026-11-21T19:42:35Z", "unconfirmed"],
+  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, lastSnapshotAttemptAt, expected) => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: new Date(endedAt).toISOString(),
+      lastAttemptAt: new Date(endedAt).toISOString(),
+      error: null,
+    };
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: new Date(1795290158322).toISOString(),
+            snapshotVerifiedAt: new Date(1795290150656).toISOString(),
+            lastSnapshotAttemptAt,
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop: { ...stop, requestedAt: null },
+          }),
+        },
+      },
+      { body: { ok: true, type: "stop.status", id: ID, stop: { ...stop, requestedAt } } },
+    );
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+  });
+
+  test("get identifies a by-ID stop completion mismatch in the retention diagnostic", async () => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: "2026-11-22T09:03:40Z",
+    };
+    const verifiedAt = "2026-11-22T09:03:35.500Z";
+    const observedEndedAt = "2026-11-22T09:03:41Z";
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: stop.endedAt,
+            snapshotVerifiedAt: verifiedAt,
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop,
+          }),
+        },
+      },
+      {
+        body: {
+          ok: true,
+          type: "stop.status",
+          id: ID,
+          stop: { ...stop, endedAt: observedEndedAt, requestedAt: "2026-11-22T09:03:30Z", error: "PRIVATE_ERROR" },
+        },
+      },
+    );
+    const log = spyOn(console, "info");
+    try {
+      expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: "unconfirmed" });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.find((event) => event.event === "boat_retention_unconfirmed")).toMatchObject({
+        providerSandboxId: ID,
+        retention: "unconfirmed",
+        reason: "stop_end_mismatch",
+        verifiedAt: Date.parse(verifiedAt),
+        stopEndedAt: Date.parse(stop.endedAt),
+        observedStopEndedAt: Date.parse(observedEndedAt),
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_ERROR");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test.each([
+    {
+      name: "a completed stop with a recently verified snapshot",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "usable",
+    },
+    {
+      name: "a superseded prior stop with a recently verified snapshot",
+      stopStatus: StopOperationStatusEnum.Superseded,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "usable",
+    },
+    {
+      name: "an in-flight stop",
+      stopStatus: StopOperationStatusEnum.Failing,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "pending",
+    },
+    {
+      name: "a snapshot still in progress",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.InProgress },
+      expected: "pending",
+    },
+    {
+      name: "a failed snapshot attempt despite recent verification",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Failed },
+      expected: "unconfirmed",
+    },
+    {
+      name: "no snapshot",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: null, snapshotAvailable: false, snapshotVerifiedAt: null },
+      expected: "unconfirmed",
+    },
+  ])("get classifies archived retention with $name", async ({ stopStatus, snapshot, expected }) => {
+    const ended = stopStatus === StopOperationStatusEnum.Completed || stopStatus === StopOperationStatusEnum.Superseded;
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "sandbox.info",
+        sandbox: retainedSandbox({
+          ...snapshot,
+          stop: {
+            id: "stop-1",
+            status: stopStatus,
+            requestedAt: ended ? null : "2026-11-09T09:59:00Z",
+            lastAttemptAt: "2026-11-09T10:00:00Z",
+            endedAt: ended ? "2026-11-09T10:00:00Z" : null,
+            error: ended ? null : "archival attempt failed",
+          },
+        }),
+      },
+    });
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+  });
+
   test("get maps boat's states onto the common ones", async () => {
     const states = [
       "init",
@@ -334,41 +470,6 @@ describe("sandboxes", () => {
     expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
   });
 
-  test("list filters by labels and states and pages with boat's cursor", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [sandbox({ state: "idle" })],
-          pageInfo: { nextCursor: "next-1", hasMore: true, limit: 2 },
-        },
-      },
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [],
-          pageInfo: { nextCursor: null, hasMore: false, limit: 2 },
-        },
-      },
-    );
-    const first = await boat.provider.list({
-      labels: { armada: "1", owner: "u1" },
-      states: ["ready", "running"],
-      limit: 2,
-    });
-    expect(first.cursor).toBe("next-1");
-    expect(first.items[0]).toMatchObject({ id: ID, state: "ready" });
-    const last = await boat.provider.list({ cursor: first.cursor as string });
-    expect(last).toEqual({ items: [], cursor: null });
-    const query = boat.requests[0]?.query;
-    expect(query?.getAll("label")).toEqual(["armada=1", "owner=u1"]);
-    expect(query?.get("state")).toBe("ready,idle,running");
-    expect(query?.get("limit")).toBe("2");
-    expect(boat.requests[1]?.query.get("cursor")).toBe("next-1");
-  });
-
   test("stop and delete use their endpoints, and delete confirms with the exact sandbox id", async () => {
     const boat = fakeBoat(
       { status: 202, body: { ok: true, type: "sandbox.stopping", id: ID, status: "stopping" } },
@@ -386,6 +487,33 @@ describe("sandboxes", () => {
     expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/stop` });
     expect(boat.requests[1]).toMatchObject({ method: "DELETE", path: `/api/v1/sandboxes/${ID}` });
     expect(boat.requests[1]?.headers.get("x-ascii-confirm-delete")).toBe(ID);
+  });
+
+  test.each([
+    ["completed", {}, "completed"],
+    ["still processing", { status: "processing" }, "pending"],
+    ["wrong operation", { id: "del_other" }, null],
+    ["wrong kind", { kind: "snapshot" }, null],
+    ["wrong placement", { targetId: "bx_98765432" }, null],
+  ] as const)("observes an exact sandbox deletion: %s", async (_case, changes, status) => {
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "deletion.operation",
+        operation: { id: "del_1", kind: "sandbox", targetId: ID, status: "completed", ...changes },
+      },
+    });
+    const receipt = boat.provider.observeSandboxDeletion({
+      sandboxId: ID,
+      generation: 6,
+      operationId: "del_1",
+      signal: new AbortController().signal,
+    });
+    if (status === null) await expect(receipt).rejects.toMatchObject({ code: "unknown" });
+    else await expect(receipt).resolves.toEqual({ status });
+    expect(boat.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/api/v1/deletion-operations/del_1" },
+    ]);
   });
 });
 
@@ -695,7 +823,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
         if (init?.method === "GET") {
           const state = ["archived", "provisioning", "ready"][gets++] ?? "ready";
           events.push(state);
-          return Response.json({ sandbox: sandbox({ state }) });
+          return Response.json({ sandbox: state === "archived" ? retainedSandbox() : sandbox({ state }) });
         }
         if (path.endsWith("/commands")) {
           events.push("bridge");
@@ -759,23 +887,26 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
   }
 });
 
-test("a stopped-only beforeResume hook refuses the provider resume API on fence failure", async () => {
-  const methods: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    beforeResume: async () => {
-      throw Error("resume fence denied");
-    },
-    fetch: (async (_input, init) => {
-      methods.push(init?.method ?? "GET");
-      return Response.json({ sandbox: sandbox({ state: "archived" }) });
-    }) as typeof fetch,
-  });
-  await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
-    "resume fence denied",
-  );
-  expect(methods).toEqual(["GET"]);
-});
+test.each([true, false])(
+  "native resume requires verified retention before checking the owner fence (%s)",
+  async (usable) => {
+    const methods: string[] = [];
+    const provider = createBoatProvider({
+      apiKey: KEY,
+      beforeResume: async () => {
+        throw Error("resume fence denied");
+      },
+      fetch: (async (_input, init) => {
+        methods.push(init?.method ?? "GET");
+        return Response.json({ sandbox: retainedSandbox({ snapshotAvailable: usable }) });
+      }) as typeof fetch,
+    });
+    await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
+      usable ? "resume fence denied" : "Boat retained data has not been verified.",
+    );
+    expect(methods).toEqual(["GET"]);
+  },
+);
 
 test.each([true, false])("native private state ACK precedes Boat stop API (%s)", async (acknowledged) => {
   const order: string[] = [];
@@ -1053,7 +1184,7 @@ test("starting compute waits for readiness before a command", async () => {
 });
 
 test("idle capture observations show command admission without a wake", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat(
       { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
@@ -1106,6 +1237,66 @@ test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat 
   expect(boat.requests.filter((r) => r.path.endsWith("/commands"))).toHaveLength(outcome === "exhausted" ? 5 : 1);
   expect(boat.sleeps).toHaveLength(outcome === "exhausted" ? 4 : outcome === "stopped" ? 1 : 0);
   expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
+});
+
+test.each(["live", "starting", "refused", "invalid", "truncated", "unsuccessful"] as const)(
+  "capture boot observation uses a single guarded command: %s",
+  async (scenario) => {
+    const boot = "e76cc889-0359-4544-9320-dd938debba67";
+    const boat = fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ state: scenario === "starting" ? "starting" : "ready" }) } },
+      scenario === "refused"
+        ? errorBody(409, "sandbox_not_ready", "Not ready")
+        : {
+            body: {
+              ok: true,
+              type: "command.finished",
+              success: scenario !== "unsuccessful",
+              exitCode: 0,
+              stdout: scenario === "invalid" ? "-".repeat(36) : boot + "\n",
+              stderr: "",
+              timedOut: false,
+              stdoutTruncated: scenario === "truncated",
+            },
+          },
+    );
+    const signal = new AbortController().signal;
+    const observed = boat.provider.observeCaptureBoot(ID, signal);
+    if (scenario === "refused") await expect(observed).rejects.toMatchObject({ status: 409 });
+    else expect(await observed).toBe(scenario === "live" ? boot : null);
+    expect(boat.requests).toMatchObject([
+      { method: "GET", path: `/api/v1/sandboxes/${ID}` },
+      ...(scenario === "starting"
+        ? []
+        : [
+            {
+              method: "POST",
+              path: `/api/v1/sandboxes/${ID}/commands`,
+              body: {
+                command: "cat /proc/sys/kernel/random/boot_id",
+                timeoutSeconds: 5,
+              },
+            },
+          ]),
+    ]);
+    expect(boat.sleeps).toHaveLength(0);
+  },
+);
+
+test("capture boot cancellation after the live read prevents command dispatch", async () => {
+  const controller = new AbortController();
+  const requests: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    fetch: (async (_input, init) => {
+      requests.push(init?.method ?? "");
+      controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      return Response.json({ ok: true, sandbox: sandbox({ state: "ready" }) });
+    }) as typeof fetch,
+  });
+  await expect(provider.observeCaptureBoot(ID, controller.signal)).rejects.toBeDefined();
+  expect(requests).toEqual(["GET"]);
 });
 
 test("capture cancellation during a readiness wait cannot admit a later command", async () => {
@@ -1184,7 +1375,7 @@ test("cleared Boat /run receipt restarts SSH hydration instead of trusting a pre
 test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
   "capture observations identify %s without waking or stopping compute",
   async (state) => {
-    const log = spyOn(console, "info").mockImplementation(() => {});
+    const log = spyOn(console, "info");
     try {
       const reads = state === "archived" ? 1 : 5;
       const boat = fakeBoat(
@@ -1244,7 +1435,7 @@ test("runtime activation resumes compute with explicit lifetime and no account e
 });
 
 test("terminal capture refusal identifies its stop caller without forwarding context to Boat", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat({ body: { sandbox: sandbox({ state: "archived" }) } });
     await expect(
@@ -1255,7 +1446,9 @@ test("terminal capture refusal identifies its stop caller without forwarding con
         preservationContext: { source: "lifecycle_stop", captureId: "capture_fixture" },
       }),
     ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    const lines = log.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .filter((line) => line.event === "boat_preservation_exec");
     expect(lines).toHaveLength(2);
     for (const line of lines) expect(line).toMatchObject({ caller: "lifecycle_stop", captureId: "capture_fixture" });
     expect(lines[1]).toMatchObject({ decision: "refuse_terminal", normalizedState: "stopped" });
@@ -1381,6 +1574,11 @@ test("Boat does not publish an older snapshot without verification for the curre
       sandbox: sandbox({
         state: "archived",
         stoppedAt: "2026-11-18T10:01:00Z",
+        stop: {
+          id: "stop-1",
+          status: StopOperationStatusEnum.Completed,
+          endedAt: "2026-11-18T10:01:00Z",
+        },
         snapshotAvailable: true,
         snapshotCompletedAt: "2026-11-18T10:00:00Z",
         lastSnapshotStatus: "completed",

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishManifest } from "./publish-runtime-artifacts.ts";
 
-test("publication includes every requested digest and refuses missing or corrupt pinned bytes", async () => {
+test("publication includes bundled harness digests only and refuses missing or corrupt pinned bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "publication-"));
   try {
     const pin = async (path: string) => {
@@ -18,6 +18,10 @@ test("publication includes every requested digest and refuses missing or corrupt
       runtime: await pin("runtime"),
       harnesses: { codex: { archive: await pin("codex.tar.gz") } },
       opencode: await pin("opencode"),
+      antigravity: {
+        x64: await pin("antigravity-linux-x64.tar.gz"),
+        arm64: await pin("antigravity-linux-arm64.tar.gz"),
+      },
     };
     const destination = join(root, "published");
     await publishManifest(manifest, root, destination);

@@ -1,4 +1,4 @@
-export { PROVIDER_ID } from "./errors.ts";
+export { BoatRetentionUnconfirmed, PROVIDER_ID } from "./errors.ts";
 export { normalizeEvent } from "./events.ts";
 export {
   installNativeCwdWrapper,

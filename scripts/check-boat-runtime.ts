@@ -483,7 +483,6 @@ try {
     const control = await api("sandbox/send", {
       id,
       request_id: crypto.randomUUID(),
-      conversation_id: launched.conversationId,
       prompt: "Run the shell command sleep 90, then reply WAITED. Do not change files or forget the remembered token.",
     });
     if (!control.promptId || control.conversationId !== launched.conversationId)
@@ -504,7 +503,6 @@ try {
       `sandbox/${operation}`,
       {
         id,
-        conversation_id: launched.conversationId,
         ...(operation === "steer"
           ? { text: `Stop waiting and reply exactly ${expected}. Do not use more tools.` }
           : {}),
@@ -551,7 +549,6 @@ try {
     const sent = await api("sandbox/send", {
       id,
       request_id: requestId,
-      conversation_id: launched.conversationId,
       prompt:
         githubMode || mcpMode
           ? toolsPrompt
@@ -678,7 +675,6 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
       id,
       request_id: requestId,
       runtimeVersion: 1,
-      conversation_id: initialConversation,
       prompt: mcpMode
         ? `${mcpInstruction} After it succeeds, reply exactly with the token I originally asked you to remember. Do not change files.`
         : "Again reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
@@ -731,7 +727,6 @@ if (resumeMode && !failure && id && checkpointReceipt && initialConversation && 
       const sent = await api("sandbox/send", {
         id,
         request_id: requestId,
-        conversation_id: initialConversation,
         prompt: toolsPrompt,
       });
       if (

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { encryptSecret, type GitHubConnectionStore, type Sql } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
@@ -57,9 +58,12 @@ test.each(["boat", "modal", "docker"] as const)(
         else if (query.includes("from public.docker_hosts")) rows = [{ id: "host" }];
         else if (query.includes("select s.id,s.lifecycle_generation"))
           rows = [{ id: "sandbox", lifecycle_generation: "1" }];
-        else if (query.includes("from public.runtime_enrolments")) rows = [{ epoch }];
+        else if (query.includes("from public.runtime_enrolments"))
+          rows = [{ epoch, runtime_protocol_version: PROTOCOL_VERSION }];
         else if (query.includes("jsonb_build_object"))
-          rows = [{ binding: { ...binding, epoch }, expires_at: "2099-01-01" }];
+          rows = [
+            { binding: { ...binding, epoch }, expires_at: "2099-01-01", modal_setup_id: null, modal_setup_enc: null },
+          ];
         else if (query.includes("from public.docker_launch_requests")) rows = [];
         else if (query.includes("insert into public.github_runtime_issued")) rows = [];
         else if (query.includes("update runtime_github_capabilities")) {

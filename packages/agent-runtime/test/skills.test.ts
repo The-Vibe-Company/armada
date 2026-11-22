@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SKILLPACK_RUNTIME } from "../../core/src/skillpack-runtime.ts";
 import { Journal, Runner, type RunnerRequest } from "../src/index.ts";
-import { installRuntimeSkills } from "../src/skills.ts";
+import { executeWithReceipt } from "../src/request-receipts.ts";
+import { installPinnedSkills, installRuntimeSkills, skillInstallResult } from "../src/skills.ts";
 
 const key = `cmp_pat_${"a".repeat(48)}`,
   workspace = "11111111-1111-4111-8111-111111111111";
@@ -15,23 +16,6 @@ async function fixture() {
     repo = join(root, "repo");
   await mkdir(bin);
   await mkdir(repo);
-  const git = Bun.spawnSync(["/usr/lib/git-core/git", "init", repo]);
-  if (git.exitCode) throw Error("Git fixture unavailable");
-  const cli = `#!${process.execPath}
-const fs=require('fs'),path=require('path');const args=process.argv.slice(2),get=n=>args[args.indexOf(n)+1];
-const key=process.env.SKILLPACK_API_KEY,expected=${JSON.stringify(key)},workspace=${JSON.stringify(workspace)};
-if(JSON.stringify(args).includes(expected)||process.env.OPENAI_API_KEY||get('--api-url')!=='https://skillpack.app/v1')process.exit(97);
-fs.appendFileSync(path.join(process.env.HOME,'cli-calls'),args[0]+'\\n');
-if(args[0]==='auth'){if(key!==expected){process.stderr.write(key||'');process.exit(3);}console.log(JSON.stringify({workspace:{id:workspace}}));process.exit(0);}
-const ref=args[1],version=get('--version'),tool=get('--tools'),cwd=get('--project');
-if((ref!=='catalog/public-skill'||version!=='1.2.3'||key)&&(ref!=='private-skill'||version!=='2.3.4'||key!==expected))process.exit(98);
-if(tool!=='codex'||get('--scope')!=='project'||!args.includes('--pin')||!args.includes('--yes'))process.exit(99);
-const slug=ref.split('/').at(-1),folder=path.join(cwd,'.agents/skills',slug);fs.mkdirSync(folder,{recursive:true});fs.writeFileSync(path.join(folder,'SKILL.md'),ref.includes('/')?'Public skill behavior':'Private skill behavior');
-const lockpath=path.join(cwd,'.companion/skills.lock.json');fs.mkdirSync(path.dirname(lockpath),{recursive:true});let lock={lockfileVersion:3,workspaces:{}};try{lock=JSON.parse(fs.readFileSync(lockpath,'utf8'));}catch{}
-const id=ref.includes('/')?'catalog:catalog':workspace;lock.workspaces[id]??={apiUrl:'https://skillpack.app/v1',skills:{}};
-lock.workspaces[id].skills[slug]={version,pinned:version,...(ref.includes('/')?{catalogReference:ref}:{}),skillId:'22222222-2222-4222-8222-222222222222',checksum:'sha256:'+'b'.repeat(64),targets:[{tool,version,packageChecksum:'sha256:'+'b'.repeat(64)}]};fs.writeFileSync(lockpath,JSON.stringify(lock));console.log(JSON.stringify({installed:true}));
-`;
-  await writeFile(join(bin, "skillpack"), cli, { mode: 0o755 });
   const journal = new Journal(":memory:", (v) => v),
     grant = { sandboxId: "skills", generation: "1", token: "a".repeat(32), expiresAt: Date.now() + 60000 };
   let starts = 0;
@@ -94,47 +78,95 @@ lock.workspaces[id].skills[slug]={version,pinned:version,...(ref.includes('/')?{
   };
 }
 
-test("runtime installs public/private pinned skills without credential argv, validates receipts and excludes only skill artifacts", async () => {
-  const f = await fixture();
+test("pinned skill installation uses credentials only for private commands and validates lockfile receipts", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "runtime-skill-lock-"));
+  const references = ["catalog/public-skill@1.2.3", "private-skill@2.3.4"];
+  const checksum = `sha256:${"b".repeat(64)}`;
+  const entry = (version: string) => ({
+    version,
+    pinned: version,
+    skillId: "22222222-2222-4222-8222-222222222222",
+    checksum,
+    targets: [{ tool: "codex", version, packageChecksum: checksum }],
+  });
+  const commands: Array<{ command: string; credential?: string | undefined }> = [];
   try {
-    const response = await f.install(),
-      value = (await response.json()) as { result: { receipts: { reference: string; workspaceId?: string }[] } };
-    expect(response.status).toBe(200);
-    expect(value.result.receipts.map((r) => r.reference)).toEqual([
-      "catalog/public-skill@1.2.3",
-      "private-skill@2.3.4",
-    ]);
-    expect(value.result.receipts[1]?.workspaceId).toBe(workspace);
-    expect(f.starts()).toBe(0);
-    expect(await readFile(join(f.repo, ".agents/skills/public-skill/SKILL.md"), "utf8")).toBe("Public skill behavior");
-    expect(await readFile(join(f.repo, ".agents/skills/private-skill/SKILL.md"), "utf8")).toBe(
-      "Private skill behavior",
+    await mkdir(join(cwd, ".companion"));
+    const workspaces: Record<
+      string,
+      { apiUrl: string; skills: Record<string, ReturnType<typeof entry> & { catalogReference?: string }> }
+    > = {};
+    const receipts = await installPinnedSkills(
+      { harness: "codex", references, cwd, key },
+      new AbortController().signal,
+      async (command, credential) => {
+        commands.push({ command, credential });
+        const apiUrl = "https://skillpack.app/v1";
+        if (/skillpack install .*catalog\/public-skill.* --version .*1\.2\.3/.test(command)) {
+          workspaces["catalog:catalog"] = {
+            apiUrl,
+            skills: { "public-skill": { ...entry("1.2.3"), catalogReference: "catalog/public-skill" } },
+          };
+        } else if (/skillpack install .*private-skill.* --version .*2\.3\.4/.test(command)) {
+          workspaces[workspace] = { apiUrl, skills: { "private-skill": entry("2.3.4") } };
+        } else {
+          return { code: 0, stdout: JSON.stringify({ workspace: { id: workspace } }) };
+        }
+        await writeFile(join(cwd, ".companion/skills.lock.json"), JSON.stringify({ lockfileVersion: 3, workspaces }));
+        return { code: 0, stdout: "" };
+      },
     );
-    const status = Bun.spawnSync(["/usr/lib/git-core/git", "-C", f.repo, "status", "--porcelain"]);
-    expect(status.stdout.toString()).toBe("");
-    expect(JSON.stringify(value).includes(key)).toBe(false);
-    expect(f.journal.redact(key).includes(key)).toBe(false);
-    const callsBeforeReplay = await readFile(join(f.root, "cli-calls"), "utf8");
-    expect((await f.install()).status).toBe(200); // durable guest replay does not spawn/reinstall
-    expect(await readFile(join(f.root, "cli-calls"), "utf8")).toBe(callsBeforeReplay);
-    expect(f.starts()).toBe(0);
+    expect(receipts.map(({ reference }) => reference)).toEqual(references);
+    expect(receipts[1]?.workspaceId).toBe(workspace);
+    expect(commands.map(({ credential }) => credential)).toEqual([key, undefined, key, undefined]);
+    const scripts = commands.map(({ command }) => command);
+    expect(scripts[0]).toContain("skillpack auth status");
+    for (const script of scripts.slice(0, 3)) {
+      expect(script).toContain("--api-url https://skillpack.app/v1");
+      expect(script).toContain("--json");
+    }
+    for (const script of scripts.slice(1, 3)) {
+      expect(script).toContain(`--scope project --project '${cwd}' --tools codex --pin --yes`);
+    }
+    expect(scripts[3]).toContain("/.agents/skills/public-skill/");
+    expect(scripts[3]).toContain("/.agents/skills/private-skill/");
+    expect(scripts.join("\n")).not.toContain(key);
+    expect(JSON.stringify(receipts)).not.toContain(key);
   } finally {
-    await f.close();
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test("runtime returns only closed private-key failures; no CLI diagnostic enters receipt or WAL", async () => {
-  const f = await fixture(),
-    bad = `cmp_pat_${"c".repeat(48)}`;
+test("refused private authorization persists only the closed failure and replays without running commands", async () => {
+  const journal = new Journal(":memory:", (value) => value);
+  const request: RunnerRequest = {
+    version: 1,
+    sandboxId: "skills",
+    requestId: "refused",
+    op: "installSkills",
+    input: { harness: "codex", references: ["private-skill@2.3.4"], cwd: "/unused", key },
+  };
+  let calls = 0;
+  const dispatch = () =>
+    skillInstallResult(
+      installPinnedSkills(request.input, new AbortController().signal, async () => {
+        calls++;
+        return { code: 3, stdout: `invalid credential: ${key}` };
+      }),
+    );
   try {
-    const response = await f.install(bad),
-      value = await response.json();
-    expect(value).toMatchObject({ result: { failure: { reason: "skillpack_credential_refused" } } });
-    expect(JSON.stringify(value).includes(bad)).toBe(false);
-    expect(JSON.stringify(f.journal.db.query("select * from requests").all()).includes(bad)).toBe(false);
-    expect(f.starts()).toBe(0);
+    const response = await executeWithReceipt(journal, request, dispatch);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      version: 1,
+      requestId: request.requestId,
+      result: { failure: { reason: "skillpack_credential_refused" } },
+    });
+    expect(journal.db.query("SELECT body FROM requests WHERE id = ?").get(request.requestId)).toEqual({ body });
+    expect(await (await executeWithReceipt(journal, request, dispatch)).text()).toBe(body);
+    expect(calls).toBe(1);
   } finally {
-    await f.close();
+    journal.close();
   }
 });
 

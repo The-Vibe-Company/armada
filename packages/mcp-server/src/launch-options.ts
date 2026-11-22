@@ -2,6 +2,7 @@ import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   HARNESS_KINDS,
   HARNESSES,
+  type LaunchOptionsResponse,
   type LaunchProviderCapabilities,
   type LaunchProviderOption,
   MACHINE_SIZES,
@@ -9,6 +10,7 @@ import {
   PROVIDER_LIMITS,
   SANDBOX_PROVIDERS,
 } from "@armada/core";
+import type { ControlOptions } from "./control-options.ts";
 
 /**
  * `POST /api/v1/launch/options`: what a launch may choose, read from the server's own catalogs so an API-only client
@@ -148,4 +150,86 @@ export function launchProviderOptions(
       unsupportedReasons,
     },
   ];
+}
+
+export type LaunchDiscoveryOptions = Pick<
+  ControlOptions,
+  | "boatRuntimeLaunch"
+  | "docker"
+  | "dockerControls"
+  | "dockerLaunch"
+  | "launch"
+  | "modalRuntimeHostFor"
+  | "modalRuntimeLaunch"
+  | "runtimeCheckpoint"
+  | "runtimeGitHub"
+  | "runtimeHostFor"
+  | "runtimeMcp"
+  | "runtimeResume"
+  | "runtimeSend"
+  | "templates"
+>;
+
+export function readLaunchOptions(options: LaunchDiscoveryOptions) {
+  return {
+    ...launchOptions,
+    providers: launchProviderOptions(
+      options.docker,
+      Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
+    ),
+    modalRuntime: {
+      defaultPath: "runtime",
+      enabled: Boolean(options.modalRuntimeLaunch),
+      followupVersion: options.runtimeSend ? 1 : 0,
+      idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
+      emptyResumeVersion: options.modalRuntimeLaunch && options.runtimeResume && options.runtimeSend ? 1 : 0,
+      idleTemplateVersion:
+        options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor && options.runtimeSend ? 1 : 0,
+      resumeVersion: options.runtimeResume && options.modalRuntimeLaunch ? 1 : 0,
+      mcpVersion: options.runtimeMcp ? 2 : 0,
+      skillsVersion: options.modalRuntimeLaunch ? 1 : 0,
+      usageVersion: options.modalRuntimeLaunch ? 1 : 0,
+      claudeVersion: options.modalRuntimeLaunch ? 1 : 0,
+      opencodeVersion: options.modalRuntimeLaunch ? 1 : 0,
+      opencodeShellProofVersion: options.modalRuntimeLaunch ? 1 : 0,
+      opencodeMcpProofVersion: options.modalRuntimeLaunch && options.runtimeMcp ? 1 : 0,
+      variablesVersion: options.templates && options.modalRuntimeLaunch && options.modalRuntimeHostFor ? 1 : 0,
+    },
+    dockerRuntime: {
+      opencodeMcpProofVersion:
+        options.docker?.hosts &&
+        options.docker.placement &&
+        options.docker.normalApi &&
+        options.docker.normalLaunch &&
+        options.docker.normalSend &&
+        options.dockerLaunch &&
+        options.dockerControls &&
+        options.runtimeMcp
+          ? 1
+          : 0,
+    },
+    boatRuntime: {
+      defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
+      diagnosticsVersion: 1,
+      followupVersion: options.runtimeSend ? 1 : 0,
+      checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
+      resumeVersion: options.runtimeResume ? 1 : 0,
+      githubVersion: options.runtimeGitHub ? 1 : 0,
+      mcpVersion: options.runtimeMcp ? 2 : 0,
+      skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
+      workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
+      controlsVersion: options.runtimeHostFor ? 1 : 0,
+      opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
+      opencodeMcpProofVersion:
+        options.templates &&
+        options.launch?.boatRuntimeDefault &&
+        options.boatRuntimeLaunch &&
+        options.runtimeHostFor &&
+        options.runtimeMcp &&
+        options.runtimeSend
+          ? 1
+          : 0,
+      enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
+    },
+  } satisfies LaunchOptionsResponse;
 }

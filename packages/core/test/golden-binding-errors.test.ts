@@ -10,7 +10,7 @@ const provider = { id: "boat", maxGoldens: 1 } as Provider;
 test.each([
   [[], "not bound to the connected provider account"],
   [[{ busy: true }], "reservation with no durable job"],
-  [[{ busy: true, job_id: "job", started_at: "2026-11-14 10:00:00+00" }], "armada golden build-status job"],
+  [[{ busy: true, job_id: "job", started_at: "2026-11-14 10:00:00+00" }], "armada snapshot show --build job"],
 ] as const)("binding preflight distinguishes missing binding from busy reservation (%j)", async (rows, message) => {
   const sql = { query: async () => ({ rows }) } as unknown as Sql;
   await expect(assertGoldenBackendBinding(sql, golden, provider, "account")).rejects.toThrow(message);

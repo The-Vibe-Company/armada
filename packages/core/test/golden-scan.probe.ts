@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecRequest, Provider } from "../src/server.ts";
 import { goldenScript, scanGoldenSandbox, withGoldenDirs } from "../src/server.ts";
-import { capturedScript } from "./golden-scan-fixture.ts";
+import { capturedScript } from "./golden-scan.fixture.ts";
 
 // This is the actual remote Linux scanner: Bash 4+ associative arrays and GNU grep/find.
 // macOS Bash 3.2 cannot execute it; Linux CI retains every filesystem/history/diagnostic oracle.
@@ -53,37 +53,29 @@ function git(cwd: string, ...args: string[]): void {
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
 }
 
-linuxScanTest(
-  "real shell: a clean sandbox passes",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      expect(runAgainst(script, roots).status).toBe(0);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: a clean sandbox passes", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    expect(runAgainst(script, roots).status).toBe(0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
-linuxScanTest(
-  "real shell: short, underscore-separated placeholders (test fixtures) do not trip the scan",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      writeFileSync(
-        join(roots.home, "fixtures.ts"),
-        ['const a = "ghs_test_secret";', 'const b = "ghu_caller_access_token";', ""].join("\n"),
-      );
-      expect(runAgainst(script, roots).status).toBe(0);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: short, underscore-separated placeholders (test fixtures) do not trip the scan", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    writeFileSync(
+      join(roots.home, "fixtures.ts"),
+      ['const a = "ghs_test_secret";', 'const b = "ghu_caller_access_token";', ""].join("\n"),
+    );
+    expect(runAgainst(script, roots).status).toBe(0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 linuxScanTest.each([`ghp_${"A".repeat(36)}`, `cmp_pat_${"a".repeat(48)}`, `armada_gh_${"a".repeat(64)}`])(
   "real shell: a realistically-shaped token in a plain file fails the build",
@@ -97,80 +89,67 @@ linuxScanTest.each([`ghp_${"A".repeat(36)}`, `cmp_pat_${"a".repeat(48)}`, `armad
       rmSync(base, { recursive: true, force: true });
     }
   },
-  30_000,
 );
 
-linuxScanTest(
-  "real shell: a token-shaped filename is rejected without printing it",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const token = `ghp_${"F".repeat(36)}`;
-      writeFileSync(join(roots.tmp, token), "");
-      const quoted = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-      const isolated = script.replaceAll(quoted(innerScript(script)), quoted(withIsolatedRoots(script, roots)));
-      const bin = join(base, "bin");
-      mkdirSync(bin);
-      writeFileSync(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o700 });
-      const result = spawnSync("bash", ["-c", isolated], {
-        encoding: "utf8",
-        env: { PATH: `${bin}:${process.env.PATH}`, HOME: roots.home },
-      });
-      expect(result.status).toBe(97);
-      expect(`${result.stdout}${result.stderr}`).not.toContain(token);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: a token-shaped filename is rejected without printing it", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const token = `ghp_${"F".repeat(36)}`;
+    writeFileSync(join(roots.tmp, token), "");
+    const quoted = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const isolated = script.replaceAll(quoted(innerScript(script)), quoted(withIsolatedRoots(script, roots)));
+    const bin = join(base, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o700 });
+    const result = spawnSync("bash", ["-c", isolated], {
+      encoding: "utf8",
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: roots.home },
+    });
+    expect(result.status).toBe(97);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
-linuxScanTest(
-  "real shell: a token in .git/config is rejected without printing the token",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const repo = join(roots.home, "repo");
-      mkdirSync(repo);
-      git(repo, "init", "-q");
-      const token = `ghp_${"C".repeat(36)}`;
-      writeFileSync(join(repo, ".git", "config"), `[core]\nrepositoryformatversion = 0\n# ${token}\n`);
-      const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
-      expect(result.status).toBe(97);
-      expect(`${result.stdout}${result.stderr}`).not.toContain(token);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: a token in .git/config is rejected without printing the token", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    const token = `ghp_${"C".repeat(36)}`;
+    writeFileSync(join(repo, ".git", "config"), `[core]\nrepositoryformatversion = 0\n# ${token}\n`);
+    const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
+    expect(result.status).toBe(97);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
-linuxScanTest(
-  "real shell: a token in a commit message is rejected without printing it",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const repo = join(roots.home, "repo");
-      mkdirSync(repo);
-      git(repo, "init", "-q");
-      git(repo, "config", "user.email", "a@b.com");
-      git(repo, "config", "user.name", "a");
-      writeFileSync(join(repo, "f"), "ok\n");
-      git(repo, "add", "f");
-      const token = `gho_${"D".repeat(36)}`;
-      git(repo, "commit", "-qm", `message ${token}`);
-      const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
-      expect(result.status).toBe(97);
-      expect(`${result.stdout}${result.stderr}`).not.toContain(token);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: a token in a commit message is rejected without printing it", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "a@b.com");
+    git(repo, "config", "user.name", "a");
+    writeFileSync(join(repo, "f"), "ok\n");
+    git(repo, "add", "f");
+    const token = `gho_${"D".repeat(36)}`;
+    git(repo, "commit", "-qm", `message ${token}`);
+    const result = spawnSync("bash", ["-c", withIsolatedRoots(script, roots)], { encoding: "utf8" });
+    expect(result.status).toBe(97);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(token);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 linuxScanTest(
   "real shell: a token in a dangling (amended-away, not yet gc'd) git blob still fails the build",
@@ -198,7 +177,6 @@ linuxScanTest(
       rmSync(base, { recursive: true, force: true });
     }
   },
-  30_000,
 );
 
 function canDropToNobody(): boolean {
@@ -227,43 +205,38 @@ test.skipIf(process.platform !== "linux" || !canDropToNobody())(
       rmSync(base, { recursive: true, force: true });
     }
   },
-  30_000,
 );
 
-linuxScanTest(
-  "real shell: a corrupted git object fails closed instead of being silently skipped",
-  async () => {
-    const script = await capturedScript();
-    const { base, roots } = sandbox();
-    try {
-      const repo = join(roots.home, "repo");
-      mkdirSync(repo);
-      git(repo, "init", "-q");
-      git(repo, "config", "user.email", "a@b.com");
-      git(repo, "config", "user.name", "a");
-      writeFileSync(join(repo, "f.txt"), "hello\n");
-      git(repo, "add", "f.txt");
-      git(repo, "commit", "-qm", "first");
-      writeFileSync(join(repo, "g.txt"), "world\n");
-      git(repo, "add", "g.txt");
-      git(repo, "commit", "-qm", "second");
-      const list = spawnSync("bash", ["-c", `find '${repo}/.git/objects' -type f | grep -v pack | head -1`], {
-        encoding: "utf8",
-      });
-      const objectFile = list.stdout.trim();
-      expect(objectFile).not.toBe("");
-      chmodSync(objectFile, 0o644);
-      writeFileSync(objectFile, "garbage-not-a-valid-zlib-stream");
-      const result = runAgainst(script, roots);
-      // 95: the scan itself could not run to completion. Never 0 (silently clean) and never 97
-      // (that code means a token was actually found, which this is not).
-      expect(result.status).toBe(95);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  },
-  30_000,
-);
+linuxScanTest("real shell: a corrupted git object fails closed instead of being silently skipped", async () => {
+  const script = await capturedScript();
+  const { base, roots } = sandbox();
+  try {
+    const repo = join(roots.home, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "a@b.com");
+    git(repo, "config", "user.name", "a");
+    writeFileSync(join(repo, "f.txt"), "hello\n");
+    git(repo, "add", "f.txt");
+    git(repo, "commit", "-qm", "first");
+    writeFileSync(join(repo, "g.txt"), "world\n");
+    git(repo, "add", "g.txt");
+    git(repo, "commit", "-qm", "second");
+    const list = spawnSync("bash", ["-c", `find '${repo}/.git/objects' -type f | grep -v pack | head -1`], {
+      encoding: "utf8",
+    });
+    const objectFile = list.stdout.trim();
+    expect(objectFile).not.toBe("");
+    chmodSync(objectFile, 0o644);
+    writeFileSync(objectFile, "garbage-not-a-valid-zlib-stream");
+    const result = runAgainst(script, roots);
+    // 95: the scan itself could not run to completion. Never 0 (silently clean) and never 97
+    // (that code means a token was actually found, which this is not).
+    expect(result.status).toBe(95);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 function cleanCredentials(base: string, roots: { home: string; root: string; tmp: string }): number {
   const script = goldenScript(withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 1 }]));

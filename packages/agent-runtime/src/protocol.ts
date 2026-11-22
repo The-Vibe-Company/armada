@@ -1,7 +1,16 @@
+// oxlint-disable-next-line landmines-style/no-comments -- Keep wire compatibility rules with the version constant.
+/**
+ * Bump the version only when an older runtime can no longer work with the new server.
+ * Breaking changes include removing or renaming an op or field, changing a field's
+ * type or meaning, making an optional field required, or changing authentication.
+ * Adding optional fields an older runtime can ignore, or ops it never receives, is additive.
+ */
+export const PROTOCOL_VERSION = 1;
+
 import type { AgentEvent, ExecRequest, Harness, OutputChunkRequest, PromptRequest, PromptStatus } from "@armada/core";
 import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
-export const PROTOCOL_VERSION = 1;
+export const MAX_COMMAND_RESPONSE_BYTES = 1_048_576;
 export const AUTH_HEADER = "x-armada-runner-grant";
 export type McpConnection =
   | { type: "http"; url: string; headers?: Record<string, string> }
@@ -17,6 +26,10 @@ export interface ConfigureMcpRequest {
 }
 export interface ConfigureMcpResult {
   revision: string;
+}
+export interface ExtendCommandAuthorityResult {
+  epoch: string;
+  expiresAt: number;
 }
 /** Trusted private control only; never a model tool or a public owner DTO. */
 export interface OrchestratorEpochBinding {
@@ -42,7 +55,7 @@ export interface Grant {
 export type CheckpointIdentity = Pick<Grant, "sandboxId" | "generation">;
 export type DriverEvent =
   | Omit<Extract<AgentEvent, { kind: "message" }>, "id" | "at" | "conversationId" | "promptId">
-  | { kind: "other"; type: string; data: unknown };
+  | { kind: "other"; type: string; data: unknown; rawDiagnostic?: true };
 export interface RuntimePromptRequest extends PromptRequest {
   /** Private native cwd supplied by the provider after server-side repository validation. */
   cwd?: string;
@@ -57,6 +70,7 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  enrolled?: boolean;
   workspaceHost?: import("./workspace-exec.ts").WorkspaceExecutionHost;
   prepareWorkspace?: () => Promise<void>;
   reportHarnessFailure?: (
@@ -129,10 +143,11 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
       expectedSessionId: string;
       input: Omit<RuntimePromptRequest, "text">;
     }
-  | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string> }
+  | { op: "configureReadableVariables"; harness: Harness; variables: Record<string, string>; secretKeys?: string[] }
   | { op: "workspaceExec"; input: import("./workspace-exec.ts").WorkspaceExec }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
+  | { op: "extendCommandAuthority"; epoch: string; expiresAt: number }
   | { op: "resourceObservation" }
   | { op: "readOutputs"; part?: OutputChunkRequest | null }
   | ConfigureMcpRequest

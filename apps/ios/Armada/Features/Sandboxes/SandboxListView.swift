@@ -104,7 +104,7 @@ struct SandboxListView: View {
             .navigationDestination(for: SandboxSummary.self) { sandbox in
                 SandboxDetailView(sandbox: sandbox)
             }
-            // A launch lands directly in the new sandbox's conversation, following its first turn.
+            // With sandbox metadata, open its conversation and follow the first turn.
             .navigationDestination(item: $launched) { sandbox in
                 SandboxConversationView(sandbox: sandbox)
             }
@@ -118,9 +118,9 @@ struct SandboxListView: View {
                 if let newSandbox {
                     NewSandboxView(
                         model: newSandbox,
-                        onLaunched: { sandbox in
+                        onLaunched: { destination in
                             showingNewSandbox = false
-                            launched = sandbox
+                            if case .conversation(let sandbox) = destination { launched = sandbox }
                             Task { await model?.load() }
                         },
                         onShowList: {

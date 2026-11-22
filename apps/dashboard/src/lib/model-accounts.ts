@@ -16,20 +16,24 @@ import {
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
 /** #603's account statuses; any other value reads as `unknown` rather than as working. */
-export const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
-export const ACCOUNT_SCOPES = ["user", "org"] as const;
+const ACCOUNT_STATUSES = ["active", "revoked", "deleted", "unknown"] as const;
+const ACCOUNT_SCOPES = ["user", "org"] as const;
 
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
-export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
+type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
 export type AccountScope = (typeof ACCOUNT_SCOPES)[number];
 
+type MonthlySpend = { periodStart: string; usd: string; unpricedTurns: number };
+
 export interface ModelAccount {
+  monthlySpend?: MonthlySpend;
   maxAgents?: number | null;
   modelLimits?: Record<string, number>;
   modelCounts?: Record<string, { runningAgents: number; waitingAgents: number }>;
   runningAgents?: number;
   waitingAgents?: number;
   rateLimited?: boolean;
+  exhaustedUntil?: string;
   id: string;
   scope: AccountScope;
   kind: AccountKind;
@@ -45,7 +49,7 @@ export interface ModelAccount {
   models?: ConnectionModelInfo[];
 }
 
-export type KindInfo = {
+type KindInfo = {
   label: string;
   harness: Harness;
   harnessLabel: string;
@@ -112,11 +116,10 @@ export const KIND_INFO = Object.fromEntries(
   }),
 ) as Record<AccountKind, KindInfo>;
 
-export const STATUS_INFO: Record<AccountStatus, { label: string; tone: "ok" | "warn" | "error" | "muted" }> = {
-  active: { label: "Active", tone: "ok" },
-  revoked: { label: "Revoked", tone: "error" },
-  deleted: { label: "Removed", tone: "error" },
-  unknown: { label: "Status unknown", tone: "warn" },
+const ACCOUNT_PROBLEM_LABELS: Record<Exclude<AccountStatus, "active">, string> = {
+  revoked: "Revoked",
+  deleted: "Removed",
+  unknown: "Status unknown",
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -138,6 +141,30 @@ function text(value: unknown, max: number): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;
 }
 
+function parseMonthlySpend(value: unknown) {
+  if (!isRow(value)) return;
+  const { periodStart, usd, unpricedTurns } = value;
+  if (
+    typeof periodStart !== "string" ||
+    !/^\d{4}-(0[1-9]|1[0-2])-01$/.test(periodStart) ||
+    typeof usd !== "string" ||
+    !/^\d+(?:\.\d+)?$/.test(usd) ||
+    typeof unpricedTurns !== "number" ||
+    !Number.isSafeInteger(unpricedTurns) ||
+    unpricedTurns < 0
+  )
+    return;
+  return { periodStart, usd, unpricedTurns };
+}
+
+export function monthlyApiSpendLabel({ kind, monthlySpend }: ModelAccount) {
+  if (kind !== "openai" && kind !== "anthropic" && kind !== "opencode") return null;
+  const unpriced = monthlySpend?.unpricedTurns ?? 0;
+  const usd = monthlySpend && (monthlySpend.usd !== "0" || unpriced === 0) ? monthlySpend.usd : "—";
+  const note = unpriced ? ` (${unpriced} unpriced ${unpriced === 1 ? "turn" : "turns"})` : "";
+  return `API: ${usd} USD this month${note}`;
+}
+
 /** An account DTO, or null when it does not match the contract. An unknown status reads as `unknown`. */
 export function parseAccount(value: unknown): ModelAccount | null {
   if (!isRow(value)) return null;
@@ -145,10 +172,13 @@ export function parseAccount(value: unknown): ModelAccount | null {
   if (!oneOf(ACCOUNT_SCOPES, value.scope) || !oneOf(ACCOUNT_KINDS, value.kind)) return null;
   const name = text(value.name, MAX_ACCOUNT_NAME);
   const expiresAt = isoOrNull(value.expiresAt);
+  const exhaustedUntil = isoOrNull(value.exhaustedUntil);
   const updatedAt = isoOrNull(value.updatedAt);
   if (!name || expiresAt === undefined || !updatedAt) return null;
   if (typeof value.version !== "number" || !Number.isInteger(value.version) || value.version < 0) return null;
+  const monthlySpend = parseMonthlySpend(value.monthlySpend);
   return {
+    ...(monthlySpend ? { monthlySpend } : {}),
     id: value.id,
     scope: value.scope,
     kind: value.kind,
@@ -156,6 +186,7 @@ export function parseAccount(value: unknown): ModelAccount | null {
     isDefault: value.isDefault === true,
     status: oneOf(ACCOUNT_STATUSES, value.status) ? value.status : "unknown",
     expiresAt,
+    ...(exhaustedUntil ? { exhaustedUntil } : {}),
     updatedAt,
     version: value.version,
     maxAgents: typeof value.maxAgents === "number" ? value.maxAgents : null,
@@ -230,8 +261,8 @@ export type AuthCapabilities = { hostedOAuth: boolean; terminal: Partial<Record<
  * of these exactly, bare or as its documented `--name <name>` template; anything else is not shown.
  */
 const CLI_LOGIN: Partial<Record<AccountKind, string>> = {
-  codex_auth: "armada creds login codex",
-  claude_oauth: "armada creds login claude",
+  codex_auth: "armada account login codex",
+  claude_oauth: "armada account login claude",
 };
 
 /** The allowlisted base for a reported command, or null: never a placeholder, an extra flag or arbitrary shell. */
@@ -296,34 +327,18 @@ export const HARNESS_PATH = "/harness";
 /** The harness sections of the Harness page and the add dialog, in this order. */
 export const HARNESS_ORDER: readonly Harness[] = HARNESSES;
 
-export type Billing = KindInfo["billing"];
-
-/** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
-export function kindFor(harness: Harness, billing?: Billing): AccountKind {
-  const kind = ACCOUNT_KINDS.find(
-    (value) =>
-      KIND_INFO[value].harness === harness &&
-      harnessesForCredential(value).length === 1 &&
-      KIND_INFO[value].billing === (billing ?? "subscription"),
-  );
-  const selected =
-    kind ?? (billing === undefined ? ACCOUNT_KINDS.find((value) => KIND_INFO[value].harness === harness) : undefined);
-  if (!selected) throw new Error(`no ${billing} kind for ${harness}`);
-  return selected;
-}
-
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
   return accounts.filter((account) => harnessesForCredential(account.kind).includes(harness));
 }
 
 /** Why a launch cannot use an account now, in a word or two ("expired", "removed"), or null when it can. */
 export function accountProblem(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): string | null {
-  if (account.status !== "active") return STATUS_INFO[account.status].label.toLowerCase();
+  if (account.status !== "active") return ACCOUNT_PROBLEM_LABELS[account.status].toLowerCase();
   if (account.expiresAt !== null && Date.parse(account.expiresAt) <= now) return "expired";
   return null;
 }
 
-export type AccountState = {
+type AccountState = {
   /** The state in plain words, as the row's state cell says it. */
   label: string;
   tone: "ok" | "warn" | "error";
@@ -335,7 +350,7 @@ export type AccountState = {
 export function accountState(account: Pick<ModelAccount, "status" | "expiresAt">, now: number): AccountState {
   const problem = accountProblem(account, now);
   if (problem === null) return { label: "Ready", tone: "ok", needsAction: false };
-  if (account.status === "unknown") return { label: STATUS_INFO.unknown.label, tone: "warn", needsAction: true };
+  if (account.status === "unknown") return { label: ACCOUNT_PROBLEM_LABELS.unknown, tone: "warn", needsAction: true };
   return { label: problem.charAt(0).toUpperCase() + problem.slice(1), tone: "error", needsAction: true };
 }
 
@@ -382,9 +397,9 @@ export function checkDefaultChoice(
  * personal default, the only personal account, the org default, the only org account. Several candidates and no
  * default is `ambiguous`: the person chooses, so no billing account is ever picked for them.
  */
-export type LaunchWhy = "personal-default" | "personal-only" | "org-default" | "org-only";
+type LaunchWhy = "personal-default" | "personal-only" | "org-default" | "org-only";
 
-export type LaunchDefault =
+type LaunchDefault =
   | { state: "resolved"; account: ModelAccount; why: LaunchWhy }
   | { state: "unusable"; account: ModelAccount; why: LaunchWhy }
   | { state: "ambiguous" }
@@ -432,6 +447,12 @@ export type AccountList =
   | { state: "not-configured" }
   | { state: "error"; message: string };
 
+export function missingMorphModels(account: Pick<ModelAccount, "kind" | "models">) {
+  return account.kind === "morph" && !account.models?.length
+    ? "Morph models could not be loaded. Reload and try again."
+    : null;
+}
+
 /**
  * The account a launch request bills, as the server action decides it: `id` undefined only where no account is
  * sent (a server older than named accounts, or an agent with no account at all, which the server then refuses on
@@ -462,6 +483,8 @@ export function checkAccountChoice(
   if (!chosen) return { ok: false, error: "That account is not available for this agent. Reload and choose again." };
   const problem = accountProblem(chosen, now);
   if (problem) return { ok: false, error: `${chosen.name} is ${problem}. Replace its token or choose another.` };
+  const missingModels = missingMorphModels(chosen);
+  if (missingModels) return { ok: false, error: missingModels };
   return { ok: true, id: chosen.id };
 }
 
@@ -472,9 +495,9 @@ export function checkAccountChoice(
  * `fresh` or `stale` windows, or `unavailable` (the account reports none, such as a model-only token) or `error`
  * (the read failed). `version` is the secret version the report was observed under.
  */
-export const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
+const USAGE_STATUSES = ["fresh", "stale", "unavailable", "error"] as const;
 /** A report the server sent but this dashboard cannot read (a newer shape): never a server status. */
-export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
+type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
 /**
  * One allowance window, from #624's `Window {id, label, kind, usedPercent, resetsAt, sourceId?, observedAt?,
  * windowDurationMins?, ...}`. `id` is unique within a report; `usedPercent` null is a reading the provider reported
@@ -482,7 +505,7 @@ export type UsageReadStatus = (typeof USAGE_STATUSES)[number] | "unreadable";
  * identify itself) and `observedAt` when that window was last read: a sparse update keeps an older window with its
  * original time.
  */
-export type UsageWindow = {
+type UsageWindow = {
   id: string;
   label: string;
   usedPercent: number | null;
@@ -496,9 +519,9 @@ export type UsageWindow = {
  * A native credit snapshot (#624 v3 `{hasCredits, unlimited, balance}`). `balance` is the provider's exact decimal
  * string: it is never turned into a number, summed or given a currency.
  */
-export type CreditBalance = { hasCredits: boolean; unlimited: boolean; balance: string | null };
+type CreditBalance = { hasCredits: boolean; unlimited: boolean; balance: string | null };
 /** One meter's credits: which native meter reported it, under what name, and when. */
-export type CreditMeter = CreditBalance & {
+type CreditMeter = CreditBalance & {
   key: string;
   sourceId: string | null;
   label: string;

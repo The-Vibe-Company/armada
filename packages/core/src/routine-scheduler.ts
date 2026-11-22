@@ -57,7 +57,7 @@ type Claim = {
   reason?: string | null;
   id: string;
   state: string;
-  sandbox_id: string;
+  sandbox_id: string | null;
   prompt_id: string | null;
   conversation_id: string | null;
 };
@@ -91,9 +91,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
           state,
           reason ?? null,
           claim?.id ?? null,
-          // A failed template claim is terminal before provider allocation. Its UUID is
-          // only a reservation; keep the request identity without inventing a sandbox.
-          claim?.state === "failed" ? null : (claim?.sandbox_id ?? null),
+          claim?.sandbox_id ?? null,
           claim?.prompt_id ?? null,
           claim?.conversation_id ?? null,
           routineLaunchRefusal(refusal),
@@ -118,7 +116,11 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   async function templateClaim(run: Run): Promise<Claim | undefined> {
     return (
       await sql.query<Claim>(
-        "select id,state,reason,sandbox_id,result->>'promptId' as prompt_id,result->>'conversationId' as conversation_id from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$3",
+        `select c.id,c.state,c.reason,case when c.state='failed' then s.id else c.sandbox_id end as sandbox_id,
+         c.result->>'promptId' as prompt_id,c.result->>'conversationId' as conversation_id
+         from public.template_launch_requests c
+         left join public.sandboxes s on c.state='failed' and s.id=c.sandbox_id and s.org_id=c.org_id and s.owner_id=c.actor_id
+         where c.org_id=$1 and c.actor_id=$2 and c.client_key=$3`,
         [run.org_id, run.owner_id, run.request_key],
       )
     ).rows[0];

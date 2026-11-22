@@ -1,242 +1,273 @@
-import { beforeAll, expect, test } from "bun:test";
-import {
-  createSqlMcpRegistry,
-  createSqlSandboxStore,
-  DelegatedAuthority,
-  encryptSecret,
-  type Provider,
-  type Sql,
-} from "@armada/core/server";
-import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createSqlSandboxStore, DelegatedAuthority, encryptSecret, type Provider, type Sql } from "@armada/core/server";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
+import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedResponse } from "./published-response.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
 
-let db: Awaited<ReturnType<typeof migratedDatabase>>;
+let pendingDatabase: ReturnType<typeof migratedDatabase> | undefined;
 beforeAll(async () => {
-  db = await migratedDatabase();
+  pendingDatabase = migratedDatabase();
+  await pendingDatabase;
+});
+afterAll(async () => {
+  const pending = pendingDatabase;
+  pendingDatabase = undefined;
+  const db = await pending?.catch(() => undefined);
+  await db?.close();
 });
 
 // Primary contract: an ordinary parent obtains only delegated child authority;
 // no managed-orchestrator identity is needed, and checkpointing fails closed.
 test("ordinary sandbox opt-in bounds child admission and scrubs authority before stop without hiding the parent", async () => {
+  const db = await pendingDatabase;
+  if (!db) throw new Error("Test database is not open");
   const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), admin: crypto.randomUUID() };
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
   };
-  try {
-    await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.admin]);
-    await db.query("insert into orgs(id,name) values($1,'Scoped sandbox access')", [people.org]);
-    await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin')", [
-      people.org,
-      people.owner,
-      people.admin,
-    ]);
-    const golden = (
-      await db.query<{
-        id: string;
-      }>(
-        `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-      values($1,'modal-access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
-        [
-          people.org,
-          people.admin,
-          JSON.stringify({
-            repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
-            init: ["bun install"],
-          }),
-        ],
-      )
-    ).rows[0]!;
-    const account = (
-      await db.query<{ id: string }>(
-        "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'openai',$2) returning id",
-        [people.org, await encryptSecret(SECRETS.orgOpenai, ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const fake = fakeBoat();
-    const info = await fake.provider.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
-    let token = "";
-    let scrubFails = false;
-    let parentActive = false;
-    const effects: string[] = [];
-    const provider: Provider = {
-      ...fake.provider,
-      id: "modal",
-      get: async (id) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
-      installOrchestratorEpoch: async (request) => {
-        if (parentActive) throw Error("native_busy");
-        token = request.token;
-        return { acknowledged: true };
-      },
-      scrubOrchestratorEpoch: async () => {
-        effects.push("scrub");
-        if (scrubFails) throw Error("unavailable");
-        return { acknowledged: true };
-      },
-      quiesceOrchestrator: async () => {
-        effects.push("quiesce");
-        return { acknowledged: true };
-      },
-      stop: async (request) => {
-        effects.push("stop");
-        await fake.provider.stop(request);
-      },
-    };
-    const saved = await createSqlSandboxStore(sql, { turnModels: true }).insert({
-      id: crypto.randomUUID(),
-      provider: "modal",
-      providerSandboxId: info.id,
-      goldenId: golden.id,
-      orgId: people.org,
-      ownerId: people.owner,
-      harness: "codex",
-      status: "starting",
-      model: "m",
-      reasoningEffort: "high",
-      visibility: "private",
-      credentialId: account.id,
-      credentialVersion: 1,
-    });
-    const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
-    const wrapped = access.wrap(provider);
-    await wrapped.exec({ sandboxId: info.id, command: "true" });
-    expect(token).toBe("");
-    await access.prepare(
-      provider,
-      saved,
-      { userId: people.owner, orgId: people.org, role: "member" },
-      { maxActiveChildren: 1 },
-    );
-    expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
-    expect((await db.query("select id from sandboxes where id=$1", [saved.id])).rows).toHaveLength(1);
-    const authority = new DelegatedAuthority(sql, async () => {});
-    // Completion is self-only: stop scope may not select a child or unrelated target.
-    expect(await authority.admit(token, { method: "finish" }, async (_tx, principal) => principal.ownerId)).toBe(
-      people.owner,
-    );
-    await expect(authority.admit(token, { method: "finish", childId: saved.id }, async () => true)).rejects.toThrow(
-      "denied",
-    );
-    let allocations = 0;
-    const children = createSandboxChildren(sql, authority, {
-      launch: async () => {
-        allocations++;
-        throw Error("response lost");
-      },
-      message: async () => {},
-      stop: async () => {},
-      read: async () => null,
-      reconcile: async (operation) => ({ operationId: operation.id, sandboxId: operation.sandboxId, state: "unknown" }),
-    });
-    const selection = {
-      goldenId: golden.id,
-      harness: "codex" as const,
-      credentialId: account.id,
-      credentialVersion: 1,
-      model: "m",
-    };
-    const activeToken = token;
-    parentActive = true;
-    provider.prompt = async (request) => {
-      await access.beforePrompt(provider, request.sandboxId);
-      throw Error("native_busy");
-    };
-    await expect(
-      wrapped.prompt({ sandboxId: info.id, harness: "codex", text: "conflicting follow-up" }),
-    ).rejects.toThrow();
-    expect(
-      await authority.admit(
-        activeToken,
-        { method: "launch", ...selection },
-        async (_tx, principal) => principal.ownerId,
-      ),
-    ).toBe(people.owner);
-    parentActive = false;
-    expect((await children.launch(token, "first", selection)).state).toBe("uncertain");
-    await expect(children.launch(token, "second", selection)).rejects.toThrow("child policy");
-    expect(allocations).toBe(1);
-    await expect(children.launch(token, "foreign", { ...selection, goldenId: crypto.randomUUID() })).rejects.toThrow(
-      "denied",
-    );
-    scrubFails = true;
-    await expect(wrapped.stop({ sandboxId: info.id })).rejects.toThrow("denied");
-    expect(effects).toEqual(["quiesce", "scrub"]);
-    await expect(children.launch(token, "after-stop", selection)).rejects.toThrow("denied");
-    scrubFails = false;
-    await wrapped.stop({ sandboxId: info.id });
-    expect(effects.at(-1)).toBe("stop");
-    const previousToken = token;
-    await db.query(
-      "update sandboxes set status='stopped',stopped_at=now(),conversation_ids=array['remembered-conversation'],lifecycle_generation=lifecycle_generation+1 where id=$1",
-      [saved.id],
-    );
-    // The provider activates first; the real MCP lifecycle publishes stopped -> ready
-    // before delegated access is installed, just like the native pre-prompt hook.
-    fake.sandbox(info.id).info.state = "ready";
-    provider.configureMcp = async () => {};
-    const mcp = createMcpLifecycle({
-      sql,
-      registry: createSqlMcpRegistry(sql, ENCRYPTION_KEY),
-      encryptionKey: ENCRYPTION_KEY,
-      origin: PUBLIC_URL,
-    });
-    await mcp.beforePrompt(provider, info.id, { userId: people.owner, orgId: people.org });
-    await expect(access.beforePrompt(provider, info.id)).resolves.toBeUndefined();
-    await db.query("update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1 where id=$1", [
-      saved.id,
-    ]);
-    expect(
-      await authority.admit(token, { method: "launch", ...selection }, async (_tx, principal) => principal.ownerId),
-    ).toBe(people.owner);
-    await expect(authority.admit(previousToken, { method: "launch", ...selection }, async () => true)).rejects.toThrow(
-      "denied",
-    );
-    expect(
-      (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [saved.id]))
-        .rows[0]?.conversation_ids,
-    ).toEqual(["remembered-conversation"]);
-    const services = createSandboxAccessServices({
-      sql,
-      encryptionKey: ENCRYPTION_KEY,
-      scopedMcpUrl: PUBLIC_URL,
-      providers: {
-        resolve: async () => {
-          throw Error("Completion must not call a provider before replying");
-        },
-      },
-      credentials: {
-        resolve: async () => {
-          throw Error("Completion must not request model credentials");
-        },
-      },
-      connections: undefined,
-    });
-    const finish = (body: object) =>
-      services.scopedToolsRoute(
-        new Request(`${PUBLIC_URL}/api/v1/orchestrator-tools/finish`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify(body),
+  await db.query("insert into auth.users(id) values($1),($2)", [people.owner, people.admin]);
+  await db.query("insert into orgs(id,name) values($1,'Scoped sandbox access')", [people.org]);
+  await db.query("insert into members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin')", [
+    people.org,
+    people.owner,
+    people.admin,
+  ]);
+  const golden = (
+    await db.query<{
+      id: string;
+    }>(
+      `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,'modal-access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
+      [
+        people.org,
+        people.admin,
+        JSON.stringify({
+          repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+          init: ["bun install"],
         }),
-      );
-    expect((await finish({ sandboxId: saved.id }))?.status).toBe(400);
-    const reply = await finish({});
-    expect(reply?.status).toBe(200);
-    expect(await reply?.json()).toEqual({ result: { id: saved.id, status: "stopping" } });
-    expect(
-      (
-        await db.query(
-          "select status,status_reason,stop_requested_at is not null as requested from sandboxes where id=$1",
-          [saved.id],
-        )
-      ).rows[0],
-    ).toEqual({ status: "stopping", status_reason: "agent_finished", requested: true });
-    expect((await finish({}))?.status).toBe(403);
-  } finally {
-    await db.close();
-  }
+      ],
+    )
+  ).rows[0]!;
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'openai',$2) returning id",
+      [people.org, await encryptSecret(SECRETS.orgOpenai, ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const fake = fakeBoat();
+  const info = await fake.provider.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
+  let token = "";
+  let scrubFails = false;
+  let parentActive = false;
+  const effects: string[] = [];
+  const provider: Provider = {
+    ...fake.provider,
+    id: "modal",
+    get: async (id) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
+    installOrchestratorEpoch: async (request) => {
+      if (parentActive) throw Error("native_busy");
+      token = request.token;
+      return { acknowledged: true };
+    },
+    scrubOrchestratorEpoch: async () => {
+      effects.push("scrub");
+      if (scrubFails) throw Error("unavailable");
+      return { acknowledged: true };
+    },
+    quiesceOrchestrator: async () => {
+      effects.push("quiesce");
+      return { acknowledged: true };
+    },
+    stop: async (request) => {
+      effects.push("stop");
+      await fake.provider.stop(request);
+    },
+  };
+  const saved = await createSqlSandboxStore(sql, { turnModels: true }).insert({
+    id: crypto.randomUUID(),
+    provider: "modal",
+    providerSandboxId: info.id,
+    goldenId: golden.id,
+    orgId: people.org,
+    ownerId: people.owner,
+    harness: "codex",
+    status: "starting",
+    model: "m",
+    reasoningEffort: "high",
+    visibility: "private",
+    credentialId: account.id,
+    credentialVersion: 1,
+  });
+  const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
+  const wrapped = access.wrap(provider);
+  await wrapped.exec({ sandboxId: info.id, command: "true" });
+  expect(token).toBe("");
+  await access.prepare(
+    provider,
+    saved,
+    { userId: people.owner, orgId: people.org, role: "member" },
+    { maxActiveChildren: 1 },
+  );
+  expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
+  expect((await db.query("select id from sandboxes where id=$1", [saved.id])).rows).toHaveLength(1);
+  const authority = new DelegatedAuthority(sql, async () => {});
+  // Completion is self-only: stop scope may not select a child or unrelated target.
+  expect(await authority.admit(token, { method: "finish" }, async (_tx, principal) => principal.ownerId)).toBe(
+    people.owner,
+  );
+  await expect(authority.admit(token, { method: "finish", childId: saved.id }, async () => true)).rejects.toThrow(
+    "denied",
+  );
+  let allocations = 0;
+  const children = createSandboxChildren(sql, authority, {
+    launch: async () => {
+      allocations++;
+      throw Error("response lost");
+    },
+    message: async () => {},
+    stop: async () => {},
+    read: async () => null,
+    reconcile: async (operation) => ({ operationId: operation.id, sandboxId: operation.sandboxId, state: "unknown" }),
+  });
+  const selection = {
+    goldenId: golden.id,
+    harness: "codex" as const,
+    credentialId: account.id,
+    credentialVersion: 1,
+    model: "m",
+  };
+  const activeToken = token;
+  parentActive = true;
+  provider.prompt = async (request) => {
+    await access.beforePrompt(provider, request.sandboxId);
+    throw Error("native_busy");
+  };
+  await expect(
+    wrapped.prompt({ sandboxId: info.id, harness: "codex", text: "conflicting follow-up" }),
+  ).rejects.toThrow();
+  expect(
+    await authority.admit(activeToken, { method: "launch", ...selection }, async (_tx, principal) => principal.ownerId),
+  ).toBe(people.owner);
+  parentActive = false;
+  expect((await children.launch(token, "first", selection)).state).toBe("uncertain");
+  await expect(children.launch(token, "second", selection)).rejects.toThrow("child policy");
+  expect(allocations).toBe(1);
+  await expect(children.launch(token, "foreign", { ...selection, goldenId: crypto.randomUUID() })).rejects.toThrow(
+    "denied",
+  );
+  scrubFails = true;
+  await expect(wrapped.stop({ sandboxId: info.id })).rejects.toThrow("denied");
+  expect(effects).toEqual(["quiesce", "scrub"]);
+  await expect(children.launch(token, "after-stop", selection)).rejects.toThrow("denied");
+  scrubFails = false;
+  await wrapped.stop({ sandboxId: info.id });
+  expect(effects.at(-1)).toBe("stop");
+  const previousToken = token;
+  await db.query(
+    "update sandboxes set status='stopped',stopped_at=now(),conversation_ids=array['remembered-conversation'],lifecycle_generation=lifecycle_generation+1 where id=$1",
+    [saved.id],
+  );
+  fake.sandbox(info.id).info.state = "ready";
+  await expect(access.beforePrompt(provider, info.id)).rejects.toThrow("denied");
+  expect((await db.query("select status from sandboxes where id=$1", [saved.id])).rows[0]).toEqual({
+    status: "stopped",
+  });
+  expect(
+    (await db.query("select id from sandbox_transitions where sandbox_id=$1 and actor='armada_access'", [saved.id]))
+      .rows,
+  ).toEqual([]);
+  // The retained wake is admitted by the lifecycle path before native preparation.
+  await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [saved.id]);
+  await expect(access.beforePrompt(provider, info.id)).resolves.toBeUndefined();
+  await db.query("update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1 where id=$1", [
+    saved.id,
+  ]);
+  expect(
+    await authority.admit(token, { method: "launch", ...selection }, async (_tx, principal) => principal.ownerId),
+  ).toBe(people.owner);
+  await expect(authority.admit(previousToken, { method: "launch", ...selection }, async () => true)).rejects.toThrow(
+    "denied",
+  );
+  expect(
+    (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [saved.id]))
+      .rows[0]?.conversation_ids,
+  ).toEqual(["remembered-conversation"]);
+  const services = createSandboxAccessServices({
+    sql,
+    encryptionKey: ENCRYPTION_KEY,
+    scopedMcpUrl: PUBLIC_URL,
+    providers: {
+      resolve: async () => {
+        throw Error("Completion must not call a provider before replying");
+      },
+    },
+    credentials: {
+      resolve: async () => {
+        throw Error("Completion must not request model credentials");
+      },
+    },
+    connections: undefined,
+  });
+  const finish = (body: object) =>
+    services.scopedToolsRoute(
+      new Request(`${PUBLIC_URL}/api/v1/orchestrator-tools/finish`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      }),
+    );
+  const generationBefore = (
+    await db.query<{ lifecycle_generation: number; stop_generation: number }>(
+      "select lifecycle_generation, stop_generation from sandboxes where id=$1",
+      [saved.id],
+    )
+  ).rows[0]!;
+  expect(
+    await transitionSandbox(sql, {
+      sandboxId: saved.id,
+      expectedGeneration: generationBefore.lifecycle_generation - 1,
+      fromStates: ["running"],
+      toState: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      effects: [],
+    }),
+  ).toEqual({ kind: "conflict" });
+  expect((await finish({ sandboxId: saved.id }))?.status).toBe(400);
+  const reply = await finish({});
+  expect(reply?.status).toBe(200);
+  const completed = await reply?.json();
+  expect(completed).toEqual({ result: { id: saved.id, status: "stopping" } });
+  expect(publishedResponse("orchestrator-tools/finish").safeParse(completed).success).toBe(true);
+  expect(
+    (
+      await db.query(
+        "select status,status_reason,stop_requested_at is not null as requested from sandboxes where id=$1",
+        [saved.id],
+      )
+    ).rows[0],
+  ).toEqual({ status: "stopping", status_reason: "agent_finished", requested: true });
+  const journal = (
+    await db.query(
+      `select t.from_status,t.to_status,t.actor,t.code,t.generation,s.stop_generation
+       from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id where s.id=$1 and t.actor='finish'`,
+      [saved.id],
+    )
+  ).rows;
+  expect(journal).toEqual([
+    {
+      from_status: "running",
+      to_status: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      generation: generationBefore.lifecycle_generation + 1,
+      stop_generation: generationBefore.stop_generation + 1,
+    },
+  ]);
+  expect((await finish({}))?.status).toBe(403);
 });

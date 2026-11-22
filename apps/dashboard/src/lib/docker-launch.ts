@@ -6,6 +6,7 @@ import type {
   LaunchProviderOption,
 } from "@armada/core";
 import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
+import type { LaunchEnvelope } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -16,7 +17,7 @@ import type { DockerHost } from "./docker-hosts.ts";
  */
 export const LAUNCH_OPTIONS_ROUTE = "launch/options";
 
-export type DockerCapability = LaunchCapabilityName;
+type DockerCapability = LaunchCapabilityName;
 export type DockerLaunchOption = Omit<LaunchProviderOption, "id"> & { id: "docker" };
 
 /** How each capability reads in the dialog; exhaustive, so a capability the server adds must be named here. */
@@ -118,6 +119,18 @@ export function dockerLaunchBlocker(
 export const UNKNOWN_DOCKER_LAUNCH =
   "The Armada server did not confirm the launch. Launch again without changing anything: the server recognises the same request and does not start a second sandbox.";
 
+const DOCKER_LAUNCH_KEY_PREFIX = "docker:";
+
+export function createDockerLaunchKey() {
+  return DOCKER_LAUNCH_KEY_PREFIX + crypto.randomUUID();
+}
+
+export function isDockerLaunchKey(key: string) {
+  return key.startsWith(DOCKER_LAUNCH_KEY_PREFIX) && isUuid(key.slice(DOCKER_LAUNCH_KEY_PREFIX.length));
+}
+
+export const PREVIOUS_DOCKER_LAUNCH = "Inspect the sandbox from the previous launch before submitting a new request.";
+
 /** Where the dialog keeps one host's unconfirmed launch key, across closing and reopening it. */
 export function dockerLaunchKeyStorage(hostId: string): string {
   return `armada-docker-launch:${hostId}`;
@@ -154,12 +167,12 @@ export function preferredHarness(
   return offered.find(usable) ?? first;
 }
 
-export type DockerLaunchArgs = {
+type DockerLaunchArgs = {
   org: string;
   hostId: string;
   harness: Harness;
   credentialId: string;
-  requestId: string;
+  idempotencyKey: string;
   model: string;
   reasoningEffort: string;
   prompt?: string;
@@ -168,15 +181,15 @@ export type DockerLaunchArgs = {
 
 /** The `sandbox/launch` body for a Docker host: an agent in the official Armada environment, private, with no image override. */
 export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
-  if (![args.org, args.hostId, args.credentialId, args.requestId].every(isUuid))
-    throw new Error("Docker launch identifiers must be UUIDs.");
+  if (![args.org, args.hostId, args.credentialId].every(isUuid) || !isDockerLaunchKey(args.idempotencyKey))
+    throw new Error("Docker launch identifiers or launch key are invalid.");
   return {
     org: args.org,
     provider: "docker",
     hostId: args.hostId,
     harness: args.harness,
     credentialId: args.credentialId,
-    requestId: args.requestId,
+    idempotencyKey: args.idempotencyKey,
     model: args.model,
     reasoningEffort: args.reasoningEffort,
     visibility: "private",
@@ -186,10 +199,11 @@ export function dockerLaunchBody(args: DockerLaunchArgs): DockerLaunchRequest {
 }
 
 /** The launched sandbox's id from the normal launch envelope, checked to be a Docker sandbox. */
-export function launchedDockerSandbox(payload: unknown): string | null {
-  if (!isRecord(payload) || !isRecord(payload.sandbox)) return null;
-  const { id, provider } = payload.sandbox;
-  return typeof id === "string" && isUuid(id) && provider === "docker" ? id : null;
+export function launchedDockerSandbox(receipt: {
+  sandbox: Pick<LaunchEnvelope["sandbox"], "id" | "provider">;
+}): string | null {
+  const { id, provider } = receipt.sandbox;
+  return provider === "docker" && isUuid(id) ? id : null;
 }
 
 /** The capabilities that act on an existing sandbox, in the order its page names them. */

@@ -1,8 +1,3 @@
-/** OPT-IN BILLABLE. Receive explicit management/model configuration via PRIVATE stdin only.
- * The coordinator must expose listenPort with HTTPS ingress at ingestUrl before invoking.
- * No profile/environment/credential-file reads. Never print configuration, SDK causes or tokens.
- */
-
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ModalClient } from "modal";
@@ -24,19 +19,15 @@ import { appJournal, cliAppAdapter, createOwnedApp, finalizeOwnedApp } from "./c
 interface Input {
   tokenId?: string;
   tokenSecret?: string;
-  /** Explicit operator opt-in to public SDK profile loading, never a manual credential-file read. */
   operatorProfile?: boolean;
   scope: Scope;
-  /** Trusted operator-selected provenance, independent of this fixture's private/org access scope. */
   managementAuthority?: ModalManagementProvenance;
   appName?: never;
-  /** New, exclusive local directory for durable non-secret run evidence. */
   receiptDirectory: string;
   artifact: Omit<ComposedModalOptions["artifact"], "bundle" | "sha256"> & { dist: string };
   ingestUrl: string;
   listenPort: number;
   models: boolean;
-  /** Current production core generates these scripts; credentials remain private stdin only. */
   goldenRecipe?: GoldenSshRecipe & { scanCommand: string };
   harness: HarnessEnvironment;
 }
@@ -80,7 +71,7 @@ async function main() {
     ]);
     const bytes = await loadRunnerArtifact(input.artifact.dist);
 
-    const { provider, ingest, close } = await createComposedModalProvider({
+    const { provider, readResourceReceipts, ingest, close } = await createComposedModalProvider({
       scope: input.scope,
       ...(input.managementAuthority ? { managementAuthority: input.managementAuthority } : {}),
       appName: owned.name,
@@ -110,6 +101,7 @@ async function main() {
     let completed = false;
     try {
       const result = await runModalConformance(provider, {
+        readResourceReceipts,
         models: input.models,
         ...(input.goldenRecipe ? { goldenRecipe: input.goldenRecipe } : {}),
         onReceipt: remember,
@@ -118,22 +110,20 @@ async function main() {
       console.log(
         JSON.stringify({
           ...result,
-          resources: mergeModalResourceReceipts([...receipts, ...(await provider.resourceReceipts())]),
+          resources: mergeModalResourceReceipts([...receipts, ...(await readResourceReceipts())]),
         }),
       );
     } catch {
       console.log(
         JSON.stringify({
           status: "conformance_failed",
-          resources: mergeModalResourceReceipts([...receipts, ...(await provider.resourceReceipts().catch(() => []))]),
+          resources: mergeModalResourceReceipts([...receipts, ...(await readResourceReceipts().catch(() => []))]),
         }),
       );
       process.exitCode = 1;
     } finally {
       try {
-        // Read failures are not empty inventories. Historical receipts remain in the journal;
-        // only a fresh durable read authorizes finalization after successful conformance cleanup.
-        const resources = await provider.resourceReceipts();
+        const resources = await readResourceReceipts();
         const images = await db.query("select name,record from public.modal_images");
         const proof = { complete: completed, resources, imageCount: images.rows.length };
         await save({
@@ -151,7 +141,6 @@ async function main() {
     }
   } finally {
     try {
-      // Preserve any pending creation journal; never adopt, retry or stop its App here.
       if (owned) await save({ app: owned, status: owned.finalization });
     } finally {
       try {

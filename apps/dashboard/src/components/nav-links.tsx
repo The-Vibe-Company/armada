@@ -15,6 +15,7 @@ import {
   ServerIcon,
   SettingsIcon,
   VariableIcon,
+  WebhookIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -40,6 +41,7 @@ import { cn } from "@/lib/utils";
 const ICONS: Record<NavIcon, LucideIcon> = {
   sandboxes: BoxesIcon,
   routines: CalendarClockIcon,
+  triggers: WebhookIcon,
   templates: LayoutTemplateIcon,
   environments: CameraIcon,
   skills: PackageIcon,
@@ -55,7 +57,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
  * Destinations behind a server opt-in. The shell passes the server's answer as a promise and does not wait for it:
  * only the entry itself appears once the answer says the server offers it.
  */
-export type NavOptIns = Record<NavOptIn, Promise<boolean>>;
+type NavOptIns = Record<NavOptIn, Promise<boolean>>;
 
 function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode }) {
   return use(when) ? children : null;
@@ -89,8 +91,10 @@ export function NavLinks({
   optIns,
   sandboxes = [],
   organizationId = null,
+  organizationAdmin = false,
 }: {
   organizationId?: string | null;
+  organizationAdmin?: boolean;
   className?: string;
   optIns: NavOptIns;
   sandboxes?: { id: string; label: string; status: SandboxStatus }[];
@@ -124,6 +128,7 @@ export function NavLinks({
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {group.links.map((link) => {
+                  if (link.adminOnly && !organizationAdmin) return null;
                   const { href, label } = link;
                   const Icon = ICONS[link.icon];
                   const active = isActiveLink(pathname, href);

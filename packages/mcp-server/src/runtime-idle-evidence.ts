@@ -1,4 +1,26 @@
 import { type AgentEvent, decryptSecret, encryptSecret, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { dispatchableRuntimeCommand } from "./runtime-authority-extension.ts";
+
+export function currentDockerRuntimeIssuer(dockerHostId: string) {
+  return `exists(select 1 from public.docker_hosts h
+      join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
+      join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+      where h.id=${dockerHostId} and h.revoked_at is null
+        and r.docker_issuer_fence=h.owner_id::text||':'||e.epoch::text)`;
+}
+
+export function unsettledRuntimeCommands(sandboxId: string, generation: string, dockerHostId?: string) {
+  const issuerFence = dockerHostId ? `and ${currentDockerRuntimeIssuer(dockerHostId)}` : "";
+  return `select 1 from public.runtime_enrolments r
+    join public.runtime_commands c on c.sandbox_id=r.sandbox_id and c.epoch=r.epoch
+    where r.sandbox_id=${sandboxId} and r.lifecycle_generation=${generation} and r.runtime_hash is not null
+      ${issuerFence}
+      and ((c.result_enc is null and not starts_with(c.request_id,'outputs_')
+            and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")})
+        or (c.accepted_prompt_id is not null and not exists(
+          select 1 from public.runtime_idle_turns t
+          where t.sandbox_id=c.sandbox_id and t.prompt_id=c.accepted_prompt_id::text and t.settled)))`;
+}
 
 /** Called only inside event admission's sandbox/epoch transaction. Existing archives
  * are projected once, in bounded pages; sweeps never decrypt historical events.
@@ -73,4 +95,23 @@ export async function projectRuntimeIdle(
   }
   if (cursor !== archiveSequence) throw Error("Idle evidence ahead of archive.");
   await apply(fresh, sequence);
+}
+
+export function recordNativeIdleTurn(
+  sql: Pick<Sql, "query">,
+  sandboxId: string,
+  reconcileToken: string,
+  generation: number,
+  promptId: string,
+) {
+  return sql.query(
+    `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
+     select id,task_prompt_id,true from public.sandboxes
+     where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
+       and reconcile_lease_until>now() and activity_lease_id is null
+       and task_prompt_id=$4 and stop_requested_at is null
+       and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
+     on conflict(sandbox_id,prompt_id) do update set settled=true`,
+    [sandboxId, reconcileToken, generation, promptId],
+  );
 }

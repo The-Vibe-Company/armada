@@ -7,7 +7,7 @@ import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, type FakeBoat, harness, launchSandboxId, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -37,9 +37,14 @@ test("explicit report validates the latest finished turn and persists through AP
     const { client, token, people, boat, db } = server;
     const bearer = await token(people.member);
     const mcp = await client(bearer);
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "work" });
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "work",
+    });
     expect(launched.isError).toBe(false);
-    const id = launched.data.id;
+    const id = launchSandboxId(launched.data);
     const report = (outcome: unknown, prompt_id = "prompt_1") => call(mcp, "report", { id, prompt_id, outcome });
     expect((await report({ state: "ready" })).isError).toBe(true); // still running
     finishMatched(boat, "prompt_1");
@@ -110,8 +115,13 @@ test("send and steer clear outcomes before admission and fence replacement recei
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { golden: "shared", harness: "claude", prompt: "first" });
-    const id = launched.data.id;
+    const launched = await call(mcp, "launch", {
+      provider: "boat",
+      golden: "shared",
+      harness: "claude",
+      prompt: "first",
+    });
+    const id = launchSandboxId(launched.data);
     finishMatched(boat, "prompt_1");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_1", outcome: { state: "ready" } })).isError).toBe(false);
     // Observe actual SQL state at the provider boundary, not just after completion.
@@ -150,7 +160,7 @@ test("send and steer clear outcomes before admission and fence replacement recei
       });
       return { ...receipt, promptId: "unpollable-steer-record", mode: "late" };
     };
-    expect((await call(mcp, "steer", { id, text: "continue with review" })).data.promptId).toBe(
+    expect((await call(mcp, "send", { id, steer: true, prompt: "continue with review" })).data.promptId).toBe(
       "unpollable-steer-record",
     );
     boat.finish("bx_1", "prompt_3", "finished");
@@ -178,7 +188,9 @@ test("a restart steer registers its replacement run so settlement exports it", a
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    const id = launchSandboxId(
+      (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
+    );
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -189,7 +201,7 @@ test("a restart steer registers its replacement run so settlement exports it", a
       const receipt = await boat.provider.prompt({ sandboxId: input.sandboxId, harness: "codex", text: input.text });
       return { ...receipt, promptId: "unpollable-steer-record", mode: "restart" };
     };
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
     expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
       task_prompt_id: "prompt_2",
     });
@@ -216,7 +228,9 @@ test("a new restart steer preserves an older unresolved replacement across downt
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+    const id = launchSandboxId(
+      (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
+    );
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -230,13 +244,13 @@ test("a new restart steer preserves an older unresolved replacement across downt
     const taskPromptId = async () =>
       (await db.query<{ task_prompt_id: string | null }>("select task_prompt_id from sandboxes where id=$1", [id]))
         .rows[0]?.task_prompt_id;
-    expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
     // The first replacement appears late, then a second steer interrupts it.
     await boat.provider.prompt({ sandboxId: "bx_1", harness: "codex", text: "change course" });
     await db.query("update native_steer_cursors set pending_since=now()-interval '2 hours' where sandbox_id=$1", [id]);
     interrupting = "prompt_2";
-    expect((await call(mcp, "steer", { id, text: "again" })).isError).toBe(false);
+    expect((await call(mcp, "send", { id, steer: true, prompt: "again" })).isError).toBe(false);
     expect(await taskPromptId()).toBe("");
     const native = createNativeWebhookPrompts(db, async () => boat.provider);
     // Run recovery and settlement, with the cursor's retry spacing elapsed.
@@ -280,7 +294,9 @@ for (const stopFirst of [false, true])
     try {
       const { client, token, people, boat, db } = server;
       const mcp = await client(await token(people.member));
-      const id = (await call(mcp, "launch", { golden: "shared", harness: "codex", prompt: "first" })).data.id;
+      const id = launchSandboxId(
+        (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
+      );
       await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
         people.org,
         await encryptSecret("{}", ENCRYPTION_KEY),
@@ -289,7 +305,7 @@ for (const stopFirst of [false, true])
         boat.finish(input.sandboxId, "prompt_1", "interrupted");
         return { conversationId: "conv_1", promptId: "unpollable-steer-record", mode: "restart" };
       };
-      expect((await call(mcp, "steer", { id, text: "change course" })).isError).toBe(false);
+      expect((await call(mcp, "send", { id, steer: true, prompt: "change course" })).isError).toBe(false);
       expect((await db.query("select task_prompt_id from sandboxes where id=$1", [id])).rows[0]).toEqual({
         task_prompt_id: "",
       });

@@ -13,6 +13,7 @@ import { type ControlOptions, createSqlData, handleControlRequest } from "@armad
 import type { PGlite } from "@electric-sql/pglite";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { dispatchGoldenBuild } from "../../core/test/support/golden-build-dispatch.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
@@ -27,7 +28,7 @@ describe("golden command", () => {
       calls.push("fetch");
       throw new Error("No request should run");
     };
-    const result = await capture(["golden", "create", "web", "--repo", WEB, "--init", "TOKEN=abc pnpm i"], {
+    const result = await capture(["snapshot", "new", "web", "--repo", WEB, "--init", "TOKEN=abc pnpm i"], {
       auth: loggedIn("22222222-2222-4222-8222-222222222222", fetch, { ARMADA_URL: "https://armada.test" }),
     });
     expect(result.code).toBe(2);
@@ -36,9 +37,6 @@ describe("golden command", () => {
   });
 
   test("create builds, scans and snapshots a multi-repo golden on the server, with no boat account environment", async () => {
-    // golden create is server-orchestrated now (no separate connect/snapshot step for a golden
-    // built this way, and no BOAT_API_KEY): the CLI sends the parsed --repo/--init config to
-    // /api/v1/golden/create, which admits the durable disposable-builder job, then polls its status.
     const db = await openMigratedDatabase();
     try {
       const people = await fixture(db);
@@ -94,9 +92,10 @@ describe("golden command", () => {
 
       const created = await capture(
         [
-          "golden",
-          "create",
+          "snapshot",
+          "new",
           "monorepo",
+          "--wait",
           "--private",
           "--repo",
           "https://github.com/acme/web.git",
@@ -108,7 +107,7 @@ describe("golden command", () => {
         {
           auth,
           sleep: async () => {
-            await controlOptions.goldenBuilds!.runOne();
+            await dispatchGoldenBuild(db, controlOptions.goldenBuilds!);
           },
         },
       );
@@ -129,9 +128,6 @@ describe("golden command", () => {
         { url: "https://github.com/acme/api.git", branch: "dev", dir: "api" },
       ]);
 
-      // golden list itself now always goes through the Armada API (golden-api-list.test.ts,
-      // packages/mcp-server/test/control.test.ts's "golden/list" case); visibility is checked
-      // directly against the store here instead, the same way goldenForLaunch does it at launch.
       const store = createSqlGoldenStore(db);
       const owner = actor(people, "owner");
       expect(await asUser(db, people.owner, () => store.findByName(people.org, "monorepo"))).toHaveLength(1);
@@ -147,12 +143,8 @@ describe("golden command", () => {
         (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace, modal_environment, modal_app_id, config)
         select org_id, name, visibility, owner_id, 'modal', 'im-cli', 'ws-cli', 'main', 'ap-cli', config
         from goldens where provider = 'boat' and name = 'monorepo'`);
-      for (const command of ["connect", "snapshot"]) {
-        const ambiguous = await capture(["golden", command, "monorepo"], { auth });
-        expect(ambiguous.err).toContain("exists on boat and modal");
-      }
       const modalOnly = await asUser(db, people.owner, () =>
-        capture(["golden", "list", "--provider", "modal", "--json"], { auth }),
+        capture(["snapshot", "ls", "--provider", "modal", "--json"], { auth }),
       );
       expect(JSON.parse(modalOnly.out).map((row: { provider: string }) => row.provider)).toEqual(["modal"]);
     } finally {
@@ -193,7 +185,7 @@ describe("golden command", () => {
         ARMADA_URL: "https://armada.test",
       });
 
-      const result = await capture(["golden", "list", "--json"], { auth });
+      const result = await capture(["snapshot", "ls", "--json"], { auth });
       expect(result.code).toBe(0);
       expect(result.out).toContain('"name": "web"');
       expect(result.out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
@@ -205,7 +197,7 @@ describe("golden command", () => {
   test("golden commands without a login ask for one", async () => {
     const auth = loggedIn("22222222-2222-4222-8222-222222222222", fetch, { SUPABASE_ANON_KEY: "anon" });
     await auth.session.clear();
-    const result = await capture(["golden", "list"], { auth });
+    const result = await capture(["snapshot", "ls"], { auth });
     expect(result.code).toBe(3);
     expect(result.err).toContain("You are not signed in. Run armada login.");
   });
@@ -302,7 +294,6 @@ function fakeSupabaseFetch(userId: string): typeof fetch {
   }) as typeof fetch;
 }
 
-/** GitHub's REST surface a golden create needs: `/user`, installations, a repo lookup. */
 function fakeGitHubFetch(): typeof fetch {
   return (async (input: string | URL | Request) => {
     const url = String(input);
@@ -356,7 +347,6 @@ function fakeCreateProvider(): Provider {
     deleteSnapshot: async () => {},
     fork: async () => ({ id: "bx_1", name: "box", state: "ready", providerState: "ready", labels: {} }),
     get: async () => ({ id: "bx_1", name: "box", state: "ready", providerState: "ready", labels: {} }),
-    list: async () => ({ items: [], cursor: null }),
     prompt: async () => ({ promptId: "p", conversationId: "c", status: "queued" }),
     getPrompt: async () => ({ promptId: "p", status: "finished", done: true }),
     steer: async () => ({ conversationId: "c", promptId: "p" }),
@@ -370,5 +360,4 @@ function fakeCreateProvider(): Provider {
   };
 }
 
-// Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();

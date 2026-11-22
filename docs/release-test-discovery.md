@@ -53,8 +53,6 @@ PostgreSQL or explicit coordinator authorization and must not enter unit CI.
 - `packages/mcp-server/test/runtime-enrolment-postgres.release.ts`
 - `packages/mcp-server/test/runtime-native-auth-postgres.release.ts`
 - `packages/mcp-server/test/sql.release.ts`
-- `packages/provider-boat/test/integration.coordinator.ts`
-- `packages/provider-modal/test/artifact.release.ts`
 - `scripts/build-migration.release.ts`
 
 The full release unit command was deliberately not run: the delivery owner
@@ -65,13 +63,13 @@ Targeted probe output is evidence only for that probe, not a full release pass.
 
 Browser suites (not run in PR CI):
 
-- `tests/dashboard/launch.e2e.ts`
-- `tests/dashboard/models.e2e.ts`
-- `tests/dashboard/phone-width.e2e.ts`
-- `tests/dashboard/presets.e2e.ts`
-- `tests/dashboard/resources.e2e.ts`
-- `tests/dashboard/sandboxes.e2e.ts`
-- `tests/dashboard/snapshots.e2e.ts`
+- `test/dashboard/launch.e2e.ts`
+- `test/dashboard/models.e2e.ts`
+- `test/dashboard/phone-width.e2e.ts`
+- `test/dashboard/presets.e2e.ts`
+- `test/dashboard/resources.e2e.ts`
+- `test/dashboard/sandboxes.e2e.ts`
+- `test/dashboard/snapshots.e2e.ts`
 
 iOS suites (conditional iOS checks when their files change, not the Bun unit gate):
 

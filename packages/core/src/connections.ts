@@ -34,8 +34,9 @@ export interface McpConnectionInput {
   command?: string;
   args?: string[];
   authType?: McpConnectionDto["authType"];
-  /** Write-only authentication payload. */
+  /** Write-only grant data. A full update clears omitted credentials. */
   authentication?: string;
+  stdioEnv?: Record<string, string>;
 }
 /** OAuth worker owns issuer discovery, URL validation and fixed callback policy. Never return tokens. */
 export interface McpBrokerPort {
@@ -88,9 +89,10 @@ type Row = {
   auth_type: McpConnectionDto["authType"];
   status: McpConnectionDto["status"];
   disabled: boolean;
+  generation: number;
 };
 const columns =
-  "c.catalog_id,c.default_for_launch,c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
+  "c.catalog_id,c.default_for_launch,c.id,c.org_id,c.name,c.scope,c.transport,c.url,c.command,c.args,c.auth_type,c.disabled,g.generation,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status";
 function dto(r: Row): McpConnectionDto {
   return {
     catalogId: r.catalog_id,
@@ -156,6 +158,8 @@ export function createSqlMcpRegistry(
       return dto(await get(user, org, id));
     },
     async save(user, org, input, id) {
+      if (input.stdioEnv !== undefined && (input.transport !== "stdio" || input.serviceId !== undefined))
+        throw new VaultError("invalid", "The stdio environment is only supported for local stdio definitions.");
       if (id) {
         const old = await get(user, org, id, true);
         if (old.catalog_id && input.serviceId !== old.catalog_id)
@@ -191,19 +195,31 @@ export function createSqlMcpRegistry(
           );
       }
       validateInput(input);
-      const enc = input.authentication === undefined ? null : await encryptSecret(input.authentication, encryptionKey);
+      const secret = input.stdioEnv === undefined ? input.authentication : serializeStdioEnvironment(input.stdioEnv);
+      const enc = secret === undefined ? null : await encryptSecret(secret, encryptionKey);
       const connectionId = id ?? crypto.randomUUID();
-      // One statement: changing a definition invalidates every old lease via grant generation.
-      await sql.query(
-        `with saved as (
-        insert into public.mcp_connections(id,org_id,owner_id,scope,name,transport,url,command,args,auth_type,catalog_id)
-        values($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9::jsonb,$10,$13)
-        on conflict(id) do update set name=excluded.name,transport=excluded.transport,url=excluded.url,
-        command=excluded.command,args=excluded.args,auth_type=excluded.auth_type,catalog_id=excluded.catalog_id returning id)
+      const saved = await sql.query(
+        `with actor as materialized (
+          select role from public.members where org_id=$2::uuid and user_id=$3::uuid
+            and ($4='personal' or role='admin') for share
+        ), created as (
+          insert into public.mcp_connections(id,org_id,owner_id,scope,name,transport,url,command,args,auth_type,catalog_id)
+          select $1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9::jsonb,$10,$13 from actor
+          where not $14::boolean returning id
+        ), updated as (
+          update public.mcp_connections c set name=$5,transport=$6,url=$7,command=$8,args=$9::jsonb,
+            auth_type=$10,catalog_id=$13
+          from actor where $14::boolean and c.id=$1::uuid and c.org_id=$2::uuid and c.scope=$4
+            and (c.scope='org' or c.owner_id=$3::uuid)
+            and (c.catalog_id is null or c.catalog_id=$13)
+          returning c.id
+        ), saved as (
+          select id from created union all select id from updated
+        )
         insert into public.mcp_grants(connection_id,value_enc,status) select id,$11::bytea,$12 from saved
         on conflict(connection_id) do update set value_enc=excluded.value_enc,status=excluded.status,
         generation=mcp_grants.generation+1,version=mcp_grants.version+1,revoked_at=null,
-        refresh_owner=null,refresh_until=null,refresh_consumed=false`,
+        refresh_owner=null,refresh_until=null,refresh_consumed=false returning id`,
         [
           connectionId,
           org,
@@ -218,8 +234,11 @@ export function createSqlMcpRegistry(
           enc,
           input.transport === "stdio" ? "connected" : "not_connected",
           input.serviceId ?? null,
+          id !== undefined,
         ],
       );
+      if (!saved.rows.length)
+        throw new VaultError("forbidden", "MCP definition or edit permission changed; reload before retrying.");
       return dto(await get(user, org, connectionId));
     },
     async metadata(user, org, id, input) {
@@ -256,11 +275,17 @@ export function createSqlMcpRegistry(
         authType: row.auth_type,
       });
       const result = await sql.query<{ id: string }>(
-        `update public.mcp_grants g set status='connected',generation=generation+1,
-        version=version+1,value_enc=null,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
-        from public.mcp_connections c where c.id=$1::uuid and g.connection_id=c.id
-        and c.transport='stdio' and c.auth_type='none' and not c.disabled returning g.id`,
-        [id],
+        `with actor as materialized (
+          select role from public.members where org_id=$2::uuid and user_id=$3::uuid for share
+        )
+        update public.mcp_grants g set status='connected',generation=g.generation+1,
+          version=g.version+1,revoked_at=null,refresh_consumed=false,refresh_owner=null,refresh_until=null
+        from public.mcp_connections c cross join actor
+        where c.id=$1::uuid and c.org_id=$2::uuid and g.connection_id=c.id and g.generation=$4
+          and c.transport='stdio' and c.auth_type='none' and not c.disabled
+          and ((c.scope='org' and actor.role='admin') or (c.scope='personal' and c.owner_id=$3::uuid))
+        returning g.id`,
+        [id, org, user, row.generation],
       );
       if (!result.rows[0]) throw new VaultError("conflict", "The stdio definition changed; reload before configuring.");
       return dto(await get(user, org, id));
@@ -398,6 +423,31 @@ function validateInput(i: McpConnectionInput) {
   }
 }
 
+function serializeStdioEnvironment(value: unknown) {
+  const invalid = () => new VaultError("invalid", "Invalid MCP stdio environment.");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+  const entries = Object.entries(value);
+  if (entries.length > 64) throw invalid();
+  for (const [name, entry] of entries) {
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name) ||
+      ["__proto__", "prototype", "constructor"].includes(name) ||
+      typeof entry !== "string" ||
+      entry.length > 8192 ||
+      entry.includes("\0")
+    )
+      throw invalid();
+    try {
+      encodeURIComponent(entry);
+    } catch {
+      throw invalid();
+    }
+  }
+  const serialized = JSON.stringify(Object.fromEntries(entries));
+  if (Buffer.byteLength(serialized) >= 65536) throw invalid();
+  return serialized;
+}
+
 /** Only deterministic package entrypoints, never a shell or an unpinned package alias. */
 function validatePinnedStdio(command: string, args: string[]) {
   try {
@@ -448,7 +498,15 @@ export function createSqlMcpGrantPort(sql: Sql) {
       return (
         (
           await sql.query<McpGrantSnapshot>(
-            "update public.mcp_grants set generation=generation+1,version=version+1,value_enc=null,revoked_at=null,status='not_connected',refresh_owner=null,refresh_until=null,refresh_consumed=false where connection_id=$1::uuid and exists(select 1 from public.mcp_connections c where c.id=mcp_grants.connection_id and not c.disabled) returning id,value_enc,generation,version",
+            `with remote as materialized (
+              select c.id,g.generation from public.mcp_connections c
+              join public.mcp_grants g on g.connection_id=c.id
+              where c.id=$1::uuid and not c.disabled and c.transport<>'stdio'
+            )
+            update public.mcp_grants g set generation=g.generation+1,version=g.version+1,value_enc=null,
+              revoked_at=null,status='not_connected',refresh_owner=null,refresh_until=null,refresh_consumed=false
+            from remote where g.connection_id=remote.id and g.generation=remote.generation
+            returning g.id,g.value_enc,g.generation,g.version`,
             [connectionId],
           )
         ).rows[0] ?? null

@@ -1,20 +1,18 @@
 # Templates from the CLI
 
-Use `armada template` for API-only template management. `template launch` keeps
+Use `armada template` to list, inspect and launch templates. Create, publish or
+delete them in the dashboard or through the [CLI administration API](cli-admin.md#template-authoring). `template launch` keeps
 revision selection and durable request keys together without changing ordinary
 snapshot launches. Templates contain readable configuration and value-free secret ID/version bindings.
 
 In the dashboard, find templates under **Launch from → Templates**. The screen calls
-immutable revisions **versions**; the CLI retains `publish`, `--revision` and
-`--expected-revision`. **Launch** opens **Launch <template name>** with that version’s choices fixed.
+immutable revisions **versions**. **Launch** opens **Launch <template name>** with that version’s choices fixed.
 **Running → Routines → New routine** schedules a task against the template as it is
 at creation, not against future versions.
 
-Create a personal preset in your selected organization from a definition file
-using the definition below:
+After creating a preset, find and inspect it with:
 
 ```sh
-armada template create my-preset --file definition.json
 armada template list
 armada template get my-preset
 ```
@@ -32,8 +30,8 @@ Docker placement uses the same definition file and template/routine launch path:
 ```
 
 To use a built Docker environment, add `"snapshotId": "SNAPSHOT_UUID"` to the
-definition above. Publish it using `--file`; snapshot selection is not a launch
-override. Omit `snapshotId` to keep the existing official host environment.
+definition above before creating or publishing it. The published version fixes
+the snapshot selection. Omit `snapshotId` to keep the existing official host environment.
 `goldenId` and `goldenBinding` remain null: Docker snapshots are built per host,
 not reused from Modal or Boat snapshots.
 
@@ -56,20 +54,9 @@ host-local snapshots under **Docker host <name>** alongside cloud snapshots. Sav
 with **Save template**. In an editable template’s details, **Change** opens the
 form; **Save as version N** creates a new version rather than replacing history.
 **Remove → Remove template** confirms deletion. These controls have the same
-visibility and authorization limits as the CLI. Routines use their persisted owner's authority and
+visibility and authorization limits as the API. Routines use their persisted owner's authority and
 the same pinned template path, so they inherit its snapshot choice, with original-
 prompt observation through Docker status. Real-host execution is coordinator-owned.
-
-When supplying `--org UUID` on create, explicitly choose `--scope personal|org`.
-Organization templates require an administrator to create, publish or delete.
-
-Publish a complete replacement definition as a new immutable revision, or delete
-using the current revision as an optimistic-concurrency guard:
-
-```sh
-armada template publish TEMPLATE_ID --expected-revision 1 --file definition.json
-armada template delete TEMPLATE_ID --expected-revision 2
-```
 
 Launch with `armada template launch NAME_OR_ID --request-key unique-run-1`.
 For a name-based launch, the CLI prints its resolved template ID before submission.
@@ -104,10 +91,8 @@ omitted account resolves the launching actor's user-over-org default, then freez
 its ID/version. Pinned accounts never silently fall back. Revisions store connection
 IDs, not access tokens: current connected grant generations/versions resolve at
 launch admission, so ordinary OAuth refresh requires no republication. Variables
-and secrets require explicit versions. The JSON field `goldenId` and definition
-flag `--golden UUID` retain their API/CLI spelling but identify a Boat or Modal
-snapshot; do not rename the field to `snapshotId` (that field selects a Docker
-snapshot).
+and secrets require explicit versions. In the JSON definition, `goldenId`
+identifies a Boat or Modal snapshot and `snapshotId` identifies a Docker snapshot.
 
 Morph is a model account, not a sandbox provider. Its shared account supports
 Claude Code, Codex and OpenCode; use a supported Morph model and a
@@ -120,8 +105,8 @@ for account capacity, dispatching FIFO per account. A queued receipt is not evid
 that the prompt ran; read its outcome with wait/logs. See the [account setup and limits](dave-onboarding.md). No arbitrary environment override exists.
 
 Authenticated no-store POST `/api/v1/templates/{create,list,get,publish,delete,launch}`
-and MCP `template_{create,list,get,publish,delete,launch}` share validation; the
-public dashboard proxy supports all six. Every body needs `org` UUID. Unknown
+is available directly or through the public dashboard proxy. Use the REST launch
+route or `armada template launch` for an existing template. Every body needs an `org` UUID. Unknown
 fields/query parameters refuse at direct control; the proxy strips query strings.
 
 | Operation | Additional fields |
@@ -240,10 +225,8 @@ later-turn rehydration, is in [deployed checks](post-deploy-smoke.md#targeted-st
 
 Use `armada template --help` or `armada template <action> -h` at the
 command boundary. A help-like token inside an operation is not a help request:
-for example, `--prompt -h` supplies the literal prompt `-h`, and
-`template create --file definition.json -- --help` supplies a literal template
-name after the terminator. Malformed operations still fail validation rather
-than silently showing help. No launch or definition handling changes otherwise.
+for example, `--prompt -h` supplies the literal prompt `-h`. Malformed operations
+fail validation.
 
 ### Vault help and literal arguments
 

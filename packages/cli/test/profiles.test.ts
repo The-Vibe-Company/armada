@@ -6,6 +6,8 @@ import { productionAuthIo } from "../src/auth-commands.ts";
 import { profileDirectory } from "../src/profiles.ts";
 import { run } from "../src/run.ts";
 
+import { loginAuthorized, loginStarted } from "./device-login.fixture.ts";
+
 test("named profiles isolate sessions, logout and preferences while retaining the legacy default", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-profiles-"));
   try {
@@ -36,14 +38,12 @@ test("named profiles isolate sessions, logout and preferences while retaining th
         return Response.json({ sandboxes: [] });
       },
     };
-    expect(await run(["--profile", "staging", "list", "--json"], io, { auth })).toBe(0);
+    expect(await run(["--profile", "staging", "ls", "--json"], io, { auth })).toBe(0);
     expect(calls).toEqual(["https://stage.example/api/v1/sandbox/list"]);
-    expect(await run(["list", "--json"], io, { auth: { ...auth, env: { ...env, ARMADA_PROFILE: "staging" } } })).toBe(
-      0,
-    );
+    expect(await run(["ls", "--json"], io, { auth: { ...auth, env: { ...env, ARMADA_PROFILE: "staging" } } })).toBe(0);
     expect(calls).toHaveLength(2);
     expect(
-      await run(["--profile=staging", "list"], io, {
+      await run(["--profile=staging", "ls"], io, {
         auth: { ...auth, env: { ...env, ARMADA_URL: "https://wrong.example" } },
       }),
     ).toBe(2);
@@ -72,12 +72,12 @@ test("profile selection overrides the environment and rejects unsafe or unconfig
         throw new Error("Must not request");
       },
     };
-    expect(await run(["--profile", "chosen", "list"], io, { auth })).toBe(2);
+    expect(await run(["--profile", "chosen", "ls"], io, { auth })).toBe(2);
     expect(errors).toContain("--profile chosen login --url");
     for (const name of ["../other", "", "a/b", ".", "x".repeat(65)]) {
-      expect(await run([`--profile=${name}`, "list"], io, { auth })).toBe(2);
+      expect(await run([`--profile=${name}`, "ls"], io, { auth })).toBe(2);
     }
-    expect(await run(["--profile", "one", "--profile", "two", "list"], io, { auth })).toBe(2);
+    expect(await run(["--profile", "one", "--profile", "two", "ls"], io, { auth })).toBe(2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -128,11 +128,16 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     const calls: string[] = [];
     auth.fetch = async (url) => {
       calls.push(String(url));
-      return Response.json({ methods: [] });
+      return String(url).endsWith("/start") ? loginStarted() : loginAuthorized();
     };
-    // Stop at method discovery: it proves the old malformed session did not prevent a new login.
-    expect(await run(["login", "--url", "https://stage.example", "--provider", "github"], io, { auth })).toBe(2);
-    expect(calls).toEqual(["https://stage.example/api/v1/auth/methods"]);
+    auth.open = () => {};
+    auth.sleep = async () => {};
+    expect(await run(["login", "--url", "https://stage.example"], io, { auth })).toBe(0);
+    expect(calls).toEqual([
+      "https://stage.example/api/v1/auth/device/start",
+      "https://stage.example/api/v1/auth/device/poll",
+    ]);
+    expect((await auth.session.read())?.armadaUrl).toBe("https://stage.example");
     expect(await run(["logout"], io, { auth })).toBe(0);
     expect(await auth.session.read()).toBeNull();
   } finally {
@@ -157,22 +162,33 @@ test("default profile organization preferences use the saved login origin", asyn
     },
     write: async () => {},
   };
-  let output = "";
-  auth.out = (s) => {
-    output += s;
+  let body: unknown;
+  auth.fetch = async (input, init) => {
+    expect(new URL(String(input)).origin).toBe("https://custom.example");
+    body = JSON.parse(String(init?.body));
+    return Response.json({ sandboxes: [] });
   };
   expect(
     await run(
-      ["org", "current"],
+      ["ls"],
       {
-        out: (s) => {
-          output += s;
-        },
+        out: () => {},
         err: () => {},
       },
       { auth },
     ),
   ).toBe(0);
   expect(origins).toEqual(["https://custom.example"]);
-  expect(JSON.parse(output)).toEqual({ org: "chosen_org" });
+  expect(body).toEqual({ org: "chosen_org" });
+});
+
+test("exec rejects shell text without the argument separator", async () => {
+  let stderr = "";
+  const code = await run(
+    ["exec", "11111111-1111-4111-8111-111111111111", "pwd"],
+    { out: () => {}, err: (text) => (stderr += text) },
+    { env: {} },
+  );
+  expect(code).toBe(2);
+  expect(stderr).toContain("Use armada exec [sandbox-id] -- COMMAND");
 });

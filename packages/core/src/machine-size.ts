@@ -1,10 +1,10 @@
 import type { LaunchRequest } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
+import { capabilities, MACHINE_SIZES, type MachineSize } from "./machine-capabilities.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
 
-/** Versioned, browser-safe resource policy. Labels do not imply equal performance or billing. */
-export const MACHINE_SIZES = ["small", "medium", "large", "xlarge"] as const;
-export type MachineSize = (typeof MACHINE_SIZES)[number];
+export { MACHINE_SIZES, type MachineSize } from "./machine-capabilities.ts";
+
 export const MACHINE_SIZE_CATALOG = {
   small: { vcpus: 2, memoryMiB: 4096, boatType: "small", boatDiskGB: 51 },
   medium: { vcpus: 4, memoryMiB: 8192, boatType: "default", boatDiskGB: 51 },
@@ -59,15 +59,17 @@ export function parseMachineSizePolicy(value: unknown, directories: readonly str
 }
 export function machineCapacity(provider: SandboxProviderId, size: MachineSize): MachineCapacity {
   const c = MACHINE_SIZE_CATALOG[parseMachineSize(size)];
+  const resources = capabilities(provider).sizeResources;
+  const physicalCores = resources === "explicit-limits" ? c.vcpus / 2 : null;
   return {
     provider,
     provenance: "requested-provider-resources",
     vcpus: c.vcpus,
     memoryMiB: c.memoryMiB,
-    cpuPhysicalCores: provider === "modal" ? c.vcpus / 2 : null,
-    cpuLimitPhysicalCores: provider === "modal" ? c.vcpus / 2 : null,
-    memoryLimitMiB: provider === "modal" ? c.memoryMiB : null,
-    boatType: provider === "boat" ? c.boatType : null,
+    cpuPhysicalCores: physicalCores,
+    cpuLimitPhysicalCores: physicalCores,
+    memoryLimitMiB: resources === "explicit-limits" ? c.memoryMiB : null,
+    boatType: resources === "instance-type" ? c.boatType : null,
   };
 }
 export function resolveMachineSize(
@@ -104,8 +106,6 @@ export interface MachineSizePolicyResult {
   policy: MachineSizePolicy | null;
 }
 
-/** Fail-closed launch transport: old replicas return 404. Never retry on the legacy route. */
-export const SIZED_LAUNCH_ROUTE_V1 = "/api/v1/sandbox/launch-sized-v1" as const;
 export const SIZED_LAUNCH_TOOL_V1 = "launch_sized_v1" as const;
 /** Required even when size is omitted and repository/golden policy semantics are relied upon. */
 export type SizedLaunchRequestV1 = LaunchRequest & { org?: string; sizePolicyVersion: 1 };

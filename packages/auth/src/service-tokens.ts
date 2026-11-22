@@ -7,14 +7,13 @@ interface CreatedServiceToken {
   id: string;
   label: string;
   orgName: string;
-  /** Shown once. Only the sha-256 hex of this string is stored. */
   token: string;
+  expiresAt: string | null;
 }
 
-/** Mints a service token for a bot. The caller must already be a member of the org. */
 export async function createServiceToken(
   store: AuthStore,
-  input: { userId: string; orgName?: string; label?: string; now: Date },
+  input: { userId: string; orgName?: string; label?: string; expiresAt?: string | null; now: Date },
 ): Promise<CreatedServiceToken> {
   const org = await resolveOrg(store, input.userId, input.orgName);
   const label = assertLabel(input.label ?? "default");
@@ -25,8 +24,9 @@ export async function createServiceToken(
     hash: await sha256Hex(token),
     label,
     createdAt: input.now.toISOString(),
+    expiresAt: input.expiresAt ?? null,
   });
-  return { id: row.id, label, orgName: org.name, token };
+  return { id: row.id, label, orgName: org.name, token, expiresAt: row.expiresAt };
 }
 
 export async function listServiceTokens(store: AuthStore, userId: string): Promise<ListedToken[]> {
@@ -56,7 +56,7 @@ export async function resolveOrg(store: AuthStore, userId: string, orgName: stri
     if (memberships.length === 0) throw new AuthError("You are not a member of an organization.", "usage");
     throw new AuthError("Name the org with --org. You belong to more than one.", "usage");
   }
-  const found = memberships.filter((membership) => membership.name === orgName);
+  const found = memberships.filter((membership) => membership.orgId === orgName || membership.name === orgName);
   const only = found.length === 1 ? found[0] : undefined;
   if (!only) {
     throw new AuthError(

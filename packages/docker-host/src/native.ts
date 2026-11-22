@@ -2,18 +2,25 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { DOCKER_HOST_SNAPSHOT_BASELINE_HEADER } from "../../core/src/docker-host-upgrade.ts";
-import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/src/docker-host-protocol.ts";
+import type {
+  DockerHostPollRequest,
+  DockerHostPollResponse,
+  DockerHostResultRequest,
+} from "../../core/src/docker-host-wire.ts";
+import {
+  createDockerMachineExecutor,
+  type DockerMachineCli,
+  type DockerMachineRequest,
+} from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
-import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
+import { createDockerContainerInventory } from "./container-inventory.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
-
-/** Private atomic state and an exclusive process lock; abandoned locks require operator intervention. */
 export async function fileStore(
   directory: string,
 ): Promise<Store & { lock(): Promise<() => Promise<void>>; exists(): Promise<boolean> }> {
@@ -74,7 +81,7 @@ export async function fileStore(
       compactReceipts(state);
       const serialized = JSON.stringify(state);
       if (Buffer.byteLength(serialized) > MAX_STATE_BYTES) throw new Error("Host state capacity reached");
-      if (await exists()) await load(); // Refuse unsafe existing configuration rather than replacing it.
+      if (await exists()) await load();
       const temporary = join(directory, `.state-${crypto.randomUUID()}`);
       const file = await open(temporary, "wx", 0o600);
       try {
@@ -94,8 +101,6 @@ export async function fileStore(
     async lock() {
       let lockName = "daemon.lock";
       if (process.platform === "linux") {
-        // A lock from another boot cannot have a surviving process owner. Keep
-        // legacy locks for explicit operator inspection. OS flock releases on crashes.
         try {
           await lstat(join(directory, "daemon.lock"));
           throw new Error("Legacy daemon lock requires operator inspection");
@@ -114,7 +119,6 @@ export async function fileStore(
           await file.close();
           throw new Error("Unsafe daemon lock");
         }
-        // The private stdin pipe is a lifetime lease: kernel closes it even on SIGKILL.
         const child = spawn("sh", ["-c", "flock --exclusive --nonblock 3 || exit 1; printf ready; cat >/dev/null"], {
           stdio: ["pipe", "pipe", "ignore", file.fd],
         });
@@ -146,21 +150,19 @@ export async function fileStore(
     },
   };
 }
-
-/** A host request the server answered with an error status. */
 class HostRequestDenied extends Error {
   constructor(readonly status: number) {
     super("Host request denied");
   }
 }
-
-/** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
 export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
+  inventory?: { cli: DockerMachineCli; failed(): void },
 ): Api & {
+  stopInventory(): Promise<void>;
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -171,16 +173,20 @@ export function httpApi(
     token: string,
     body: unknown,
     timeoutMs = 8_000,
-    snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
+    signal?: AbortSignal,
+    onResponse?: (response: Response) => void,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
-        ...(snapshotBaseline === undefined ? {} : { [DOCKER_HOST_SNAPSHOT_BASELINE_HEADER]: String(snapshotBaseline) }),
+        [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+        ...(endpoint === "poll"
+          ? { "x-armada-docker-host-delete-physical": "1", "x-armada-docker-host-restore": "1" }
+          : {}),
       },
       body: JSON.stringify(body),
     });
@@ -188,11 +194,11 @@ export function httpApi(
       await response.body?.cancel();
       throw new HostRequestDenied(response.status);
     }
-    if (endpoint === "results") {
+    onResponse?.(response);
+    if (endpoint === "results" || endpoint === "container-inventory") {
       await response.body?.cancel();
       return undefined;
     }
-    // Bound protocol output as well as Docker inspect output; neither is ever logged.
     if (!response.body) throw new Error("Invalid host response");
     let size = 0;
     const reader = response.body.getReader();
@@ -210,7 +216,34 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
+  function postResult(state: State, body: DockerHostResultRequest & { retained?: true }) {
+    return post(state.server, "results", state.hostToken, body);
+  }
+
+  const inventoryStop = new AbortController();
+  let inventoryReport: Promise<void> | undefined;
+  let nextInventoryAt = 0;
+  async function reportInventory(cli: DockerMachineCli, state: State, deploymentId: string) {
+    const signal = inventoryStop.signal;
+    const containers = await Array.fromAsync(
+      createDockerContainerInventory(cli, state, deploymentId).listInventory(signal),
+    );
+    signal.throwIfAborted();
+    await post(
+      state.server,
+      "container-inventory",
+      state.hostToken,
+      { installationId: state.installationId, containers },
+      undefined,
+      signal,
+    );
+  }
+
   return {
+    async stopInventory() {
+      inventoryStop.abort();
+      await inventoryReport;
+    },
     async reuseRegistration(state, token) {
       if (!validToken(token)) throw new Error("Invalid registration token");
       const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
@@ -250,11 +283,37 @@ export function httpApi(
       return (await post(server, "register", token, { installationId })) as { hostId: string; hostToken: string };
     },
     async poll(state, options) {
+      async function poll(body: DockerHostPollRequest, timeoutMs?: number) {
+        let retainedStopProof = false;
+        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs, undefined, (response) => {
+          retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
+        })) as DockerHostPollResponse;
+        if (
+          inventory &&
+          !inventoryStop.signal.aborted &&
+          result?.containerInventory === 1 &&
+          !inventoryReport &&
+          performance.now() >= nextInventoryAt
+        ) {
+          const deploymentId =
+            result.containerInventoryDeploymentId ??
+            `${serverOrigin(state.server)}/${state.hostId}/${state.installationId}`;
+          inventoryReport = reportInventory(inventory.cli, state, deploymentId)
+            .catch(() => {
+              if (!inventoryStop.signal.aborted) inventory.failed();
+            })
+            .finally(() => {
+              nextInventoryAt = performance.now() + 60_000;
+              inventoryReport = undefined;
+            });
+        }
+        return { ...result, retainedStopProof: retainedStopProof ? (true as const) : undefined };
+      }
+
       const body = {
         installationId: state.installationId,
         version: VERSION,
-
-        ...(options?.skipSnapshots ? { skipSnapshots: true } : {}),
+        ...(options?.skipSnapshots && options.waitSeconds === undefined ? { skipSnapshots: true as const } : {}),
       };
       const retention = {
         retentionSeconds: state.retentionSeconds ?? 86400,
@@ -264,7 +323,6 @@ export function httpApi(
             const at = new Date(entry.deadline).toISOString();
             return next === null || at < next ? at : next;
           }, null),
-        // The authoritative per-generation deadlines the daemon will delete at.
         deadlines: (state.retention ?? [])
           .filter((entry) => !entry.deleted)
           .map((entry) => ({
@@ -273,45 +331,12 @@ export function httpApi(
             deadline: new Date(entry.deadline).toISOString(),
           })),
       };
-      const legacyRetention = {
-        retentionSeconds: retention.retentionSeconds,
-        nextCleanupAt: retention.nextCleanupAt,
-      };
       const disk = diskFreeBytes ? { diskFreeBytes: await diskFreeBytes() } : {};
       const stopped = stoppedBytes ? { stoppedSandboxBytes: await stoppedBytes(state) } : {};
       const sampledResources = resources ? await resources(state) : dockerHostResources();
-      if (options?.waitSeconds !== undefined) {
-        // Held poll (#2561): the server answers as soon as work exists. Servers
-        // without it refuse the additive fields before claiming, and the
-        // daemon then keeps its own idle period.
-        try {
-          return (await post(
-            state.server,
-            "poll",
-            state.hostToken,
-            {
-              // No skipSnapshots: it would stay stale for the whole hold. The
-              // server serializes snapshot builds from `running` instead and
-              // frees the slot as soon as the running build completes.
-              installationId: body.installationId,
-              version: body.version,
-              resumeClaimProtocol: 1,
-              ...retention,
-              ...disk,
-              ...stopped,
-              resources: sampledResources,
-              resourcePolicyVersion: 1,
-              waitSeconds: options.waitSeconds,
-              running: [...(options.running ?? [])],
-            },
-            options.waitSeconds * 1000 + 8_000,
-          )) as Awaited<ReturnType<Api["poll"]>>;
-        } catch (error) {
-          if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        }
-      }
-      try {
-        return (await post(state.server, "poll", state.hostToken, {
+      const waitSeconds = options?.waitSeconds;
+      return await poll(
+        {
           ...body,
           resumeClaimProtocol: 1,
           ...retention,
@@ -319,83 +344,20 @@ export function httpApi(
           ...stopped,
           resources: sampledResources,
           resourcePolicyVersion: 1,
-        })) as Awaited<ReturnType<Api["poll"]>>;
-      } catch (error) {
-        // Older servers reject the additive resource field before claiming a job.
-        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        try {
-          return (await post(state.server, "poll", state.hostToken, {
-            ...body,
-            ...legacyRetention,
-            ...disk,
-            ...stopped,
-            resources: sampledResources,
-            resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
-        } catch (claimCompatibilityError) {
-          if (!(claimCompatibilityError instanceof HostRequestDenied) || claimCompatibilityError.status !== 400)
-            throw claimCompatibilityError;
-        }
-        if (stoppedBytes) {
-          try {
-            return (await post(state.server, "poll", state.hostToken, {
-              ...body,
-              ...legacyRetention,
-              ...disk,
-              resources: sampledResources,
-              resourcePolicyVersion: 1,
-            })) as Awaited<ReturnType<Api["poll"]>>;
-          } catch (compatibilityError) {
-            if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
-              throw compatibilityError;
-          }
-        }
-        if (diskFreeBytes) {
-          try {
-            return (await post(state.server, "poll", state.hostToken, {
-              ...body,
-              ...legacyRetention,
-              resources: sampledResources,
-              resourcePolicyVersion: 1,
-            })) as Awaited<ReturnType<Api["poll"]>>;
-          } catch (diskCompatibilityError) {
-            if (!(diskCompatibilityError instanceof HostRequestDenied) || diskCompatibilityError.status !== 400)
-              throw diskCompatibilityError;
-          }
-        }
-        try {
-          return (await post(state.server, "poll", state.hostToken, {
-            ...body,
-            resources: sampledResources,
-            resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
-        } catch (compatibilityError) {
-          if (!(compatibilityError instanceof HostRequestDenied) || compatibilityError.status !== 400)
-            throw compatibilityError;
-        }
-        try {
-          // The preceding policy-capable server knows quotas but not availability.
-          // Keep its handshake so manual-limit hosts can still receive work.
-          return (await post(state.server, "poll", state.hostToken, {
-            ...body,
-            resources: dockerHostResources(),
-            resourcePolicyVersion: 1,
-          })) as Awaited<ReturnType<Api["poll"]>>;
-        } catch (legacyError) {
-          if (!(legacyError instanceof HostRequestDenied) || legacyError.status !== 400) throw legacyError;
-          return (await post(state.server, "poll", state.hostToken, body)) as Awaited<ReturnType<Api["poll"]>>;
-        }
-      }
+          ...(waitSeconds === undefined ? {} : { waitSeconds, running: [...(options?.running ?? [])] }),
+        },
+        waitSeconds === undefined ? undefined : waitSeconds * 1000 + 8_000,
+      );
     },
     async claim(state, requestId, accepted) {
-      await post(state.server, "results", state.hostToken, {
+      await postResult(state, {
         installationId: state.installationId,
         requestId,
         claimed: accepted,
       });
     },
     async cleaned(state, requestId, reason) {
-      await post(state.server, "results", state.hostToken, {
+      await postResult(state, {
         installationId: state.installationId,
         requestId,
         cleaned: true,
@@ -410,6 +372,7 @@ export function httpApi(
           signal: AbortSignal.timeout(45_000),
           headers: {
             authorization: `Bearer ${state.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
             "x-armada-installation-id": state.installationId,
             "x-armada-request-id": requestId,
             ...(body ? { "content-type": "application/x-tar" } : {}),
@@ -420,46 +383,68 @@ export function httpApi(
         if (response.status !== 204 && response.status !== 202) throw new HostRequestDenied(response.status);
         return response.status;
       }
-      // Admission denies tainted or superseded work before requesting any bytes.
       if ((await send()) === 204) return;
       const archive = await read();
       if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
     },
-    async result(state, receipt, expired) {
-      const body = {
+    async result(state, receipt, expired, retained) {
+      if (!expired && !receipt.outcome) throw new Error("Missing host receipt outcome");
+      const machineId =
+        !expired &&
+        receipt.outcome === "completed" &&
+        (receipt.operation === "create" || receipt.operation === "restore")
+          ? receipt.machineId
+          : undefined;
+      const body: DockerHostResultRequest & { retained?: true } = {
         installationId: state.installationId,
         requestId: receipt.requestId,
-        ...(expired ? { expired: true } : { outcome: receipt.outcome }),
+        ...(!expired && retained && receipt.operation === "stop" && receipt.outcome === "failed" ? { retained } : {}),
+        ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
+        ...(machineId === undefined ? {} : { machineId }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
       const baselineTool = receipt.operation === "buildSnapshot" ? receipt.baselineTool : undefined;
       const missingRefIndex = receipt.operation === "buildSnapshot" ? receipt.missingRefIndex : undefined;
-      if (expired || (!receipt.reason && baselineVersion === undefined))
-        return void (await post(state.server, "results", state.hostToken, body));
-      try {
-        await post(state.server, "results", state.hostToken, {
-          ...body,
-          ...(receipt.reason ? { reason: receipt.reason } : {}),
-          ...(baselineVersion === undefined ? {} : { baselineVersion }),
-          ...(baselineTool === undefined ? {} : { baselineTool }),
-          ...(missingRefIndex === undefined ? {} : { missingRefIndex }),
-        });
-      } catch (error) {
-        // Older replicas may reject optional body fields. Carry verified baseline metadata in a header
-        // so a retry routed to a newer replica still receives the complete receipt.
-        if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
-        await post(state.server, "results", state.hostToken, body, undefined, baselineVersion);
-      }
+      if (expired || (!receipt.reason && baselineVersion === undefined)) return void (await postResult(state, body));
+      await postResult(state, {
+        ...body,
+        ...(receipt.reason ? { reason: receipt.reason } : {}),
+        ...(baselineVersion === undefined ? {} : { baselineVersion }),
+        ...(baselineTool === undefined ? {} : { baselineTool }),
+        ...(missingRefIndex === undefined ? {} : { missingRefIndex }),
+      });
     },
   };
 }
 
-/** Never a shell, never inherited output; inspect can contain secrets. */
+export async function observeRetainedStop(
+  options: Parameters<typeof createDockerMachineExecutor>[0],
+  request: DockerMachineRequest,
+) {
+  let exitedContainer = false;
+  const executor = createDockerMachineExecutor({
+    ...options,
+    cli: {
+      async run(args, stdin, runOptions) {
+        const result = await options.cli.run(args, stdin, runOptions);
+        if (args[0] === "container" && args[1] === "inspect" && result.exitCode === 0) {
+          const rows: unknown = JSON.parse(result.stdout);
+          const container = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+          exitedContainer =
+            typeof container?.Id === "string" &&
+            /^[a-f0-9]{64}$/.test(container.Id) &&
+            container.State?.Status === "exited" &&
+            container.State.Running === false;
+        }
+        return result;
+      },
+    },
+  });
+  return (await executor.isStopped(request)) && exitedContainer;
+}
 export const dockerCli: DockerMachineCli = {
   run(argv, stdin, options) {
-    // Buildx is a separate client process: its stdin may be a socket that cannot be reopened as /dev/stdin.
-    // A scoped environment secret is consumed by BuildKit, not Dockerfile ENV/ARG or the image.
     const env = { ...process.env };
     delete env.ARMADA_SNAPSHOT_GITHUB_TOKEN;
     if (options?.githubBuildToken !== undefined) {
@@ -473,8 +458,6 @@ export const dockerCli: DockerMachineCli = {
         env,
       });
       let buildStderr = "";
-      // Keep only a bounded tail in memory. The builder admits only fixed tool
-      // names as errors and never forwards the raw stream to logs or the API.
       child.stderr.on("data", (data: Buffer) => {
         if (!captureBuildDiagnostic) return;
         buildStderr = (buildStderr + data.toString("utf8")).slice(-32768);
@@ -506,8 +489,6 @@ export const dockerCli: DockerMachineCli = {
     });
   },
 };
-
-/** Binary collector output with a hard byte budget. Never expose Docker diagnostics. */
 export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer> | null> {
   const child = Bun.spawn(["docker", ...argv], {
     stdin: "ignore",

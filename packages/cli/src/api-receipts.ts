@@ -1,6 +1,5 @@
 import { PROMPT_STATUSES } from "@armada/core";
 
-/** Validate the wire fields consumed by CLI operations, before any success output. */
 export function validApiReceipt(path: string, value: unknown): boolean {
   if (!record(value)) return false;
   const text = (key: string) => typeof value[key] === "string" && value[key] !== "";
@@ -24,7 +23,6 @@ export function validApiReceipt(path: string, value: unknown): boolean {
         bool("truncated")
       );
     case "/api/v1/sandbox/status":
-    case "/api/v1/sandbox/detail":
     case "/api/v1/sandbox/wait":
       return (
         text("id") &&
@@ -48,7 +46,7 @@ export function validApiReceipt(path: string, value: unknown): boolean {
           (row) =>
             record(row) &&
             typeof row.name === "string" &&
-            (row.provider === undefined || member(row.provider, ["boat", "modal", "docker"])) &&
+            member(row.provider, ["boat", "modal", "docker"]) &&
             (row.visibility === undefined || member(row.visibility, ["org", "private"])) &&
             record(row.config) &&
             Array.isArray(row.config.repos),
@@ -63,7 +61,6 @@ export function validApiReceipt(path: string, value: unknown): boolean {
         )
       );
     default:
-      // API control routes return JSON objects, including explicit empty acknowledgements ({}).
       return true;
   }
 }

@@ -13,7 +13,7 @@ embed, mint with a service token created by an organization admin who does
 not own the sandbox (an ordinary member cannot mint, even for an
 organization-visible sandbox, because minting requires the owner or an
 organization admin), or keep the viewer token on your backend and proxy
-only `viewer/status`, `viewer/logs` and `viewer/events`.
+only `viewer/status`, `viewer/logs` and the sandbox event stream.
 The response is `{ token, expiresAt }`. When the browser holds a
 token, forward only this opaque token. It expires after five minutes; renew through your
 backend. Never send the service bearer to the browser or put tokens in URLs.
@@ -33,26 +33,19 @@ The viewer bearer works only on these routes:
   or HTTP 409 `credential_binding_required` for a Modal sandbox with no bound
   model account. The request body is limited to 128 KiB; a larger body returns
   HTTP 503 `{"error":"viewer_access_denied"}`, so do not retry it unchanged.
-- `GET /api/v1/viewer/events?cursor=<URL-encoded opaque cursor>`: SSE over fetch
-  with `Authorization: Bearer <viewer token>`. Native EventSource cannot set this
-  header. Each `page` event contains the ordinary logs response. Save its JSON
-  `cursor` for reconnects; do not derive a cursor from event text. Last-Event-ID is
-  also accepted as an input cursor, but JSON cursors are authoritative.
+- `GET /api/v1/events?sandbox=<sandbox UUID>`: the [sandbox event feed](README.md#stream-sandbox-events) accepts the viewer bearer for its bound sandbox.
 
-Pages contain at most 100 events and request a 64 KiB provider byte budget.
-Streams poll the existing incremental reader when idle, at one second intervals,
-and read one page per consumer pull without a background producer. Abort the fetch
-on unmount. An `access-ended` event or end of stream requires reauthorization or
-reconnect. After a transport error, fall back to `viewer/logs` using the saved
-cursor and a bounded polling cadence; reconnect SSE when available. Treat cursors
-as opaque and handle a rejected/expired history cursor by reopening history.
-These are the same provider cursors and public events as ordinary logs, including
-native Boat's mutable-row behavior. Clients should use the existing event reducer
-rather than assuming append-only messages.
+The feed sends durable references for lifecycle transitions and runtime events.
+On provider-native sandboxes, read logs directly to see output between transitions.
+Use `viewer/logs` to retrieve message
+content and `viewer/status` for current status. Save the last processed SSE ID
+for reconnects and keep the opaque log cursor separately. Log pages request at
+most 100 events and a 64 KiB provider byte budget. Reconcile mutable log
+events by event ID. On unmount, abort the stream. If a grant expires, renew it
+through your backend before reconnecting.
 
-Use a same-origin application backend proxy for browser integration. This API
-adds no permissive CORS or cookie authentication. Proxy only the viewer routes,
-forward Authorization and cancellation, and disable response buffering for SSE.
+Use a same-origin application backend proxy for browser integration. Forward
+Authorization and cancellation and disable response buffering for SSE.
 
 Design decision: the token is an AES-GCM sealed, purpose-bound grant under
 ARMADA_ENCRYPTION_KEY, containing the issuing bearer, exact sandbox and expiry.

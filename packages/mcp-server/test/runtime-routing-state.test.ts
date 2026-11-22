@@ -8,6 +8,7 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import { providerRegistry } from "../src/http.ts";
 import {
   createHistoricalSandboxProviderResolver,
@@ -64,10 +65,10 @@ test.each(["core", "scoped"] as const)(
     const runtime = await store.insert({ ...f.input(), boatRuntime: true });
     expect(runtime.boatRuntime).toBe(true);
     expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
-    await store.update(runtime.id, { status: "stopped", stoppedAt: new Date().toISOString() });
-    expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [runtime.id])).rows).toEqual([
-      { boat_runtime: true },
-    ]);
+    await store.update(runtime.id, { effectiveTtlSeconds: 7200 });
+    expect(
+      (await f.db.query("select boat_runtime, effective_ttl_seconds from sandboxes where id=$1", [runtime.id])).rows,
+    ).toEqual([{ boat_runtime: true, effective_ttl_seconds: 7200 }]);
   },
 );
 
@@ -217,11 +218,10 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
       throw Error("must not wait");
     },
   };
-  for (const [name, extra] of [
-    ["send", { prompt: "no" }],
-    ["github_refresh", {}],
-  ] as const)
-    await expect(callSharedTool(context, name, { id: record.id, ...extra })).rejects.toMatchObject({
-      code: "unsupported",
-    });
+  await expect(callSharedTool(context, "send", { id: record.id, prompt: "no" })).rejects.toMatchObject({
+    code: "unsupported",
+  });
+  await expect(dispatchGitHubRestControl(context, "github/refresh", { id: record.id })).rejects.toMatchObject({
+    code: "unsupported",
+  });
 });

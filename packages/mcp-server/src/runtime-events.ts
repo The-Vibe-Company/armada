@@ -1,6 +1,7 @@
 import {
   type AgentEvent,
   type Harness,
+  isModelOutput,
   type MemberRole,
   modelRateLimit,
   PROMPT_STATUSES,
@@ -9,6 +10,9 @@ import {
   VaultError,
 } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { recordAccountExhaustion } from "./account-exhaustion.ts";
+import { completedUsageTurns, unmeasuredUsage } from "./account-spend.ts";
+import { UUID } from "./control-input.ts";
 import { createSqlData } from "./data.ts";
 import type { Route } from "./http.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, runtimeTransaction } from "./runtime-enrolment.ts";
@@ -16,7 +20,9 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
+import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
+import { deferTransactionWake, eventFeedWakeKey } from "./wake-bus.ts";
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -119,7 +125,7 @@ export function createRuntimeEvents(
       });
     }
     let first: { sandboxId: string; epoch: string } | undefined;
-    const result = await authority.withSession(token, epoch, async (tx, scope) => {
+    const result = await authority.withSession(token, epoch, async (tx, scope, generation) => {
       if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
       if (value.nativeAuth !== undefined) throw new UnsupportedNativeAuth();
       if (
@@ -186,6 +192,7 @@ export function createRuntimeEvents(
       const sequences: number[] = [];
       const markers: (string | null)[] = [];
       const encrypted: string[] = [];
+      const visibleTextPromptIds: (string | null)[] = [];
       for (const item of items) {
         if (item.sequence > ack + 1) break; // Commit only the contiguous prefix, never an event beyond a gap.
         const previous = existing.get(item.sequence);
@@ -198,6 +205,16 @@ export function createRuntimeEvents(
           const marker = item.event.promptId && !known.has(item.event.promptId) ? item.event.promptId : null;
           sequences.push(item.sequence);
           markers.push(marker);
+          const { event } = item;
+          visibleTextPromptIds.push(
+            event.kind === "message" &&
+              isModelOutput(event) &&
+              event.text.trim() &&
+              event.promptId &&
+              UUID.test(event.promptId)
+              ? event.promptId
+              : null,
+          );
           // Send hex as text so both SQL adapters and direct drivers preserve the encrypted bytes.
           encrypted.push(Buffer.from(await encryptSecret(item.serialized, key)).toString("hex"));
           pending.set(item.sequence, item.serialized);
@@ -209,13 +226,15 @@ export function createRuntimeEvents(
         }
         ack = Math.max(ack, item.sequence);
       }
-      if (sequences.length)
+      if (sequences.length) {
         await tx.query(
-          `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc)
-           select $1,sequence,$2,marker,decode(event_hex,'hex')
-           from unnest($3::bigint[],$4::text[],$5::text[]) as batch(sequence,marker,event_hex)`,
-          [scope.sandboxId, scope.epoch, sequences, markers, encrypted],
+          `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc,visible_text_prompt_id)
+           select $1,sequence,$2,marker,decode(event_hex,'hex'),text_prompt_id
+           from unnest($3::bigint[],$4::text[],$5::text[],$6::uuid[]) as batch(sequence,marker,event_hex,text_prompt_id)`,
+          [scope.sandboxId, scope.epoch, sequences, markers, encrypted, visibleTextPromptIds],
         );
+        deferTransactionWake(tx, eventFeedWakeKey(scope.sandboxId));
+      }
       // Project only the newly committed contiguous archive prefix. Replays cannot
       // resurrect waits, and assistant progress or terminal events clear them.
       const retryUpdates = new Map<string, number | null>();
@@ -245,9 +264,12 @@ export function createRuntimeEvents(
             item.status,
           ]);
       }
+      await recordAccountExhaustion(tx, scope.sandboxId, fresh);
       await projectRuntimeIdle(tx, scope.sandboxId, key, initialAck, fresh, ack);
+      await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
       const usage = reportedTurnUsage(fresh);
-      if (addedPrompt || usage.turns.length) {
+      const completed = completedUsageTurns(fresh);
+      if (addedPrompt || usage.turns.length || completed.size) {
         // recordUsage merges cumulative snapshots, not per-batch deltas. Prompt-only
         // failures/unknown turns must remain in the coverage denominator as well.
         usage.turnCount = Number(
@@ -282,8 +304,15 @@ export function createRuntimeEvents(
         ).rows[0];
         await data.sandboxes.recordUsage(scope.sandboxId, usage, {
           observations: usage.turns,
+          completed,
           ...(admission?.captured
-            ? { contexts: admittedTurnContexts(admission.context, usage.turns, owner.harness) }
+            ? {
+                contexts: admittedTurnContexts(
+                  admission.context,
+                  [...usage.turns, ...[...completed.keys()].map(unmeasuredUsage)],
+                  owner.harness,
+                ),
+              }
             : {}),
         });
       }

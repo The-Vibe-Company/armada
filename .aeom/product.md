@@ -18,7 +18,6 @@ On the landing: read what Armada does, see how a golden, a launch, a sandbox and
 ## Visual assets
 - The logo: five small triangles in a V, the lead one lime green, the others off-white, the back two fainter, like a formation seen from above. (seen: apps/dashboard/src/components/landing/Mark.tsx)
 - The hero: a night sky drawn on a canvas, where squadrons of small coloured triangle ships fly in and the logo's formation breaks apart, behind a large white headline. (seen: /) (seen: apps/dashboard/src/components/landing/Sky.tsx)
-- The README's masthead and diagram: off-white text and lime marks on near-black, with a monospace for commands and a plain sans for words. (seen: docs/images/armada-masthead.svg) (seen: docs/images/armada-how-it-works-dark.svg)
 
 ## Accepted exceptions
 - `gradient-text` on /: the hero's "See every move." shine is the accepted hero, kept exactly as it is. (seen: issue #610)

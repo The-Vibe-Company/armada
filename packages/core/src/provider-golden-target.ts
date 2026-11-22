@@ -1,5 +1,5 @@
 import type { GoldenRow } from "./golden-store.ts";
-import type { ProviderTarget, SandboxProviderId } from "./sandbox-provider.ts";
+import { type ProviderTarget, type SandboxProviderId, sandboxRowModalBinding } from "./sandbox-provider.ts";
 
 /** Immutable routing metadata only; authorization/provenance remains with the caller. */
 export function goldenRowProviderTarget(
@@ -13,9 +13,6 @@ export function goldenRowProviderTarget(
     orgId: row.org_id,
     ownerId: row.owner_id,
     visibility: row.visibility as "org" | "private",
-    modal:
-      row.provider === "modal"
-        ? { workspace: row.modal_workspace!, environment: row.modal_environment!, appId: row.modal_app_id! }
-        : null,
+    modal: sandboxRowModalBinding(row),
   };
 }

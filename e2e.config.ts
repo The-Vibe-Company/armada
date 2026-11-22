@@ -14,7 +14,7 @@ const app = {
 };
 
 export default {
-  tests: "tests/dashboard/**/*.e2e.ts",
+  tests: "test/dashboard/**/*.e2e.ts",
   workers: 1,
   retries: 0,
   trace: "on",

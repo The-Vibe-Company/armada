@@ -98,6 +98,8 @@ export function createDockerOutputReader(sql: Sql, key: string, clock?: Clock) {
             },
           },
         );
+        if (reply.requestId === requestId && reply.status === 409 && reply.body.error === "output_limit")
+          throw new OutputCollectionError("output_limit");
         if (part === null && reply.body.error === "invalid_request")
           throw new OutputCollectionError("output_protocol_unsupported");
         if (reply.status !== 200 || reply.body.requestId !== requestId) return null;

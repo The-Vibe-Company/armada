@@ -16,7 +16,7 @@ spec.loader.exec_module(ocr)
 
 
 class BootstrapTests(unittest.TestCase):
-    # Armada addition: doctor must never install or execute OCR.
+    # Armada addition: check must never install or execute OCR.
     def test_check_is_read_only_and_verifies_cached_content(self):
         data = b"synthetic binary"
         with tempfile.TemporaryDirectory() as tmp, \
@@ -61,7 +61,12 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(binary.read_bytes(), data)
             self.assertTrue(os.access(binary, os.X_OK))
             self.assertEqual(ocr.ensure_binary(), binary)
-            download.assert_called_once()
+            download.assert_called_once_with(
+                "https://github.com/alibaba/open-code-review/releases/download/"
+                "v1.13.12/opencodereview-linux-arm64",
+                timeout=60,
+            )
+            self.assertEqual(binary, Path(tmp).resolve() / "1.13.12/linux-arm64/ocr")
             binary.write_bytes(b"corrupted")
             with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                 ocr.ensure_binary()

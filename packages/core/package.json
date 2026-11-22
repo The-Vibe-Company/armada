@@ -1,16 +1,31 @@
 {
   "name": "@armada/core",
-  "version": "2.57.2",
+  "version": "8.0.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./accounts": "./src/account-binding-policy.ts",
+    "./antigravity-credential": "./src/antigravity-credential.ts",
+    "./contract": "./src/contract/index.ts",
+    "./contract/failures": "./src/contract/failures.ts",
+    "./contract/public-auth": "./src/contract/public-auth.ts",
+    "./contract/sandbox": "./src/contract/sandbox.ts",
+    "./contract/sandbox-events": "./src/contract/sandbox-events.ts",
+    "./contract/sandbox-outputs": "./src/contract/sandbox-outputs.ts",
+    "./contract/sandbox-viewer": "./src/contract/sandbox-viewer.ts",
+    "./contract/tokens": "./src/contract/tokens.ts",
+    "./docker": "./src/docker-api.ts",
+    "./launch": "./src/launch-exports.ts",
+    "./launch-workdir": "./src/launch-workdir.ts",
+    "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
   },
   "dependencies": {
     "croner": "11.0.0",
     "cronstrue": "3.39.0",
-    "tar-stream": "3.1.7"
+    "tar-stream": "3.1.7",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/tar-stream": "^3.1.5"

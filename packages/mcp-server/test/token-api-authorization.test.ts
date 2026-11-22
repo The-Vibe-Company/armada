@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken, generateToken, sha256Hex } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import { tokenOperations } from "@armada/core/contract";
 import { type ControlOptions, createHandler, handleControlRequest } from "../src/index.ts";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
@@ -91,37 +92,58 @@ test("session callers can create and list only their own tokens in memberships",
   const { call } = makeServer();
   const created = await call("token/create", jwt(ALICE), { org: "Alpha", label: "worker" });
   expect(created.status).toBe(200);
-  const dto = (await created.json()) as { id: string; token: string; orgName: string };
+  tokenOperations.createServiceToken.successHeaders["Cache-Control"].parse(created.headers.get("cache-control"));
+  const dto = tokenOperations.createServiceToken.output.parse(await created.json());
   expect(dto.orgName).toBe("Alpha");
-  expect(dto.token).toMatch(/^armada_/);
+  expect(dto.expiresAt).toBe("2026-12-08T00:00:00.000Z");
+  expect(dto.token).toMatch(/^armada_sk_[A-Za-z0-9_-]{43}$/);
   const list = await call("token/list", jwt(ALICE));
   expect(list.status).toBe(200);
-  expect((await list.json()) as unknown).toMatchObject({ tokens: [{ id: dto.id, orgName: "Alpha", label: "worker" }] });
+  tokenOperations.listServiceTokens.successHeaders["Cache-Control"].parse(list.headers.get("cache-control"));
+  expect(tokenOperations.listServiceTokens.output.parse(await list.json())).toMatchObject({
+    tokens: [{ id: dto.id, orgName: "Alpha", label: "worker", lastUsedAt: null, expiresAt: dto.expiresAt }],
+  });
 
-  const legacySelector = await call("token/create", jwt(ALICE), { orgName: "Beta" });
-  expect(legacySelector.status).toBe(200);
-  expect(((await legacySelector.json()) as { orgName: string }).orgName).toBe("Beta");
-  const uuidSelector = await call("token/create", jwt(ALICE), { org: ORG_A });
+  const uuidSelector = await call("token/create", jwt(ALICE), { org: ORG_A, label: "uuid-key", expires: "never" });
   expect(uuidSelector.status).toBe(200);
-  expect(((await uuidSelector.json()) as { orgName: string }).orgName).toBe("Alpha");
-  const switched = await call("token/create", jwt(ALICE), { org: "Other" });
+  expect(await uuidSelector.json()).toMatchObject({ orgName: "Alpha", expiresAt: null });
+  const switched = await call("token/create", jwt(ALICE), { org: "Other", label: "worker" });
   expect(switched.status).toBe(403);
 });
 
-test("service tokens remain subset-scoped and cannot create or list in another organization", async () => {
+test("service and MCP tokens cannot manage API keys", async () => {
   const { call, store } = makeServer();
-  const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-  const child = await call("token/create", parent.token, { org: "Alpha", label: "child" });
-  expect(child.status).toBe(200);
-  const escalation = await call("token/create", parent.token, { org: "Beta", label: "escape" });
-  expect(escalation.status).toBe(403);
-  const unscoped = await call("token/create", parent.token, { label: "escape" });
-  expect(unscoped.status).toBe(403);
-  const list = await call("token/list", parent.token);
-  expect(list.status).toBe(200);
-  const tokens = ((await list.json()) as { tokens: { orgName: string }[] }).tokens;
-  expect(tokens).toHaveLength(2);
-  expect(tokens.every((token) => token.orgName === "Alpha")).toBe(true);
+  const key = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
+  const access = await oauthAccess(store, ORG_A);
+  for (const token of [key.token, access]) {
+    expect((await call("token/create", token, { org: "Alpha", label: "child" })).status).toBe(403);
+    expect((await call("token/list", token)).status).toBe(403);
+    expect((await call("token/revoke", token, { id: key.id })).status).toBe(403);
+  }
+});
+
+test("whoami identifies the verified login or API key and rejects a revoked key", async () => {
+  const { call, store } = makeServer();
+  const expiresAt = "2099-01-01T00:00:00.000Z";
+  const key = await createServiceToken(store, {
+    userId: ALICE,
+    orgName: "Alpha",
+    label: "agent",
+    expiresAt,
+    now: now(),
+  });
+  const login = await call("token/whoami", jwt(ALICE));
+  expect(tokenOperations.whoami.output.parse(await login.json())).toEqual({ userId: ALICE, auth: "login" });
+  const identity = await call("token/whoami", key.token);
+  expect(tokenOperations.whoami.output.parse(await identity.json())).toEqual({
+    userId: ALICE,
+    auth: "key",
+    key: { name: "agent", expiresAt },
+  });
+  expect((await call("token/revoke", jwt(ALICE), { id: key.id })).status).toBe(200);
+  const refused = await call("token/whoami", key.token);
+  expect(refused.status).toBe(401);
+  expect(await refused.json()).toMatchObject({ error: { message: expect.stringContaining("expired, or revoked") } });
 });
 
 test("only an owner can revoke their service token, including for an organization they administer", async () => {
@@ -132,9 +154,8 @@ test("only an owner can revoke their service token, including for an organizatio
   expect(denied.status).toBe(403);
   const revoked = await call("token/revoke", jwt(ALICE), { id: aliceToken.id });
   expect(revoked.status).toBe(200);
-  const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-  const serviceDenied = await call("token/revoke", parent.token, { id: bobToken.id });
-  expect(serviceDenied.status).toBe(403);
+  tokenOperations.revokeServiceToken.successHeaders["Cache-Control"].parse(revoked.headers.get("cache-control"));
+  expect(tokenOperations.revokeServiceToken.output.parse(await revoked.json())).toEqual({ ok: true });
 });
 
 test("session token lists hide another member's tokens even in the same organization", async () => {
@@ -146,57 +167,6 @@ test("session token lists hide another member's tokens even in the same organiza
   const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
   expect(ids).toContain(alice.id);
   expect(ids).not.toContain(bob.id);
-});
-
-test("an Alpha-scoped service token cannot list or revoke Alice's Beta token", async () => {
-  const { call, store } = makeServer();
-  const alpha = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-  const beta = await createServiceToken(store, { userId: ALICE, orgName: "Beta", now: now() });
-  const list = await call("token/list", alpha.token);
-  expect(list.status).toBe(200);
-  const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
-  expect(ids).toContain(alpha.id);
-  expect(ids).not.toContain(beta.id);
-  const revoke = await call("token/revoke", alpha.token, { id: beta.id });
-  expect(revoke.status).toBe(403);
-});
-
-test("scoped token revocation re-reads current membership before using a listed token", async () => {
-  const { call, store } = makeServer();
-  const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-  store.listServiceTokens = async () => [
-    { id: parent.id, label: parent.label, orgName: "Alpha", createdAt: now().toISOString(), revokedAt: null },
-  ];
-  store.memberships = async () => [];
-
-  const revoke = await call("token/revoke", parent.token, { id: parent.id });
-  expect(revoke.status).toBe(403);
-});
-
-test("database organization names are globally unique, preventing duplicate-name scope confusion", () => {
-  const migration = Bun.file("supabase/migrations/20261108160000_orgs_credentials.sql");
-  return migration.text().then((sql) => {
-    expect(sql).toContain("create unique index orgs_name_key on public.orgs (lower(btrim(name)))");
-  });
-});
-
-test("MCP OAuth access tokens are restricted to their Alpha scope on every token route", async () => {
-  const { call, store } = makeServer();
-  const access = await oauthAccess(store, ORG_A);
-  const alpha = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-  const beta = await createServiceToken(store, { userId: ALICE, orgName: "Beta", now: now() });
-
-  const unscoped = await call("token/create", access, { label: "child" });
-  expect(unscoped.status).toBe(403);
-  const betaChild = await call("token/create", access, { org: "Beta", label: "child" });
-  expect(betaChild.status).toBe(403);
-  const list = await call("token/list", access);
-  expect(list.status).toBe(200);
-  const ids = ((await list.json()) as { tokens: { id: string }[] }).tokens.map((token) => token.id);
-  expect(ids).toContain(alpha.id);
-  expect(ids).not.toContain(beta.id);
-  const revoke = await call("token/revoke", access, { id: beta.id });
-  expect(revoke.status).toBe(403);
 });
 
 test("token routes distinguish auth-store outages, post-auth I/O and invalid requests", async () => {
@@ -215,7 +185,8 @@ test("token routes distinguish auth-store outages, post-auth I/O and invalid req
         if (route === "token/create") store.insertToken = fail;
         if (route === "token/revoke") store.revokeToken = fail;
       }
-      const response = await call(route, jwt(ALICE), { org: "Alpha", id: BOB });
+      const body = route === "token/create" ? { org: "Alpha", label: "key" } : { id: BOB };
+      const response = await call(route, jwt(ALICE), body);
       expect(response.status).toBe(503);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.json()).toMatchObject({ error: { code: "dependency_unavailable" } });
@@ -231,21 +202,5 @@ test("token routes distinguish auth-store outages, post-auth I/O and invalid req
     const response = await call(route, jwt(ALICE), body);
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "invalid" } });
-  }
-});
-
-test("route-local membership failures remain dependency failures after scoped authentication", async () => {
-  for (const route of ["token/list", "token/create", "token/revoke"]) {
-    const { call, store } = makeServer();
-    const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
-    const memberships = store.memberships.bind(store);
-    let reads = 0;
-    store.memberships = async (userId) => {
-      if (++reads > 0) throw new Error("private database diagnostic");
-      return memberships(userId);
-    };
-    const response = await call(route, parent.token, { org: "Alpha", id: parent.id });
-    expect(response.status).toBe(503);
-    expect(await response.text()).not.toContain("private database diagnostic");
   }
 });

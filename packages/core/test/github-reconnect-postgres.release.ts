@@ -2,12 +2,12 @@
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { resolveGitHubAccess } from "../src/github.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
+import { applyPostgresFixtureMigrations } from "./support/postgres-migrations.ts";
 
 // This URL must allow CREATE DATABASE. Each case owns a disposable database.
 describe("GitHub reconnect (PostgreSQL)", () => {
@@ -37,11 +37,7 @@ describe("GitHub reconnect (PostgreSQL)", () => {
         if (!(await admin.unsafe("select 1 from pg_roles where rolname = $1", [role])).length)
           await admin.unsafe(`create role ${role} nologin${role === "service_role" ? " bypassrls" : ""}`);
       }
-      await one.unsafe(prereq.replace(/^create role .*;$/gm, ""));
-      for (const file of readdirSync("supabase/migrations")
-        .filter((f) => f.endsWith(".sql"))
-        .sort())
-        await one.unsafe(await Bun.file(`supabase/migrations/${file}`).text());
+      await applyPostgresFixtureMigrations(one, prereq.replace(/^create role .*;$/gm, ""));
       const userId = crypto.randomUUID();
       const key = Buffer.alloc(32, 9).toString("base64");
       await one.unsafe("insert into auth.users (id) values ($1)", [userId]);
@@ -87,7 +83,12 @@ describe("GitHub reconnect (PostgreSQL)", () => {
         },
         userId,
       );
-      await fetchingProfile;
+      await Promise.race([
+        fetchingProfile,
+        first.then(() => {
+          throw new Error("GitHub access resolution completed before requesting the profile");
+        }),
+      ]);
       reconnect = two.begin(async (tx) => {
         await tx.unsafe("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
         await tx.unsafe("set local role authenticated");
@@ -100,7 +101,6 @@ describe("GitHub reconnect (PostgreSQL)", () => {
       release();
       // The stale profile write is fenced by the refresh token that the request observed.
       expect(await first).toMatchObject({ status: "unavailable" });
-      await reconnect;
       expect(
         Array.from(await observer.unsafe<{ login: string }[]>("select login from profile_changes")).map(
           (row) => row.login,
@@ -121,7 +121,7 @@ describe("GitHub reconnect (PostgreSQL)", () => {
       await admin.unsafe(`drop database ${name} with (force)`);
       await admin.end();
     }
-  }, 60000);
+  });
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.

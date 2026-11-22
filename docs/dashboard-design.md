@@ -1,14 +1,26 @@
 # Dashboard design notes
 
 The signed-in dashboard (`apps/dashboard/src/app/(app)`) is a work tool: a person picks an organization,
-checks what is running or failed, launches an agent from a golden, and occasionally manages goldens,
+checks what is running or failed, launches an agent from a snapshot, and occasionally manages snapshots,
 connections, keys and members. These notes keep later changes consistent with that job.
+
+Resource create and add flows use `CreateDialog` through
+`ResourceBrowser.actions`. Use one short, centered form and keep the resource
+list on the page. The dashboard uses the caller’s Supabase JWT. Use a
+dashboard SQL function for writes that row-level security cannot express.
+
+For fixture UI development, `bun run dev` runs the dashboard and
+`e2e/mock-supabase.ts` on ports 3100 and 54399. Sign in as
+`alice@example.com` with code `123456`. Free both ports before starting,
+and use Ctrl-C to stop both processes. The dashboard unit tests use
+`bun test` for pure logic; use `bun run e2e` for browser journeys.
 
 ## Principles
 
 - **Scope first.** The current organization and the person's role in it sit at the top of the navigation,
   above every page. Nothing on a page should leave doubt about which org it shows.
-- **One primary action per page.** Sandboxes: launch (it leads to the goldens). Goldens: launch from a golden.
+- **One primary action per page.** On Sandboxes, **Launch a sandbox** opens the starting-point picker.
+  Under **Launch from**, **Snapshots** lists snapshots and their launch actions.
   Detail: send a message or stop. Everything else is a secondary (outline or ghost) button.
 - **Activity before reference.** Lists lead with the identifier and its state; supporting facts are muted and
   collapse on narrow screens. On a sandbox, the logs are the main column and the facts sit beside them.

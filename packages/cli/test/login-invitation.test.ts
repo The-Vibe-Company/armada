@@ -3,6 +3,8 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore, type Session } from "../src/session.ts";
 
+import { loginAuthorized, loginStarted } from "./device-login.fixture.ts";
+
 const saved: Session = {
   armadaUrl: "https://armada.example",
   accessToken: "old-access",
@@ -32,26 +34,21 @@ function fixture(initial: Session | null = null) {
       err += value;
     },
     now: () => new Date("2026-11-13"),
-    open: () => {
-      throw new Error("Email login must not open a browser");
-    },
-    readEmail: async () => "user@example.test",
-    readCode: async () => "123456",
+    open: () => {},
+    sleep: async () => {},
     fetch: async (input, init) => {
       const path = new URL(String(input)).pathname;
-      if (path.endsWith("/auth/methods")) {
+      if (path.endsWith("/auth/device/start")) {
         logins++;
-        return Response.json({ methods: ["email"] });
+        return loginStarted();
       }
-      if (path.endsWith("/auth/email/start")) return Response.json({ ok: true });
-      if (path.endsWith("/auth/email/verify"))
-        return Response.json({ accessToken: "new-access", refreshToken: "new-refresh", expiresAt: "2099-01-01" });
+      if (path.endsWith("/auth/device/poll")) return loginAuthorized();
       if (path.endsWith("/auth/refresh")) return Response.json({ msg: "private provider diagnostic" }, { status: 401 });
-      if (path.endsWith("/token/list") || path.endsWith("/account/status")) {
+      if (path.endsWith("/token/whoami") || path.endsWith("/account/status")) {
         commands++;
         expect(init?.method).toBe("POST");
         return !rejectNewSession && new Headers(init?.headers).get("authorization") === "Bearer new-access"
-          ? Response.json({ tokens: [] })
+          ? Response.json({ auth: "login", userId: "user" })
           : Response.json({ msg: "private provider diagnostic" }, { status: 401 });
       }
       throw new Error(`Unexpected path ${path}`);
@@ -74,12 +71,12 @@ for (const [name, initial, commands] of [
 ] as const) {
   test(`interactive ${name} session invites login and completes the original command`, async () => {
     const state = fixture(initial);
-    expect(await state.run(["token", "list"])).toBe(0);
+    expect(await state.run(["whoami"])).toBe(0);
     expect(state.output()).toMatchObject({
       invitations: 1,
       logins: 1,
       commands,
-      out: "Logged in.\nNo service tokens.\n",
+      out: "Signed in as user@example.test.\nuser (saved login)\n",
     });
     expect(state.output().err).not.toContain("private provider diagnostic");
   });
@@ -88,7 +85,7 @@ for (const [name, initial, commands] of [
 test("a failed retried command never starts another login", async () => {
   const state = fixture();
   state.rejectRetry();
-  expect(await state.run(["token", "list"])).toBe(3);
+  expect(await state.run(["whoami"])).toBe(3);
   expect(state.output()).toMatchObject({ invitations: 1, logins: 1, commands: 1 });
   expect(state.output().err).toContain("Run armada login.");
 });
@@ -97,11 +94,15 @@ for (const json of [false, true]) {
   test(`noninteractive authentication failure gives safe login instructions (${json ? "JSON" : "text"})`, async () => {
     const state = fixture(saved);
     state.auth.interactive = false;
-    expect(await state.run(["token", "list", ...(json ? ["--json"] : [])])).toBe(3);
+    expect(await state.run(["whoami", ...(json ? ["--json"] : [])])).toBe(3);
     expect(state.output()).toMatchObject({ invitations: 0, logins: 0, out: "" });
     if (json)
       expect(JSON.parse(state.output().err)).toEqual({
-        error: { code: "unauthorized", message: "You are not signed in. Run armada login." },
+        error: {
+          code: "unauthorized",
+          message: "You are not signed in. Run armada login.",
+          hint: "Next step: run armada login.",
+        },
       });
     else expect(state.output().err).toContain("Run armada login.");
     expect(state.output().err).not.toContain("private provider diagnostic");
@@ -111,15 +112,19 @@ for (const json of [false, true]) {
 test("declining the invitation leaves the command unexecuted", async () => {
   const state = fixture();
   state.auth.confirmSignIn = async () => false;
-  expect(await state.run(["token", "list"])).toBe(3);
+  expect(await state.run(["whoami"])).toBe(3);
   expect(state.output()).toMatchObject({ logins: 0, commands: 0 });
 });
 
 test("an invalid environment token is never replaced by interactive login", async () => {
   const state = fixture();
-  state.auth.env.ARMADA_TOKEN = "invalid-environment-token";
-  expect(await state.run(["token", "list"])).toBe(3);
-  expect(state.output()).toMatchObject({ invitations: 0, logins: 0 });
+  state.auth.env.ARMADA_TOKEN = `armada_sk_${"a".repeat(43)}`;
+  expect(await state.run(["whoami"])).toBe(3);
+  expect(state.output()).toMatchObject({
+    invitations: 0,
+    logins: 0,
+    err: expect.stringContaining("expired, or revoked"),
+  });
 });
 
 for (const initial of [null, { ...saved, expiresAt: "2000-01-01" }, saved]) {
@@ -131,7 +136,7 @@ for (const initial of [null, { ...saved, expiresAt: "2000-01-01" }, saved]) {
   });
 }
 
-for (const args of [["--help"], ["--version"], ["token", "--help"]]) {
+for (const args of [["--help"], ["--version"], ["whoami", "--help"]]) {
   test(`${args.join(" ")} stays available without authentication`, async () => {
     const state = fixture();
     expect(await state.run(args)).toBe(0);
@@ -139,13 +144,13 @@ for (const args of [["--help"], ["--version"], ["token", "--help"]]) {
   });
 }
 
-test("invited login preserves code-refusal guidance", async () => {
+test("invited login preserves browser denial guidance", async () => {
   const state = fixture();
   const original = state.auth.fetch;
   state.auth.fetch = async (input, init) =>
-    String(input).endsWith("/email/verify") ? Response.json({}, { status: 401 }) : original(input, init);
-  expect(await state.run(["token", "list"])).toBe(3);
-  expect(state.output().err).toContain("already used");
+    String(input).endsWith("/device/poll") ? Response.json({ status: "access_denied" }) : original(input, init);
+  expect(await state.run(["whoami"])).toBe(3);
+  expect(state.output().err).toContain("denied in the browser");
 });
 
 test("a typed server 401 after successful refresh still offers login", async () => {

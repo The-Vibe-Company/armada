@@ -1,7 +1,4 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
@@ -14,30 +11,60 @@ import {
   goldenForLaunch,
   installSkill,
   type LaunchTemplate,
-  launchSandbox,
   PrivateSkillError,
   ProviderError,
   type Sql,
   type TemplateRuntime,
   VaultError,
 } from "@armada/core/server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
+import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { callSharedTool } from "../src/tool-api.ts";
-import { createArmadaServer } from "../src/tools.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
-import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
+const getDatabase = useMigratedDatabase();
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
-  const { db, people } = await sharedDatabase();
+  const database = getDatabase();
+  await resetMigratedDatabaseRows(
+    database,
+    `
+    reset role;
+    reset all;
+    set search_path=public;
+    delete from template_launch_requests;
+    alter table launch_template_revisions disable trigger immutable_template_revision;
+    delete from launch_template_revisions;
+    alter table launch_template_revisions enable trigger immutable_template_revision;
+    delete from launch_templates;
+    delete from provider_launch_requests;
+    delete from ordinary_launch_receipts;
+    delete from sandboxes;
+    delete from golden_operation_fences;
+    delete from mcp_connections;
+    delete from readable_variables;
+    delete from application_secrets;
+    delete from credentials;
+    alter table members disable trigger members_guard;
+    delete from members;
+    alter table members enable trigger members_guard;
+    delete from orgs;
+    delete from auth.users;
+    delete from mcp_invalidations;
+  `,
+  );
+  const { db, people, sharedGoldenId: goldenId, openaiCredentialId: credential } = await seedDatabase(database);
+  const variableId = crypto.randomUUID();
+  await db.query(
+    `insert into public.readable_variables(id,org_id,owner_id,scope,name,value)
+     values($1,$2,$3,'personal','APP_REGION',$4)`,
+    [variableId, people.org, people.owner, "europe\n$(not-a-command)"],
+  );
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -53,15 +80,6 @@ async function fixture() {
     orgs: [{ orgId: people.org, role: userId === people.admin ? ("admin" as const) : ("member" as const) }],
     via: "supabase" as const,
   });
-  const rows = await db.query<{ id: string }>("select id from goldens where name='shared'");
-  const goldenId = rows.rows[0]!.id;
-  const v = await vault.command(actor(), "variable", "set", {
-    org: people.org,
-    scope: "personal",
-    name: "APP_REGION",
-    value: "europe\n$(not-a-command)",
-  });
-  const variableId = (v.item as { id: string }).id;
   const definition = {
     goldenId,
     provider: "boat",
@@ -80,7 +98,6 @@ async function fixture() {
     },
   };
   const data = createSqlData(sql)(actor());
-  const credential = (await db.query<{ id: string }>("select id from credentials where kind='openai'")).rows[0]!.id;
   const runtime: TemplateRuntime = {
     stores: {
       goldens: data.goldens,
@@ -113,7 +130,6 @@ async function fixture() {
       runtime,
     );
   return {
-    // The file owns the engine; every fixture restores its session identity.
     close: async () => {
       await db.exec("reset role; reset all; set search_path=public");
     },
@@ -136,7 +152,7 @@ async function fixture() {
   };
 }
 
-test("Modal template placement retains the real golden snapshot fence and provider binding", async () => {
+test("Modal template placement uses the pinned provider binding", async () => {
   const f = await fixture();
   try {
     const goldenId = (
@@ -148,9 +164,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     if (!goldenId) throw Error("missing Modal golden");
     f.runtime.provider = async (golden) => {
       expect(golden.modal).toEqual({ workspace: "workspace", environment: "main", appId: "ap-template" });
-      expect(
-        (await f.db.query("select golden_id from golden_operation_fences where golden_id=$1", [goldenId])).rows,
-      ).toEqual([{ golden_id: goldenId }]);
       return { ...f.provider, id: "modal" };
     };
     const created = await f.create(undefined, undefined, {
@@ -162,14 +175,6 @@ test("Modal template placement retains the real golden snapshot fence and provid
     const result = await f.launch((created.item as LaunchTemplate).id);
     expect(result).toMatchObject({ state: "succeeded", provider: "modal" });
     publishedResponse("templates/launch").parse(result);
-    expect(
-      (
-        await f.db.query<{ golden_operation_fence_id: string }>(
-          "select golden_operation_fence_id from template_launch_requests where id=$1",
-          [result.requestId],
-        )
-      ).rows[0]?.golden_operation_fence_id,
-    ).toBeString();
   } finally {
     await f.close();
   }
@@ -384,12 +389,69 @@ for (const retained of [false, true]) {
       expect(await f.launch(t.id)).toEqual(result);
       expect(calls).toBe(1);
       expect((await f.db.query("select id from sandboxes")).rows).toHaveLength(0);
-      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(retained ? 1 : 0);
+      expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     } finally {
       await f.close();
     }
   });
 }
+
+test("a lost allocation commit acknowledgement settles without dispatching the provider", async () => {
+  const f = await fixture();
+  const transaction = f.sql.transaction!.bind(f.sql);
+  let loseAcknowledgement = false;
+  let committedState: unknown;
+  f.sql.transaction = async (work) => {
+    const result = await transaction(work);
+    if (!loseAcknowledgement) return result;
+    loseAcknowledgement = false;
+    committedState = (await f.db.query("select state from template_launch_requests")).rows;
+    throw Error("allocation acknowledgement lost");
+  };
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    f.runtime.options = {
+      ...f.runtime.options,
+      beforeFork: async () => {
+        loseAcknowledgement = true;
+      },
+    };
+    const result = await f.launch(template.id);
+    expect(committedState).toEqual([{ state: "allocating" }]);
+    expect(result.state).toBe("failed");
+    expect(await f.launch(template.id)).toEqual(result);
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test.each(["deleted", "pending"] as const)(
+  "template registration failure releases the snapshot reference only after confirmed deletion (%s)",
+  async (deleteStatus) => {
+    const f = await fixture();
+    try {
+      const template = (await f.create()).item as LaunchTemplate;
+      f.runtime.stores.sandboxes.insert = async () => {
+        throw Error("registration failed");
+      };
+      f.provider.delete = async () => ({ status: deleteStatus });
+      await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.people.admin]);
+
+      const result = await f.launch(template.id);
+      expect(f.boat.forks).toHaveLength(1);
+      if (deleteStatus === "deleted") {
+        expect(result.state).toBe("failed");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).resolves.toBeDefined();
+      } else {
+        expect(result.state).toBe("reconciling");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).rejects.toThrow("unresolved");
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("template launch records externalRef on the sandbox and keys it into the request fingerprint", async () => {
   const f = await fixture();
@@ -415,11 +477,18 @@ test("unknown provider outcomes remain durable reconciling across service restar
   try {
     const t = (await f.create()).item as LaunchTemplate;
     let calls = 0;
+    let durableIntent: unknown;
     f.provider.fork = async () => {
       calls++;
+      durableIntent = (
+        await f.db.query(
+          "select state, (select count(*)::int from golden_operation_fences) as fences from template_launch_requests",
+        )
+      ).rows;
       throw Error("transport lost after possible allocation");
     };
     const first = await f.launch(t.id);
+    expect(durableIntent).toEqual([{ state: "allocating", fences: 0 }]);
     expect(first.state).toBe("reconciling");
     const restarted = createTemplateService(f.sql);
     const retry = await restarted.command(
@@ -431,14 +500,7 @@ test("unknown provider outcomes remain durable reconciling across service restar
     expect(retry.state).toBe("reconciling");
     expect(calls).toBe(1);
     expect(f.boat.prompts).toHaveLength(0);
-    // Unknown allocation keeps the existing retirement barrier through process restart.
-    expect(
-      (
-        await f.db.query(
-          "select f.id from golden_operation_fences f join template_launch_requests r on r.golden_operation_fence_id=f.id",
-        )
-      ).rows,
-    ).toHaveLength(1);
+    expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -466,7 +528,7 @@ test("changed variable, removed membership and invalid authority overrides fail 
   }
 });
 
-test("HTTP and MCP share strict template operations; secure routes require authentication and no query parameters", async () => {
+test("Template REST validates authoring and launch requests", async () => {
   const f = await fixture();
   try {
     const options: ControlOptions = {
@@ -584,35 +646,6 @@ test("HTTP and MCP share strict template operations; secure routes require authe
       modelAccount: alternate,
     });
     expect(refusedOverride?.status).toBe(400);
-    const context = {
-      templates: f.service,
-      caller: f.actor(),
-      data: createSqlData(f.sql)(f.actor()),
-      provider: async () => f.provider,
-      launchCredentials: f.runtime.stores.credentials,
-      connections: f.runtime.stores.connections,
-      exposedSecrets: async () => [],
-      now: () => new Date(),
-      sleep: async () => {},
-    };
-    const got = (await callSharedTool(context, "template_get", { org: f.people.org, id: saved.item.id })) as {
-      item: LaunchTemplate;
-    };
-    expect(got.item.id).toBe(saved.item.id);
-    await expect(
-      callSharedTool(context, "template_publish", {
-        org: f.people.org,
-        id: saved.item.id,
-        expectedRevision: 1,
-        definition: { ...f.definition, env: { X: "no" } },
-      }),
-    ).rejects.toThrow();
-    const launched = (await callSharedTool(context, "template_launch", {
-      org: f.people.org,
-      id: saved.item.id,
-      requestKey: "transport-launch",
-    })) as { state: string };
-    expect(launched.state).toBe("succeeded");
   } finally {
     await f.close();
   }
@@ -728,18 +761,16 @@ test("reference revocation during initialization stops the allocated sandbox bef
   }
 });
 
-test("a rebuild published during provider selection cannot replace or invalidate the already claimed snapshot", async () => {
+test("a rebuild published during provider selection invalidates pre-dispatch admission", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;
     const rebuilt = `a${"8".repeat(62)}`;
-    let frozen = "";
     let rebuild = true;
-    f.runtime.provider = async (golden) => {
+    f.runtime.provider = async () => {
       if (rebuild) {
         rebuild = false;
-        frozen = golden.providerSnapshotId ?? "";
-        // After immutable request claim, but BEFORE normal launch's beginOperation.
+        // The request is claimed, but the allocation intent has not committed.
         await f.db.query("update goldens set provider_snapshot_id=$2,boat_snapshot_id=$2 where id=$1", [
           f.goldenId,
           rebuilt,
@@ -748,12 +779,11 @@ test("a rebuild published during provider selection cannot replace or invalidate
       return f.provider;
     };
     const first = await f.launch(template.id);
-    expect(first.state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen]);
+    expect(first).toMatchObject({ state: "failed", reason: "environment_snapshot_unavailable" });
     expect(await f.launch(template.id)).toEqual(first);
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
     expect((await f.launch(template.id, "after-rebuild")).state).toBe("succeeded");
-    expect(f.boat.forks.map((fork) => fork.from)).toEqual([frozen, rebuilt]);
+    expect(f.boat.forks.map((fork) => fork.from)).toEqual([rebuilt]);
     expect((await f.db.query("select id from golden_operation_fences")).rows).toHaveLength(0);
     await expect(
       f.db.query("update template_launch_requests set golden_operation_fence_id=gen_random_uuid()"),
@@ -763,7 +793,7 @@ test("a rebuild published during provider selection cannot replace or invalidate
   }
 });
 
-test("claimed snapshot fences release on pre-adoption launch refusals without losing request tombstones", async () => {
+test("pre-dispatch launch refusals preserve idempotency without a snapshot reference", async () => {
   const f = await fixture();
   try {
     const template = (await f.create()).item as LaunchTemplate;
@@ -837,11 +867,12 @@ test("later readable preparation survives variable edits, template tombstones an
 test("ordinary prompt admission performs no additional template queries or provider bootstrap", async () => {
   const f = await fixture();
   try {
-    const launched = await launchSandbox(
-      f.provider,
-      f.runtime.stores,
-      { userId: f.people.owner, orgId: f.people.org, role: "member" },
-      { golden: "shared", provider: "boat", harness: "codex", connections: [] },
+    const ordinarySandboxId = crypto.randomUUID();
+    const providerSandboxId = `bx_ordinary_${ordinarySandboxId}`;
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+       values($1,$2,$3,$4,'boat',$5,'codex','running')`,
+      [ordinarySandboxId, f.goldenId, f.people.org, f.people.owner, providerSandboxId],
     );
     const options = {
       sql: f.sql,
@@ -853,10 +884,10 @@ test("ordinary prompt admission performs no additional template queries or provi
     const withTemplates = createMcpLifecycle({ ...options, prepareReadableVariables: f.service.prepare });
     const actor = { userId: f.people.owner, orgId: f.people.org };
     f.queries.length = 0;
-    await ordinary.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    expect(await ordinary.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
     const baseline = f.queries.length;
     f.queries.length = 0;
-    await withTemplates.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    expect(await withTemplates.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
     expect(f.queries).toHaveLength(baseline);
     expect(f.configured).toHaveLength(0);
     // A fresh read sees a newly admitted template; there is no negative process cache.
@@ -869,89 +900,76 @@ test("ordinary prompt admission performs no additional template queries or provi
   }
 });
 
-test.skipIf(process.platform !== "linux")(
-  "a replacement Modal runner receives frozen readable values again before the next native turn",
-  async () => {
-    const f = await fixture();
-    const root = await mkdtemp(join(tmpdir(), "template-restore-"));
-    const generations: { runner: Runner; journal: Journal }[] = [];
-    try {
-      const generation = async (name: string) => {
-        const cwd = join(root, name);
-        await mkdir(cwd);
-        const proof = join(cwd, "proof.json");
-        const driver = new CodexDriver({
-          executable: join(import.meta.dir, "../../agent-runtime/test/fixtures/app-server.ts"),
-          cwd,
-          env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_READABLE_INSPECTION: proof },
-        });
-        const journal = new Journal(":memory:", (s) => s);
-        const grant = {
-          token: crypto.randomUUID(),
-          sandboxId: "runtime",
-          generation: name,
-          expiresAt: Date.now() + 60000,
-        };
-        const runner = new Runner(journal, grant, { claude: driver, codex: driver });
-        generations.push({ runner, journal });
-        const inspect = async () => {
-          const turn = driver.start({
-            request: { sandboxId: "runtime", harness: "codex", text: "message-semantics" },
-            signal: new AbortController().signal,
-            session: () => {},
-            emit: () => {},
-          });
-          await turn.done;
-          return JSON.parse(await readFile(proof, "utf8"));
-        };
-        return { runner, grant, inspect };
+test("a replacement runner receives frozen readable values before its next turn", async () => {
+  const f = await fixture();
+  const generations: { runner: Runner; journal: Journal }[] = [];
+  try {
+    const generation = (name: string) => {
+      let readables: Record<string, string> = {};
+      const driver: Driver = {
+        configureReadableVariables: (variables) => {
+          readables = variables;
+        },
+        start: () => {
+          throw new Error("The test only prepares a turn");
+        },
+        close: async () => {},
       };
-      let active = await generation("modal-incarnation-1");
-      // Transparent provider transport into the actual private runner/native driver, not a hydration mock.
-      f.provider.configureReadableVariables = async (input) => {
-        const request = input as { harness: string; variables: Record<string, string> };
-        const result = await active.runner.handle(
-          new Request("https://private-runner", {
-            method: "POST",
-            headers: { [AUTH_HEADER]: active.grant.token },
-            body: JSON.stringify({
-              version: 1,
-              requestId: crypto.randomUUID(),
-              op: "configureReadableVariables",
-              ...request,
-              sandboxId: active.grant.sandboxId,
-            }),
+      const journal = new Journal(":memory:", (s) => s);
+      const grant = {
+        token: crypto.randomUUID(),
+        sandboxId: "runtime",
+        generation: name,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      };
+      const runner = new Runner(journal, grant, { codex: driver });
+      generations.push({ runner, journal });
+      return { runner, grant, readables: () => readables };
+    };
+    let active = generation("first");
+    // The runtime's readable-variables suite owns native subprocess environment delivery.
+    f.provider.configureReadableVariables = async (input) => {
+      const request = input as { harness: string; variables: Record<string, string> };
+      const result = await active.runner.handle(
+        new Request("https://private-runner", {
+          method: "POST",
+          headers: { [AUTH_HEADER]: active.grant.token },
+          body: JSON.stringify({
+            version: 1,
+            requestId: crypto.randomUUID(),
+            op: "configureReadableVariables",
+            ...request,
+            sandboxId: active.grant.sandboxId,
           }),
-        );
-        if (result.status !== 200) throw Error("Native readable bootstrap refused");
-      };
-      const template = (await f.create()).item as LaunchTemplate;
-      const launched = await f.launch(template.id);
-      expect(launched.state).toBe("succeeded");
-      active = await generation("modal-incarnation-2");
-      expect(await active.inspect()).toEqual({}); // A fresh physical runner has no retained application environment.
-      const lifecycle = createMcpLifecycle({
-        sql: f.sql,
-        registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-        encryptionKey: ENCRYPTION_KEY,
-        origin: "https://armada.test",
-        prepareReadableVariables: f.service.prepare,
-      });
-      await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-        userId: f.people.owner,
-        orgId: f.people.org,
-      });
-      expect(await active.inspect()).toEqual({ region: "europe\n$(not-a-command)" });
-    } finally {
-      for (const g of generations) {
-        await g.runner.close();
-        g.journal.close();
-      }
-      await f.close();
-      await rm(root, { recursive: true, force: true });
+        }),
+      );
+      if (result.status !== 200) throw Error("Native readable bootstrap refused");
+    };
+    const template = (await f.create()).item as LaunchTemplate;
+    const launched = await f.launch(template.id);
+    expect(launched.state).toBe("succeeded");
+    active = generation("replacement");
+    expect(active.readables()).toEqual({}); // A fresh physical runner has no retained application environment.
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      prepareReadableVariables: f.service.prepare,
+    });
+    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+      userId: f.people.owner,
+      orgId: f.people.org,
+    });
+    expect(active.readables()).toEqual({ APP_REGION: "europe\n$(not-a-command)" });
+  } finally {
+    for (const g of generations) {
+      await g.runner.close();
+      g.journal.close();
     }
-  },
-);
+    await f.close();
+  }
+});
 
 // Contract: installation evidence survives request replay, without mutating the
 // admission manifest. Physical transports are covered by the install owners.
@@ -1054,7 +1072,7 @@ test("template skills retain verified receipts and closed refusals without repla
           }
         : exec(r);
     for (const [reason, warnings, action] of [
-      ["skillpack_cli_unavailable", [], "armada golden update"],
+      ["skillpack_cli_unavailable", [], "armada snapshot update"],
       ["skillpack_download_unavailable", ["skillpack_download_unavailable"], "allow GitHub release egress"],
     ] as const) {
       await f.db.query("update goldens set build_warnings=$2::text[] where id=$1", [
@@ -1158,51 +1176,6 @@ test("secret references authorize delivery without persisting values and revoke 
     ).rows[0]!.id;
     const binding = { key: "APP_TOKEN", secretId, version: 1 };
     const def = { ...f.definition, variables: [], secrets: [binding] };
-    // Exercise the actual remote MCP schema, not only the shared tool dispatcher.
-    const server = createArmadaServer(
-      {
-        templates: f.service,
-        caller: f.actor(),
-        data: createSqlData(f.sql)(f.actor()),
-        launchCredentials: f.runtime.stores.credentials,
-        exposedSecrets: async () => [],
-        provider: async () => f.provider,
-        now: () => new Date(),
-        sleep: async () => {},
-      },
-      "test",
-    );
-    const client = new Client({ name: "template-secret-test", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.connect(a);
-    await client.connect(b);
-    try {
-      const created = await client.callTool({
-        name: "template_create",
-        arguments: {
-          org: f.people.org,
-          name: "mcp-secret-template",
-          scope: "personal",
-          definition: def,
-        },
-      });
-      expect(created.isError).not.toBe(true);
-      const saved = JSON.parse((created.content as { text: string }[])[0]!.text);
-      expect(saved.revision.definition.secrets).toEqual([binding]);
-      const published = await client.callTool({
-        name: "template_publish",
-        arguments: {
-          org: f.people.org,
-          id: saved.item.id,
-          expectedRevision: 1,
-          definition: def,
-        },
-      });
-      expect(published.isError).not.toBe(true);
-    } finally {
-      await client.close();
-      await server.close();
-    }
     const created = await f.create(f.people.owner, "personal", def);
     const templateId = (created.item as LaunchTemplate).id;
     const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });

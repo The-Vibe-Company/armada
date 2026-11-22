@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { SandboxListMetadata } from "@armada/core";
+import type { SandboxListMetadata } from "./sandbox-access.ts";
 import { sandboxActivityPage } from "./sandbox-activity";
 
 test("activity counts cover the full filtered inventory while rendering only the requested page", () => {

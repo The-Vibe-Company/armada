@@ -76,6 +76,16 @@ test("account changes price new turns under the subscription without rewriting o
     throw Error("not legacy");
   })(caller, { id, credentialId: subscription });
   const newAdmission = await store.captureUsagePricingContext!(id);
+  await store.recordUsage!(
+    id,
+    { turnCount: 2, turns: [] },
+    { observations: [], completed: new Map([["failed-before-receipt", "2026-11-01T00:00:00Z"]]) },
+  );
+  expect((await db.query("select account_id from account_spend")).rows).toEqual([]);
+  await store.recordTurnModel!(id, "failed-before-receipt", "gpt-6.1-sol", old.usagePricing);
+  expect((await db.query("select account_id, unpriced_turns from account_spend")).rows).toEqual([
+    { account_id: oldAccount, unpriced_turns: 1 },
+  ]);
   await record("new", 2); // Native usage may arrive before its accepted RPC receipt.
   await store.recordTurnModel!(id, "new", "gpt-6.1-sol", newAdmission);
   await record("old-delayed", 3);

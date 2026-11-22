@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
 import { dockerCli } from "./native.ts";
 
@@ -35,7 +36,6 @@ export async function servicePreflight(instance?: string) {
     );
   await command(["flock", "--version"]);
   await command(["systemctl", "--user", "show-environment"]);
-  // This may be permitted by logind policy; no sudo or privileged fallback.
   await command(["loginctl", "enable-linger"]);
   if ((await command(["loginctl", "show-user", String(process.getuid?.()), "--property=Linger", "--value"])) !== "yes")
     throw new Error("Linger is required for reboot persistence; ask the administrator to enable it for this account.");
@@ -56,13 +56,20 @@ function quoted(value: string) {
   if (/[\r\n\0]/.test(value)) throw new Error("Unsupported installation path.");
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 }
-export async function installService(state: State, instance?: string) {
-  const p = paths(homedir(), instance);
-  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory(homedir(), instance))}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+interface ServiceIo {
+  home: string;
+  service(args: string[]): Promise<unknown>;
+}
+
+const localService: () => ServiceIo = () => ({ home: homedir(), service: command });
+
+export async function installService(state: State, instance?: string, io = localService()) {
+  const p = paths(io.home, instance);
+  const unit = `[Unit]\nDescription=Armada Docker host\nAfter=network-online.target\n\n[Service]\nExecStart=${quoted(p.binary)} run --state-dir ${quoted(stateDirectory(io.home, instance))}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=90\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   await mkdir(p.units, { recursive: true, mode: 0o700 });
   await writeFile(p.unit, unit, { flag: "wx", mode: 0o600 });
   await writeFile(
-    join(stateDirectory(homedir(), instance), "managed.json"),
+    join(stateDirectory(io.home, instance), "managed.json"),
     JSON.stringify({
       installationId: state.installationId,
       binarySha256: createHash("sha256")
@@ -72,18 +79,13 @@ export async function installService(state: State, instance?: string) {
     }),
     { flag: "wx", mode: 0o600 },
   );
-  await command(["systemctl", "--user", "daemon-reload"]);
-  await command(["systemctl", "--user", "enable", "--now", serviceName(instance)]);
+  await io.service(["systemctl", "--user", "daemon-reload"]);
+  await io.service(["systemctl", "--user", "enable", "--now", serviceName(instance)]);
   console.log("Installed Armada Docker host user service with linger. Use armada-docker-host status.");
 }
 
 export async function inventory(state: State) {
-  const filters = [
-    "--filter",
-    `label=dev.armada.machine.installation=${state.installationId}`,
-    "--filter",
-    `label=dev.armada.machine.host=${state.hostId}`,
-  ];
+  const filters = machineLabelFilters(state);
   const running = await dockerCli.run(["container", "ls", ...filters, "--format", "{{.ID}}"]);
   const containers = await dockerCli.run(["container", "ls", "--all", ...filters, "--format", "{{.ID}}"]);
   const volumes = await dockerCli.run(["volume", "ls", ...filters, "--format", "{{.Name}}"]);
@@ -103,7 +105,6 @@ type ManagedInstallation = {
 };
 const digestPattern = /^[a-f0-9]{64}$/;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-/** Daemon-owned, re-creatable public artifact caches (runtime binary; #2562 shared and private archives). */
 const CACHE_DIRECTORIES = ["runtime-cache", "artifact-cache", "artifact-cache-private"];
 
 async function safeAncestors(path: string, home: string) {
@@ -136,8 +137,6 @@ async function ownedFile(path: string, home: string, executable = false): Promis
     await file.close();
   }
 }
-
-/** Refuse all unknown files and preserve shared Docker images and linger settings. */
 export async function validateInstallation(
   state: State,
   home = homedir(),
@@ -182,13 +181,9 @@ export async function validateInstallation(
   return marker;
 }
 
-export interface UpgradeServiceIo {
-  home: string;
+export interface UpgradeServiceIo extends ServiceIo {
   executable: string;
-  service(args: string[]): Promise<unknown>;
 }
-
-/** Durable rename: pending marker is synced before the executable can be replaced. */
 async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temporaryDirectory = dirname(path)) {
   const temporary = join(temporaryDirectory, `.armada-host-upgrade-${randomUUID()}.tmp`);
   try {
@@ -212,12 +207,10 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
     });
   }
 }
-
-/** Invoked only from the caller's verified downloaded executable; never reads stdin or rewrites credentials. */
 export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
-  io: UpgradeServiceIo = { home: homedir(), executable: process.execPath, service: command },
+  io: UpgradeServiceIo = { ...localService(), executable: process.execPath },
   instance?: string,
 ) {
   const origin = serverOrigin(server);
@@ -228,8 +221,6 @@ export async function upgradeService(
   const bytes = await ownedFile(io.executable, io.home, true);
   const digest = sha256(bytes);
   if (initialMarker.binarySha256 === digest && initialMarker.pendingBinarySha256 === undefined) return;
-  // Do not disable the service or touch work. Stop must complete before taking
-  // the daemon's exclusive lock; restart even if stop/lock/update fails.
   try {
     await io.service(["systemctl", "--user", "stop", serviceName(instance)]);
     const unlock = await store.lock();
@@ -243,8 +234,6 @@ export async function upgradeService(
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
       const stable = { installationId: marker.installationId, binarySha256: currentDigest, unit: marker.unit };
-      // Sibling temporary marker files cannot make the private state directory
-      // fail its unknown-file check after an interrupted write.
       await atomicReplace(
         markerFile,
         Buffer.from(JSON.stringify({ ...stable, pendingBinarySha256: digest })),
@@ -273,10 +262,9 @@ export async function uninstallPreflight(state: State, instance?: string) {
 export async function stopService(instance?: string) {
   await command(["systemctl", "--user", "disable", "--now", serviceName(instance)]);
 }
-export async function removeInstallation(instance?: string) {
-  const p = paths(homedir(), instance);
-  const directory = stateDirectory(homedir(), instance);
-  // Preserve registration/ownership proof until the final binary unlink succeeds.
+export async function removeInstallation(instance?: string, io = localService()) {
+  const p = paths(io.home, instance);
+  const directory = stateDirectory(io.home, instance);
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
       path,
@@ -285,7 +273,7 @@ export async function removeInstallation(instance?: string) {
   );
   try {
     await unlink(p.unit);
-    await command(["systemctl", "--user", "daemon-reload"]);
+    await io.service(["systemctl", "--user", "daemon-reload"]);
     for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
     for (const entry of await readdir(directory)) {
       if (/^daemon-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.lock$/.test(entry)) {
@@ -299,7 +287,6 @@ export async function removeInstallation(instance?: string) {
     await unlink(join(directory, "state.json"));
     await unlink(join(directory, "managed.json"));
     await rmdir(directory);
-    // Last fallible operation: command remains available on any earlier failure.
     await unlink(p.binary);
   } catch (error) {
     await mkdir(directory, { recursive: true, mode: 0o700 });

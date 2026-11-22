@@ -38,7 +38,7 @@ server-embedded manifest guards use the same pins. Modal's image installs those
 exact packages; runner SHA-256 is computed from the rebuilt bundle, not a static
 checksum to hand-edit. The server must be rebuilt with that artifact.
 
-The shared golden recipe upgrades an older preinstalled Claude executable to
+The shared snapshot recipe upgrades an older preinstalled Claude executable to
 2.1.322 at `/usr/local/bin/claude` using `sudo -n npm install --global --prefix /usr/local`;
 it verifies that absolute executable and fails the build on a mismatch. A newer
 image version is deliberately downgraded to the exact validated pin, rather than
@@ -46,33 +46,38 @@ shadowed by a different PATH installation. Modal's base image is
 already pinned to it. Repo-specific setup/init commands can still override it:
 remove/update any old Claude install in your saved config or setup script.
 
-## Operator action (not performed by this PR)
+## Refresh snapshots after upgrading
 
-After releasing the rebuilt server/runtime, refresh **every provider-specific
-golden used for Claude launches**, including private and organization goldens.
+After releasing the rebuilt server/runtime, refresh **every Boat and Modal
+snapshot used for Claude launches**, including private and organization snapshots.
 Existing snapshots and already-running sandboxes are not upgraded by a release.
-Keep each golden's full repo/branch/init configuration (and original setup file,
-if used); update any explicit old tool pin. Rebuild, do not just re-snapshot the
-old master. For example, with the existing configuration saved as `golden.json`:
+Keep each snapshot's full repo/branch/init configuration (and original setup file,
+if used); update any explicit old tool pin. Rebuild from that configuration. Save it
+as `snapshot.json`, replace `SNAPSHOT_NAME` with the snapshot name and `ORG_UUID`
+with its organization UUID, and use the returned build job UUID for `JOB_UUID`.
 
 ```sh
-armada golden update <name> --provider boat --org <org> --replace --config golden.json
-armada golden update <name> --provider modal --org <org> --replace --config golden.json
-# Add --setup <original-setup-file> when the original build used one.
-armada golden build-status <job-id>
+armada snapshot update "SNAPSHOT_NAME" --provider boat --org ORG_UUID --replace --config snapshot.json
+armada snapshot update "SNAPSHOT_NAME" --provider modal --org ORG_UUID --replace --config snapshot.json
+# Add --setup "path/to/original-setup.sh" when the original build used one.
+armada snapshot show --build JOB_UUID
 ```
 
-Run only the command for each provider actually hosting that golden. Boat and
+Run only the command for each provider actually hosting that snapshot. Boat and
 Modal snapshots are separate: updating one does not update the other. Boat gets
 the executable from the shared recipe; Modal also gets the rebuilt managed
-runner and pinned image. Use the correct owner's session for private goldens.
+runner and pinned image. Use the correct owner's session for private snapshots.
 Wait for each build to succeed; launch fresh sandboxes for validation.
 
-After #866 is merged, on each refreshed provider golden:
+On each refreshed snapshot, replace `PROVIDER` with `boat` or `modal` to match
+the snapshot. Use `CLAUDE_ACCOUNT_UUID` for the UUID of a Claude account entitled to the
+requested model. Run Boat verification only on demand through the coordinator.
+For Fable on Boat, follow the [provider check](fable-provider-check.md): the
+native path is expected to refuse it.
 
 ```sh
-armada launch <name> --provider <boat-or-modal> --agent claude --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
-armada launch <name> --provider <boat-or-modal> --agent claude --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
 ```
 
 Inspect turn/model metadata as well as the response. Test with an entitled account;

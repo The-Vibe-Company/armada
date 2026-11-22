@@ -1,3 +1,5 @@
+import { confirmsCleanupStop } from "./smoke-sandbox-cleanup.ts";
+
 export class ExpirySmokeFailure extends Error {
   constructor(readonly code: "invalid_receipt" | "expiry_not_stopped" | "poll_limit_exceeded") {
     super(code);
@@ -13,7 +15,9 @@ interface Case {
   reasoningEffort?: string;
 }
 interface Io {
-  request<T>(path: string, body: object): Promise<T>;
+  launch<T>(body: object, keepHandle: (id: string) => void): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  deadlineFor(step: "expiry_ready" | "expiry_deadline" | "expiry_as_stop"): number | undefined;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   sleep(ms: number): Promise<void>;
@@ -37,14 +41,27 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   let attempted = false;
   let stopped = false;
   let passed = true;
-  const api = <T>(action: string, body: object) => io.request<T>(`sandbox/${action}`, { org: item.org, ...body });
+  async function api<T>(action: string, body: object, until?: number): Promise<T> {
+    const remaining = until === undefined ? undefined : until - io.now();
+    if (remaining !== undefined && remaining <= 0) throw new ExpirySmokeFailure("poll_limit_exceeded");
+    const result = await io.request<T>(`sandbox/${action}`, { org: item.org, ...body }, remaining);
+    if (until !== undefined && io.now() > until) throw new ExpirySmokeFailure("poll_limit_exceeded");
+    return result;
+  }
   const physicalStop = (status: Status) => status.status === "stopped" && status.providerState === "stopped";
-  async function observe(done: (status: Status) => boolean | Promise<boolean>, polls: number): Promise<Status> {
+  async function observe(
+    done: (status: Status) => boolean | Promise<boolean>,
+    fallbackPolls: number,
+    until?: number,
+  ): Promise<Status> {
+    const polls = until === undefined ? fallbackPolls : Number.POSITIVE_INFINITY;
     for (let i = 0; i < polls; i++) {
-      const status = await api<Status>("status", { id });
+      const status = await api<Status>("status", { id }, until);
       if (status?.id !== id) throw new ExpirySmokeFailure("invalid_receipt");
       if (await done(status)) return status;
-      if (i + 1 < polls) await io.sleep(1000);
+      const remaining = until === undefined ? 1000 : until - io.now();
+      if (remaining <= 0) break;
+      if (i + 1 < polls) await io.sleep(Math.min(1000, remaining));
     }
     throw new ExpirySmokeFailure("poll_limit_exceeded");
   }
@@ -57,11 +74,12 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
     expiresAt: string | null;
     stoppedAt: string | null;
   }
-  async function metadata(): Promise<Metadata> {
+  async function metadata(until?: number) {
     for (let page = 1; page <= 20; page++) {
       const result = await api<{ sandboxes: Metadata[]; page: number; hasMore: boolean; nextPage: number | null }>(
         "list",
         { owner: "me", harness: item.harness, page, limit: 200 },
+        until,
       );
       if (!Array.isArray(result?.sandboxes) || result.page !== page) throw new ExpirySmokeFailure("invalid_receipt");
       const matches = result.sandboxes.filter((row) => row.id === id);
@@ -79,27 +97,35 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   try {
     await io.step("expiry_launch", async () => {
       attempted = true;
-      const result = await api<{ sandbox: { id: string; provider: string }; promptId?: string }>("launch", {
-        golden: item.golden,
-        provider: item.provider,
-        harness: item.harness,
-        model: item.model,
-        credentialId: item.modelAccountId,
-        ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
-        connections: [],
-        skipSkillDefaults: true,
-        ttlSeconds: TTL,
-      });
+      const result = await io.launch<{ sandbox: { id: string }; promptId?: string }>(
+        {
+          golden: item.golden,
+          provider: item.provider,
+          harness: item.harness,
+          model: item.model,
+          credentialId: item.modelAccountId,
+          ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
+          connections: [],
+          skipSkillDefaults: true,
+          ttlSeconds: TTL,
+        },
+        (handle) => {
+          id = handle;
+        },
+      );
       if (typeof result?.sandbox?.id === "string" && result.sandbox.id) id = result.sandbox.id;
-      if (!id || result.sandbox.provider !== item.provider || result.promptId)
-        throw new ExpirySmokeFailure("invalid_receipt");
+      if (!id || result.promptId) throw new ExpirySmokeFailure("invalid_receipt");
     });
     const ready = await io.step("expiry_ready", () =>
-      observe((status) => {
-        if (["failed", "stopped", "stopping"].includes(status.status))
-          throw new ExpirySmokeFailure("expiry_not_stopped");
-        return status.status === "ready";
-      }, 120),
+      observe(
+        (status) => {
+          if (["failed", "stopped", "stopping"].includes(status.status))
+            throw new ExpirySmokeFailure("expiry_not_stopped");
+          return status.status === "ready";
+        },
+        120,
+        io.deadlineFor("expiry_ready"),
+      ),
     );
     io.idle?.();
     io.out(
@@ -114,7 +140,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
     const expiresAt = ready.expiresAt;
     await io.step("expiry_deadline", async () => {
       // Receipt must be a short ordinary TTL, not a hard-provider-timeout or an unbounded wait.
-      const row = await metadata();
+      const row = await metadata(io.deadlineFor("expiry_deadline"));
       const deadline = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
       if (
         row.effectiveTtlSeconds !== TTL ||
@@ -126,14 +152,19 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
         throw new ExpirySmokeFailure("invalid_receipt");
     });
     await io.step("expiry_as_stop", async () => {
-      await observe((status) => {
-        if (status.expiresAt !== expiresAt || status.status === "failed")
-          throw new ExpirySmokeFailure("expiry_not_stopped");
-        if (!physicalStop(status)) return false;
-        if (status.statusReason !== "expired") throw new ExpirySmokeFailure("expiry_not_stopped");
-        return true;
-      }, 360);
-      const row = await metadata();
+      const until = io.deadlineFor("expiry_as_stop");
+      await observe(
+        (status) => {
+          if (status.expiresAt !== expiresAt || status.status === "failed")
+            throw new ExpirySmokeFailure("expiry_not_stopped");
+          if (!physicalStop(status)) return false;
+          if (status.statusReason !== "expired") throw new ExpirySmokeFailure("expiry_not_stopped");
+          return true;
+        },
+        360,
+        until,
+      );
+      const row = await metadata(until);
       if (
         row.status !== "stopped" ||
         row.expiresAt !== expiresAt ||
@@ -150,10 +181,12 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
       await io.withCleanup(async () => {
         try {
           // One mutation attempt only; a lost acknowledgement is reconciled by observation.
-          try {
-            await api("stop", { id });
-          } catch {}
           await io.step("expiry_cleanup_stop", async () => {
+            const receipt = await api<{ id: string; status: string }>("stop", { id }).catch(() => null);
+            if (confirmsCleanupStop(receipt, id!)) {
+              stopped = true;
+              return;
+            }
             await observe(async (status) => {
               if (physicalStop(status)) return true;
               if (status.status !== "failed") return false;

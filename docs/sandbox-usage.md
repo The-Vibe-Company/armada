@@ -1,6 +1,6 @@
 # Sandbox usage (#770)
 
-API/MCP status and list (including CLI `armada status` and `armada list --json`)
+API/MCP status and list (including CLI `armada info` and `armada ls --json`)
 include `usage`: `computeSeconds`, `turnCount`, and `turns` with reported
 `inputTokens`, `outputTokens`, `cachedTokens` and model. There are no server
 prices. Usage is interior data: organization metadata-only list readers receive
@@ -81,14 +81,17 @@ migration with the normal release process before running this server version.
 
 ## Coordinator staging check: Codex model attribution (#1163)
 
-After the normal runtime deployment, launch on an existing Modal golden without
+After the normal runtime deployment, launch on an existing Modal snapshot without
 `--model`, then with an explicit model (or configured Codex endpoint model):
 
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
+
 ```sh
-armada launch <modal-golden> --provider modal --agent codex "Reply OK"
-armada wait <id>
-armada status <id> --json
-armada logs <id>
+armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
+armada info --wait SANDBOX_UUID
+armada info SANDBOX_UUID --json
+armada events SANDBOX_UUID
 ```
 
 Compare the normalized `armada/turnUsage` event in logs with `usage.turns` in
@@ -106,16 +109,16 @@ provider transport change; storage/price integration remains a following slice.
 
 ## Coordinator staging check: Claude resumed accounting (#1163)
 
-After normal runtime rollout, run on a Modal golden:
+After normal runtime rollout, run on a Modal snapshot:
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
-armada status <id> --json
-armada send <id> "Reply OK again"
-armada wait <id>
-armada logs <id>
-armada status <id> --json
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada info --wait SANDBOX_UUID
+armada info SANDBOX_UUID --json
+armada prompt SANDBOX_UUID "Reply OK again"
+armada info --wait SANDBOX_UUID
+armada events SANDBOX_UUID
+armada info SANDBOX_UUID --json
 ```
 
 Expect fresh and resumed prompts to report their own per-model counters and
@@ -140,13 +143,13 @@ resume_usage plus exact-turn counters, complete totals and computed cost.
 
 ## Coordinator staging check: Claude cache lifetimes (#1163)
 
-After normal server deployment, launch a Claude session on a Modal golden:
+After normal server deployment, launch a Claude session on a Modal snapshot:
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
-armada logs <id>
-armada status <id> --json
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada info --wait SANDBOX_UUID
+armada events SANDBOX_UUID
+armada info SANDBOX_UUID --json
 ```
 
 Compare each model's result `cacheCreationEphemeral5mInputTokens` and

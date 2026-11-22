@@ -37,14 +37,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActionResult } from "@/lib/action";
 import {
   type ChatItem,
-  conversationsOf,
-  eventsOf,
+  chatTurnRunning,
   projectChat,
   STEER_RESTARTS_TURN,
   type ToolActivity,
@@ -60,7 +58,7 @@ import {
   SEND_KEY_FIELD,
   UNCONFIRMED_ACTION,
 } from "@/lib/composer";
-import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
+import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
@@ -96,8 +94,7 @@ type Props = {
   harness: Harness;
   catalog: ModelCatalog;
   launchedModel: string | null;
-  /** Conversation ids Armada recorded for the sandbox, oldest first. */
-  conversations: string[];
+  currentConversation?: string | undefined;
   /** The Armada server is configured: messages can be sent. */
   configured: boolean;
   /** Why this sandbox takes no messages from here whatever its status (a Docker sandbox, for now): shown instead. */
@@ -179,7 +176,9 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
-  const [events, setEvents] = useState<ChatEvent[]>([]);
+  const [history, setHistory] = useState(initialChatHistory);
+  const currentHistory = useRef(initialChatHistory);
+  const { events, loaded, olderCursor } = history;
   const [status, setStatus] = useState(initialStatus);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
@@ -189,21 +188,15 @@ export function SandboxChat(props: Props) {
     retryAvailable: false,
     accessEnded: false,
   });
-  const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
     rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
     state?: string;
-    promptId?: string;
     conversationId?: string | null;
     requestedModel?: string | null;
     observedModel?: string | null;
     modelSelectionReason?: string | null;
     modelSelectionMessage?: string | null;
   } | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [chosen, setChosen] = useState<string | null>(null);
-  const cursor = useRef<string | null>(null);
-  const olderCursor = useRef<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const known = useRef(initialStatus);
   const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
@@ -251,8 +244,9 @@ export function SandboxChat(props: Props) {
 
   const read = useCallback(
     async (session: PollSession): Promise<ReadResult> => {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
-      const cursorBefore = cursor.current;
+      const { cursor: cursorBefore, loaded } = currentHistory.current;
+      const path = loaded ? "events" : "history";
+      const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
       const controller = new AbortController();
       session.controller = controller;
@@ -292,21 +286,13 @@ export function SandboxChat(props: Props) {
         if (!metadata || !isCurrent(session)) return { kind: "aborted" };
 
         const page = parseEventPage(body);
-        // A successful page must make progress before the continuation can run. The
-        // route turns stalled upstream cursors into 502s, but keep the browser safe
-        // if a proxy or an older server ever sends one directly.
-        if (page.hasMore && (!page.cursor || page.cursor === cursorBefore)) {
+        const backward = body.backward === true;
+        const next = applyChatPage(currentHistory.current, page, backward ? "latest" : "forward");
+        if (!next) {
           return { kind: "retryable", message: "The server returned a conversation page without a new cursor." };
         }
-        const backward = body.backward === true;
-        if (backward) {
-          olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
-          setHasMore(olderCursor.current !== null);
-        }
-        if (page.cursor) cursor.current = page.cursor;
-        if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
-        if (!backward && olderCursor.current === null) setHasMore(false);
-        setLoaded(true);
+        currentHistory.current = next;
+        setHistory(next);
         return {
           kind: "success",
           more: !backward && page.hasMore,
@@ -323,24 +309,22 @@ export function SandboxChat(props: Props) {
   );
 
   const loadOlder = async () => {
-    const boundary = olderCursor.current;
+    const boundary = currentHistory.current.olderCursor;
     const session = sessionRef.current;
     if (!boundary || loadingOlder || !session || !isCurrent(session)) return;
     setLoadingOlder(true);
     try {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
+      const url = new URL(`/api/sandboxes/${sandboxId}/history`, window.location.origin);
       url.searchParams.set("cursor", boundary);
-      url.searchParams.set("direction", "backward");
       const response = await fetch(url, { cache: "no-store" });
       const body: unknown = await response.json();
       if (!isCurrent(session)) return;
       if (!response.ok || !isSuccessfulPage(body)) throw Error("Older messages could not be read.");
       const page = parseEventPage(body);
-      if (page.hasMore && (!page.olderCursor || page.olderCursor === boundary))
-        throw Error("Older messages did not advance.");
-      setEvents((shown) => mergeEvents(page.events, shown));
-      olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
-      setHasMore(olderCursor.current !== null);
+      const next = applyChatPage(currentHistory.current, page, "older");
+      if (!next) throw Error("Older messages did not advance.");
+      currentHistory.current = next;
+      setHistory(next);
     } catch {
       if (isCurrent(session))
         setPoll((current) => ({ ...current, error: "Older messages could not be read. Try again." }));
@@ -450,14 +434,10 @@ export function SandboxChat(props: Props) {
     };
   }, [tick]);
 
-  const conversations = useMemo(() => conversationsOf(events, props.conversations), [events, props.conversations]);
-  const selected = chosen && conversations.includes(chosen) ? chosen : (conversations.at(-1) ?? null);
-  const shownConversation = conversations.length > 1 ? selected : null;
-  const chat = useMemo(() => projectChat(eventsOf(events, shownConversation)), [events, shownConversation]);
+  const { currentConversation } = props;
+  const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
-  const observedTurn = turnModel && (!selected || turnModel.conversationId === selected) ? turnModel : null;
-  const turnRunning =
-    (observedTurn?.state ? ["queued", "running"].includes(observedTurn.state) : chat.running) && LIVE.includes(status);
+  const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
@@ -465,12 +445,6 @@ export function SandboxChat(props: Props) {
   return (
     <div data-fit="chat" className="space-y-2 sm:space-y-4">
       <Card data-fit="card" className="gap-0 overflow-hidden rounded-none border-0 bg-transparent py-0 shadow-none">
-        {conversations.length > 1 && (
-          <div className="px-4 py-3 sm:px-6">
-            <ConversationPicker conversations={conversations} selected={selected} onChange={(id) => setChosen(id)} />
-          </div>
-        )}
-
         {status === "running" && statusMessage && (
           <p className="px-4 py-2 text-xs text-muted-foreground sm:px-6">{statusMessage}</p>
         )}
@@ -508,12 +482,11 @@ export function SandboxChat(props: Props) {
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
 
         <Transcript
-          key={selected ?? "all"}
           items={chat.items}
           running={turnRunning}
           loaded={loaded}
           poll={poll}
-          hasMore={hasMore}
+          hasMore={olderCursor !== null}
           onMore={() => void loadOlder()}
         />
 
@@ -528,7 +501,6 @@ export function SandboxChat(props: Props) {
               {...props}
               status={status}
               idlePaused={idlePaused}
-              conversation={selected && props.conversations.includes(selected) ? selected : null}
               running={turnRunning}
               onDone={() => {
                 router.refresh();
@@ -539,37 +511,6 @@ export function SandboxChat(props: Props) {
       </Card>
 
       <TechnicalEvents events={chat.technical} />
-    </div>
-  );
-}
-
-function ConversationPicker({
-  conversations,
-  selected,
-  onChange,
-}: {
-  conversations: string[];
-  selected: string | null;
-  onChange: (id: string) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="flex items-center gap-2">
-      <Label htmlFor={id} className="sr-only">
-        Conversation
-      </Label>
-      <NativeSelect
-        id={id}
-        value={selected ?? ""}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-auto text-xs"
-      >
-        {conversations.map((conversation, index) => (
-          <option key={conversation} value={conversation}>
-            {`Conversation ${index + 1}`}
-          </option>
-        ))}
-      </NativeSelect>
     </div>
   );
 }
@@ -1045,7 +986,6 @@ function Composer({
   launchedModel,
   pinnedModel,
   status,
-  conversation,
   running,
   onDone,
   idlePaused,
@@ -1056,7 +996,6 @@ function Composer({
   statusReason,
 }: Props & {
   status: SandboxStatus;
-  conversation: string | null;
   running: boolean;
   idlePaused: boolean;
   onDone: () => void;
@@ -1178,7 +1117,6 @@ function Composer({
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
-      <input type="hidden" name="conversation" value={conversation ?? ""} />
       <Label htmlFor={`${fieldId}-message`} className="sr-only">
         Message
       </Label>

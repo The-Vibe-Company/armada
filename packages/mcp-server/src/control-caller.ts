@@ -1,6 +1,7 @@
-import type { AuthStore } from "@armada/auth";
-import { VaultError } from "@armada/core/server";
-import { authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { type AuthStore, bearerKind } from "@armada/auth";
+import { resolveOrg, VaultError } from "@armada/core/server";
+import { authenticateCaller, bearerToken, type Caller, type SupabaseProject } from "./caller.ts";
+import type { ControlOptions } from "./control.ts";
 
 interface CallerControlOptions {
   authStore: AuthStore;
@@ -25,7 +26,14 @@ export async function authenticatedControlCaller(
 
 export async function authenticatedCaller(request: Request, options: CallerControlOptions): Promise<Caller> {
   const caller = await authenticatedControlCaller(request, options);
-  if (!caller) throw new Unauthorized("Run armada login.");
+  if (!caller) {
+    const token = bearerToken(request.headers.get("authorization"));
+    throw new Unauthorized(
+      token && bearerKind(token) === "service"
+        ? "API key is invalid, expired, or revoked. Update ARMADA_TOKEN."
+        : "Run armada login.",
+    );
+  }
   return caller;
 }
 
@@ -41,4 +49,10 @@ export function scopedOrg(caller: Caller, requested: string | undefined): string
     );
   }
   return orgId;
+}
+
+export async function selectedCaller(options: Pick<ControlOptions, "store">, caller: Caller, ref: string | undefined) {
+  if (ref === undefined) return caller;
+  const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, ref));
+  return { ...caller, orgs: caller.orgs.filter((item) => item.orgId === org.id) };
 }

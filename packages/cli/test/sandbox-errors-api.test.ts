@@ -4,7 +4,7 @@ import { memorySessionStore } from "../src/session.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const canary = "synthetic-private-provider-detail";
-async function capture(args: string[], status: number, serverCode: unknown, message = canary) {
+async function capture(args: string[], status: number, serverCode: unknown, message = canary, stdoutIsTTY?: boolean) {
   let out = "";
   let err = "";
   let calls = 0;
@@ -24,59 +24,51 @@ async function capture(args: string[], status: number, serverCode: unknown, mess
       return Response.json({ error: { code: serverCode, message, details: { reason: canary } } }, { status });
     },
   };
-  const exit = await run(args, auth, { auth });
+  const exit = await run(args, auth, { auth, ...(stdoutIsTTY === undefined ? {} : { stdoutIsTTY }) });
   expect(calls).toBe(1);
   expect(out).toBe("");
   expect(err).not.toContain(canary);
   return { exit, err };
 }
 
-// One owner at run.ts: the routes have different parsing and legacy code mappings.
 test.each(
   [
-    ["status", id],
-    ["detail", id],
-    ["recovery", id],
-    ["advice", id],
-    ["wait", id],
-    ["logs", id],
+    ["info", id],
+    ["info", id, "--wait"],
+    ["events", id],
     ["stop", id],
-    ["interrupt", id],
-    ["send", id, "hello"],
-    ["steer", id, "hello"],
-    ["exec", id, "printf audit"],
+    ["stop", id, "--turn"],
+    ["prompt", id, "hello"],
+    ["prompt", "--steer", id, "hello"],
+    ["exec", id, "--", "printf audit"],
     ["rm", id, "--yes"],
     ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
     ["bind-credential", id, "--credential-id", id],
   ].map((args) => ({ args })),
-)("missing sandbox gets actionable not_found and a legacy code: $args", async ({ args }) => {
-  const { exit, err } = await capture([...args, "--json"], 404, "not_found");
+)("missing sandbox gets actionable not_found: $args", async ({ args }) => {
+  const { exit, err } = await capture(args, 404, "not_found", canary, false);
   expect(exit).toBe(1);
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
-  expect(failure.legacyCode).toBe(
-    ["recovery", "advice", "report", "bind-credential"].includes(args[0] ?? "") ? "unavailable" : "conflict",
-  );
   expect(failure.message).toContain("not found or not accessible");
-  expect(failure.message).toContain("armada list --json");
+  expect(failure.message).toContain("armada ls --json");
   expect(failure.message).not.toContain("Outcome unknown");
 });
 
 test.each([
-  [400, "invalid_request", "invalid_request", "unavailable", 2, "COMMAND --help"],
-  [403, "forbidden", "forbidden", "conflict", 1, "org admin"],
-  [409, "conflict", "conflict", "unavailable", 1, "start/stop"],
-  [409, "no_running_turn", "no_running_turn", "unavailable", 1, "armada send"],
-  [409, "sandbox_not_ready", "sandbox_not_ready", "unavailable", 1, "Wait until"],
-  [400, "unsupported", "unsupported", "unavailable", 1, "not supported"],
-  [500, "internal", "unavailable", undefined, 1, "may already have been accepted"],
-  [400, canary, "invalid_request", "unavailable", 2, "COMMAND --help"],
-])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, legacy, exit, step) => {
-  const result = await capture(["steer", id, "hello", "--json"], status as number, server);
+  [400, "invalid_request", "invalid_request", 2, "COMMAND --help"],
+  [403, "forbidden", "forbidden", 1, "org admin"],
+  [409, "conflict", "conflict", 1, "start/stop"],
+  [409, "no_running_turn", "no_running_turn", 1, "armada prompt"],
+  [409, "sandbox_not_ready", "sandbox_not_ready", 1, "Wait until"],
+  [400, "unsupported", "unsupported", 1, "not supported"],
+  [500, "internal", "unavailable", 1, "may already have been accepted"],
+  [400, canary, "invalid_request", 2, "COMMAND --help"],
+])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, exit, step) => {
+  const result = await capture(["prompt", "--steer", id, "hello", "--json"], status as number, server);
   expect(result.exit).toBe(exit);
   const failure = JSON.parse(result.err).error;
   expect(failure.code).toBe(code);
-  expect(failure.legacyCode).toBe(legacy);
   expect(failure.message).toContain(step as string);
 });
 
@@ -84,17 +76,17 @@ test("human error guidance is stderr-only and does not retry a stop rejection", 
   const result = await capture(["stop", id], 409, "conflict");
   expect(result.exit).toBe(1);
   expect(result.err).toStartWith("armada: The sandbox state conflicts");
-  expect(result.err).toContain("armada list --json");
+  expect(result.err).toContain("armada ls --json");
   expect(result.err).not.toContain("Outcome unknown");
 });
 
 test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])(
-  "stop preserves its previous unavailable code as an alias for %s",
+  "stop gives outcome guidance for %s",
   async (code) => {
     const result = await capture(["stop", id, "--json"], 503, code);
     expect(result.exit).toBe(1);
-    expect(JSON.parse(result.err).error).toMatchObject({ code, legacyCode: "unavailable" });
-    expect(JSON.parse(result.err).error.message).toContain("armada list --json");
+    expect(JSON.parse(result.err).error).toMatchObject({ code });
+    expect(JSON.parse(result.err).error.message).toContain("armada ls --json");
   },
 );
 
@@ -110,31 +102,31 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
   expect(result.exit).toBe(1);
   if (!suffix) {
     expect(failure.message).toContain(message);
-    expect(failure.message).toContain("armada detail ID");
+    expect(failure.message).toContain("armada info ID");
   } else {
     expect(failure.message).not.toContain(message);
-    expect(failure.message).toContain("armada list --json");
+    expect(failure.message).toContain("armada ls --json");
   }
 });
 
-test.each([{ args: ["launch", "web", "--agent", "codex", "hello"] }, { args: ["send", id, "hello"] }])(
-  "host_full remains actionable without relaying provider diagnostics: $args",
-  async ({ args }) => {
-    const result = await capture([...args, "--json"], 409, "host_full");
-    expect(result.exit).toBe(1);
-    const failure = JSON.parse(result.err).error;
-    expect(failure.code).toBe("host_full");
-    expect(failure.message).toContain("Stop a sandbox on that host or raise its limit");
-    expect(failure.message).not.toContain("outcome unknown");
-  },
-);
+test.each([
+  { args: ["new", "web", "--provider", "boat", "--agent", "codex", "hello"] },
+  { args: ["prompt", id, "hello"] },
+])("host_full remains actionable without relaying provider diagnostics: $args", async ({ args }) => {
+  const result = await capture([...args, "--json"], 409, "host_full");
+  expect(result.exit).toBe(1);
+  const failure = JSON.parse(result.err).error;
+  expect(failure.code).toBe("host_full");
+  expect(failure.message).toContain("Stop a sandbox on that host or raise its limit");
+  expect(failure.message).not.toContain("outcome unknown");
+});
 
 test("terminal send reports the exact shared recovery reason and rejects appended guest text", async () => {
   const message =
     "Cannot control docker sandbox: stopped. Its container is removed after finish/stop; start a new sandbox on the same branch.";
   for (const code of ["sandbox_terminal", "invalid_request"])
     for (const suffix of ["", canary]) {
-      const result = await capture(["send", id, "hello", "--json"], 409, code, message + suffix);
+      const result = await capture(["prompt", id, "hello", "--json"], 409, code, message + suffix);
       expect(JSON.parse(result.err).error.message.startsWith(message)).toBe(suffix === "");
     }
 });

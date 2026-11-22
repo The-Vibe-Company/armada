@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox } from "../../provider-boat/test/support.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { bunLikeSql } from "./support.ts";
 
@@ -44,10 +45,9 @@ async function rows() {
 test("server lifecycle drains multiple rows while independent work is pending; stop drains all lanes", async () => {
   const { db, sql, ids } = await rows();
   const build = deferred<boolean>();
-  const retirement = deferred<boolean>();
   const exportJob = deferred<boolean>();
+  const exportDrained = deferred<void>();
   let exportSignal: AbortSignal | undefined;
-  let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
   let reconciled = 0;
@@ -56,21 +56,13 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     fetch: (async (input: Request | string | URL, _init?: RequestInit) =>
       Response.json({
         ok: true,
-        sandbox: sandbox({
+        sandbox: retainedSandbox({
           id: new URL(input instanceof Request ? input.url : String(input)).pathname.split("/").at(-1),
-          state: "archived",
         }),
       })) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
-  const workers = startServerWorkers(
-    {
-      runOne: async () => {
-        buildRunning = true;
-        return build.promise;
-      },
-      reconcileOne: async () => {},
-    },
+  const workers = startServerWorkers([
     {
       drain: () => lifecycle.drain(),
       reconcileOne: async (signal) => {
@@ -79,28 +71,26 @@ test("server lifecycle drains multiple rows while independent work is pending; s
         return result;
       },
     },
-    () => {},
+  ], () => {}, [
     {
-      runOne: async (signal) => {
-        retirementSignal = signal;
-        return retirement.promise;
+      async reconcileOne() {
+        buildRunning = true;
+        return build.promise;
+      },
+      async drain() {},
+    },
+    {
+      reconcileOne: async (signal) => {
+        exportSignal = signal;
+        return exportJob.promise;
+      },
+      async drain() {
+        exportDrained.resolve();
       },
     },
-    undefined,
-    [],
-    [
-      {
-        reconcileOne: async (signal) => {
-          exportSignal = signal;
-          return exportJob.promise;
-        },
-        async drain() {},
-      },
-    ],
-  );
+  ]);
   try {
     await progress.promise;
-    expect(retirementSignal).toBeDefined();
     expect(exportSignal).toBeDefined();
     expect(buildRunning).toBe(true);
     const records = await db.query<{ status: string }>("select status from sandboxes where id=any($1::uuid[])", [ids]);
@@ -112,15 +102,12 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     });
     await Promise.resolve();
     expect(done).toBe(false);
-    build.resolve(true);
-    await workers.goldenWorker.done;
-    expect(retirementSignal?.aborted).toBe(true);
     expect(exportSignal?.aborted).toBe(true);
     expect(done).toBe(false);
-    retirement.resolve(false);
-    await workers.retirementWorker.done;
-    expect(done).toBe(false);
     exportJob.resolve(false);
+    await exportDrained.promise;
+    expect(done).toBe(false);
+    build.resolve(false);
     await workers.done;
     expect(done).toBe(true);
     const count = reconciled;
@@ -129,7 +116,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   } finally {
     workers.stop();
     build.resolve(false);
-    retirement.resolve(false);
     exportJob.resolve(false);
     await workers.done;
   }
@@ -150,7 +136,7 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
         entered.resolve();
         return response.promise;
       }
-      return Response.json({ ok: true, sandbox: sandbox({ id: providerId, state: "archived" }) });
+      return Response.json({ ok: true, sandbox: retainedSandbox({ id: providerId }) });
     }) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
@@ -178,12 +164,12 @@ test("cancelled SDK observation stays tracked but cannot starve the next item or
     });
     await Promise.resolve();
     expect(drained).toBe(false);
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: retainedSandbox({ id: firstProviderId }) }));
     await done;
     expect((await read(ids[0]!))?.status).toBe("running");
     expect(requests).toBe(2);
   } finally {
-    response.resolve(Response.json({ ok: true, sandbox: sandbox({ id: firstProviderId, state: "archived" }) }));
+    response.resolve(Response.json({ ok: true, sandbox: retainedSandbox({ id: firstProviderId }) }));
     await lifecycle.drain();
   }
 });
@@ -196,35 +182,37 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     orchDrain = deferred<void>();
   let calls = 0,
     drains = 0;
+  let admissionWakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(SANDBOX_ADMISSION_WAKE, () => admissionWakes++);
   const workers = startServerWorkers(
-    { runOne: async () => false, reconcileOne: async () => {} },
-    {
-      reconcileOne: async () => {
-        if (++calls === 1) return true;
-        ordinarySecond.resolve("ordinary");
-        return held.promise;
+    [
+      {
+        reconcileOne: async () => {
+          if (++calls === 1) return true;
+          ordinarySecond.resolve("ordinary");
+          return held.promise;
+        },
+        drain: async () => {
+          drains++;
+          await ordinaryDrain.promise;
+        },
       },
-      drain: async () => {
-        drains++;
-        await ordinaryDrain.promise;
+      {
+        reconcileOne: async () => {
+          orchEntered.resolve("orchestrator");
+          return true;
+        },
+        drain: async () => {
+          drains++;
+          await orchDrain.promise;
+        },
       },
-    },
+    ],
     () => {},
-    undefined,
-    undefined,
-    {
-      reconcileOne: async () => {
-        orchEntered.resolve("orchestrator");
-        return true;
-      },
-      drain: async () => {
-        drains++;
-        await orchDrain.promise;
-      },
-    },
   );
   try {
     expect(await Promise.race([ordinarySecond.promise, orchEntered.promise])).toBe("orchestrator");
+    expect(admissionWakes).toBeGreaterThan(0);
     workers.stop();
     held.resolve(false);
     await Promise.resolve();
@@ -241,42 +229,11 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     expect(drains).toBe(2);
     expect(stopped).toBe(true);
   } finally {
+    unsubscribe();
     workers.stop();
     held.resolve(false);
     ordinaryDrain.resolve();
     orchDrain.resolve();
-    await workers.done;
-  }
-});
-
-test("retention maintenance runs independently and shutdown tracks an in-flight cleanup", async () => {
-  const entered = deferred<void>(),
-    release = deferred<void>();
-  const workers = startServerWorkers(
-    { runOne: async () => false, reconcileOne: async () => {} },
-    { reconcileOne: async () => false, drain: async () => {} },
-    () => {},
-    undefined,
-    async () => {
-      entered.resolve();
-      await release.promise;
-    },
-  );
-  try {
-    await entered.promise;
-    workers.stop();
-    let done = false;
-    workers.done.then(() => {
-      done = true;
-    });
-    await Promise.resolve();
-    expect(done).toBe(false);
-    release.resolve();
-    await workers.done;
-    expect(done).toBe(true);
-  } finally {
-    release.resolve();
-    workers.stop();
     await workers.done;
   }
 });
@@ -298,17 +255,8 @@ test("managed reconciliation shares the existing lane fairly and shutdown drains
     drain,
   });
   const workers = startServerWorkers(
-    {
-      async runOne() {
-        return false;
-      },
-      async reconcileOne() {},
-    },
-    lane("ordinary", async () => {}),
+    [lane("ordinary", async () => {}), lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
     () => {},
-    undefined,
-    undefined,
-    [lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
   );
   stop = () => workers.stop();
   try {

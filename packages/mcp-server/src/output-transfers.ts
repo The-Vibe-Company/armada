@@ -11,18 +11,55 @@ import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, typ
 type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
-const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
+export const OUTPUT_COLLECTOR_ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted
+  and not ('collector_unsupported' = any(outputs_failure_reasons))`;
+export const LIVE_OUTPUT_CANDIDATE = `(${OUTPUT_COLLECTOR_ELIGIBLE}) and status in ('running','ready') and stopped_at is null`;
+
+export const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
           or (status='failed' and stop_requested_at is not null and stopped_at is null)`;
 
+const RETAINED_INCOMPLETE = `not exists(select 1 from public.sandbox_output_state
+          where sandbox_id=sandboxes.id and retained_generation=sandboxes.lifecycle_generation)`;
+
+export const OUTPUT_SCAN_UNPUBLISHED = `not exists(select 1 from public.sandbox_output_state
+          where sandbox_id=sandboxes.id and published_scan >= $2::timestamptz)`;
+
+export function lockOutputSandbox(tx: Sql, id: string) {
+  return tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+}
+
+export async function recordDockerOutputUpload(tx: Sql, id: string) {
+  const { rows } = await tx.query<{ scan: string }>(
+    `insert into public.sandbox_output_state(sandbox_id,upload_scan) values($1,clock_timestamp())
+     on conflict(sandbox_id) do update set upload_scan=excluded.upload_scan returning upload_scan::text as scan`,
+    [id],
+  );
+  return rows[0]!.scan;
+}
+
+export function recordOutputPublication(tx: Sql, id: string, scan: string, retainedGeneration?: string) {
+  return tx.query(
+    `insert into public.sandbox_output_state(sandbox_id,published_scan,retained_generation)
+      values($1,$2,$3) on conflict(sandbox_id) do update set published_scan=excluded.published_scan,
+      retained_generation=coalesce(excluded.retained_generation,sandbox_output_state.retained_generation)`,
+    [id, scan, retainedGeneration ?? null],
+  );
+}
+
 export const BOAT_RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null
-          and stop_requested_at is null and outputs_retained_generation is distinct from lifecycle_generation`;
+          and stop_requested_at is null and ${RETAINED_INCOMPLETE}`;
 
 export const DOCKER_RETAINED_OUTPUT_STOP = `provider='docker' and status in ('stopped','failed') and stopped_at is not null
-          and stop_requested_at is not null and outputs_retained_generation is distinct from lifecycle_generation
+          and stop_requested_at is not null and ${RETAINED_INCOMPLETE}
           and exists(select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
             where h.id=sandboxes.docker_host_id and h.revoked_at is null)`;
 
-const RETAINED_OUTPUT_STOP = `((${BOAT_RETAINED_OUTPUT_STOP}) or (${DOCKER_RETAINED_OUTPUT_STOP}))`;
+const WRITE_ELIGIBILITY = {
+  live: CAN_WRITE_LIVE,
+  "boat-retained": BOAT_RETAINED_OUTPUT_STOP,
+  "docker-retained": `${DOCKER_RETAINED_OUTPUT_STOP} and exists(select 1 from public.sandbox_output_state
+    where sandbox_id=sandboxes.id and upload_scan=$2::timestamptz)`,
+};
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
@@ -35,27 +72,23 @@ export async function collectOutputTransfers(
   request: { sandboxId: string; signal?: AbortSignal },
   scan: string,
   key: string,
-  writes?: Set<Promise<unknown>>,
-  retainedGeneration?: string,
+  options: { generation: string; mode: keyof typeof WRITE_ELIGIBILITY; writes?: Set<Promise<unknown>> | undefined },
 ): Promise<void> {
   const { signal } = request;
-  const canWrite = `not application_secret_tainted and (${
-    retainedGeneration === undefined
-      ? CAN_WRITE_LIVE
-      : `${RETAINED_OUTPUT_STOP} and lifecycle_generation=$3::bigint and outputs_checked_at=$2::timestamptz and provider_sandbox_id=$4`
-  }) and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz)`;
-  const authority = retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration, request.sandboxId];
+  const { generation, mode, writes } = options;
+  const canWrite = `not application_secret_tainted and (${WRITE_ELIGIBILITY[mode]})
+    and lifecycle_generation=$3::bigint and provider_sandbox_id=$4
+    and ${OUTPUT_SCAN_UNPUBLISHED}`;
+  const authority = [id, scan, generation, request.sandboxId];
   if (!sql.transaction) throw Error("output_transaction_unavailable");
   const transaction = sql.transaction.bind(sql);
   // All stage/publish writes share the existing sandbox taint and publication fence.
   async function update<T>(fn: (tx: Sql, orgId: string) => Promise<T>): Promise<T> {
     signal?.throwIfAborted();
     const work = transaction(async (tx) => {
+      await lockOutputSandbox(tx, id);
       const sandbox = (
-        await tx.query<{ org_id: string }>(
-          `select org_id from public.sandboxes where id=$1 and ${canWrite} for update`,
-          authority,
-        )
+        await tx.query<{ org_id: string }>(`select org_id from public.sandboxes where id=$1 and ${canWrite}`, authority)
       ).rows[0];
       if (!sandbox) throw new OutputCollectionError("output_unavailable");
       signal?.throwIfAborted();
@@ -250,10 +283,7 @@ export async function collectOutputTransfers(
         and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
       [id, scan],
     );
-    await tx.query(
-      `update public.sandboxes set outputs_published_scan=$2::timestamptz${retainedGeneration === undefined ? "" : ", outputs_retained_generation=$3::bigint"} where id=$1`,
-      retainedGeneration === undefined ? [id, scan] : [id, scan, retainedGeneration],
-    );
+    await recordOutputPublication(tx, id, scan, mode === "live" ? undefined : generation);
   });
 }
 

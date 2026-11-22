@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
+import { codexTurnUsage, settleCodexTurnUsage } from "../src/codex-turn-usage.ts";
 import { RequestRefused } from "../src/errors.ts";
 import { CodexDriver, createRedactor, type DriverEvent, type Turn } from "../src/index.ts";
 import { removeNativeCodexAuth } from "../src/native-auth.ts";
@@ -153,6 +154,32 @@ nativeTest.each([
         },
       },
     ]);
+  } finally {
+    await driver.close();
+  }
+});
+
+nativeTest("Codex reports malformed JSON buffered after a terminal notification", async () => {
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+  const events: DriverEvent[] = [];
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "malformed-protocol" },
+      signal: new AbortController().signal,
+      session: () => {},
+      emit: (event) => events.push(event),
+    });
+    await expect(turn.done).rejects.toMatchObject({
+      code: "invalid_harness_protocol",
+      cause: expect.any(SyntaxError),
+    });
+    expect(events.find((event) => event.kind === "other" && event.type === "harness_stderr")).toMatchObject({
+      data: { exitCode: null, signal: "SIGKILL", text: "fixture diagnostic\n" },
+    });
   } finally {
     await driver.close();
   }
@@ -582,60 +609,51 @@ nativeTest.each(["before", "after", "partial", "foreign", "invalid", "regressed"
   },
 );
 
-nativeTest(
-  "Codex process loss cannot publish partial resumed totals or seed the next prompt baseline",
-  async () => {
-    const driver = new CodexDriver({
-      executable: `${import.meta.dir}/fixtures/app-server.ts`,
-      cwd: import.meta.dir,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_RESUME_USAGE_BASELINE: "before" },
-    });
-    const events: DriverEvent[] = [];
-    const start = (text: string) =>
-      driver.start({
-        request: { sandboxId: "s", harness: "codex", text },
-        sessionId: "persisted-thread",
-        signal: AbortSignal.timeout(3000),
-        session() {},
-        emit(event) {
-          events.push(event);
-        },
-      });
-    try {
-      // Await outside Bun's synchronous promise matcher: its nested event loop can
-      // strand child-exit/reaping callbacks and even prevent the test timeout firing.
-      const failure = await start("usage-process-lost").done.then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      expect(failure).toMatchObject({ code: "harness_process_lost" });
-      expect(events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage")).toEqual([
-        {
-          kind: "other",
-          type: "armada/turnUsage",
-          data: {
-            model: "gpt-6.2-sol",
-            inputTokens: null,
-            outputTokens: null,
-            cachedTokens: null,
-            cacheWriteTokens: null,
-            reasoningTokens: null,
-          },
-        },
-      ]);
-      events.length = 0;
-      // The synthetic next peer supplies only a post-dispatch total; no new pre-turn baseline.
-      driver.configureReadableVariables({ ARMADA_RESUME_USAGE_BASELINE: "late" });
-      expect(await start("redirect").done).toBe("finished");
-      expect(events.find((e) => e.kind === "other" && e.type === "armada/turnUsage")).toMatchObject({
-        data: { inputTokens: null, outputTokens: null, cachedTokens: null },
-      });
-    } finally {
-      await driver.close();
-    }
-  },
-  5000,
-);
+test("Codex process loss cannot publish partial resumed totals or seed the next prompt baseline", () => {
+  const baseline = {
+    inputTokens: 100,
+    outputTokens: 20,
+    cachedInputTokens: 30,
+    cacheWriteInputTokens: 10,
+    reasoningOutputTokens: 4,
+  };
+  const partial = {
+    inputTokens: 200,
+    outputTokens: 40,
+    cachedInputTokens: 60,
+    cacheWriteInputTokens: 20,
+    reasoningOutputTokens: 8,
+  };
+  const threadId = "persisted-thread";
+  const tokenTotals = new Map([[threadId, partial]]);
+  const latest = codexTurnUsage(partial, baseline);
+  expect(latest).toMatchObject({ inputTokens: 100, outputTokens: 20, cachedTokens: 30 });
+  expect(
+    settleCodexTurnUsage({
+      tokenTotals,
+      threadId,
+      dispatched: true,
+      terminalObserved: false,
+      latest,
+      model: "gpt-6.2-sol",
+    }),
+  ).toEqual({
+    model: "gpt-6.2-sol",
+    inputTokens: null,
+    outputTokens: null,
+    cachedTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  });
+
+  // The next prompt supplies only a post-dispatch total.
+  const next = { inputTokens: 300, outputTokens: 60, cachedInputTokens: 90 };
+  expect(codexTurnUsage(next, tokenTotals.get(threadId) ?? null)).toEqual({
+    inputTokens: null,
+    outputTokens: null,
+    cachedTokens: null,
+  });
+});
 
 // Captured native ordering, not an inferred pre-turn baseline: the old total
 // arrives only after dispatch, followed by the new cumulative total.
@@ -699,6 +717,10 @@ nativeTest.each(["closed", "after-abort", "unclosed", "wrong-session", "corrupt"
             ]
           : []),
         JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "recorded-fresh" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "user_message", message: "history\u2028text\u2029continues" },
+        }),
         JSON.stringify({
           type: "event_msg",
           payload: {

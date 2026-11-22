@@ -1,7 +1,9 @@
 import type { Harness } from "../packages/core/src/contract.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
+import { observeSmokeLaunch } from "./smoke-launch.ts";
+
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
-export interface ScopedProbeCase {
+interface ScopedProbeCase {
   org: string;
   provider: "boat" | "modal";
   harness: Harness;
@@ -11,8 +13,12 @@ export interface ScopedProbeCase {
   reasoningEffort?: string;
 }
 export interface ScopedProbeIo {
-  request<T>(path: string, body: object): Promise<T>;
-  poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
+  request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+  deadline: number;
+  stepTimeouts: Partial<Record<"scoped_snapshot" | "scoped_native_turn" | "scoped_tool_evidence", number>>;
+  poll<T>(read: (remainingMs?: number) => Promise<T>, done: (value: T) => boolean, until?: number): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   stopSandbox(id: string): Promise<void>;
@@ -49,7 +55,15 @@ function decoded(value: unknown): unknown {
     return value;
   }
 }
-function unpack(value: unknown, depth = 0): { result: Row; error: boolean; denied: boolean } {
+type ToolOutput = {
+  result: Row;
+  error: boolean;
+  denied: boolean;
+  failureCode?: "scoped_authority_denied" | "scoped_operation_unavailable";
+  requestId?: string;
+};
+
+function unpack(value: unknown, depth = 0): ToolOutput {
   if (depth > 5) return { result: {}, error: true, denied: false };
   value = decoded(value);
   const data = row(value);
@@ -61,19 +75,25 @@ function unpack(value: unknown, depth = 0): { result: Row; error: boolean; denie
   if (Array.isArray(data.content)) {
     const parts = data.content.map((part) => unpack(row(part).text, depth + 1));
     const found = parts.find((part) => Object.keys(part.result).length) ?? parts[0];
+    const failureCode = parts.find((part) => part.failureCode)?.failureCode;
+    const requestId = row(data._meta).requestId;
     return {
       result: found?.result ?? {},
       error: error || parts.some((part) => part.error),
       denied: parts.some((part) => part.denied),
+      ...(failureCode && { failureCode, ...(uuid(requestId) && { requestId }) }),
     };
   }
+  const failureCode =
+    value === "scoped_authority_denied" || value === "scoped_operation_unavailable" ? value : undefined;
   return {
     result: row(data.result),
-    error,
+    error: error || failureCode !== undefined,
     denied:
-      value === "scoped_authority_denied" ||
+      failureCode === "scoped_authority_denied" ||
       data.message === "scoped_authority_denied" ||
       row(data.error).code === "scoped_authority_denied",
+    ...(failureCode && { failureCode }),
   };
 }
 function assistantAnswers(events: unknown[], expected: string): boolean {
@@ -98,7 +118,43 @@ function referenceRead(name: string, input: Row): boolean {
   const wrapped = /^(?:\/bin\/)?(?:bash|sh) -l?c (['"])(.*)\1$/.exec(command);
   return (wrapped?.[2] ?? command) === referenceCommand;
 }
-type Call = { id: string; name: string; input: Row; result: Row; error: boolean; denied: boolean };
+type Call = ToolOutput & { id: string; name: string; input: Row; outputPresent: boolean };
+
+const childTools = ["launch", "message", "read", "stop"];
+const knownExtraTools = [
+  "exec_command",
+  "commandExecution",
+  "apply_patch",
+  "web_search",
+  "webSearch",
+  "list_children",
+  "extend",
+  "finish",
+  "delete",
+];
+
+function receiptDiagnostic(call: Call | undefined, key: string) {
+  const keyMatches = call?.input.idempotencyKey === key;
+  const operationId = call?.result.id;
+  const sandboxId = call?.result.sandboxId;
+  const state = call?.result.state;
+  return {
+    keyMatches,
+    receiptIdValid: uuid(operationId),
+    receiptSandboxIdValid: uuid(sandboxId),
+    ...((state === "failed" || state === "uncertain") &&
+      keyMatches &&
+      uuid(operationId) && { operationId, ...(uuid(sandboxId) && { sandboxId }) }),
+    receiptState:
+      typeof state === "string" && ["pending", "uncertain", "failed", "succeeded"].includes(state)
+        ? state
+        : "unrecognized",
+    toolError: call?.error ?? null,
+    authorityDenied: call?.denied ?? null,
+    ...(call?.failureCode && { toolFailureCode: call.failureCode }),
+    ...(call?.requestId && { toolRequestId: call.requestId }),
+  };
+}
 
 export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: ScopedProbeIo) {
   const launchKey = `smoke-scoped-${crypto.randomUUID()}`;
@@ -106,7 +162,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   const stopKey = `smoke-scoped-${crypto.randomUUID()}`;
   const answer = `SCOPED_CHILD_${crypto.randomUUID()}`;
   const noAccess = `NO_ACCESS_${crypto.randomUUID()}`;
-  const childPrompt = `Reply with exactly ${answer} and nothing else. Do not use tools or modify files.`;
+  const childPrompt = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({ lane: "child", answer })}`;
   let before: Set<string> | undefined;
   let parentId: string | undefined;
   let promptId: string | undefined;
@@ -117,16 +173,23 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   const claims = new Set<string>();
   const operations = new Set<string>();
   const events = new Map<string, Row>();
-  const api = <T>(path: string, body: object) => io.request<T>(path, { org: item.org, ...body });
-  async function snapshot(): Promise<Set<string>> {
+  const api = <T>(path: string, body: object, timeoutMs?: number) =>
+    io.request<T>(path, { org: item.org, ...body }, timeoutMs);
+  function stepDeadline(name: keyof ScopedProbeIo["stepTimeouts"]) {
+    const timeoutMs = io.stepTimeouts[name];
+    return timeoutMs === undefined ? undefined : Math.min(io.deadline, io.now() + timeoutMs);
+  }
+  async function snapshot(until?: number): Promise<Set<string>> {
     const ids = new Set<string>();
     for (let page = 1; page <= 20; page++) {
-      const result = await api<{ sandboxes: Row[]; hasMore: boolean; nextPage: number | null }>("sandbox/list", {
-        owner: "me",
-        golden: item.goldenId,
-        limit: 200,
-        page,
-      });
+      const remaining = until === undefined ? undefined : until - io.now();
+      if (remaining !== undefined && remaining <= 0) fail("scoped_incomplete_snapshot");
+      const result = await api<{ sandboxes: Row[]; hasMore: boolean; nextPage: number | null }>(
+        "sandbox/list",
+        { owner: "me", golden: item.goldenId, limit: 200, page },
+        remaining,
+      );
+      if (until !== undefined && io.now() > until) fail("scoped_incomplete_snapshot");
       if (!Array.isArray(result?.sandboxes) || typeof result.hasMore !== "boolean") fail("scoped_invalid_list");
       for (const entry of result.sandboxes) {
         if (!uuid(entry.id)) fail("scoped_invalid_list");
@@ -137,7 +200,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string) {
+  async function logs(id: string, phase: "initial_evidence" | "tool_evidence" | "cleanup", until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -151,15 +214,18 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
       };
       let result: { events: Row[]; cursor: string | null; hasMore: boolean };
       try {
-        result = await api("logs/read", options);
+        const remaining = until === undefined ? undefined : until - io.now();
+        if (remaining !== undefined && remaining <= 0) fail("scoped_incomplete_logs");
+        result = await io.request("logs/read", { org: item.org, ...options }, remaining);
       } catch (error) {
         // Never serialize errors, cursor values, provider responses or tool text.
-        const status = row(error).status;
+        const { status, transportTimeoutMs } = row(error);
         io.out(
           JSON.stringify({
             step: "scoped_logs_diagnostic",
             provider: item.provider,
             route: "logs/read",
+            phase,
             page,
             cursorPresent: cursor !== undefined,
             coalesce: options.coalesce,
@@ -167,6 +233,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             limit: options.limit,
             status:
               typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+            transportTimeoutMs:
+              typeof transportTimeoutMs === "number" &&
+              Number.isSafeInteger(transportTimeoutMs) &&
+              transportTimeoutMs > 0
+                ? transportTimeoutMs
+                : null,
           }),
         );
         throw error;
@@ -239,6 +311,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             name,
             input,
             ...output,
+            outputPresent: result.output !== undefined && result.output !== null,
             error: result.isError === true || output.error,
           });
       }
@@ -275,7 +348,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     async prepare(): Promise<void> {
       if (before) fail("scoped_already_prepared");
       if (item.harness !== "codex") fail("scoped_codex_only");
-      before = await io.step("scoped_snapshot", snapshot);
+      before = await io.step("scoped_snapshot", () => snapshot(stepDeadline("scoped_snapshot")));
     },
     async run(id: string, credentialVersion: number): Promise<void> {
       if (!before || parentId || !uuid(id) || !Number.isSafeInteger(credentialVersion) || credentialVersion < 1)
@@ -290,20 +363,29 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         skills: [],
         ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
       };
-      const goal = `Use only the configured native MCP server armada_orchestrator tools launch, message, read, stop for this task. Never use CLI, HTTP, config, credential or grant reads. If needed, the ONLY terminal command allowed is exactly ${referenceCommand} to read the nonsecret tool reference; do not use other exec commands. Never retry a mutation or generate new keys. Launch at most ONE idle child using exactly ${JSON.stringify({ idempotencyKey: launchKey, selection })} (no initial prompt or TTL). After a succeeded launch, message that child's returned sandboxId with exactly ${JSON.stringify({ sandboxId: "CHILD_SANDBOX_ID", idempotencyKey: messageKey, text: childPrompt })}, replacing CHILD_SANDBOX_ID with the actual sandboxId returned by launch. Poll read with {sandboxId} at most 20 times until its events contain the child's actual nonpartial assistant answer ${answer}, not a prompt/tool echo. Then stop that same child using idempotencyKey ${stopKey}. If any mutation is pending/uncertain or fails, do not retry; stop this task and report the failure. If the native tools are unavailable or launch returns scoped_authority_denied, reply with exactly ${noAccess}. Do not fabricate tool results.`;
+      const goal = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({
+        lane: "parent",
+        launch: { idempotencyKey: launchKey, selection },
+        messageKey,
+        stopKey,
+        answer,
+        noAccess,
+      })}`;
       await io.step("scoped_native_turn", async () => {
+        const until = stepDeadline("scoped_native_turn");
         sendUnknown = true;
         evidenceUnknown = true;
         const sent = await io.poll(
-          async () => {
+          async (remainingMs) => {
             try {
-              return await api<{ promptId: string }>("sandbox/send", { id, prompt: goal });
+              return await api<{ promptId: string }>("sandbox/send", { id, prompt: goal }, remainingMs);
             } catch (error) {
               if (!io.isNotReady(error)) throw error;
               return null;
             }
           },
           (result) => result !== null,
+          until,
         );
         if (!sent || typeof sent.promptId !== "string" || !sent.promptId) fail("scoped_send_unknown");
         promptId = sent.promptId;
@@ -311,12 +393,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         let lastWait: Row | undefined;
         try {
           await io.poll(
-            async () => {
-              const result = await api<Row>("sandbox/wait", {
-                id,
-                prompt_id: promptId,
-                timeout_seconds: 0,
-              });
+            async (remainingMs) => {
+              const result = await api<Row>(
+                "sandbox/wait",
+                { id, prompt_id: promptId, timeout_seconds: 0 },
+                remainingMs,
+              );
               lastWait = result;
               return result;
             },
@@ -330,6 +412,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
               if (!["running", "finished"].includes(String(prompt.state))) fail("scoped_invalid_wait");
               return prompt.state === "finished";
             },
+            until,
           );
         } catch (error) {
           const safeText = (value: unknown) => (typeof value === "string" ? redactForLog(value) : null);
@@ -354,10 +437,55 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         }
       });
       await io.step("scoped_tool_evidence", async () => {
-        await logs(id);
+        const evidenceDeadline = stepDeadline("scoped_tool_evidence");
+        await logs(id, "initial_evidence", evidenceDeadline);
+        if (evidenceDeadline !== undefined && io.now() > evidenceDeadline) fail("scoped_incomplete_logs");
         evidenceUnknown = false;
         adopt();
-        const tools = calls(true);
+        let tools = calls(true);
+        const hasResult = (call: Call) => call.error || call.denied || Object.keys(call.result).length > 0;
+        const boundRead = (call: Call, childId: string) =>
+          call.result.id === childId &&
+          call.result.orgId === item.org &&
+          call.result.provider === item.provider &&
+          call.result.harness === "codex" &&
+          call.result.goldenId === item.goldenId &&
+          call.result.credentialId === item.modelAccountId &&
+          call.result.credentialVersion === credentialVersion &&
+          call.result.model === item.model &&
+          (!item.reasoningEffort || call.result.reasoningEffort === item.reasoningEffort);
+        const answered = (call: Call, childId: string) =>
+          !call.error &&
+          boundRead(call, childId) &&
+          Array.isArray(call.result.events) &&
+          assistantAnswers(call.result.events, answer);
+        const evidenceReady = (seen: Call[]) => {
+          const mutations = seen.filter((call) => call.name !== "read" && childTools.includes(call.name));
+          if (mutations.some((call) => hasResult(call) && (!successful(call) || call.denied))) return true;
+          const childId = mutations.find((call) => call.name === "launch")?.result.sandboxId;
+          return (
+            uuid(childId) &&
+            mutations.some((call) => call.name === "message" && hasResult(call)) &&
+            mutations.some((call) => call.name === "stop" && hasResult(call)) &&
+            seen.some((call) => call.name === "read" && call.input.sandboxId === childId && answered(call, childId))
+          );
+        };
+        if (enabled && !evidenceReady(tools)) {
+          const until = evidenceDeadline ?? Math.min(io.deadline, io.now() + 10_000);
+          const updated = await observeSmokeLaunch(until, io, async () => {
+            try {
+              await logs(id, "tool_evidence", until);
+            } catch (error) {
+              if (typeof row(error).transportTimeoutMs === "number" && io.now() >= until) return;
+              throw error;
+            }
+            adopt();
+            const seen = calls(true);
+            if (io.now() <= until) tools = seen;
+            return evidenceReady(seen) ? seen : undefined;
+          });
+          if (updated) tools = updated;
+        }
         const launches = tools.filter((call) => call.name === "launch");
         const launch = launches[0];
         const correctLaunch =
@@ -395,8 +523,20 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             !launch ||
             !successful(launch) ||
             !uuid(launch.result.sandboxId)
-          )
+          ) {
+            io.out(
+              JSON.stringify({
+                step: "scoped_launch_diagnostic",
+                provider: item.provider,
+                launchCount: launches.length,
+                inputFieldCount: launch ? Object.keys(launch.input).length : 0,
+                selectionMatches: !!launch && selected(launch.input),
+                toolOutputPresent: launch?.outputPresent ?? false,
+                ...receiptDiagnostic(launch, launchKey),
+              }),
+            );
             fail("scoped_launch_unproven");
+          }
           const childId = launch.result.sandboxId;
           if (before?.has(childId) || childId === id) fail("scoped_child_identity");
           return { launch, childId };
@@ -425,50 +565,28 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
                 messageCount: messages.length,
                 readCount: reads.length,
                 stopCount: stops.length,
-                keyMatches: call?.input.idempotencyKey === messageKey,
+                ...receiptDiagnostic(call, messageKey),
                 textMatches: call?.input.text === childPrompt,
                 targetMatches: call?.input.sandboxId === childId,
                 receiptTargetMatches: call?.result.sandboxId === childId,
-                receiptIdValid: uuid(call?.result.id),
-                receiptState:
-                  typeof call?.result.state === "string" &&
-                  ["pending", "uncertain", "failed", "succeeded"].includes(call.result.state)
-                    ? call.result.state
-                    : "unrecognized",
-                toolError: call?.error ?? null,
-                authorityDenied: call?.denied ?? null,
               }),
             );
             fail("scoped_message_unproven");
           }
           return call;
         });
-        const boundRead = (call: Call) =>
-          call.result.id === childId &&
-          call.result.orgId === item.org &&
-          call.result.provider === item.provider &&
-          call.result.harness === "codex" &&
-          call.result.goldenId === item.goldenId &&
-          call.result.credentialId === item.modelAccountId &&
-          call.result.credentialVersion === credentialVersion &&
-          call.result.model === item.model &&
-          (!item.reasoningEffort || call.result.reasoningEffort === item.reasoningEffort);
-        const answered = (call: Call) =>
-          !call.error &&
-          boundRead(call) &&
-          Array.isArray(call.result.events) &&
-          assistantAnswers(call.result.events, answer);
         await io.step("scoped_child_answer", async () => {
           if (
             reads.length < 1 ||
             reads.length > 20 ||
             reads.some((call) => call.input.sandboxId !== childId) ||
-            !reads.some(answered)
+            !reads.some((call) => answered(call, childId))
           )
             fail("scoped_answer_unproven");
         });
         const stop = await io.step("scoped_child_stop", async () => {
           const call = stops[0];
+          const extraTools = tools.filter((tool) => !childTools.includes(tool.name));
           if (
             stops.length !== 1 ||
             !call ||
@@ -476,9 +594,23 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             call.input.sandboxId !== childId ||
             call.result.sandboxId !== childId ||
             !successful(call) ||
-            tools.some((tool) => !["launch", "message", "read", "stop"].includes(tool.name))
-          )
+            extraTools.length > 0
+          ) {
+            io.out(
+              JSON.stringify({
+                step: "scoped_stop_diagnostic",
+                provider: item.provider,
+                stopCount: stops.length,
+                readCount: reads.length,
+                ...receiptDiagnostic(call, stopKey),
+                targetMatches: call?.input.sandboxId === childId,
+                receiptTargetMatches: call?.result.sandboxId === childId,
+                extraToolNames: knownExtraTools.filter((name) => extraTools.some((tool) => tool.name === name)),
+                unknownExtraToolCount: extraTools.filter((tool) => !knownExtraTools.includes(tool.name)).length,
+              }),
+            );
             fail("scoped_stop_unproven");
+          }
           return call;
         });
         await io.step("scoped_child_order", async () => {
@@ -490,7 +622,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
               (call) =>
                 tools.indexOf(message) < tools.indexOf(call) &&
                 tools.indexOf(call) < tools.indexOf(stop) &&
-                answered(call),
+                answered(call, childId),
             )
           )
             fail("scoped_order_unproven");
@@ -516,7 +648,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         let unattributed: string[] = [];
         if (parent) {
           try {
-            await logs(parent);
+            await logs(parent, "cleanup");
             evidenceUnknown = false;
           } catch {
             ok = false;

@@ -1,9 +1,8 @@
 import type { GoldenRecord } from "./golden.ts";
-import type { GitHubLaunchInfo, LaunchResult } from "./launch.ts";
-import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
+import type { GitHubLaunchInfo } from "./launch.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "./snapshot-baseline.ts";
 
-/** Public golden metadata only; compatibility aliases never borrow another placement's ids. */
+/** Public golden metadata. */
 export function goldenResponse(row: GoldenRecord) {
   return {
     id: row.id,
@@ -17,25 +16,8 @@ export function goldenResponse(row: GoldenRecord) {
     baselineOutdated: row.providerSnapshotId !== null && (row.baselineVersion ?? 0) < SNAPSHOT_BASELINE_VERSION,
     providerSandboxId: row.providerSandboxId,
     modal: row.modal,
-    ...goldenCompatibilityIds(row),
     repos: row.config.repos.length,
     config: row.config,
-  };
-}
-
-export function goldenCompatibilityIds(row: GoldenRecord) {
-  const boat = row.provider === "boat";
-  return {
-    boatSnapshotId: boat ? row.providerSnapshotId : null,
-    boatSandboxId: boat ? row.providerSandboxId : null,
-  };
-}
-
-export function sandboxIdentity<P extends SandboxPlacementProviderId>(row: { provider: P; providerSandboxId: string }) {
-  return {
-    provider: row.provider,
-    providerSandboxId: row.providerSandboxId,
-    boatId: row.provider === "boat" ? row.providerSandboxId : null,
   };
 }
 
@@ -45,32 +27,5 @@ export function launchGitHubResponse(github: GitHubLaunchInfo) {
     login: github.login ?? null,
     tokenExpiresAt: github.tokenExpiresAt ?? null,
     message: github.message ?? null,
-  };
-}
-
-/** Shared flat launch metadata; callers retain their existing envelope-specific fields. */
-export function launchResponse(result: LaunchResult) {
-  const { sandbox } = result;
-  return {
-    id: sandbox.id,
-    ...(result.runtime ? { runtime: result.runtime } : {}),
-    ...(sandbox.runtimeTransport ? { runtimeTransport: sandbox.runtimeTransport } : {}),
-    ...sandboxIdentity(sandbox),
-    golden: result.golden.name,
-    repositoryDir: sandbox.repositoryDir ?? null,
-    ...(sandbox.externalRef ? { externalRef: sandbox.externalRef } : {}),
-    harness: sandbox.harness,
-    model: sandbox.model,
-    skills: sandbox.skills ?? [],
-    reasoningEffort: sandbox.reasoningEffort,
-    credentialId: sandbox.credentialId ?? null,
-    credentialVersion: sandbox.credentialVersion ?? null,
-    status: sandbox.status,
-    conversationIds: sandbox.conversationIds,
-    promptId: result.promptId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt?.toISOString() ?? null,
-    machineSize: sandbox.machineSize ?? null,
-    github: launchGitHubResponse(result.github),
   };
 }

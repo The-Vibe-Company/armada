@@ -1,0 +1,101 @@
+{
+  "docker/real-model": {
+    "real_model_launch": 10000,
+    "real_model_ready": 60336,
+    "real_model_send": 10000,
+    "real_model_stop": 47973,
+    "real_model_wait": 44574
+  },
+  "modal/default-skills": {
+    "default_skills_golden": 10000,
+    "default_skills_org": 10000,
+    "default_skills_personal": 10000
+  },
+  "modal/expiry": {
+    "expiry_as_stop": 592977,
+    "expiry_deadline": 10000,
+    "expiry_launch": 152262,
+    "expiry_ready": 10000,
+    "expiry_time_to_ready": 154686
+  },
+  "modal/lifecycle": {
+    "default_skills_opt_out_receipts": 10000,
+    "default_skills_receipts": 10000,
+    "extend": 14592,
+    "git_remote": 10000,
+    "git_status": 10000,
+    "github_launch_access": 10000,
+    "github_refresh": 10000,
+    "golden_helper_integrity": 10000,
+    "golden_skillpack_integrity": 10000,
+    "launch": 117096,
+    "list_ready": 10000,
+    "list_resumed": 11037,
+    "list_stopped": 10000,
+    "list_stopped_final": 10000,
+    "preservation_archive": 10000,
+    "preservation_clean_checkout": 10000,
+    "preservation_clean_stop": 10000,
+    "preservation_commit": 10000,
+    "preservation_recovery_handle": 10000,
+    "preservation_recovery_read_only": 10000,
+    "preservation_unknown_handle_refused": 10000,
+    "ready": 10000,
+    "resume_send": 10000,
+    "resume_usage": 10000,
+    "resume_wait": 78783,
+    "send": 10000,
+    "steer_refused": 10000,
+    "stop": 59688,
+    "stop_resumed": 48594,
+    "time_to_ready": 119292,
+    "usage": 10000,
+    "wait": 30504
+  },
+  "modal/real-model": {
+    "real_model_launch": 91782,
+    "real_model_ready": 10000,
+    "real_model_send": 10000,
+    "real_model_stop": 44103,
+    "real_model_wait": 42981
+  },
+  "modal/scoped": {
+    "scoped_child_cleanup": 10000,
+    "scoped_native_turn": 215142,
+    "scoped_parent_launch": 164235,
+    "scoped_parent_ready": 10000,
+    "scoped_parent_stop": 44358,
+    "scoped_snapshot": 10000,
+    "scoped_tool_evidence": 10000
+  },
+  "modal/templates": {
+    "cleanup_template": 10000,
+    "cleanup_template_sandbox": 42927,
+    "cleanup_template_variable": 10000,
+    "template_answer": 10000,
+    "template_create": 10000,
+    "template_exec_isolation": 10000,
+    "template_launch": 148200,
+    "template_model_account": 10000,
+    "template_variable_create": 10000,
+    "template_wait": 28638
+  },
+  "modal/vault": {
+    "vault_cleanup_secrets": 10000,
+    "vault_cleanup_variables": 10000,
+    "vault_reconcile_secrets": 10000,
+    "vault_reconcile_variables": 10000,
+    "vault_secret_list": 10000,
+    "vault_secret_read_refused": 10000,
+    "vault_secret_revoke": 10000,
+    "vault_secret_revoked_rotate_refused": 10000,
+    "vault_secret_revoked_version_unchanged": 10000,
+    "vault_secret_rotate": 10000,
+    "vault_secret_set": 10000,
+    "vault_secret_stale_rotate_refused": 10000,
+    "vault_secret_stale_version_unchanged": 10000,
+    "vault_variable_list": 10000,
+    "vault_variable_read": 10000,
+    "vault_variable_set": 10000
+  }
+}

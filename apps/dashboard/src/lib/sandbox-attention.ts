@@ -9,10 +9,10 @@ import { parsePullRequests } from "./pull-requests.ts";
 
 /** Existing attention and recovery semantics, now shown on the authorized sandbox detail rather than a separate board. */
 /** Under this much time left, a live sandbox's deadline is highlighted and its unfinished work needs the operator. */
-export const EXPIRY_WARNING_SECONDS = 30 * 60;
+const EXPIRY_WARNING_SECONDS = 30 * 60;
 
 /** A prompt longer than this is not carried to the page for a one-click resend: it is resent from its conversation. */
-export const RESEND_MAX_CHARS = 16_000;
+const RESEND_MAX_CHARS = 16_000;
 
 /** What a one-click "Continue" sends to an agent that finished without reporting an outcome. */
 export const CONTINUE_PROMPT =
@@ -20,18 +20,21 @@ export const CONTINUE_PROMPT =
 
 /** What the events say about the agent's work. */
 export type TurnSummary = {
-  /** The latest turn's status, or `running` while any conversation has a turn in flight. Null before the first. */
   status: PromptStatus | null;
   /** Why the latest turn failed, as the server reported it. */
   reason: string | null;
   /** The latest turn's prompt id: an acknowledgement holds for this turn, not the next. */
   promptId?: string | null;
   /** The latest prompt as sent, for a one-click resend; null when it is too long to carry or has no text. */
-  prompt?: { text: string; conversationId: string | null } | null;
+  prompt?: string | null;
 };
 
-export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
-  const { items, running } = projectChat(events);
+export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string) {
+  const { items, running } = projectChat(
+    currentConversation
+      ? events.filter((event) => !event.conversationId || event.conversationId === currentConversation)
+      : events,
+  );
   let status: PromptStatus | null = null;
   let reason: string | null = null;
   let promptId: string | null = null;
@@ -42,7 +45,7 @@ export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
       reason = item.reason ?? null;
       promptId = item.promptId ?? null;
       const text = item.text.trim();
-      prompt = text && text.length <= RESEND_MAX_CHARS ? { text, conversationId: item.conversationId ?? null } : null;
+      prompt = text && text.length <= RESEND_MAX_CHARS ? text : null;
     }
   }
   if (running) {
@@ -61,17 +64,9 @@ export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
  * The state column. `kind` orders and colours the row; `label` is what it reads. The structured outcome the agent
  * reported for its latest finished turn (#742) refines that turn into `ready` (to merge) or `blocked`.
  */
-export type AttentionStateKind =
-  | "failed"
-  | "blocked"
-  | "ready"
-  | "finished"
-  | "interrupted"
-  | "idle"
-  | "working"
-  | "stopped";
+type AttentionStateKind = "failed" | "blocked" | "ready" | "finished" | "interrupted" | "idle" | "working" | "stopped";
 
-export type AttentionState = {
+type AttentionState = {
   kind: AttentionStateKind;
   label: string;
   /** For a failure: the known explanation's title and hint, or the reason as reported. */
@@ -98,7 +93,7 @@ export function isRecoverableReason(reason: string | null | undefined): boolean 
 }
 
 /** What is recorded on the sandbox row itself, beside its status. */
-export type Recorded = {
+type Recorded = {
   statusReason: string | null;
   lifecycleError: string | null;
 };
@@ -177,7 +172,7 @@ function failed(reason: string | null, fallback: string): AttentionState {
 }
 
 /** The time left before the deadline Armada holds a live sandbox to. */
-export type ExpiryView = { text: string; urgent: boolean; seconds: number };
+type ExpiryView = { text: string; urgent: boolean; seconds: number };
 
 export function expiryView(status: SandboxStatus, expiresAt: string | null, now: Date): ExpiryView | null {
   if (!isActiveStatus(status) || !expiresAt) return null;
@@ -193,15 +188,6 @@ export function expiryView(status: SandboxStatus, expiresAt: string | null, now:
  * waiting for its first prompt, or an ended sandbox with nothing left in it.
  */
 export type Attention = "ready" | "blocked" | "failed" | "interrupted" | "unconcluded" | "expiring";
-
-export const ATTENTION_TITLES: Record<Attention, string> = {
-  ready: "Ready to merge",
-  blocked: "Blocked",
-  failed: "Failed",
-  interrupted: "Interrupted",
-  unconcluded: "Finished without an outcome",
-  expiring: "Expiring with unfinished work",
-};
 
 /**
  * - ready, blocked: the agent reported it (#742), on a live or a stopped machine;
@@ -243,21 +229,10 @@ export function attentionOf(
   }
 }
 
-/** The label a row's badge reads for what it needs. */
-export function attentionLabel(attention: Attention, status: SandboxStatus): string {
-  if (attention === "unconcluded") return isActiveStatus(status) ? "No outcome reported" : "Stopped mid-work";
-  if (attention === "interrupted") return "Interrupted — resend";
-  if (attention === "expiring") return "Expiring soon";
-  return ATTENTION_TITLES[attention];
-}
-
 export function sandboxAttention(
   sandbox: Pick<Sandbox, "id" | "status"> &
     Partial<
-      Pick<
-        Sandbox,
-        "status_reason" | "task_outcome" | "preservation_note" | "conversation_ids" | "expires_at" | "lifecycle_error"
-      >
+      Pick<Sandbox, "status_reason" | "task_outcome" | "preservation_note" | "expires_at" | "lifecycle_error">
     > & { pull_requests?: unknown },
   turn: TurnSummary | null,
   now: Date,
@@ -287,21 +262,12 @@ export function sandboxAttention(
       state.failure?.title ?? "",
       sandbox.preservation_note ?? "",
     ]),
-    resend:
-      attention === "interrupted" && turn?.prompt
-        ? {
-            text: turn.prompt.text,
-            conversationId:
-              turn.prompt.conversationId && sandbox.conversation_ids?.includes(turn.prompt.conversationId)
-                ? turn.prompt.conversationId
-                : null,
-          }
-        : null,
+    resend: attention === "interrupted" ? (turn?.prompt ?? null) : null,
   };
 }
 
 /** `<sandbox id>.<8 hex>`: the sandbox and a short fingerprint of the state an acknowledgement covers. */
-export function ackKey(sandboxId: string, parts: readonly string[]): string {
+function ackKey(sandboxId: string, parts: readonly string[]): string {
   let hash = 0x811c9dc5;
   for (const char of parts.join("\u0000")) {
     hash ^= char.codePointAt(0) ?? 0;

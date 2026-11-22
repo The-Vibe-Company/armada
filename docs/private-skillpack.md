@@ -29,13 +29,13 @@ window can do whatever that key allows on Skillpack, not only read skills.
 Native CLI presently does not enforce its `--confirm-secrets` flag; a broader
 key can also authorize secret projection. Use only trusted skills and sandboxes.
 
-Use `armada creds set skillpack --file <private-file>` or pipe the value on
+Use `armada account add skillpack --file <private-file>` or pipe the value on
 stdin. Add `--org <organization>` for an org default (admin only). Your own
 credential wins over the org's, and a refused personal key never silently falls
 back to wider org authority. Storage uses the existing AES-GCM encrypted vault;
 a user JWT cannot read `value_enc`. The value is never an argument.
 
-Ordinary sandbox launch accepts `armada launch <golden> --agent codex --skill notes@1.0.0`
+Ordinary sandbox launch accepts `armada new SNAPSHOT --provider boat --agent codex --skill notes@1.0.0`
 (and repeated `--skill` flags). The API `skills` array accepts both private
 `slug@exact-version` and public `org/slug@exact-version` pins, as do template and
 delegated child launches. Distinct pins must have distinct installed slugs.
@@ -50,34 +50,30 @@ Missing key, refused key, unavailable/inaccessible skill, and general
 installation failure have separate closed diagnostic reasons. Provider/tool
 output is never forwarded.
 
-The server-only `installPrivateSkill` function owns the shared installation boundary. Ordinary
-launch failures expose the closed `reason` and `stage` through the API; the CLI
-reports the same closed classification in its error message, without forwarding
-installer or provider output. Receipts are
-returned in the existing sandbox `skills` field, including private `workspaceId`.
-Golden skill configuration is unchanged; future golden callers must install
-before the existing snapshot scan, whose PAT pattern includes Skillpack tokens.
+Launch failures expose a closed `reason` and `stage` through the API, and the
+CLI reports the same classification. The snapshot scan includes Skillpack
+tokens.
 
-Transport uses pinned-host SSH stdin. The key is passed only in child process
-environment to `skillpack auth status` and `skillpack install`, then discarded;
-no `auth login`, profile write, argv secret or provider command journal is used.
-The freshly authorized SSH key is removed under the shared `authorized_keys`
-lock **before** the installer runs, including on refused/missing-skill paths;
-unrelated keys and file metadata are preserved. Golden create/update installs the trusted native CLI automatically; the base
-image must supply Node, Bash and `flock`. A read-only key limits authority during the install window; broader keys do not
-provide that capability fence.
+Enrolled runtimes install skills through an epoch-fenced runtime command.
+The native provider path uses pinned-host SSH and passes the key to the
+installer through its child-process environment. Both paths discard the key
+after installation and keep it out of the harness environment. Snapshot builds
+provision the Skillpack CLI. Before launch, check the snapshot build result
+for provisioning warnings.
 
-Defaults, version resolution, custom origins and secret-bearing skill packages
-are outside this first credential/install slice. No live credential or production
-install is used in verification; fake SSH/CLI tests execute the actual guest
-script and check receipt validation, error sanitization and command-local auth.
+See [default pins](skill-defaults.md) for how Armada resolves skills at launch.
 
-## Ordinary launch staging parity (#983)
+## Ordinary launch parity (#983)
 
-After approved staging deployment, run the ordinary `armada launch` command above
-for Boat Codex and Modal Codex with a staging private pin and a configured
-Skillpack credential. Check `--json` output `skills[]` for the exact reference,
-version, checksum, fixed origin and expected workspaceId; ask the first turn to
+On Modal staging, the coordinator can use a private pin and a configured
+Skillpack credential with:
+
+```sh
+armada new SNAPSHOT --provider modal --agent codex --skill notes@1.0.0 --json
+```
+
+Boat checks are coordinator-only and on demand. Check `sandbox.skills[]` for
+the exact reference, version, checksum, fixed origin and expected `workspaceId`; ask the first turn to
 read a known installed marker. Confirm missing/revoked private credentials fail
 with a closed reason before any prompt, and a public-only launch never requires
-a Skillpack credential. This PR performs no deployment or live-provider install.
+a Skillpack credential.

@@ -1,23 +1,30 @@
-import { expect, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
+import { encryptSecret } from "@armada/core/server";
+import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { controlFailureResponse } from "../src/control-errors.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
+import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
-import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
+import { authorityExtensionRequestId } from "../src/runtime-authority-extension.ts";
+import { createRuntimeCommands, RuntimeCommandConflict, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { unsettledRuntimeCommands } from "../src/runtime-idle-evidence.ts";
+import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture() {
+async function fixture(waitAdvanceMs = 20_000, boatRuntime = false) {
   const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
-    select $1,id,org_id,owner_id,'command-native','codex','ready' from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+    select $1,id,org_id,owner_id,'command-native','codex','ready',$3 from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner, boatRuntime],
   );
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -28,21 +35,21 @@ async function fixture() {
   let waiting: (() => Promise<void>) | undefined;
   const clock = {
     now: () => now,
-    async wait() {
+    async wait(_ms: number, _signal: AbortSignal) {
       const callback = waiting;
       waiting = undefined;
       await callback?.();
-      now += 20000;
+      now += waitAdvanceMs;
     },
   };
-  const bridge = () => createRuntimeCommands(authority, ENCRYPTION_KEY, clock);
+  const bridge = (time = clock) => createRuntimeCommands(authority, ENCRYPTION_KEY, time);
   const enrol = async () =>
     authority.enrol(
       (await authority.issue({ ownerId: people.owner, sandboxId: id, configuration: {} })).enrolmentToken,
     );
   const command = (requestId: string): RunnerRequest => ({ version: 1, sandboxId: id, requestId, op: "health" });
-  const request = async (path: string, token: string, epoch: string, body: unknown) => {
-    const response = await bridge().route(
+  const request = async (path: string, token: string, epoch: string, body: unknown, commands = bridge()) => {
+    const response = await commands.route(
       new Request(`https://armada.example/api/runtime/${path}`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "x-armada-runtime-epoch": epoch },
@@ -54,6 +61,7 @@ async function fixture() {
   };
   return {
     db,
+    sql,
     people,
     id,
     authority,
@@ -66,6 +74,239 @@ async function fixture() {
     },
   };
 }
+
+test.each([
+  ["advertised", 1, true],
+  ["absent", undefined, false],
+  ["unknown version", 2, false],
+  ["stale generation", 1, false],
+  ["stale expected epoch", 1, false],
+  ["late reply", 1, false],
+] as const)("extension capability health handles %s", async (kind, capability, supported) => {
+  const f = await fixture(kind === "late reply" ? 5_000 : 250);
+  const initial = await f.enrol();
+  const active = kind === "stale expected epoch" ? await f.enrol() : initial;
+  const bridge = f.bridge();
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  f.onWait(async () => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== "health") throw Error("Expected a fresh health probe");
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: {
+        version: 1,
+        requestId: command.requestId,
+        result: {
+          ready: true,
+          generation: kind === "stale generation" ? "0" : active.epoch,
+          commandAuthorityExtension: capability,
+        },
+      },
+    });
+  });
+  const health = agent.health(undefined, undefined, {
+    expectedEpoch: initial.epoch,
+    async assertClaim() {},
+    requireCommandAuthorityExtension: true,
+  });
+  if (supported) {
+    expect(await health).toEqual({ runtime: "armada", epoch: active.epoch });
+  } else {
+    await expect(health).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  }
+  if (kind === "stale expected epoch")
+    expect((await f.db.query("select request_id from runtime_commands where sandbox_id=$1", [f.id])).rows).toEqual([]);
+});
+
+test.each([
+  "covers target",
+  "short deadline",
+  "wrong ACK epoch",
+  "replacement epoch",
+  "late ACK",
+  "lost claim",
+  "expired dispatch",
+  "expired claim after ACK",
+  "successor rebinds",
+] as const)("extension authority receipt handles %s", async (kind) => {
+  const f = await fixture(kind === "late ACK" ? 2_500 : 250, true);
+  const bridge = f.bridge();
+  let active = await f.enrol();
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const {
+    rows: [sandbox],
+  } = await f.db.query<{ generation: number; deadline: Date }>(
+    "select lifecycle_generation::int as generation, now()+interval '1 day' as deadline from sandboxes where id=$1",
+    [f.id],
+  );
+  if (!sandbox) throw Error("Missing fixture sandbox");
+  const jobId = await jobs.enqueue("boat_runtime_extend", f.id, sandbox.generation, f.id, null, {
+    orgId: f.people.org,
+    maxAttempts: 2,
+    deadline: sandbox.deadline,
+  });
+  if (!jobId) throw Error("Missing fixture job");
+  await f.db.query("insert into boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [
+    f.id,
+    jobId,
+  ]);
+  const claim = async () => {
+    const lease = await jobs.claim("boat_runtime_extend", crypto.randomUUID(), 300, 1);
+    if (!lease) throw Error("Missing fixture lease");
+    return lease.lease_epoch;
+  };
+  let leaseEpoch = await claim();
+  let ownsClaim = true;
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  const target = 60_000;
+  const requestId = authorityExtensionRequestId(jobId);
+  const busy = async () =>
+    (await f.db.query(unsettledRuntimeCommands("$1", "$2"), [f.id, sandbox.generation])).rows.length > 0;
+  const extend = () =>
+    agent.extendCommandAuthority({
+      jobId,
+      leaseEpoch,
+      expectedEpoch: active.epoch,
+      expiresAt: target,
+      signal: new AbortController().signal,
+      async assertClaim() {
+        if (!ownsClaim) throw Error("extension claim lost");
+      },
+    });
+  const answer = async (op: "health" | "extendCommandAuthority", result: Record<string, unknown>) => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== op) throw Error(`Expected ${op} command`);
+    if (op === "extendCommandAuthority")
+      expect(command).toMatchObject({ requestId, epoch: active.epoch, expiresAt: target });
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { version: 1, requestId: command.requestId, result },
+    });
+  };
+  const answerHealth = () => answer("health", { ready: true, generation: active.epoch, commandAuthorityExtension: 1 });
+  const answerAck = async () => {
+    await answer("extendCommandAuthority", {
+      epoch: kind === "wrong ACK epoch" ? "0" : active.epoch,
+      expiresAt: kind === "short deadline" ? target - 1 : target + 1,
+    });
+    if (kind === "lost claim") ownsClaim = false;
+    if (kind === "expired claim after ACK") await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+  };
+  f.onWait(async () => {
+    await answerHealth();
+    f.onWait(async () => {
+      if (kind === "expired dispatch") {
+        expect(await busy()).toBe(true);
+        await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+        expect(await busy()).toBe(false);
+        const later = f.command("later-health");
+        await bridge.enqueue(f.people.owner, later, active.epoch);
+        expect((await bridge.next(active.runtimeToken, active.epoch)).command).toEqual(later);
+        return;
+      }
+      if (kind === "successor rebinds") return;
+      if (kind !== "late ACK") return answerAck();
+      f.onWait(answerAck);
+    });
+  });
+  if (kind === "short deadline" || kind === "wrong ACK epoch") {
+    await expect(extend()).rejects.toMatchObject({ code: "unavailable" });
+  } else if (kind === "late ACK" || kind === "expired dispatch") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+  } else if (kind === "lost claim") {
+    await expect(extend()).rejects.toThrow("extension claim lost");
+  } else if (kind === "expired claim after ACK") {
+    const receipt = extend();
+    await expect(receipt).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(receipt).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
+    f.onWait(answerHealth);
+    const replay = extend();
+    await expect(replay).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(replay).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
+  } else if (kind === "successor rebinds") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+    await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+    leaseEpoch = await claim();
+    f.onWait(async () => {
+      await answerHealth();
+      f.onWait(answerAck);
+    });
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
+  } else {
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
+    if (kind === "replacement epoch") {
+      active = await f.enrol();
+      f.onWait(answerHealth);
+      await expect(extend()).rejects.toThrow("runtime_command_conflict");
+      expect((await bridge.next(active.runtimeToken, active.epoch)).command).toBeNull();
+    }
+  }
+});
+
+test("generic mailbox admission refuses a command-authority extension", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const command = {
+    version: 1,
+    requestId: authorityExtensionRequestId(crypto.randomUUID()),
+    sandboxId: f.id,
+    op: "extendCommandAuthority",
+    epoch: active.epoch,
+    expiresAt: 60_000,
+  } as const;
+  await expect(bridge.enqueue(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
+  await expect(bridge.call(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
+});
+
+test("an exact command replay checks the claim again before returning a stored reply", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const command = f.command("replay-fence");
+  await bridge.enqueue(f.people.owner, command, active.epoch);
+  const reply = {
+    epoch: active.epoch,
+    requestId: command.requestId,
+    status: 200,
+    body: { version: 1, requestId: command.requestId, result: { ready: true } },
+  };
+  await bridge.complete(active.runtimeToken, active.epoch, reply);
+  let current = true;
+  await expect(
+    bridge.call(f.people.owner, command, {
+      expectedEpoch: active.epoch,
+      async assertClaim() {
+        if (!current) throw Error("Claim expired during replay");
+        current = false;
+      },
+    }),
+  ).rejects.toThrow("Claim expired during replay");
+  expect(await bridge.result(f.people.owner, f.id, command.requestId, active.epoch)).toEqual({
+    state: "finished",
+    reply,
+  });
+});
 
 test("encrypted command mailbox survives replica restart, redelivers one stable ID and pins the first durable result", async () => {
   const f = await fixture();
@@ -90,11 +331,12 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(await response.json()).toEqual({ epoch: active.epoch, command: first });
   expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: first });
+  const promptId = crypto.randomUUID();
   const reply = {
     epoch: active.epoch,
     requestId: first.requestId,
     status: 200,
-    body: { requestId: first.requestId, result: { marker: "private-result-marker" } },
+    body: { requestId: first.requestId, result: { marker: "private-result-marker", promptId } },
   };
   expect(await (await f.request("results", active.runtimeToken, active.epoch, reply)).json()).toEqual({
     epoch: active.epoch,
@@ -104,7 +346,7 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
     (
       await f.request("results", active.runtimeToken, active.epoch, {
         ...reply,
-        body: { error: "late replay must not overwrite" },
+        body: { result: { promptId: crypto.randomUUID() } },
       })
     ).status,
   ).toBe(200);
@@ -114,6 +356,21 @@ test("encrypted command mailbox survives replica restart, redelivers one stable 
   ).rows[0];
   expect(Buffer.from(sealed?.result_enc ?? []).includes(Buffer.from("private-result-marker"))).toBe(false);
   expect(await (await poll()).json()).toEqual({ epoch: active.epoch, command: last });
+  expect(
+    (
+      await f.request("results", active.runtimeToken, active.epoch, {
+        ...reply,
+        requestId: last.requestId,
+        body: { result: { promptId } },
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (await f.db.query("select request_id, accepted_prompt_id from runtime_commands order by sequence")).rows,
+  ).toEqual([
+    { request_id: first.requestId, accepted_prompt_id: promptId },
+    { request_id: last.requestId, accepted_prompt_id: null },
+  ]);
   await expect(
     f.bridge().enqueue(f.people.owner, { ...first, input: { ...first.input, text: "changed" } }),
   ).rejects.toThrow("runtime_command_conflict");
@@ -223,17 +480,53 @@ test("a checkpoint fences new exec work but an admitted exec replay stays unknow
   expect((await f.db.query("select 1 from runtime_commands where request_id='exec-new'")).rows).toHaveLength(0);
 });
 
+test("a held runtime poll returns a locally enqueued command with the clock frozen", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const command = f.command("arrived-during-idle");
+  const waiting = Promise.withResolvers<AbortSignal>();
+  const delay = Promise.withResolvers<void>();
+  const commands = f.bridge({
+    now: () => 0,
+    wait(_ms, signal) {
+      signal.addEventListener("abort", () => delay.resolve(), { once: true });
+      waiting.resolve(signal);
+      return delay.promise;
+    },
+  });
+  const poll = f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  const signal = await Promise.race([
+    waiting.promise,
+    poll.then(() => {
+      throw new Error("Runtime poll returned before waiting");
+    }),
+  ]);
+  try {
+    await f.bridge().enqueue(f.people.owner, command);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    if (!signal.aborted) delay.reject(new Error("Runtime poll received no enqueue wake"));
+  }
+  const response = await poll;
+  expect(await response.json()).toEqual({ epoch: active.epoch, command });
+});
+
 test("empty polls release the transaction while waiting and private routes/grants reject malformed authority", async () => {
   const f = await fixture();
 
   const active = await f.enrol();
-  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-  expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
-  f.onWait(async () => {
-    await f.bridge().enqueue(f.people.owner, f.command("arrived-during-idle"));
+  let time = 0;
+  const waits: number[] = [];
+  const commands = f.bridge({
+    now: () => time,
+    async wait(ms) {
+      waits.push(ms);
+      time += ms;
+    },
   });
-  const awakened = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch });
-  expect(await awakened.json()).toEqual({ epoch: active.epoch, command: f.command("arrived-during-idle") });
+  const response = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, commands);
+  expect(await response.json()).toEqual({ epoch: active.epoch, command: null });
+  expect(waits).toEqual(Array(20).fill(1000));
   expect((await f.request("poll", "invalid", active.epoch, { epoch: active.epoch })).status).toBe(401);
   expect((await f.request("poll", active.runtimeToken, active.epoch, { epoch: "wrong" })).status).toBe(409);
   for (const role of ["anon", "authenticated"]) {
@@ -272,9 +565,9 @@ test("empty polls release the transaction while waiting and private routes/grant
   ).toBe(499);
 });
 
-test.each(["health", "maximum-frame"] as const)(
+test.each(["maximum-frame"] as const)(
   "dialout client wire contract round-trips a real Runner response (%s)",
-  async (kind) => {
+  async () => {
     const { RuntimeDialout } = await import("../../agent-runtime/src/dialout.ts");
     const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
     const { mkdtemp, rm } = await import("node:fs/promises");
@@ -285,25 +578,23 @@ test.each(["health", "maximum-frame"] as const)(
     const journal = new Journal(join(root, "journal"), (value) => value);
     const stop = new AbortController();
     try {
-      if (kind === "maximum-frame") {
-        await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
-        await f.db.query("update runtime_enrolments set epoch=9223372036854775805");
-      }
+      await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+      await f.db.query("update runtime_enrolments set epoch=9223372036854775805");
       const active = await f.enrol();
-      let command = f.command("client-wire");
-      if (kind === "maximum-frame") {
-        const empty = { ...command, op: "prompt", input: { sandboxId: f.id, harness: "codex", text: "" } } as const;
-        const rawBudget = 1048576 - Buffer.byteLength(JSON.stringify(empty));
-        await expect(
-          f.bridge().enqueue(f.people.owner, { ...empty, input: { ...empty.input, text: "x".repeat(rawBudget) } }),
-        ).rejects.toThrow("runtime_command_conflict");
-        const budget =
-          1048576 - Buffer.byteLength(JSON.stringify({ type: "command", epoch: active.epoch, request: empty }));
-        command = { ...empty, input: { ...empty.input, text: "x".repeat(budget) } };
-      }
+      const empty = {
+        ...f.command("client-wire"),
+        op: "prompt",
+        input: { sandboxId: f.id, harness: "codex", text: "" },
+      } as const;
+      const rawBudget = 1048576 - Buffer.byteLength(JSON.stringify(empty));
+      await expect(
+        f.bridge().enqueue(f.people.owner, { ...empty, input: { ...empty.input, text: "x".repeat(rawBudget) } }),
+      ).rejects.toThrow("runtime_command_conflict");
+      const budget =
+        1048576 - Buffer.byteLength(JSON.stringify({ type: "command", epoch: active.epoch, request: empty }));
+      const command = { ...empty, input: { ...empty.input, text: "x".repeat(budget) } };
       const driver = {
         start() {
-          if (kind === "health") throw Error("health must not start a harness");
           return { done: Promise.resolve("finished" as const), async interrupt() {}, async steer() {} };
         },
         async close() {},
@@ -344,20 +635,11 @@ test.each(["health", "maximum-frame"] as const)(
         ),
       );
       const result = await f.bridge().call(f.people.owner, command);
-      if (kind === "maximum-frame") {
-        expect(result).toMatchObject({
-          epoch: active.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: { result: { promptId: expect.any(String) } },
-        });
-        return;
-      }
       expect(result).toMatchObject({
         epoch: active.epoch,
         requestId: command.requestId,
         status: 200,
-        body: { result: { generation: active.epoch, ready: true } },
+        body: { result: { promptId: expect.any(String) } },
       });
     } finally {
       stop.abort();
@@ -380,12 +662,13 @@ test.each(["timeout", "abort", "replacement", "stop"] as const)(
       expect((await f.bridge().next(active.runtimeToken, active.epoch)).command).toEqual(command);
       if (scenario === "abort") abort.abort();
       if (scenario === "replacement") {
-        await f.bridge().complete(active.runtimeToken, active.epoch, {
-          epoch: active.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: {},
-        });
+        // Simulate a remote commit followed by rotation before the local fallback tick.
+        const staleReply = { epoch: active.epoch, requestId: command.requestId, status: 200, body: {} };
+        await f.db.query("update runtime_commands set result_enc=$1 where sandbox_id=$2 and request_id=$3", [
+          await encryptSecret(JSON.stringify(staleReply), ENCRYPTION_KEY),
+          f.id,
+          command.requestId,
+        ]);
         await f.enrol();
         // Historical readback stays available, but it is not a current call reply.
         expect((await f.bridge().result(f.people.owner, f.id, command.requestId)).state).toBe("finished");
@@ -693,24 +976,38 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "runtime-startup-"));
   const journal = new Journal(join(root, "journal"), (value) => value);
+  const logger = spyOn(console, "info");
   try {
     const previous = await f.enrol();
     const agent = createRuntimeAgent(f.bridge(), {
       harness: "codex",
       ownerId: f.people.owner,
       sandboxId: f.id,
-      providerSandboxId: "physical",
+      providerSandboxId: "command-native",
       cwd: root,
       defaults: { model: "gpt-5.4", reasoningEffort: "high" },
     });
+    let bootstrapStart: unknown;
+    let authenticatedEpoch: string | undefined;
     let token: string | undefined;
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
     const start = createRuntimeStartup(
-      f.authority,
+      {
+        ...f.authority,
+        async issue(input) {
+          const ticket = await f.authority.issue(input);
+          now += 10;
+          return ticket;
+        },
+      },
       {
         async bootstrap(input) {
+          bootstrapStart = logger.mock.calls
+            .map(([line]) => JSON.parse(String(line)))
+            .find((entry) => entry.event === "armada.runtime.startup_phase" && entry.phase === "bootstrap");
           token = input.enrolmentToken;
+          now += 40;
           expect(Object.keys(input).sort()).toEqual([
             "artifact",
             "cacheDir",
@@ -718,7 +1015,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             "sandboxId",
             "serverUrl",
           ]);
-          expect(input.sandboxId).toBe("physical");
+          expect(input.sandboxId).toBe("command-native");
           await expect(f.authority.withSession(previous.runtimeToken, previous.epoch, async () => {})).rejects.toThrow(
             "runtime_enrolment_denied",
           );
@@ -729,7 +1026,11 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             false,
           );
         },
-        health: (signal) => agent.health(signal),
+        async health(signal, epoch) {
+          expect(authenticatedEpoch).toBe(epoch);
+          now += 30;
+          return agent.health(signal);
+        },
       },
       {
         now: () => now,
@@ -774,25 +1075,158 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         },
       },
     );
+    const requestId = crypto.randomUUID();
     expect(
-      await start({
-        ownerId: f.people.owner,
-        sandboxId: f.id,
-        providerSandboxId: "physical",
-        serverUrl: "https://armada.invalid",
-        cacheDir: "/home/user/.armada-bootstrap",
-        artifact: { sha256: "a".repeat(64), bytes: 10 },
-        configuration,
-      }),
+      await continueRequest(requestId, () =>
+        start({
+          ownerId: f.people.owner,
+          sandboxId: f.id,
+          providerSandboxId: "command-native",
+          serverUrl: "https://armada.invalid",
+          cacheDir: "/home/user/.armada-bootstrap",
+          artifact: { sha256: "a".repeat(64), bytes: 10 },
+          configuration,
+          onEnrolled: (epoch) => {
+            authenticatedEpoch = epoch;
+          },
+        }),
+      ),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    expect(bootstrapStart).toEqual({
+      event: "armada.runtime.startup_phase",
+      requestId,
+      sandboxId: f.id,
+      epoch: "2",
+      phase: "bootstrap",
+      elapsedMs: 10,
+    });
+    const samples = logger.mock.calls.flatMap(([line]) =>
+      String(line).includes('"event":"armada.runtime.startup_timing"') ? [JSON.parse(String(line))] : [],
+    );
+    expect(samples).toEqual([
+      {
+        event: "armada.runtime.startup_timing",
+        sandboxId: f.id,
+        epoch: "2",
+        stages: [
+          { stage: "issue_ticket", ms: 10 },
+          { stage: "bootstrap", ms: 40 },
+          { stage: "enrolment_wait", ms: 250 },
+          { stage: "health", ms: 30 },
+        ],
+      },
+    ]);
     expect(journal.prompts()).toEqual([]);
   } finally {
+    logger.mockRestore();
     journal.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
+test("startup refuses a mismatched physical sandbox before replacing the live runtime", async () => {
+  const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+  const f = await fixture();
+  const session = await f.enrol();
+  const bootstrap = mock(async () => {
+    throw Error("unexpected bootstrap");
+  });
+  const start = createRuntimeStartup(f.authority, {
+    bootstrap,
+    health: async () => {
+      throw Error("unexpected health");
+    },
+  });
+
+  await expect(
+    start({
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "different-machine",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: "codex" },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(bootstrap).not.toHaveBeenCalled();
+  expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+    session.epoch,
+  );
+});
+
+test.each(["before issuance", "during issuance"] as const)(
+  "queued startup stops when the claim expires %s",
+  async (expiry) => {
+    const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+    const f = await fixture();
+    const session = await f.enrol();
+    let current = expiry !== "before issuance";
+    const authority = createRuntimeEnrolments(
+      {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              ...tx,
+              async query<T>(statement: string, values?: unknown[]) {
+                const result = await tx.query<T>(statement, values);
+                if (expiry === "during issuance" && statement.includes("insert into public.runtime_enrolments"))
+                  current = false;
+                return result;
+              },
+            }),
+          ),
+      },
+      ENCRYPTION_KEY,
+    );
+    const bootstrap = mock(async () => {
+      throw Error("unexpected bootstrap");
+    });
+    const start = createRuntimeStartup(authority, {
+      bootstrap,
+      health: async () => {
+        throw Error("unexpected health");
+      },
+    });
+
+    const startup = {
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "command-native",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: "codex" },
+      async assertClaim() {
+        if (!current) throw Error("queued claim expired");
+      },
+    };
+    await expect(start(startup)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(bootstrap).not.toHaveBeenCalled();
+    const ticket = await f.db.query<{ pending: boolean }>(
+      "select enrolment_hash is not null as pending from runtime_enrolments where sandbox_id=$1",
+      [f.id],
+    );
+    expect(ticket.rows).toEqual([{ pending: false }]);
+    expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+      session.epoch,
+    );
+  },
+);
+
+const startupFailures = [
+  "selection",
+  "pre-abort",
+  "timeout",
+  "bootstrap",
+  "replacement",
+  "lifecycle",
+  "stop",
+  "claim loss",
+] as const;
+
+test.each([...startupFailures])(
   "startup never publishes readiness after %s and never repeats host bootstrap",
   async (scenario) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
@@ -803,6 +1237,8 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
     const abort = new AbortController();
     if (scenario === "pre-abort") abort.abort();
     let epoch = "";
+    let current = true;
+    let checkedAfterHealthInTransaction = false;
     const start = createRuntimeStartup(
       f.authority,
       {
@@ -813,6 +1249,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
             epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
         },
         async health() {
+          if (scenario === "claim loss") current = false;
           if (scenario === "replacement") await f.enrol();
           if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
           return { runtime: "armada", epoch };
@@ -832,11 +1269,20 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
     const pending = start({
       ownerId: f.people.owner,
       sandboxId: f.id,
-      providerSandboxId: "physical",
+      providerSandboxId: "command-native",
       serverUrl: "https://armada.invalid",
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
       configuration: { selectedHarness: scenario === "selection" ? "unknown" : "codex" },
+      ...(scenario === "claim loss"
+        ? {
+            async assertClaim(tx?: Sql) {
+              if (current) return;
+              checkedAfterHealthInTransaction = tx !== undefined;
+              throw Error("Dispatch claim expired.");
+            },
+          }
+        : {}),
       signal: abort.signal,
       readinessTimeoutMs: 1000,
     });
@@ -849,6 +1295,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
           ? "Invalid runtime startup selection."
           : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
     });
+    if (scenario === "claim loss") expect(checkedAfterHealthInTransaction).toBe(true);
     expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
     if (scenario === "pre-abort" || scenario === "selection")
       expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
@@ -955,13 +1402,36 @@ test("bound model check uses enrolled health and exact epoch, never destinations
   expect(String(failure)).not.toContain("private_key_echo");
 });
 
+function webhookAttempts(sql: Sql, sandboxId: string) {
+  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example", {
+    now: () => Date.UTC(2030, 0, 1),
+  });
+  const store = createJobsStore(sql);
+  const owner = crypto.randomUUID();
+  return async () => {
+    const { rows } = await sql.query(
+      `update jobs j set run_after=now() from outbound_webhook_deliveries d
+       where j.id=d.id and j.kind='webhook' and j.state='queued'
+         and d.payload->>'sandboxId'=$1 and d.attempts=0 returning j.id`,
+      [sandboxId],
+    );
+    for (const _ of rows) {
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      expect(await store.complete(job, owner, result)).toBe(true);
+    }
+  };
+}
+
 test("cancelled queued runtime turns defer webhooks until the first durable command reply preserves their alias", async () => {
   const f = await fixture();
   const active = await f.enrol();
-  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
   // Invalid encryption prevents any network send after a claim, while the
   // attempts counter proves whether admission happened before alias readiness.
-  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
+  const tryDeliveries = webhookAttempts(f.sql, f.id);
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
     [f.people.org, new Uint8Array([1])],
@@ -984,11 +1454,11 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
     );
     await f.bridge().enqueue(f.people.owner, command);
     await f.db.query("select enqueue_webhook_turn($1,$2,'finished')", [f.id, nativeId]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    await tryDeliveries();
     await f.db.query("update account_turn_queue set state='failed',failure_reason='cancelled' where request_id=$1", [
       publicId,
     ]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    await tryDeliveries();
     expect(
       (
         await f.db.query<{ attempts: number }>(
@@ -1011,7 +1481,7 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
     expect(
       (await f.db.query("select state,native_prompt_id from account_turn_queue where request_id=$1", [publicId])).rows,
     ).toEqual([{ state: "failed", native_prompt_id: nativeId }]);
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+    await tryDeliveries();
     expect(
       (
         await f.db.query<{ attempts: number }>(
@@ -1020,18 +1490,14 @@ test("cancelled queued runtime turns defer webhooks until the first durable comm
         )
       ).rows,
     ).toEqual([{ attempts: 1 }]);
-    // Isolate each prefix from already-failed delivery retries.
-    await f.db.query("delete from outbound_webhook_deliveries");
   }
 });
 
 test("a superseded unfinished queued command cannot hold stop or later turn webhooks", async () => {
   const f = await fixture();
   await f.enrol();
-  const sql: Sql = { query: (q, p) => f.db.query(q, p) };
-  // Invalid encryption prevents any network send; a claim (true) proves admission.
-  const worker = createOutboundWebhooks(sql, "invalid_key", "https://armada.example");
-  await f.db.query("delete from outbound_webhook_deliveries");
+  // Invalid encryption prevents network I/O. A recorded attempt proves dispatch.
+  const tryDeliveries = webhookAttempts(f.sql, f.id);
   await f.db.query(
     "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
     [f.people.org, new Uint8Array([1])],
@@ -1059,25 +1525,24 @@ test("a superseded unfinished queued command cannot hold stop or later turn webh
     ).rows;
   await f.db.query("select enqueue_webhook_turn($1,'native_uncertain','finished')", [f.id]);
   // While the reply can still arrive, the alias may still be published.
-  expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+  await tryDeliveries();
+  expect(await attempts()).toEqual([{ type: "turn.finished", attempts: 0 }]);
   await f.enrol();
   expect(await f.bridge().result(f.people.owner, f.id, `follow_${publicId}`)).toEqual({ state: "superseded" });
   await f.db.query("select enqueue_webhook_turn($1,'native_later','finished')", [f.id]);
   await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [f.id]);
-  while (await worker.reconcileOne(new AbortController().signal));
+  await tryDeliveries();
   expect(await attempts()).toEqual([
     { type: "sandbox.stopped", attempts: 1 },
     { type: "turn.finished", attempts: 1 },
     { type: "turn.finished", attempts: 1 },
   ]);
-  await f.db.query("delete from outbound_webhook_deliveries");
 });
 
 test.each(["accepted", "rejected"] as const)(
   "a %s well-formed runtime reply is recorded under the request ID with the caller's own validation",
   async (kind) => {
     const { createRuntimeAgent } = await import("../src/runtime-agent.ts");
-    const { observeRequest } = await import("../src/request-observability.ts");
     const f = await fixture();
     const session = await f.enrol();
     const runtime = f.bridge();
@@ -1163,7 +1628,6 @@ test.each(["accepted", "rejected"] as const)(
 );
 
 test("a retried runtime command answered by its stored reply records no second provider call", async () => {
-  const { observeRequest } = await import("../src/request-observability.ts");
   const f = await fixture();
   const active = await f.enrol();
   const command = f.command("retried-reply");
@@ -1195,7 +1659,6 @@ test("a retried runtime command answered by its stored reply records no second p
 });
 
 test("a command answered before its first result read still records the fenced admission, unlike a later replay", async () => {
-  const { observeRequest } = await import("../src/request-observability.ts");
   const f = await fixture();
   const active = await f.enrol();
   const command = f.command("fast-reply");
@@ -1244,4 +1707,132 @@ test("a command answered before its first result read still records the fenced a
   );
   expect(replay.reply).toEqual(first.reply);
   expect(replay.records).toEqual([]);
+});
+
+function bootstrapFailureRequest(token: string) {
+  return new Request("https://armada.test/api/runtime/progress", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stage: "bootstrap_failed" }),
+  });
+}
+
+test("bootstrap failure journals one transition and refuses progress authenticated against a stale generation", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const request = () => bootstrapFailureRequest(enrolmentToken);
+  const stale = createRuntimeProgress({
+    ...f.authority,
+    withBootstrap: (token, work) =>
+      f.authority.withBootstrap(token, (tx, scope, generation) => work(tx, scope, String(BigInt(generation) + 1n))),
+  });
+  const journal = () =>
+    f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id]);
+  expect((await stale(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([]);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+
+  const report = createRuntimeProgress(f.authority);
+  expect((await report(request()))?.status).toBe(200);
+  expect((await report(request()))?.status).toBe(401);
+  expect((await journal()).rows).toEqual([{ from_status: "ready", to_status: "failed", code: "bootstrap_failed" }]);
+});
+
+test("a failed reason write rolls back the bootstrap status change and journal", async () => {
+  const f = await fixture();
+  const { enrolmentToken } = await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+  const report = createRuntimeProgress(f.authority);
+  await f.db.exec(
+    `alter table sandboxes add constraint fixture_reject_bootstrap_reason
+     check (status_reason is distinct from 'Armada runtime bootstrap failed.') not valid`,
+  );
+  try {
+    expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(400);
+    expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+      { status: "ready", status_reason: null },
+    ]);
+    expect((await f.db.query("select id from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint fixture_reject_bootstrap_reason");
+  }
+  expect((await report(bootstrapFailureRequest(enrolmentToken)))?.status).toBe(200);
+});
+
+test("authenticated boot and turn diagnostics retain their initiating request IDs and sanitized stack", async () => {
+  const f = await fixture();
+  const records: Record<string, unknown>[] = [];
+  const log = (line: string) => records.push(JSON.parse(line));
+  let grant: Awaited<ReturnType<typeof f.enrol>> | undefined;
+  const launch = await observeRequest(async () => {
+    grant = await f.enrol();
+    return new Response(null, { status: 204 });
+  }, log);
+  if (!grant) throw Error("Missing runtime grant");
+  const { runtimeToken, epoch } = grant;
+  const commandId = "follow_progress_fixture";
+  const command = {
+    version: 1 as const,
+    sandboxId: f.id,
+    requestId: commandId,
+    op: "prompt" as const,
+    input: { sandboxId: f.id, harness: "codex" as const, text: "fixture prompt" },
+  };
+  const accept = () =>
+    observeRequest(async () => {
+      await f.bridge().enqueue(f.people.owner, command);
+      return new Response(null, { status: 204 });
+    }, log);
+  const send = await accept();
+  const replay = await accept();
+  expect(replay?.headers.get("x-request-id")).not.toBe(send?.headers.get("x-request-id"));
+  const route = createRuntimeProgress(f.authority);
+  const report = (body: unknown) =>
+    observeRequest(
+      async () =>
+        (await route(
+          new Request("https://armada.test/api/runtime/progress", {
+            method: "POST",
+            headers: { authorization: `Bearer ${runtimeToken}`, "x-armada-runtime-epoch": epoch },
+            body: JSON.stringify(body),
+          }),
+        )) ?? undefined,
+      log,
+    );
+  const error = new Error("private_config_canary");
+  error.stack +=
+    "\n    at main (/private_config_canary/runtime/main.js:701:12)\n    at /$bunfs/root/armada-runtime:801:19";
+  const diagnostic = runtimeOperatorDiagnostic(error, "session_start_failed");
+  const unrelated = await report({ stage: "harness_turn_failed", commandId: "foreign_command", diagnostic });
+  expect(unrelated?.status).toBe(400);
+  const harness = await report({ stage: "harness_turn_failed", commandId, diagnostic });
+  expect(harness?.status).toBe(200);
+  const boot = await report({ stage: "runtime_failed", reason: "artifact_preparation" });
+  expect(boot?.status).toBe(200);
+  expect(records.filter((record) => record.event === "operator_failure")).toMatchObject([
+    {
+      phase: "runtime.harness_turn_failed",
+      errorClass: "HarnessError",
+      message: "session_start_failed",
+      stack: ["main.js:701:12", "armada-runtime:801:19"],
+      requestId: send?.headers.get("x-request-id"),
+      sandboxId: f.id,
+    },
+    {
+      phase: "runtime.boot",
+      message: "artifact_preparation",
+      requestId: launch?.headers.get("x-request-id"),
+      sandboxId: f.id,
+    },
+  ]);
+  expect(
+    (await f.db.query("select from_status,to_status,code from sandbox_transitions where sandbox_id=$1", [f.id])).rows,
+  ).toEqual([{ from_status: "ready", to_status: "failed", code: "artifact_preparation" }]);
+  expect(JSON.stringify(records)).not.toContain("private_config_canary");
+  expect((await f.db.query("select status,status_reason from sandboxes where id=$1", [f.id])).rows).toEqual([
+    {
+      status: "failed",
+      status_reason:
+        "Runtime artifact preparation failed. Ask the server operator to check published harness artifacts and container filesystem access before launching again.",
+    },
+  ]);
 });

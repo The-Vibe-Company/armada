@@ -35,6 +35,10 @@ export type Defect =
   | "idle-wrong-first-epoch"
   | "idle-wrong-first-request"
   | "lost-followup"
+  | "job-admission"
+  | "idle-setup-failed"
+  | "idle-incomplete-history"
+  | "idle-stopped-first-turn"
   | "lost-launch"
   | "mcp-error-result"
   | "mcp-no-result"
@@ -108,6 +112,7 @@ export type Defect =
   | "variables-old-prompt"
   | "variables-old-version"
   | "variables-receipt-mismatch"
+  | "variables-unrelated-launch"
   | "variables-resume-replay"
   | "variables-secrets"
   | "variables-wrapper"
@@ -120,7 +125,7 @@ export type Defect =
   | "wrong-prompt"
   | "wrong-request"
   | "wrong-source";
-export type CliFlag =
+type CliFlag =
   | "--resume"
   | "--ordinary"
   | "--idle"
@@ -132,7 +137,7 @@ export type CliFlag =
   | "--skills"
   | "--variables"
   | "--usage";
-export interface Expected {
+interface Expected {
   success: boolean;
   counters: { launches: number; stops: number; checkpoints: number; resumes: number; sends: number };
   firstSends?: number;
@@ -217,35 +222,6 @@ const expected = {
     proofs: {
       resume: true,
       githubAfterResume: false,
-    },
-  },
-  ordinaryVariables: {
-    stdoutContains: [
-      '"ordinaryDefault":"verified"',
-      '"answer":"verified"',
-      '"checkpoint":"verified"',
-      '"followup":"verified"',
-      "compute stopped",
-    ],
-    success: true,
-    counters: {
-      launches: 1,
-      stops: 1,
-      checkpoints: 1,
-      resumes: 0,
-      sends: 1,
-    },
-    combinedExcludes: [
-      "fixture-token",
-      "private transport diagnostics",
-      "87695aff52e6ddfeec827188ef0d53e36cad584439ca428b5bffedfe4171ec6b",
-      "readable-canary\n$(not-a-command)",
-    ],
-    proofs: {
-      resume: false,
-      githubAfterResume: false,
-      variables: true,
-      variablesAfterResume: false,
     },
   },
   ordinaryIdleVariables: {
@@ -1907,15 +1883,15 @@ export const scenarios: Scenario[] = [
   { label: "ordinary-claude", args: ["--ordinary", "--claude"], defects: [], expected: expected.ordinary },
   { label: "ordinary-opencode", args: ["--ordinary", "--opencode"], defects: [], expected: expected.ordinary },
   {
-    label: "ordinary-variables",
-    args: ["--ordinary", "--variables"],
-    defects: [],
-    expected: expected.ordinaryVariables,
+    label: "explicit-pinned-job-variables",
+    args: ["--variables"],
+    defects: ["job-admission"],
+    expected: expected.opencodeVariables,
   },
   {
     label: "ordinary-idle-variables",
     args: ["--ordinary", "--idle", "--variables"],
-    defects: [],
+    defects: ["job-admission"],
     expected: expected.ordinaryIdleVariables,
   },
   { label: "ordinary-empty", args: ["--ordinary", "--empty-resume"], defects: [], expected: expected.ordinaryEmpty },
@@ -1942,6 +1918,12 @@ export const scenarios: Scenario[] = [
     args: ["--ordinary", "--variables"],
     defects: ["variables-no-tool", "ordinary-template-missing-transport"],
     expected: expected.ordinaryTemplateMissingTransport,
+  },
+  {
+    label: "empty-job-admission",
+    args: ["--empty-resume"],
+    defects: ["job-admission"],
+    expected: expected.emptySuccess,
   },
   { label: "empty-success", args: ["--empty-resume"], defects: [], expected: expected.emptySuccess },
   { label: "empty-claude", args: ["--empty-resume", "--claude"], defects: [], expected: expected.emptySuccess },
@@ -2014,6 +1996,32 @@ export const scenarios: Scenario[] = [
     defects: ["tool-result", "empty-disk-mismatch"],
     expected: expected.emptyDiskMismatch,
   },
+  { label: "idle-job-admission", args: ["--idle"], defects: ["job-admission"], expected: expected.idle },
+  {
+    label: "idle-job-admission-failed-setup",
+    args: ["--idle"],
+    defects: ["job-admission", "idle-setup-failed"],
+    expected: { ...expected.idleBadReceipt, stderrContains: ["Admitted Modal launch or initial turn failed."] },
+  },
+  {
+    label: "idle-job-admission-incomplete-history",
+    args: ["--idle"],
+    defects: ["job-admission", "idle-incomplete-history"],
+    expected: {
+      ...expected.idleBadReceipt,
+      stderrContains: ["Idle archive already contains inference or lacks complete common-runtime provenance."],
+    },
+  },
+  {
+    label: "idle-job-admission-stopped-first-turn",
+    args: ["--idle"],
+    defects: ["job-admission", "idle-stopped-first-turn"],
+    expected: {
+      ...expected.idleBadReceipt,
+      firstSends: 1,
+      stderrContains: ["Queued Modal turn did not finish on an active sandbox."],
+    },
+  },
   { label: "idle", args: ["--idle"], defects: [], expected: expected.idle },
   { label: "idle-resume", args: ["--resume", "--idle"], defects: [], expected: expected.idleResume },
   { label: "idle-variables", args: ["--idle", "--variables"], defects: [], expected: expected.idleVariables },
@@ -2056,10 +2064,13 @@ export const scenarios: Scenario[] = [
     expected: expected.idleOldVersion,
   },
   {
-    label: "idle-bad-receipt",
-    args: ["--idle"],
-    defects: ["tool-result", "idle-bad-receipt"],
-    expected: expected.idleBadReceipt,
+    label: "idle-template-job-status-mismatch",
+    args: ["--ordinary", "--idle", "--variables"],
+    defects: ["job-admission", "idle-bad-receipt"],
+    expected: {
+      ...expected.idleBadReceipt,
+      stderrContains: ["Modal template admission has inconsistent starting status."],
+    },
   },
   {
     label: "idle-running-history",
@@ -2415,7 +2426,7 @@ export const scenarios: Scenario[] = [
     defects: ["resume-stop-unknown"],
     expected: expected.resumeBadCheckpoint,
   },
-  { label: "github", args: ["--github"], defects: [], expected: expected.opencodeGithub },
+  { label: "github-job-admission", args: ["--github"], defects: ["job-admission"], expected: expected.opencodeGithub },
   { label: "github-resume", args: ["--resume", "--github"], defects: [], expected: expected.opencodeGithubResume },
   {
     label: "github-old-preflight",
@@ -2638,10 +2649,22 @@ export const scenarios: Scenario[] = [
     expected: expected.opencodeVariablesOldPrompt,
   },
   {
-    label: "variables-receipt-mismatch",
+    label: "explicit-pinned-job-unrelated-inventory",
     args: ["--variables"],
-    defects: ["variables-receipt-mismatch"],
-    expected: expected.opencodeVariablesOldPrompt,
+    defects: ["job-admission", "variables-unrelated-launch"],
+    expected: {
+      ...expected.lostLaunch,
+      stderrContains: ["Admitted Modal sandbox does not match the owner inventory"],
+    },
+  },
+  {
+    label: "explicit-pinned-job-manifest-mismatch",
+    args: ["--variables"],
+    defects: ["job-admission", "variables-receipt-mismatch"],
+    expected: {
+      ...expected.opencodeVariablesOldPrompt,
+      stderrContains: ["Modal template launch manifest identity is unavailable"],
+    },
   },
   {
     label: "variables-resume-replay",

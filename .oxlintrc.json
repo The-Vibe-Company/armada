@@ -1,0 +1,15 @@
+{
+  "categories": {
+    "correctness": "off"
+  },
+  "extends": ["./node_modules/@interfere/landmines/configs/recommended.json"],
+  "plugins": [],
+  "rules": {
+    "landmines-style/no-comments": [
+      "error",
+      {
+        "publicApi": ["/packages/sdk/"]
+      }
+    ]
+  }
+}

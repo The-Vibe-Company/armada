@@ -29,12 +29,13 @@ and snapshot. This is not a GitHub refusal by itself.
 
 The new --add-repo mode preserves all stored repositories, their branches and
 directories, and init commands. It uses a distinct server endpoint, not a
-client-side list/read/overwrite fallback:
+client-side list/read/overwrite fallback. Replace `ORG_UUID` with the target
+organization UUID.
 
-    armada snapshot update two-repos-prod-test --provider boat --org <org-id>       --add-repo https://github.com/owner/new.git@main
+    armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --add-repo https://github.com/owner/new.git@main
 
-Repeat --add-repo for multiple additions. Do not combine it with --repo, --config,
---init or --setup. To change an existing branch, directory or init command, use a
+Repeat --add-repo for multiple additions. Do not combine it with --replace, --repo,
+--config, --init or --setup. To change an existing branch, directory or init command, use a
 complete --config with --replace intentionally. Re-adding the same canonical repository and
 branch is a no-op in the merged config, enabling idempotent receipt recovery.
 Conflicting branches/directories or exceeding the 16-repository total refuse
@@ -46,8 +47,8 @@ Read-only commands:
 
     armada --version
     armada account status --json
-    armada snapshot list --provider boat --org <org-id> --json
-    armada snapshot capabilities --provider boat --org <org-id>
+    armada snapshot ls --provider boat --org ORG_UUID --json
+    armada api golden/capabilities '{"provider":"boat","org":"ORG_UUID"}'
 
 --version is the CLI version; account status includes the server version and
 the authenticated user/org scope. Packages on unreleased branches may still
@@ -67,7 +68,7 @@ server without durable update routes also needs upgrading. Malformed/missing
 config or idempotency fields from mismatched clients should not be repaired by
 blindly resubmitting a different request. If an older server returns a synchronous
 snapshot result instead of a durable job receipt, the new CLI reports version
-skew/unknown outcome and refuses to poll an undefined job. Inspect snapshot list
+skew/unknown outcome and refuses to poll an undefined job. Inspect snapshot ls
 before retrying: the operation might already have completed.
 
 ## Every refusal boundary on the 2.29.0 update path
@@ -82,7 +83,7 @@ key exists even if admission was refused and no durable job was created.
 | Unknown command/option, missing option value, repeated single option, wrong positional count | Check armada --help and the CLI version. Supply one snapshot name and supported flags. --add-repo is new and update-only. |
 | A golden needs at least one --repo; invalid git URL/branch/name/directory; duplicate explicit directory; non-GitHub repository | For replacement repeat ALL desired full GitHub URLs, optionally @branch, or supply complete valid --config. Use --add-repo to append instead. Bare owner/repo is not a valid replacement CLI git URL in 2.29.0. |
 | Could not read config/setup file; config not JSON; unknown config/repository keys; invalid init array/commands; secret-shaped config keys/assignments; limits (16 repos/32 init commands) | Fix the named local file/field; remove secrets and deliver them through the separate secrets boundary. Do not send credentials in repository URLs, config, arguments or setup. |
-| Invalid --provider, --timeout outside 0–600; invalid idempotency key | Choose boat/modal, a bounded local polling timeout, and a stable 16–128-character key of letters/digits/underscore/hyphen. Local timeout is not a server build deadline. |
+| Invalid --provider, --timeout outside 1–600; invalid idempotency key | Choose boat/modal, a bounded local polling timeout, and a stable 16–128-character key of letters/digits/underscore/hyphen. Local timeout is not a server build deadline. |
 | Set ARMADA_TOKEN or run armada login; expired/revoked session; HTTP 401; invalid Armada URL | Sign in to the intended server as the actual snapshot owner/admin, or repair the service-token/server URL configuration. Never paste token values into diagnostics. |
 | No organization, ambiguous organization, not a member, token scoped to another organization | Use --org with the intended membership and the matching authenticated token. Check account status. |
 | Secure golden creation is not configured on this server; unknown route; config/idempotencyKey required | Check server configuration and CLI/server compatibility. Upgrade together; do not fall back from addition to replacement. |
@@ -108,8 +109,10 @@ No raw stderr, command text, matched secret or upstream error is published.
 
 ## Read-only discrimination and retry
 
-    armada snapshot build-status --idempotency-key <printed-key> --org <org-id>
-    armada snapshot build-status <known-job-id>
+Replace `ADMISSION_KEY` with the printed key and `JOB_UUID` with the known job UUID.
+
+    armada snapshot show --idempotency-key ADMISSION_KEY --org ORG_UUID
+    armada snapshot show --build JOB_UUID
 
 The key lookup is requester-scoped; use the same user's identity. No such build
 after an immediate refusal is expected. Do not invent a builder failure from a

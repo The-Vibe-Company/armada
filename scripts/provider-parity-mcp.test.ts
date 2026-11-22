@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { exportedToolProofs } from "../packages/agent-runtime/src/opencode-export-observations.ts";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Native MCP observations, not assistant prose, own the proof. Transport fixtures
@@ -119,8 +120,7 @@ for (const scenario of [
           now += ms;
         },
         fetch: async (url, init) => {
-          const route = url.split("/api/v1/")[1]!;
-          const body = JSON.parse(String(init.body)),
+          const { path: route, body } = parityRequest(url, init),
             id = body.org;
           calls.push(`${id}:${route}`);
           expect(JSON.stringify(body)).not.toContain(binding.expectedText);
@@ -420,7 +420,7 @@ for (const scenario of [
               if (mode === "resume_stop_budget") now += 110_001;
               result = { id: body.id, status: "stopped" };
               break;
-            case "sandbox/delete":
+            case sandboxDeletePath:
               states.set(id, "deleted");
               result = { id: body.id, status: "deleted" };
               break;
@@ -552,7 +552,7 @@ for (const scenario of [
       if (noAllocation || (mode === "opencode_docker_unadvertised" && provider === "docker"))
         expect(calls).not.toContain(`${provider}:templates/launch`);
       else {
-        expect(calls).toContain(`${provider}:sandbox/delete`);
+        expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
         expect(report.features.cleanup[provider].status).toBe("pass");
       }
       expect(calls).not.toContain(`${provider}:sandbox/exec`);

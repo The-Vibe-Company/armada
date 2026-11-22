@@ -71,7 +71,21 @@ exact manifest size and SHA256, then extracted with the same file-inventory
 checks into the private per-sandbox cache. Anything else falls back to the
 normal download. Docker hosts mount their verified cache there read-only (see
 [Docker hosts](docker-host-daemon.md#shared-verified-artifact-cache-2562)).
-Modal and Boat have no such mount and download as before.
+Enrolled Modal allocations mount the `armada-runtime-artifacts` Volume at that
+path read-only when the Volume exists in the bound Modal environment. The Modal
+bootstrap also checks that path for the runtime executable and verifies size
+and SHA256 before publishing it to the private cache. Provider-run Modal and
+Boat do not mount the Volume.
+
+After the HTTP listener starts, the server uses the registered Modal App
+credentials to warm the Volume in each bound environment in the background. Enrolled launches and resumes
+also request warming for new bindings and failed startup seeds. A launch
+that races warming can use the existing verified HTTP installer. The seeder
+verifies existing entries and writes only missing or invalid manifest digests, verifies uploaded
+bytes by SHA-256 and size, and preserves digests from other deployments. The
+server image includes the Modal Python SDK used for Volume uploads. The Modal
+credentials need permission to create and write the Volume. Server health
+checks run independently of Volume warming.
 
 The trusted launcher holds exclusive launch/lifecycle ownership and supplies
 only `{serverUrl,enrolmentToken}` to `armada-runtime dialout` on private stdin.

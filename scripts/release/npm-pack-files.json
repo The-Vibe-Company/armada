@@ -1,0 +1,5 @@
+{
+  "cli": ["LICENSE", "README.md", "bin/armada.cjs", "package.json"],
+  "platform": ["LICENSE", "README.md", "bin/armada", "package.json"],
+  "sdk": ["LICENSE", "README.md", "index.d.ts", "index.js", "package.json"]
+}

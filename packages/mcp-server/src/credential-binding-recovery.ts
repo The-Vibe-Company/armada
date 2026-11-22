@@ -1,6 +1,8 @@
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, type Harness, resolveCredentials, type Sql, VaultError } from "@armada/core/server";
 import type { Machine } from "@armada/provider-modal";
 import type { Caller } from "./caller.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 
 export interface CredentialBindingRecoveryInput {
   id: string;
@@ -19,14 +21,14 @@ export type CredentialBindingRecovery = (
   input: CredentialBindingRecoveryInput,
   quiesce?: import("./sandbox-account-change.ts").QuiesceAccountChange,
 ) => Promise<CredentialBindingRecoveryResult>;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 /** No provider port: recovery cannot allocate, resume or restart a physical workspace. */
 export function createCredentialBindingRecovery(
   sql: Sql,
   encryptionKey: string | undefined,
 ): CredentialBindingRecovery {
   return async (caller, input) => {
-    if (!UUID.test(input.id) || !UUID.test(input.credentialId))
+    if (!bindingIds.safeParse(input).success)
       throw new VaultError("invalid", "Sandbox and credential IDs must be UUIDs.");
     if (!sql.transaction) throw new VaultError("unavailable", "Binding recovery requires a transaction.");
     return sql.transaction(async (tx) => {
@@ -40,6 +42,7 @@ export function createCredentialBindingRecovery(
         credential_version: number | null;
         /** An activity or reconciliation lease that has not expired; an expired one is released, as everywhere else. */
         leased: boolean;
+        native_drain_pending: boolean;
         modal_workspace: string;
         modal_environment: string;
         modal_app_id: string;
@@ -58,6 +61,9 @@ export function createCredentialBindingRecovery(
         caller.userId,
       ]);
       if (!member.rows.length) throw new VaultError("forbidden", "Organization membership is required.");
+      if (sandbox.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
+      if (await hasStrictNativeDrainStop(tx, sandbox.id))
+        throw new VaultError("conflict", "Native sandbox preservation is pending.");
       if (sandbox.credential_id !== null || sandbox.credential_version !== null)
         throw new VaultError("conflict", "This sandbox is already bound; its account cannot change.");
       const policies = await tx.query<{
@@ -120,8 +126,11 @@ export function createCredentialBindingRecovery(
       const binding = resolved.binding;
       if (!binding) throw new VaultError("unavailable", "The selected account has no stable revision.");
       const credential = await tx.query(
-        "select id from public.credentials where id=$1 and version=$2 and status='active' and (expires_at is null or expires_at>now()) for update",
-        [binding.credentialId, binding.credentialVersion],
+        `select id from public.credentials where id=$1 and version=$2 and status='active'
+         and (expires_at is null or expires_at>now())
+         and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4))
+         for update`,
+        [binding.credentialId, binding.credentialVersion, caller.userId, sandbox.org_id],
       );
       if (!credential.rows.length)
         throw new VaultError("conflict", "The selected account changed during recovery. Choose it again.");

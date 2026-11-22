@@ -7,11 +7,11 @@ import {
   type GoldenActor,
   launchSandbox,
   ProviderError,
+  type Sql,
 } from "@armada/core/server";
-import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { createSandboxLifecycle, requestNativeDrainStop } from "../src/sandbox-lifecycle.ts";
 import { createSubscriptionMigration, type SubscriptionMigrationTransports } from "../src/subscription-migration.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -36,48 +36,15 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
     )
   ).rows[0]!;
-  const boat = fakeBoat(),
-    modal = fakeBoat();
+  const boat = fakeBoat();
   const oldBoat = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
-  const oldModal = await modal.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
   const unknownPin = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
-  const boatId = "11111111-1111-4111-8111-111111111111",
-    modalId = "22222222-2222-4222-8222-222222222222";
-  const scope: Scope = {
-    orgId: people.org,
-    userId: people.owner,
-    visibility: "org",
-    binding: { workspace: "ws", environment: "main", appId: "app" },
-  };
+  const boatId = "11111111-1111-4111-8111-111111111111";
   const goldens = createSqlGoldenStore(db);
-  const modalGolden = await goldens.insert({
-    orgId: people.org,
-    ownerId: people.owner,
-    name: "legacy-modal",
-    visibility: "org",
-    provider: "modal",
-    modal: scope.binding,
-    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-  });
   await db.query(
     `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version)
     select $1,$2,$3,id,'codex','ready','boat',$4,$4,'org',$5,1 from goldens where org_id=$2 and name='shared'`,
     [boatId, people.org, people.owner, oldBoat.id, account.id],
-  );
-  await db.query(
-    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,visibility,credential_id,credential_version)
-    values($1,$2,$3,$4,'codex','ready','modal',$5,'org',$6,1)`,
-    [modalId, people.org, people.owner, modalGolden.id, oldModal.id, account.id],
-  );
-  await db.query(
-    `insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','migration',$5::jsonb)`,
-    [
-      scopeKey(scope),
-      oldModal.id,
-      people.org,
-      people.owner,
-      JSON.stringify({ generation: 1, launchUserId: people.owner }),
-    ],
   );
   for (const [id, physical, version] of [
     ["33333333-3333-4333-8333-333333333333", unknownPin.id, null],
@@ -99,10 +66,6 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       [id, people.org, people.owner, status, account.id, id],
     );
   const resolved: string[] = [];
-  await db.query("insert into model_auth_ownership(account_id,account_version,sandbox_id) values($1,1,$2)", [
-    account.id,
-    crypto.randomUUID(),
-  ]);
   let writer = true,
     disk: string | undefined = native(0),
     drained = 0,
@@ -110,7 +73,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   const grants = new Map<string, { url: string; capability: string }>();
   const submitted: string[] = [];
   const pendingHomes = new Set<string>();
-  let afterDrain = native(1);
+  let afterDrain = native(2);
   let vendorUnavailable = true;
   const transports: SubscriptionMigrationTransports = {
     admission: async (_provider, id, active) => {
@@ -173,28 +136,11 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     prepareAccount: (...args) => migration.prepareAccount(...args),
     prepareTurn: (...args) => migration.prepareTurn(...args),
   });
-  const modalProvider = {
-    ...modal.provider,
-    id: "modal" as const,
-    stop: async ({ sandboxId }: { sandboxId: string }) => {
-      const current = await auth.state.read(actor, account.id, 1, modalId);
-      expect(
-        await auth.publishFromModal(
-          scope,
-          { sandboxId, generation: "1", expiresAt: Date.now() + 60000 },
-          native(2),
-          current?.revision ?? 0,
-        ),
-      ).toMatchObject({ committed: true });
-      await modal.provider.stop({ sandboxId });
-    },
-  };
   migration = createSubscriptionMigration(
     db,
     async (_sql, id) => {
       resolved.push(id);
       if (id === boatId) return { provider: boat.provider, providerSandboxId: oldBoat.id };
-      if (id === modalId) return { provider: modalProvider, providerSandboxId: oldModal.id };
       if (id === "33333333-3333-4333-8333-333333333333")
         return { provider: boat.provider, providerSandboxId: unknownPin.id };
       throw new ProviderError({
@@ -208,6 +154,13 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     auth.broker!,
     transports,
   );
+  const worker = createSandboxLifecycle(db, async () => boat.provider);
+  for (const source of ["33333333-3333-4333-8333-333333333333"]) {
+    await expect(auth.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+    await db.query("update sandboxes set reconcile_after='infinity' where id<>$1", [source]);
+    expect(await worker.reconcileOne()).toBe(true);
+    await worker.drain();
+  }
   const resolver = launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY, undefined, auth);
   const ids: string[] = [];
   for (let index = 0; index < 3; index++) {
@@ -238,42 +191,13 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(drained).toBe(1);
   expect(writer).toBe(false);
   expect(disk).toBeUndefined();
-  expect(modal.stops).toEqual([oldModal.id]);
   expect(resolved).not.toContain("66666666-6666-4666-8666-666666666666");
   expect(resolved).not.toContain("77777777-7777-4777-8777-777777777777");
-  await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-    scopeKey(scope),
-    JSON.stringify(scope),
-  ]);
-  const restored: Machine = {
-    info: { ...oldModal, labels: { sandbox: modalId, credentialId: account.id, credentialVersion: "1" } },
-    launchUserId: actor.userId,
-    golden: false,
-    phase: "active",
-    generation: 2,
-    ttlSeconds: 3600,
-    physicalName: "restored-modal",
-  };
-  const restoredEnv = await modalLaunchEnvironment({
-    sql: db,
-    vault: createSqlVaultStore(db),
-    encryptionKey: ENCRYPTION_KEY,
-    scope,
-    scopeKey: scopeKey(scope),
-    callerUserId: actor.userId,
-    modelAuth: auth,
-  })(restored, { ARMADA_SERVER_CODEX: "1" });
-  expect(restoredEnv.subscription?.capability).toBe(
-    auth.broker!.configuration(actor, account.id, 1, modalId).capability,
-  );
-  expect(restoredEnv.codexAuthJson).toBeUndefined();
-  expect(JSON.stringify(restoredEnv)).not.toContain("migration-refresh-");
-
   expect(boat.stops).toContain(unknownPin.id);
   expect(boat.prompts.map((prompt) => prompt.text.split("\n\n", 1)[0])).toEqual(["shared-0", "shared-1", "shared-2"]);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-2",
-    revision: 2,
+    revision: 1,
   });
   for (const id of ids) {
     await resolver.assertTurn!(actor, id, false);
@@ -287,9 +211,9 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     expect(access?.status).toBe(200);
     expect(await access!.json()).toMatchObject({ accessToken: "migration-access-2" });
   }
-  expect(await auth.broker!.access(actor, account.id, 1, 2)).toMatchObject({
+  expect(await auth.broker!.access(actor, account.id, 1, 1)).toMatchObject({
     accessToken: "migration-access-3",
-    revision: 3,
+    revision: 2,
   });
   expect(renewals).toBe(1);
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
@@ -298,7 +222,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(drained).toBe(1);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-3",
-    revision: 3,
+    revision: 2,
   });
   // A known old home can appear after global enrollment; validate its latest
   // private token instead of assuming the broker's older import is still valid.
@@ -309,9 +233,9 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   // A new shared guest encounters the spent saved token. Its renewal itself
   // must discover/drain the known legacy source and return verified access,
   // without requiring the old owner to prompt or sign in first.
-  expect(await auth.broker!.access(actor, account.id, 1, 3)).toMatchObject({
+  expect(await auth.broker!.access(actor, account.id, 1, 2)).toMatchObject({
     accessToken: "migration-access-5",
-    revision: 4,
+    revision: 3,
   });
   expect(writer).toBe(false);
   expect(disk).toBeUndefined();
@@ -332,7 +256,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 5,
+    revision: 4,
   });
   expect(submitted).not.toContain("migration-refresh-0");
   expect(renewals).toBe(4);
@@ -345,7 +269,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 6,
+    revision: 5,
   });
   expect(submitted.slice(-2)).toEqual(["migration-refresh--1", "migration-refresh-6"]);
   expect(renewals).toBe(6);
@@ -367,12 +291,12 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(grants.has(oldBoat.id)).toBe(false);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 6,
+    revision: 5,
   });
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-9",
-    revision: 7,
+    revision: 6,
   });
   await boat.provider.prompt({ sandboxId: oldBoat.id, harness: "codex", text: "retried after provider outage" });
   expect(boat.prompts.at(-1)?.text).toBe("retried after provider outage");
@@ -396,169 +320,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(submitted).not.toContain("migration-refresh-0");
 });
 
-test("replicas observe an already-stopping Modal checkpoint before either adopts shared auth", async () => {
-  const { db, people } = await database();
-  let release!: () => void;
-  let firstEnrollment: Promise<void> | undefined, secondEnrollment: Promise<void> | undefined;
-  try {
-    const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
-    const account = (
-      await db.query<{ id: string }>(
-        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
-        [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const scope: Scope = {
-      orgId: actor.orgId,
-      userId: actor.userId,
-      visibility: "org",
-      binding: { workspace: "ws", environment: "main", appId: "app" },
-    };
-    const golden = await createSqlGoldenStore(db).insert({
-      orgId: actor.orgId,
-      ownerId: actor.userId,
-      name: "stopping-modal",
-      visibility: "org",
-      provider: "modal",
-      modal: scope.binding,
-      config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-    });
-    const id = crypto.randomUUID(),
-      physical = "stopping-native";
-    await createSqlSandboxStore(db).insert({
-      id,
-      provider: "modal",
-      providerSandboxId: physical,
-      goldenId: golden.id,
-      orgId: actor.orgId,
-      ownerId: actor.userId,
-      harness: "codex",
-      status: "ready",
-      visibility: "org",
-      model: "gpt-6.1-sol",
-      reasoningEffort: "high",
-      credentialId: account.id,
-      credentialVersion: 1,
-    });
-    await db.query(
-      "insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','stopping-migration',$5::jsonb)",
-      [
-        scopeKey(scope),
-        physical,
-        actor.orgId,
-        actor.userId,
-        JSON.stringify({ generation: 1, launchUserId: actor.userId }),
-      ],
-    );
-    let entering!: () => void, observed!: () => void, finish!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      entering = resolve;
-    });
-    const observation = new Promise<void>((resolve) => {
-      observed = resolve;
-    });
-    const checkpoint = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const stopped = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    let stopping = false,
-      complete = false,
-      busy = false,
-      stops = 0;
-    let firstMigration!: ReturnType<typeof createSubscriptionMigration>,
-      secondMigration!: ReturnType<typeof createSubscriptionMigration>;
-    const first = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-      origin: "https://armada.example",
-      prepareAccount: (...args) => firstMigration.prepareAccount(...args),
-    });
-    const second = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-      origin: "https://armada.example",
-      prepareAccount: (...args) => secondMigration.prepareAccount(...args),
-    });
-    const provider = {
-      ...fakeBoat().provider,
-      id: "modal" as const,
-      get: async () => {
-        if (busy && !complete) {
-          observed();
-          await stopped;
-        }
-        return {
-          id: physical,
-          name: physical,
-          state: complete ? ("stopped" as const) : stopping ? ("stopping" as const) : ("running" as const),
-          providerState: complete ? "stopped" : stopping ? "checkpoint" : "active",
-          labels: {},
-        };
-      },
-      stop: async () => {
-        stops++;
-        if (stopping) {
-          busy = true;
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "lifecycle_lease_busy",
-            message: "Synthetic active lifecycle lease",
-            retryable: true,
-          });
-        }
-        stopping = true;
-        entering();
-        try {
-          await checkpoint;
-          expect(
-            await first.publishFromModal(
-              scope,
-              { sandboxId: physical, generation: "1", expiresAt: Date.now() + 60000 },
-              native(1),
-              0,
-            ),
-          ).toEqual({ authRevision: 1, committed: true });
-          complete = true;
-        } finally {
-          finish();
-        }
-      },
-    };
-    firstMigration = createSubscriptionMigration(
-      db,
-      async () => ({ provider, providerSandboxId: physical }),
-      (...args) => first.capture(...args),
-      first.broker!,
-    );
-    secondMigration = createSubscriptionMigration(
-      db,
-      async () => ({ provider, providerSandboxId: physical }),
-      (...args) => second.capture(...args),
-      second.broker!,
-    );
-    firstEnrollment = first.broker!.enroll(actor, account.id, 1);
-    await entered;
-    secondEnrollment = second.broker!.enroll(actor, account.id, 1);
-    expect(await Promise.race([secondEnrollment.then(() => "adopted"), observation.then(() => "waiting")])).toBe(
-      "waiting",
-    );
-    release();
-    await Promise.all([firstEnrollment, secondEnrollment]);
-    expect(stops).toBe(2); // One owner stop and one typed busy reply; never redispatch.
-    expect(await first.broker!.access(actor, account.id, 1)).toMatchObject({
-      accessToken: "migration-access-1",
-      revision: 1,
-    });
-    expect(await second.broker!.access(actor, account.id, 1)).toMatchObject({
-      accessToken: "migration-access-1",
-      revision: 1,
-    });
-  } finally {
-    release?.();
-    await Promise.allSettled([firstEnrollment, secondEnrollment]);
-  }
-});
-
-test("shared subscription admission and native turn repair never inspect an Armada runtime guest", async () => {
+test.each(["boat", "modal"] as const)("subscription skips %s runtime guests", async (kind) => {
   const { db, people } = await database();
   const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
   const account = (
@@ -570,15 +332,40 @@ test("shared subscription admission and native turn repair never inspect an Arma
   const boat = fakeBoat();
   const physical = await boat.provider.fork({ from: "runtime", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
   const id = crypto.randomUUID();
+  const goldens = createSqlGoldenStore(db);
+  const golden =
+    kind === "boat"
+      ? (await goldens.findByName(people.org, "shared"))[0]!
+      : await goldens.insert({
+          orgId: people.org,
+          ownerId: people.owner,
+          name: "runtime-modal",
+          visibility: "org",
+          provider: "modal",
+          modal: { workspace: "ws", environment: "main", appId: "app" },
+          config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+        });
   await db.query(
-    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime)
-     select $1,$2,$3,id,'codex','running','boat',$4,$4,'org',$5,1,true from goldens where org_id=$2 and name='shared'`,
-    [id, people.org, people.owner, physical.id, account.id],
+    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime,runtime_transport)
+     values($1,$2,$3,$6,'codex','running',$7,$4,$8,'org',$5,1,$9,$10)`,
+    [
+      id,
+      people.org,
+      people.owner,
+      physical.id,
+      account.id,
+      golden.id,
+      kind,
+      kind === "boat" ? physical.id : null,
+      kind === "boat",
+      kind === "modal" ? "dialout" : null,
+    ],
   );
   const resolved: string[] = [];
   const inspected: string[] = [];
   const provider = {
     ...boat.provider,
+    id: kind,
     async get(...args: Parameters<typeof boat.provider.get>) {
       inspected.push(args[0]);
       return boat.provider.get(...args);
@@ -608,4 +395,409 @@ test("shared subscription admission and native turn repair never inspect an Arma
   expect((await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status).toBe(
     "running",
   );
+});
+
+test.each(["boat", "modal"] as const)("subscription preparation leaves a strict native %s stop alone", async (kind) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const mock = fakeBoat();
+  const physical = await mock.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const provider = { ...mock.provider, id: kind };
+  const golden = await createSqlGoldenStore(db).insert({
+    orgId: people.org,
+    ownerId: people.owner,
+    name: "strict-source",
+    visibility: "org",
+    provider: kind,
+    modal: kind === "modal" ? { workspace: "ws", environment: "main", appId: "app" } : null,
+    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+  });
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,
+       visibility,credential_id,credential_version,stop_requested_at,stop_generation)
+     values($1,$2,$3,$7,'codex','stopping',$4,$5,'org',$6,1,now(),1)`,
+    [id, people.org, people.owner, kind, physical.id, account.id, golden.id],
+  );
+  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,1)", [id]);
+  const resolved: string[] = [];
+  const unexpected = async () => {
+    throw Error("subscription must leave the strict source alone");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async (_sql, sandboxId) => {
+      resolved.push(sandboxId);
+      return { provider, providerSandboxId: physical.id };
+    },
+    unexpected,
+    {
+      configuration() {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+
+  await migration.prepareAccount(actor, account.id, 1);
+  expect(resolved).toEqual([]);
+  expect(mock.stops).toEqual([]);
+  if (kind === "boat") {
+    await db.query("update sandboxes set status='stopped', stopped_at=now(), stop_requested_at=null where id=$1", [id]);
+    await expect(migration.prepareTurn(provider, physical.id, actor)).rejects.toMatchObject({ code: "conflict" });
+  }
+});
+
+test("subscription preparation leaves provider stop to a strict drain admitted during output capture", async () => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const sandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let admitted = false;
+  const provider = {
+    ...boat.provider,
+    async readOutputs() {
+      admitted = await requestNativeDrainStop(db, sandbox, "boat", actor.userId);
+      return [];
+    },
+  };
+  const unexpected = async () => {
+    throw Error("an unversioned source must not transfer native auth");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async () => ({ provider, providerSandboxId: physical.id }),
+    unexpected,
+    {
+      configuration: () => {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+  const previousKey = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+  try {
+    await migration.prepareAccount(actor, account.id, 1);
+  } finally {
+    if (previousKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = previousKey;
+  }
+  expect(admitted).toBe(true);
+  expect(boat.stops).toEqual([]);
+});
+
+test.each([
+  "worker handoff",
+  "rolled-back transition",
+  "lost commit response",
+  "managed source",
+  "operator-deferred stop",
+])("Boat subscription stop uses durable admission: %s", async (mode) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const store = createSqlSandboxStore(db);
+  const sandbox = await store.insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    visibility: "private",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  if (mode === "managed source") {
+    await db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [
+      actor.orgId,
+      actor.userId,
+      sandbox.id,
+    ]);
+  }
+  let faultInjected = false;
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction(run) {
+      let attemptedTransition = false;
+      const result = await db.transaction!((tx) =>
+        run({
+          ...tx,
+          query: (statement, params) => {
+            if (statement.includes("public.sandbox_transition(")) {
+              attemptedTransition = true;
+              if (mode === "rolled-back transition") {
+                faultInjected = true;
+                throw Error("Synthetic transition failure");
+              }
+            }
+            return tx.query(statement, params);
+          },
+        }),
+      );
+      if (attemptedTransition && mode === "lost commit response") {
+        faultInjected = true;
+        throw Error("Synthetic lost commit response");
+      }
+      return result;
+    },
+  };
+  const unexpected = () => {
+    throw Error("an unversioned source must not transfer native auth");
+  };
+  const migration = createSubscriptionMigration(
+    sql,
+    async () => ({ provider: boat.provider, providerSandboxId: physical.id }),
+    unexpected,
+    { configuration: unexpected, transferLegacy: unexpected },
+  );
+  const preparing = migration.prepareAccount(actor, account.id, 1);
+  if (mode === "managed source") await preparing;
+  else await expect(preparing).rejects.toMatchObject({ code: "unavailable" });
+  expect(boat.stops).toEqual([]);
+
+  const [row] = (
+    await db.query<{ status: string; stop_requested_at: string | null; generation: number }>(
+      "select status, stop_requested_at, lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    )
+  ).rows;
+  expect(faultInjected).toBe(mode === "rolled-back transition" || mode === "lost commit response");
+  if (mode === "rolled-back transition" || mode === "managed source") {
+    expect(row).toEqual({ status: "ready", stop_requested_at: null, generation: sandbox.lifecycleGeneration! });
+    return;
+  }
+  expect(row!.status).toBe("stopping");
+  expect(row!.stop_requested_at).toBeTruthy();
+  if (mode === "operator-deferred stop") {
+    await db.query("update sandboxes set reconcile_after='infinity' where id=$1", [sandbox.id]);
+    await migration.prepareAccount(actor, account.id, 1);
+    expect(boat.stops).toEqual([]);
+    return;
+  }
+  await expect(migration.prepareAccount(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+  expect(
+    await requestNativeDrainStop(db, { ...sandbox, lifecycleGeneration: row!.generation }, "boat", actor.userId),
+  ).toBe(false);
+  const worker = createSandboxLifecycle(db, async () => boat.provider);
+  expect(await worker.reconcileOne()).toBe(true);
+  await worker.drain();
+  expect(boat.stops).toEqual([physical.id]);
+  await migration.prepareAccount(actor, account.id, 1);
+});
+
+test.each([
+  "acknowledged",
+  "configured after probe",
+  "second probe failed",
+  "second probe failed and settlement reply lost",
+  "lost admission reply",
+  "lost pause reply",
+  "lost configuration reply",
+  "configuration readback failed",
+  "stop epoch advanced",
+  "generation advanced",
+  "settlement rolled back",
+  "lost settlement reply",
+] as const)("Boat subscription workspace commands fence strict drain: %s", async (outcome) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const { provider } = fakeBoat();
+  const physical = await provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const sandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    credentialVersion: 1,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const tryDrain = async () => {
+    const { rows } = await db.query<{ generation: number }>(
+      "select lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    return requestNativeDrainStop(db, { ...sandbox, lifecycleGeneration: rows[0]!.generation }, "boat", actor.userId);
+  };
+  const calls: string[] = [];
+  const secondProbeFailed =
+    outcome === "second probe failed" || outcome === "second probe failed and settlement reply lost";
+  const settlementReplyLost =
+    outcome === "lost settlement reply" || outcome === "second probe failed and settlement reply lost";
+  let configured = false;
+  let probed = false;
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction(run) {
+      let settled = false;
+      const result = await db.transaction!((tx) =>
+        run({
+          ...tx,
+          query: async <T>(statement: string, params?: unknown[]) => {
+            const result = await tx.query<T>(statement, params);
+            if (statement.includes("delete from public.sandbox_native_exec_attempts")) {
+              settled = true;
+              if (outcome === "settlement rolled back") throw Error("Synthetic settlement rollback");
+            }
+            return result;
+          },
+        }),
+      );
+      if (settled && settlementReplyLost) throw Error("Synthetic lost settlement reply");
+      if (outcome === "lost admission reply" && !calls.length) {
+        const { rows } = await db.query<{ id: string }>(
+          "select sandbox_id as id from sandbox_native_exec_attempts where sandbox_id=$1",
+          [sandbox.id],
+        );
+        if (rows.length) throw Error("Synthetic lost admission reply");
+      }
+      return result;
+    },
+  };
+  const target = async () => ({ provider, providerSandboxId: physical.id });
+  const authority = {
+    configuration: () => ({ url: "https://armada.example", capability: "test" }),
+    transferLegacy: async () => {},
+  };
+  const transports: SubscriptionMigrationTransports = {
+    read: async () => {
+      if (probed && secondProbeFailed) throw Error("Synthetic unavailable probe");
+      if (configured && outcome === "configuration readback failed") throw Error("Synthetic readback failed");
+      if (configured || (probed && outcome === "configured after probe")) return "null";
+      probed = true;
+      return native(0);
+    },
+    admission: async () => {
+      calls.push("pause");
+      expect(await tryDrain()).toBe(false);
+      if (outcome === "acknowledged") {
+        let extraPauses = 0;
+        const otherReplica = createSubscriptionMigration(db, target, async () => [], authority, {
+          ...transports,
+          admission: async () => {
+            extraPauses++;
+            throw Error("The second replica must not pause the writer");
+          },
+        });
+        await expect(otherReplica.prepareAccount(actor, account.id, 1)).rejects.toMatchObject({
+          code: "unavailable",
+        });
+        expect(extraPauses).toBe(0);
+      }
+      if (outcome === "lost pause reply") throw Error("Synthetic lost pause reply");
+    },
+    configure: async () => {
+      calls.push("configure");
+      expect(await tryDrain()).toBe(false);
+      configured = true;
+      if (outcome === "stop epoch advanced")
+        await db.query("update sandboxes set stop_generation=stop_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "generation advanced")
+        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "lost configuration reply") throw Error("Synthetic lost configuration reply");
+    },
+  };
+  const migration = createSubscriptionMigration(sql, target, async () => [], authority, transports);
+
+  const preparing =
+    outcome === "lost pause reply" || secondProbeFailed
+      ? migration.prepareAccount(actor, account.id, 1)
+      : migration.prepareTurn(provider, physical.id, actor);
+  const results = {
+    acknowledged: { calls: ["pause", "configure"], drain: true },
+    "configured after probe": { calls: [], drain: true },
+    "second probe failed": { calls: [], error: /Model sign-in is temporarily unavailable/, drain: true },
+    "second probe failed and settlement reply lost": {
+      calls: [],
+      error: /Model sign-in is temporarily unavailable/,
+      drain: true,
+    },
+    "lost admission reply": { calls: [], error: /Synthetic lost admission reply/ },
+    "lost pause reply": { calls: ["pause"], error: /Model sign-in is temporarily unavailable/ },
+    "lost configuration reply": { calls: ["pause", "configure"], error: /Synthetic lost configuration reply/ },
+    "configuration readback failed": { calls: ["pause", "configure"], error: /Synthetic readback failed/ },
+    "stop epoch advanced": { calls: ["pause", "configure"], error: /stopped during native upgrade/ },
+    "generation advanced": { calls: ["pause", "configure"], error: /changed during native upgrade/ },
+    "settlement rolled back": { calls: ["pause", "configure"], error: /Synthetic settlement rollback/ },
+    "lost settlement reply": { calls: ["pause", "configure"], error: /Synthetic lost settlement reply/, drain: true },
+  };
+  const expected = results[outcome];
+  if ("error" in expected) await expect(preparing).rejects.toThrow(expected.error);
+  else await preparing;
+  expect(calls).toEqual(expected.calls);
+  expect(await tryDrain()).toBe("drain" in expected);
+  if (outcome === "stop epoch advanced" || outcome === "lost settlement reply") {
+    await db.query(
+      `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,
+         reconcile_after='infinity',lifecycle_generation=lifecycle_generation+1,preservation_stop_generation=stop_generation
+       where id=$1`,
+      [sandbox.id],
+    );
+    await db.query(
+      `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,stop_generation,lifecycle_generation,stop_generation,'{"completedPrompts":[]}'
+       from sandboxes where id=$1`,
+      [sandbox.id],
+    );
+    const { rows } = await db.query<{ outcome: string }>(
+      "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    expect(rows[0]?.outcome).toBe(outcome === "stop epoch advanced" ? "ineligible" : "clean");
+  }
 });

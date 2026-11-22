@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Owns real dashboard JSON-RPC and CLI command request paths, native correlation and cleanup.
@@ -51,7 +52,7 @@ for (const mode of [
         },
         out: (line) => lines.push(line),
         fetch: async (url, init) => {
-          const body = JSON.parse(String(init.body));
+          const body = parityRequest(url, init).body;
           const headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
           if (new URL(url).pathname === "/mcp") {
@@ -78,7 +79,7 @@ for (const mode of [
             expect(body.params.name).toBe("send");
             const args = body.params.arguments;
             expect(args.id).toBe(ids[active]);
-            expect(args.conversation_id).toBe(conversation);
+            expect(args).not.toHaveProperty("conversation_id");
             expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
             expect(args).not.toHaveProperty("model");
             expect(args).not.toHaveProperty("reasoning_effort");
@@ -104,7 +105,7 @@ for (const mode of [
               result: { content: [{ type: "text", text: JSON.stringify({ promptId }) }] },
             });
           }
-          const route = url.split("/api/v1/")[1]!;
+          const { path: route } = parityRequest(url, init);
           const provider = body.org === orgs.modal ? "modal" : "docker";
           calls.push(`${provider}:${route}`);
           switch (route) {
@@ -128,11 +129,11 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: ids[provider], provider } });
-            case "sandbox/detail":
+              return Response.json({ sandbox: { id: ids[provider], provider, externalRef: body.externalRef } });
+            case "sandbox/status":
               return Response.json({
                 id: body.id,
-                status: "ready",
+                status: states.get(provider),
                 settled: true,
                 prompt: null,
                 conversationIds: mode === "conversation_missing" ? [] : [conversation],
@@ -144,7 +145,7 @@ for (const mode of [
               }
               expect(body.id).toBe(ids[provider]);
               expect(body.org).toBe(orgs[provider]);
-              expect(body.conversation_id).toBe(conversation);
+              expect(body).not.toHaveProperty("conversation_id");
               expect(body.request_id).toMatch(/^[a-f0-9-]{36}$/);
               expect(body).not.toHaveProperty("model");
               expect(body).not.toHaveProperty("reasoning_effort");
@@ -204,12 +205,10 @@ for (const mode of [
                 ],
               });
             }
-            case "sandbox/status":
-              return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               states.set(provider, "stopped");
               return Response.json({ id: body.id, status: "stopped" });
-            case "sandbox/delete":
+            case sandboxDeletePath:
               states.set(provider, "deleted");
               return Response.json({ id: body.id, status: "deleted" });
             default:

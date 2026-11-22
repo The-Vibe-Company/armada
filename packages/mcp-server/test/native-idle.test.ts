@@ -3,16 +3,13 @@ import type { PromptRequest, Provider, SandboxInfo, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
-import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
+import { createPullRequestScanJob } from "../src/sandbox-pull-requests.ts";
+import { sqlOver } from "../src/sql.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import {
-  lostConfirmation,
-  recreatedAtFetchedCommit,
-  rejectedRecreation,
-  unrecordedUrlPush,
-} from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -94,6 +91,7 @@ async function fixture(mode = "quiet") {
       name: "native",
       providerState: phase,
       ...(placement === "modal" ? { physicalGeneration: "1" } : {}),
+      ...(stopped && placement === "boat" && mode !== "lost-retention" ? { retainedSnapshot: "usable" as const } : {}),
       ...(stopped && mode === "lost-retention" ? { stopNote: "checkpoint_failed_disk_not_retained" as const } : {}),
       labels: {},
     }),
@@ -275,7 +273,7 @@ test.each([
     expect(stopping.status).toBe("stopping");
     await expect(
       f.data.sandboxes.update(f.id, {
-        status: "starting",
+        nativeResumeAdmission: stopping.providerSandboxId,
         stopRequested: false,
         activityToken: crypto.randomUUID(),
         advanceGeneration: true,
@@ -315,12 +313,10 @@ test("Modal native idle needs current physical quiescence and a synchronized wat
 
 test("an expired native idle pause refuses wake before provider work", async () => {
   const f = await fixture();
-  await f.data.sandboxes.update(f.id, {
-    status: "stopped",
-    statusReason: "idle_paused",
-    stoppedAt: new Date(f.at).toISOString(),
-    expiresAt: new Date(f.at + 600_000).toISOString(),
-  });
+  await f.db.query(
+    "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=$2,expires_at=$3 where id=$1",
+    [f.id, new Date(f.at).toISOString(), new Date(f.at + 600_000).toISOString()],
+  );
   await expect(
     callSharedTool(
       {
@@ -348,11 +344,11 @@ test.each(["idle_paused", "work_merged"])(
   "a native %s stop still checkpointing refuses send before provider work",
   async (reason) => {
     const f = await fixture(`stopping-${reason}`);
-    await f.data.sandboxes.update(f.id, {
-      status: "stopping",
-      statusReason: reason,
-      expiresAt: new Date(f.at + 3_600_000).toISOString(),
-    });
+    await f.db.query("update sandboxes set status='stopping',status_reason=$2,expires_at=$3 where id=$1", [
+      f.id,
+      reason,
+      new Date(f.at + 3_600_000).toISOString(),
+    ]);
     await expect(
       callSharedTool(
         {
@@ -477,6 +473,11 @@ test.each([
   "ledger gap",
   "ledger hook missing",
   "ledger hook restored",
+  "generation changed during exec",
+  "tainted after enqueue",
+  "generation changed after refresh claim",
+  "completion interrupted",
+  "activity started after enqueue",
   "open",
   "closed",
   "no push",
@@ -505,19 +506,14 @@ test.each([
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
   const repository = "example/repo";
-  // Real Git evidence: the reader output that reaches admission.
-  const git =
-    state === "rejected recreation"
-      ? rejectedRecreation()
-      : state === "recreated at fetched commit"
-        ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
-        : state === "lost confirmation"
-          ? (({ stdout, first }) => ({ stdout, sha: first }))(lostConfirmation())
-          : state === "unrecorded URL push"
-            ? // Discovery sees only the merged PR; the open one left by URL with --no-verify.
-              (({ stdout, first }) => ({ stdout, sha: first }))(unrecordedUrlPush())
-            : undefined;
-  const sha = git?.sha ?? "a".repeat(40);
+  const sha = "a".repeat(40);
+  const later = "2".repeat(40);
+  const ledger: Partial<Record<typeof state, string>> = {
+    "rejected recreation": `^\t${sha}\n?\ttopic\t${sha}\n`,
+    "recreated at fetched commit": `topic\t${later}\ntopic\t${sha}\n`,
+    "lost confirmation": `^\t${later}\ntopic\t${sha}\n?\ttopic\t${later}\n`,
+    "unrecorded URL push": `^\t${later}\ntopic\t${sha}\n`,
+  };
   await f.db.query(
     `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
        values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -544,6 +540,8 @@ test.each([
       ),
     ],
   );
+  if (state === "generation changed after refresh claim")
+    await f.db.query("update github_connections set access_expires_at=now() where user_id=$1", [owner]);
   if (state === "corrected report") {
     await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 4 });
@@ -609,6 +607,10 @@ test.each([
   const attemptPull = { ...closedPull, number: 14, head: { ...closedPull.head, ref: "other", sha: "f".repeat(40) } };
   const fetchGitHub = Object.assign(
     async (url: Parameters<typeof fetch>[0]) => {
+      if (String(url) === "https://github.com/login/oauth/access_token") {
+        expect(state).toBe("generation changed after refresh claim");
+        return Response.json({ access_token: "next_access", refresh_token: "next_refresh", expires_in: 3600 });
+      }
       if (String(url) === "https://api.github.com/user")
         return Response.json({ id: 123, login: "owner", name: "Owner" });
       // A pull request already known from an earlier scan is read by number.
@@ -646,33 +648,106 @@ test.each([
     },
     { preconnect: fetch.preconnect },
   );
-  const observe = async (stdout: string) => {
-    const observer = createSandboxPullRequests(
-      f.sql,
+  let interruptCompletion = state === "completion interrupted";
+  const observe = async (stdout: string, activityStarted = false) => {
+    const willInterrupt = interruptCompletion;
+    const sql = sqlOver({
+      unsafe: async (query, params) => (await f.db.query(query, params)).rows,
+      begin: (work) =>
+        f.db.transaction((tx) =>
+          work({
+            async unsafe(query, params) {
+              if (interruptCompletion && query.startsWith("update public.jobs set attempts=0")) {
+                interruptCompletion = false;
+                throw Error("Interrupted after publishing observation in the transaction.");
+              }
+              return (await tx.query(query, params)).rows;
+            },
+          }),
+        ),
+    });
+    const jobs = createJobsStore(sql);
+    const at = Date.now();
+    const vault = createSqlVaultStore(f.sql);
+    const handler = createPullRequestScanJob(
+      sql,
+      jobs,
       {
-        store: createSqlVaultStore(f.sql),
+        store: {
+          ...vault,
+          withGitHubConnectionRefresh: (userId, work) =>
+            vault.withGitHubConnectionRefresh(userId, (store, connection) =>
+              work(
+                {
+                  ...store,
+                  async consumeGitHubRefresh(userId, expected) {
+                    const consumed = await store.consumeGitHubRefresh(userId, expected);
+                    if (consumed && state === "generation changed after refresh claim")
+                      await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [
+                        f.id,
+                      ]);
+                    return consumed;
+                  },
+                },
+                connection,
+              ),
+            ),
+        },
         encryptionKey: ENCRYPTION_KEY,
         app: { clientId: "fixture_app", clientSecret: "fixture_client" },
         fetch: fetchGitHub,
       },
-      async (_target, request) => ({
-        detached: false,
-        exitCode: 0,
-        // Two checkouts of one repository pushed `topic`: one at the merged PR's
-        // head, the other later at a commit with no PR yet. Their ledgers carry
-        // no order between them, whichever checkout is configured first.
-        stdout: state.startsWith("later push in")
-          ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
-            ? `topic\t${"b".repeat(40)}\n`
-            : stdout
-          : stdout,
-        stderr: "",
-        timedOut: false,
-        truncated: false,
-      }),
+      async (_target, request) => {
+        if (state === "generation changed during exec")
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        return {
+          detached: false,
+          exitCode: 0,
+          // Two checkouts of one repository pushed `topic`: one at the merged PR's
+          // head, the other later at a commit with no PR yet. Their ledgers carry
+          // no order between them, whichever checkout is configured first.
+          stdout:
+            state === "generation changed during exec"
+              ? "!untracked\n"
+              : state.startsWith("later push in")
+                ? request.cwd === (state === "later push in second checkout" ? "/home/user/copy" : "/home/user/repo")
+                  ? `topic\t${"b".repeat(40)}\n`
+                  : stdout
+                : stdout,
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+        };
+      },
+      () => at,
     );
-    await observer.reconcileOne(new AbortController().signal);
-    await observer.drain();
+    if (state === "tainted after enqueue") {
+      await handler.prepare();
+      await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
+    }
+    if (activityStarted) {
+      await handler.prepare();
+      await f.db.query(
+        "update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+        [f.id, crypto.randomUUID()],
+      );
+    }
+    const runner = createJobsRunner(jobs, { pr_scan: handler }, undefined, () => () => {});
+    expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+    await runner.drain();
+    expect((await f.db.query("select state,attempts from jobs where sandbox_id=$1", [f.id])).rows).toEqual([
+      willInterrupt
+        ? { state: "leased", attempts: 1 }
+        : state.startsWith("generation changed")
+          ? { state: "failed", attempts: 1 }
+          : state === "tainted after enqueue"
+            ? { state: "done", attempts: 1 }
+            : { state: "queued", attempts: 0 },
+    ]);
+    if (activityStarted) {
+      const { rows } = await f.db.query<{ run_after: Date }>("select run_after from jobs where sandbox_id=$1", [f.id]);
+      expect(rows[0]?.run_after).toEqual(new Date(at + 15_000));
+    }
   };
   // The lifecycle worker settles the finished turn before a scan may prove a
   // stop; its timer is not due yet, so this tick stops nothing.
@@ -686,22 +761,21 @@ test.each([
     expect(
       (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
     ).toEqual({ u: true });
-    await f.db.query("update sandboxes set pull_request_check_after=now() where id=$1", [f.id]);
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
   }
   if (state === "later push in dropped checkout") {
     // A revised grant drops the checkout whose later push has no PR yet. Its
     // latest push, read before, still has to be at a pull request head.
     await observe(`topic\t${sha}\n`);
     await f.db.query(
-      `update sandboxes set pull_request_check_after=now(),
-         pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
+      `update sandboxes set pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
       [f.id, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "copy" }])],
     );
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
   }
   await observe(
-    git
-      ? git.stdout
-      : state === "no push" || state === "corrected report"
+    ledger[state] ??
+      (state === "no push" || state === "corrected report"
         ? ""
         : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${
             // More older pushes to the branch than one scan looks up: the newest
@@ -709,8 +783,31 @@ test.each([
             state === "merged after many pushes"
               ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
               : ""
-          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
+          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`),
+    state === "activity started after enqueue",
   );
+  if (state === "activity started after enqueue") {
+    expect((await f.data.sandboxes.get(f.id))?.pullRequests).toEqual([]);
+    await f.db.query("update sandboxes set activity_lease_id=null,activity_until=null where id=$1", [f.id]);
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
+    await observe(`topic\t${sha}\n`);
+  }
+  if (state === "completion interrupted") {
+    expect((await f.data.sandboxes.get(f.id))?.pullRequests).toEqual([]);
+    const [leased] = (await f.db.query<{ id: string }>("select id from jobs where sandbox_id=$1", [f.id])).rows;
+    await f.db.query("update jobs set lease_until=now() where id=$1", [leased!.id]);
+    await observe(`topic\t${sha}\n`);
+    expect((await f.db.query("select id from jobs where sandbox_id=$1", [f.id])).rows).toEqual([leased]);
+  }
+  if (state === "generation changed during exec")
+    expect((await f.db.query("select pull_request_scan as scan from sandboxes where id=$1", [f.id])).rows).toEqual([
+      { scan: null },
+    ]);
+  if (state === "generation changed after refresh claim")
+    expect(
+      (await f.db.query("select access_expires_at>now() as valid from github_connections where user_id=$1", [owner]))
+        .rows,
+    ).toEqual([{ valid: true }]);
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
   // A turn the proof did not see is in flight: stop admission rechecks settlement.
@@ -723,6 +820,8 @@ test.each([
   const sandbox = await f.data.sandboxes.get(f.id);
   const shouldStop =
     state === "merged" ||
+    state === "completion interrupted" ||
+    state === "activity started after enqueue" ||
     state === "merged with scratch push" ||
     state === "merged with scratch PR closed before launch" ||
     state === "merged after head advanced" ||
@@ -733,6 +832,8 @@ test.each([
   if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
     state === "no push" ||
+      state.startsWith("generation changed") ||
+      state === "tainted after enqueue" ||
       state === "other commit" ||
       state === "merged before launch at pushed commit" ||
       state === "merged after head advanced past an unknown push" ||

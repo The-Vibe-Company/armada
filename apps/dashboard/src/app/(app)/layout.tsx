@@ -2,6 +2,7 @@ import { LogOutIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, Suspense } from "react";
 import { AppSidebar, DesktopSidebarTrigger } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
@@ -39,7 +40,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </div>
       <ShellSearch />
       <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
-        <SandboxLaunchAction shortcut />
+        <SandboxLaunchAction shortcut dockerLimits={<DockerLaunchLimitList />} />
       </div>
     </div>
   );
@@ -75,15 +76,20 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           fallback={
             <NavLinks
               organizationId={selected?.org.id ?? null}
+              organizationAdmin={selected?.role === "admin"}
               className="px-3 pb-4"
               optIns={{ dockerHosts: dockerHostsEnabled() }}
             />
           }
         >
-          <ShellNavigation organizationId={selected?.org.id ?? null} sandboxes={liveSandboxes} />
+          <ShellNavigation
+            organizationId={selected?.org.id ?? null}
+            organizationAdmin={selected?.role === "admin"}
+            sandboxes={liveSandboxes}
+          />
         </Suspense>
       </AppSidebar>
-      <CommandMenu />
+      <CommandMenu organizationAdmin={selected?.role === "admin"} />
       <Toaster />
       <main className="w-full min-w-0 flex-1 space-y-6 px-4 py-6 md:px-6 md:py-6">
         <ShellBreadcrumb organization={selected?.org.name ?? "Armada"} />
@@ -130,13 +136,16 @@ async function loadLiveSandboxes(orgId: string) {
 async function ShellNavigation({
   sandboxes,
   organizationId,
+  organizationAdmin,
 }: {
   sandboxes: ReturnType<typeof loadLiveSandboxes>;
   organizationId: string | null;
+  organizationAdmin: boolean;
 }) {
   return (
     <NavLinks
       organizationId={organizationId}
+      organizationAdmin={organizationAdmin}
       className="px-3 pb-4"
       optIns={{ dockerHosts: dockerHostsEnabled() }}
       sandboxes={await sandboxes}

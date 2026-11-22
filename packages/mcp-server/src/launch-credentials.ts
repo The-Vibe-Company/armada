@@ -57,9 +57,36 @@ export function launchCredentials(
   ownership?: ModelAuthOwnership,
   /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
   repositoryGithub?: GitHubLaunchOptions,
-): LaunchCredentialResolver {
+): LaunchCredentialResolver & {
+  admitExistingSandbox: NonNullable<LaunchCredentialResolver["admit"]>;
+  resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
+} {
+  async function resolveModel(actor: GoldenActor, harness: Harness, credentialId?: string, credentialVersion?: number) {
+    if (ownership && credentialId === undefined && credentialVersion === undefined) {
+      const preference = await ownership.launchAccountDefault(actor.userId, harness);
+      if (preference?.credentialIds.length) {
+        const selected = await ownership.chooseLaunchPoolAccount(actor.userId, harness, preference);
+        credentialId = selected.credentialId;
+        credentialVersion = selected.credentialVersion;
+      } else {
+        credentialId = preference?.credentialId ?? undefined;
+      }
+    }
+    return resolveCredentials(reader, encryptionKey, {
+      userId: actor.userId,
+      orgId: actor.orgId,
+      harness,
+      ...(credentialId !== undefined ? { credentialId } : {}),
+      ...(credentialVersion !== undefined ? { credentialVersion } : {}),
+    });
+  }
+  const enrollAccount: NonNullable<LaunchCredentialResolver["enrollAccount"]> = async (actor, credentials) => {
+    if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
+      await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+  };
   const repositoryAccess = github ?? repositoryGithub;
   return {
+    resolveModel,
     installPrivateSkill,
     ...(repositoryAccess
       ? ({
@@ -81,12 +108,12 @@ export function launchCredentials(
               const denied = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
                 );
               const unknown = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} could not be verified as public before launch. Run armada github connect or retry when GitHub is available.`,
+                  `Repository ${repository.dir} could not be verified as public before launch. Run armada account login github or retry when GitHub is available.`,
                 );
               const request = async (suffix = "") => {
                 try {
@@ -168,14 +195,14 @@ export function launchCredentials(
       if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
       return repaired;
     },
-    async enrollAccount(actor, credentials) {
-      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
-        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
-    },
+    enrollAccount,
     async admit(actor, credentials, sandboxId, model) {
+      if (credentials.binding) await ownership?.admitLaunch(credentials.binding, sandboxId, model);
+      await enrollAccount(actor, credentials);
+    },
+    async admitExistingSandbox(actor, credentials, sandboxId, model) {
       if (credentials.binding) await ownership?.admitCapacity(credentials.binding.credentialId, sandboxId, model);
-      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
-        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+      await enrollAccount(actor, credentials);
     },
     async releaseAdmission(sandboxId) {
       await ownership?.releaseCapacity(sandboxId);
@@ -237,6 +264,15 @@ export function launchCredentials(
       }
     },
     async defaults(actor, harness) {
+      if (ownership) {
+        const preference = await ownership.launchAccountDefault(actor.userId, harness);
+        if (!preference) return undefined;
+        return {
+          harness,
+          credentialId: preference.credentialIds.length ? null : preference.credentialId,
+          model: preference.model,
+        };
+      }
       return (await reader.agentDefaults?.(actor.userId))?.find((row) => row.harness === harness);
     },
     async resolve(
@@ -245,13 +281,7 @@ export function launchCredentials(
       credentialId?: string,
       credentialVersion?: number,
     ): Promise<HarnessCredentials> {
-      const resolved = await resolveCredentials(reader, encryptionKey, {
-        userId: actor.userId,
-        orgId: actor.orgId,
-        harness,
-        ...(credentialId !== undefined ? { credentialId } : {}),
-        ...(credentialVersion !== undefined ? { credentialVersion } : {}),
-      });
+      const resolved = await resolveModel(actor, harness, credentialId, credentialVersion);
       const access = github
         ? await resolveGitHubAccess(
             { ...github, caller: "launch", encryptionKey, minimumLifetimeMs: 60 * 60 * 1000 },
@@ -294,7 +324,17 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      if ((row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") && value.startsWith("{")) {
+      if (row.kind === "morph" && value.trimStart().startsWith("{")) {
+        try {
+          const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
+          values.push(value, apiKey);
+        } catch {
+          values.push(value, ...jsonLeaves(value));
+        }
+      } else if (
+        (row.kind === "openai" || row.kind === "anthropic" || row.kind === "opencode") &&
+        value.startsWith("{")
+      ) {
         const connection = JSON.parse(parseCredentialValue(row.kind, value));
         // Keep full-secret and endpoint/key redaction, not unrelated non-secret numeric prices.
         values.push(

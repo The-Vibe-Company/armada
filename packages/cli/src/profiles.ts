@@ -21,12 +21,10 @@ export function profileStores(env: NodeJS.ProcessEnv) {
   return {
     session: fileSessionStore(join(dir, "session.json")),
     preferences: filePreferences(join(dir, "preferences.json")),
-    emailPreferences: filePreferences(join(dir, "login-email.json")),
     launchPreferences: filePreferences(join(dir, "launch-preferences.json")),
   };
 }
 
-/** Global options stop at -- so prompt/command payloads are never rewritten. */
 export function selectProfile(argv: readonly string[], env: NodeJS.ProcessEnv) {
   const args: string[] = [];
   let selected: string | undefined;
@@ -44,6 +42,6 @@ export function selectProfile(argv: readonly string[], env: NodeJS.ProcessEnv) {
     } else args.push(arg);
   }
   const effective: NodeJS.ProcessEnv = { ...env, ...(selected === undefined ? {} : { ARMADA_PROFILE: selected }) };
-  profileDirectory(effective); // Validate before any filesystem or network access.
+  profileDirectory(effective);
   return { args, env: effective };
 }

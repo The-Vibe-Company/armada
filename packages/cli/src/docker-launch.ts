@@ -11,15 +11,21 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { requireLaunchAgent } from "./agent-validation.ts";
+import { ArmadaApiError } from "./api-responses.ts";
 import { type Args, flag, single, values } from "./args.ts";
-import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { type CurrentSandboxFile, rememberSandbox } from "./current-sandbox.ts";
 import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-/** API-only plain-image launch. No golden, provider credential or database dependency. */
-export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
+export async function launchDocker(
+  args: Args,
+  io: Pick<AuthIo, "out" | "err">,
+  auth: AuthIo,
+  sandboxFile?: CurrentSandboxFile,
+): Promise<number> {
   const allowed = new Set([
     "--repo",
     "--variable",
@@ -29,7 +35,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     "--golden",
     "--credential-id",
     "--credential-version",
-    "--request-id",
+    "--idempotency-key",
     "--agent",
     "--org",
     "--model",
@@ -62,10 +68,10 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     throw new GoldenError("invalid_config", "--host requires a UUID or exact host name.");
   if (snapshotId && values(args, "--repo").length)
     throw new GoldenError("invalid_config", "A snapshot cannot be combined with --repo.");
-  const supplied = single(args, "--request-id");
-  if (supplied !== undefined && !uuid.test(supplied))
-    throw new GoldenError("invalid_config", "--request-id requires a UUID.");
-  const requestId = supplied?.toLowerCase() ?? crypto.randomUUID();
+  const supplied = single(args, "--idempotency-key");
+  if (supplied !== undefined && (supplied.length < 16 || supplied.length > 128))
+    throw new GoldenError("invalid_config", "--idempotency-key requires 16–128 characters.");
+  const idempotencyKey = supplied ?? crypto.randomUUID();
   const version = single(args, "--credential-version");
   if (version !== undefined && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version))))
     throw new GoldenError("invalid_config", "--credential-version must be a positive integer.");
@@ -115,7 +121,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
   const selected = connections?.split(",").map((id) => id.trim());
   if (selected && (selected.length > MAX_MCP_CONNECTIONS || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", `Connections require 1–${MAX_MCP_CONNECTIONS} comma-separated UUIDs.`);
-  const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
+  const client = await createSdkCommandClient(auth, { preserveServerErrors: true });
   const hostId = selector
     ? uuid.test(selector)
       ? selector.toLowerCase()
@@ -140,7 +146,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     ...(snapshotId ? { snapshotId } : {}),
     harness,
     ...(credentialId === undefined ? {} : { credentialId }),
-    requestId,
+    idempotencyKey,
     ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model")! }),
     ...(single(args, "--reasoning-effort") === undefined
       ? {}
@@ -158,7 +164,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
     });
     if (
       result?.sandbox?.provider !== "docker" ||
-      result.sandbox.id !== requestId ||
+      !uuid.test(result.sandbox.id) ||
       result.golden !== null ||
       (!result.runtime?.epoch && !(result.runtime === null && ["starting", "failed"].includes(result.sandbox.status)))
     )
@@ -166,29 +172,14 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
         "invalid_config",
         "Docker launch outcome unknown: server did not confirm the requested logical sandbox.",
       );
-    if (args.options.has("--json"))
-      io.out(
-        `${JSON.stringify(
-          {
-            ...result,
-            id: result.sandbox.id,
-            provider: result.sandbox.provider,
-            status: result.sandbox.status,
-            promptId: result.promptId ?? null,
-            conversationId: result.conversationId ?? null,
-          },
-          null,
-          2,
-        )}\n`,
-      );
+    if (result.sandbox.status !== "failed") await rememberSandbox(result.sandbox.id, sandboxFile, io);
+    if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else
       io.out(
         `Docker sandbox: ${result.sandbox.providerSandboxId}\nArmada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n${result.promptId ? `Prompt: ${result.promptId}\n` : ""}${result.github?.message ? `Note: ${result.github.message}\n` : ""}${result.sandbox.statusReason ? `Reason: ${result.sandbox.statusReason}\n` : ""}`,
       );
     return 0;
   } catch (error) {
-    // A structured refusal is definitive; transport failures, malformed receipts and
-    // server/gateway failures still need the stable request identity for recovery.
     if (
       !(
         error instanceof ArmadaApiError &&
@@ -198,7 +189,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
       !(error instanceof AuthError && error.code === "unauthorized")
     )
       io.err(
-        `Docker launch request ${requestId}. Inspect this sandbox or retry with --request-id ${requestId} and the same body; do not create a replacement while outcome is unknown.\n`,
+        `Docker launch key ${JSON.stringify(idempotencyKey)}. Retry with --idempotency-key and the same key and body; do not create a replacement while outcome is unknown.\n`,
       );
     throw error;
   }

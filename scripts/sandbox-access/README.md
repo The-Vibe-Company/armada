@@ -248,7 +248,7 @@ Partitions and exhausted deadlines still need operator follow-up.
 Compare a retained parent using the **same origin, exported token and org**:
 
 ```sh
-ARMADA_URL="$STAGING_URL" armada status "$PARENT_ID" --org "$STAGING_ORG" --json
+ARMADA_URL="$STAGING_URL" armada info "$PARENT_ID" --org "$STAGING_ORG" --json
 ```
 
 A default CLI origin/session could differ from the checker's. Do not infer a

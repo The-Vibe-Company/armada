@@ -30,10 +30,16 @@ check() {
   "$@" --help | grep -q "^armada $expected: launch coding agents"
 }
 
-# The main tarball holds only the launcher, its manifest, the README and the license.
-listed=$(tar -tzf "$main" | LC_ALL=C sort | tr '\n' ' ')
-test "$listed" = "package/LICENSE package/README.md package/bin/armada.cjs package/package.json " \
-  || { echo "::error::unexpected files in $main: $listed"; exit 1; }
+check_files() {
+  local archive=$1 kind=$2
+  local expected_files actual_files
+  expected_files=$(jq -r --arg kind "$kind" '.[$kind][] | "package/" + .' "$root/scripts/release/npm-pack-files.json" | LC_ALL=C sort)
+  actual_files=$(tar -tzf "$archive" | LC_ALL=C sort)
+  diff -u <(printf '%s\n' "$expected_files") <(printf '%s\n' "$actual_files")
+}
+
+check_files "$main" cli
+check_files "$platform" platform
 
 mkdir -p "$work/npm" && cd "$work/npm"
 npm init -y > /dev/null
@@ -53,54 +59,16 @@ fi
 # The SDK installs alone, outside the monorepo: no workspace dependency, nothing but its bundle.
 sdk="$tarballs/the-vibe-company-armada-sdk-$expected.tgz"
 test -f "$sdk" || { echo "::error::missing $sdk"; exit 1; }
-listed=$(tar -tzf "$sdk" | LC_ALL=C sort | tr '\n' ' ')
-test "$listed" = "package/LICENSE package/README.md package/index.d.ts package/index.js package/package.json " \
-  || { echo "::error::unexpected files in $sdk: $listed"; exit 1; }
+check_files "$sdk" sdk
 mkdir -p "$work/sdk" && cd "$work/sdk"
 echo '{ "name": "sdk-smoke", "private": true, "type": "module" }' > package.json
 npm install --no-audit --no-fund --offline "$sdk"
 test -z "$(jq -r '.dependencies // {} | keys[]' node_modules/@the-vibe-company/armada-sdk/package.json)"
-cat > smoke.mjs <<'EOF'
-import { createHmac } from "node:crypto";
-import { Armada, ArmadaError, verifyWebhookSignature } from "@the-vibe-company/armada-sdk";
-const seen = [];
-const armada = new Armada({ token: "smoke", url: "https://armada.invalid", fetch: async (url) => {
-  seen.push(new URL(String(url)).pathname);
-  return Response.json({ error: { code: "outcome_unknown" } }, { status: 503 });
-} });
-const error = await armada.status({ id: "sandbox" }).catch((caught) => caught);
-if (!(error instanceof ArmadaError) || error.code !== "outcome_unknown" || seen.length !== 1) {
-  throw new Error(`unexpected SDK result ${error} for ${seen}`);
-}
-const { inspect } = await import("node:util");
-let bearer;
-const logged = new Armada({ token: "smoke_secret", url: "https://armada.invalid", fetch: async (_url, init) => {
-  bearer = new Headers(init.headers).get("authorization");
-  return Response.json({ id: "s" });
-} });
-if (JSON.stringify(logged).includes("smoke_secret") || inspect(logged, { depth: 10, showHidden: true }).includes("smoke_secret")) {
-  throw new Error("a serialized or inspected SDK client exposes its token");
-}
-await logged.status({ id: "s" });
-if (bearer !== "Bearer smoke_secret") throw new Error(`unexpected SDK authorization ${bearer}`);
-const body = "{}", id = "evt", timestamp = String(Math.floor(Date.now() / 1000));
-const signature = `v1=${createHmac("sha256", "secret").update(`${timestamp}.${id}.${body}`).digest("hex")}`;
-const headers = { "armada-webhook-id": id, "armada-webhook-timestamp": timestamp, "armada-webhook-signature": signature };
-if (!(await verifyWebhookSignature({ secret: "secret", body, headers: new Headers(headers) }))) {
-  throw new Error("webhook signature rejected");
-}
-const docker = { org: "o", provider: "docker", hostId: "h", harness: "codex", requestId: "r" };
-let launchBody;
-const receipt = await new Armada({ token: "smoke", url: "https://armada.invalid", fetch: async (_url, init) => {
-  launchBody = init.body;
-  return Response.json({ sandbox: { id: "s", provider: "docker", status: "running", hostId: "h" }, golden: null,
-    ttlSeconds: 60, expiresAt: "2026-01-01T00:00:00.000Z" });
-} }).launch(docker);
-if (launchBody !== JSON.stringify(docker) || receipt.golden !== null || receipt.sandbox.id !== "s") {
-  throw new Error(`unexpected Docker launch ${launchBody} -> ${JSON.stringify(receipt)}`);
-}
+node --input-type=module - "$root/scripts/release/sdk-smoke.mjs" <<'EOF'
+import { pathToFileURL } from "node:url";
+const { smokeSdk } = await import(pathToFileURL(process.argv[2]).href);
+await smokeSdk(await import("@the-vibe-company/armada-sdk"));
 EOF
-node smoke.mjs
 echo "SDK install: node import passed."
 tsc="$root/node_modules/.bin/tsc"
 test -x "$tsc" || { echo "::error::missing $tsc: run bun install --frozen-lockfile first"; exit 1; }

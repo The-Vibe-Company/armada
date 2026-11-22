@@ -27,7 +27,9 @@ test("a pre-dispatch dependency failure is definite and logs a safe reason", asy
         orgs: [{ orgId: "22222222-2222-4222-8222-222222222222", role: "admin" }],
       },
       {
+        provider: "docker",
         harness: "codex",
+        hostId: "44444444-4444-4444-8444-444444444444",
         org: "22222222-2222-4222-8222-222222222222",
         requestId: "33333333-3333-4333-8333-333333333333",
       },

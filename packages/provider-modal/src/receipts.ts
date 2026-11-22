@@ -1,7 +1,5 @@
 import type { ModalResourceReceipt } from "./ports.ts";
 
-/** Keep every observed Image/physical reference when a later durable read lacks a failed commit's
- * metadata. Only receipt fields are exported; no upstream error/request object is merged. */
 export function mergeModalResourceReceipts(receipts: readonly ModalResourceReceipt[]): ModalResourceReceipt[] {
   const merged = new Map<string, ModalResourceReceipt>();
   for (const current of receipts) {

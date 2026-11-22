@@ -22,6 +22,7 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import { encryptSecret, ProviderError, type Sql } from "@armada/core";
+import { launchEnvelope } from "@armada/core/contract";
 import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -29,7 +30,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
-import { sqlOver } from "../src/sql.ts";
+import { type SqlDriver, sqlOver } from "../src/sql.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -52,11 +53,27 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  return seedDatabase(await openMigratedDatabase());
+  const db = await openMigratedDatabase();
+  try {
+    return await seedDatabase(db);
+  } catch (error) {
+    return closeAfterSetupFailure(db, error);
+  }
+}
+
+async function closeAfterSetupFailure(db: PGlite, error: unknown): Promise<never> {
+  try {
+    await db.close();
+  } catch (closeError) {
+    throw new AggregateError([error, closeError], "Test database setup and cleanup failed");
+  }
+  throw error;
 }
 
 /** Seed the common launch fixtures into an empty database owned by the caller. */
-export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: People }> {
+export async function seedDatabase(
+  db: PGlite,
+): Promise<{ db: PGlite; people: People; sharedGoldenId: string; openaiCredentialId: string }> {
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),
@@ -64,52 +81,57 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
     member: crypto.randomUUID(),
     admin: crypto.randomUUID(),
   };
-  for (const user of [people.owner, people.member, people.admin]) {
-    await db.query("insert into auth.users (id) values ($1)", [user]);
-  }
-  await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Example', $2), ($3, 'Other', null)", [
-    people.org,
-    await encryptSecret(SECRETS.orgBoat, ENCRYPTION_KEY),
-    people.otherOrg,
-  ]);
-  await db.query(
-    `insert into members (org_id, user_id, role) values
-      ($1, $2, 'member'), ($1, $3, 'member'), ($1, $4, 'admin'), ($5, $3, 'admin')`,
-    [people.org, people.owner, people.member, people.admin, people.otherOrg],
-  );
   const config = JSON.stringify({
     repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
     init: ["bun install"],
   });
-  await db.query(
-    `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values
-      ($1, 'mine', 'private', $2, $5, $8::jsonb),
-      ($1, 'shared', 'org', $3, $6, $8::jsonb),
-      ($4, 'elsewhere', 'org', $9, $7, $8::jsonb)`,
+  const [orgBoat, ownerClaude, personalBoat, orgClaude, orgOpenai] = await Promise.all(
+    [SECRETS.orgBoat, SECRETS.ownerClaude, SECRETS.personalBoat, SECRETS.orgClaude, SECRETS.orgOpenai].map((value) =>
+      encryptSecret(value, ENCRYPTION_KEY),
+    ),
+  );
+  const { rows: goldens } = await db.query<{ id: string }>(
+    `with users as (
+      insert into auth.users (id) values ($1::uuid), ($2::uuid), ($3::uuid)
+    ), organizations as (
+      insert into orgs (id, name, boat_api_key_enc) values ($4::uuid, 'Example', $6), ($5::uuid, 'Other', null)
+    ), memberships as (
+      insert into members (org_id, user_id, role) values
+        ($4, $1, 'member'), ($4, $2, 'member'), ($4, $3, 'admin'), ($5, $2, 'admin')
+    ), seeded_goldens as (
+      insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values
+        ($4, 'mine', 'private', $1, $7, $10::jsonb),
+        ($4, 'shared', 'org', $3, $8, $10::jsonb),
+        ($5, 'elsewhere', 'org', $2, $9, $10::jsonb)
+      returning id, name
+    )
+    select id from seeded_goldens where name='shared'`,
     [
-      people.org,
       people.owner,
+      people.member,
       people.admin,
+      people.org,
       people.otherOrg,
+      orgBoat,
       `a${"1".repeat(62)}`,
       `a${"2".repeat(62)}`,
       `a${"3".repeat(62)}`,
       config,
-      people.member,
     ],
   );
-  const credential = async (scope: string, owner: string, kind: string, value: string) =>
-    db.query("insert into credentials (scope, owner_id, kind, value_enc) values ($1, $2, $3, $4)", [
-      scope,
-      owner,
-      kind,
-      await encryptSecret(value, ENCRYPTION_KEY),
-    ]);
-  await credential("user", people.owner, "claude_oauth", SECRETS.ownerClaude);
-  await credential("user", people.owner, "boat", SECRETS.personalBoat);
-  await credential("org", people.org, "claude_oauth", SECRETS.orgClaude);
-  await credential("org", people.org, "openai", SECRETS.orgOpenai);
-  return { db, people };
+  const { rows: credentials } = await db.query<{ id: string }>(
+    `with seeded_credentials as (
+      insert into credentials (scope, owner_id, kind, value_enc) values
+        ('user', $1, 'claude_oauth', $3),
+        ('user', $1, 'boat', $4),
+        ('org', $2, 'claude_oauth', $5),
+        ('org', $2, 'openai', $6)
+      returning id, kind
+    )
+    select id from seeded_credentials where kind='openai'`,
+    [people.owner, people.org, ownerClaude, personalBoat, orgClaude, orgOpenai],
+  );
+  return { db, people, sharedGoldenId: goldens[0]!.id, openaiCredentialId: credentials[0]!.id };
 }
 
 interface FakeSandbox {
@@ -235,7 +257,12 @@ export function fakeBoat() {
     async stop(request: { sandboxId: string }) {
       stops.push(request.sandboxId);
       const sandbox = find(request.sandboxId);
-      sandbox.info = { ...sandbox.info, state: "stopped" as SandboxState, providerState: "archived" };
+      sandbox.info = {
+        ...sandbox.info,
+        state: "stopped" as SandboxState,
+        providerState: "archived",
+        retainedSnapshot: "usable",
+      };
     },
     async delete() {
       return { status: "pending" };
@@ -379,39 +406,55 @@ function fakeGitHub(db: PGlite) {
  * adapter sent an array literal. Run the server on this and a raw array parameter fails as it did on Railway.
  */
 export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
-  return sqlOver({
-    async unsafe(text, params) {
-      onQuery?.(text);
-      if (params.some((param) => Array.isArray(param))) {
-        throw new Error(
-          'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
-        );
-      }
-      return (await db.query(text, params as unknown[])).rows;
-    },
-  });
+  const driver = (connection: Pick<PGlite, "query">) =>
+    ({
+      async unsafe(text, params) {
+        onQuery?.(text);
+        if (params.some((param) => Array.isArray(param))) {
+          throw new Error(
+            'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
+          );
+        }
+        return (await connection.query(text, params as unknown[])).rows;
+      },
+    }) satisfies SqlDriver;
+  return sqlOver({ ...driver(db), begin: (work) => db.transaction((tx) => work(driver(tx))) });
+}
+
+interface HarnessOptions {
+  /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
+  sql?: (db: PGlite) => Sql;
+  routes?: readonly Route[];
+  buildSsh?: GoldenCreateOptions["ssh"];
+  /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
+  authStore?: (db: PGlite) => AuthStore;
+  log?: (line: string) => void;
+  /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
+  modalProviderFor?: HandlerOptions["modalProviderFor"];
+  providerFor?: HandlerOptions["providerFor"];
+  modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
+  connections?: HandlerOptions["connections"];
 }
 
 export async function harness(
-  options: {
-    /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
-    sql?: (db: PGlite) => Sql;
-    routes?: readonly Route[];
-    buildSsh?: GoldenCreateOptions["ssh"];
-    goldenAdoption?: HandlerOptions["goldenAdoption"];
-    /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
-    authStore?: (db: PGlite) => AuthStore;
-    log?: (line: string) => void;
-    /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
-    modalProviderFor?: HandlerOptions["modalProviderFor"];
-    providerFor?: HandlerOptions["providerFor"];
-    modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
-    connections?: HandlerOptions["connections"];
-  } = {},
+  options: HarnessOptions = {},
   /** Caller-owned seeded database; its owner closes it after all clients are done. */
   fixture?: Awaited<ReturnType<typeof database>>,
-): Promise<TestServer> {
-  const { db, people } = fixture ?? (await database());
+) {
+  const seeded = fixture ?? (await database());
+  try {
+    return createTestServer(options, seeded, fixture === undefined);
+  } catch (error) {
+    if (!fixture) return closeAfterSetupFailure(seeded.db, error);
+    throw error;
+  }
+}
+
+function createTestServer(
+  options: HarnessOptions,
+  { db, people }: Awaited<ReturnType<typeof database>>,
+  ownsDatabase: boolean,
+) {
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
   const clock = { now: new Date("2026-11-08T12:00:00.000Z") };
@@ -464,7 +507,6 @@ export async function harness(
   });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
-    goldenBuilds: builds,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
@@ -475,7 +517,6 @@ export async function harness(
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
-    ...(options.goldenAdoption ? { goldenAdoption: options.goldenAdoption } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
@@ -538,10 +579,25 @@ export async function harness(
       return client;
     },
     async close() {
-      for (const client of clients) await client.close();
-      if (!fixture) await db.close();
+      const errors: unknown[] = [];
+      for (const client of clients) {
+        try {
+          await client.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (ownsDatabase) {
+        try {
+          await db.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Test server cleanup failed");
     },
-  };
+  } satisfies TestServer;
 }
 
 /** The structured result of a tool call, or the error text when it failed. */
@@ -554,4 +610,8 @@ export async function call(client: Client, name: string, args: Record<string, un
     text,
     data: (result.structuredContent ?? {}) as Record<string, unknown>,
   };
+}
+
+export function launchSandboxId(data: unknown) {
+  return launchEnvelope.parse(data).sandbox.id;
 }

@@ -9,7 +9,7 @@ export type FailureHelp = {
 
 const USAGE: FailureHelp = {
   title: "Usage limit reached",
-  hint: "The account this agent runs on has hit its plan or billing limit. Wait for the limit to reset, or switch to another account and send the prompt again.",
+  hint: "The account this agent runs on has hit its plan or billing limit. Try again after the account limit resets.",
   fix: { href: "/harness", label: "Manage subscriptions" },
 };
 

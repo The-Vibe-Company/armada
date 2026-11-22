@@ -18,14 +18,17 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, httpApi, readDockerOutputArchive } from "../src/native.ts";
+import { fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
 
 function fail(): never {
   throw new Error("missing receipt");
 }
 
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot"> = "create",
+  operation: Exclude<
+    Job["operation"],
+    "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical" | "restore"
+  > = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {
@@ -61,7 +64,6 @@ function fixture(
     },
   };
   const run = async () => {
-    // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
     executed.push(job.operation);
     if (failure) throw failure;
@@ -118,12 +120,367 @@ test.each(["create", "stop", "delete"] as const)(
     expect(f.executed).toEqual([]);
     f.failSave(false);
     await tick(f.store, f.api, f.executor);
-    // A new iteration reloads only durable state, as a restarted process does.
     await tick(f.store, f.api, f.executor);
     expect(f.executed).toEqual([operation]);
     expect(f.acknowledgements).toEqual(["completed", "completed"]);
   },
 );
+
+test.each(["create", "restore"] as const)(
+  "%s replays the verified allocation ID after a lost acknowledgement and ledger compaction",
+  async (operation) => {
+    const { job, store, api, executor, state } = fixture();
+    const machineId = "b".repeat(64);
+    const allocation: Job =
+      operation === "create"
+        ? job
+        : {
+            ...job,
+            operation,
+            request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+            predecessor: { request: job.request, machineId: "a".repeat(64) },
+          };
+    api.poll = async () => ({ job: allocation });
+    let allocations = 0;
+    executor[operation] = async () => {
+      allocations++;
+      return { machineId };
+    };
+    const reported: unknown[] = [];
+    api.result = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+      reported.push(JSON.parse(String(init?.body)));
+      if (reported.length === 1) throw new Error("acknowledgement lost");
+      return new Response(null, { status: 204 });
+    }) as typeof fetch).result;
+    const run = () => tick(store, api, executor, false, () => 100_000);
+
+    await expect(run()).rejects.toThrow("acknowledgement lost");
+    expect(state().receipts).toContainEqual(expect.objectContaining({ outcome: "completed", machineId }));
+    await run();
+
+    const cleaned = await store.load();
+    const saved = cleaned.receipts.find((receipt) => receipt.requestId === allocation.requestId) ?? fail();
+    saved.cleaned = true;
+    cleaned.receipts.push({
+      requestId: crypto.randomUUID(),
+      operation: "buildSnapshot",
+      inputHash: "d".repeat(64),
+      request: { ...job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1_100_000) },
+      outcome: "completed",
+    });
+    compactReceipts(cleaned);
+    expect(cleaned.receipts).toHaveLength(0);
+    await store.save(cleaned);
+
+    await run();
+    const body = {
+      installationId: state().installationId,
+      requestId: allocation.requestId,
+      outcome: "completed",
+      machineId,
+    };
+    expect(reported).toEqual([body, body, body]);
+    expect(allocations).toBe(1);
+  },
+);
+
+test("physical-only mailbox delete replays an uncommitted result for the same immutable ID", async () => {
+  const { job, store, api, executor, acknowledgements, state } = fixture();
+  const machineId = "a".repeat(64);
+  const physical: Job = { ...job, operation: "deletePhysical", machineId };
+  api.poll = async () => ({ job: physical });
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed")) {
+      throw new Error("completion write lost");
+    }
+    await save(next);
+  };
+  const targets: unknown[] = [];
+  executor.delete = async (request, target) => {
+    expect(state().receipts.find((receipt) => receipt.requestId === job.requestId)?.outcome).toBeUndefined();
+    expect(request).toEqual(job.request);
+    targets.push(target);
+  };
+
+  await expect(tick(store, api, executor)).rejects.toThrow("completion write lost");
+  expect(acknowledgements).toEqual([]);
+  expect(state().cleanupGenerations).toBeUndefined();
+  api.poll = async () => ({ job: { ...physical, machineId: "b".repeat(64) } });
+  await expect(tick(store, api, executor)).rejects.toThrow("Changed host job");
+
+  api.poll = async () => ({ job: physical });
+  loseCompletion = false;
+  await tick(store, api, executor);
+  await tick(store, api, executor);
+  expect(targets).toEqual([
+    { scope: "physical-only", machineId },
+    { scope: "physical-only", machineId },
+  ]);
+  expect(acknowledgements).toEqual(["completed", "completed"]);
+});
+
+test("restore replays its frozen predecessor after a lost completion without authorizing retention cleanup", async () => {
+  const { job, store, api, executor, acknowledgements, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  await store.save({
+    ...state(),
+    retention: [{ request: job.request, requestId: job.requestId, deadline: 1 }],
+  });
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (request) => {
+    cleanup.push(request.generation);
+  };
+  const copies: string[] = [];
+  executor.restore = async (target, predecessor) => {
+    expect(state().receipts.find((receipt) => receipt.requestId === restore.requestId)?.outcome).toBeUndefined();
+    expect(target).toEqual(restore.request);
+    expect(predecessor.request).toEqual(job.request);
+    copies.push(predecessor.machineId);
+  };
+  executor.startRuntime = async () => {
+    throw new Error("Restore must not install the runtime");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  api.poll = async () => ({ job: restore });
+  await expect(run()).rejects.toThrow("completion write lost");
+  expect(cleanup).toEqual([]);
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  await expect(run()).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  api.poll = async () => ({ job: { ...restore, predecessor: { ...restore.predecessor, machineId: "b".repeat(64) } } });
+  await expect(run()).rejects.toThrow("Changed host job");
+
+  api.poll = async () => ({ job: restore });
+  loseCompletion = false;
+  await run();
+  await run();
+  expect(copies).toEqual([restore.predecessor.machineId, restore.predecessor.machineId]);
+  expect(acknowledgements).toEqual(["completed", "completed"]);
+  api.poll = async () => ({ job: null });
+  await run();
+  expect(cleanup).toEqual([job.request.generation]);
+});
+
+test("an ambiguous Docker restore failure replays the same pending job", async () => {
+  const { job, store, api, executor, acknowledgements } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  api.poll = async () => ({ job: restore });
+  executor.restore = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  const run = () => tick(store, api, executor, false, () => 100_000);
+  await expect(run()).rejects.toThrow("docker_failed");
+  expect(acknowledgements).toEqual([]);
+  executor.restore = async () => {};
+  await run();
+  expect(acknowledgements).toEqual(["completed"]);
+});
+
+test("an ambiguous restore defers only its own redelivery while the host takes other jobs", async () => {
+  const { job, store, api, executor } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const { job: stop } = fixture("stop");
+  const failed = Promise.withResolvers<void>();
+  let pollCount = 0;
+  const acknowledgements: string[] = [];
+  api.poll = async (_state, options) => {
+    pollCount++;
+    if (pollCount === 1) return { job: restore, held: true };
+    if (pollCount > 3) throw new Error("unexpected poll");
+    await failed.promise;
+    const next = [restore, stop].find(
+      (item) => !options?.running?.includes(item.requestId) && !acknowledgements.includes(item.requestId),
+    );
+    return { job: next ?? null, held: true };
+  };
+  let attempts = 0;
+  const dispatches: string[] = [];
+  executor.restore = async () => {
+    attempts++;
+    if (attempts === 1) throw new DockerMachineError("docker_failed");
+    dispatches.push("restore");
+  };
+  executor.stop = async () => {
+    dispatches.push("stop");
+  };
+  api.result = async (_state, receipt) => {
+    acknowledgements.push(receipt.requestId);
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    now: () => 100_000,
+    beforeTick: async () => {
+      if (pollCount === 1) await failed.promise;
+    },
+    stopping: () => acknowledgements.length === 2 || pollCount > 3,
+    failed: () => failed.resolve(),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  expect(dispatches).toEqual(["stop", "restore"]);
+  expect(acknowledgements).toHaveLength(2);
+  expect(sleeps).toEqual([]);
+});
+
+test("a pending restore lets unrelated jobs drain while a priority stop is fenced", async () => {
+  const { job, store, api, executor } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const { job: stop } = fixture("stop");
+  const conflictingStop: Job = { ...stop, requestId: crypto.randomUUID(), request: job.request };
+  const failed = Promise.withResolvers<void>();
+  const unrelatedCompleted = Promise.withResolvers<void>();
+  let pollCount = 0;
+  let now = 100_000;
+  const acknowledgements: string[] = [];
+  api.poll = async (_state, options) => {
+    pollCount++;
+    if (pollCount === 1) return { job: restore, held: true };
+    if (pollCount > 4) throw new Error("unexpected poll");
+    await failed.promise;
+    const jobs = [conflictingStop, stop, restore];
+    const blockedSandboxes = new Set(
+      jobs.filter((item) => options?.running?.includes(item.requestId)).map((item) => item.request.sandboxId),
+    );
+    const next = jobs.find(
+      (item) => !blockedSandboxes.has(item.request.sandboxId) && !acknowledgements.includes(item.requestId),
+    );
+    return { job: next ?? null, held: true };
+  };
+  const dispatches: string[] = [];
+  executor.restore = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  executor.stop = async (request) => {
+    dispatches.push(request.sandboxId === job.request.sandboxId ? "conflicting stop" : "stop");
+  };
+  api.result = async (_state, receipt) => {
+    acknowledgements.push(receipt.requestId);
+    if (receipt.requestId === stop.requestId) unrelatedCompleted.resolve();
+  };
+  const sleeps: number[] = [];
+  await runJobs(store, api, executor, {
+    now: () => now,
+    beforeTick: async () => {
+      if (pollCount === 1) await failed.promise;
+      if (pollCount === 3 && dispatches.includes("stop")) {
+        await unrelatedCompleted.promise;
+        now = 200_000;
+      }
+    },
+    stopping: () => acknowledgements.length === 2 || pollCount > 4,
+    failed: () => failed.resolve(),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  expect(dispatches).toEqual(["stop", "conflicting stop"]);
+  expect(acknowledgements).toHaveLength(2);
+  expect(sleeps).toEqual([]);
+});
+
+test("local retention reclaims an expired pending restore target even while offline", async () => {
+  const { job, store, api, executor, state } = fixture();
+  const restore: Job = {
+    ...job,
+    operation: "restore",
+    request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+    predecessor: { request: job.request, machineId: "a".repeat(64) },
+  };
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed"))
+      throw new Error("completion write lost");
+    await save(next);
+  };
+  let stoppedTarget: string | undefined;
+  executor.restore = async (target) => {
+    stoppedTarget = target.generation;
+  };
+  executor.isStopped = async (target) => target.generation === stoppedTarget;
+  const cleanup: string[] = [];
+  executor.deleteStopped = async (target) => {
+    cleanup.push(target.generation);
+  };
+  api.poll = async () => ({ job: restore });
+  await expect(tick(store, api, executor, false, () => 100_000)).rejects.toThrow("completion write lost");
+
+  api.poll = async () => {
+    throw new Error("offline");
+  };
+  loseCompletion = false;
+  await expect(tick(store, api, executor, false, () => 199_999)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([]);
+  const expiryChecks: string[] = [];
+  executor.stopIfExpired = async (target) => {
+    expiryChecks.push(target.generation);
+    return true;
+  };
+  await expect(
+    tick(store, api, executor, false, () => 200_000, { running: new Set([restore.requestId]) }),
+  ).rejects.toThrow("offline");
+  expect(expiryChecks).toEqual([]);
+  expect(cleanup).toEqual([]);
+  await expect(tick(store, api, executor, false, () => 200_000)).rejects.toThrow("offline");
+  expect(cleanup).toEqual([restore.request.generation]);
+  expect(state().receipts[0]?.outcome).toBeUndefined();
+});
+
+test("a refused physical-only delete leaves the retained generation eligible for resume", async () => {
+  const { job, store, api, executor, acknowledgements } = fixture();
+  api.poll = async () => ({ job: { ...job, operation: "deletePhysical", machineId: "a".repeat(64) } });
+  executor.delete = async () => {
+    throw new DockerMachineError("ownership_mismatch");
+  };
+  await tick(store, api, executor);
+  expect(acknowledgements).toEqual(["failed"]);
+
+  const accepted: boolean[] = [];
+  api.claim = async (_state, _requestId, decision) => {
+    accepted.push(decision);
+  };
+  api.poll = async () => ({
+    job: null,
+    resumeClaims: [
+      { requestId: crypto.randomUUID(), sandboxId: job.request.sandboxId, generation: job.request.generation },
+    ],
+  });
+  await tick(store, api, executor);
+  expect(accepted).toEqual([true]);
+});
 
 test("recovers a persisted pending operation after interruption without issuing a new identity", async () => {
   const f = fixture();
@@ -181,7 +538,7 @@ test("rejects changed request identity, generation inputs, and fresh create iden
   expect(f.executed).toHaveLength(1);
 });
 
-test("a failed image fetch is reported with its reason, and an older server still gets the plain outcome", async () => {
+test("a failed image fetch is reported with its reason even when the server refuses the result", async () => {
   const f = fixture();
   f.failExecution(new DockerMachineError("image_unavailable"));
   await tick(f.store, f.api, f.executor);
@@ -191,7 +548,6 @@ test("a failed image fetch is reported with its reason, and an older server stil
   await tick(generic.store, generic.api, generic.executor);
   expect(generic.state().receipts[0]?.reason).toBeUndefined();
 
-  // A transient failure is not an older server: the reason is kept for the next tick, never dropped.
   const sent: Record<string, unknown>[] = [];
   const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
     sent.push(JSON.parse(String(init?.body)));
@@ -199,22 +555,6 @@ test("a failed image fetch is reported with its reason, and an older server stil
   }) as typeof fetch);
   await expect(transient.result(f.state(), f.state().receipts[0] ?? fail())).rejects.toThrow("Host request denied");
   expect(sent).toEqual([expect.objectContaining({ reason: "image_unavailable" })]);
-  for (const server of ["current", "older"] as const) {
-    const bodies: Record<string, unknown>[] = [];
-    const api = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
-      bodies.push(body);
-      // An older server refuses any field it does not know.
-      return new Response(null, { status: server === "older" && "reason" in body ? 400 : 204 });
-    }) as typeof fetch);
-    await api.result(f.state(), f.state().receipts[0] ?? fail());
-    const plain = { installationId: f.state().installationId, requestId: f.job.requestId, outcome: "failed" };
-    expect(bodies).toEqual(
-      server === "current"
-        ? [{ ...plain, reason: "image_unavailable" }]
-        : [{ ...plain, reason: "image_unavailable" }, plain],
-    );
-  }
 });
 
 test("uncertain execution fails durably, never replays, and TTL sweep still runs on denied polling", async () => {
@@ -315,7 +655,6 @@ test("offline TTL stop confirmation survives restart and lost ACK without replay
   expect(f.state().receipts[0]).toMatchObject({ expired: true, outcome: "completed" });
   expect(f.state().receipts[0]?.expiryReported).toBeUndefined();
   expect(JSON.stringify(calls)).not.toContain(state.hostToken);
-  // Reload the durable receipt; a later unavailable daemon cannot erase the proof.
   const restarted = {
     ...executor,
     async stopIfExpired() {
@@ -451,7 +790,6 @@ test("bounded TTL sweeps retire confirmed generations while reporting fairly acr
   };
   await tick(f.store, api, executor);
   expect(reports).toEqual([first]);
-  // Each tick reloads only durable state; no in-memory cursor is supplied by the fixture.
   await tick(f.store, api, executor);
   expect(reports).toEqual([first, second]);
   await tick(f.store, api, executor);
@@ -483,17 +821,37 @@ test("HTTP registration is single-use and host credentials remain in authorizati
     request: f.job.request,
     outcome: "completed",
   });
-  await api.result(state, { requestId: f.job.requestId, operation: "create", request: f.job.request }, true);
+  await api.result(
+    state,
+    {
+      requestId: f.job.requestId,
+      operation: "create",
+      request: f.job.request,
+      outcome: "completed",
+      machineId: "b".repeat(64),
+    },
+    true,
+  );
   expect(JSON.parse(String(calls.at(-1)?.init.body))).toEqual({
     installationId: state.installationId,
     requestId: f.job.requestId,
     expired: true,
   });
   expect(calls.map((c) => c.init.headers)).toEqual([
-    { authorization: `Bearer ${registrationToken}`, "content-type": "application/json" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-snapshot-baseline": "1" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
-    { authorization: `Bearer ${hostToken}`, "content-type": "application/json" },
+    {
+      authorization: `Bearer ${registrationToken}`,
+      "content-type": "application/json",
+      "x-armada-docker-host-protocol": "1",
+    },
+    {
+      authorization: `Bearer ${hostToken}`,
+      "content-type": "application/json",
+      "x-armada-docker-host-protocol": "1",
+      "x-armada-docker-host-delete-physical": "1",
+      "x-armada-docker-host-restore": "1",
+    },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
+    { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
   ]);
   expect(calls.every((c) => c.init.redirect === "error" && !`${c.url}${c.init.body}`.includes(hostToken))).toBe(true);
   expect(JSON.stringify(state)).not.toContain(registrationToken);
@@ -548,8 +906,6 @@ test("private native state survives reopening, excludes concurrent owners and re
   }
 });
 
-// One owner boundary for write/read compatibility: a large save may be refused,
-// but must never replace readable state with a file its own reader rejects.
 test("native state writes remain readable or preserve the previous durable state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-docker-state-size-"));
   try {
@@ -570,9 +926,7 @@ test("native state writes remain readable or preserve the previous durable state
     try {
       await store.save(next);
       accepted = true;
-    } catch {
-      /* a bounded persistence layer may refuse admission */
-    }
+    } catch {}
     const restored = await store.load();
     expect(JSON.stringify(restored) === JSON.stringify(accepted ? next : previous)).toBe(true);
   } finally {
@@ -686,6 +1040,119 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
 });
 
+test.each([
+  ["verified retention", true, true, "exited false", true],
+  ["workspace lost after acknowledgement is lost", true, true, "reclaimed", true],
+  ["volume without a container", true, true, "", false],
+  ["container without its owned workspace", true, false, "exited false", false],
+  ["container still running", true, true, "running true", false],
+  ["container with a foreign workspace mount", true, true, "foreign", false],
+  ["container never started", true, true, "created", false],
+  ["server without the capability", false, true, "exited false", false],
+] as const)(
+  "failed stop reports %s through the negotiated results route",
+  async (_, supported, owned, status, proof) => {
+    const f = fixture("stop");
+    let delivered = false;
+    let workspacePresent = owned;
+    const results: unknown[] = [];
+    const api = httpApi((async (url, options) => {
+      if (String(url).endsWith("/poll")) {
+        const job = delivered ? null : f.job;
+        delivered = true;
+        return Response.json(
+          { job },
+          {
+            headers: supported ? { "x-armada-docker-retained-stop": "1" } : {},
+          },
+        );
+      }
+      const receipt = (await f.store.load()).receipts[0];
+      expect(receipt?.outcome).toBe("failed");
+      results.push(JSON.parse(String(options?.body)));
+      if (proof && results.length === 1) {
+        if (status === "reclaimed") workspacePresent = false;
+        throw new Error("lost response");
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    let stops = 0;
+    const state = f.state();
+    const request = f.job.request;
+    const name = `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`;
+    const labels = Object.fromEntries(
+      Object.entries({
+        host: state.hostId,
+        installation: state.installationId,
+        sandbox: request.sandboxId,
+        generation: request.generation,
+        image: request.image,
+        "ttl-seconds": String(request.ttlSeconds),
+        "created-at": "1000",
+        "expires-at": "61000",
+      }).map(([key, value]) => [`dev.armada.machine.${key}`, value]),
+    );
+    const cli: Parameters<typeof observeRetainedStop>[0]["cli"] = {
+      async run(args) {
+        const container = args[0] === "container";
+        const resourceName = container ? name : `${name}-home`;
+        if (args[1] === "ls") {
+          const exists = container ? status !== "" : workspacePresent;
+          return { exitCode: 0, stdout: exists ? JSON.stringify(resourceName) : "" };
+        }
+        expect(args.at(-1)).toBe(resourceName);
+        const resource = container
+          ? {
+              Id: "a".repeat(64),
+              Name: `/${name}`,
+              Config: { Image: request.image, User: "1000:1000", Labels: labels },
+              HostConfig: { Privileged: false },
+              Mounts: [
+                {
+                  Type: "volume",
+                  Name: status === "foreign" ? "unrelated" : `${name}-home`,
+                  Destination: "/home/user",
+                  RW: true,
+                },
+              ],
+              State: { Running: status === "running true", Status: status === "created" ? "created" : "exited" },
+            }
+          : { Name: resourceName, Driver: "local", Options: {}, Labels: labels };
+        return { stdout: JSON.stringify([resource]), exitCode: 0 };
+      },
+    };
+    const executor: Executor = {
+      ...f.executor,
+      async stop() {
+        stops++;
+        throw new Error("stop response unknown");
+      },
+      isRetainedStop(request) {
+        return observeRetainedStop(
+          { hostId: state.hostId, installationId: state.installationId, cli, now: () => 1000 },
+          request,
+        );
+      },
+    };
+    if (proof) {
+      await expect(tick(f.store, api, executor)).rejects.toThrow("lost response");
+      await tick(f.store, api, executor);
+      await tick(f.store, api, executor);
+    } else {
+      await tick(f.store, api, executor);
+    }
+    const result = {
+      installationId: f.state().installationId,
+      requestId: f.job.requestId,
+      outcome: "failed",
+      ...(proof ? { retained: true } : {}),
+    };
+    const { retained: _retained, ...ordinaryFailure } = result;
+    expect(results).toEqual(proof ? [result, status === "reclaimed" ? ordinaryFailure : result] : [result]);
+    expect(stops).toBe(1);
+  },
+);
+
 test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
   const state = fixture().state();
   for (const result of [false, true]) {
@@ -706,8 +1173,6 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
   }
 });
 
-// The daemon's loop passes `dispatch`, but an older server never holds a poll, so
-// the build still runs inline and must keep the other work moving (#2561).
 for (const [caller, options] of [
   ["a serial caller", {}],
   [
@@ -832,7 +1297,6 @@ for (const [caller, options] of [
     }
   });
 
-// The no-Node fallback must not label arbitrary HTTP output as a canceled ticket/name.
 test("HTTP reuse authenticates only with the fresh ticket and validates public identity before confirmation", async () => {
   const state = fixture().state();
   const token = "c".repeat(64);
@@ -946,7 +1410,6 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
       image: `sha256:${"a".repeat(64)}`,
     },
   };
-  // Exceed the default cleanup capacity, not an incidental near-limit file size.
   initial.receipts = Array.from({ length: 17409 }, (_, index) => {
     const suffix = index.toString(16).padStart(12, "0");
     return {
@@ -1009,48 +1472,6 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   expect(effects).toBe(1);
 });
 
-test("native poll retains sampled availability when an older server rejects retention telemetry", async () => {
-  let calls = 0;
-  const f = fixture();
-  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body));
-        calls++;
-        expect(body.resources).toEqual(resources);
-        if ("retentionSeconds" in body) return new Response(null, { status: 400 });
-        expect(JSON.stringify(body)).not.toContain(f.state().hostToken);
-        return Response.json({ job: null });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => resources,
-  );
-  expect(await api.poll(await f.store.load())).toEqual({ job: null });
-  expect(calls).toBe(3);
-});
-
-test("older policy-capable servers retain the quota handshake when availability fields are refused", async () => {
-  const f = fixture();
-  let calls = 0;
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        expect(body.resourcePolicyVersion).toBe(1);
-        if ("availableCpus" in body.resources) return new Response(null, { status: 400 });
-        return Response.json({ job: null, limits: { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 } });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 2, availableMemoryBytes: 10 * 1024 ** 3 }),
-  );
-  expect(await api.poll(await f.store.load())).toMatchObject({ limits: { cpus: 1 } });
-  expect(calls).toBe(4);
-});
-
 test("TTL index deduplicates active receipts, retires terminal history and rotates uncertain failures before mailbox polling", async () => {
   const f = fixture();
   await tick(f.store, f.api, f.executor);
@@ -1111,7 +1532,6 @@ test("TTL index deduplicates active receipts, retires terminal history and rotat
   expect((await f.store.load()).receipts).toHaveLength(5);
 });
 
-// Build legacy compacted state through the production compactor, not invented fences.
 test.each(["stop", "delete", "expired", "resumed"] as const)(
   "legacy compacted %s history preserves only uncertain live TTL obligations",
   async (kind) => {
@@ -1147,7 +1567,6 @@ test.each(["stop", "delete", "expired", "resumed"] as const)(
           requestId: crypto.randomUUID(),
         });
     }
-    // Reach the real compaction threshold with closed unrelated receipts.
     state.receipts.push(
       ...Array.from({ length: 4500 }, () => ({
         request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
@@ -1326,70 +1745,12 @@ test("server retention override persists and shifts pending deadlines without re
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
   await f.store.save(state);
-  // A completed-job replay must not bypass durable policy storage.
   f.api.poll = async () => ({ job: f.job, retentionSeconds: 3600 });
   await tick(f.store, f.api, f.executor);
   expect((await f.store.load()).retentionSeconds).toBe(3600);
   expect((await f.store.load()).retentionPolicyFromServer).toBe(true);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(17200000);
 });
-
-test("a pre-disk server keeps retention and availability when refusing only disk telemetry", async () => {
-  const f = fixture();
-  const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-  let calls = 0;
-  const api = httpApi(
-    Object.assign(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        calls++;
-        const body = JSON.parse(String(init?.body));
-        expect(body.resources).toEqual(resources);
-        expect(body.retentionSeconds).toBe(86400);
-        if ("diskFreeBytes" in body) {
-          expect(body.diskFreeBytes).toBe(123);
-          return new Response(null, { status: 400 });
-        }
-        return Response.json({ job: null, retentionSeconds: 3600 });
-      },
-      { preconnect: fetch.preconnect },
-    ),
-    async () => resources,
-    async () => 123,
-  );
-  expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-  expect(calls).toBe(3);
-});
-
-test.each(["resumeClaimProtocol", "stoppedSandboxBytes"])(
-  "an older server keeps disk telemetry when refusing %s",
-  async (unsupported) => {
-    const f = fixture();
-    const resources = { cpus: 8, memoryBytes: 32 * 1024 ** 3, availableCpus: 3, availableMemoryBytes: 12 * 1024 ** 3 };
-    let calls = 0;
-    const api = httpApi(
-      Object.assign(
-        async (_url: string | URL | Request, init?: RequestInit) => {
-          calls++;
-          const body = JSON.parse(String(init?.body));
-          expect(body.resources).toEqual(resources);
-          expect(body.retentionSeconds).toBe(86400);
-          expect(body.diskFreeBytes).toBe(123);
-          if (unsupported in body || (unsupported === "resumeClaimProtocol" && "deadlines" in body)) {
-            if (unsupported === "stoppedSandboxBytes") expect(body.stoppedSandboxBytes).toBe(456);
-            return new Response(null, { status: 400 });
-          }
-          return Response.json({ job: null, retentionSeconds: 3600 });
-        },
-        { preconnect: fetch.preconnect },
-      ),
-      async () => resources,
-      async () => 123,
-      async () => 456,
-    );
-    expect(await api.poll(await f.store.load())).toEqual({ job: null, retentionSeconds: 3600 });
-    expect(calls).toBe(unsupported === "resumeClaimProtocol" ? 2 : 3);
-  },
-);
 
 test.each([false, true])(
   "complete allocation loss reconciles durable admission (failed create: %s)",
@@ -1445,7 +1806,7 @@ test.each(["stop", "create", "resume"] as const)(
         await f.store.save(next);
       },
     };
-    await store.save(state); // Compaction happens before the first observation.
+    await store.save(state);
     const deleted: string[] = [];
     const executor: Executor = {
       ...f.executor,
@@ -1455,7 +1816,6 @@ test.each(["stop", "create", "resume"] as const)(
       },
     };
     const api: Api = { ...f.api, poll: async () => ({ job: null }) };
-    // Each tick reloads a serialized state, just like a restarted daemon.
     for (let i = 0; i < 3; i++) await tick(store, api, executor, false, () => 1000);
     expect(deleted.sort()).toEqual(expected);
   },
@@ -1547,7 +1907,6 @@ test("physical expiry stops every generation while create is stalled without rac
   await observed.promise;
   expect(stopped).toEqual([]);
   expect(f.state()).toEqual(before);
-  // Settle fast inspections without releasing the blocked allocation.
   for (let i = 0; i < 10; i++) await Promise.resolve();
   expect(checks).toBe(2);
   const newlyAdmitted = fixture();
@@ -1575,7 +1934,6 @@ test("physical expiry stops every generation while create is stalled without rac
   await expiry.drain();
   finish.resolve();
   await pending;
-  // Only the serialized mailbox persists and publishes the physical proof.
   await tick(f.store, f.api, f.executor);
   expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
 });
@@ -1636,7 +1994,6 @@ test("a queued resume is observed before a due local retention deletion", async 
     return { job: resume };
   };
   await tick(f.store, f.api, executor, false, () => 0);
-  // The resume claims the stopped generation before retention may delete it.
   expect(order).toEqual(["poll", "resume", "startRuntime"]);
   expect((await f.store.load()).retention).toEqual([]);
 });
@@ -1699,9 +2056,6 @@ test("a resume behind another mailbox job still cancels its generation's due ret
       enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
     },
   };
-  // The server serves one job per poll, ordered so every stop/delete precedes
-  // startup work. An unrelated stop is therefore handed out first, and the
-  // resume for this generation is only visible as pending intent.
   const unrelated: Job = {
     requestId: crypto.randomUUID(),
     operation: "stop",
@@ -1711,15 +2065,12 @@ test("a resume behind another mailbox job still cancels its generation's due ret
   f.api.poll = async () => {
     order.push("poll");
     polls++;
-    // The server reports every held generation with the poll, including a
-    // resume queued behind this stop, not only the single job it hands out.
     return {
       job: polls === 1 ? unrelated : resume,
       pendingStarts: [{ sandboxId: resume.request.sandboxId, generation: resume.request.generation }],
     };
   };
   await tick(f.store, f.api, executor, false, () => 0);
-  // The due generation is not deleted while a resume for it is queued behind the stop.
   expect(order).not.toContain("delete");
   expect((await f.store.load()).retention).toEqual([]);
 });
@@ -1756,8 +2107,6 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
   expect((await f.store.load()).retention).toEqual([]);
-  // A fresh load on each tick represents restart; expiry retires the durable
-  // hold, then default discovery reclaims the expired workspace.
   await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
   expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(1000);
@@ -1766,8 +2115,6 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
   original.expired = true;
   original.expiryReported = true;
-  // A completed unrelated snapshot supplies the ledger pressure that triggers
-  // real compaction; its opaque image bytes are never sent to Docker.
   compacted.receipts.push({
     requestId: crypto.randomUUID(),
     operation: "buildSnapshot",
@@ -1780,7 +2127,7 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   await f.store.save(compacted);
   offline = false;
   await tick(f.store, f.api, f.executor, false, () => 1999);
-  expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
+  expect(acknowledgements).toEqual([true]);
   expect(deleted).toBe(true);
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
@@ -1816,7 +2163,7 @@ test("disk pressure reclaims oldest eligible workspaces until the floor, preserv
   f.executor.isStopped = async (request) => {
     if (request === undefined) throw Error("missing request");
     if (request.generation === requests[2]!.generation) throw Error("foreign ownership");
-    return request.generation !== requests[3]!.generation; // running/starting
+    return request.generation !== requests[3]!.generation;
   };
   f.executor.deleteStopped = async (request) => {
     expect(
@@ -1880,7 +2227,6 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
         (item) => !acknowledged.includes(item.requestId) && !options?.running?.includes(item.requestId),
       );
       if (job) return { job: structuredClone(job), held: true };
-      // The server holds the poll until something changes.
       await changed.promise;
       return { job: null, held: true };
     },
@@ -1950,7 +2296,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
     async register() {
       throw new Error("unused");
     },
-    // Like the server: a sandbox is blocked only until its running job's outcome is recorded.
     async poll(_state, options) {
       const running = options?.running ?? [];
       if (running.length) held.resolve();
@@ -1978,7 +2323,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
     },
   };
   const executor: Executor = {
-    // The create completes while the next poll is held, which then returns the stop.
     create: async () => held.promise,
     stop: async () => {},
     delete: async () => {},
@@ -1993,7 +2337,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
   });
   expect(sleeps).toEqual([]);
   expect(acknowledged).toEqual([create.requestId, stop.requestId]);
-  // The stop is admitted from the hold that returned it, not refused and polled for again.
   expect(delivered).toEqual([create.requestId, stop.requestId]);
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
 });
@@ -2024,7 +2367,6 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
   const dispatch = (job: Job) => {
     dispatched.push(job.requestId);
   };
-  // The older server answers without `held` and knows nothing of `running`.
   expect(await tick(f.store, f.api, f.executor, false, Date.now, { dispatch })).toBe("worked");
   expect(dispatched).toEqual([]);
   expect(f.acknowledgements).toEqual(["completed"]);
@@ -2036,7 +2378,7 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
   expect(f.acknowledgements).toEqual(["completed"]);
 });
 
-test("native held polls report running work and fall back to the previous protocol on older servers", async () => {
+test("native held polls report running work without retrying a refused request", async () => {
   const f = fixture();
   const bodies: Record<string, unknown>[] = [];
   const api = httpApi(
@@ -2052,16 +2394,12 @@ test("native held polls report running work and fall back to the previous protoc
     async () => ({ cpus: 8, memoryBytes: 32 * 1024 ** 3 }),
   );
   const running = crypto.randomUUID();
-  expect(await api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] })).toEqual({
-    job: null,
-  });
+  await expect(
+    api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] }),
+  ).rejects.toThrow();
+  expect(bodies).toHaveLength(1);
   expect(bodies[0]).toMatchObject({ waitSeconds: 20, running: [running], resumeClaimProtocol: 1 });
-  // A held poll leaves snapshot serialization to `running`: the flag would stay stale for the hold.
   expect(bodies[0]).not.toHaveProperty("skipSnapshots");
-  expect(bodies[1]).toMatchObject({ resumeClaimProtocol: 1, skipSnapshots: true });
-  expect(bodies[1]).not.toHaveProperty("waitSeconds");
-  expect(bodies[1]).not.toHaveProperty("running");
-  expect(bodies).toHaveLength(2);
 });
 
 test("a ledger that cannot be saved before a held poll never overwrites a completion saved during it", async () => {
@@ -2091,7 +2429,6 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
     ...f.api,
     async poll(state, options) {
       if (options?.running?.length) {
-        // The running job completes durably while this poll is held; its ACK is lost.
         gate.resolve();
         await work?.catch(() => {});
         return { job: null, held: true };
@@ -2110,15 +2447,12 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
     work = running;
   };
   expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
-  // The pre-poll save fails once; the completion's own save during the poll succeeds.
   failNextSave = true;
   const blocked = tick(store, api, executor, false, Date.now, { dispatch, running: new Set([f.job.requestId]) });
   await expect(blocked).rejects.toThrow("disk unavailable");
   gate.resolve();
   await expect(work).rejects.toThrow("ACK lost");
-  // A tick with a ledger it could not save admitted nothing and wrote nothing afterwards.
   expect(f.state().receipts.find((receipt) => receipt.requestId === f.job.requestId)?.outcome).toBe("completed");
-  // The re-delivered job replays its durable outcome instead of running again.
   expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
   await work;
   expect(f.executed).toEqual(["create"]);
@@ -2126,8 +2460,6 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
 });
 
 test("a job of a sandbox whose operation still runs here waits, even if the server already freed the sandbox", async () => {
-  // The server records an outcome without the host when it cancels queued work,
-  // and then hands out the sandbox's next job while its create still executes.
   const f = fixture("stop");
   const api: Api = {
     ...f.api,

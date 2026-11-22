@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { configFromEnv, dashboardOrigin } from "../src/config.ts";
+import { readStartupConfiguration } from "../src/startup-configuration.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const ENV = {
@@ -9,6 +13,8 @@ const ENV = {
   ARMADA_AUTH_SECRET: "a-test-auth-secret-of-enough-length",
   ARMADA_PUBLIC_URL: "https://armada.example.com",
   ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+  ARMADA_MODAL_DIALOUT: "1",
+  ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
 };
 
 describe("config", () => {
@@ -19,26 +25,16 @@ describe("config", () => {
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
       expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
   });
-  test("Modal default is strict, native unless explicitly selected, and requires enrolled prerequisites", () => {
-    expect(configFromEnv(ENV).modalAgentPath).toBe("native");
-    expect(
-      configFromEnv({ ...ENV, ARMADA_MODAL_DIALOUT: "1", ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" })
-        .modalAgentPath,
-    ).toBe("native");
-    expect(
-      configFromEnv({
-        ...ENV,
-        ARMADA_MODAL_AGENT_PATH: "runtime",
-        ARMADA_MODAL_DIALOUT: "1",
-        ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
-      }).modalAgentPath,
-    ).toBe("runtime");
-    for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
-      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: mode })).toThrow("ARMADA_MODAL_AGENT_PATH");
-    for (const setup of [{}, { ARMADA_MODAL_DIALOUT: "1" }, { ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" }])
-      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: "runtime", ...setup })).toThrow(
-        "requires ARMADA_MODAL_DIALOUT",
+  test("Modal startup requires dial-out and a manifest", () => {
+    for (const missing of [
+      { ARMADA_MODAL_DIALOUT: undefined },
+      { ARMADA_MODAL_RUNTIME_MANIFEST: undefined },
+      { ARMADA_MODAL_RUNTIME_MANIFEST: " " },
+    ]) {
+      expect(() => configFromEnv({ ...ENV, ...missing })).toThrow(
+        /ARMADA_MODAL_DIALOUT=1.*ARMADA_MODAL_RUNTIME_MANIFEST/,
       );
+    }
   });
   test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
     expect(configFromEnv(ENV).databasePoolMax).toBe(3);
@@ -138,4 +134,87 @@ describe("config", () => {
     expect(() => configFromEnv({ ...ENV, ARMADA_PUBLIC_URL: "http://armada.example.com/x" })).toThrow(/origin/);
     expect(() => configFromEnv({ ...ENV, PORT: "http" })).toThrow(/PORT/);
   });
+});
+
+test.each([
+  ["SUPABASE_URL", "https://example.com/private-path"],
+  ["ARMADA_DATABASE_URL", "https://example.com"],
+])("rejects an invalid startup URL for %s without including its value", (name, value) => {
+  try {
+    configFromEnv({ ...ENV, [name]: value });
+  } catch (error) {
+    expect(String(error)).toContain(name);
+    expect(String(error)).not.toContain(value);
+    return;
+  }
+  throw new Error(`Expected startup to reject ${name}`);
+});
+
+test.each([
+  ["ARMADA_BOAT_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "runtime" }],
+  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_MODAL_DIALOUT: "1" }],
+] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ...settings,
+      [name]: "/nonexistent/manifest.json",
+    }),
+  ).rejects.toThrow(name);
+});
+
+describe("startup with a valid Modal manifest", () => {
+  async function readWithManifest(overrides: Record<string, string>) {
+    const dir = await mkdtemp(join(tmpdir(), "armada-config-"));
+    try {
+      const path = join(dir, "runtime.json");
+      await Bun.write(
+        path,
+        JSON.stringify({
+          protocol: 1,
+          platform: "linux",
+          libc: "glibc",
+          architecture: "x64",
+          runtime: { sha256: "a".repeat(64), bytes: 1 },
+          harnesses: {},
+        }),
+      );
+      return await readStartupConfiguration({
+        ...ENV,
+        ARMADA_RUNTIME_ARTIFACT_DIR: dir,
+        ARMADA_MODAL_RUNTIME_MANIFEST: path,
+        ...overrides,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("rejects an unusable Docker manifest when placement is enabled", async () => {
+    await expect(
+      readWithManifest({
+        ARMADA_DOCKER_HOSTS: "1",
+        ARMADA_DOCKER_PLACEMENT: "1",
+        ARMADA_DOCKER_RUNTIME_MANIFEST: "/nonexistent/manifest.json",
+      }),
+    ).rejects.toThrow("ARMADA_DOCKER_RUNTIME_MANIFEST");
+  });
+
+  test("startup checks PostgreSQL client URL syntax without connecting", async () => {
+    await expect(readWithManifest({ ARMADA_DATABASE_URL: "postgres://user:%zz@example.com/db" })).rejects.toThrow(
+      "ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.",
+    );
+  });
+
+  test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
+    await expect(readWithManifest({ ARMADA_INVITATION_MAIL: "supabase" })).rejects.toThrow("ARMADA_DASHBOARD_URL");
+  });
+});
+
+test("validates the configured login providers before constructing the server", () => {
+  expect(configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: " github, , google " }).loginProviders).toEqual([
+    "github",
+    "google",
+  ]);
+  expect(() => configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: "github,unsupported" })).toThrow("ARMADA_AUTH_PROVIDERS");
 });

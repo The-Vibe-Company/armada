@@ -9,21 +9,20 @@ export const migrationsDir = join(root, "supabase", "migrations");
 const prereqPath = fileURLToPath(new URL("./supabase-prereq.sql", import.meta.url));
 
 /** A fresh in-memory Postgres with the Supabase prerequisites, and no Armada tables yet. */
-export async function openDatabase(): Promise<PGlite> {
+export async function openDatabase() {
   const db = new PGlite();
   await db.waitReady;
   return db;
 }
 
-/** Applies the Supabase prerequisites and every migration, in filename order. */
-export async function applyMigrations(db: PGlite): Promise<string[]> {
-  const files = readdirSync(migrationsDir)
+export async function applyMigrations(db: PGlite, directory = migrationsDir) {
+  const files = readdirSync(directory)
     .filter((name) => name.endsWith(".sql"))
     .sort();
   if (files.length === 0) throw new Error("no migrations in supabase/migrations");
   await execFile(db, prereqPath, "supabase prerequisites");
   for (const file of files) {
-    await execFile(db, join(migrationsDir, file), file);
+    await execFile(db, join(directory, file), file);
   }
   await db.exec("create schema if not exists supabase_migrations");
   await db.exec("create table if not exists supabase_migrations.schema_migrations (version text primary key)");
@@ -33,7 +32,7 @@ export async function applyMigrations(db: PGlite): Promise<string[]> {
   return files;
 }
 
-async function execFile(db: PGlite, path: string, name: string): Promise<void> {
+async function execFile(db: PGlite, path: string, name: string) {
   const sql = await Bun.file(path).text();
   try {
     await db.exec(sql);

@@ -27,7 +27,6 @@ export interface OAuthServiceBinding {
   tokenFormat?: "slack-user";
 }
 export interface OAuthGrant {
-  /** Trusted registered-service policy, encrypted with the grant and pending state. */
   binding?: OAuthServiceBinding;
   issuer: string;
   resource: string;
@@ -49,11 +48,8 @@ export interface PendingAuthorization {
   sealed: string;
 }
 export interface OAuthStore {
-  /** Current connect/revoke generation, including when no grant exists. */
   generation(connectionId: string): Promise<string>;
-  /** Vault ciphertext only. Must enforce connection ownership separately. */
   readGrant(connectionId: string): Promise<StoredGrant | null>;
-  /** Atomic compare-and-swap, including a non-revoked connection check. null means initial creation only. */
   saveGrant(
     connectionId: string,
     expectedVersion: string | null,
@@ -61,12 +57,9 @@ export interface OAuthStore {
     generation: string,
     refreshOwner?: string,
   ): Promise<boolean>;
-  /** Exclusive cross-process refresh claim, fenced by grant version. Never reclaim an ambiguous claim automatically. */
   claimRefresh(connectionId: string, version: string, generation: string, refreshOwner: string): Promise<boolean>;
-  /** Atomic tombstone and grant deletion; must defeat outstanding CAS/claims and pending callbacks. */
   revoke(connectionId: string): Promise<void>;
   putPending(stateHash: string, record: PendingAuthorization): Promise<void>;
-  /** Atomic one-time consumption, bound to actor and expiry; failed checks MUST NOT return the record. */
   takePending(stateHash: string, actorId: string, now: number): Promise<PendingAuthorization | null>;
 }
 export interface SecretBox {
@@ -77,10 +70,8 @@ export interface OAuthBrokerOptions {
   store: OAuthStore;
   vault: SecretBox;
   redirectUri: string;
-  /** Trusted deployment option: HTTP is allowed only for a fixed loopback browser callback. */
   development?: boolean;
   clientMetadataUrl?: string;
-  /** Must check actor membership/ownership and disabled/revoked state. */
   authorize(actorId: string, connectionId: string): Promise<void>;
   fetch?: FetchLike;
   now?: () => number;
@@ -102,14 +93,11 @@ const fail = (code: "unsupported" | "needs_reconnect" | "busy", action: string):
   throw new GatewayError(code, action);
 };
 
-export async function discoverOAuthIssuer(
-  issuer: string,
-  fetcher: FetchLike = publicFetch,
-): Promise<OAuthServerMetadata | undefined> {
+export async function discoverOAuthIssuer(issuer: string, fetcher: FetchLike = publicFetch) {
   if (endpoint(issuer).href.includes("?"))
     throw new GatewayError("unsafe_endpoint", "Issuer identifiers cannot contain a query component.");
 
-  async function discoverMetadata(issuer: string): Promise<OAuthServerMetadata | undefined> {
+  async function discoverMetadata(issuer: string) {
     for (const candidate of buildDiscoveryUrls(issuer)) {
       const candidateUrl = endpoint(candidate.url).href;
       const response = await restrictedFetch(fetcher, (url) => url.href === candidateUrl)(candidate.url);
@@ -118,13 +106,13 @@ export async function discoverOAuthIssuer(
         continue;
       }
       if (!response.ok) throw new GatewayError("upstream", "Authorization metadata is unavailable.");
-      // SDK 1.32.2's OIDC discovery schema strips RFC 9207 and revocation fields.
       const schema = (candidate.type === "oauth" ? OAuthMetadataSchema : OpenIdProviderDiscoveryMetadataSchema).extend({
         authorization_response_iss_parameter_supported: z.boolean().optional(),
         revocation_endpoint: z.url().optional(),
         revocation_endpoint_auth_methods_supported: z.array(z.string()).optional(),
       });
-      return schema.parse(await response.json());
+      const metadata: OAuthServerMetadata = schema.parse(await response.json());
+      return metadata;
     }
     return undefined;
   }
@@ -166,7 +154,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
     purpose: "token_endpoint" | "registration_endpoint" | "revocation_endpoint",
     client?: OAuthClientInformationMixed,
     binding?: OAuthServiceBinding,
-  ): FetchLike {
+  ) {
     if (metadata.issuer !== issuer || (client && client.issuer !== issuer))
       throw new GatewayError("unsafe_endpoint", "OAuth client and metadata must remain bound to the exact issuer.");
     const advertised = metadata[purpose];
@@ -174,7 +162,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       throw new GatewayError("unsupported", "Authorization server did not advertise the required endpoint.");
     const pinned = endpoint(advertised).href;
     const exactFetch = restrictedFetch(fetcher, (url) => url.href === pinned);
-    return async (input, init) => {
+    const fetchForPurpose: FetchLike = async (input, init) => {
       if (init?.method !== "POST")
         throw new GatewayError("unsafe_endpoint", "OAuth endpoint only accepts its purpose-specific POST.");
       const response = await exactFetch(input, init);
@@ -189,8 +177,9 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
         ...(typeof scope === "string" ? { scope: scope.replace(/,/g, " ") } : {}),
       });
     };
+    return fetchForPurpose;
   }
-  function completed(grant: Omit<OAuthGrant, "tokens" | "expiresAt">, tokens: OAuthTokens): OAuthGrant {
+  function completed(grant: Omit<OAuthGrant, "tokens" | "expiresAt">, tokens: OAuthTokens) {
     if (
       tokens.token_type.toLowerCase() !== "bearer" ||
       (tokens.expires_in === undefined ? grant.binding?.tokenFormat !== "slack-user" : tokens.expires_in <= 0) ||
@@ -215,9 +204,8 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       client?: OAuthClientInformationMixed;
       scope?: string;
       resourceMetadataUrl?: string;
-      /** Trusted server policy only; never accept this from a public request. */
       binding?: OAuthServiceBinding;
-    }): Promise<{ authorizationUrl: string }> {
+    }) {
       await options.authorize(input.actorId, input.connectionId);
       const generation = await store.generation(input.connectionId);
       const resource = endpoint(input.resource).href;
@@ -311,7 +299,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       });
       return { authorizationUrl: started.authorizationUrl.href };
     },
-    async callback(input: { actorId: string; state: string; code: string; issuer?: string }): Promise<void> {
+    async callback(input: { actorId: string; state: string; code: string; issuer?: string }) {
       const pending = await store.takePending(await hash(input.state), input.actorId, now());
       if (!pending) throw new GatewayError("denied", "Authorization expired or was already consumed. Reconnect.");
       await options.authorize(input.actorId, pending.connectionId);
@@ -341,7 +329,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       )
         fail("needs_reconnect", "Connection changed during authorization. Reconnect.");
     },
-    async access(actorId: string, connectionId: string, resource: string): Promise<string> {
+    async access(actorId: string, connectionId: string, resource: string) {
       await options.authorize(actorId, connectionId);
       const saved = await store.readGrant(connectionId);
       if (!saved) return fail("needs_reconnect", "Connect this service before use.");
@@ -384,49 +372,49 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       await options.authorize(actorId, connectionId);
       return grant.tokens.access_token;
     },
-    async revoke(
-      actorId: string,
-      connectionId: string,
-    ): Promise<{ upstreamRevocation: "done" | "unsupported" | "failed" }> {
-      await options.authorize(actorId, connectionId);
-      const saved = await store.readGrant(connectionId);
-      await store.revoke(connectionId);
-      if (!saved) return { upstreamRevocation: "done" };
-      const grant = JSON.parse(await vault.open(saved.sealed)) as OAuthGrant;
-      const url = grant.metadata.revocation_endpoint;
-      if (!url) return { upstreamRevocation: "unsupported" };
-      try {
-        const body = new URLSearchParams({
-          token: grant.tokens.refresh_token ?? grant.tokens.access_token,
-          client_id: grant.client.client_id,
-        });
-        const headers = new Headers();
-        const method = selectClientAuthMethod(
-          grant.client,
-          grant.metadata.revocation_endpoint_auth_methods_supported ?? ["client_secret_basic"],
-        );
-        if (method === "client_secret_basic" && grant.client.client_secret) {
-          const encode = (value: string) => new URLSearchParams({ value }).toString().slice(6);
-          headers.set(
-            "authorization",
-            `Basic ${btoa(`${encode(grant.client.client_id)}:${encode(grant.client.client_secret)}`)}`,
-          );
-        } else if (method === "client_secret_post" && grant.client.client_secret)
-          body.set("client_secret", grant.client.client_secret);
-        const response = await purposeFetch(
-          grant.issuer,
-          grant.metadata,
-          "revocation_endpoint",
-          grant.client,
-        )(url, { method: "POST", headers, body });
-        return { upstreamRevocation: response.ok ? "done" : "failed" };
-      } catch {
-        return { upstreamRevocation: "failed" };
-      }
-    },
   };
-  function safe<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
-    return async (...args) => {
+  const revoke: (
+    actorId: string,
+    connectionId: string,
+  ) => Promise<{ upstreamRevocation: "done" | "unsupported" | "failed" }> = async (actorId, connectionId) => {
+    await options.authorize(actorId, connectionId);
+    const saved = await store.readGrant(connectionId);
+    await store.revoke(connectionId);
+    if (!saved) return { upstreamRevocation: "done" };
+    const grant = JSON.parse(await vault.open(saved.sealed)) as OAuthGrant;
+    const url = grant.metadata.revocation_endpoint;
+    if (!url) return { upstreamRevocation: "unsupported" };
+    try {
+      const body = new URLSearchParams({
+        token: grant.tokens.refresh_token ?? grant.tokens.access_token,
+        client_id: grant.client.client_id,
+      });
+      const headers = new Headers();
+      const method = selectClientAuthMethod(
+        grant.client,
+        grant.metadata.revocation_endpoint_auth_methods_supported ?? ["client_secret_basic"],
+      );
+      if (method === "client_secret_basic" && grant.client.client_secret) {
+        const encode = (value: string) => new URLSearchParams({ value }).toString().slice(6);
+        headers.set(
+          "authorization",
+          `Basic ${btoa(`${encode(grant.client.client_id)}:${encode(grant.client.client_secret)}`)}`,
+        );
+      } else if (method === "client_secret_post" && grant.client.client_secret)
+        body.set("client_secret", grant.client.client_secret);
+      const response = await purposeFetch(
+        grant.issuer,
+        grant.metadata,
+        "revocation_endpoint",
+        grant.client,
+      )(url, { method: "POST", headers, body });
+      return { upstreamRevocation: response.ok ? "done" : "failed" };
+    } catch {
+      return { upstreamRevocation: "failed" };
+    }
+  };
+  function safe<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
+    return async (...args: A) => {
       try {
         return await fn(...args);
       } catch (error) {
@@ -439,7 +427,7 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
     connect: safe(broker.connect),
     callback: safe(broker.callback),
     access: safe(broker.access),
-    revoke: safe(broker.revoke),
+    revoke: safe(revoke),
   };
 }
 export type OAuthBroker = ReturnType<typeof createOAuthBroker>;

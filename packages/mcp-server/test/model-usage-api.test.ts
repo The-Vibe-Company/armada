@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { encryptSecret } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
+import { accountCommand } from "../../cli/src/account-commands.ts";
 import { productionAuthIo } from "../../cli/src/auth-commands.ts";
-import { credsCommand } from "../../cli/src/vault-commands.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createModelUsageApi } from "../src/model-usage.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -90,7 +90,7 @@ test.each([
     auth.fetch = (async (input, init) =>
       (await handleControlRequest(new Request(String(input), init), options)) ??
       new Response(null, { status: 404 })) as typeof fetch;
-    await credsCommand(["set", "codex-auth", "--name", "Native", ...(scope === "org" ? ["--org", ORG] : [])], {
+    await accountCommand(["add", "codex-auth", "--name", "Native", ...(scope === "org" ? ["--org", ORG] : [])], {
       auth,
       readFile: async () => "",
       readStdin: async () =>

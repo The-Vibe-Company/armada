@@ -1,6 +1,6 @@
+import { accountIneligibility } from "./account-pool.ts";
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
-import { COMPATIBLE_MODEL_PROVIDERS } from "./compatible-providers.ts";
 import type { Harness, Visibility } from "./contract.ts";
 import { decryptSecret, EncryptionKeyError } from "./crypto.ts";
 import type { CredentialKind, CredentialScope } from "./database.types.ts";
@@ -14,6 +14,7 @@ import {
   parseConnectionModels,
   parseOpenCodeEndpoint,
 } from "./opencode-endpoint.ts";
+import { MORPH_ENDPOINTS, MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 import { redactKnownTokens } from "./token-redaction.ts";
 import type { UsagePricingContext } from "./usage-pricing.ts";
@@ -31,6 +32,7 @@ export interface CredentialBinding {
 export interface HarnessCredentials {
   /** Server-only pricing metadata from the same sealed/bound account; never harness configuration. */
   modelPrices?: ModelPriceOverrides;
+  morphModels?: readonly string[];
   /** Server-generated, secret-free price catalog pinned for a new session, not sandbox environment. */
   usagePricing?: UsagePricingContext;
   binding?: CredentialBinding;
@@ -60,6 +62,7 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
   return {
     ...(resolved.binding ? { binding: resolved.binding } : {}),
     ...(resolved.modelPrices ? { modelPrices: resolved.modelPrices } : {}),
+    ...(resolved.morphModels ? { morphModels: resolved.morphModels } : {}),
     env,
     secrets,
     codexAuthJson: auth !== undefined,
@@ -103,8 +106,11 @@ export const MAX_AUTH_FILE_LENGTH = 65536;
 export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 
 interface KindInfo {
-  /** The name `armada creds set <name>` takes. */
-  name: string;
+  readonly singleton?: true;
+  readonly orgStorage?: "org-boat-key";
+  readonly normalizeValue?: (value: string) => string;
+  /** The name `armada account add <name>` takes. */
+  name?: string;
   label: string;
   /** What launch injects it as. A file kind has no variable. */
   env?: string;
@@ -118,9 +124,15 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   opencode: { name: "opencode", label: "OpenCode API key or custom endpoint", env: "OPENCODE_API_KEY" },
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
-  boat: { name: "boat", label: "boat.dev API key" },
-  modal: { name: "modal", label: "Modal token pair (id and secret)" },
-  skillpack: { name: "skillpack", label: "Skillpack personal access token" },
+  boat: { name: "boat", label: "boat.dev API key", singleton: true, orgStorage: "org-boat-key" },
+  modal: {
+    name: "modal",
+    label: "Modal token pair (id and secret)",
+    singleton: true,
+    normalizeValue: (value) => JSON.stringify(modalPairJson(parseModalTokenPair(value))),
+  },
+  skillpack: { name: "skillpack", label: "Skillpack personal access token", singleton: true },
+  antigravity: { label: "Antigravity" },
 };
 
 /**
@@ -137,13 +149,15 @@ export function parseCredentialKind(name: string): CredentialKind {
     if (info.name === wanted) return kind as CredentialKind;
   }
   const known = Object.values(CREDENTIAL_KINDS)
-    .map((info) => info.name)
+    .flatMap((info) => (info.name === undefined ? [] : [info.name]))
     .join(", ");
   throw new VaultError("invalid", `Unknown credential '${name}'. Use one of: ${known}.`);
 }
 
 export function credentialName(kind: CredentialKind): string {
-  return CREDENTIAL_KINDS[kind].name;
+  const name = CREDENTIAL_KINDS[kind].name;
+  if (name === undefined) throw new VaultError("invalid", `Unsupported credential kind: ${kind}.`);
+  return name;
 }
 
 /**
@@ -153,13 +167,15 @@ export function credentialName(kind: CredentialKind): string {
 export function parseCredentialValue(kind: CredentialKind, raw: string): string {
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
-  if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
+  const normalizeValue = CREDENTIAL_KINDS[kind]?.normalizeValue;
+  if (normalizeValue) return normalizeValue(value);
   if (kind === "skillpack" && !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(value)) {
     throw new VaultError(
       "invalid",
       "A Skillpack token starts with cmp_pat_ followed by 48 lowercase hexadecimal characters.",
     );
   }
+  if (kind === "morph" && value.startsWith("{")) return JSON.stringify(parseMorphAccount(value));
   if (kind === "opencode" && value.startsWith("{")) {
     try {
       const { endpoint, apiKey, prices, ...extra } = JSON.parse(value);
@@ -250,6 +266,19 @@ export function parseCredentialValue(kind: CredentialKind, raw: string): string 
   return value;
 }
 
+function parseMorphAccount(value: string) {
+  if (!value.trimStart().startsWith("{")) {
+    return { apiKey: parseCredentialValue("morph", value), models: [...MORPH_MODEL_IDS] };
+  }
+  try {
+    const { apiKey, models, ...extra } = JSON.parse(value);
+    if (Object.keys(extra).length || typeof apiKey !== "string" || apiKey.trimStart().startsWith("{")) throw Error();
+    return { apiKey: parseCredentialValue("morph", apiKey), models: parseConnectionModels(models) };
+  } catch {
+    throw new VaultError("invalid", "A Morph connection requires an API key and 1–32 exact model IDs.");
+  }
+}
+
 /** A Modal token: its id and its secret, which only work together. Stored as one row, so never mixed. */
 export interface ModalTokenPair {
   tokenId: string;
@@ -317,7 +346,7 @@ export async function resolveModalTokens(
         ]
       : [["org", input.orgId]];
   for (const [scope, ownerId] of scopes) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "modal");
+    const row = await findStoredCredential(reader, scope, ownerId, "modal");
     if (!row) continue;
     const opened = await open(row.valueEnc, encryptionKey);
     let pair: ModalTokenPair;
@@ -331,8 +360,8 @@ export async function resolveModalTokens(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No Modal token pair for you or your org. Run 'armada creds set modal' or ask an org admin to set the org's."
-      : "Your org has no Modal token pair. An org admin sets it with 'armada creds set modal --org <name>'.",
+      ? "No Modal token pair for you or your org. Run 'armada account add modal' or ask an org admin to set the org's."
+      : "Your org has no Modal token pair. An org admin sets it with 'armada account add modal --org <name>'.",
   );
 }
 
@@ -350,7 +379,7 @@ export async function resolveSkillpackCredential(
     ["user", input.userId],
     ["org", input.orgId],
   ] as const) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "skillpack");
+    const row = await findStoredCredential(reader, scope, ownerId, "skillpack");
     if (!row) continue;
     if (
       (row.status !== undefined && row.status !== "active") ||
@@ -394,8 +423,18 @@ export interface CredentialReader {
   orgBoatKey(orgId: string): Promise<Uint8Array | null>;
 }
 
+async function findStoredCredential(
+  reader: CredentialReader,
+  scope: CredentialScope,
+  ownerId: string,
+  kind: CredentialKind,
+) {
+  return (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === kind);
+}
+
 export interface ResolvedCredentials {
   modelPrices?: ModelPriceOverrides;
+  morphModels?: readonly string[];
   binding?: CredentialBinding;
   /** Variables to put in the sandbox environment at launch. Never in the golden. */
   env: Record<string, string>;
@@ -439,18 +478,21 @@ export async function resolveCredentials(
             ? candidates[0]
             : undefined;
     if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
-    if (!kinds.includes(row.kind)) {
-      const supported = harnessesForCredential(row.kind).map((id) => HARNESS_CATALOG[id].label);
+    const harnesses = harnessesForCredential(row.kind);
+    const reason = accountIneligibility(
+      { scope, version: row.version ?? 1, status: row.status ?? "active", expiresAt: row.expiresAt, harnesses },
+      input.harness,
+      Date.now(),
+      input.credentialVersion,
+    );
+    if (reason?.code === "incompatible_harness") {
+      const supported = harnesses.map((id) => HARNESS_CATALOG[id].label);
       throw new VaultError(
         "invalid",
         `This account cannot drive ${HARNESS_CATALOG[input.harness].label}. This account works with ${supported.join(" and ") || "no coding harness"}; for ${HARNESS_CATALOG[input.harness].label} use ${kinds.map(credentialName).join(" or ")}.`,
       );
     }
-    if (
-      (row.status !== undefined && row.status !== "active") ||
-      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) ||
-      (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
-    ) {
+    if (reason || (input.credentialVersion !== undefined && row.version === undefined)) {
       throw new VaultError(
         "credential_refused",
         "The selected credential is expired, revoked or changed. No fallback was used.",
@@ -462,7 +504,7 @@ export async function resolveCredentials(
   }
   throw new VaultError(
     "missing_credential",
-    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
+    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada account add ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
   );
 }
 
@@ -477,7 +519,7 @@ export async function resolveBoatKey(
   input: { userId: string; orgId: string; visibility: Visibility },
 ): Promise<{ key: string; scope: CredentialScope }> {
   if (input.visibility === "private") {
-    const personal = (await reader.credentials("user", input.userId)).find((row) => row.kind === "boat");
+    const personal = await findStoredCredential(reader, "user", input.userId, "boat");
     if (personal) return { key: await open(personal.valueEnc, encryptionKey), scope: "user" };
   }
   const org = await reader.orgBoatKey(input.orgId);
@@ -485,8 +527,8 @@ export async function resolveBoatKey(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No boat.dev key for you or your org. Run 'armada creds set boat' or ask an org admin to set the org key."
-      : "Your org has no boat.dev key. An org admin sets it with 'armada creds set boat --org <name>'.",
+      ? "No boat.dev key for you or your org. Run 'armada account add boat' or ask an org admin to set the org key."
+      : "Your org has no boat.dev key. An org admin sets it with 'armada account add boat --org <name>'.",
   );
 }
 
@@ -505,8 +547,11 @@ export interface ConnectionModelInfo {
  */
 export function connectionModels(kind: CredentialKind, plaintext: string): ConnectionModelInfo[] {
   if (kind === "morph") {
-    parseCredentialValue(kind, plaintext);
-    return COMPATIBLE_MODEL_PROVIDERS.morph.models.map((model) => ({ model, input: null, output: null }));
+    try {
+      return parseMorphAccount(plaintext).models.map((model) => ({ model, input: null, output: null }));
+    } catch {
+      return [];
+    }
   }
   if ((kind !== "opencode" && kind !== "openai") || !plaintext.trimStart().startsWith("{")) return [];
   let parsed: { endpoint?: { models?: string[] }; models?: string[]; prices?: ModelPriceOverrides };
@@ -574,29 +619,36 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string, harness: Harness): ResolvedCredentials {
   const source = { kind, scope };
   if (kind === "morph") {
-    const provider = COMPATIBLE_MODEL_PROVIDERS[kind];
+    const { apiKey, models } = parseMorphAccount(value);
     if (harness === "opencode") {
       return {
         env: {
-          OPENCODE_API_KEY: parseCredentialValue(kind, value),
+          OPENCODE_API_KEY: apiKey,
           [OPENCODE_ENDPOINT_ENV]: JSON.stringify({
             version: 1,
-            baseUrl: provider.codex.baseUrl,
-            models: provider.models,
+            baseUrl: MORPH_ENDPOINTS.codex.baseUrl,
+            models,
           }),
         },
         files: [],
         sources: [source],
+        morphModels: models,
       };
     }
     const claude = harness === "claude";
+    const aliases = Object.fromEntries(
+      Object.entries(MORPH_ENDPOINTS.claude.aliases).filter(([, model]) => models.includes(model)),
+    );
     return {
       env: {
-        [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: parseCredentialValue(kind, value),
-        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(claude ? provider.claude : provider.codex),
+        [claude ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"]: apiKey,
+        [claude ? CLAUDE_ENDPOINT_ENV : CODEX_ENDPOINT_ENV]: JSON.stringify(
+          claude ? { ...MORPH_ENDPOINTS.claude, aliases } : MORPH_ENDPOINTS.codex,
+        ),
       },
       files: [],
       sources: [source],
+      morphModels: models,
     };
   }
   if (kind === "opencode" && value.startsWith("{")) {

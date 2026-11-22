@@ -78,7 +78,7 @@ CLI and dashboard messages use the same ordinary send request, with a UUID
 from immutable runtime identity and stored lifecycle state; clients do not
 select a resume endpoint or start a new conversation after pause.
 
-The CLI generates a UUID when omitted. `armada send ID 'instruction'
+The CLI generates a UUID when omitted. `armada prompt ID 'instruction'
 --request-id UUID` supplies an existing identity for reconciling an uncertain
 runtime delivery. Send errors display the request ID; retain it and the exact
 original input and inspect status before deciding whether to reconcile. There
@@ -99,7 +99,7 @@ before these updated clients: older servers reject UUIDs on native sends.
 
 Docker uses the same global idle delay and archived-terminal-turn detector, not
 an independent host timer. Automatic pause requires placement/bootstrap to be
-configured and a registered host daemon supporting resume (2.28.0 or later).
+configured and a registered host daemon reporting a supported protocol.
 Older/unknown daemons are skipped before checkpoint, never silently stopped.
 Pending commands, unknown task identity, active turns, application-secret taint
 and the existing archive bound remain conservative exclusions.

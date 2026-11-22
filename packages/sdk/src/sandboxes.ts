@@ -1,3 +1,4 @@
+import { sandboxOperations } from "@armada/core/contract/sandbox";
 import type { RequestOptions } from "./index.ts";
 
 /** Internal route client shared by the SDK and CLI, which have different receipt and auth policies. */
@@ -11,53 +12,54 @@ export function sandboxClient(
   ) => Promise<T>,
 ) {
   return {
-    launch<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/launch", body, false, options);
+    launch<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/launch", body, false, options);
     },
-    status<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/status", body, true, options);
+    status<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/status", body, true, options);
     },
-    list<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/list", body, true, options);
+    list<T>(body: unknown, options?: RequestOptions) {
+      const { route, readOnly } = sandboxOperations.listSandboxes;
+      return post<T>(route.path.slice("/api/v1/".length), body, readOnly, options);
     },
-    advice<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/advice", body, true, options);
+    advice<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/advice", body, true, options);
     },
-    "bind-credential"<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/bind-credential", body, false, options);
+    "bind-credential"<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/bind-credential", body, false, options);
     },
-    detail<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/detail", body, true, options);
+    exec<T>(body: unknown, options?: RequestOptions, defaultTimeoutMs?: number) {
+      const { route, readOnly } = sandboxOperations.execSandbox;
+      return post<T>(route.path.slice("/api/v1/".length), body, readOnly, options, defaultTimeoutMs);
     },
-    exec<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/exec", body, false, options);
+    extend<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/extend", body, false, options);
     },
-    extend<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/extend", body, false, options);
+    interrupt<T>(body: unknown, options?: RequestOptions) {
+      const { route, readOnly } = sandboxOperations.interruptSandbox;
+      return post<T>(route.path.slice("/api/v1/".length), body, readOnly, options);
     },
-    interrupt<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/interrupt", body, false, options);
+    logs<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("logs/read", body, true, options);
     },
-    logs<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("logs/read", body, true, options);
+    recovery<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/recovery", body, true, options);
     },
-    recovery<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/recovery", body, true, options);
+    report<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/report", body, false, options);
     },
-    report<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/report", body, false, options);
+    send<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/send", body, false, options);
     },
-    send<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/send", body, false, options);
+    steer<T>(body: unknown, options?: RequestOptions) {
+      const { route, readOnly } = sandboxOperations.steerSandbox;
+      return post<T>(route.path.slice("/api/v1/".length), body, readOnly, options);
     },
-    steer<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/steer", body, false, options);
+    stop<T>(body: unknown, options?: RequestOptions) {
+      return post<T>("sandbox/stop", body, false, options);
     },
-    stop<T>(body: unknown, options?: RequestOptions): Promise<T> {
-      return post("sandbox/stop", body, false, options);
-    },
-    wait<T>(body: unknown, options?: RequestOptions, defaultTimeoutMs?: number): Promise<T> {
-      return post("sandbox/wait", body, true, options, defaultTimeoutMs);
+    wait<T>(body: unknown, options?: RequestOptions, defaultTimeoutMs?: number) {
+      return post<T>("sandbox/wait", body, true, options, defaultTimeoutMs);
     },
   };
 }

@@ -1,17 +1,19 @@
 import { assertHash } from "./codec.ts";
-import type {
-  AuthStore,
-  ListedToken,
-  Membership,
-  OAuthClientRecord,
-  OAuthCodeRecord,
-  TokenRecord,
-  TokenTable,
+import {
+  type AuthStore,
+  type ListedToken,
+  type Membership,
+  type OAuthClientRecord,
+  type OAuthCodeRecord,
+  SERVICE_TOKEN_USAGE_INTERVAL_MS,
+  type TokenRecord,
+  type TokenTable,
 } from "./types.ts";
 
 interface StoredToken extends TokenRecord {
   hash: string;
   kind: TokenTable;
+  lastUsedAt: string | null;
 }
 
 interface StoredCode extends OAuthCodeRecord {
@@ -22,7 +24,6 @@ interface StoredMember extends Membership {
   userId: string;
 }
 
-/** In-memory store for tests. `debugSnapshot` is the JSON that must never contain a raw token. */
 export interface MemoryAuthStore extends AuthStore {
   addMembership(userId: string, membership: Membership): void;
   debugSnapshot(): string;
@@ -45,6 +46,19 @@ export function createMemoryAuthStore(): MemoryAuthStore {
     debugSnapshot() {
       return JSON.stringify({ tokens, clients, codes, members });
     },
+    async useServiceToken(hash, now) {
+      assertHash(hash);
+      const token = findActive("service", hash);
+      if (!token || token.revokedAt || (token.expiresAt && token.expiresAt <= now)) return null;
+      const member = members.find((row) => row.userId === token.userId && row.orgId === token.orgId);
+      if (!member) return null;
+      if (
+        token.lastUsedAt === null ||
+        Date.parse(now) - Date.parse(token.lastUsedAt) >= SERVICE_TOKEN_USAGE_INTERVAL_MS
+      )
+        token.lastUsedAt = now;
+      return { token: publicToken(token), role: member.role };
+    },
     async findTokenByHash(kind, hash) {
       assertHash(hash);
       const token = findActive(kind, hash);
@@ -61,6 +75,8 @@ export function createMemoryAuthStore(): MemoryAuthStore {
         label: input.label,
         revokedAt: null,
         createdAt: input.createdAt,
+        expiresAt: input.expiresAt ?? null,
+        lastUsedAt: null,
         kind,
       };
       tokens.push(token);
@@ -93,6 +109,8 @@ export function createMemoryAuthStore(): MemoryAuthStore {
           orgName: member.name,
           createdAt: token.createdAt,
           revokedAt: token.revokedAt,
+          expiresAt: token.expiresAt,
+          lastUsedAt: token.lastUsedAt,
         });
       }
       return listed.sort((left, right) => (left.createdAt < right.createdAt ? 1 : -1));
@@ -154,5 +172,6 @@ function publicToken(token: StoredToken): TokenRecord {
     label: token.label,
     revokedAt: token.revokedAt,
     createdAt: token.createdAt,
+    expiresAt: token.expiresAt,
   };
 }

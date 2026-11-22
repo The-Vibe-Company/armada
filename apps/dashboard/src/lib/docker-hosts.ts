@@ -76,7 +76,8 @@ function parseHost(value: unknown): DockerHost | null {
       value.diskFreeBytes !== null &&
       (!Number.isSafeInteger(value.diskFreeBytes) || Number(value.diskFreeBytes) < 0)) ||
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
-    (value.snapshotBuildSupported !== undefined && typeof value.snapshotBuildSupported !== "boolean") ||
+    (value.protocol !== null && (!Number.isSafeInteger(value.protocol) || Number(value.protocol) < 0)) ||
+    typeof value.upgradeRequired !== "boolean" ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
     (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
@@ -100,9 +101,8 @@ function parseHost(value: unknown): DockerHost | null {
       : { stoppedSandboxBytes: value.stoppedSandboxBytes as number | null }),
     ...(value.diskFreeBytes === undefined ? {} : { diskFreeBytes: value.diskFreeBytes as number | null }),
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
-    ...(typeof value.snapshotBuildSupported === "boolean"
-      ? { snapshotBuildSupported: value.snapshotBuildSupported }
-      : {}),
+    protocol: value.protocol as number | null,
+    upgradeRequired: value.upgradeRequired,
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
     ...(value.resources === undefined
@@ -124,7 +124,6 @@ export function parseDockerHostList(value: unknown): DockerHostList | null {
     placement: value.placement,
     ...(typeof value.serverVersion === "string" ? { serverVersion: value.serverVersion } : {}),
     ...(typeof value.targetVersion === "string" ? { targetVersion: value.targetVersion } : {}),
-    ...(typeof value.minimumVersion === "string" ? { minimumVersion: value.minimumVersion } : {}),
     hosts: list,
     skipped: value.hosts.length - list.length,
   };
@@ -170,18 +169,21 @@ export function expiryCountdown(expiresAt: string, now: number): string | null {
 }
 
 /**
- * A route the server does not mount answers 404 (or 405) without an error code, which `controlPost` reports with no
- * `code`: for the host list, that means Docker hosts are not enabled on this server. Any other refusal is an error.
+ * The router reports an unmounted route as `unknown_route`. The host list also treats uncoded 404 or 405 replies
+ * as a server with Docker hosts disabled.
  */
 export function isRouteAbsent(error: { status: number | undefined; code: string | undefined }): boolean {
-  return (error.status === 404 || error.status === 405) && error.code === undefined;
+  return (
+    (error.status === 404 && error.code === "unknown_route") ||
+    ((error.status === 404 || error.status === 405) && error.code === undefined)
+  );
 }
 
 /** How long a registration token works (the server's `registration_expires_at`). */
-export const REGISTRATION_TTL_MS = 5 * 60_000;
+const REGISTRATION_TTL_MS = 5 * 60_000;
 
 /** The first block of a host ID, which is what the page shows until hosts have names. */
-export function shortHostId(id: string): string {
+function shortHostId(id: string): string {
   return id.slice(0, 8);
 }
 

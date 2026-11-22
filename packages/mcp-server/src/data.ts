@@ -9,9 +9,11 @@ import {
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  type PlanLimit,
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
+  type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -30,13 +32,86 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
-import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
+import {
+  assertGoldenBackendBinding,
+  assertSqlGoldenMutation,
+  beginSnapshotLaunch,
+  CoreLaunchSettlementConflict,
+  failureDiagnostic,
+} from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
+import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
+import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
+import { admitHistoricalModalDrain, historicalModalDrainCandidate } from "./modal-drain-journal.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
+import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+  SandboxStopTargetChanged,
+} from "./runtime-reconciliation-conflict.ts";
+import {
+  carryNativePreservationAcrossStop,
+  completeSandboxDeletion,
+  expireAfterExtension,
+  fencePreservedBoatDrainReplay,
+  fencePreservedModalDrainIncarnation,
+  finishLaunchFailure,
+  finishLaunchSuccess,
+  lockHistoricalManagedModalParent,
+  markNativeDrainDispatchUnclaimed,
+  nativeDrainDispatch,
+  publishNativeResumeAdmission,
+  publishNativeTurn,
+  publishOwnerStop,
+  recordNativeDrainDeleteOperation,
+  recordNativeRetentionRefusal,
+  recordObservedProviderState,
+  requestStartingModalStop,
+  STRICT_NATIVE_DRAIN_STOP,
+  settleRuntimeTurn,
+} from "./sandbox-lifecycle.ts";
+import { MANAGED_MODAL_DRAIN_VISIBLE, SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
+import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
-import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
+import { MODAL_LAUNCH_FAILURE } from "./turns.ts";
+import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
+
+const currentNativeExec = `exists(select 1 from public.sandbox_native_exec_attempts e
+  where e.sandbox_id=s.id and e.generation=s.lifecycle_generation)`;
+
+export async function nativeWorkspaceCommandPending(sql: Sql, sandboxId: string) {
+  const { rows } = await sql.query<{ pending: boolean }>(
+    "select exists(select 1 from public.sandbox_native_exec_attempts where sandbox_id=$1) as pending",
+    [sandboxId],
+  );
+  return rows[0]?.pending === true;
+}
+
+export async function recordNativeWorkspaceCommand(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `insert into public.sandbox_native_exec_attempts(sandbox_id,generation)
+     select $1,$2 where not exists (
+       select 1 from public.sandbox_native_exec_attempts where sandbox_id=$1
+     ) returning sandbox_id`,
+    [sandboxId, generation],
+  );
+  return rows.length === 1;
+}
+
+export async function settleNativeWorkspaceCommand(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `delete from public.sandbox_native_exec_attempts
+     where sandbox_id=$1 and generation=$2 returning sandbox_id`,
+    [sandboxId, generation],
+  );
+  return rows.length === 1;
+}
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -48,7 +123,33 @@ export interface SandboxView extends SandboxRecord {
   modal: ModalBinding | null;
 }
 
+export interface ServerSandboxPatch extends SandboxPatch {
+  deleteCompleted?: true;
+  nativeDrain?: true;
+  historicalModalDrainPlacement?: string;
+  nativeDrainDeleteOperation?: { provider: SandboxRecord["provider"]; placement: string; id: string };
+  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string; allowHistoricalModal?: boolean };
+  expireAfterExtension?: true;
+  nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
+  nativeExecCompleted?: true;
+  nativeRetentionRefusal?: string;
+  nativeResumeAdmission?: string;
+  nativePromptAdmission?: ServerSandboxPatch["nativeChildSend"];
+  nativeChildSend?: { fromState: SandboxStatus; placement: string };
+  nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
+  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement?: boolean };
+  ownerStop?: true;
+  ownerStopSignal?: AbortSignal;
+  onlyIfIdle?: boolean;
+  retainedRuntimeStop?: string;
+  modalRuntimeExtensionTarget?: string;
+  providerObservation?: { fromState: SandboxStatus; providerRunPlacement?: string };
+  nativeDiagnostic?: { state: SandboxStatus; placement: string; previousReason: string | null };
+  turnActivity?: "claim" | "finish";
+}
+
 export interface ServerSandboxStore extends SandboxStore {
+  update(id: string, patch: ServerSandboxPatch): Promise<void>;
   /** Persist an accepted native receipt even if stop fences later task publication. */
   recordNativePrompt?(id: string, providerSandboxId: string, promptId: string, requestId?: string): Promise<void>;
   /** Persist an accepted native steer whose run is not yet provable, so native
@@ -66,13 +167,31 @@ export interface ServerSandboxStore extends SandboxStore {
     | "runtimeTransport"
     | "preservationNote"
     | "credentialId"
+    | "conversationIds"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  recordNativeExhaustion?(
+    id: string,
+    promptId: string,
+    limit: PlanLimit & { resetsAt: string },
+    at: number,
+  ): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  historicalModalDrainCandidate?(id: string): Promise<boolean>;
+  nativeDrainDispatch?(
+    id: string,
+    placement: string,
+    generation: number,
+    activityToken: string,
+    action: "inspect" | "claim",
+    allowHistoricalModal: boolean,
+  ): Promise<{ operation_id: string | null; historical_phase: string | null }>;
+  getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
+  requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
+  /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
@@ -82,9 +201,15 @@ export interface ServerSandboxStore extends SandboxStore {
       observations: readonly TurnTokenUsage[];
       /** Trusted service admission contexts, never guest monetary output. */
       contexts?: readonly TurnPriceContext[];
+      completed?: ReadonlyMap<string, string>;
     },
   ): Promise<void>;
-  preserveWork?(id: string, provider: Provider, providerId: string): Promise<"pending" | void>;
+  preserveWork?(
+    id: string,
+    provider: Provider,
+    providerId: string,
+    authority: StopAuthority,
+  ): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -136,11 +261,6 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-  and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 // Ordinary delegated children retain their relation, but permanent parent deletion
 // fences their authority before owner/admin cleanup. Legacy orchestrators keep
 // their dedicated lifecycle. Share the policy between authorization and admission.
@@ -152,7 +272,7 @@ const SANDBOX_DELETION_MANAGED = `(exists(select 1 from public.orchestrators o w
         and p.kind='sandbox' and parent.status='deleted')))`;
 const SANDBOX_INTERIOR = `(s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin'))`;
 const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
-  case when s.provider='boat' then nullif(s.provider_sandbox_id,'') else null end as "boatId", s.id, s.org_id as "orgId", s.owner_id as "ownerId",
+  s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
   coalesce(s.status='stopped' and s.status_reason='idle_paused',false) as "idlePaused", s.status::text as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
   s.effective_ttl_seconds as "effectiveTtlSeconds",
@@ -189,8 +309,9 @@ export class DataError extends Error {
   constructor(
     message: string,
     readonly code: "unavailable" | "sandbox_not_ready" | "not_found" | "invalid" = "unavailable",
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -198,10 +319,21 @@ export function createSqlData(
   sql: Sql,
   listOrgId?: string,
   namedList?: { ref: string; store: VaultStore },
+  managedModalDrain?: {
+    id: string;
+    org_id: string;
+    revoke(tx: Sql, parentId: string): Promise<void>;
+  },
 ): DataSource {
   return (caller) => {
     const orgIds = caller.orgs.map((org) => org.orgId);
     const scope: [string[], string] = [orgIds, caller.userId];
+    const managed = managedModalDrain !== undefined;
+    const deleteVisibility = managed ? MANAGED_MODAL_DRAIN_VISIBLE : SANDBOX_VISIBLE;
+    const assertDrainTarget = (id: string) => {
+      if (managedModalDrain && (id !== managedModalDrain.id || !orgIds.includes(managedModalDrain.org_id)))
+        throw new DataError("Managed drain target changed.");
+    };
     const ownOrg = (orgId: string) => {
       if (!orgIds.includes(orgId)) throw new GoldenError("not_found", "No such golden.");
     };
@@ -241,6 +373,12 @@ export function createSqlData(
       },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
       beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
+      beginSnapshotLaunch(golden, actor, sandboxId) {
+        ownOrg(golden.orgId);
+        if (actor.userId !== caller.userId || actor.orgId !== golden.orgId)
+          throw new GoldenError("forbidden", "Caller mismatch.");
+        return beginSnapshotLaunch(sql, golden, actor, sandboxId);
+      },
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -311,6 +449,29 @@ export function createSqlData(
       },
     };
 
+    async function readSandbox(id: string, forStop: boolean) {
+      assertDrainTarget(id);
+      if (!UUID.test(id)) return null;
+      const result = await sql.query<SandboxViewRow & { stop_busy: boolean }>(
+        `select ${SANDBOX_COLUMNS}${
+          forStop
+            ? `, (
+          coalesce(s.reconcile_lease_until > clock_timestamp(), false)
+          or ${unresolvedModalLaunch("s")}
+          or coalesce(s.activity_until > clock_timestamp(), false)
+          or ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
+            and s.status in ('ready','running') and s.activity_lease_id is not null)
+        ) and not ${currentNativeExec} as stop_busy`
+            : ""
+        }
+        from public.sandboxes s join public.goldens g on g.id = s.golden_id
+        where ${forStop ? SANDBOX_VISIBLE : deleteVisibility} and s.id = $3`,
+        [...scope, id],
+      );
+      const row = result.rows[0];
+      return row ? { sandbox: mapView(row), busy: row.stop_busy === true } : null;
+    }
+
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
       async launchTiming(id) {
@@ -349,13 +510,26 @@ export function createSqlData(
         );
         // Usage may arrive before the accepted RPC receipt. Reconcile that already stored observation
         // after its authoritative pre-work context is captured, without changing any existing quote.
-        const rows = await sql.query<{ usage: Pick<SandboxUsage, "turnCount" | "turns"> | null }>(
-          `select s.usage_turns as usage from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
-          [...scope, id],
+        const rows = await sql.query<{
+          usage: Pick<SandboxUsage, "turnCount" | "turns"> | null;
+          awaiting_spend: boolean;
+        }>(
+          `select s.usage_turns as usage, exists(
+            select 1 from public.account_spend_turns t
+            where t.sandbox_id=s.id and t.prompt_id=$4 and t.account_id is null
+          ) as awaiting_spend from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3::uuid`,
+          [...scope, id, promptId],
         );
-        const usage = rows.rows[0]?.usage;
-        const pending = usage?.turns.filter((turn) => turn.promptId === promptId && !turn.pricing) ?? [];
-        if (usage && pending.length) await sandboxes.recordUsage!(id, usage, { observations: pending });
+        const row = rows.rows[0];
+        if (!row?.usage) return;
+        const shares = row.usage.turns.filter((turn) => turn.promptId === promptId);
+        const pending = shares.filter((turn) => !turn.pricing);
+        if (row.awaiting_spend && !shares.length) {
+          const unmeasured = unmeasuredUsage(promptId);
+          await sandboxes.recordUsage!(id, { ...row.usage, turns: [unmeasured] }, { observations: [unmeasured] });
+        } else if (pending.length) {
+          await sandboxes.recordUsage!(id, row.usage, { observations: pending });
+        }
       },
       async recordAccountRateLimit(id, promptId, retryAt) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -363,6 +537,9 @@ export function createSqlData(
           `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
           [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
         );
+      },
+      async recordNativeExhaustion(id, promptId, limit, at) {
+        await recordNativeAccountExhaustion(sql, scope, id, promptId, limit, at);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
@@ -396,13 +573,22 @@ export function createSqlData(
           throw new DataError("A sandbox is recorded for its caller only.");
         }
         const result = await sql.query<SandboxViewRow>(
-          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
+          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid), inserted as (
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
              $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text,$24::text,$25::boolean,$26::text::jsonb from visible
            returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref
+           ), snapshot_reference as (
+             insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
+             select id,$27::text from inserted where $27::text is not null
+             returning sandbox_id
+           ), consumed_intent as (
+             delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
+             where i.sandbox_id=r.sandbox_id
+           )
+           select * from inserted`,
           [
             ...scope,
             input.goldenId,
@@ -429,6 +615,7 @@ export function createSqlData(
             input.externalRef ?? null,
             input.stopWhenWorkMerged ?? true,
             JSON.stringify(input.pullRequestSource ?? null),
+            input.sourceSnapshotId ?? null,
           ],
         );
         const row = result.rows[0];
@@ -448,26 +635,57 @@ export function createSqlData(
         if (!row) throw new GoldenError("not_found", "Sandbox not found.");
         if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
+      requestStartingModalStop: (sandbox, signal) => requestStartingModalStop(sql, scope, sandbox, signal),
       async assertDeletionAllowed(id) {
+        assertDrainTarget(id);
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
         const row = (
-          await sql.query<{ status: string; managed: boolean }>(
+          await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
             `select s.status::text as status,
+             coalesce(s.status='failed' and s.provider='modal' and s.status_reason=$4 and s.stopped_at is null, false)
+               as modal_cleanup_owns_exit,
              ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
            and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
              and (s.owner_id=$2::uuid or m.role='admin'))`,
-            [...scope, id],
+            [...scope, id, MODAL_LAUNCH_FAILURE],
           )
         ).rows[0];
         if (!row) throw new GoldenError("not_found", "No such sandbox or deletion access denied.");
-        if (row.managed)
+        if (row.modal_cleanup_owns_exit) throw new GoldenError("conflict", "Sandbox exit is unconfirmed.");
+        if (row.managed && !managed)
           throw new GoldenError(
             "conflict",
             "Managed orchestrators have their own lifecycle; delete an ordinary delegated parent before its child.",
           );
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
+      },
+      async historicalModalDrainCandidate(id) {
+        assertDrainTarget(id);
+        const candidate = await sql.query(
+          `select 1 from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}
+           and ${historicalModalDrainCandidate(managed)}`,
+          [...scope, id],
+        );
+        if (managed && !candidate.rows.length) throw new DataError("Managed historical Modal journal changed.");
+        return candidate.rows.length === 1;
+      },
+      async nativeDrainDispatch(id, placement, generation, activityToken, action, allowHistoricalModal) {
+        assertDrainTarget(id);
+        const owned = await nativeDrainDispatch(
+          sql,
+          scope,
+          id,
+          placement,
+          generation,
+          activityToken,
+          action,
+          allowHistoricalModal,
+          managed,
+        );
+        if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
+        return owned;
       },
       async recordUsage(id, usage, options) {
         const mergeNative = async (target: Sql, unpriced: boolean) =>
@@ -580,15 +798,19 @@ export function createSqlData(
           const merged = (await mergeNative(tx, false)).rows[0]?.usage;
           if (!merged) return;
           const observations = options?.observations ?? [];
+          const completed = options?.completed ?? new Map<string, string>();
+          const unmeasured = [...completed.keys()].map(unmeasuredUsage);
+          const contextRows = [...observations, ...unmeasured];
           let contexts = options?.contexts;
-          if (contexts === undefined && observations.length) {
+          if (contexts === undefined && contextRows.length) {
             const admissions = await tx.query<{ prompt_id: string; context: unknown; captured: boolean }>(
               `select prompt_id,pricing_context as context,pricing_context is not null as captured
                from public.sandbox_turn_models where sandbox_id=$1 and prompt_id=any($2::text[])`,
-              [id, observations.map((row) => row.promptId)],
+              [id, [...new Set(contextRows.map((row) => row.promptId))]],
             );
             const byPrompt = new Map(admissions.rows.map((row) => [row.prompt_id, row]));
-            contexts = observations.flatMap((row) => {
+            const byShare = new Map(contextRows.map((row) => [JSON.stringify([row.promptId, row.model]), row]));
+            contexts = [...byShare.values()].flatMap((row) => {
               const captured = byPrompt.get(row.promptId);
               // Legacy turns retain the launch book. Missing provenance after a switch is unknown,
               // never an excuse to bill the old turn against the new account (or vice versa).
@@ -618,6 +840,14 @@ export function createSqlData(
             [...scope, id, JSON.stringify(priced)],
           );
           if (saved.rows.length !== 1) throw new DataError("Usage admission changed during recording.");
+          await publishAccountSpend(
+            tx,
+            id,
+            completed,
+            observations,
+            priced.turns,
+            stampTurnPricing(unmeasured, [], [], contexts ?? [], before.harness),
+          );
         });
       },
       async assertExecAllowed(id) {
@@ -641,14 +871,16 @@ export function createSqlData(
             "sandbox_not_ready",
           );
       },
-      async preserveWork(id, provider, providerId) {
+      async preserveWork(id, provider, providerId, authority) {
         const selected = await sandboxes.get(id);
         if (!selected) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId, "user_stop");
+        return preserveBeforeStop(sql, provider, id, providerId, "user_stop", authority);
       },
       async readWorkRecovery(id, recoveryId) {
-        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
-        return readWorkRecovery(sql, id, recoveryId);
+        if (!UUID.test(id)) throw new DataError("No such sandbox.", "not_found");
+        const archive = await readWorkRecovery(sql, scope, id, recoveryId);
+        if (archive === undefined) throw new DataError("No such sandbox.", "not_found");
+        return archive;
       },
       async recordNativePrompt(id, providerSandboxId, promptId, requestId) {
         await sql.query(
@@ -661,8 +893,8 @@ export function createSqlData(
             update public.account_turn_queue q set native_prompt_id=coalesce(q.native_prompt_id,$5)
             from accepted s where q.sandbox_id=s.id and q.request_id=$6::uuid
               and q.owner_id=s.owner_id and q.org_id=s.org_id
-          ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
-            select id,$5,provider,provider_sandbox_id,owner_id,org_id from accepted on conflict do nothing`,
+          ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,created_at)
+            select id,$5,provider,provider_sandbox_id,owner_id,org_id,clock_timestamp() from accepted on conflict do nothing`,
           [...scope, id, providerSandboxId, promptId, requestId ?? null],
         );
       },
@@ -689,16 +921,190 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        assertDrainTarget(id);
+        if (
+          managed &&
+          !(
+            patch.nativeDrainAdmission?.allowHistoricalModal ||
+            patch.renewActivity ||
+            (patch.deleteCompleted && patch.nativeDrain && patch.historicalModalDrainPlacement)
+          )
+        )
+          throw new DataError("Managed Modal drain only permits historical deletion activity.");
+        const { nativeRetentionRefusal } = patch;
+        if (nativeRetentionRefusal !== undefined) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken)
+            throw new DataError("Retention refusal requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            recordNativeRetentionRefusal(tx, scope, id, expectedGeneration, activityToken, nativeRetentionRefusal),
+          );
+          if (!applied) throw new DataError("Retention refusal is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.expireAfterExtension) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
+            throw new DataError("Unsafe extension settlement requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            expireAfterExtension(tx, scope, id, expectedGeneration, activityToken),
+          );
+          if (!applied) throw new DataError("Extension activity changed before settlement.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.nativeDrainDeleteOperation) {
+          const { expectedGeneration, activityToken, nativeDrainDeleteOperation: operation } = patch;
+          if (expectedGeneration === undefined || !activityToken)
+            throw new DataError("Native drain operation evidence requires its activity generation and token.");
+          const recorded = await recordNativeDrainDeleteOperation(
+            sql,
+            scope,
+            id,
+            expectedGeneration,
+            activityToken,
+            operation,
+          );
+          if (!recorded) throw new DataError("Native drain operation evidence is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.deleteCompleted) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
+            throw new DataError("Sandbox deletion completion requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            completeSandboxDeletion(
+              tx,
+              scope,
+              id,
+              expectedGeneration,
+              activityToken,
+              patch.nativeDrain === true,
+              patch.historicalModalDrainPlacement,
+              managed,
+            ),
+          );
+          if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
+        const stopStatus =
+          patch.ownerStop && (patch.status === "stopping" || patch.status === "stopped" || patch.status === "failed")
+            ? patch.status
+            : undefined;
+        if (
+          patch.ownerStop &&
+          (!stopStatus ||
+            patch.expectedGeneration === undefined ||
+            !patch.activityToken ||
+            Boolean(patch.advanceGeneration) === Boolean(patch.finishActivity))
+        )
+          throw new DataError("Owner stop requires its activity generation, token and phase.");
+        const reason = statusReasonOf(patch);
+        if (patch.finishActivity && patch.status === "failed" && !patch.ownerStop && !patch.providerObservation) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || typeof reason !== "string")
+            throw new DataError("Launch failure requires its activity generation, token and diagnostic.");
+          const applied = await sql.transaction((tx) =>
+            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason, patch.expectedRuntimeEpoch),
+          );
+          if (applied === "epoch_conflict")
+            throw new CoreLaunchSettlementConflict("Launch failure publication is stale.");
+          if (!applied) throw new DataError("Launch failure publication is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.nativeDiagnostic && (patch.expectedGeneration === undefined || reason === undefined))
+          throw new DataError("Native diagnostic refresh requires generation and diagnostic evidence.");
+        if (patch.providerObservation !== undefined) {
+          if (
+            patch.expectedGeneration === undefined ||
+            reason === undefined ||
+            (patch.status !== "failed" &&
+              patch.status !== "stopped" &&
+              patch.status !== "ready" &&
+              patch.status !== "running" &&
+              patch.status !== "starting" &&
+              patch.status !== "stopping") ||
+            (patch.status === "stopped" && !patch.stoppedAt)
+          )
+            throw new DataError("Provider observation publication requires generation and state evidence.");
+          const result = await recordObservedProviderState(sql, scope, {
+            sandboxId: id,
+            generation: patch.expectedGeneration,
+            ...patch.providerObservation,
+            toState: patch.status,
+            reason,
+            stoppedAt: patch.stoppedAt ?? null,
+          });
+          if (result.kind === "conflict")
+            throw new DataError("Provider state observation is stale.", "sandbox_not_ready");
+          return;
+        }
+        const initialPrompt =
+          patch.status === "running" && patch.taskPromptId && patch.conversationIds
+            ? { promptId: patch.taskPromptId, conversationIds: patch.conversationIds }
+            : undefined;
+        if (
+          patch.finishActivity &&
+          (patch.status === "ready" || initialPrompt) &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
+          const { expectedGeneration, activityToken } = patch;
+          const outcome = await sql.transaction((tx) =>
+            finishLaunchSuccess(
+              tx,
+              scope,
+              id,
+              expectedGeneration,
+              activityToken,
+              patch.expectedRuntimeEpoch,
+              initialPrompt,
+            ),
+          );
+          if (outcome === "applied") return;
+          if (outcome === "epoch_conflict")
+            throw new CoreLaunchSettlementConflict("Runtime readiness publication is stale.");
+          if (outcome === "native_conflict")
+            throw new DataError(
+              initialPrompt
+                ? "Native launch prompt publication is stale."
+                : "Native launch readiness publication is stale.",
+              "sandbox_not_ready",
+            );
+          throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
+        }
+        if (patch.status !== undefined && stopStatus === undefined)
+          throw new DataError("Sandbox status changes require a lifecycle transition.");
+        const nativeResume = patch.nativeResumeAdmission;
+        if (
+          nativeResume !== undefined &&
+          (!patch.activityToken ||
+            patch.expectedGeneration === undefined ||
+            Boolean(patch.advanceGeneration) === Boolean(patch.renewActivity))
+        )
+          throw new DataError("Native resume requires its activity generation, token and phase.");
+        const nativeReceipt = patch.nativeSendReceipt ?? patch.nativeSteerReceipt;
+        const receiptGeneration = patch.expectedGeneration;
+        const receiptToken = patch.activityToken;
+        if (nativeReceipt && (!patch.finishActivity || receiptGeneration === undefined || !receiptToken))
+          throw new DataError("Native turn publication requires its activity fence.");
+        const childSend = patch.nativeChildSend;
+        const childSendToken = patch.activityToken;
+        if (childSend && (!patch.advanceGeneration || patch.expectedGeneration === undefined || !childSendToken))
+          throw new DataError("Native child send requires its activity admission fence.");
         const sets: string[] = [];
         const params: unknown[] = [...scope, id];
         const set = (column: string, value: unknown, cast: string) => {
           params.push(value);
           sets.push(`${column} = $${params.length}${cast}`);
         };
-        if (patch.advanceGeneration && patch.activityToken) {
+        if ((patch.advanceGeneration || patch.turnActivity === "claim") && patch.activityToken) {
           set("activity_lease_id", patch.activityToken, "::uuid");
-          sets.push("activity_until = now() + interval '2 minutes'");
+          const clock = patch.nativeDrainAdmission ? "clock_timestamp()" : "now()";
+          sets.push(`activity_until = ${clock} + interval '2 minutes'`);
         }
+        if (patch.nativeDrainAdmission) sets.push("native_drain_pending = true");
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
           // Retries of an in-flight stop share one epoch; send/resume clears it.
@@ -713,13 +1119,18 @@ export function createSqlData(
               "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
             );
         }
-        if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
-        if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
+        if (patch.renewActivity)
           sets.push(
-            "activity_lease_id = null",
-            "activity_until = null",
-            "lifecycle_generation = s.lifecycle_generation + 1",
+            "activity_until = (case when s.native_drain_pending then clock_timestamp() else now() end) + interval '2 minutes'",
           );
+        if (
+          (patch.finishActivity || patch.turnActivity === "finish") &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          sets.push("activity_lease_id = null", "activity_until = null");
+          if (patch.finishActivity) sets.push("lifecycle_generation = s.lifecycle_generation + 1");
+        }
         if (patch.advanceGeneration && !patch.renewLifecycle)
           sets.push("lifecycle_generation = s.lifecycle_generation + 1");
         if (patch.renewLifecycle) {
@@ -730,25 +1141,65 @@ export function createSqlData(
             "lifecycle_error = null",
           );
         }
-        if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
-        if (patch.status !== undefined) {
-          set("status", patch.status, "::public.sandbox_status");
-          sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
-        }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
-        if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
-        if (patch.status === "deleted") sets.push("preservation_note = null");
         if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
+        const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        const reason = statusReasonOf(patch);
-        if (reason !== undefined) set("status_reason", reason, "::text");
+        const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
+        if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
+        const admission = !!patch.advanceGeneration && !!patch.activityToken;
         let fence = "";
+        if (!patch.nativeDrainAdmission) {
+          fence = patch.renewActivity
+            ? " and s.id=renewal_target.id and (not renewal_target.native_drain_pending or renewal_target.activity_until > clock_timestamp())"
+            : " and not s.native_drain_pending";
+          if (admission || nativeResume !== undefined) fence += ` and not ${STRICT_NATIVE_DRAIN_STOP}`;
+        }
+        if (patch.nativeDiagnostic) {
+          const { state, placement, previousReason } = patch.nativeDiagnostic;
+          params.push(state, placement, previousReason);
+          fence += ` and s.status=$${params.length - 2}::public.sandbox_status
+            and s.provider_sandbox_id=$${params.length - 1}
+            and s.status_reason is not distinct from $${params.length}::text
+            and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+            and (s.status<>'failed' or s.stopped_at is null)
+            and s.stop_requested_at is null and s.deleted_at is null and s.status<>'deleted'`;
+        }
+        if (nativeReceipt) fence += " and s.activity_until>clock_timestamp()";
+        if (patch.turnActivity !== undefined)
+          fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
+        if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
+        const nativePrompt = patch.nativePromptAdmission ?? childSend;
+        if (nativePrompt) {
+          params.push(nativePrompt.fromState, nativePrompt.placement);
+          fence += ` and s.status=$${params.length - 1}::public.sandbox_status and s.provider_sandbox_id=$${params.length}
+            and s.provider in ('boat','modal') and not s.boat_runtime
+            and s.runtime_transport is null and s.deleted_at is null and s.status<>'deleted'`;
+        }
+        if (nativeResume !== undefined) {
+          params.push(nativeResume);
+          fence += ` and s.provider_sandbox_id=$${params.length} and s.provider in ('boat','modal')
+            and not s.boat_runtime and s.runtime_transport is null
+            and s.deleted_at is null and s.status<>'deleted'`;
+          if (patch.renewActivity) fence += " and s.activity_until>clock_timestamp() and s.stop_requested_at is null";
+        }
+        if (patch.modalRuntimeExtensionTarget !== undefined) {
+          if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
+            throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
+          params.push(patch.modalRuntimeExtensionTarget);
+          fence += ` and s.provider='modal' and s.runtime_transport='dialout'
+            and s.provider_sandbox_id=$${params.length}::text and s.status in ('ready','running')
+            and s.stop_requested_at is null and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.expires_at<$${extensionDeadlineParam}::timestamptz
+            and exists(select 1 from public.runtime_enrolments r where r.sandbox_id=s.id
+              and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
+              and r.epoch=r.command_grant_epoch and r.command_grant_expires_at>=$${extensionDeadlineParam}::timestamptz)`;
+        }
         // Only an explicit send/resume may cancel an in-flight stop. Other
         // workspace operations must not mutate data covered by its receipt.
         if (
@@ -771,9 +1222,43 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
-        if (patch.deleteRequested)
+        let retainedProof: string | undefined;
+        if (patch.retainedRuntimeStop !== undefined) {
+          params.push(patch.retainedRuntimeStop);
+          retainedProof = `exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+            on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+            where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+            and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+          fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted and ${retainedProof}`;
+        }
+        if (patch.deleteRequested) {
+          params.push(MODAL_LAUNCH_FAILURE);
           fence += ` and s.status in ('stopped','failed')
-            and not ${SANDBOX_DELETION_MANAGED}`;
+            and not (s.status='failed' and s.provider='modal' and s.status_reason is not distinct from $${params.length}::text
+              and s.stopped_at is null)
+            and ${managed ? "s.stop_requested_at is null" : `not ${SANDBOX_DELETION_MANAGED}`}`;
+        }
+        if (patch.nativeExecAdmission) {
+          params.push(patch.nativeExecAdmission.provider, patch.nativeExecAdmission.placement);
+          fence += ` and s.provider=$${params.length - 1}::public.sandbox_provider
+            and s.provider_sandbox_id=$${params.length}
+            and s.provider in ('boat','modal') and not s.boat_runtime
+            and s.runtime_transport is distinct from 'dialout'
+            and s.status in ('starting','ready','running') and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.stop_requested_at is null
+            and not s.application_secret_tainted`;
+        }
+        if (patch.nativeExecCompleted)
+          fence += " and s.activity_until>clock_timestamp() and s.stop_requested_at is null";
+        if (patch.renewActivity)
+          fence += ` and (s.activity_until>clock_timestamp() or not exists(
+            select 1 from public.sandbox_native_exec_attempts e
+            where e.sandbox_id=s.id and e.generation=s.lifecycle_generation
+            union all
+            select 1 from public.sandbox_native_send_attempts a
+            where a.sandbox_id=s.id and a.generation=s.lifecycle_generation
+          ))`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
         // The generation CAS also fences its stop-claim and late publication.
@@ -783,7 +1268,8 @@ export function createSqlData(
           ? "(s.reconcile_lease_until is null or s.reconcile_lease_until < now() or (s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at > clock_timestamp()))"
           : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now())";
         if (supersedeObservation) sets.push("reconcile_lease = null", "reconcile_lease_until = null");
-        const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
+        const ownsActivity =
+          !!patch.activityToken && (patch.finishActivity || patch.renewActivity || patch.turnActivity === "finish");
         if (ownsActivity) {
           params.push(patch.activityToken);
           fence += ` and s.activity_lease_id = $${params.length}::uuid`;
@@ -792,35 +1278,325 @@ export function createSqlData(
         // than the pre-dispatch reservation. Transfer ownership in the same SQL
         // statement so there is never an uncounted admission window.
         const releaseReservation =
-          patch.taskPromptId !== undefined ||
-          (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
-          patch.status === "deleted";
-        const cancelTurns = patch.stopRequested === true;
+          patch.taskPromptId !== undefined || (patch.stoppedAt !== undefined && patch.stoppedAt !== null);
+        const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
+        if (idleAdmission)
+          fence += ` and (s.status='ready' or (s.status='running' and
+            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))))
+            and s.stop_requested_at is null
+            and not exists(select 1 from public.account_turn_queue q
+              where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
+            and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
+        if (stopStatus !== undefined) {
+          fence += " and s.provider in ('boat','modal') and s.deleted_at is null";
+          if (admission) fence += ` and not ${unresolvedModalLaunch("s")}`;
+          fence += patch.finishActivity
+            ? stopStatus === "failed"
+              ? " and s.status in ('stopping','failed')"
+              : " and s.status='stopping'"
+            : stopStatus === "failed"
+              ? " and s.status='failed' and s.stop_requested_at is null"
+              : " and s.status in ('starting','ready','running') and s.stop_requested_at is null";
+        }
+        const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
-        const admission = !!patch.advanceGeneration && !!patch.activityToken;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
         // not a later read that a concurrent lease release could already have cleared. A row
         // changed while this statement waited on its lock is rechecked at its newest version,
         // so then the CAS may refuse a holder that this snapshot predates.
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
-        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
-           where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
-        const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
-          observeRefusal
-            ? `with observed as (select s.status::text as status,
+        const publishTransition = stopStatus !== undefined || childSend !== undefined || nativeResume !== undefined;
+        const returning = publishTransition ? "id, status, generation" : "id";
+        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g${patch.renewActivity ? ", renewal_target" : ""}
+           where s.id = $3 and g.id = s.golden_id and ${deleteVisibility}
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${publishTransition ? "s.id, s.status, s.lifecycle_generation::text as generation" : "s.id"}`;
+        const effects = `${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""}`;
+        const applyUpdate = (connection: Sql) =>
+          connection.query<{
+            id: string | null;
+            status?: SandboxStatus;
+            generation?: string;
+            observed?: Record<string, unknown> | null;
+            stop_evidence?: (StopRefusalEvidence & { nativeExecPending: boolean }) | null;
+          }>(
+            patch.renewActivity
+              ? `with renewal_target as materialized (
+                   select s.id, s.native_drain_pending, s.activity_until from public.sandboxes s
+                   where s.id=$3::uuid and ${deleteVisibility} for update of s
+                 ) ${update}`
+              : observeRefusal
+                ? `with observed as (select s.status::text as status,
                   s.activity_lease_id as "activityLeaseId",
                   coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
                   coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
                   s.stop_requested_at is not null as "stopRequested",
                   ${generationParam ? `s.lifecycle_generation<>$${generationParam}::bigint` : "false"} as "generationChanged",
                   ${SANDBOX_DELETION_MANAGED} as managed
-                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
+                from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
-          params,
-        );
+                : stopStatus !== undefined
+                  ? `with updated as (${update})${effects}
+                   select u.id,u.status,u.generation,
+                     case when u.id is null then (select row_to_json(e) from
+                       (select ${stopRefusalEvidence}, ${currentNativeExec} as "nativeExecPending", $${generationParam}::bigint::text as "requestGeneration",
+                         ${retainedProof ?? "null"} as "retainedCheckpointCurrent"
+                         from public.sandboxes s
+                         where s.id=$3::uuid and ${deleteVisibility}) e) end as stop_evidence
+                   from (values (1)) seed left join updated u on true`
+                  : wrapped
+                    ? `with updated as (${update})${effects} select ${returning} from updated`
+                    : update,
+            params,
+          );
+        const recordNativePromptAttempt = async (tx: Sql, generation: string) => {
+          await tx.query("insert into public.sandbox_native_send_attempts(sandbox_id,generation) values($1,$2)", [
+            id,
+            generation,
+          ]);
+        };
+        let result: Awaited<ReturnType<typeof applyUpdate>> & { observationBlocked?: boolean };
+        if (patch.nativeDrainAdmission) {
+          const { provider, placement, allowHistoricalModal } = patch.nativeDrainAdmission;
+          const { expectedGeneration } = patch;
+          if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
+            throw new DataError("Native drain requires its delete admission fence.");
+          result = await sql.transaction(async (tx) => {
+            const parent = managedModalDrain
+              ? await lockHistoricalManagedModalParent(tx, managedModalDrain, caller.userId)
+              : undefined;
+            if (managed && (!parent?.parentId || (!parent.idle && !parent.native_drain_pending)))
+              throw new DataError("Managed Modal drain lost its parent admission.", "sandbox_not_ready");
+            const {
+              rows: [locked],
+            } = await tx.query<{
+              native_drain_pending: boolean;
+              requires_incarnation_proof: boolean;
+            }>(
+              `select s.native_drain_pending, s.provider='modal' as requires_incarnation_proof
+               from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}
+                 and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
+                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+                 and s.stopped_at is not null and (s.stop_requested_at is null or $6::boolean)
+                 and s.deleted_at is null and not s.application_secret_tainted
+                 and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+                   and (s.owner_id=$2::uuid or m.role='admin')) for update of s`,
+              [...scope, id, provider, placement, allowHistoricalModal === true],
+            );
+            if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            const historical =
+              allowHistoricalModal === true &&
+              locked.requires_incarnation_proof &&
+              (await admitHistoricalModalDrain(tx, id, locked.native_drain_pending, managed));
+            if (allowHistoricalModal && !historical)
+              throw new DataError("Historical Modal drain eligibility changed before admission.", "sandbox_not_ready");
+            if (
+              !historical &&
+              locked.requires_incarnation_proof &&
+              !(await fencePreservedModalDrainIncarnation(tx, id, locked.native_drain_pending))
+            )
+              throw new DataError("Modal drain requires the preserved stopped incarnation.", "sandbox_not_ready");
+            if (locked.native_drain_pending) {
+              if (!locked.requires_incarnation_proof && !(await fencePreservedBoatDrainReplay(tx, id)))
+                throw new DataError("Boat drain requires verified work preservation.", "sandbox_not_ready");
+              const {
+                rows: [retry],
+              } = await tx.query<{ allowed: boolean }>(
+                `select $2::public.sandbox_provider='modal' or exists(
+                   select 1 from public.native_drain_unclaimed_dispatches where sandbox_id=$1
+                 ) or exists(
+                   select 1 from public.native_drain_delete_operations
+                   where sandbox_id=$1 and provider=$2 and placement=$3
+                 ) as allowed`,
+                [id, provider, placement],
+              );
+              if (!retry?.allowed)
+                throw new DataError("Native drain deletion outcome is unknown.", "sandbox_not_ready");
+            } else if (!historical) {
+              const {
+                rows: [recovery],
+              } = await tx.query<{ outcome: string }>(
+                "select public.copy_native_drain_recovery($1::uuid,$2::bigint) as outcome",
+                [id, expectedGeneration],
+              );
+              if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
+                throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+            }
+            if (managedModalDrain && parent?.parentId && !locked.native_drain_pending)
+              await managedModalDrain.revoke(tx, parent.parentId);
+            const updated = await applyUpdate(tx);
+            if (!updated.rows[0]?.id)
+              throw new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready");
+            if (!locked.native_drain_pending) await markNativeDrainDispatchUnclaimed(tx, id);
+            return updated;
+          });
+        } else if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
+          if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
+            const locked = await tx.query<{ observation_blocked: boolean }>(
+              `select not (${observationFence}) as observation_blocked
+               from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
+              [...scope, id],
+            );
+            if (!locked.rows.length) return { rows: [] };
+            patch.ownerStopSignal?.throwIfAborted();
+            const updated = await applyUpdate(tx);
+            if (
+              !updated.rows[0]?.id &&
+              !ownsActivity &&
+              !patch.retainedRuntimeStop &&
+              locked.rows[0]?.observation_blocked
+            )
+              return { ...updated, observationBlocked: true };
+            const row = updated.rows[0];
+            if (stopStatus !== undefined && row?.id) {
+              if (!row.status || !row.generation) throw new Error("Owner stop update did not return its fence.");
+              if (
+                patch.finishActivity &&
+                (patch.stopRequested === true ||
+                  (patch.stopRequested === false && stopStatus !== "stopping" && patch.stoppedAt))
+              )
+                await carryNativePreservationAcrossStop(tx, id, row.generation);
+              await publishOwnerStop(tx, {
+                sandboxId: id,
+                generation: row.generation,
+                fromState: row.status,
+                toState: stopStatus,
+                confirmedStop: patch.stoppedAt != null,
+                ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
+                code: patch.finishActivity
+                  ? "owner_stop_settled"
+                  : patch.retainedRuntimeStop
+                    ? "runtime_retained_stop"
+                    : "owner_stop_admitted",
+              });
+            }
+            return updated;
+          });
+        } else if (patch.nativeExecAdmission || patch.nativeExecCompleted) {
+          const { activityToken, expectedGeneration } = patch;
+          if (
+            !sql.transaction ||
+            !activityToken ||
+            expectedGeneration === undefined ||
+            (patch.nativeExecAdmission ? !admission : !patch.finishActivity)
+          )
+            throw new DataError("Native exec requires its activity generation and token.");
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            if (!updated.rows[0]?.id) return updated;
+            if (patch.nativeExecAdmission) {
+              await tx.query("insert into public.sandbox_native_exec_attempts(sandbox_id,generation) values($1,$2)", [
+                id,
+                expectedGeneration + 1,
+              ]);
+            } else {
+              if (!(await settleNativeWorkspaceCommand(tx, id, expectedGeneration)))
+                throw new DataError("Native exec evidence changed before completion.");
+            }
+            return updated;
+          });
+        } else if (nativeResume !== undefined && patch.activityToken) {
+          const activityToken = patch.activityToken;
+          if (!sql.transaction) throw new Error("Native resume admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            const row = updated.rows[0];
+            if (row?.id) {
+              if (!row.status || !row.generation) throw new Error("Native resume update did not return its fence.");
+              await publishNativeResumeAdmission(tx, id, row.status, row.generation, activityToken);
+              if (admission) await recordNativePromptAttempt(tx, row.generation);
+            }
+            return updated;
+          });
+        } else if (patch.nativePromptAdmission) {
+          if (!sql.transaction || !admission || patch.expectedGeneration === undefined)
+            throw new DataError("Native prompt dispatch requires its activity generation and token.");
+          const generation = String(patch.expectedGeneration + 1);
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            if (updated.rows[0]?.id) await recordNativePromptAttempt(tx, generation);
+            return updated;
+          });
+        } else if (nativeReceipt && receiptGeneration !== undefined && receiptToken) {
+          if (!sql.transaction) throw new Error("Native turn publication requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const locked = await tx.query<{ id: string }>(
+              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+                and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid
+                and s.activity_until>clock_timestamp()
+                and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
+                and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
+                and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null
+                for update`,
+              [...scope, id, receiptGeneration, receiptToken, nativeReceipt.fromState, nativeReceipt.placement],
+            );
+            if (!locked.rows.length) return { rows: [] };
+            const requestId = patch.nativeSendReceipt?.requestId;
+            if (patch.nativeSendReceipt || patch.nativeSteerReceipt?.verifiedReplacement) {
+              const settled = await tx.query(
+                `delete from public.sandbox_native_send_attempts a
+                   using public.native_webhook_prompts p, public.sandboxes s
+                   where a.sandbox_id=$1 and a.generation=$2
+                     and s.id=a.sandbox_id and p.sandbox_id=s.id and p.prompt_id=$3
+                     and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
+                     and p.org_id=s.org_id and p.owner_id=s.owner_id and p.created_at>=a.created_at
+                   returning a.sandbox_id`,
+                [id, receiptGeneration, patch.taskPromptId],
+              );
+              if (patch.nativeSendReceipt && !settled.rows.length)
+                throw new DataError("Native send acknowledgement was not recorded.");
+              if (requestId && patch.taskPromptId) await bindNativePromptRequest(tx, id, patch.taskPromptId, requestId);
+            }
+            if (nativeReceipt.fromState !== "running")
+              await publishNativeTurn(
+                tx,
+                id,
+                nativeReceipt.fromState,
+                String(receiptGeneration),
+                receiptToken,
+                patch.nativeSendReceipt ? "native_send_accepted" : "native_steer_accepted",
+              );
+            const published = await applyUpdate(tx);
+            if (!published.rows[0]?.id) throw new DataError("Native turn publication is stale.", "sandbox_not_ready");
+            return published;
+          });
+        } else if (childSend && childSendToken) {
+          if (!sql.transaction) throw new Error("Native child send admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const admitted = await applyUpdate(tx);
+            const row = admitted.rows[0];
+            if (row?.id) {
+              if (!row.generation) throw new Error("Native child send admission did not return its generation.");
+              await recordNativePromptAttempt(tx, row.generation);
+              if (childSend.fromState !== "running")
+                await publishNativeTurn(
+                  tx,
+                  id,
+                  childSend.fromState,
+                  row.generation,
+                  childSendToken,
+                  "native_child_send_admitted",
+                );
+            }
+            return admitted;
+          });
+        } else if (
+          patch.taskPromptId &&
+          patch.expectedGeneration !== undefined &&
+          patch.turnActivity === "finish" &&
+          sql.transaction
+        ) {
+          const generation = patch.expectedGeneration + (patch.finishActivity ? 1 : 0);
+          result = await sql.transaction(async (tx) => {
+            const published = await applyUpdate(tx);
+            if (published.rows[0]?.id) await settleRuntimeTurn(tx, id, generation);
+            return published;
+          });
+        } else {
+          result = await applyUpdate(sql);
+        }
         if (!result.rows[0]?.id) {
           // Record only admission predicates. The provider has not received this delete.
           if (observeRefusal)
@@ -831,14 +1607,37 @@ export function createSqlData(
                 observed: result.rows[0]?.observed ?? null,
               }),
             );
-          throw new DataError(
+          const evidence = result.rows[0]?.stop_evidence;
+          const blockedStop =
+            stopStatus !== undefined && admission && !patch.onlyIfIdle && evidence && !evidence.nativeExecPending;
+          const cause =
+            result.observationBlocked || (blockedStop && evidence.reconcileLeaseHeld)
+              ? new RuntimeReconciliationConflict()
+              : blockedStop && evidence.activityLeaseHeld
+                ? new RuntimeCheckpointActivityConflict()
+                : blockedStop && evidence.generation !== evidence.requestGeneration
+                  ? new SandboxStopTargetChanged()
+                  : undefined;
+          const error = new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",
+            cause ? { cause } : undefined,
           );
+          if (stopStatus !== undefined)
+            recordOperatorDiagnostic(
+              patch.finishActivity ? "sandbox.stop.settlement" : "sandbox.stop.admission",
+              failureDiagnostic(error),
+              {
+                sandboxId: id,
+                refusalCode: "stop_fence_rejected",
+                stopEvidence: result.rows[0]?.stop_evidence ?? null,
+              },
+            );
+          throw error;
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
         // fences, not credentials.
-        if (admission)
+        if (admission || patch.turnActivity === "claim")
           console.info(
             JSON.stringify({
               event: "sandbox_activity_admitted",
@@ -886,23 +1685,18 @@ export function createSqlData(
             | "runtimeTransport"
             | "preservationNote"
             | "credentialId"
+            | "conversationIds"
           >
         >(
-          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport"
+          `select s.credential_id as "credentialId",s.provider,s.status,s.preservation_note as "preservationNote",s.status_reason as "statusReason",s.expires_at as "expiresAt",s.boat_runtime as "boatRuntime",s.runtime_transport as "runtimeTransport",s.conversation_ids as "conversationIds"
            from public.sandboxes s where ${SANDBOX_VISIBLE} and s.id=$3`,
           [...scope, id],
         );
         return result.rows[0] ?? null;
       },
+      getForStop: (id) => readSandbox(id, true),
       async get(id) {
-        if (!UUID.test(id)) return null;
-        const result = await sql.query<SandboxViewRow>(
-          `select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
-           where ${SANDBOX_VISIBLE} and s.id = $3`,
-          [...scope, id],
-        );
-        const row = result.rows[0];
-        return row ? mapView(row) : null;
+        return (await readSandbox(id, false))?.sandbox ?? null;
       },
       async list(filter) {
         if (namedList) return namedSandboxPage(sql, scope, filter, namedList);

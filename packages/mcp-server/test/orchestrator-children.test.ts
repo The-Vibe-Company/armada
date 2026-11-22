@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
@@ -7,14 +7,26 @@ import {
   DelegatedAuthority,
   encryptSecret,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
-import { createSqlData } from "../src/data.ts";
+import { createSqlData, DataError } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
+import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { observeRequest } from "../src/request-observability.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
+import { createRuntimeProvider } from "../src/runtime-provider.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+} from "../src/runtime-reconciliation-conflict.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -23,17 +35,38 @@ const sharedDatabase = rowOnlyDatabase();
 async function fixture(
   parentState: "ready" | "running" = "running",
   accountKind: "anthropic" | "codex_auth" = "anthropic",
+  provider: "boat" | "modal" = "boat",
+  abortAfterTransition?: (code: unknown) => boolean,
 ) {
   const { db, people: p } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          async query<T>(statement: string, params?: unknown[]) {
+            const result = await tx.query<T>(statement, params);
+            if (statement.includes("from public.sandbox_transition(") && abortAfterTransition?.(params?.[5]))
+              throw Error("Synthetic transaction failure after journaling a transition");
+            return result;
+          },
+        }),
+      ),
   };
-  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
+  const golden =
+    provider === "modal"
+      ? (
+          await db.query<{ id: string }>(
+            `insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+             select $1,$2,'modal-child','org','modal','image','workspace','main','app',config from goldens where org_id=$1 and name='shared' returning id`,
+            [p.org, p.owner],
+          )
+        ).rows[0]
+      : (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
   if (!golden) throw Error("missing golden");
   const parent = await createSqlSandboxStore(sql).insert({
     id: crypto.randomUUID(),
-    provider: "boat",
+    provider,
     providerSandboxId: "parent-child-admission",
     goldenId: golden.id,
     orgId: p.org,
@@ -52,6 +85,26 @@ async function fixture(
     p.owner,
     parent.id,
   ]);
+  await db.query(
+    `insert into orchestrator_runtime(orchestrator_id,configuration,skill_revision,conversation_id,continuity)
+    values($1,$2::jsonb,$3,$4,$5)`,
+    [
+      id,
+      JSON.stringify({
+        version: 1,
+        orgId: p.org,
+        name: "existing coordinator",
+        goldenId: golden.id,
+        provider: "boat",
+        harness: "codex",
+        model: "m",
+        modelAccountId: crypto.randomUUID(),
+      }),
+      "78884de87066851b75e09cbda134606c0a8bc6d7",
+      parentState === "ready" ? null : "existing-native-conversation",
+      parentState === "ready" ? "not_started" : "native",
+    ],
+  );
   await db.query(
     `insert into credentials(id,scope,owner_id,kind,value_enc,name) values($1,'user',$2,$4,$3,'Child test account')`,
     [
@@ -95,7 +148,7 @@ async function fixture(
       async scrub() {},
     },
     {
-      scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop"],
+      scopes: ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"],
       goldenIds: [golden.id],
       credentialIds: [account],
     },
@@ -299,25 +352,133 @@ test("own children support independent target receipts while unrelated children 
   }
 });
 
-test("revocation between reservation and dispatch cancels queued allocation", async () => {
-  const { close, sql, id, authority, token, selection } = await fixture();
+test.each(["launch", "message"] as const)(
+  "revocation before dispatch records the failed %s admission",
+  async (action) => {
+    const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
+    try {
+      let childId: string | undefined;
+      if (action === "message") {
+        const child = await createSqlSandboxStore(sql).insert({
+          id: crypto.randomUUID(),
+          provider: parent.provider,
+          providerSandboxId: "child-dispatch-admission",
+          goldenId: golden.id,
+          orgId: p.org,
+          ownerId: p.owner,
+          harness: "codex",
+          model: selection.model,
+          reasoningEffort: "high",
+          status: "ready",
+          visibility: "private",
+        });
+        childId = child.id;
+        await db.query(
+          "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+          [childId, id, p.org, p.owner],
+        );
+      }
+      let admissions = 0;
+      let dispatches = 0;
+      const children = createSandboxChildren(
+        sql,
+        {
+          async admit(secret, request, reserve) {
+            if (++admissions === 2) await authority.revoke(id);
+            return authority.admit(secret, request, reserve);
+          },
+        },
+        {
+          async launch() {
+            dispatches++;
+            throw Error("allocation must not start");
+          },
+          async message() {
+            dispatches++;
+            throw Error("message must not start");
+          },
+          async stop() {
+            throw Error("unexpected");
+          },
+          async read() {
+            throw Error("unexpected");
+          },
+          async reconcile(op) {
+            return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+          },
+        },
+      );
+      const lines: string[] = [];
+      let receipt: Awaited<ReturnType<typeof children.launch>> | undefined;
+      const response = await observeRequest(
+        async () => {
+          receipt = childId
+            ? await children.message(token, "queued-revoke", childId, "synthetic child prompt")
+            : await children.launch(token, "queued-revoke", selection);
+          return new Response();
+        },
+        (line) => lines.push(line),
+      );
+      expect(dispatches).toBe(0);
+      if (!receipt) throw Error("Missing child receipt.");
+      expect(receipt.state).toBe("failed");
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: `scoped.child_${action}.dispatch_admission`,
+          code: "child_dispatch_not_admitted",
+          refusalCode: "authority_denied",
+          errorClass: "DelegatedAuthorityDenied",
+          sandboxId: receipt.sandboxId,
+          operationId: receipt.id,
+          requestId: response?.headers.get("x-request-id"),
+        }),
+      );
+    } finally {
+      await close();
+    }
+  },
+);
+
+test("an uncertain scoped message records a correlated operator diagnostic", async () => {
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
   try {
-    let admissions = 0,
-      allocations = 0;
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: parent.provider,
+      providerSandboxId: "child-message-outcome",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: selection.model,
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    let claimMiss = false;
+    let setupPending = false;
+    let admissions = 0;
+    let dispatches = 0;
     const children = createSandboxChildren(
       sql,
       {
         async admit(secret, request, reserve) {
-          if (++admissions === 2) await authority.revoke(id);
+          if (claimMiss && ++admissions === 2)
+            await db.query(
+              "update orchestrator_child_operations set dispatched_at=now() where orchestrator_id=$1 and idempotency_key=$2",
+              [id, "message-claim-miss"],
+            );
           return authority.admit(secret, request, reserve);
         },
       },
       {
-        async launch() {
-          allocations++;
-          throw Error("allocation must not start");
-        },
         async message() {
+          dispatches++;
+          if (setupPending) throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
+          throw new RuntimeFollowupConflict("runtime_activity_busy", "private provider response");
+        },
+        async launch() {
           throw Error("unexpected");
         },
         async stop() {
@@ -331,9 +492,312 @@ test("revocation between reservation and dispatch cancels queued allocation", as
         },
       },
     );
-    const receipt = await children.launch(token, "queued-revoke", selection);
-    expect(allocations).toBe(0);
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof children.message>> | undefined;
+    const response = await observeRequest(
+      async () => {
+        receipt = await children.message(token, "message-outcome", child.id, "synthetic child prompt");
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    if (!receipt) throw Error("Missing child message receipt.");
+    const original = receipt;
+    expect(original.state).toBe("uncertain");
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "scoped.child_message.execution",
+        code: "child_outcome_unconfirmed",
+        causeCode: "runtime_activity_busy",
+        sandboxId: child.id,
+        operationId: original.id,
+        requestId: response?.headers.get("x-request-id"),
+      }),
+    );
+    const replayResponse = await observeRequest(
+      async () => {
+        expect(await children.message(token, "message-outcome", child.id, "synthetic child prompt")).toEqual(original);
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        phase: "scoped.child_message.receipt",
+        causeCode: "prior_uncertain_receipt",
+        sandboxId: child.id,
+        operationId: original.id,
+      }),
+    );
+    expect(replayResponse?.status).toBe(200);
+    claimMiss = true;
+    const claimMissResponse = await observeRequest(
+      async () => {
+        const target = child.id.toUpperCase();
+        const missed = await children.message(token, "message-claim-miss", target, "synthetic child prompt");
+        expect(missed).toMatchObject({ state: "uncertain", sandboxId: target });
+        expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+          expect.objectContaining({
+            phase: "scoped.child_message.receipt",
+            causeCode: "dispatch_claim_missing",
+            sandboxId: child.id,
+            operationId: missed.id,
+          }),
+        );
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(claimMissResponse?.status).toBe(200);
+    expect(dispatches).toBe(1);
+    claimMiss = false;
+    setupPending = true;
+    const refused = await children.message(token, "message-setup-pending", child.id, "synthetic child prompt");
+    expect(refused.state).toBe("failed");
+    expect(await children.message(token, "message-setup-pending", child.id, "synthetic child prompt")).toEqual(refused);
+    expect(dispatches).toBe(2);
+    expect(lines.join("\n")).not.toContain("private provider response");
+  } finally {
+    await close();
+  }
+});
+
+test("scoped enrolled Boat extension fails before recording dispatch", async () => {
+  const { close, db, sql, id, p, golden, authority, token } = await fixture();
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "enrolled-child",
+      boatRuntime: true,
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: "m",
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const unexpected = async () => {
+      throw Error("Unexpected child executor call");
+    };
+    const extend = mock(unexpected);
+    const children = createSandboxChildren(sql, authority, {
+      launch: unexpected,
+      message: unexpected,
+      stop: unexpected,
+      extend,
+      read: unexpected,
+      reconcile: unexpected,
+    });
+
+    const receipt = await children.extend(token, "extend-enrolled", child.id, 1_200);
     expect(receipt.state).toBe("failed");
+    expect(extend).not.toHaveBeenCalled();
+    expect(
+      (await db.query("select dispatched_at,error_code from orchestrator_child_operations where id=$1", [receipt.id]))
+        .rows,
+    ).toEqual([{ dispatched_at: null, error_code: "child_dispatch_not_admitted" }]);
+  } finally {
+    await close();
+  }
+});
+
+test.each([
+  "message",
+  "stop",
+  "extend",
+  "shutdown while waiting",
+  "abort after commit",
+  "abandoned before dispatch",
+] as const)("scoped child admission handles %s", async (scenario) => {
+  const action = scenario === "stop" || scenario === "extend" ? scenario : "message";
+  const requestAbort = new AbortController();
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture(
+    "running",
+    "codex_auth",
+    "modal",
+  );
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: parent.provider,
+      providerSandboxId: "reconciling-child",
+      runtimeTransport: "dialout",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: selection.model,
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const lease = action === "stop" ? crypto.randomUUID() : null;
+    await db.query(
+      `update sandboxes set activity_lease_id=$2, activity_until=case when $2::uuid is not null then 'infinity'::timestamptz end,
+        reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
+      [child.id, lease],
+    );
+    const waiting = Promise.withResolvers<void>();
+    const raced = Promise.withResolvers<void>();
+    let dispatchAdmissions = 0;
+    let executionAttempts = 0;
+    const execute = mock(async () => {
+      if (++executionAttempts !== 1) return;
+      raced.resolve();
+      if (action === "stop") throw new RuntimeCheckpointActivityConflict();
+      throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
+    });
+    const recoverStop = spyOn({ recoverStop: async () => {} }, "recoverStop");
+    const children = createSandboxChildren(
+      sql,
+      {
+        async admit(secret, request, reserve) {
+          const result = await authority.admit(secret, request, reserve);
+          if (++dispatchAdmissions === 2) waiting.resolve();
+          if (dispatchAdmissions === 3 && scenario === "abort after commit") requestAbort.abort();
+          return result;
+        },
+      },
+      {
+        message: execute,
+        stop: execute,
+        recoverStop,
+        extend: execute,
+        async launch() {
+          throw Error("unexpected launch");
+        },
+        async read() {
+          throw Error("unexpected read");
+        },
+        async reconcile() {
+          throw Error("unexpected reconciliation");
+        },
+      },
+    );
+    const request = () => {
+      if (action === "message")
+        return children.message(token, "busy", child.id, "synthetic child prompt", requestAbort.signal);
+      if (action === "extend") return children.extend(token, "busy", child.id, 60);
+      return children.stop(token, "busy", child.id);
+    };
+    const pending = request();
+    await waiting.promise;
+    expect(execute).not.toHaveBeenCalled();
+    expect(
+      (await db.query("select state,dispatched_at from orchestrator_child_operations where target_id=$1", [child.id]))
+        .rows,
+    ).toEqual([{ state: "pending", dispatched_at: null }]);
+
+    if (scenario === "abandoned before dispatch") {
+      expect(await children.reconcileOne()).toBe(false);
+      await db.query("update orchestrator_child_operations set reconcile_after='-infinity' where target_id=$1", [
+        child.id,
+      ]);
+      expect(await children.reconcileOne()).toBe(true);
+      const recorded = await request();
+      expect(recorded).toMatchObject({ state: "failed", sandboxId: child.id });
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+      runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+      expect(await pending).toEqual(recorded);
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "shutdown while waiting") {
+      children.stopAdmission();
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    if (lease) {
+      await createSqlData(sql)({
+        userId: p.owner,
+        orgs: [{ orgId: p.org, role: "member" }],
+        via: "service",
+      }).sandboxes.update(child.id, {
+        finishActivity: true,
+        activityToken: lease,
+        expectedGeneration: child.lifecycleGeneration!,
+      });
+    } else {
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+    }
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    if (scenario === "abort after commit") {
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    await raced.promise;
+    await db.query("select 1");
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    const result = await pending;
+    expect(result).toMatchObject({ state: "succeeded", sandboxId: child.id });
+    expect(await request()).toEqual(result);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(recoverStop).not.toHaveBeenCalled();
+  } finally {
+    await close();
+  }
+});
+
+test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
+  const { close, db, sql, id, authority, token, selection } = await fixture();
+  try {
+    const boat = fakeBoat();
+    const admissionSql: Sql = {
+      query: sql.query,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        await authority.revoke(id);
+        return result;
+      },
+    };
+    const children = createSandboxChildren(sql, authority, {
+      async launch(operation, selected) {
+        return launchSandboxChild({
+          sql,
+          provider: boat.provider,
+          operation,
+          selection: selected,
+          stores: {
+            goldens: createSqlGoldenStore(admissionSql),
+            sandboxes: createSqlSandboxStore(sql),
+            credentials: {
+              async resolve() {
+                throw Error("no legacy fallback");
+              },
+            },
+          },
+          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+        });
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async message() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("unexpected");
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    const receipt = await children.launch(token, "revoked-after-admission", selection);
+    expect(receipt.state).toBe("failed");
+    expect(boat.forks).toHaveLength(0);
+    expect(
+      (
+        await db.query("select sandbox_id from ordinary_launch_snapshot_intents where sandbox_id=$1", [
+          receipt.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([]);
   } finally {
     await close();
   }
@@ -609,7 +1073,7 @@ for (const proof of [
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
   const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
-  const { ORCHESTRATOR_SCOPED_PATH } = await import("../src/sandbox-access-scoped-gateway.ts");
+  const { ORCHESTRATOR_SCOPED_PATH } = await import("@armada/core/contract");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const { createSandboxScopedGateway } = await import("../src/sandbox-access-scoped-gateway.ts");
@@ -655,11 +1119,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         if (!child) throw Error("missing owned child");
         await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
       },
+      async extend(_op, ttlSeconds) {
+        expect(ttlSeconds).toBe(60);
+      },
       async reconcile(op) {
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
       },
     };
-    const route = createSandboxScopedGateway(createSandboxChildren(sql, authority, executor));
+    const route = createSandboxScopedGateway(createSandboxChildren(sql, authority, executor), authority);
     const clientFor = async (secret: string) => {
       const client = new Client({ name: "scoped-native-fixture", version: "1" });
       await client.connect(
@@ -735,9 +1202,40 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
           body: JSON.stringify(payload),
         }),
       )) ?? new Response(null, { status: 404 });
-    expect((await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child")).status).toBe(200);
+    const { publishedResponse } = await import("./published-response.ts");
+    const launchResponse = await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child");
+    expect(launchResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/launch").safeParse(await launchResponse.json()).success).toBe(true);
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => boat.provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    const readResponse = await services.scopedToolsRoute(
+      new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/read`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sandboxId: receipt.sandboxId }),
+      }),
+    );
+    if (!readResponse) throw new Error("Scoped read did not dispatch.");
+    expect(readResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
     expect(boat.forks).toHaveLength(1);
-    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    for (const [method, body, key] of [
+      ["message", { text: "continue the same ticket" }, "mcp-child-message"],
+      ["extend", { ttlSeconds: 60 }, "api-child-extend"],
+      ["stop", {}, "api-child-stop"],
+    ] as const) {
+      const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
+      expect(response.status).toBe(200);
+      const parsed = publishedResponse(`orchestrator-tools/${method}`).safeParse(await response.json());
+      expect(parsed).toMatchObject({ success: true, data: { result: { state: "succeeded" } } });
+    }
+    expect(boat.prompts).toHaveLength(1);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
     expect(boat.stops).toHaveLength(1);
     for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
@@ -746,13 +1244,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     const denied = await api("read", { sandboxId: unrelated.id });
     expect(denied.status).toBe(403);
     expect((await denied.text()).includes(token)).toBe(false);
+    const oversizedSerializedPrompt = "\\".repeat(70_000);
     expect(
       (
         await route(
           new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
             method: "POST",
-            headers: { authorization: `Bearer ${token}` },
-            body: "x".repeat(129 * 1024),
+            headers: { authorization: `Bearer ${token}`, "idempotency-key": "oversized-launch" },
+            body: JSON.stringify({ selection: { ...selection, prompt: oversizedSerializedPrompt } }),
           }),
         )
       )?.status,
@@ -783,6 +1282,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       { scopes: ["worker:read"], goldenIds: [], credentialIds: [] },
     );
     const reader = await clientFor(readonly);
+    expect((await reader.listTools()).tools.map((tool) => tool.name)).toEqual(["read"]);
     expect((await reader.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).not.toBe(
       true,
     );
@@ -886,27 +1386,392 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-// Real delegated stop and SQL fences: a completed stop must remain live-readable.
-test("managed child stop clears its epoch only after physical confirmation", async () => {
-  const { close, db, sql, p, id, token, golden } = await fixture();
+const stopRecoveryCases = ["checkpoint", "handler", "both", "recovery rollback"];
+
+test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss) => {
+  const loseStopReply = loss === "both";
+  const abortRecovery = loss === "recovery rollback";
+  const suspendFirstStop = loss !== "checkpoint";
+  const checkpointWritten = Promise.withResolvers<void>();
+  const releaseCheckpoint = Promise.withResolvers<void>();
+  let recoveryAborts = 0;
+  const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal", (code) => {
+    if (!abortRecovery || code !== "runtime_retained_stop") return false;
+    recoveryAborts++;
+    return true;
+  });
   try {
     const fake = fakeBoat();
-    let pending = false;
+    let checkpointRequest: string | undefined;
+    let checkpointCalls = 0;
+    let hostAvailable = true;
+    let logicalId: string;
+    const physicalDeadline = new Date(Date.now() + 16_000_000);
+    const host = {
+      ...fake.provider,
+      id: "modal" as const,
+      async get(id: string) {
+        const info = await fake.provider.get(id);
+        return info.state === "ready"
+          ? { ...info, providerState: "active", expiresAt: physicalDeadline, physicalGeneration: "1" }
+          : info;
+      },
+      async captureRuntimeWork() {
+        expect(checkpointRequest).toBeDefined();
+        return { status: "clean" as const };
+      },
+      async stop(request: Parameters<typeof fake.provider.stop>[0] & { requireRetention?: boolean }) {
+        expect(checkpointRequest).toBeDefined();
+        expect(request.requireRetention).toBe(true);
+        expect(
+          (
+            await sql.query(
+              `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
+              [logicalId],
+            )
+          ).rows[0],
+        ).toEqual({ status_reason: "idle_paused", captured: true });
+        await fake.provider.stop(request);
+        if (loseStopReply) throw Error("synthetic lost compute stop response");
+      },
+    };
+    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
+    const sends: { id: string; prompt: string; request_id?: string | undefined }[] = [];
+    let physicalId: string;
+    const services = createSandboxAccessServices({
+      sql,
+      providers: {
+        async resolve(target, caller) {
+          if (!hostAvailable) throw Error("Modal App is unavailable");
+          expect(target.id).toBeDefined();
+          expect(target.runtimeTransport).toBe("dialout");
+          expect(target.visibility).toBe("private");
+          expect(target.sourceGoldenVisibility).toBe("org");
+          expect(caller.userId).toBe(p.owner);
+          return createRuntimeProvider(
+            host,
+            physicalId,
+            { events: host.events, getPrompt: host.getPrompt },
+            undefined,
+            host.captureRuntimeWork,
+          );
+        },
+      },
+      credentials,
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+      async runtimeCheckpoint(caller, request) {
+        expect(caller.userId).toBe(p.owner);
+        expect((await createSqlData(sql)(caller).sandboxes.get(request.id))?.status).toBe("running");
+        checkpointRequest = request.request_id;
+        checkpointCalls++;
+        if (checkpointCalls === 1) {
+          await sql.query("insert into runtime_checkpoints(sandbox_id,epoch,request_id) values($1,1,$2)", [
+            request.id,
+            request.request_id,
+          ]);
+          checkpointWritten.resolve();
+          if (suspendFirstStop) await releaseCheckpoint.promise;
+          throw Error("synthetic lost response after checkpoint intent");
+        }
+        await sql.query(
+          "update runtime_checkpoints set watermark=0,completed_at=now() where sandbox_id=$1 and epoch=1 and request_id=$2",
+          [request.id, request.request_id],
+        );
+        return {
+          id: request.id,
+          requestId: request.request_id,
+          runtime: { kind: "armada", epoch: "1" },
+          checkpoint: { state: "complete", watermark: 0, acknowledgedSequence: 0 },
+        };
+      },
+      async runtimeSend(caller, request) {
+        expect(caller.userId).toBe(p.owner);
+        expect(caller.orgs.map(({ orgId }) => orgId)).toEqual([p.org]);
+        sends.push(request);
+        return {
+          id: request.id,
+          requestId: request.request_id!,
+          runtime: { kind: "armada", epoch: "1" },
+          promptId: "runtime-follow-up",
+          conversationId: "runtime-conversation",
+          status: "running",
+        };
+      },
+      runtimePlacements: {
+        modal: {
+          async provider(_actor, target) {
+            expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
+            return host;
+          },
+          credentials,
+          connections: { async validate() {}, async bind() {} },
+          policy: {
+            async start({ sandbox }) {
+              logicalId = sandbox.id;
+              physicalId = sandbox.providerSandboxId;
+              expect(sandbox.runtimeTransport).toBe("dialout");
+              expect(sandbox.credentialId).toBe(selection.credentialId);
+              expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
+              expect(sandbox.visibility).toBe("private");
+              const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+              const ticket = await enrolments.issue({
+                sandboxId: sandbox.id,
+                ownerId: p.owner,
+                commandGrantExpiresAt: physicalDeadline.getTime(),
+                configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
+              });
+              const active = await enrolments.enrol(ticket.enrolmentToken);
+              return {
+                epoch: active.epoch,
+                prepareWorkspace: async () => ({ status: "not_connected" }),
+                async prompt(request) {
+                  expect(request.text).toStartWith("first turn");
+                  return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "running" };
+                },
+              };
+            },
+          },
+        },
+      },
+    });
+    const request = { ...selection, prompt: "first turn" };
+    const receipt = await services.childWorker.launch(token, "enrolled-child", request);
+    expect(receipt.state).toBe("succeeded");
+    expect((await services.childWorker.launch(token, "enrolled-child", request)).id).toBe(receipt.id);
+    expect(fake.forks).toHaveLength(1);
+    expect(fake.forks[0]?.idempotencyKey).toBe(receipt.id);
+    expect(fake.execs).toHaveLength(0);
+    await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
+      id: receipt.sandboxId,
+      events: [],
+    });
+    hostAvailable = false;
+    const message = await services.childWorker.message(token, "message", receipt.sandboxId, "follow up");
+    hostAvailable = true;
+    expect(message.state).toBe("succeeded");
+    expect(sends).toEqual([{ id: receipt.sandboxId, prompt: "follow up", request_id: message.id }]);
+    expect(fake.prompts).toHaveLength(0);
+    expect(
+      (
+        await sql.query(
+          `select c.orchestrator_id,c.owner_id,c.org_id,s.task_prompt_id from orchestrator_children c
+         join sandboxes s on s.id=c.sandbox_id where c.sandbox_id=$1`,
+          [receipt.sandboxId],
+        )
+      ).rows,
+    ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, task_prompt_id: "runtime-prompt" }]);
+    expect((await services.childWorker.extend(token, "extend", receipt.sandboxId, 15_000)).state).toBe("succeeded");
+    const firstStop = services.childWorker.stop(token, "stop", receipt.sandboxId);
+    let stopped: Awaited<typeof firstStop>;
+    try {
+      if (suspendFirstStop) {
+        await Promise.race([
+          checkpointWritten.promise,
+          firstStop.then(() => {
+            throw Error("Initial stop completed before writing the checkpoint.");
+          }),
+        ]);
+        expect(fake.stops).toHaveLength(0);
+        stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+      } else {
+        const first = await firstStop;
+        expect(first.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(0);
+        stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+        expect(stopped.id).toBe(first.id);
+      }
+      expect(stopped.state).toBe(abortRecovery ? "pending" : loseStopReply ? "uncertain" : "succeeded");
+    } finally {
+      releaseCheckpoint.resolve();
+      await firstStop;
+    }
+    expect(checkpointRequest).toBe(stopped.id);
+    if (abortRecovery) {
+      expect(recoveryAborts).toBe(1);
+      expect(
+        (await sql.query("select activity_lease_id, stop_requested_at from sandboxes where id=$1", [receipt.sandboxId]))
+          .rows,
+      ).toEqual([{ activity_lease_id: null, stop_requested_at: null }]);
+    } else {
+      expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
+    }
+    expect(checkpointCalls).toBe(2);
+    expect(fake.stops).toHaveLength(abortRecovery ? 0 : 1);
+    expect(
+      (
+        await sql.query(
+          `select actor,code,to_status from sandbox_transitions
+         where sandbox_id=$1 and to_status in ('stopping','stopped') order by id`,
+          [receipt.sandboxId],
+        )
+      ).rows,
+    ).toEqual(
+      abortRecovery
+        ? []
+        : [
+            { actor: "api", code: "runtime_retained_stop", to_status: "stopping" },
+            ...(loseStopReply ? [] : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped" }]),
+          ],
+    );
+    await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
+      status: abortRecovery ? "running" : loseStopReply ? "stopping" : "stopped",
+    });
+  } finally {
+    await close();
+  }
+});
+
+test.each(["golden lookup failure", "placement refusal", "parent revocation during configuration"] as const)(
+  "scoped Modal launch fences host dispatch after %s",
+  async (scenario) => {
+    const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
+    try {
+      if (scenario === "golden lookup failure") {
+        await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
+      }
+      const preallocationRefused = scenario !== "parent revocation during configuration";
+      const fake = fakeBoat();
+      const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
+      let bootstraps = 0;
+      const host = {
+        ...fake.provider,
+        id: "modal" as const,
+        async startRuntime() {
+          bootstraps++;
+        },
+      };
+      const services = createSandboxAccessServices({
+        sql,
+        providers: { resolve: async () => host },
+        credentials,
+        connections: undefined,
+        encryptionKey: ENCRYPTION_KEY,
+        scopedMcpUrl: "https://armada.example/mcp",
+        runtimePlacements: {
+          modal: {
+            async provider() {
+              if (scenario === "placement refusal") throw new VaultError("unavailable", "private placement detail");
+              return host;
+            },
+            credentials,
+            connections: { async validate() {}, async bind() {} },
+            policy: {
+              async start(input) {
+                await authority.revoke(id);
+                await (input.host as typeof host).startRuntime();
+                throw Error("Revoked parent should have prevented bootstrap");
+              },
+            },
+          },
+        },
+      });
+      const log = spyOn(console, "error");
+      try {
+        let receipt: Awaited<ReturnType<typeof services.childWorker.launch>> | undefined;
+        const response = await observeRequest(async () => {
+          receipt = await services.childWorker.launch(token, scenario, selection);
+          return new Response();
+        }, console.error);
+        if (!receipt) throw Error("Missing child receipt.");
+        expect(receipt.state).toBe(preallocationRefused ? "failed" : "uncertain");
+        if (preallocationRefused) {
+          expect(await services.childWorker.launch(token, scenario, selection)).toEqual(receipt);
+          const placementRefused = scenario === "placement refusal";
+
+          const diagnostics = log.mock.calls
+            .map(([line]) => String(line))
+            .filter((line) => line.includes("operator_failure"));
+          expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+            expect.objectContaining({
+              phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
+              code: "child_preallocation_rejected",
+              refusalCode: placementRefused ? "unavailable" : "invalid_config",
+              errorClass: placementRefused ? "VaultError" : "GoldenError",
+              sandboxId: receipt.sandboxId,
+              operationId: receipt.id,
+              requestId: response?.headers.get("x-request-id"),
+            }),
+          ]);
+          expect(diagnostics.join("\n")).not.toContain("private placement detail");
+          expect((await sql.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
+          expect(
+            (
+              await sql.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [
+                receipt.sandboxId,
+              ])
+            ).rows,
+          ).toEqual([]);
+        }
+      } finally {
+        log.mockRestore();
+      }
+      expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
+      expect(bootstraps).toBe(0);
+    } finally {
+      await close();
+    }
+  },
+);
+
+// Real delegated stop and SQL fences: a completed stop must remain live-readable.
+test("managed child stop clears its epoch only after physical confirmation", async () => {
+  let scenario:
+    | "confirmed"
+    | "pending"
+    | "stale"
+    | "failed exit"
+    | "admission abort"
+    | "settlement abort"
+    | "runtime admitted";
+  const { close, db, sql, p, id, token, golden } = await fixture(
+    "running",
+    "anthropic",
+    "boat",
+    (code) =>
+      (scenario === "admission abort" && code === "owner_stop_admitted") ||
+      (scenario === "settlement abort" && code === "owner_stop_settled"),
+  );
+  try {
+    const fake = fakeBoat();
+    let childId: string;
     const provider = {
       ...fake.provider,
+      async get(id: string) {
+        const info = await fake.provider.get(id);
+        return scenario === "failed exit" && info.state === "stopped"
+          ? { ...info, retainedSnapshot: "pending" as const }
+          : info;
+      },
       stop: async (request: { sandboxId: string }) => {
-        if (!pending) await fake.provider.stop(request);
+        if (scenario !== "pending") await fake.provider.stop(request);
       },
     };
     const services = createSandboxAccessServices({
       sql,
-      providers: { resolve: async () => provider },
+      providers: {
+        async resolve() {
+          if (scenario === "runtime admitted") throw Error("The existing reconciler owns the admitted runtime stop.");
+          if (scenario === "stale")
+            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [childId]);
+          return provider;
+        },
+      },
       credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    for (pending of [false, true]) {
+    for (scenario of [
+      "confirmed",
+      "pending",
+      "stale",
+      "failed exit",
+      "admission abort",
+      "settlement abort",
+      "runtime admitted",
+    ] as const) {
       const physical = await fake.provider.fork({
         from: "test",
         name: "child",
@@ -922,23 +1787,83 @@ test("managed child stop clears its epoch only after physical confirmation", asy
         orgId: p.org,
         ownerId: p.owner,
         harness: "codex",
-        status: "ready",
+        status: scenario === "failed exit" ? "failed" : "ready",
+        ...(scenario === "runtime admitted" ? { boatRuntime: true } : {}),
         model: "m",
         reasoningEffort: "high",
       });
       await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-      await services.childWorker.stop(token, crypto.randomUUID(), child.id);
+      if (scenario === "runtime admitted")
+        await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [child.id]);
+      childId = child.id;
+      const calls = fake.stops.length;
+      const receipt = await services.childWorker.stop(token, crypto.randomUUID(), child.id);
       const store = createSqlData(sql)({
         via: "service",
         userId: p.owner,
         orgs: [{ orgId: p.org, role: "member" }],
       }).sandboxes;
       const saved = await store.get(child.id);
+      const journal = await db.query(
+        "select actor,code,to_status,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
+        [child.id],
+      );
+      const [{ activity_lease_id: lease } = {}] = (
+        await db.query<{ activity_lease_id: string | null }>("select activity_lease_id from sandboxes where id=$1", [
+          child.id,
+        ])
+      ).rows;
+      if (scenario === "runtime admitted") {
+        expect(receipt.state).toBe("succeeded");
+        expect(fake.stops).toHaveLength(calls);
+        expect(saved).toMatchObject({ status: "stopping", lifecycleGeneration: 1 });
+        expect(lease).toBeNull();
+        expect(journal.rows).toEqual([]);
+        continue;
+      }
+      if (scenario === "stale" || scenario === "admission abort") {
+        expect(receipt.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(calls);
+        expect(saved).toMatchObject({
+          status: "ready",
+          lifecycleGeneration: scenario === "stale" ? 2 : 1,
+          stopRequestedAt: null,
+        });
+        expect(lease).toBeNull();
+        expect(journal.rows).toEqual([]);
+        continue;
+      }
+      if (scenario === "failed exit") {
+        expect(receipt.state).toBe("succeeded");
+        const stoppedAt = saved?.stoppedAt;
+        expect(stoppedAt).toEqual(expect.any(String));
+        expect(saved).toMatchObject({ status: "failed", stopRequestedAt: null });
+        expect(journal.rows).toEqual([]);
+        await services.childWorker.stop(token, crypto.randomUUID(), child.id);
+        expect(fake.stops).toHaveLength(calls + 1);
+        expect((await store.get(child.id))?.stoppedAt).toBe(stoppedAt);
+        continue;
+      }
+      const pending = scenario !== "confirmed";
+      if (scenario === "settlement abort") {
+        expect(receipt.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(calls + 1);
+        expect(saved?.lifecycleGeneration).toBe(2);
+        expect(lease).toEqual(expect.any(String));
+      }
+      expect(journal.rows).toEqual([
+        { actor: "owner", code: "owner_stop_admitted", to_status: "stopping", generation: 2 },
+        ...(pending
+          ? []
+          : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped", generation: 3 }]),
+      ]);
       expect(saved?.status).toBe(pending ? "stopping" : "stopped");
       expect(Boolean(saved?.stopRequestedAt)).toBe(pending);
       expect(saved?.stoppedAt !== null).toBe(!pending);
-      const report = await readStatus(provider, store, saved!, { now: new Date() });
-      expect(report.providerState).toBe(pending ? null : "archived");
+      if (scenario !== "settlement abort") {
+        const report = await readStatus(provider, store, saved!, { now: new Date() });
+        expect(report.providerState).toBe(pending ? null : "archived");
+      }
     }
   } finally {
     await close();
@@ -947,19 +1872,48 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-test("scoped child message settles through the native receipt worker into Langfuse export", async () => {
-  const { close, db, sql, p, id, token, golden } = await fixture();
+const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"];
+test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
+  const { close, db, sql, p, id, token, golden } = await fixture(
+    "running",
+    "anthropic",
+    "boat",
+    (code) => scenario === "abort" && code === "native_child_send_admitted",
+  );
   try {
     const fake = fakeBoat();
+    const provider = {
+      ...fake.provider,
+      async prompt(request: Parameters<typeof fake.provider.prompt>[0]) {
+        const receipt = await fake.provider.prompt(request);
+        if (scenario === "lost response") throw Error("Lost child prompt response");
+        return receipt;
+      },
+    };
+    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
     const services = createSandboxAccessServices({
       sql,
-      providers: { resolve: async () => fake.provider },
-      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      providers: { resolve: async () => provider },
+      credentials:
+        scenario !== "stale"
+          ? credentials
+          : {
+              ...credentials,
+              async assertTurn(_actor, sandboxId) {
+                await db.query("update sandboxes set status='running' where id=$1", [sandboxId]);
+              },
+            },
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    const physical = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, env: {}, noEnv: true });
+    const physical = await fake.provider.fork({
+      from: "test",
+      name: "child",
+      ttlSeconds: 3600,
+      env: {},
+      noEnv: true,
+    });
     const child = await createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
       provider: "boat",
@@ -968,7 +1922,7 @@ test("scoped child message settles through the native receipt worker into Langfu
       orgId: p.org,
       ownerId: p.owner,
       harness: "codex",
-      status: "ready",
+      status: scenario === "lost response" ? "running" : "ready",
       model: "m",
       reasoningEffort: "high",
     });
@@ -986,7 +1940,97 @@ test("scoped child message settles through the native receipt worker into Langfu
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [p.org, new Uint8Array([1])],
     );
-    expect((await services.childWorker.message(token, "idle-child", child.id, "follow up")).state).toBe("succeeded");
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes add constraint reject_child_prompt check (task_prompt_id <> 'prompt_1')");
+    async function laterPreservationHandoff() {
+      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [child.id]);
+      await db.query(
+        `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,activity_lease_id=null,activity_until=null,
+         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
+       where id=$1`,
+        [child.id],
+      );
+      await db.query(
+        `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,1,lifecycle_generation,1,
+         jsonb_build_object('completedPrompts',(
+           select jsonb_agg(p.prompt_id) from native_webhook_prompts p
+           where p.sandbox_id=sandboxes.id and p.completed_at is not null
+         ))
+       from sandboxes where id=$1`,
+        [child.id],
+      );
+      return db.query(
+        "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+        [child.id],
+      );
+    }
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof services.childWorker.message>> | undefined;
+    await observeRequest(
+      async () => {
+        receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    if (!receipt) throw Error("Missing child receipt.");
+    if (scenario === "lost response" || scenario === "settlement abort") {
+      expect(receipt.state).toBe("uncertain");
+      expect(fake.prompts).toHaveLength(1);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "ineligible" }]);
+      return;
+    }
+    if (scenario !== "accepted") {
+      expect(receipt.state).toBe("failed");
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: "scoped.child_message.execution",
+          code: "child_dispatch_not_admitted",
+          refusalCode: scenario === "stale" ? "sandbox_not_ready" : "native_admission_error",
+          operationId: receipt.id,
+          sandboxId: child.id,
+        }),
+      );
+      expect(fake.prompts).toHaveLength(0);
+      expect(
+        (
+          await db.query(
+            "select status,lifecycle_generation::int,activity_lease_id,task_prompt_id from sandboxes where id=$1",
+            [child.id],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          status: scenario === "stale" ? "running" : "ready",
+          lifecycle_generation: 1,
+          activity_lease_id: null,
+          task_prompt_id: "prior",
+        },
+      ]);
+      expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
+      return;
+    }
+    expect(receipt.state).toBe("succeeded");
+    expect(
+      (
+        await db.query(
+          "select actor,code,from_status,to_status,generation::int from sandbox_transitions where sandbox_id=$1",
+          [child.id],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        actor: "native_turn",
+        code: "native_child_send_admitted",
+        from_status: "ready",
+        to_status: "running",
+        generation: 2,
+      },
+    ]);
     expect(
       (
         await db.query<{ type: string }>(
@@ -1012,7 +2056,43 @@ test("scoped child message settles through the native receipt worker into Langfu
         )
       ).rows,
     ).toEqual([{ terminal_status: "finished" }]);
+    expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
   } finally {
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes drop constraint if exists reject_child_prompt");
     await close();
+  }
+});
+
+test("the event feed grants a scoped bearer access only to its authorized child", async () => {
+  const f = await fixture();
+  try {
+    const child = await createSqlSandboxStore(f.sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "event-feed-child",
+      goldenId: f.golden.id,
+      orgId: f.p.org,
+      ownerId: f.p.owner,
+      harness: "codex",
+      model: "m",
+      reasoningEffort: "medium",
+      status: "ready",
+      visibility: "private",
+    });
+    await f.db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, f.id, f.p.org, f.p.owner]);
+    await f.db.query("insert into event_log(org_id,sandbox_id,kind,ref) values($1,$2,'transition',1)", [
+      f.p.org,
+      child.id,
+    ]);
+    const feed = createEventFeed(f.sql, f.authority);
+    expect(await feed.child(f.token, child.id)("0")).toEqual([
+      expect.objectContaining({ sandboxId: child.id, kind: "transition", sequence: null }),
+    ]);
+    expect(await feed.child(f.token, f.parent.id)("0")).toBeNull();
+    await f.db.query("update orchestrator_delegations set revoked_at=now() where orchestrator_id=$1", [f.id]);
+    expect(await feed.child(f.token, child.id)("0")).toBeNull();
+  } finally {
+    await f.close();
   }
 });

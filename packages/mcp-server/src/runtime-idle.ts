@@ -1,10 +1,13 @@
 import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { dockerHostSupportsResume } from "./docker-host-version.ts";
+import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { dispatchableRuntimeCommand } from "./runtime-authority-extension.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
+import { admitCheckpointedIdleStop, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 
 /** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
  * not process inspection: only an active turn or admitted command blocks pause. */
@@ -39,11 +42,16 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(tx: Sql, id: string, existing: { request_id: string | null; merge_stop: boolean | null }) {
+  async function guard(
+    tx: Sql,
+    id: string,
+    generation: string,
+    existing: { request_id: string | null; merge_stop: boolean | null },
+  ) {
     const target = (
       await tx.query<{ task_prompt_id: string | null; merge_proof: boolean }>(
-        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1`,
-        [id],
+        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
+        [id, generation],
       )
     ).rows[0];
     // A durable merge stop owns its checkpoint. A manual/idle checkpoint
@@ -53,7 +61,8 @@ export function createRuntimeIdle(
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
-       where c.sandbox_id=$1 and c.result_enc is null and not ${expiredOutputRead("c.request_id", "$2")} limit 1`,
+       where c.sandbox_id=$1 and c.result_enc is null and not ${expiredOutputRead("c.request_id", "$2")}
+         and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")} limit 1`,
       [id, String(now())],
     );
     if (busy.rows.length) throw Error("Runtime command pending.");
@@ -86,11 +95,11 @@ export function createRuntimeIdle(
             owner_id: string;
             org_id: string;
             provider: string;
-            daemon_version: string | null;
+            daemon_protocol: number | null;
             request_id: string | null;
             merge_stop: boolean | null;
           }>(
-            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_version,p.request_id::text,p.merge_stop from public.sandboxes s
+            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_protocol,p.request_id::text,p.merge_stop from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
@@ -99,6 +108,7 @@ export function createRuntimeIdle(
              and exists(select 1 from public.members hm where hm.org_id=h.org_id and hm.user_id=h.owner_id)
            where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout') or (s.provider='docker' and $2::boolean))
            and s.status in ('ready','running') and s.stop_requested_at is null
+           and not ${unresolvedModalLaunch("s")}
            and s.expires_at>now() and not s.application_secret_tainted
            and s.activity_lease_id is null and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
            order by case when $1::uuid is null or s.id>$1::uuid then 0 else 1 end,s.id limit 20`,
@@ -108,14 +118,17 @@ export function createRuntimeIdle(
         for (const row of rows) {
           signal.throwIfAborted();
           cursor = row.id;
-          if (row.provider === "docker" && !dockerHostSupportsResume(row.daemon_version)) continue;
+          if (row.provider === "docker" && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.
             // Upgrade pre-projection archives once, outside checkpoint admission.
             // Lock in the same order as ingestion so no committed events are lost.
-            await sql.transaction!(async (tx) => {
-              await tx.query("select id from public.sandboxes where id=$1 for update", [row.id]);
+            const generation = await sql.transaction!(async (tx) => {
+              const locked = await tx.query<{ generation: string }>(
+                "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update",
+                [row.id],
+              );
               const legacy = (
                 await tx.query<{ sequence: string }>(
                   `select coalesce(max(sequence),0)::text as sequence from public.runtime_events
@@ -126,15 +139,19 @@ export function createRuntimeIdle(
               ).rows[0];
               if (Number(legacy?.sequence) > 0)
                 await projectRuntimeIdle(tx, row.id, key, Number(legacy!.sequence), [], Number(legacy!.sequence));
+              const generation = locked.rows[0]?.generation;
+              if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation, key);
+              return generation;
             });
+            if (generation === undefined) continue;
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.
-            await guard(sql, row.id, row);
+            await guard(sql, row.id, generation, row);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
               { id: row.id, request_id: requestId, runtimeVersion: 1 },
-              (tx) => guard(tx, row.id, row),
+              (tx) => guard(tx, row.id, generation, row),
             );
             signal.throwIfAborted();
             if (row.provider === "docker") {
@@ -143,18 +160,7 @@ export function createRuntimeIdle(
               await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);
               continue;
             }
-            // Leave expiry unchanged. Existing lifecycle owns fenced provider shutdown.
-            await sql.query(
-              `update public.sandboxes set status='stopping',status_reason=case when exists(
-                 select 1 from public.runtime_checkpoints p where p.sandbox_id=$1 and p.request_id=$2::uuid and p.merge_stop
-               ) then 'work_merged' else 'idle_paused' end,stop_requested_at=coalesce(stop_requested_at,now()),
-               stop_generation=stop_generation+1,reconcile_after=now()
-               where id=$1 and status in ('ready','running') and stop_requested_at is null
-               and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-                 on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1 and p.request_id=$2::uuid and p.watermark is not null
-                 and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1))`,
-              [row.id, requestId],
-            );
+            await sql.transaction!((tx) => admitCheckpointedIdleStop(tx, row.id, generation, requestId));
           } catch {
             // Pending checkpoints retain their request ID and retry next sweep.
           }

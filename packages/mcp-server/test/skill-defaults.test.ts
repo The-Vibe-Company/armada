@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
+import { skillDefaultOperations } from "@armada/core/contract";
 import type { GoldenActor, Sql } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
 import type { GoldenRow } from "../../core/src/golden-store.ts";
@@ -7,7 +8,6 @@ import { GOLDEN_SELECT, mapGoldenRow } from "../../core/src/golden-store.ts";
 import { createSkillDefaultsService } from "../../core/src/skill-defaults.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -158,7 +158,7 @@ test("skill defaults JWT reads obey own/org/private visibility and never permit 
   }
 });
 
-test("HTTP and MCP default operations share persisted state and strict authenticated transport validation", async () => {
+test("Skill-default REST operations validate requests and persist replacement pins", async () => {
   const f = await fixture();
   const boat = fakeBoat();
   const options: ControlOptions = {
@@ -190,27 +190,17 @@ test("HTTP and MCP default operations share persisted state and strict authentic
   const saved = await api("set", f.request("personal", ["team/tool@1.2.3"]));
   expect(saved?.status).toBe(200);
   expect(saved?.headers.get("cache-control")).toBe("no-store");
-  expect(await saved?.json()).toEqual({ skills: ["team/tool@1.2.3"] });
-  const caller = { ...f.actor(), via: "supabase" as const };
-  const context = {
-    skillDefaults: f.service,
-    caller,
-    data: createSqlData(f.sql)(caller),
-    provider: async () => boat.provider,
-    launchCredentials: {
-      resolve: async () => {
-        throw new Error("Defaults operations never resolve launch credentials.");
-      },
-    },
-    exposedSecrets: async () => [],
-    now: () => new Date(),
-    sleep: async () => {},
-  };
-  expect(await callSharedTool(context, "skill_defaults_get", read)).toEqual({ skills: ["team/tool@1.2.3"] });
-  await expect(
-    callSharedTool(context, "skill_defaults_set", { ...f.request("personal", []), extra: 1 }),
-  ).rejects.toThrow();
-  await expect(callSharedTool(context, "skill_defaults_get", f.request("personal", []))).rejects.toThrow();
-  expect(await callSharedTool(context, "skill_defaults_set", f.request("personal", []))).toEqual({ skills: [] });
+  expect(skillDefaultOperations.setSkillDefaults.output.parse(await saved?.json())).toEqual({
+    skills: ["team/tool@1.2.3"],
+  });
+  const loaded = await api("get", read);
+  expect(loaded?.status).toBe(200);
+  expect(loaded?.headers.get("cache-control")).toBe("no-store");
+  expect(skillDefaultOperations.readSkillDefaults.output.parse(await loaded?.json())).toEqual({
+    skills: ["team/tool@1.2.3"],
+  });
+  expect((await api("get", f.request("personal", [])))?.status).toBe(400);
+  const cleared = await api("set", f.request("personal", []));
+  expect(cleared?.status).toBe(200);
   expect(await (await api("get", read))?.json()).toEqual({ skills: [] });
 });

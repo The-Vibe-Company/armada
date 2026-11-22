@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { installNativeCwdWrapper, nativeCwdCommand } from "../src/native-cwd.ts";
 
-test("ordinary Claude needs no Python bridge and managed installation refuses a missing interpreter before mutation", async () => {
+test("ordinary Claude needs no Python bridge and managed installation refuses failed Python provisioning", async () => {
   const home = mkdtempSync(join(tmpdir(), "armada-claude-interpreter-"));
   const path = join(home, "claude");
   writeFileSync(`${path}.armada-original`, "#!/bin/sh\nprintf native-without-python", { mode: 0o755 });
@@ -20,17 +20,23 @@ test("ordinary Claude needs no Python bridge and managed installation refuses a 
     await expect(
       installNativeCwdWrapper(
         async (request) => {
-          const result = spawnSync("/bin/bash", ["-c", request.command], {
+          const command = request.command
+            .replaceAll("/usr/bin/python3", "/nonexistent/python3")
+            .replaceAll("/usr/local/bin/python3", "/nonexistent/local-python3")
+            .replaceAll("/usr/bin/id", "/nonexistent/id")
+            .replaceAll("/usr/bin/apt-get", "/nonexistent/apt-get")
+            .replaceAll("/usr/bin/sudo", "/nonexistent/sudo");
+          const result = spawnSync("/bin/bash", ["-c", command], {
             env: { HOME: home, PATH: "/nonexistent" },
             encoding: "utf8",
           });
-          expect(result.stderr).toContain("python3: command not found");
+          expect(result.stderr).toContain("Boat native wrapper could not install system interpreters");
           if (result.status !== 0) throw Error("Interpreter unavailable; install refused");
         },
         "parent",
         "claude",
         undefined,
-        true,
+        { managedClaudeMcp: true },
       ),
     ).rejects.toThrow("install refused");
   } finally {
@@ -92,7 +98,7 @@ for line in sys.stdin:
   child.stderr.on("data", (chunk) => {
     error += chunk;
   });
-  let exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+  let exited = new Promise<number | null>((resolve) => child.once("close", resolve));
   let lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   const send = async (content = "inspect tools") => {
     child.stdin.write(`${JSON.stringify({ type: "user", message: { content } })}\n`);
@@ -142,7 +148,7 @@ for line in sys.stdin:
     expect(error).not.toContain("private upstream detail");
     configure(["armada_first"]);
     child = start();
-    exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+    exited = new Promise<number | null>((resolve) => child.once("close", resolve));
     lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
     const alive = await send();
     child.kill("SIGTERM");
@@ -153,4 +159,4 @@ for line in sys.stdin:
     await exited;
     rmSync(home, { recursive: true, force: true });
   }
-}, 10000);
+});

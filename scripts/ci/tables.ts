@@ -1,0 +1,86 @@
+// Map table families to the modules responsible for their writes. Keep lifecycle
+// ownership narrow so provider, runtime and access code converge on that entry point.
+const core = "packages/core/src";
+const server = "packages/mcp-server/src";
+const actions = "apps/dashboard/src/app/actions";
+
+const owners = [
+  [
+    "sandboxes sandbox_transitions",
+    [`${core}/sandbox.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/sandbox-finish.ts`],
+  ],
+  ["ordinary_launch_snapshot_intents", [`${core}/golden-store.ts`, `${core}/sandbox.ts`, `${server}/data.ts`]],
+  ["sandbox_source_snapshots", [`${core}/sandbox.ts`, `${server}/data.ts`, `${server}/sandbox-lifecycle.ts`]],
+  ["triggers", [`${server}/inbound-trigger-store.ts`, `${server}/inbound-trigger-admin.ts`]],
+  ["trigger_deliveries", [`${server}/inbound-trigger-store.ts`]],
+  ["trigger_admin_audit", [`${server}/inbound-trigger-admin.ts`]],
+  ["jobs", [`${server}/jobs/store.ts`]],
+  [
+    "boat_runtime_extension_state",
+    [`${server}/boat-runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/runtime-resume.ts`],
+  ],
+  ["runtime_resumes", [`${server}/runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`]],
+  ["runtime_*", [`${server}/runtime-*.ts`]],
+  ["docker_*", [`${server}/docker-*.ts`]],
+  ["model_auth_* account_*", [`${server}/account-*.ts`, `${server}/model-auth*.ts`]],
+  ["sandbox_launch_stages", [`${core}/launch-stages.ts`, `${server}/launch-stage-record.ts`]],
+  ["sandbox_output*", [`${server}/sandbox-outputs.ts`, `${server}/output-transfers.ts`]],
+  ["sandbox_*_pricing sandbox_turn_models", [`${core}/sandbox.ts`, `${server}/turn-pricing.ts`]],
+  [
+    "native_drain_delete_operations native_drain_unclaimed_dispatches native_drain_stop_requests",
+    [`${server}/sandbox-lifecycle.ts`],
+  ],
+  ["sandbox_native_exec_attempts", [`${server}/data.ts`]],
+  ["sandbox_native_send_attempts", [`${server}/data.ts`]],
+  ["sandbox_native_preservation_receipts", [`${server}/sandbox-lifecycle.ts`]],
+  ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
+  [
+    "provider_launch_requests ordinary_launch_receipts native_*",
+    [`${server}/ordinary-launch-receipts.ts`, `${server}/native-*.ts`, `${server}/provider-*.ts`],
+  ],
+  ["goldens golden_*", [`${core}/golden-*.ts`, `${server}/golden-*.ts`]],
+  ["*_skill_defaults", [`${core}/skill-defaults.ts`]],
+  ["launch_templates launch_template_revisions", [`${core}/template-service.ts`]],
+  [
+    "template_launch_requests",
+    [`${core}/template-service.ts`, `${server}/jobs/modal-launch.ts`, `${server}/modal-template-receipt-settlement.ts`],
+  ],
+  ["routines routine_*", [`${core}/routine-*.ts`]],
+  [
+    "application_secret* application_vault_audit readable_variables",
+    [`${core}/application-vault.ts`, `${core}/readable-variables*.ts`],
+  ],
+  [
+    "armada_access_parents orchestrator_* orchestrators",
+    [`${core}/delegated-authority.ts`, `${server}/sandbox-access-*.ts`, `${server}/sandbox-armada-access.ts`],
+  ],
+  ["oauth_device_requests", ["packages/auth/src/device-login.ts"]],
+  ["mcp_tokens oauth_* service_tokens", ["packages/auth/src/*.ts", `${server}/token-control.ts`]],
+  ["mcp_*", [`${core}/connections.ts`, `${server}/mcp-*.ts`]],
+  ["github_*", [`${server}/github-*.ts`, `${core}/github-*.ts`]],
+  ["credentials agent_defaults", [`${core}/vault-store.ts`, `${actions}/credentials.ts`]],
+  [
+    "orgs members organization_invitations",
+    [`${core}/vault-store.ts`, `${server}/invitations.ts`, `${actions}/orgs.ts`],
+  ],
+  ["modal_*", [`${server}/modal-*.ts`, "packages/provider-modal/src/**/*.ts"]],
+  ["org_langfuse* langfuse_*", [`${server}/langfuse.ts`]],
+  [
+    "outbound_webhook_* notify_subscriptions",
+    [`${server}/outbound-webhooks.ts`, `${server}/native-webhook-prompts.ts`],
+  ],
+  ["resource_observations", [`${server}/resource-store.ts`]],
+] as const;
+
+const rules = owners.map(([tables, paths]) => ({
+  tables: tables
+    .trim()
+    .split(" ")
+    .map((table) => new Bun.Glob(table)),
+  paths,
+  files: paths.map((path) => new Bun.Glob(path)),
+}));
+
+export function tableOwner(table: string) {
+  return rules.find(({ tables }) => tables.some((pattern) => pattern.match(table)));
+}

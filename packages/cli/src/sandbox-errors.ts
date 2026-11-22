@@ -1,17 +1,16 @@
 import { sandboxControlRefusal } from "@armada/core";
 
-/** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
 export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
-    !/^\/api\/v1\/sandbox\/(?:list|detail|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
+    !/^\/api\/v1\/sandbox\/(?:list|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
       path,
     ) &&
     !/^\/api\/v1\/sandboxes\/[0-9a-f-]+(?:\?.*)?$/i.test(path) &&
     path !== "/api/v1/logs/read"
   )
     return undefined;
-  if (status === 401) return undefined; // Keep the shared login/token recovery path.
-  const inspect = "Run armada list --json to find a visible sandbox ID and check its state and selected organization.";
+  if (status === 401) return undefined;
+  const inspect = "Run armada ls --json to find a visible sandbox ID and check its state and selected organization.";
   const help: Record<string, string> = {
     sandbox_terminal: `This sandbox cannot accept this operation. Start a new sandbox on the same branch. ${inspect}`,
     not_found: `Sandbox not found or not accessible. ${inspect}`,
@@ -23,12 +22,12 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     conflict: `The sandbox state conflicts with this operation. ${inspect} Wait for any start/stop operation to settle before retrying.`,
     sandbox_not_ready: `The sandbox is not ready for this operation. ${inspect} Wait until it is ready before sending another request.`,
     no_running_turn:
-      "No turn is running. Check armada status ID; use armada send ID TEXT to start a turn instead of steer.",
+      "No turn is running. Check armada info ID; use armada prompt ID TEXT to start a turn without --steer.",
     unsupported: `This operation is not supported by the selected sandbox provider or harness. ${inspect}`,
     credential_refused:
-      "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada creds list.",
+      "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada account ls.",
     credential_binding_required:
-      "The sandbox needs an account binding. Ask its owner to inspect armada creds list and use armada bind-credential after stopping safely.",
+      "The sandbox needs an account binding. Ask its owner to inspect armada account ls and use armada bind-credential after stopping safely.",
     credential_binding_unsupported:
       "This native Boat sandbox cannot refresh model accounts safely yet. Launch a new sandbox using the chosen account; existing work is unchanged (tracked by #1579).",
     credential_binding_unsafe:
@@ -51,20 +50,13 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
               : status === 429
                 ? "rate_limited"
                 : "unavailable";
-  // Alias the JSON code emitted before this quality pass; never alias arbitrary server text.
-  const wasInterior =
-    /^\/api\/v1\/sandbox\/(?:detail|status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
-    path === "/api/v1/logs/read" ||
-    path.startsWith("/api/v1/sandboxes/");
-  const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";
-  // These immutable-binding refusals are fixed server-owned strings, never guest text.
   const bindingReasons: Record<string, string> = {
     "This sandbox is already bound; its account cannot change.":
-      "This sandbox is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
+      "This sandbox is already bound; its account cannot change. Run armada info ID to inspect the existing binding; keep that account.",
     "The Modal workspace is already bound; its account cannot change.":
-      "The Modal workspace is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
+      "The Modal workspace is already bound; its account cannot change. Run armada info ID to inspect the existing binding; keep that account.",
     "The workspace was bound concurrently; no account change was made.":
-      "The workspace was bound concurrently; no account change was made. Run armada detail ID to inspect the winning binding before continuing.",
+      "The workspace was bound concurrently; no account change was made. Run armada info ID to inspect the winning binding before continuing.",
   };
   const bindingReason =
     path === "/api/v1/sandbox/bind-credential" &&
@@ -73,7 +65,6 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     Object.hasOwn(bindingReasons, serverMessage)
       ? bindingReasons[serverMessage]
       : undefined;
-  // Match only complete policy-owned messages: arbitrary provider/guest text remains redacted.
   const controlReason =
     ["sandbox_terminal", "invalid_request", "conflict"].includes(String(serverCode)) &&
     typeof serverMessage === "string" &&
@@ -103,6 +94,5 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
       bindingReason ??
       help[code] ??
       `Sandbox operation failed (${status}). Check access and sandbox status. ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,
-    legacyCode: code === legacyCode ? undefined : legacyCode,
   };
 }

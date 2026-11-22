@@ -7,6 +7,7 @@ import { modalError, refusal } from "./errors.ts";
 import { projectGitHubExecEnvironment, withTrustedHarnessPath } from "./exec-env.ts";
 import { createGenerationGrants } from "./grants.ts";
 import { createModalIngestHandler } from "./ingest.ts";
+import { modalDeploymentId } from "./inventory.ts";
 import type { ExecEnvironment, Machine, McpConfiguration, ModalManagementProvenance, Scope } from "./ports.ts";
 import { captureProcessBaseline, sealProcessBaseline } from "./process-scope.ts";
 import { assertSourceTargetScopes, createModalProvider, type ModalProviderOptions } from "./provider.ts";
@@ -24,7 +25,6 @@ export interface HarnessEnvironment {
   nativeAuthRevision?: number;
   nativeAuthSecrets?: string[];
   mcp?: McpConfiguration;
-  /** Fresh exec-only credentials/options. Explicit {} disables launch-env fallback on restore/init. */
   execEnv?: ExecEnvironment;
 }
 export interface ModalManagementAuthority extends ModalManagementProvenance {
@@ -53,19 +53,15 @@ export interface ComposedModalOptions
     | "detachCollection"
   > {
   storedReads?: boolean;
-  /** Immutable golden visibility/binding, with userId set to the authenticated caller. */
   sourceScope?: Scope;
   resolveManagementCredentials?(authority: ModalManagementAuthority): Promise<ResolvedModalManagementCredentials>;
-  /** Production operator/client injection and HTTP dependency port. */
   fetcher?: typeof fetch;
   sql: Sql;
   signingKey: Uint8Array;
   ingestUrl: string;
   artifact: Pick<DistributionOptions, "base" | "apt" | "bundle" | "sha256">;
-  /** Server credential resolver. Called on fork/recovery only, never for a golden builder. */
   resolveHarnessEnvironment(machine: Machine, launchEnv: Readonly<Record<string, string>>): Promise<HarnessEnvironment>;
 }
-/** Actual composition: no caller needs to invent runner tokens, bootstrap JSON or SDK transport. */
 export async function createComposedModalProvider(options: ComposedModalOptions) {
   try {
     return await composeModalProvider(options);
@@ -156,15 +152,16 @@ async function composeModalProvider(options: ComposedModalOptions) {
         ingestUrl: options.ingestUrl,
       };
     },
-    restoreEnv: async () => ({}), // Harness resolver receives persisted launch identity, never cached secret env.
+    restoreEnv: async () => ({}),
     prepareSnapshot: prepareFilesystemSnapshot,
     prepareFreshMachine: prepareFreshFilesystem,
     captureProcessBaseline,
     sealProcessBaseline,
   });
-  const provider = createModalProvider({
+  const connectionPorts = createModalProvider({
     ...options,
     ...connection,
+    deploymentId: modalDeploymentId(options.scope.binding.environment, ingestUrl.origin),
     managementAuthority: provenance,
     source: { scope: sourceScope, store: sourceStore },
     store,
@@ -174,7 +171,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
   });
   const ingest = createModalIngestHandler({ sql: options.sql, verifyGrant: grants.verifyGrant });
   return {
-    provider,
+    ...connectionPorts,
     ingest,
     close: () => {
       if (!options.client) client.close();

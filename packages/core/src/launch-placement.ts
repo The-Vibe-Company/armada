@@ -4,20 +4,23 @@ import type { GoldenActor } from "./golden.ts";
 import type { LaunchOptions, LaunchPlan } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { admitLaunchPlan, type LaunchPlacement } from "./launch-plan.ts";
+import { capabilities } from "./machine-capabilities.ts";
 import { isNonMutatingProviderRefusal, type Provider } from "./provider.ts";
 import { SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
-import { HOST_CAPABILITIES, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, type SandboxProviderId } from "./sandbox-provider.ts";
 
 type GoldenAdmission = {
   actor: GoldenActor;
   id: string;
   forkEnv(): HarnessCredentials["env"];
+  beforeAllocation(): Promise<void>;
   allocationRisk(risk: boolean): void;
 };
 
 /** Golden-specific placement policy. The launch strategy owns agent initialization after the fork. */
 interface GoldenLaunchPlacement
   extends LaunchPlacement<LaunchPlan, GoldenAdmission, Awaited<ReturnType<Provider["fork"]>>> {
+  readonly recordLaunchTimings: boolean;
   runtimeDefault(options: LaunchOptions, harness: Harness): LaunchOptions["boatRuntimeDefault"];
   endpointRuntime?(options: LaunchOptions): LaunchOptions["boatEndpointRuntime"];
   allocationTtlSeconds(ttlSeconds: number, extensionHeadroom: number, privateParent: boolean): number;
@@ -34,7 +37,7 @@ function allocationTtlFor(
   return privateParent
     ? ttlSeconds
     : Math.min(
-        PROVIDER_LIMITS[provider].maxTtlSeconds,
+        capabilities(provider).maxTtlSeconds,
         ttlSeconds +
           SANDBOX_STOP_MARGIN_SECONDS +
           (HOST_CAPABILITIES[provider].reserveExtensionHeadroom ? extensionHeadroom : 0),
@@ -44,6 +47,7 @@ function allocationTtlFor(
 export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLaunchPlacement>> = {
   boat: {
     admit: admitGoldenLaunch,
+    recordLaunchTimings: false,
     runtimeDefault: (options, harness) =>
       options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined),
     endpointRuntime: (options) => options.boatEndpointRuntime,
@@ -51,14 +55,19 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
       allocationTtlFor("boat", ttlSeconds, extensionHeadroom, privateParent),
   },
   modal: {
-    admit: admitGoldenLaunch,
+    admit: (plan, admission) => admitGoldenLaunch(plan, admission, admission.id),
+    recordLaunchTimings: true,
     runtimeDefault: (options) => options.modalRuntimeDefault,
     allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
       allocationTtlFor("modal", ttlSeconds, extensionHeadroom, privateParent),
   },
 };
 
-async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocationRisk }: GoldenAdmission) {
+async function admitGoldenLaunch(
+  plan: LaunchPlan,
+  { actor, id, forkEnv, beforeAllocation, allocationRisk }: GoldenAdmission,
+  idempotencyKey?: string,
+) {
   const {
     provider,
     stores,
@@ -76,13 +85,16 @@ async function admitGoldenLaunch(plan: LaunchPlan, { actor, id, forkEnv, allocat
     () => stores.credentials.admit?.(actor, credentials, id, choice.model),
     () => options.beforeFork?.(id),
   );
+  const env = forkEnv();
+  await beforeAllocation();
   allocationRisk(true);
   return provider
     .fork({
       from: snapshot,
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       ...(machineSize.effective ? { size: machineSize.effective } : {}),
       noEnv: true,
-      env: forkEnv(),
+      env,
       ttlSeconds: allocationTtlSeconds,
       labels: {
         armada: "sandbox",

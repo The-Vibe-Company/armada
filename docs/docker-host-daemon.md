@@ -43,9 +43,9 @@ existing Codex subscription broker are reused; no provider credential is a model
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
 owner-trusted Docker only. The historical plain-image preview excludes snapshot
-builds, resume, gVisor and multi-tenancy. That preview admits **one native conversation per sandbox**, with explicit follow-up prompts
-using the returned conversationId. Retries reuse the same request UUID and input;
-a new request without that conversation or for another conversation is refused.
+builds, resume, gVisor and multi-tenancy. Each preview sandbox has one conversation.
+Send follow-up prompts through `sandbox/send` and reuse the same request UUID and
+input when reconciling uncertain delivery.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
 Unresolved RPC admission blocks new requests; the runtime owns busy-turn refusal.
 
@@ -73,7 +73,7 @@ and a heartbeat within 60 seconds; otherwise offline, with revoked taking priori
 A host inside an active uninstall drain is `draining`, not online: it takes no new
 launch, snapshot create or rebuild, and a launch from a saved snapshot names the
 drain rather than "Snapshot is unavailable". The list, launch dialog, snapshots,
-CLI and doctor name the uninstall to finish or retry rather than reporting a
+CLI diagnostics name the uninstall to finish or retry rather than reporting a
 permission failure. A queued snapshot build interrupted by a drain fails with the
 same uninstall reason, not "authorization is no longer valid".
 Online is not scheduling eligibility, capacity or runtime readiness. SQL current
@@ -86,9 +86,8 @@ installed-feature discovery, not authorization or account health. With all three
 staging inputs above and a valid installed runtime manifest, Docker advertises
 `capabilities.launch:true` and the host list advertises `placement:true`.
 Host-only opt-in retains normal list/status/logs/stop/delete without admitting new
-placement. A request field cannot enable placement. Docker is a host-bound
-source with no fabricated Boat alias; golden providers
-remain Boat/Modal. The explicit preview API below is unchanged.
+placement. A request field cannot enable placement. Docker launches use a
+host-bound source.
 
 ### Normal dashboard/API/CLI launch
 
@@ -101,7 +100,7 @@ remain Boat/Modal. The explicit preview API below is unchanged.
   "hostId": "HOST_UUID",
   "harness": "codex",
   "credentialId": "MODEL_ACCOUNT_UUID",
-  "requestId": "FRESH_SANDBOX_UUID",
+  "idempotencyKey": "saved-launch-key-0001",
   "visibility": "private",
   "model": "gpt-6.1-sol",
   "reasoningEffort": "medium",
@@ -112,19 +111,22 @@ remain Boat/Modal. The explicit preview API below is unchanged.
 The account's current version is resolved and frozen on first admission; optional
 `credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
 (default TTL four hours, maximum one day). The example selects Codex; the launch
-dialog offers the harnesses advertised by the server. Armada selects the environment, or the user selects a host-local
-snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
-golden). Boat/Modal snapshots and machine-size policy do not apply.
+dialog offers the harnesses advertised by the server. Armada selects the environment
+unless you select a host-local snapshot with the `--golden SNAPSHOT_UUID` flag.
+Docker uses its own host limits and snapshot builds.
+[Morph model accounts](morph.md) and [per-account simultaneous-agent limits](named-model-credentials.md)
+also apply to Docker launches.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
-existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
-`github`, `runtime:{kind:"armada",epoch}`, TTL/expiry and optional native
-`promptId`/`conversationId`. Admission is not completion: read the answer through
-normal `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.
+shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
+status, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
+when runtime information is available and is null otherwise. The `promptId` and
+`conversationId` fields are null when their IDs are unavailable. Read the prompt
+output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
 
-`requestId` is the logical sandbox ID and durable replay key. Identical retries
-resume the original phase IDs; changed input conflicts. Store this UUID before
-launch. A timeout is an unknown outcome, not permission to allocate a replacement.
+Store the `idempotencyKey` before launch and use the returned `sandbox.id`
+for sandbox operations. Identical retries resume the original phase IDs.
+Changed input conflicts. A timeout is an unknown outcome, not permission to allocate a replacement.
 The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
@@ -141,15 +143,14 @@ The host automatically fetches a missing image. The dashboard shows preparation
 progress, and a failed fetch is reported in plain language.
 
 ```sh
-bun run armada launch --provider docker --org "$ARMADA_ORG" \
+bun run armada new --provider docker --org "$ARMADA_ORG" \
   --host "$DOCKER_HOST_ID" \
-  --credential-id "$ARMADA_CREDENTIAL" --request-id "$REQUEST_ID" \
+  --credential-id "$ARMADA_CREDENTIAL" --idempotency-key "$LAUNCH_KEY" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
-Normal follow-up and retained stop/resume are available; see
-[the current contract](#normal-follow-up-and-stopresume-1422). The private
-preview's explicit same-conversation follow-up is a separate historical path.
+Normal follow-up and retained stop/resume are described in
+[the current contract](#normal-follow-up-and-stopresume-1422).
 
 ### Repository history for direct launches
 
@@ -239,12 +240,9 @@ the ticket expires naturally, and the installer gives Ctrl-C/list guidance.
 Unregistered binaries without retained installation files can be replaced;
 unreadable or partially registered state is preserved for diagnosis.
 
-`armada host status` prints public local status; `armada host uninstall` delegates
-to the separate binary's drain/revoke/removal procedure. Both work without login.
-Uninstall can wait for active sandbox cleanup and must be retried, not bypassed,
-if drain is unresolved. Native diagnostic output is not relayed by the wrapper;
-run `armada-docker-host status` or `armada-docker-host uninstall` directly when
-repairing local service or ownership problems. Never delete registration state or
+Run `armada-docker-host status` or `armada-docker-host uninstall` on the Docker
+machine. The daemon drains and revokes the registration before removing its
+installation. Retry an unresolved drain without bypassing it. Never delete registration state or
 force-clear a daemon lock to make installation succeed.
 
 ## Host authority, ownership and failure recovery
@@ -269,10 +267,14 @@ armada-docker-host run --state-dir /absolute/private/armada-host
 Jobs persist before side effects and redeliver the original request ID until
 completion. Changed input under that ID refuses. After restart, pending work
 requires current server redelivery; offline/revoked hosts may sweep TTL but cannot
-start pending creates. A stale exclusive `daemon.lock` must be removed only after
-verifying no daemon remains; never remove it to force concurrent startup. Receipts
+start pending creates. On Linux, the daemon takes an OS flock on a file named for
+the current boot. The locking process holds it while the daemon's private stdin
+pipe is open. Process death closes the pipe, including after SIGKILL. A legacy
+`daemon.lock` requires operator inspection. Remove it only after verifying no
+daemon remains. Receipts
 are not pruned automatically. Upgrade the host binary before sending new job
 formats; old strict binaries refuse unknown bootstrap/deadline envelopes safely.
+State writes validate existing configuration before replacing it.
 Upgrade **all server replicas before creating bound work**. Do not roll back
 while bound work remains queued: old readers deliberately refuse its envelope.
 
@@ -289,6 +291,8 @@ descriptor, never extend it. Expired creates/install/bootstrap refuse, but exact
 stop/delete remain possible. Host UTC clock and a running daemon are required for
 local TTL enforcement; this is not a guaranteed scheduler during host/daemon loss.
 An offline host means unknown/pending cleanup, not a fictional deletion receipt.
+The host enforces deadlines per generation. Expiry and mailbox work for unrelated
+generations may proceed concurrently.
 
 The fixed runtime archive initializes `/home/user` volume ownership as uid/gid
 1000:1000, modes 0700, without privileged guest exec. Installation/start is only
@@ -302,12 +306,16 @@ A completed bootstrap duplicate repeats ACK only. Recovered pending bootstrap is
 terminally uncertain and cannot replay with the same or a fresh ID for that machine
 generation. Resolve authority/clean up rather than assuming no process started.
 Host ACK is handoff, **not** health, prompt completion or journal commit.
+A recovered pending resume is likewise uncertain even if the daemon crashed
+before starting the operation. Snapshot build failures suppress raw exception
+text because build output and init commands can contain credentials. Known
+baseline-tool and missing-ref failures retain their specific diagnostics.
 
 ## Persisted placement and admission
 
 Reservation atomically stores a private Docker/Codex row and bound create job;
-its stable request UUID is also sandbox/create identity. There is no fake golden,
-Boat alias or movable host/installation/generation/image binding. Current owners
+its stable request UUID is also sandbox/create identity. The host, installation,
+generation and image bindings are fixed. Current owners
 may create/bootstrap; owner or current org admin may stop/delete. Source member
 locks precede credentials, host, sandbox and runtime. Issuer actor epoch, current
 host registration, owner membership and pinned account version are rechecked.
@@ -391,6 +399,12 @@ volume, **not** the host registration, daemon or shared pulled image.
 
 ## HTTP contract / reconciliation
 
+The daemon sends authenticated requests over HTTPS and rejects redirects.
+Protocol responses and Docker inspection output are bounded. Raw parser,
+transport, and Docker diagnostics can contain private data and are kept out
+of command error output. The server checks retained-output admission before
+the daemon reads or uploads the archive, fencing tainted or superseded work.
+
 Bearer-only POST JSON under `/api/v1/docker/sandboxes/`; no browser Origin/cookie
 authority. Every body has `org`; all except launch have `sandboxId`.
 
@@ -399,16 +413,15 @@ authority. Every body has `org`; all except launch have `sandboxId`.
 | `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
 | `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
 | `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `prompt` | `requestId`, `text`, optional `conversationId` for a follow-up | 202 pending, or 200 admitted with native receipt; same UUID/text/conversation reconciles |
 | `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
 | `get` | none | 200 safe retained metadata/status |
 | `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
 | `job` | `requestId` | pending/completed/failed state, or null if absent |
 
-Keep stable UUIDs for launch/bootstrap/health/prompt/cleanup retries. Never generate
+Keep stable UUIDs for launch/bootstrap/health/cleanup retries. Never generate
 replacement operations for an unknown result. Bootstrap retries cannot rotate a
 consumed/live ticket; deployment changes are not upgrades to an admitted operation.
-`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness/prompt; keep
+`ARMADA_DOCKER_PLACEMENT=0` disables new launch/bootstrap/readiness; keep
 `ARMADA_DOCKER_HOSTS=1` for retained metadata/journal, cleanup and daemon polling.
 Removing the host flag unmounts both Docker API families; other providers are unaffected.
 
@@ -537,7 +550,7 @@ Expected: binary --help prints usage and exits zero, not a failure message.
 The helper **starts the stopped daemon**, reuses the registration, creates a fresh
 sandbox and sends two prompts in one returned conversation. Only the first prompt
 contains a random DOCKER_MEMORY marker; the second asks it to recall that marker
-without resending it. Require two distinct native prompt IDs, the same conversation
+without resending it. Require two distinct prompt IDs, the same conversation
 ID, both answers and reported tokens in the acknowledged journal. It then confirms
 stop/delete and prints `PASS: same-conversation follow-up recalled marker; both turns
 reported tokens; stop/delete ACKed.` The host/daemon remain for inspection and may
@@ -589,6 +602,19 @@ mounted read-only. A separate sweep retries transient reads and uploads after
 two minutes per workspace. The stop and configured retention cleanup proceed
 independently. Armada keeps the last successful capture until a complete
 replacement publishes. The server and host binary both need the new code.
+
+### Container inventory
+
+An authenticated `POST /api/docker-host/poll` advertises `containerInventory: 1`
+and supplies `containerInventoryDeploymentId`. The daemon uses that identity
+for entries sent to `POST /api/docker-host/container-inventory` and continues
+sending requests to its registered HTTPS address, which can be an alias.
+A daemon paired with the preceding server release derives the identity from
+its registered origin when the poll omits the new field. Alias reporting
+requires both the server and daemon updates. The receiver counts unknown
+containers in the authenticated host installation and performs no deletions.
+The daemon inventories actual allocations for the bound registration, including
+created and stopped containers.
 
 ### Fetching the image (#1507)
 
@@ -687,11 +713,11 @@ procedure for that evidence. Coordinator-only: workers must not run this procedu
 ### Normal follow-up and stop/resume (#1422)
 
 With Docker placement and the runtime manifest enabled, `sandbox/send` (MCP `send`)
-accepts `{id, request_id, prompt, conversation_id?}`. Reuse the UUID and identical
-input after uncertain delivery. Omitted conversation selects the retained conversation;
+accepts `{id, request_id, prompt}`. Reuse the UUID and identical input after
+uncertain delivery. The sandbox determines the conversation;
 model and effort stay pinned. Only the sandbox owner can send.
 
-`sandbox/resume` (MCP `resume`) accepts `{id, request_id}` after a confirmed stop.
+`POST /api/v1/sandbox/resume` accepts `{id, request_id}` after a confirmed stop.
 It starts the **same** labelled container on the original host, retains the workspace,
 native conversation and journal, and issues fresh enrolment/epoch before confirming
 runtime health. It does not extend the original TTL or replace an expired/missing
@@ -746,38 +772,35 @@ an exact manifest version and verify the artifact before execution.
 The updater can execute release code as the Docker service account.
 Detached signing and staged rollout are follow-ups.
 
-This change delivers version reporting and the snapshot compatibility
-check. Continue using the managed installer to update manually.
-Automatic updates, rollback, and per-host policy will ship separately.
+The managed manual upgrade runs from the verified downloaded executable with
+the saved registration. It stops the user service before taking the exclusive
+daemon lock and attempts to restart the service even if the upgrade fails.
+The updater syncs the pending digest before replacing the binary and commits
+the new digest afterward. Temporary marker files live beside the state directory
+so an interrupted write cannot leave an unknown file inside it.
 
-On the owner's Linux host after a versioned release:
+Daemon requests carry the integer `x-armada-docker-host-protocol` header.
+Protocol 1 is the first published protocol. The server accepts its current
+protocol and the preceding integer. Missing, older, or newer protocols receive
+HTTP 409 with `docker_host_upgrade_required`. The server does not claim work
+for a refused daemon, and existing sandbox records stay readable. A daemon
+reports its installed release for display. Bump the protocol when removing
+or renaming an operation or field, changing a field's type or meaning, making
+an optional field required, or changing authentication. Optional fields and
+operations an older daemon never receives leave the protocol unchanged. The host list exposes the protocol
+from its last accepted poll and whether an upgrade is required.
 
-1. Before upgrading the daemon, run `armada host list --json` against
-   that release. Check that the host's last reported `version` matches
-   its installed binary and that `targetVersion` matches the server
-   release. The host page should flag an installed version below
-   `minimumVersion`. With a daemon at 2.54.0 and authorized GitHub
-   access, try a new snapshot build and confirm HTTP 409
-   `host_update_required` with no build queued.
-2. Let any active build or launch finish. Follow the managed installer
-   instructions for that same server and account. Verify the systemd
-   user service reconnects, the same host ID reports the target version,
-   and the upgrade warning clears. Check that an existing sandbox
-   is still running with the same container and workspace.
-3. Build or rebuild a snapshot and confirm it reaches `ready`, with
-   `baselineVersion: 1` and `baselineOutdated: false` in snapshot get.
-   An existing snapshot created by an older daemon can still be used.
+Before deploying the first server release with this requirement, finish active
+host builds and install the daemon from that release candidate on each managed
+host using its existing registration. Check that the user service reconnects
+and that existing containers and workspaces are still intact. The installer
+served by a deployed server uses that server's artifact, so use the candidate
+binary for the pre-deploy upgrade. After the deploy, check `armada host ls --json`
+for `protocol: 1` and `upgradeRequired: false`.
 
-Baseline verification first shipped in 2.55.0, the minimum version. So
-that a source build still stamped with an older version is judged by what
-it can do, the daemon's authenticated poll also advertises the baseline
-it can verify. The
-host list reports `snapshotBuildSupported`. Successful new snapshot
-builds must return a verification receipt matching the baseline
-required when the build was queued. If the daemon changes after
-admission and returns no receipt, the build fails with upgrade guidance.
-Already queued legacy builds can still finish and existing snapshots
-keep their launch behavior.
+Snapshot build results still include the verified image baseline in the receipt.
+Already queued builds retain the baseline recorded at admission, and existing
+snapshots retain their launch behavior.
 
 ## Managed owner installation (#1453)
 
@@ -788,7 +811,7 @@ revision and apply `20261113150000_docker_host_version.sql` through the normal
 operator release process before using it. No deployment or remote migration was
 performed here.
 
-Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
+Use **Register a Docker host** in the dashboard or `armada host add --org ORG_UUID`.
 Paste its one command on the Linux Docker machine; the one-use token is included
 under the owner-approved five-minute registration-token exception. Never share
 or persist the command. Requires curl, sha256sum, util-linux flock/loginctl
@@ -796,6 +819,8 @@ and a working systemd user session. The binary is verified before execution,
 registered over stdin and installed as a user service with linger. If the user
 cannot enable linger or use Docker, an administrator must configure linger and
 rootless Docker (or explicitly grant powerful Docker access). No sudo is run.
+Registration is persisted and the installer releases its lock before systemd
+starts the daemon under a separate lock owner.
 Use the current CLI installer below to safely upgrade an existing registration.
 Failed or uncertain registration must be inspected, never blindly replayed.
 
@@ -812,6 +837,9 @@ issuer must retain cleanup authority (current admin for other owners' sandboxes)
 Offline/uncertain cleanup, unknown labelled resources and changed managed files
 refuse removal, preserving state for reconciliation. Shared images, other workloads
 and account-wide linger are preserved. Failure is not deletion.
+Removal clears daemon-owned artifact caches. If removal fails before the binary
+is deleted, the daemon command remains available and uninstall attempts to
+restore the saved unit, registration, and ownership marker.
 A drain has no deadline: the host stays draining until the uninstall completes, so
 an interrupted uninstall cannot re-admit work while its cleanup may still be queued.
 Retrying the uninstall continues the same drain. An abandoned drain has no cancel
@@ -820,7 +848,7 @@ path; it is an open question for the owner, not a new command.
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,
 reconcile/delete its old sandboxes, revoke and remove the hand-made installation
-using the manual runbook. Run the new Add-a-host command interactively there.
+using the manual runbook. Run the command from **Register a Docker host** interactively there.
 Retain the new registration's host ID, not the revoked ID. Run the existing smoke
 with server/org/credential/SSH/image arguments plus
 `--host-id NEW_HOST_ID --service-install`. It restarts only the user service,
@@ -846,17 +874,14 @@ On a machine already linked to the same server, the current installer keeps its
 registration/name, safely upgrades the binary, and attempts to cancel the unused
 new ticket; if reconciliation fails, the ticket expires naturally.
 For a different server it creates a separate server-scoped installation and user
-service; it does not replace the existing server connection. Use
-`armada host status --server HTTPS_ORIGIN` and
-`armada host uninstall --server HTTPS_ORIGIN` to select the intended installation.
-With multiple installations, omitting the server returns an inventory and
-selection guidance without changing either installation.
+service. Run the corresponding daemon binary with `status --instance SHA256_SERVER_ORIGIN`
+or `uninstall --instance SHA256_SERVER_ORIGIN` for a named installation.
 Unreadable existing identity/state refuses installation rather than guessing.
 
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
-boundedly for the exact host. `armada host list [--json]` shows safe metadata;
-`armada host revoke UUID` revokes through the admin API. Selected organization is
-reused. `armada launch --provider docker --agent codex --host UUID_OR_NAME`
+boundedly for the exact host. `armada host ls [--json]` shows safe metadata;
+`armada host rm UUID` revokes through the admin API. Selected organization is
+reused. `armada new --provider docker --agent codex --host UUID_OR_NAME`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
 characters, never identity or authority.
@@ -901,8 +926,8 @@ CLI follow-up. Existing `--service-install` real-host acceptance remains pending
 
 ### Default model accounts on normal Docker launch (#1579)
 
-`armada launch --provider docker` no longer requires an explicit
-`--credential-id`. With an account omitted, the server uses the same compatible
+Docker launches such as `armada new --provider docker --agent codex --host HOST_UUID`
+can omit `--credential-id`. With an account omitted, the server uses the same compatible
 personal-default policy as ordinary launches: a personal subscription marked as
 default wins over a personal API key. Explicit account choices still win; an
 invalid default or ambiguous personal choice fails rather than silently using a
@@ -919,7 +944,7 @@ omission on those paths is refused, not silently billed to another account (#157
 Coordinator verification after normal deployment: mark a personal Codex
 subscription default while retaining a personal API-key account, launch on the
 owned Docker host without `--credential-id`, and inspect the returned pin. Repeat
-the same request ID after changing the default: it must return the same sandbox
+the same idempotency key after changing the default: it must return the same sandbox
 without allocation/rebilling. An explicit API-key account must remain explicit.
 This procedure is not evidence that live subscription auth has passed.
 
@@ -932,6 +957,11 @@ Snapshot builds use a request-scoped Buildx docker-container builder with the
 same CPU/memory/swap budget; its process cap is applied before build work.
 The builder is removed after each attempt; shared builders/images are untouched.
 Buildx with the docker-container driver is required for snapshot builds.
+The Docker client is invoked directly with captured output. The snapshot GitHub
+credential reaches BuildKit as a scoped build secret sourced from the client
+environment. Buildx's separate client process may receive stdin as a socket
+that it cannot reopen as `/dev/stdin`. The daemon keeps only a bounded tail of
+build stderr in memory and extracts fixed tool names for errors.
 
 This first slice does not persist resource reports, enforce host admission or
 provide overrides/UI. Those are subsequent #1773 slices; do not treat this as
@@ -974,8 +1004,8 @@ were performed here.
 ### Capacity visibility (#1773, slice c1)
 
 The host list API now adds observed hardware, effective automatic per-sandbox
-limits, admission capacity and running reservations. CLI `armada host list` and
-`armada host show HOST` (exact name or UUID, optional `--json`) show these values;
+limits, admission capacity and running reservations. CLI `armada host ls` and
+`armada host ls HOST` (exact name or UUID, optional `--json`) show these values;
 the dashboard host row shows running/capacity and its Facts show hardware,
 limits and automatic/manual mode. Retained sandbox count is separate from
 running reservations. Pending starts reserve slots until physically stopped,
@@ -1043,7 +1073,9 @@ digests. Retired request IDs replay their saved outcome on exact redelivery (inc
 snapshot image IDs); changed input is rejected. Neither path executes again. Retired create/bootstrap/build identities cannot be repeated for that generation
 under a new request ID (resume remains available);
 cleanup must still match its original machine fingerprint. Fences are never
-evicted or aged out within an installation.
+evicted or aged out within an installation. Compaction retains a stopped
+generation's receipt until exact-generation retention or deletion evidence is
+durable, so the daemon can still discover and clean up the allocation.
 
 Admission stops at 16,384 total full receipts plus fences or 8 MiB of state for
 non-cleanup jobs. Legacy installations receive a one-time cleanup ceiling of their existing
@@ -1066,9 +1098,10 @@ release path before deploying the server, then upgrade the host daemon.
 Each poll samples Linux MemAvailable and one-minute load, plus the current
 registration's labelled running sandbox containers using
 [Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/).
-The CLI's memory metric excludes inactive file cache. Armada's working-set
-memory and CPU use are credited back, so its own running agents are not charged
-twice. Unrelated containers and host processes consume the remaining headroom.
+The CLI's memory metric excludes inactive file cache. Linux MemAvailable includes
+reclaimable memory. Armada credits back its working-set memory and CPU use to
+avoid charging its running agents twice. Unrelated containers and host processes
+consume the remaining headroom.
 Snapshot builders are conservatively treated as other work during their build.
 
 Headroom decreases immediately and recovers through a quarter-weight EWMA
@@ -1122,9 +1155,9 @@ After normal deployment, with existing staging origin/token and consent:
 ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature launch-snapshot
 ```
 
-The server must advertise its golden/snapshot launch source and capability. The
-probe launches via normal `sandbox/launch` with only the selected `snapshotId`,
-not an image or explicit repository recipe. Require exact snapshot/host/image/
+The server must advertise its snapshot launch source and capability. The
+probe launches via normal `sandbox/launch` with the selected `snapshotId` and
+`hostId`. Require exact snapshot/host/image/
 organization/owner identity in its receipt, a real finished answer, and confirmed
 stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
 malformed or mismatched identity cannot pass. A rejected receipt with a known
@@ -1133,9 +1166,7 @@ sandbox ID is still journaled and cleaned up.
 Unfiltered parity keeps its ordinary plain-image Docker launch unchanged and
 reports the snapshot cell as not-run with a dedicated-probe-required reason when
 configured (or fixture-not-configured otherwise). It never claims that a plain
-image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
-part of staging/release acceptance. No deployment or real provider check was
-performed by this worker; these instructions are not acceptance evidence.
+image proved snapshot launch. Staging and release acceptance exclude Boat.
 
 ## Multiple Armada servers on one machine (#2169)
 
@@ -1147,9 +1178,8 @@ Each has independent registration credentials, durable receipts and runtime cach
 The daemon's existing installation-ID and host-ID ownership labels scope container,
 volume and snapshot operations, including cleanup; shared images remain shared.
 
-Use `armada host status --server https://armada.example` or
-`armada host uninstall --server https://armada.example` to select one.
-Without `--server`, multiple installations are listed, never implicitly removed.
+Use `armada-docker-host@<sha256-of-origin> status --instance <sha256-of-origin>`
+to inspect a named installation, or substitute `uninstall` to remove it.
 An old legacy daemon's origin is read from its private state when status does not
 yet expose it. Unreadable registration refuses installation before reading or
 exchanging the new one-use token; repair the existing local installation first.
@@ -1208,7 +1238,7 @@ Production prerequisites to compare with the passing staging environment:
   proves polling/authentication, not any of the above runtime prerequisites.
 
 After release, the coordinator must retry the owner's normal CLI launch with
-its original body/request ID, inspect any retained reservation first, then verify
+its original body and idempotency key, inspect any retained reservation first, then verify
 host create, runtime enrolment/readiness and an actual harness reply. Neither
 unit tests nor passing staging probes establish that production is configured.
 
@@ -1224,17 +1254,17 @@ Registry provenance identifies these shared release images, which do not carry
 per-registration container labels. Unproven dangling images are left alone.
 There is no global prune, forced removal, snapshot deletion or foreign-image
 cleanup. Docker's non-forced removal provides the final concurrent-use guard.
+If a sweep fails, the daemon waits until the next hourly sweep to try again.
 
 ### Retention controls and visibility
 
-`armada host show HOST` (also `--json`) and the Machines → Docker hosts panel show the
+`armada host ls HOST` (also `--json`) and the Machines → Docker hosts panel show the
 last reported retention delay and next local cleanup deadline, with the host's
 last check-in. No reported deadline means none has been reported, not proof
 that the disk is empty. Offline hosts continue enforcing their saved policy.
 
-The member who added the Docker host can run
-`armada host retention HOST --retention 24h` (units: `s`, `m`, `h`, `d`; `0`
-means next-sweep cleanup), or save retention in seconds in the Machines → Docker hosts panel.
+The member who added the Docker host can save retention in seconds in the
+Machines → Docker hosts panel. Use 0 for next-sweep cleanup.
 The maximum is 365 days. Other members, including other admins, cannot change
 this machine policy. A saved request is applied and persisted at the daemon's
 next check-in; the panel distinguishes requested from reported settings.
@@ -1253,7 +1283,7 @@ the policy delta, preserving their original stopped age.
 ### Disk visibility and launch floor
 
 Hosts report unprivileged available bytes on the Docker data filesystem at each
-check-in. `armada host show` and the Machines → Docker hosts panel show that observation
+check-in. `armada host ls HOST` and the Machines → Docker hosts panel show that observation
 and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
 is shown as unknown, never as zero or invented free space. Reports are as fresh
 as the host's last check-in, not a reservation or a guarantee of launch success.
@@ -1311,6 +1341,15 @@ deadline. This lane never writes the state file or contacts the server. The
 mailbox subsequently observes the stop and persists/reports its proof;
 server acknowledgement can therefore lag physical enforcement during slow work.
 
+The mailbox rotates its own TTL work across generations. A failed ledger write
+does not prevent a physical expiry attempt, but the daemon publishes proof only
+after saving it. The mailbox retries saved physical-cleanup and expiry reports
+after local physical work, rotating the report cursors across restarts. Retained
+output capture has a separate per-host lane with one archive read/upload in
+flight. When opening an older ledger without an active TTL list, the daemon
+reconstructs the list from receipts and keeps the obligation for a retained
+resume when compacted receipts cannot establish stop/resume order.
+
 ### Diagnosing older daemons (#2540)
 
 A server deployment does not upgrade installed host executables. Upgrade on the
@@ -1349,7 +1388,11 @@ container layers plus attached named volumes for this installation's
 exited/dead/created containers. Shared attached volumes are counted once. Volume
 sizes come from `docker system df` (the Engine `/system/df` data); volume inspect
 does not include usage. Docker rounds volume sizes; this is not a
-reclaimable-space guarantee and excludes detached volumes.
+reclaimable-space guarantee and excludes detached volumes. The scan inspects
+only the required container fields in batches of 50 to stay within the CLI's
+output and timeout bounds. It requests only volume rows from the disk usage
+report, so unrelated image, container, and build cache rows consume none of
+the output budget.
 The daemon caches the scan for one minute; unsupported or unreadable inventory
 is unknown. CLI and Machines display it alongside free disk and version guidance.
 Deploy migration `20261117080000_docker_host_stopped_disk_observation.sql` and
@@ -1367,7 +1410,11 @@ unreferenced official images be removed, under the existing two-generation
 retention rule. User snapshots and foreign resources are never pruning targets.
 Running/starting allocations and queued or durably claimed resumes are protected.
 Cleanup authorization and its reason are saved before physical deletion; reports
-retry after disconnection. Sandbox status records `retention_elapsed` or
+retry after disconnection. Each iteration polls before deleting a retained
+allocation so queued resume or bootstrap work can protect its generation even
+when a different job is first in the mailbox. Offline cleanup still runs.
+An already-deleted allocation keeps its pending cleanup report. An uncertain
+Docker inspection never authorizes deletion. Sandbox status records `retention_elapsed` or
 `disk_pressure`, displays the workspace loss, and refuses resume with that cause.
 Old daemons can continue reporting without the optional reason and retain the
 outdated-version guidance from part 1. Upgrade daemons to enable pressure cleanup.
@@ -1375,7 +1422,7 @@ The cleanup-reason migration must deploy before the new server accepts reports;
 no migration was applied during development.
 
 Default retention is the earlier of 24 hours after the first observed stop and
-the allocation’s immutable expiry. Explicit `armada host retention` overrides
+the allocation’s immutable expiry. Explicit retention overrides
 keep their configured duration, including beyond expiry. Policy updates preserve
 the observed stop age; default cleanup still respects durable resume fencing.
 
@@ -1467,6 +1514,18 @@ about a second of its enqueue, so the merge would save little.
 The per-stage launch timings of #2560 measure the real effect on staging once
 that ticket lands; this change does not add its own timing.
 
+## Runtime installation and bootstrap
+
+The host durably fences each bootstrap or resume job before starting the runtime.
+It uses the same installer for a fresh machine and after resuming a retained
+allocation. The installer verifies the pinned public artifact's origin, size
+and digest before copying the binary from the private cache. Installation and
+bootstrap errors exposed by the host omit transport and Docker diagnostics.
+
+The non-interactive launcher takes the enrolment payload on private stdin.
+The background process disconnects its output before the Docker exec shell
+exits. The runtime owns dial-out enrolment and harness setup.
+
 ## Shared verified artifact cache (#2562)
 
 Without a shared cache every sandbox downloaded, verified and extracted its
@@ -1478,7 +1537,8 @@ so a sandbox keeps today's guarantees without trusting the host or image.
 - After each successful bootstrap the daemon, in the background, fetches
   `GET /api/runtime/artifact-sets/<runtime sha256>`: the public digests and
   sizes of the harness archives and OpenCode binary deployed with that runtime.
-  Unknown digests and older servers return 404 and nothing happens.
+  Unknown digests and older servers return 404 and nothing happens. The mailbox
+  can complete bootstrap while the background warm-up runs.
 - Each artifact is verified through the shared installer (fixed HTTPS origin,
   no credentials or redirects, exact size and SHA256) into
   `<state>/artifact-cache-private`, then published atomically as a mode 0444
@@ -1488,9 +1548,11 @@ so a sandbox keeps today's guarantees without trusting the host or image.
   neither it nor the previous set.
 - New containers bind-mount that directory read-only at
   `/opt/armada/artifact-cache`. The daemon recreates the directory before
-  every create/start; an engine that refuses the bind (confinement, remote
-  engine) gets the container without it. Ownership always accepts that exact
-  read-only bind as the only extra mount, even when preparation fails;
+  every create/start. The mount uses the canonical state path. If the path
+  contains Docker mount-field separators or the engine refuses the bind (for
+  example, with confinement or a remote engine), the container runs without
+  it. Ownership always accepts that exact read-only bind as the only extra
+  mount, even when preparation fails;
   containers created before the upgrade keep their single home volume and
   download as before.
 - Do not roll a host back to a daemon older than this change while containers
@@ -1509,3 +1571,18 @@ enrolled root is `/home/user/.armada-runtime/<sandbox id>`, so any cache in a
 snapshot belongs to another sandbox ID, and Modal snapshot finalization removes
 `/home/user/.armada-runtime` before capture. Both download per launch; this
 change does not alter their images or lifecycle.
+
+## Docker host regression fixtures
+
+Daemon restart fixtures simulate a fresh iteration from saved state. Receipt
+compaction cases exercise the production compactor. The persistence size test
+checks that a successful oversized save is readable and a rejected save leaves
+the previous state readable. Mailbox cases use explicit gates to order poll
+responses, completion, acknowledgement loss, and replay without timing delays.
+
+The runtime install tests cover how the host invokes the shared installer.
+The launcher test substitutes a local executable for the installed runtime and
+runs the actual shell script. A separate file descriptor observes only a digest
+of the enrolment input. The service upgrade fixture uses writable shared memory
+where available to exercise real fsync and rename without adding load to the CI
+runner's backing disk.

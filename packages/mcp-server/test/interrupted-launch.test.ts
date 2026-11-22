@@ -30,6 +30,7 @@ for (const outcome of ["allocated", "missing", "unavailable"] as const) {
       harness: "claude",
       status: "starting",
       activityLeaseId: crypto.randomUUID(),
+      ...(outcome === "allocated" ? { boatRuntime: true } : {}),
       model: "claude-sonnet-4-6",
       reasoningEffort: "default",
     });
@@ -61,5 +62,12 @@ for (const outcome of ["allocated", "missing", "unavailable"] as const) {
       expect((await data.sandboxes.get(found.id))?.stoppedAt).not.toBeNull();
       expect(boat.stops).toEqual([found.providerSandboxId]);
     }
+    expect(
+      (
+        await db.query("select from_status,to_status,actor,code from public.sandbox_transitions where sandbox_id=$1", [
+          found.id,
+        ])
+      ).rows,
+    ).toEqual([{ from_status: "starting", to_status: "failed", actor: "reconciler", code: "launch_interrupted" }]);
   });
 }

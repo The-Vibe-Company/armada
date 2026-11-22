@@ -1,35 +1,41 @@
-import type { Harness, VaultStore } from "@armada/core";
+import { createHash } from "node:crypto";
+import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
+import type { LaunchInput } from "@armada/core/contract";
 import {
-  goldenCompatibilityIds,
-  isExternalRef,
-  isHarness,
-  launchGitHubResponse,
-  parseMachineSize,
-  sandboxIdentity,
-} from "@armada/core";
+  controlRouteKey,
+  launch as launchOperation,
+  launchOptionsOperation,
+  launchTemplateOperation,
+} from "@armada/core/contract";
 import {
   type GoldenActor,
   type GoldenRecord,
   goldenForLaunch,
   LaunchError,
-  type LaunchResult,
   launchSandbox,
   type ModelChoice,
-  type Provider,
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
+  type TemplateRuntime,
+  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg } from "./control-caller.ts";
-import { isLaunchConnectionList, optional, required, requiredNumber, UUID } from "./control-input.ts";
+import { UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
+import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
+import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import { parseSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { readLaunchOptions } from "./launch-options.ts";
+import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
+import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
+import { defineRoutes } from "./routes.ts";
+import { ToolApiError } from "./tool-api.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
@@ -53,156 +59,185 @@ type LaunchControlOptions = Pick<
   | "ordinaryLaunchReceipts"
 >;
 
-export async function launchRoute(
+type GoldenLaunchRequest = Extract<LaunchInput, { golden: string }>;
+
+export function launchRoute(
   options: LaunchControlOptions,
   caller: Caller,
-  body: Record<string, unknown>,
+  body: GoldenLaunchRequest,
   runtime: boolean | "modal" = false,
+) {
+  return observeGoldenLaunch("rest", (timing) => launchGolden(options, caller, body, runtime, timing));
+}
+
+async function launchGolden(
+  options: LaunchControlOptions,
+  caller: Caller,
+  body: GoldenLaunchRequest,
+  runtime: boolean | "modal",
+  timing: GoldenLaunchTiming,
 ) {
   const modalRuntime = runtime === "modal";
   const runtimePolicy = modalRuntime ? options.modalRuntimeLaunch : runtime ? options.boatRuntimeLaunch : undefined;
   const runtimeHost = runtime && !modalRuntime ? options.runtimeHostFor : undefined;
   if (runtime && (!runtimePolicy || (!modalRuntime && !runtimeHost)))
     throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-  if (!runtime && (body.boatRuntime !== undefined || body.runtimeTransport !== undefined))
-    throw new VaultError("invalid", "Use sandbox/launch-runtime-v1 for experimental runtime selection.");
   if (!options.data || !options.providerFor)
     throw new VaultError("unavailable", "Launching is not configured on this server.");
-  if (body.visibility !== undefined && body.visibility !== "private" && body.visibility !== "org")
-    throw new VaultError("invalid", "Visibility is private or org.");
-  const connections = body.connections;
-  if (connections !== undefined && !isLaunchConnectionList(connections))
-    throw new VaultError("invalid", "connections must contain at most 100 connection UUIDs.");
-  const idempotencyKey = body.idempotencyKey;
-  if (
-    idempotencyKey !== undefined &&
-    (typeof idempotencyKey !== "string" || idempotencyKey.length < 16 || idempotencyKey.length > 128)
-  )
-    throw new VaultError("invalid", "idempotencyKey must be 16 to 128 characters.");
-  if (body.stopWhenWorkMerged !== undefined && typeof body.stopWhenWorkMerged !== "boolean")
-    throw new VaultError("invalid", "stopWhenWorkMerged must be a boolean.");
-  if (body.externalRef !== undefined && !isExternalRef(body.externalRef))
-    throw new VaultError("invalid", "externalRef must be 1 to 200 characters without control characters.");
+  const { connections, idempotencyKey, golden: name, repo, harness, credentialId } = body;
   if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
     throw new VaultError("unavailable", "Durable launch receipts are not configured; idempotencyKey is refused.");
-  const armadaAccess = parseSandboxArmadaAccess(body.armadaAccess);
+  const maxActiveChildren = typeof body.armadaAccess === "object" ? body.armadaAccess.maxActiveChildren : undefined;
+  const armadaAccess = body.armadaAccess ? (maxActiveChildren === undefined ? {} : { maxActiveChildren }) : undefined;
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
-  const name = required(body, "golden");
-  const repo = body.repo === undefined ? undefined : required(body, "repo");
-  const harness = required(body, "harness");
-  if (!isHarness(harness)) throw new VaultError("invalid", "The agent is claude or codex.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, optional(body, "org"), options.store);
-  const golden = await goldenForLaunch(
-    data.goldens,
-    actor,
-    name,
-    optional(body, "provider") as "boat" | "modal" | undefined,
-  );
-  resolveRepositoryDir(golden, optional(body, "repo"));
+  const actor = await launchActor(data, caller, name, body.org, options.store);
+  const golden = await goldenForLaunch(data.goldens, actor, name, body.provider);
+  resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
   if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
     throw new VaultError("invalid", "Runtime v1 requires a Boat golden.");
-  const provider = modalRuntime
-    ? await options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller)
-    : runtimeHost
-      ? runtimeHost(
-          (
-            await resolveBoatKey(options.store, options.encryptionKey, {
-              userId: caller.userId,
-              orgId: actor.orgId,
-              visibility: golden.visibility,
-            })
-          ).key,
-        )
-      : await providerForGolden(
-          options,
-          caller,
-          modalRuntime
-            ? { ...golden, runtimeTransport: "dialout" }
-            : armadaAccess
-              ? { ...golden, visibility: "private", sourceGoldenVisibility: golden.visibility }
-              : golden,
+  const target = armadaAccess
+    ? { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility }
+    : golden;
+  const launchOptions: import("@armada/core").LaunchOptions = {
+    ...options.launch,
+    ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
+  };
+  const credentials = launchCredentials(
+    options.store,
+    options.encryptionKey,
+    runtime || !options.github
+      ? undefined
+      : {
+          store: options.store,
+          app: options.github.app,
+          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
+          ...(options.github?.now ? { now: options.github.now } : {}),
+        },
+    options.modelAuth,
+    runtime && options.github ? { ...options.github, store: options.store } : undefined,
+  );
+  timing.checkpoint("admission");
+  const prepare = async () => {
+    const account = await prepareGoldenLaunchAccount(
+      actor,
+      golden,
+      { harness, credentialId },
+      credentials,
+      launchOptions,
+    );
+    timing.checkpoint("account_resolution");
+    const scopedRuntimeDefault =
+      armadaAccess && account.runtimeDefault?.policy.supportsScopedAccess ? account.runtimeDefault : undefined;
+    if (scopedRuntimeDefault) {
+      const provider = await scopedRuntimeDefault.provider(actor, target);
+      if (provider.id !== golden.provider)
+        throw new LaunchError(
+          "invalid_request",
+          "Runtime default must retain the golden provider; no native fallback.",
         );
-  const connectionLifecycle = runtime ? options.runtimeMcp?.connections : options.connections;
+      timing.checkpoint("provider_resolution");
+      return {
+        provider,
+        credentials: scopedRuntimeDefault.credentials,
+        options: { ...account.options, runtime: scopedRuntimeDefault.policy },
+        connections: scopedRuntimeDefault.connections,
+      };
+    }
+    const provider = modalRuntime
+      ? await options.modalRuntimeHostFor!({ ...target, runtimeTransport: "dialout" }, caller)
+      : runtimeHost
+        ? runtimeHost(
+            (
+              await resolveBoatKey(options.store, options.encryptionKey, {
+                userId: caller.userId,
+                orgId: actor.orgId,
+                visibility: golden.visibility,
+              })
+            ).key,
+          )
+        : await providerForGolden(options, caller, target);
+    timing.checkpoint("provider_resolution");
+    return { ...account, provider };
+  };
+  let prepared: ReturnType<typeof prepare> | undefined;
+  const prepareOnce = () => (prepared ??= prepare());
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
+    const account = await prepareOnce();
+    const connectionLifecycle =
+      account.connections ?? (runtime ? options.runtimeMcp?.connections : options.connections);
+    timing.checkpoint("receipt_admission");
     const result = await launchSandbox(
-      provider,
+      account.provider,
       {
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         goldens: data.goldens,
         sandboxes: data.sandboxes,
         ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
-        credentials: launchCredentials(
-          options.store,
-          options.encryptionKey,
-          runtime || !options.github
-            ? undefined
-            : {
-                store: options.store,
-                app: options.github.app,
-                ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-                ...(options.github?.now ? { now: options.github.now } : {}),
-              },
-          options.modelAuth,
-          runtime && options.github ? { ...options.github, store: options.store } : undefined,
-        ),
+        credentials: account.credentials,
       },
       actor,
       {
-        ...(body.credentialId !== undefined ? { credentialId: required(body, "credentialId") } : {}),
+        ...(credentialId === undefined ? {} : { credentialId }),
         golden: name,
-        ...(body.size === undefined ? {} : { size: parseMachineSize(body.size) }),
+        ...(body.size === undefined ? {} : { size: body.size }),
         provider: golden.provider,
         ...(repo === undefined ? {} : { repo }),
-        ...(body.visibility === undefined ? {} : { visibility: body.visibility as "private" | "org" }),
-        ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults as boolean }),
-        ...(body.skills === undefined ? {} : { skills: body.skills as string[] }),
-        ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities as string[] }),
+        ...(body.visibility === undefined ? {} : { visibility: body.visibility }),
+        ...(body.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: body.skipSkillDefaults }),
+        ...(body.skills === undefined ? {} : { skills: body.skills }),
+        ...(body.helperCapabilities === undefined ? {} : { helperCapabilities: body.helperCapabilities }),
         ...(connections === undefined ? {} : { connections }),
-        ...modelChoice(harness, optional(body, "model"), optional(body, "reasoningEffort")),
+        ...modelChoice(harness, body.model ?? undefined, body.reasoningEffort ?? undefined),
         harness,
-        ...(optional(body, "prompt") === undefined ? {} : { prompt: required(body, "prompt") }),
-        ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: requiredNumber(body, "ttlSeconds") }),
+        ...(body.prompt == null ? {} : { prompt: body.prompt }),
+        ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: body.ttlSeconds }),
         ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
-        ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef as string }),
+        ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
       },
       {
-        ...options.launch,
+        ...account.options,
         ...(receiptId ? { newId: () => receiptId } : {}),
-        ...(runtimePolicy ? (modalRuntime ? { runtime: runtimePolicy } : { boatRuntime: runtimePolicy }) : {}),
         ...(armadaAccess
           ? {
               privateVisibility: true as const,
-              beforeStart: async (provider: Provider, sandbox: import("@armada/core").SandboxRecord) => {
-                await options.launch?.beforeStart?.(provider, sandbox);
-                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess);
+              beforeStart: async (provider, sandbox, enrolled) => {
+                await options.launch?.beforeStart?.(provider, sandbox, enrolled);
+                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess, enrolled);
               },
             }
           : {}),
       },
     );
+    timing.checkpoint("shared_launcher");
+    timing.launched(result.sandbox);
     return {
-      ...launchJson(result),
+      ...goldenLaunchResponse(result),
       ...(armadaAccess
-        ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
+        ? { armadaAccess: { enabled: true as const, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
         : {}),
     };
   };
   if (idempotencyKey === undefined) return dispatch();
-  const target = armadaAccess ? { ...golden, visibility: "private" as const } : golden;
+  const { provider } = await prepareOnce();
   const management = await provider.managementIdentity?.();
   const backendId = (await provider.backendIdentity?.())?.id;
   if (!management || !backendId)
     throw new VaultError("unavailable", "This launch path cannot pin allocation authority; idempotencyKey is refused.");
+  const authority = {
+    target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
+    management,
+    backendId,
+  };
   const { idempotencyKey: _key, ...request } = body;
   // Same key and same request replays the recorded answer; a different request under the key is refused.
-  return options.ordinaryLaunchReceipts!.run(
+  const receipt = await options.ordinaryLaunchReceipts!.run(
     actor,
-    idempotencyKey as string,
+    idempotencyKey,
     {
       surface: "control",
       route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "native",
@@ -210,12 +245,9 @@ export async function launchRoute(
       goldenId: golden.id,
     },
     dispatch,
-    {
-      target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
-      management,
-      backendId,
-    },
+    authority,
   );
+  return publicLaunchReceipt(receipt);
 }
 
 export async function launchActor(
@@ -240,6 +272,41 @@ export async function launchActor(
   const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
   if (!member) throw new VaultError("not_found", "You are not a member of an org.");
   return { userId: caller.userId, orgId: member.orgId, role: member.role };
+}
+
+export function launchTemplate(
+  templates: TemplateService,
+  caller: Caller,
+  input: Record<string, unknown>,
+  runtime: TemplateRuntime | undefined,
+  surface: "template_rest" | "routine",
+) {
+  return observeGoldenLaunch(
+    surface,
+    async (timing) => {
+      let freshModal = false;
+      const result = await templates.command(
+        caller,
+        "launch",
+        input,
+        runtime && {
+          ...runtime,
+          provider: async (golden) => {
+            timing.checkpoint("admission");
+            const provider = await runtime.provider(golden);
+            timing.checkpoint("provider_resolution");
+            freshModal = golden.provider === "modal";
+            return provider;
+          },
+        },
+      );
+      if (freshModal && result.state === "succeeded" && typeof result.id === "string") {
+        timing.launched({ provider: "modal", id: result.id });
+      }
+      return result;
+    },
+    "template_execution",
+  );
 }
 
 /** One launch path for interactive templates and unattended owner-scoped routines. */
@@ -274,26 +341,6 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
   };
 }
 
-function launchJson(result: LaunchResult) {
-  return {
-    ...(result.runtime ? { runtime: result.runtime } : {}),
-    helper: result.helper,
-    sandbox: {
-      ...result.sandbox,
-      ...sandboxIdentity(result.sandbox),
-    },
-    golden: {
-      ...result.golden,
-      ...goldenCompatibilityIds(result.golden),
-    },
-    promptId: result.promptId ?? null,
-    conversationId: result.conversationId ?? null,
-    ttlSeconds: result.ttlSeconds,
-    expiresAt: result.expiresAt?.toISOString() ?? null,
-    github: launchGitHubResponse(result.github),
-  };
-}
-
 function modelChoice(
   harness: Harness,
   model: string | undefined,
@@ -310,3 +357,154 @@ function modelChoice(
     throw error;
   }
 }
+
+const pinnedModalRefusals = new Map([
+  ["credential_busy", "conflict"],
+  ["credential_binding_required", "credential_binding_required"],
+  ["credential_refused", "credential_refused"],
+  ["unauthorized", "credential_refused"],
+  ["forbidden", "forbidden"],
+  ["not_found", "not_found"],
+  ["invalid", "invalid"],
+  ["invalid_request", "invalid_request"],
+  ["no_credentials", "no_credentials"],
+  ["unsupported", "unsupported"],
+  ["unavailable", "dependency_unavailable"],
+  ["payment_required", "payment_required"],
+  ["provider_not_configured", "provider_not_configured"],
+  ["provider_routing_unavailable", "provider_routing_unavailable"],
+  ["rate_limited", "rate_limited"],
+  ["conflict", "conflict"],
+]);
+
+function pinnedModalFailure(receipt: Record<string, unknown>) {
+  const recorded = typeof receipt.failureCode === "string" ? pinnedModalRefusals.get(receipt.failureCode) : undefined;
+  const code = receipt.state === "failed" ? (recorded ?? "start_failed") : "outcome_unknown";
+  return new ToolApiError(
+    code,
+    launchFailureHelp(code) ?? "The pinned Modal launch was refused. Check the template and provider settings.",
+    typeof receipt.id === "string" ? { sandboxId: receipt.id } : undefined,
+  );
+}
+
+function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
+  if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
+}
+
+export const launchRoutes = defineRoutes("launch", {
+  [launchOptionsOperation.route.path.slice("/api/v1/".length)]: {
+    methods: [launchOptionsOperation.route.method],
+    handler: ({ body, options }) => {
+      if (!launchOptionsOperation.input.body.safeParse(body).success)
+        throw new VaultError("invalid", "The request is not a JSON object.");
+      return readLaunchOptions(options);
+    },
+  },
+  "sandbox/launch": async ({ caller, body, options, request }) => {
+    if (body.provider === "docker") configureDockerLaunch(options, request);
+    const { store, encryptionKey } = options;
+    const userId = caller.userId;
+    const parsed = launchOperation.input.body.safeParse(body);
+    if (!parsed.success)
+      throw new VaultError(
+        "invalid",
+        body.provider === "docker" && Object.hasOwn(body, "image")
+          ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+          : "Invalid launch request. See the sandbox/launch request schema.",
+      );
+    const launch = parsed.data;
+    if (launch.provider === "docker") {
+      const org = scopedOrg(caller, launch.org);
+      const dockerLaunch = options.dockerLaunch;
+      if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+      const organization = await resolveOrg(store, userId, org);
+      const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
+      if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
+      const { idempotencyKey, ...request } = launch;
+      const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+      return canonicalLaunchResponse(
+        await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId }),
+      );
+    }
+    if ("id" in launch) {
+      const template = launch;
+      const templateOrg = scopedOrg(caller, template.org);
+      if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+        throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+      if (template.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+      if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+      const base = templateRuntime(options, caller);
+      if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+      const {
+        provider,
+        harness,
+        runtimeVersion: _runtimeVersion,
+        runtimeTransport,
+        org: _org,
+        idempotencyKey,
+        ...input
+      } = template;
+      const organization = await resolveOrg(store, userId, templateOrg);
+      const requestKey = `pinned-modal/${createHash("sha256").update(JSON.stringify(idempotencyKey)).digest("hex")}`;
+      const receipt = await launchTemplate(
+        options.templates,
+        caller,
+        { ...input, org: organization.id, requestKey },
+        {
+          pinnedLaunch: (result, manifest) => {
+            const envelope = goldenLaunchResponse(result);
+            const { templateId, revision, revisionId, account, definition, variables } = manifest;
+            return {
+              ...envelope,
+              sandbox: {
+                ...envelope.sandbox,
+                templateManifest: { templateId, revision, revisionId, account, definition, variables },
+              },
+            };
+          },
+          validateDefinition: (definition) => {
+            if (definition.provider !== provider || definition.harness !== harness)
+              throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
+          },
+          stores: {
+            goldens: base.stores.goldens,
+            sandboxes: base.stores.sandboxes,
+            credentials: launchCredentials(
+              options.store,
+              options.encryptionKey,
+              undefined,
+              options.modelAuth,
+              options.github ? { ...options.github, store: options.store } : undefined,
+            ),
+            ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+          },
+          provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport }, caller),
+          options: { ...base.options, runtime: options.modalRuntimeLaunch },
+        },
+        "template_rest",
+      );
+      if (receipt.state === "succeeded") return publicLaunchReceipt(launchOperation.output.parse(receipt.envelope));
+      throw pinnedModalFailure(receipt);
+    }
+    scopedOrg(caller, launch.org);
+    if ("runtimeVersion" in launch) {
+      if ("runtimeTransport" in launch) {
+        if (!options.modalRuntimeLaunch || !options.modalRuntimeHostFor)
+          throw new VaultError("unavailable", "Modal runtime staging opt-in is disabled.");
+        if (launch.prompt === undefined && !options.runtimeSend)
+          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+        return canonicalLaunchResponse(await launchRoute(options, caller, launch, "modal"));
+      }
+      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
+        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
+      return canonicalLaunchResponse(await launchRoute(options, caller, launch, true));
+    }
+    return canonicalLaunchResponse(await launchRoute(options, caller, launch));
+  },
+  [controlRouteKey(launchTemplateOperation.route)]: ({ caller, body, options, request }) => {
+    configureDockerLaunch(options, request);
+    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+    return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
+  },
+});

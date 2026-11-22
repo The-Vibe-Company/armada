@@ -175,7 +175,7 @@ supplied here, so this survey does not authorize flipping the gate. Rollback als
 requires retiring affected workers: gate-off does not uninstall existing wrappers.
 
 The small #879 fix remains independently useful: a new sandbox must receive more
-than one hour of advertised remaining life, and `armada github refresh <sandbox>`
+than one hour of advertised remaining life, and `armada api github/refresh '{"id":"<sandbox>"}'`
 repairs running legacy Boat workers through private stdin plus an ephemeral file.
 **The command is explicit recovery, not per-command automatic refresh.** PR #881
 also offers best-effort legacy Boat preparation before the next prompt only with
@@ -204,7 +204,7 @@ shows the allowlisted phase directly to the owner. Unknown transport failures us
 
 Production check after deployment (not performed by this PR): on an owner's
 resumed legacy Boat sandbox with expired inherited GitHub auth, run
-`armada github refresh <sandbox> --json`, then verify `gh api user` identifies
+`armada api github/refresh '{"id":"<sandbox>"}'`, then verify `gh api user` identifies
 that owner and an authenticated Git fetch works. Repeat refresh to check
 idempotence; after resume, refresh again to recreate ephemeral `/run` state.
 Do not print token files or credential environment variables.

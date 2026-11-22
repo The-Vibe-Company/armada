@@ -146,7 +146,7 @@ export class GoldenCreateService {
     if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
     const providerId = provider.id;
     const modal = input.existingGolden?.modal ?? input.modal ?? null;
-    if ((provider.id === "modal") !== (modal !== null))
+    if (HOST_CAPABILITIES[providerId].requiresPinnedGoldenBinding !== (modal !== null))
       throw new GoldenError("invalid_config", "Secure golden creation requires the provider’s pinned binding.");
     if (input.existingGolden) {
       assertProviderOf(provider, input.existingGolden.provider);
@@ -215,7 +215,7 @@ export class GoldenCreateService {
         ...(this.deps.execution ? { idempotencyKey: this.deps.execution.id } : {}),
       });
       await this.deps.execution?.builder(builder.id);
-      if (providerId === "boat" && this.deps.installBaseline) {
+      if (HOST_CAPABILITIES[providerId].goldenBuilderBaseline === "install-at-build" && this.deps.installBaseline) {
         if (builder.state !== "ready") await waitReady(provider, builder.id, limits);
         await this.deps.installBaseline(provider, builder.id);
       }
@@ -397,8 +397,9 @@ export class GoldenCreateService {
         !builder &&
         phase === "builder" &&
         error instanceof ProviderError &&
-        error.provider === "modal" &&
-        error.providerCode === "modal_builder_image_failed" &&
+        isSandboxProvider(error.provider) &&
+        error.providerCode !== undefined &&
+        error.providerCode === HOST_CAPABILITIES[error.provider].builderImageFailureCode &&
         !error.details?.resourceReceipt &&
         !error.details?.keepSource
           ? error.message
@@ -534,7 +535,7 @@ export class GoldenCreateService {
 
 /**
  * The single-segment directory each repo is cloned into, so a golden created this way can later be
- * pulled at launch the same way as one from `armada golden create --repo <url>`: `basename`, with a
+ * pulled at launch the same way as one from `armada snapshot new NAME --repo <url>`: `basename`, with a
  * `-2`, `-3`, ... suffix on collision. The build script and the persisted config call this once each,
  * deterministically, so the two never disagree about where a repo lives.
  */

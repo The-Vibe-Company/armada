@@ -9,7 +9,7 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeSelfFinish, selfFinishToken } from "../src/sandbox-finish.ts";
-import { createSandboxOutputs } from "../src/sandbox-outputs.ts";
+import { outputJobFixture } from "./output-job.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -54,9 +54,9 @@ async function fixture() {
   const runtime = createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY);
   const ops: string[] = [];
   // When set, the runtime holds its queue until the gate opens (a slow in-flight read).
-  const hold: { gate: Promise<void> | null; onWait?: () => void } = { gate: null };
-  // When set, the runtime answers HTTP 200 with this result instead of its directory read.
-  const forced: { result?: unknown } = {};
+  const hold: { gate: Promise<void> | null; onWait?: () => void; afterAnswer?: () => void } = { gate: null };
+  // Override the runtime response for cases that exercise the wire contract.
+  const forced: { result?: unknown; error?: string } = {};
   let loop = Promise.resolve();
   // The reader's poll wait stands in for the runtime's command loop: it takes the head command
   // over the real session fence and answers it with the runtime's own directory read.
@@ -78,7 +78,7 @@ async function fixture() {
     if (!command) return;
     ops.push(command.op);
     let result = forced.result;
-    if (!("result" in forced)) {
+    if (!("result" in forced) && !forced.error) {
       if (command.op !== "readOutputs" || command.part === undefined) {
         result = { files: await readOutputDirectory(outputs) };
       } else {
@@ -91,12 +91,13 @@ async function fixture() {
     await runtime.complete(session.runtimeToken, session.epoch, {
       epoch: session.epoch,
       requestId: command.requestId,
-      status: 200,
-      body: { version: 1, requestId: command.requestId, result },
+      status: forced.error ? 409 : 200,
+      body: forced.error ? { error: forced.error } : { version: 1, requestId: command.requestId, result },
     });
+    hold.afterAnswer?.();
   }
   const reader = createDockerOutputReader(sql, ENCRYPTION_KEY, clock);
-  const service = createSandboxOutputs(
+  const service = outputJobFixture(
     sql,
     ENCRYPTION_KEY,
     async () => {
@@ -247,6 +248,22 @@ test("a well-formed Docker read reply that Armada rejects keeps the snapshot and
   }
 });
 
+test("a Docker runtime directory limit is recorded as output_limit", async () => {
+  const f = await fixture();
+  try {
+    f.forced.error = "output_limit";
+    expect(await f.service.reconcileOne(new AbortController().signal)).toBe(true);
+    await f.service.drain();
+    const { rows } = await f.db.query<{ outputs_failure_reasons: string[] }>(
+      "select outputs_failure_reasons from sandboxes where id=$1",
+      [f.id],
+    );
+    expect(rows[0]?.outputs_failure_reasons).toEqual(["output_limit"]);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("a Docker read never queues behind an unanswered runtime command; the previous snapshot stays", async () => {
   const f = await fixture();
   try {
@@ -286,7 +303,6 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
       await Promise.race([sampleQueued.promise.then(() => "queued"), f.service.drain().then(() => "finished")]),
     ).toBe("queued");
     expect(await queued()).toBe(1);
-    writeFileSync(join(f.outputs, "memo.txt"), "final");
     // The pre-stop capture queues its own read behind the sample's instead of skipping.
     f.hold.onWait = captureQueued.resolve;
     capture = captureDockerStopOutputs(f.sql, ENCRYPTION_KEY, f.id, { reader: f.reader });
@@ -294,14 +310,13 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
       "queued",
     );
     expect(await queued()).toBe(2);
+    f.hold.afterAnswer = () => {
+      delete f.hold.afterAnswer;
+      writeFileSync(join(f.outputs, "memo.txt"), "draft superseded by final");
+    };
     gate.resolve();
     await capture;
-    // The capture's own (latest) scan is the one published, not a skip.
-    const fence = await f.db.query<{ published: boolean }>(
-      `select outputs_published_scan=outputs_checked_at as published from sandboxes where id=$1`,
-      [f.id],
-    );
-    expect(fence.rows[0]?.published).toBe(true);
+    expect(await (await f.download("memo.txt"))?.text()).toBe("draft superseded by final");
     // Every Armada Docker stop admits right after the capture: the runtime fence then refuses
     // the sample's reply and result poll, so only a capture taken before admission survives.
     await f.db.query(`update sandboxes set status='stopping',stop_requested_at=now() where id=$1`, [f.id]);
@@ -309,7 +324,7 @@ test("a Docker stop during an in-flight sample queues its final read behind it b
     await f.db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.id]);
     const response = await f.download("memo.txt");
     expect(response?.status).toBe(200);
-    expect(await response?.text()).toBe("final");
+    expect(await response?.text()).toBe("draft superseded by final");
   } finally {
     f.hold.gate = null;
     gate.resolve();
@@ -348,9 +363,9 @@ test("a timed-out Docker read stops holding the runtime queue and is removed onl
     let delivered: string | undefined;
     const clock = {
       now: () => t,
-      async wait(ms: number) {
+      async wait() {
         delivered ??= (await runtime.next(f.session.runtimeToken, f.session.epoch)).command?.requestId;
-        t += ms;
+        t += 25_000;
       },
     };
     const reader = createDockerOutputReader(f.sql, ENCRYPTION_KEY, clock);

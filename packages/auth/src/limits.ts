@@ -1,16 +1,12 @@
-/** Access tokens expire an hour after `created_at`. Refresh tokens expire after 30 days. */
 export const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const AUTH_CODE_TTL_MS = 10 * 60 * 1000;
 export const LOGIN_TTL_MS = 10 * 60 * 1000;
 
-/** The only scope the authorization server grants. */
 export const OAUTH_SCOPE = "armada";
 
-/** MCP resource path #464 serves. The resource indicator is the public origin plus this path. */
 export const MCP_PATH = "/mcp";
 
-/** `ARMADA_PUBLIC_URL` is an origin. Local http is allowed so a test can stand in for the server. */
 export function assertPublicUrl(publicUrl: string): string {
   let url: URL;
   try {

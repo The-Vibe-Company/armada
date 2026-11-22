@@ -5,24 +5,36 @@ import {
   decryptSecret,
   encryptSecret,
   type Harness,
+  modalLaunchSetupKeySql,
   resolveModelChoice,
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { admitAccountCapacity } from "./account-capacity.ts";
+import {
+  admitAccountTurn,
+  DISPATCHING_TURN_CANCELLED,
+  type DispatchTurn,
+  dispatchAccountTurn,
+  NATIVE_DISPATCH_UNCERTAIN,
+  QUEUED_DISPATCH_EVIDENCE,
+  QUEUED_TURN_CANCELLED,
+  TURN_FIFO_ELIGIBLE,
+  TURN_RECOVERY_ELIGIBLE,
+  UNCERTAIN_DISPATCH_MESSAGE,
+  UNSETTLED_TASK,
+} from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
+import type { JobContext } from "./jobs/runner.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
-import { continueRequest, currentRequestId } from "./request-observability.ts";
+import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
-import { ToolError } from "./tools.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
+import { ToolError } from "./tool-error.ts";
 
-const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
-  or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
-  or exists(select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id)
-  or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
-const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
 type Entry = {
   model: string | null;
   sequence: string;
@@ -41,14 +53,59 @@ type Entry = {
   result_enc: Uint8Array<ArrayBuffer> | null;
   conversation_id: string;
 };
+type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
+const DISPATCH_JOB_BACKFILL_BATCH = 20;
+
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
  * Runtime-backed lanes reconcile the same durable request under a bounded dispatch lease.
  * An uncertain dispatch retains its slot until lifecycle evidence or an owner stop resolves it. */
 export function createAccountTurnQueue(sql: Sql, key: string) {
+  const jobs = createJobsStore(sql, key);
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
-  let dispatch: ((caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>) | undefined;
+  let backfillRange: { after: string; through: string | null } = { after: "0", through: null };
+  let dispatch: DispatchTurn | undefined;
+  function enqueueDispatchJob(entry: DispatchJobEntry, tx?: Sql) {
+    return jobs.enqueue(
+      "turn_dispatch",
+      entry.sandbox_id,
+      Number(entry.queued_generation),
+      entry.request_id,
+      { requestId: entry.request_id },
+      { orgId: entry.org_id, maxAttempts: 3 },
+      tx,
+    );
+  }
+  async function backfillDispatchJobs(signal: AbortSignal) {
+    // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
+    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; through: string; missing_job: boolean }>(
+      `with sweep as (
+         select coalesce($3::bigint,(select max(sequence) from public.account_turn_queue)) as through
+       )
+       select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,sweep.through::text,
+       case when q.state in ('queued','dispatching') then not exists (
+         select 1 from public.jobs j where j.idem_key =
+           format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
+       ) else false end as missing_job
+       from sweep cross join lateral (
+         select sandbox_id,request_id,org_id,queued_generation,sequence,state
+         from public.account_turn_queue where sequence>$1::bigint and sequence<=sweep.through
+         order by sequence limit $2
+       ) q order by q.sequence`,
+      [backfillRange.after, DISPATCH_JOB_BACKFILL_BATCH, backfillRange.through],
+    );
+    const last = rows.at(-1);
+    backfillRange =
+      last && rows.length === DISPATCH_JOB_BACKFILL_BATCH && last.sequence !== last.through
+        ? { after: last.sequence, through: last.through }
+        : { after: "0", through: null };
+    for (const entry of rows) {
+      if (signal.aborted) return;
+      if (entry.missing_job) await enqueueDispatchJob(entry);
+    }
+  }
+
   async function waitingMessage(accountId: string, sandboxId: string, requestId: string) {
     const row = (
       await sql.query<{
@@ -63,8 +120,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       }>(
         `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
           (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-            or (s.task_prompt_id is not null and s.status='running' and not exists(
-              select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))
+            or (${UNSETTLED_TASK})
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
             select 1 from public.account_agent_reservations r where r.sandbox_id=s.id and r.account_id=c.id)) as has_slot
@@ -79,13 +135,16 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       return `Waiting for a free agent slot for model ${row.model} on account ${row.name} (${row.model_working}/${row.model_limit}).`;
     return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
   }
-  async function accept(caller: Caller, input: RuntimeFollowupInput) {
-    const requestId = input.request_id?.toLowerCase() ?? randomUUID();
+  async function persist(
+    caller: Caller,
+    input: RuntimeFollowupInput & { request_id: string },
+    initialLaunch?: { generation: string; canDispatch: JobContext["canDispatch"] },
+  ) {
+    const requestId = input.request_id;
     const normalized = {
       id: input.id,
       request_id: requestId,
       prompt: input.prompt,
-      conversation_id: input.conversation_id,
       model: input.model,
       reasoning_effort: input.reasoning_effort,
     };
@@ -94,7 +153,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     // The first insert owns correlation. Keep it outside the idempotency hash.
     const sealed = await encryptSecret(JSON.stringify({ ...normalized, correlationId: currentRequestId() }), key);
     if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
-    const entry = await sql.transaction(async (tx) => {
+    return sql.transaction(async (tx) => {
       const target = (
         await tx.query<{
           status: string;
@@ -110,12 +169,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           credential_id: string | null;
           credential_version: number;
           org_id: string;
-          conversation_ids: string[];
+          launch_setup_state: string | null;
         }>(
-          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,s.conversation_ids from public.sandboxes s
-         join public.members m on m.org_id=s.org_id and m.user_id=$2
-         where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
-          [input.id, caller.userId],
+          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
+                  s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
+                  case when s.provider='modal' and not $3::boolean then (
+                    select j.state from public.jobs j where j.idem_key=${modalLaunchSetupKeySql()}
+                  ) end as launch_setup_state
+           from public.sandboxes s
+           join public.members m on m.org_id=s.org_id and m.user_id=$2
+           where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
+          [input.id, caller.userId, initialLaunch !== undefined],
         )
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
@@ -132,6 +196,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
+      assertModalLaunchSetup(target.launch_setup_state);
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
       if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
@@ -146,8 +211,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         )
           throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
         if (Buffer.byteLength(input.prompt) > 262144) throw new VaultError("invalid", "The prompt is too large.");
-        if (input.conversation_id !== undefined && !target.conversation_ids.includes(input.conversation_id))
-          throw new VaultError("invalid", "Continue an existing runtime conversation.");
       }
       if (
         !(target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") &&
@@ -176,6 +239,24 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         [target.credential_id, target.credential_version, caller.userId, target.org_id],
       );
       if (!credential.rows.length) throw new VaultError("not_found", "Pinned account is no longer authorized.");
+      if (initialLaunch) {
+        const { rows: sandboxes } = await tx.query(
+          `select id from public.sandboxes
+           where id=$1 and lifecycle_generation=$2 and org_id=$3 and owner_id=$4
+             and provider='modal' and runtime_transport='dialout' and provider_sandbox_id is not null
+             and status in ('ready','running') and stop_requested_at is null and deleted_at is null
+             and expires_at>clock_timestamp() for update`,
+          [input.id, initialLaunch.generation, target.org_id, caller.userId],
+        );
+        if (!sandboxes.length) return null;
+        // WARNING: Read after locking because ticket rotation can change the receipt without updating the sandbox.
+        const { rows: enrolled } = await tx.query(
+          `select sandbox_id from public.runtime_enrolments
+           where sandbox_id=$1 and lifecycle_generation=$2 and runtime_hash is not null`,
+          [input.id, initialLaunch.generation],
+        );
+        if (!enrolled.length || !(await initialLaunch.canDispatch(tx))) return null;
+      }
       let saved = (
         await tx.query<Entry>("select * from public.account_turn_queue where sandbox_id=$1 and request_id=$2", [
           input.id,
@@ -188,26 +269,31 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       )
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
-        const sandbox = await tx.query<Record<string, unknown>>(
-          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
-           and deleted_at is null and expires_at>now() and stop_requested_at is null
+        const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
+          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
+           and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
            and status in ('ready','running','stopped') for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        if (
-          locked.status !== "stopped" &&
-          (
-            await tx.query(
-              `select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-           where p.sandbox_id=$1 and p.merge_stop`,
+        if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
+          throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (locked.status !== "stopped") {
+          const checkpoint = (
+            await tx.query<{ merge_stop: boolean }>(
+              `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
+               on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1`,
               [input.id],
             )
-          ).rows.length
-        )
-          throw new VaultError("conflict", "Sandbox is stopping after its pull requests were merged.");
+          ).rows[0];
+          if (checkpoint)
+            throw new VaultError(
+              "conflict",
+              checkpoint.merge_stop
+                ? "Sandbox is stopping after its pull requests were merged."
+                : "Sandbox is checkpointing. Wait for a confirmed retained stop before sending.",
+            );
+        }
         const lockedRefusal = sandboxControlRefusal(
           {
             status: String(locked.status),
@@ -221,6 +307,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           new Date(),
         );
         if (lockedRefusal) throw new VaultError("conflict", lockedRefusal);
+        const currentConversation = locked.conversation_ids.at(-1);
         saved = (
           await tx.query<Entry>(
             `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)
@@ -235,14 +322,21 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               target.credential_version,
               hash,
               sealed,
-              input.conversation_id ?? target.conversation_ids.at(-1) ?? `first_${requestId}`,
+              currentConversation ?? `first_${requestId}`,
               input.model ?? target.model,
             ],
           )
         ).rows[0]!;
+        await enqueueDispatchJob(saved, tx);
+        if (initialLaunch && !(await initialLaunch.canDispatch(tx)))
+          throw new Error("Modal initial turn lost its job lease before queue commit.");
       }
       return saved;
     });
+  }
+  async function accept(caller: Caller, input: RuntimeFollowupInput) {
+    const requestId = input.request_id?.toLowerCase() ?? randomUUID();
+    const entry = await persist(caller, { ...input, request_id: requestId });
     if (!entry) return null;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
     if (entry.state === "failed")
@@ -258,6 +352,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   return {
     accept,
+    async acceptInitialLaunch(
+      caller: Caller,
+      input: { id: string; request_id: string; prompt: string },
+      generation: string,
+      canDispatch: JobContext["canDispatch"],
+    ) {
+      return Boolean(await persist(caller, input, { generation, canDispatch }));
+    },
     async cancelQueued(caller: Caller, sandboxId: string) {
       await sql.query(
         `update public.account_turn_queue q set state='failed',failure_reason='Queued prompt was cancelled.'
@@ -335,6 +437,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     setDispatch(value: NonNullable<typeof dispatch>) {
       dispatch = value;
     },
+    backfillDispatchJobs,
     async drain() {
       await Promise.allSettled([...pending]);
     },
@@ -347,203 +450,38 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and (s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE})`);
+          and ${QUEUED_DISPATCH_EVIDENCE}`);
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and (s.deleted_at is not null or s.expires_at<=now() or s.stop_requested_at is not null
-            or s.status not in ('ready','running','stopped')
-            or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation))`);
+          and ${QUEUED_TURN_CANCELLED}`);
         await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
-          and (s.stop_requested_at is not null or s.deleted_at is not null or s.status in ('deleted','stopping','failed') or (s.status='stopped' and s.lifecycle_generation<>q.queued_generation) or s.expires_at<=now())`);
+          and ${DISPATCHING_TURN_CANCELLED}`);
         // Native admission advances the generation before calling the provider. An expired
         // changed-generation claim is uncertain, never safe to replay or leave dispatching.
         await sql.query(`update public.account_turn_queue q set state='failed',dispatch_until=null,
-          failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.'
+          failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
           from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
-          and q.dispatch_until<=now() and not coalesce(${RUNTIME_LANE},false)
-          and (s.lifecycle_generation is distinct from q.dispatch_generation
-            or s.activity_lease_id is not null or coalesce(${RUNTIME_REQUEST_EVIDENCE},false))`);
+          and q.dispatch_until<=now() and ${NATIVE_DISPATCH_UNCERTAIN}`);
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE}) or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))))
-           and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence))
+             where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
+           and ${TURN_FIFO_ELIGIBLE}
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
           )
         ).rows;
         for (const candidate of candidates) {
           scanAfter = String(candidate.sequence);
-          const recovering = candidate.state === "dispatching";
-          const admitted = await sql.transaction!(async (tx) => {
-            const member = (
-              await tx.query<{ role: "admin" | "member"; epoch: string }>(
-                `select m.role,e.epoch::text from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
-             where m.org_id=$1 and m.user_id=$2 for share of m`,
-                [candidate.org_id, candidate.owner_id],
-              )
-            ).rows[0];
-            await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
-            const current = await tx.query(
-              `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
-              and (q.state='queued' or q.dispatch_until<=now())
-              and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence)) for update of q`,
-              [candidate.sandbox_id, candidate.request_id, candidate.state],
-            );
-            if (!current.rows.length) return null;
-            if (recovering) {
-              // Recheck under account, queue and sandbox locks: the discovery read may be stale.
-              // Native providers cannot replay uncertain mutations, but an unchanged generation
-              // with no request evidence proves the previous claim never began dispatch.
-              const abandoned = await tx.query(
-                `select s.id from public.sandboxes s
-                 join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-                 where s.id=$1 and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
-                 and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation)) and not coalesce(${RUNTIME_LANE},false)
-                 and s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
-                 and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false) for update of s`,
-                [candidate.sandbox_id, candidate.request_id],
-              );
-              if (abandoned.rows.length) {
-                await tx.query(
-                  `with retried as (update public.account_turn_queue set state='queued',
-                    dispatch_generation=null,dispatch_until=null,failure_reason=null
-                    where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-                   delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
-                  [candidate.sandbox_id, candidate.request_id],
-                );
-                return null;
-              }
-            }
-            const valid = await tx.query<{ id: string; runtime: boolean }>(
-              `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
-             where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.credential_id=$4 and s.credential_version=$5
-             and c.version=$5 and c.status='active' and (c.expires_at is null or c.expires_at>now())
-             and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3))
-             and s.deleted_at is null and s.stop_requested_at is null and s.expires_at>now()
-             and (s.status<>'stopped' or s.lifecycle_generation=$7::bigint)
-             and (s.status in ('ready','running','stopped') or ($6::boolean and s.status='starting')) for update of s`,
-              [
-                candidate.sandbox_id,
-                candidate.owner_id,
-                candidate.org_id,
-                candidate.account_id,
-                candidate.credential_version,
-                recovering,
-                candidate.queued_generation,
-              ],
-            );
-            if (!member || member.epoch !== String(candidate.actor_epoch) || !valid.rows.length) {
-              await tx.query(
-                "update public.account_turn_queue set state='failed',failure_reason='Authorization or sandbox lifecycle changed.' where sandbox_id=$1 and request_id=$2 and state='queued'",
-                [candidate.sandbox_id, candidate.request_id],
-              );
-              return null;
-            }
-            if (recovering && !valid.rows[0]!.runtime) return null;
-            const busy = await tx.query(
-              `select 1 from public.account_turn_queue where sandbox_id=$1 and state='dispatching'
-             union all select 1 from public.sandboxes s where s.id=$1 and (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-             or (s.task_prompt_id is not null and s.status='running' and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))) limit 1`,
-              [candidate.sandbox_id],
-            );
-            if (!recovering && busy.rows.length) return null;
-            try {
-              if (!recovering)
-                await admitAccountCapacity(
-                  tx,
-                  candidate.account_id,
-                  candidate.sandbox_id,
-                  candidate.model ?? undefined,
-                );
-              else
-                await tx.query(
-                  "insert into public.account_agent_reservations(sandbox_id,account_id,model) values($1,$2,$3) on conflict(sandbox_id) do nothing",
-                  [candidate.sandbox_id, candidate.account_id, candidate.model],
-                );
-            } catch (error) {
-              if (error instanceof VaultError && error.code === "conflict") return null;
-              throw error;
-            }
-            const claimed = await tx.query(
-              "update public.account_turn_queue set dispatch_generation=case when state='queued' then (select lifecycle_generation from public.sandboxes where id=$1) else dispatch_generation end,state='dispatching',dispatch_until=now()+interval '15 minutes' where sandbox_id=$1 and request_id=$2 and state=$3 returning request_id",
-              [candidate.sandbox_id, candidate.request_id, candidate.state],
-            );
-            if (!claimed.rows.length) return null;
-            return {
-              entry: candidate,
-              caller: {
-                userId: candidate.owner_id,
-                via: "service" as const,
-                orgs: [{ orgId: candidate.org_id, role: member.role }],
-              },
-            };
-          });
+          const admitted = await admitAccountTurn(sql, candidate);
           if (admitted) return admitted;
         }
         return null;
       })();
       if (!picked) return false;
-      const work = (async () => {
-        try {
-          const { correlationId, ...input } = JSON.parse(
-            await decryptSecret(picked.entry.input_enc, key),
-          ) as RuntimeFollowupInput & { correlationId?: string };
-          const result = await continueRequest(correlationId, () => dispatch!(picked.caller, input));
-          await sql.query(
-            `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
-                 where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-               delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-            [input.id, picked.entry.request_id, await encryptSecret(JSON.stringify(result), key)],
-          );
-        } catch (error) {
-          // Retry only when durable evidence proves no model mutation began. Generation/lease
-          // fences native and runtime sends; journals and host jobs additionally fence Docker.
-          await sql.transaction!(async (tx) => {
-            await tx.query("select id from public.credentials where id=$1 for update", [picked.entry.account_id]);
-            const unchanged = await tx.query(
-              `select s.id from public.sandboxes s
-              join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-              where s.id=$1 and q.state='dispatching' and s.lifecycle_generation=q.dispatch_generation
-              and s.activity_lease_id is null and s.stop_requested_at is null
-              and s.status in ('ready','running') and s.deleted_at is null and s.expires_at>now()
-              and not exists(select 1 from public.runtime_commands where sandbox_id=s.id
-                and request_id in ('follow_'||$2::text,'docker_prompt_'||$2::text,'resume_'||$2::text))
-              and not exists(select 1 from public.docker_host_jobs where bound_sandbox_id=s.id and request_id=$2::uuid)
-              and not exists(select 1 from public.runtime_resumes where sandbox_id=s.id and request_id=$2::uuid)
-              for update of s,q`,
-              [picked.entry.sandbox_id, picked.entry.request_id],
-            );
-            if (unchanged.rows.length) {
-              const retry = error instanceof VaultError && (error.code === "conflict" || error.code === "unavailable");
-              await tx.query(
-                `with retried as (update public.account_turn_queue set state=$3,failure_reason=$4,dispatch_generation=null,dispatch_until=null
-                where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-                delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
-                [
-                  picked.entry.sandbox_id,
-                  picked.entry.request_id,
-                  retry ? "queued" : "failed",
-                  retry
-                    ? null
-                    : "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
-                ],
-              );
-            } else {
-              // No raw exception text: provider diagnostics may contain credentials.
-              await tx.query(
-                `update public.account_turn_queue q set failure_reason='Dispatch outcome uncertain; inspect sandbox history before resending.',
-                 state=case when coalesce(${RUNTIME_LANE},false) then q.state else 'failed' end,
-                 dispatch_until=case when not coalesce(${RUNTIME_LANE},false) then null when ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
-                 from public.sandboxes s where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'`,
-                [picked.entry.sandbox_id, picked.entry.request_id],
-              );
-            }
-          });
-        }
-      })();
+      const work = dispatchAccountTurn(sql, key, picked.entry, picked.caller, dispatch);
       pending.add(work);
       void work.finally(() => pending.delete(work));
       return true;

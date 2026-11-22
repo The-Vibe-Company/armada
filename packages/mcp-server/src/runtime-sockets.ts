@@ -2,6 +2,8 @@ import type { ServerWebSocket, WebSocketHandler } from "bun";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 
+import { runtimeWakes } from "./wake-bus.ts";
+
 export interface RuntimeSocketData {
   token: string;
   epoch: string;
@@ -23,6 +25,7 @@ interface Connection {
   ready: boolean;
   closed: boolean;
   busy: boolean;
+  woken: boolean;
   messageBusy: boolean;
   waiting: string | undefined;
   lastSeen: number;
@@ -59,9 +62,13 @@ export function createRuntimeSockets(
   function failure(socket: Socket, error: unknown) {
     end(socket, error instanceof RuntimeEnrolmentDenied ? 4401 : 1012);
   }
-  async function pump(socket: Socket) {
+  async function pump(socket: Socket, woken = false) {
     const state = connections.get(socket);
-    if (!state || state.closed || state.busy || stopping) return;
+    if (!state || state.closed || stopping) return;
+    if (state.busy) {
+      state.woken ||= woken;
+      return;
+    }
     if (!state.ready) {
       if (time.now() - state.lastSeen >= 8000) end(socket, 1002);
       return;
@@ -72,21 +79,24 @@ export function createRuntimeSockets(
     }
     state.busy = true;
     try {
-      await commands.withNext(socket.data.token, socket.data.epoch, async (value) => {
-        if (stopping || state.closed) return;
-        if (!value.command) {
-          state.waiting = undefined;
-          return;
-        }
-        if (value.command.requestId === state.waiting) return; // Never flood a pending native RPC.
-        const frame = JSON.stringify({ type: "command", epoch: value.epoch, request: value.command });
-        if (Buffer.byteLength(frame) > 1048576) throw Error("runtime_frame_too_large");
-        if (socket.send(frame) === 0) {
-          end(socket, 1012);
-          return;
-        }
-        state.waiting = value.command.requestId;
-      });
+      do {
+        state.woken = false;
+        await commands.withNext(socket.data.token, socket.data.epoch, async (value) => {
+          if (stopping || state.closed) return;
+          if (!value.command) {
+            state.waiting = undefined;
+            return;
+          }
+          if (value.command.requestId === state.waiting) return; // Never flood a pending native RPC.
+          const frame = JSON.stringify({ type: "command", epoch: value.epoch, request: value.command });
+          if (Buffer.byteLength(frame) > 1048576) throw Error("runtime_frame_too_large");
+          if (socket.send(frame) === 0) {
+            end(socket, 1012);
+            return;
+          }
+          state.waiting = value.command.requestId;
+        });
+      } while (state.woken && !state.closed && !stopping);
     } catch (error) {
       failure(socket, error);
     } finally {
@@ -172,13 +182,21 @@ export function createRuntimeSockets(
         ready: false,
         closed: false,
         busy: false,
+        woken: false,
         messageBusy: false,
         waiting: undefined,
         lastSeen: time.now(),
         cancel: () => {},
       };
       connections.set(socket, state);
-      state.cancel = time.every(1000, () => track(pump(socket)));
+      const cancelTimer = time.every(1000, () => track(pump(socket)));
+      const unsubscribe = runtimeWakes.subscribe(`socket:${socket.data.sandboxId}`, () => {
+        track(pump(socket, true));
+      });
+      state.cancel = () => {
+        cancelTimer();
+        unsubscribe();
+      };
     },
     message: (socket, value) => track(message(socket, value)),
     close(socket) {

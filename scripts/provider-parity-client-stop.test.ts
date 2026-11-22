@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Actual production client serializers, active/terminal observations and cleanup intent handling.
@@ -20,7 +21,7 @@ for (const mode of [
     const states = new Map<string, string>(),
       memory = new Map<string, string>(),
       turns = new Map<string, number>(),
-      due = new Map<string, number>(),
+      deletes = new Map<string, number>(),
       cleanupStops = new Map<string, number>();
     const statusRefused = new Set<string>();
     const wire: Array<{ provider: string; client: string }> = [],
@@ -31,7 +32,6 @@ for (const mode of [
       expect(["ready", "running"]).toContain(states.get(provider)!);
       wire.push({ provider, client });
       states.set(provider, mode === "ack_only" ? "stopping" : "stopped");
-      if (mode === "ack_only") due.set(provider, now + 110_000);
       if (mode === "late_stop") now += 110_001;
       if (mode === "lost_ack") throw Error("transport_placeholder");
       return { id: mode === "wrong_ack" ? "other_owned_placeholder" : id[provider], status: "stopped" };
@@ -60,7 +60,7 @@ for (const mode of [
         },
         out: (line) => lines.push(line),
         fetch: async (url, init) => {
-          const body = JSON.parse(String(init.body)),
+          const body = parityRequest(url, init).body,
             headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
           if (new URL(url).pathname === "/mcp") {
@@ -103,7 +103,7 @@ for (const mode of [
             });
           }
           const provider = body.org === org.modal ? "modal" : "docker";
-          const route = url.split("/api/v1/")[1];
+          const { path: route } = parityRequest(url, init);
           switch (route) {
             case "launch/options":
               return Response.json({
@@ -127,7 +127,7 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: id[provider], provider } });
+              return Response.json({ sandbox: { id: id[provider], provider, externalRef: body.externalRef } });
             case "sandbox/send": {
               const n = (turns.get(provider) ?? 0) + 1;
               if (n > 1 && mode === "resume_quota")
@@ -166,7 +166,6 @@ for (const mode of [
                   { status: 403 },
                 );
               }
-              if (due.has(provider) && now >= due.get(provider)!) states.set(provider, "stopped");
               return Response.json({ id: body.id, status: states.get(provider), settled: true, prompt: null });
             case "sandbox/stop":
               if (body.request_id) {
@@ -188,7 +187,10 @@ for (const mode of [
               expect(states.get(provider)).toBe("stopped");
               states.set(provider, "ready");
               return Response.json({ id: body.id, status: "ready" });
-            case "sandbox/delete":
+            case sandboxDeletePath:
+              deletes.set(provider, (deletes.get(provider) ?? 0) + 1);
+              if (states.get(provider) === "stopping")
+                return Response.json({ error: { code: "conflict" } }, { status: 409 });
               expect(states.get(provider)).toBe("stopped");
               states.set(provider, "deleted");
               return Response.json({ id: body.id, status: "deleted" });
@@ -220,7 +222,13 @@ for (const mode of [
               ? "not-run"
               : "fail",
       );
-      if (mode !== "unsupported") expect(report.features.cleanup[provider].status).toBe("pass");
+      if (mode === "ack_only") {
+        expect(report.features.cleanup[provider]).toMatchObject({
+          status: "fail",
+          diagnostic: { code: "conflict", httpStatus: 409 },
+        });
+        expect(deletes.get(provider)).toBe(1);
+      } else if (mode !== "unsupported") expect(report.features.cleanup[provider].status).toBe("pass");
       if (mode === "valid") {
         expect(wire.filter((call) => call.provider === provider).map((call) => call.client)).toEqual([
           "dashboard",

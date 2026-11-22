@@ -2,7 +2,7 @@
 
 ## Root / #523 factory contract
 
-`await createComposedModalProvider(options)` returns `{provider, ingest, close}`.
+`await createComposedModalProvider(options)` returns `{provider, captureRuntimeWork, ingest, close}`. Runtime work capture is a separate connection port.
 Mount `ingest` at the exact public HTTPS `ingestUrl` under the server's `/api/v1`
 routing. Provide transactional server SQL, persistent random >=32-byte signingKey,
 appName, artifact and resolveHarnessEnvironment.
@@ -52,8 +52,8 @@ profile/workspace label is not authentication; actual AppID is authoritative.
 There is no redirect/new-App fallback. The public SDK does not expose a separate
 verified authenticated-workspace accessor.
 
-Source snapshots use a separate SQL store and source lease. Fork reservations,
-get/list/events/runner grants use only target scope. No source-store fallback can
+Source snapshots use a separate SQL store. Fork reservations and
+get/list/events/runner grants use target scope. No source-store fallback can
 expose an org-scoped machine when a private target was requested. A fork persists
 source Image lineage; subsequent machine operations refuse a provider connection
 with the wrong source authority, even when both connections reach the same App.
@@ -77,7 +77,11 @@ managementAuthority provenance. It also accepts explicit
 public client injection. `ModalStore.imageReferenced` is a server-only boolean
 reference check: it counts private target references across visibility scopes
 without returning private resource IDs, owners, events or rows to a source caller.
-GC and fork reservation serialize on the source lease.
+Snapshot retirement and fork reservation serialize on the saved-image row.
+Store entry points recheck live organization membership, including for private owners. Lifecycle phase
+commits renew the 15-minute lease, and expired holders cannot commit late results.
+Image collection claims expire after five minutes. Tombstone deletion matches the
+name, source and image ID so a late collector cannot purge a replacement artifact.
 
 ## Runner / grants / credentials
 
@@ -88,6 +92,17 @@ Modal proxy token uses Authorization; the runner application token uses
 in registry JSON. Ingest validates live membership, scope, generation and producer
 sequence, dedupes identical replays, rejects conflicting replay and ACKs only after
 contiguous durable commit. No database/user/provider token reaches the runner.
+The handler bounds the request body before parsing JSON and checks the batch size.
+An injected grant verifier must authenticate the token cryptographically and resolve
+scope from trusted server state. Request JSON supplies no authority. Event
+projection runs in the same authenticated archive transaction before ACK and must
+tolerate replays.
+The archive stops at a missing producer sequence so downstream consumers see
+contiguous events.
+
+The deployment tag uses a fixed-width hash of the Modal environment and public
+ingest origin. This keeps the identity stable within Modal's tag budget and lets
+the inventory reaper match the exact tag.
 
 `resolveHarnessEnvironment(machine,launchEnv)` runs for each active generation,
 never for golden builders. It returns allowlisted `claudeEnv`, `codexEnv`, optional
@@ -193,6 +208,8 @@ No nested `input` wrapper is added. The only returned value is the exact acknowl
 revision; extra runner fields/config/auth are never echoed or saved in provider SQL.
 HTTP success/enveloped errors must match version/requestId; existing protocol1 bare
 safe errors on HTTP409 remain supported without changing the frozen wire protocol.
+The transport maps allowlisted runner error codes to public diagnostics and drops
+raw runner error details.
 
 Register this provider through the real server provider factory before core calls
 `connections.prepare`. First fork boot precedes canonical Armada sandbox/binding
@@ -233,14 +250,28 @@ Node manifest and apt policy in a real disposable Modal probe (terminated). Git,
 gh, sshd, Bun and both harnesses are installed with `/home/user/repos` writable by
 user. No named Modal Secret/account environment is inherited. The non-secret
 conformance App/name/environment binding is exported as MODAL_CONFORMANCE_APP;
-workspace metadata still comes from the trusted connection record.
+the AppID is authoritative and workspace metadata comes from the trusted connection record.
+
+For custom distribution inputs, pin a Debian base by OCI digest. The base must
+include apt, Node and npm, and its configured Debian snapshot repository must
+provide the exact apt versions in the lock. Image construction uses public build
+inputs and excludes bootstrap, authorization and session data.
 
 For the single CLI/server binary, import `loadEmbeddedRunnerArtifact` from
 `@armada/provider-modal/embedded` after the runtime build. Merge returned bytes/hash
 with MODAL_IMAGE_LOCK in artifact. Bun embeds main.js and its manifest as file
-assets: the compiled server needs no external runtime/workspace files. Native
-executables are installed only in Modal, not as host binaries. The compile smoke
-imports the actual composed factory and embedded artifact on all four targets.
+assets. Both loaders validate the portable bundle, while the disk loader also
+checks native resources. The compiled server needs no external runtime/workspace
+files. Native executables are installed only in Modal, not as host binaries.
+The compile smoke imports the actual composed factory and embedded artifact on
+all four targets.
+
+Saved golden images carry the runtime from their build date. Before private
+bootstrap, the direct Modal runner path refreshes the public runtime for
+first-generation forks and golden builder generations that have yet to complete
+fresh-state preparation. This includes builders reopened from a recovery image.
+Ordinary non-golden working checkpoint resumes in this path keep their saved
+runtime and native journal.
 
 ## Authorized VM build privilege and independent runner Bun
 
@@ -317,9 +348,8 @@ SSH executor. It validates an Ed25519 public key and provisions actual OpenSSH o
 port2222 through Modal's raw TCP tunnel; SSH itself encrypts/authenticates traffic.
 It generates a per-generation Ed25519 host key and returns its real public key for
 strict pinning. Client authorizations expire after15 minutes. Password/agent/TCP/X11 paths are disabled; root key-only login is golden-only. Private host keys never leave the machine.
-`prepareSsh` delegates to this exact same leased implementation: neither public
-path can recreate authorization/host keys after checkpoint/scrub. Both require
-current active admission and generation under the lifecycle lease.
+SSH provisioning requires active admission and the current generation under the
+lifecycle lease, so it cannot recreate authorization or host keys after checkpoint/scrub.
 
 Stop: durable checkpoint phase -> runner drain/auth scrub -> exact SQL ACK watermark
 verification -> close SSH and all user-owned writers -> remove keys/auth audit ->
@@ -331,14 +361,63 @@ reports successful stop. TTL >24h is rejected, not clamped. Exited machines with
 a current verified checkpoint report failure, not fictional disk recovery.
 
 Goldens are immutable/provider-bound, use ttlMs:null and contain no managed model
-credentials/sessions/bootstrap/host keys. Named snapshot deletion records a durable
-tombstone first; source leases protect concurrent private/org fork reservations.
-Images remain while any non-deleted fork references their lineage, including after
-restore changes its current working Image. Last-fork deletion performs GC across
-those references, with idempotent Image deletion/tombstone purge. collectGarbage()
-retries interrupted GC explicitly. Server events remain readable after deletion.
+credentials/sessions/bootstrap/host keys. Named snapshot deletion refuses while a
+non-deleted fork references the exact saved image, including across private and
+organization scopes. Enrolled admission pins the image in a short reservation
+transaction. Native admission still holds the source lease through boot.
+Retirement records a durable tombstone before physical collection. Collection
+preserves referenced artifacts, including historical tombstones and images shared
+by multiple handles. `collectRetiredSnapshot(name)` retries collection for a
+specific retired snapshot. Server events remain readable after deletion.
 Control tables are server-only/RLS-enabled. Secure golden org-admin authorization
 remains upstream, in addition to live membership/owner/binding checks here.
+
+### Provider options and recovery contracts
+
+- Allocation inventory tags are stable and server-owned. Use the trusted
+  staging-only host allocation option for enrolled runtimes. It freezes routing
+  on the machine and skips starting the tunnel listener. The server owns runtime
+  health. Explicit resource selections remain immutable across physical restores.
+  Only new managed launch reservations opt into explicit VM allocation. Record
+  VM evidence after confirmed named creation and bind it to the physical ID and
+  generation. Older rows without that evidence remain unknown.
+- The history-only provider reads server-owned history for `get`, `events`, and
+  `getPrompt` without reaching the live App or runner. Admission and lifecycle
+  decisions require the live provider. Unknown-create adoption requires verified
+  ownership and the persisted source authority, with no credential fallback.
+- A lost response after runner boot can be reconciled against the same physical
+  incarnation. Keep the single-attempt lock when boot is uncertain and preserve
+  admission and session state on that incarnation.
+- Workspace size capture runs a fixed collector in the physical container for
+  either runner path. It reads live compute without taking the lifecycle lease
+  or starting a stopped workspace. The caller's pre-stop deadline bounds the
+  whole wait. If stop wins the race, keep the previous measurement.
+- Native and runtime forks pin a live handle under a shared image row lock.
+  The reservation commits before boot, and retirement checks references under
+  an exclusive image row lock. Once an unreferenced tombstone is marked
+  collecting, remote deletion can run outside the source lease. Only the holder of its expiring dispatch claim can issue that deletion.
+  Release the claim on failure for immediate retry and purge only the matching
+  source and physical Image record after success. Cleanup of other sources'
+  retired images defaults to a detached task after delete, outside the delete
+  receipt and server activity lease.
+- Keep an unpublished builder while any saving, published, or tombstoned Image
+  records it as source. Once the rollback artifact is confirmed collected, a
+  builder parked at checkpoint can be deleted if its snapshot history has no
+  other retention reason. Once deletion is committed, snapshot history alone
+  does not block finishing it. Resume interrupted deletion through the same delete
+  path and recheck ownership and retention after remote observation. Resume
+  refuses deleting machines. Recovery itself leaves Image collection to the
+  artifact owner. Only the trusted server can call `stopRuntime`, after it
+  verifies that the checkpoint for the exact physical incarnation is durably
+  sealed and ACKed. On delete, independently confirm that the incarnation has
+  exited before removing its recovery images.
+- Core validates repository membership and existence against the golden. The
+  provider accepts only valid checkout paths and installs no executable
+  wrappers for them. Renewing a running machine never allocates or restores
+  compute. For private exec, the runtime checks the environment allowlist again.
+  Validate runner wire version and request ID, translate structured errors, and
+  keep MCP payloads, credentials, and raw SDK or runner errors out of receipts
+  and public diagnostics.
 
 ### Authorized golden master restore / NULL canonical master (#546)
 
@@ -445,11 +524,16 @@ with `receipt` and `details.resourceReceipt`; `modalFailureReceipt(error)` retur
 The whitelist contains logical/physical IDs, deterministic name, durable/observed phase,
 registryConfirmed, generation, Image/source/recovery references, binding and nonsensitive
 management provenance. No request/env/MCP config, auth, labels, prompt text or raw SDK
-cause is included. Known SDK Image IDs survive in a failure receipt even when their
-SQL commit failed; new named snapshot IDs are also retained in Machine.snapshotImages.
+cause is included. SDK error classification uses recognized error names and
+validated numeric gRPC statuses from SDK ClientError instances. Public builder
+image failures keep only recognized build diagnostics, and lifecycle failure logs
+use allowlisted labels. Check the durable lifecycle phase before retrying any
+mutation, including when a transport error is marked retryable. Known SDK Image
+IDs survive in a failure receipt even when their SQL commit failed. New named
+snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 
-`provider.resourceReceipts()` inventories authorized target/context records (including
+The scoped Modal connection’s `readResourceReceipts()` inventories authorized target/context records (including
 deleted history) without requiring a healthy Modal service. Call it **before** closing
 a disposable fixture DB. `mergeModalResourceReceipts` preserves all observed Image IDs
 when later durable reads lack an interrupted commit's metadata. Do not blindly delete
@@ -499,7 +583,7 @@ private bootstrap/protected RPC/exec/checkpoint/journal reopen, and execute pinn
 native binary versions. No workspace node_modules can mask a missing remote import.
 This is not proof of real model/cloud parity or the runtime's full security gates.
 
-`runModalConformance(provider,{models:true,launchEnv?})` is explicitly opt-in and
+`runModalConformance(provider, { readResourceReceipts, models: true })` is explicitly opt-in and
 billable: toolchain/protected exec, actual ephemeral SSH authentication with strict
 host-key pinning, golden SSH scrub, fork, concurrent real Claude/Codex turns,
 checkpoint/stop/same-ID restore, both conversation resumes, snapshot deletion,
@@ -550,6 +634,12 @@ and unrelated resources are outside this tool's ownership. Future live tests
 must create a new fixture. This change was validated with injected adapters only;
 real operator validation remains a separate authorized action.
 
+The opt-in SSH probe generates a local ephemeral private key, keeps its contents
+out of Armada output, and removes it in `finally`. Use the current trusted core
+golden baseline and keep that script out of logs. Send SSH provisioning exactly
+one Ed25519 public key without client-controlled options. Provision only on
+running machines, outside image builds.
+
 Supply HTTPS ingress first. Never save private input in argv/history/repository/
 Image layers. Rebuild the current runtime artifact before live conformance.
 
@@ -571,9 +661,56 @@ For server-owned golden rows only, Provider.exec verifies scope/authority/curren
 active admission and holds the lease through a one-command public Sandbox.exec root
 supervisor. Command text is private stdin (never argv); HOME/PATH are explicit public
 values and no model/provider/GitHub exec credentials are supplied. Synchronous timeouts
-are 1–600 seconds (default60), stdout/stderr are drained concurrently and retained at
-64KiB each, actual exit status and timeout/truncation flags are returned. Detached
+are 1–600 seconds (default60). Drain stdout and stderr concurrently while writing
+stdin and waiting for the process to avoid backpressure. Retain up to 64KiB each, actual exit status and timeout/truncation flags are returned. Detached
 requests fail closed. A sealed golden is not implicitly restored/unsealed. Workers
 never take this path and retain normal runtime process/journal/outbox behavior.
 The NNP OS fixture now runs the actual production scanner through this root SDK
 helper and verifies nonzero status/stdout/stderr, command timeout and output bounds.
+
+## Test fixtures and opt-in conformance
+
+The artifact-validation test copies the actual loader to a disposable package
+tree so file imports resolve fixture assets without modifying the shared
+workspace artifact. The distribution test uses an incompressible payload to
+force multiple chunks and replays the captured installation commands in an
+isolated directory. It checks Linux's single-command size limit and verifies
+that a digest mismatch leaves the previously installed runtime intact. To
+verify the embedded runtime, compile `test/bundle.ts` and run the resulting
+executable without the workspace runtime files available.
+
+The provider lifecycle tests exercise the real adapter through injected ports.
+Golden cases create their own images, while worker lifecycle cases start with
+a saved image. The history cursor regression uses real migrations and
+PostgreSQL semantics to distinguish bigint cursor ordering from the projected
+text alias. Fixture timestamps run in reverse and event IDs are synthetic.
+
+The live Modal conformance fixture is opt-in and billable. The coordinator
+must expose the supplied listen port through HTTPS at the ingest URL before
+running it. Pass management and model configuration only over private stdin.
+The fixture requires explicit tokens and refuses operator profiles, borrowed
+Apps, and caller-supplied management authority. Keep SDK causes and tokens out
+of diagnostics. Source generated scripts from current production core.
+
+Use a fresh exclusive evidence directory and retain the journal, including
+pending and ambiguous creates. Never retry ambiguous creation or adopt an App
+by name, prefix, or age. Require terminal readback to prove cleanup. Inventory
+read errors leave the journal intact, and only fresh durable readback can
+authorize finalization. The conformance App fixture targets public Modal CLI
+1.6.3 and injects CLI execution for local tests.
+
+The Linux process-scope and checkpoint conformance fixtures require a
+disposable PID and mount namespace and the native runtime build for checkpoint
+coverage. Run checkpoint conformance as root and PID 1 in that namespace.
+Never run the quiescer against the host or a coding worker's namespace.
+The fixtures exercise real seccomp and pidfd behavior, verify that platform
+exec helpers do not gain writer trust, and check for late state recreation
+after quiescence. For the open-journal snapshot case, inspect the actual
+holder's kernel file descriptors.
+
+The OS build fixture uses disposable Docker infrastructure, public artifacts,
+and synthetic data. Pass the isolated production core source directory as the
+first positional argument. Its harness must expose the unmodified `baselineSetup`.
+Use the production npm launcher for the no-PATH regression. The SSH fixture
+checks inherited no-new-privileges in an approved image and selects root only
+from trusted golden metadata. Workers run as the sandbox user.

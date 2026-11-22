@@ -12,20 +12,24 @@ Supabase sessions. For a backend integration, sign in with the CLI and create a
 revocable service token scoped to the intended organization:
 
 ```sh
-armada token create --org acme --label product-backend
+armada api token/create '{"org":"acme","label":"product-backend"}'
 ```
 
-Store the token in your backend's secret store when it is printed. Armada
+Store the response's `token` in your backend's secret store. Armada
 stores its hash. Access still depends on the issuing user's membership and
 permissions. Keep this bearer out of browsers, URLs and logs. Send
 `Content-Type: application/json` with JSON request bodies.
 
 ## Launch a sandbox
 
+Sandbox responses use `providerSandboxId` for the provider identifier. Golden
+metadata uses `providerSnapshotId` and `providerSandboxId`. The Boat-specific
+response fields `boatId`, `boatSnapshotId` and `boatSandboxId` have been removed.
+
 `POST /api/v1/sandbox/launch` serves Boat, Modal and Docker, but Docker takes a
 different body (see [Docker launches](#docker-launches)). For Boat and Modal,
-the body takes a snapshot name in `golden` and an agent identifier in
-`harness`. This example assumes a Modal snapshot called `review` and a
+the body requires `provider`, a snapshot name in `golden`, and an agent
+identifier in `harness`. This example assumes a Modal snapshot called `review` and a
 configured Codex account:
 
 ```json
@@ -39,8 +43,23 @@ configured Codex account:
 }
 ```
 
+Boat, Modal and Docker launch success responses use the `launchEnvelope`
+schema in `@armada/core/contract`. The CLI emits the same shape with `--json`,
+for example `armada new review --provider modal --agent codex --json`.
+Read the sandbox ID, provider and status from `sandbox.id`, `sandbox.provider`
+and `sandbox.status`. For Boat and Modal, read the snapshot name from
+`golden.name`. Docker returns `golden: null` even when the launch uses a Docker
+snapshot. A successful pinned-template request to `sandbox/launch` includes
+`sandbox.templateManifest` in the same envelope. The separate
+`templates/launch` operation returns a durable template receipt.
+
+For Boat and Modal snapshot launches and for Docker launches, use
+`credentialId` to select a model account. The account’s simultaneous-agent
+limit applies across sandbox providers. For Morph account setup, model
+selection and the default limit, see [Morph model accounts](../morph.md).
+
 Omit `prompt` to launch without starting a turn. The first
-`sandbox/send` then opens the conversation, so omit `conversation_id` on it. Save the returned Armada
+`sandbox/send` then opens the conversation. Save the returned Armada
 sandbox ID from `sandbox.id` for subsequent calls. Ordinary cloud launches
 inherit snapshot visibility. A private snapshot is visible to its owner.
 
@@ -64,39 +83,26 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   up recorded sandboxes with `POST /api/v1/sandbox/list` and
   `{"externalRef":"application-1042"}`. An empty list is expected when the
   allocation succeeded but the sandbox was never registered.
-- An `outcome_unknown` or 409 `conflict` answer for the key normally names
-  the receipt UUID, which is also the sandbox ID the launch would have. As the
-  launching user, call the MCP `launch_receipt` tool with
-  `{"id":"<receipt UUID>"}` (add `"org":"<organization UUID>"` when you belong
-  to several organizations). It looks up provider allocations through
-  the provider binding recorded on the receipt, so it works after the snapshot
-  is removed. An empty `allocations` list does not prove that nothing was
-  allocated.
-- If you never received a receipt UUID (for example the first response was
-  lost and the replay returns `not_found`), there is no self-service lookup.
-  Keep the original key, do not relaunch, and escalate to an Armada operator
-  with the organization, the idempotency key and the `externalRef`.
+- If recovery needs an operator, include the organization, idempotency key,
+  `externalRef` and receipt UUID when available. The UUID is the logical sandbox
+  ID and is recorded in the provider's sandbox ownership label.
 
-The `idempotencyKey`, `externalRef` and recovery rules above apply only to Boat
-and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
+The recovery rules above describe Boat and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
 for receipt lookup and template launch keys.
 
 ### Docker launches
 
-A launch with `"provider":"docker"` goes to a separate handler with its own
-list of accepted fields. It refuses `golden`, `idempotencyKey` and `externalRef`
-with HTTP 400 `invalid_request`. A Docker sandbox therefore has no external
-reference, and `sandbox/list` with `externalRef` never returns it.
+A launch with `"provider":"docker"` takes a host or Docker snapshot as its
+source. Send an `idempotencyKey` of 16–128 characters. Read the assigned sandbox
+ID from `sandbox.id`. Replay the same inputs with the same key. A changed normalized request
+returns 409 `conflict`. Set `externalRef` to look up the sandbox later.
 
-- `org` is required and must be the organization UUID.
-- `requestId` is required and must be a fresh UUID. It becomes the sandbox ID
-  and is the replay key, so store it before you launch. Armada compares the
-  normalized request, so supplying a default explicitly (for example the
-  default `ttlSeconds`) is not a change. A changed body returns 409 `conflict`.
+- Select `org` by slug or UUID with a personal session. A scoped token can
+  omit it or send its scoped UUID.
 - `hostId` (a Docker host UUID) is required, unless you launch from a Docker
   snapshot with `snapshotId` (a snapshot UUID). The snapshot selects its host:
   a different `hostId` returns 404 `not_found`, and `repos` with
-  `snapshotId` returns 400 `invalid_request`.
+  `snapshotId` returns 400 `invalid`.
 - `harness` is required. Optional fields include `credentialId`,
   `credentialVersion`, `model`, `reasoningEffort`, `prompt`, `ttlSeconds`,
   `repos`, `skills` and `"visibility":"private"`.
@@ -105,8 +111,7 @@ The launch call returns as soon as Armada admits the launch. A worker then
 starts the sandbox on the host and sends the prompt. The first response
 therefore normally carries `"status":"starting"` and no `promptId` or
 `conversationId`. To follow the launch, call `sandbox/status` with the
-`requestId` as `id`. A replay with the same `requestId` and body never starts
-a second launch:
+returned sandbox ID. Replaying the same identifier and body starts at most one launch.
 
 - The replay reports the sandbox's current status, not the status of an
   earlier response. Until the worker publishes the launch receipt, a sandbox
@@ -116,7 +121,9 @@ a second launch:
   worker has published the launch receipt and the launch sent a prompt. It
   never carries them before.
 
-After a dropped response, poll `sandbox/status` with the `requestId` as `id`.
+After a dropped response, reissue the same request with the original replay
+key to recover the receipt. If you have the assigned sandbox ID, you can also
+query `sandbox/status`.
 For a launch that sent a prompt, read the prompt receipt by replaying the same
 request and checking the response for `promptId` and `conversationId`, not its
 status. A `starting` response without
@@ -128,7 +135,7 @@ It may also have ended after the worker sent the prompt but before it recorded
 the receipt, so the agent may already have acted on it. Treat the prompt outcome
 as uncertain: inspect the original sandbox with `sandbox/status` and its
 transcript with `logs/read` before you repeat the work. Do not launch with a
-new `requestId` until you know that the first launch failed or ended.
+new `idempotencyKey` until you know that the first launch failed or ended.
 See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
@@ -143,8 +150,8 @@ Renew it through the same backend authorization flow.
 Minting needs only read access: the token's issuer must be able to read the
 sandbox's logs, which requires the sandbox owner or an organization admin,
 whatever the sandbox's visibility. Every viewer call then runs as that issuer.
-`viewer/status`, `viewer/logs` and `viewer/events` work for either, but
-`viewer/send` succeeds only when the issuing service token belongs to the
+Either issuer can read status, read logs and subscribe to the sandbox event
+stream. `viewer/send` succeeds only when the issuing service token belongs to the
 sandbox owner. Otherwise it returns HTTP 404 `not_found` ("No owned sandbox"),
 even for an organization admin.
 For an interactive embed, mint with a service token created by the sandbox
@@ -166,7 +173,7 @@ to mint for a view-only user, that user can send prompts with
   `credential_binding_required` or 409 `sandbox_terminal` instead (see the
   send checks below).
 - Keep the bearer on your backend and expose only proxy routes for
-  `viewer/status`, `viewer/logs` and `viewer/events`. Do not give the browser
+  `viewer/status`, `viewer/logs` and the sandbox event stream. Do not give the browser
   the viewer token or a route to `viewer/send`.
 
 | Viewer route | Input |
@@ -174,15 +181,36 @@ to mint for a view-only user, that user can send prompts with
 | `POST /api/v1/viewer/status` | `{}` |
 | `POST /api/v1/viewer/logs` | `{}` or `{"cursor":"<saved cursor>"}` |
 | `POST /api/v1/viewer/send` | `{"message":"Write a shorter summary","requestId":"<UUID>"}` |
-| `GET /api/v1/viewer/events` | Optional URL-encoded `cursor` query parameter |
 
-Use `fetch` with the viewer bearer to read the server-sent event stream through
-a same-origin proxy. Each `page` event contains a logs page. Save its JSON
-`cursor` and reuse it on reconnect. Pages request at most 100 events and a
-64 KiB provider byte budget. Existing events can be updated, so reconcile by
-event ID. On `access-ended` or stream closure, reconnect or reauthorize as
-appropriate. See [sandbox viewers](sandbox-viewer.md) for proxy and polling
-details.
+See [sandbox viewers](sandbox-viewer.md) for proxy and cursor handling.
+
+## Stream sandbox events
+
+Fetch `GET /api/v1/events?sandbox=<UUID>` with an `Authorization: Bearer ...` header. The sandbox owner, an organization admin, and a bearer scoped to read that child or view that sandbox can subscribe. A refusal returns HTTP 403 before streaming.
+
+Each frame carries the global decimal-string SSE `id` and an event-log reference. Runtime entries include the per-sandbox `sequence`. Transition entries have a null sequence. Fetch logs or status for content.
+
+Reconnect with the last processed ID in `Last-Event-ID` or `cursor`. The header takes precedence and playback starts strictly after that ID. With neither, the stream replays available history. Idle feeds send a heartbeat comment every 15 seconds.
+
+## Drive a turn over MCP
+
+Call `launch_options` with `{}` to read the same server-wide launch catalog as
+`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal snapshots.
+Call `outputs_list` with `id` to list the stored output snapshot. Call
+`output_read` with `id` and `name` to read a file up to 32 KiB as a JSON object
+with a `base64` field. Use `GET /api/v1/sandboxes/{id}/outputs/{name}` for
+larger files. Both transports enforce the same snapshot access rules.
+
+| Tool | Mode | Result |
+| --- | --- | --- |
+| `send` | `steer: true`, with the instruction in `prompt` | Redirect the running turn. The receipt includes `delivery` and `mode`. |
+| `status` | `wait: true` | Wait for settlement and return status with `timedOut`. Omit `recorded` when waiting. |
+| `stop` | `turn: true` | Interrupt the turn and keep the machine up. The receipt includes `interrupted`. |
+| `stop` | `after: true` | Wait for settlement and then request an idle-only stop. On timeout the receipt contains the observed sandbox status and `timedOut: true`. Omit `turn` and `only_if_idle`. |
+
+Both wait modes accept `timeout_seconds` from 0 to 600 and default to 60. For `stop` with `after: true`, zero seconds observes status without sending a stop request.
+Steer and interrupt target the sandbox by ID. The standalone steer, wait and
+interrupt operations are available through the REST API.
 
 ## Drive the sandbox from your backend
 
@@ -208,16 +236,16 @@ viewer messages well below 128 KiB.
 | `sandbox/list` | None, send `{}` | `org`, `externalRef`, `harness`, `golden` (snapshot UUID), `owner` (UUID or `me`), `status` (nonempty array), `page`, `limit` | `sandboxes`, `total`, `page`, `limit`, `hasMore`, `nextPage`. Page starts at 1 and is capped at 1,000,000. Default limit 25, maximum 200. Deleted rows are excluded by default. |
 | `sandbox/status` | `id` | `prompt_id`, `recorded` (boolean) | Sandbox status and turn details. Omit `prompt_id` for the latest turn. With `recorded: true` use stored state. |
 | `sandbox/wait` | `id` | `prompt_id`, `timeout_seconds` (integer 0–600, default 60) | Status with `timedOut`. Call again to keep waiting. |
-| `sandbox/send` | `id`, `prompt` | `request_id` (UUID), `conversation_id`, `model` and `reasoning_effort`, subject to the rules below | Includes `promptId`, `conversationId` and the send status, which can be `queued`. A queued answer also includes `requestId`. |
+| `sandbox/send` | `id`, `prompt` | `request_id` (UUID), `model` and `reasoning_effort`, subject to the rules below | Includes `promptId`, `conversationId` and the send status, which can be `queued`. A queued answer also includes `requestId`. |
 | `sandbox/stop` | `id` | `request_id` (UUID), `only_if_idle` (boolean) | `id`, `status` and an optional `preservationNote`. |
 
 Send rules depend on the sandbox:
 
-| Sandbox | `request_id` | `conversation_id` | `model`, `reasoning_effort` |
-| --- | --- | --- | --- |
-| Native Boat or Modal | Optional | Optional | Optional, for this turn only |
-| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Optional. Omit it to continue the latest conversation. On an idle sandbox with no turn yet, omitting it opens the first conversation. A supplied ID must name an existing conversation of this sandbox. | Refused. Boat accepts values equal to the launch values. |
-| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Optional. Omit it to continue the latest recorded conversation, or the launch conversation when none is recorded yet. A supplied ID must name a conversation already recorded for this sandbox. | Refused |
+| Sandbox | `request_id` | `model`, `reasoning_effort` |
+| --- | --- | --- |
+| Native Boat or Modal | Optional | Optional, for this turn only |
+| Runtime Boat or Modal, including OpenCode | Required without a pinned model account. Otherwise Armada generates one when omitted. | Refused. Boat accepts values equal to the launch values. |
+| Docker | Armada generates one when omitted, because every Docker sandbox has a pinned model account | Refused |
 
 Before the queue or the provider sees a send, Armada checks the sandbox, in
 this order:
@@ -227,10 +255,13 @@ this order:
 2. HTTP 409 `credential_binding_required` for a Modal sandbox without a model
    account binding that could otherwise accept the send, including a stopped
    and retained one. A `request_id` does not bypass this check. The sandbox
-   owner must bind an account first, on the sandbox's dashboard page, with
-   `armada bind-credential`, or with `POST /api/v1/sandbox/bind-credential`
-   and `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. The
-   workspace and conversations are retained.
+   owner must bind an account first. Use the sandbox's dashboard page,
+   `armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID`, or
+   `POST /api/v1/sandbox/bind-credential` with
+   `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. Replace the UUID
+   placeholders with the sandbox and model account IDs. Stop the sandbox
+   safely and let lifecycle reconciliation finish before binding. Binding
+   retains the workspace and conversations without starting the sandbox.
 3. HTTP 409 `sandbox_terminal` when the sandbox cannot take a send in its
    current state: it has expired, failed or been deleted, or it is stopped and
    a send cannot resume it. Stopped Boat and Modal sandboxes resume on send
@@ -245,17 +276,23 @@ this order:
    instead when check 2 or 3 fails first.
    Send with a service token created by the sandbox owner.
 
+Send opens or continues the sandbox's conversation. Send and runtime resume
+refuse conversation selectors with HTTP 409 `conflict`. Launch another sandbox
+for a separate conversation. An identical retry of an admitted account-queued
+send can still retrieve its original receipt. For a send originally submitted
+with a selector, use `sandbox/status` with its original request UUID as
+`prompt_id` to reconcile the outcome.
+
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
-sandboxes, the queue returns HTTP 400 `invalid` for a refused override or a
-`conversation_id` that names no recorded conversation. It returns HTTP 409
+sandboxes, the queue returns HTTP 400 `invalid` for a refused override. It
+returns HTTP 409
 `conflict` when the sandbox cannot accept a prompt now, for example while a
 Docker launch is still `starting`. It also returns 409 `conflict` for a reused
 `request_id` with different input, or for one whose queued send has failed.
 
 An admitted send returns `queued` with its `requestId`. Until the conversation
-is recorded, the returned `conversationId` is a placeholder. Omit
-`conversation_id` instead of sending the placeholder back. Armada dispatches
+is recorded, the returned `conversationId` is a placeholder. Armada dispatches
 the prompt after earlier prompts for the sandbox finish. Docker applies its
 own checks at dispatch, and a prompt rejected there is marked failed. Call
 `sandbox/status` with the `requestId` as `prompt_id` to follow a queued send.
@@ -285,6 +322,15 @@ before a turn starts, and status can report a turn as `running`, `finished`,
 the lifecycle transition. Check status for completion. Resuming a stopped
 sandbox depends on retaining recoverable work. See the
 [lifecycle state model](../state-model.md).
+
+## Delete a stopped sandbox
+
+Send `DELETE /api/v1/sandboxes/{id}` with your bearer token. Use the optional
+`org` query parameter to select an organization. For Docker, send a UUID as
+`requestId` and reuse it after an uncertain response to identify the same
+deletion request. A confirmed deletion returns
+`{"id":"<sandbox-id>","status":"deleted"}` and removes the sandbox's recovery
+archives.
 
 ## Receive signed webhooks
 

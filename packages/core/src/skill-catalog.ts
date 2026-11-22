@@ -1,3 +1,4 @@
+import { skillpackVersionInputs } from "./contract/skillpack.ts";
 import { SKILL_PIN_PATTERN, validateSkillPins } from "./skill-pins.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -52,14 +53,6 @@ function referenceSyntax(value: unknown, source: SkillCatalogSource): value is s
     value.split("/").every((part) => part.length <= 128) &&
     SKILL_PIN_PATTERN.test(`${value}@1.0.0`)
   );
-}
-function referenceInput(value: unknown, source: SkillCatalogSource): asserts value is string {
-  if (!referenceSyntax(value, source)) invalid();
-  try {
-    validateSkillPins([`${value}@1.0.0`]);
-  } catch {
-    invalid();
-  }
 }
 function upstreamReference(value: unknown, source: SkillCatalogSource): string {
   if (!referenceSyntax(value, source)) throw unavailable();
@@ -197,7 +190,7 @@ export function createSkillCatalog(fetchImpl: typeof fetch = fetch) {
       key?: string | null,
     ): Promise<{ versions: string[] }> {
       sourceInput(input.source);
-      referenceInput(input.reference, input.source);
+      if (!skillpackVersionInputs[input.source].shape.reference.safeParse(input.reference).success) invalid();
       if (input.source === "public") {
         const [org = "", slug = ""] = input.reference.split("/");
         const item = publicItem(

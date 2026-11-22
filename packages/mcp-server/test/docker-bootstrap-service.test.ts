@@ -1,30 +1,50 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
-import { DOCKER_LAUNCH_FAILURE_MESSAGES, DockerRetentionEnded, type Harness, type Sql } from "@armada/core";
+import { expect, mock, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
+  type Harness,
+  type Sql,
+} from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { canonicalDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
+import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import type { Job } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
+const failWrite = (fragment: string) =>
+  ({
+    query: sql.query,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          query: (statement, values) => {
+            if (statement.includes(fragment)) throw Error("handoff write failed");
+            return tx.query(statement, values);
+          },
+        }),
+      ),
+  }) satisfies Sql;
 const key = Buffer.alloc(32, 9).toString("base64");
 const manifest = {
   protocol: 1,
@@ -45,14 +65,6 @@ const options = {
 const service = createDockerBootstrapService(sql, key, options);
 const hosts = createDockerHostStore(sql, key);
 const reservations = createDockerSandboxService(sql, key, { enabled: true });
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function admittedResume(f: Awaited<ReturnType<typeof fixture>>, requestId: string) {
   const requested = await service.resume(f.actor, f.sandbox.id, requestId);
   if (requested.state === "claiming") {
@@ -78,6 +90,7 @@ async function fixture(ack = true, harness: Harness = "codex") {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL]);
   // Generated offline value, not an actual credential or an externally usable fixture secret.
   const secret = `offline-bootstrap-${randomUUID()}`,
     credentialId = randomUUID();
@@ -171,7 +184,7 @@ test("bootstrap is literal opt-in, owner-only and waits for create ACK before re
   expect(resolutions).toBe(1);
 });
 
-test("sealed account configuration is delivered only by enrolment, host gets ticket and artifact, neither ACK means readiness", async () => {
+test("sealed account configuration is delivered only by enrolment, host ACK leaves readiness to enrolment", async () => {
   const f = await fixture();
   const result = await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
   expect(Object.keys(result).sort()).toEqual(["operation", "requestId", "state"]);
@@ -188,10 +201,50 @@ test("sealed account configuration is delivered only by enrolment, host gets tic
     enrolmentToken: expect.stringMatching(/^armada_enrol_[a-f0-9]{64}$/),
   });
   expect(JSON.stringify(delivery)).not.toContain(f.secret);
-  const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
-  expect(enrolled.configuration).toEqual(configuration);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
+  expect(enrolled.configuration).toEqual(configuration);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(
+    (
+      await database().query(
+        `select t.actor,t.code,t.generation=s.lifecycle_generation as current_generation
+         from sandbox_transitions t join sandboxes s on s.id=t.sandbox_id
+         where t.sandbox_id=$1 and t.from_status='starting' and t.to_status='ready'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled", current_generation: true }]);
+});
+
+test("a conflicting Docker readiness CAS rolls back ticket consumption and leaves enrolment retryable", async () => {
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  if (delivery?.operation !== "bootstrap") throw Error("missing bootstrap delivery");
+  const ticket = delivery.bootstrap.enrolmentToken;
+  const before = await pending(f.sandbox.id);
+  let reachedTransition = false;
+  const stale: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          query: (statement, params) => {
+            if (!statement.includes("public.sandbox_transition(")) return tx.query(statement, params);
+            reachedTransition = true;
+            return tx.query(statement, [params?.[0], "0", ...(params?.slice(2) ?? [])]);
+          },
+        }),
+      ),
+  };
+  await expect(createRuntimeEnrolments(stale, key).enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
+  expect(reachedTransition).toBe(true);
+  expect(await pending(f.sandbox.id)).toEqual(before);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  await createRuntimeEnrolments(sql, key).enrol(ticket);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
 });
 
 test("bootstrap and resume on a draining host name the uninstall, not a permission failure", async () => {
@@ -480,6 +533,36 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof is invalid after %s", async (cause) => {
+  const db = database();
+  const f = await fixture();
+  if (cause === "issuer role change")
+    await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+      f.actor.orgId,
+      f.actor.userId,
+    ]);
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  const issue = () => authority.issue({ ownerId: f.actor.userId, sandboxId: f.sandbox.id, configuration: {} });
+  const session = await authority.enrol((await issue()).enrolmentToken);
+  const requestId = randomUUID();
+  await db.query(
+    `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+     values($1,$2,$3,0,now())`,
+    [f.sandbox.id, session.epoch, requestId],
+  );
+  if (cause === "replacement ticket") await issue();
+  else
+    await db.query("update public.members set role='member' where org_id=$1 and user_id=$2", [
+      f.admin.orgId,
+      f.admin.userId,
+    ]);
+  await expect(
+    hosts.enqueueSandbox(f.actor, f.sandbox.id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
+  ).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+});
+
 test.each([false, true])("idle checkpoint fences Docker stop and retained restore (merge stop=%s)", async (merged) => {
   const db = database();
   const f = await fixture();
@@ -489,7 +572,6 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
   const session = await authority.enrol(boot.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
   await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
   const conversationId = randomUUID(),
     promptId = randomUUID(),
@@ -591,7 +673,7 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   });
   await idle.reconcileOne(new AbortController().signal);
   if (!merged) {
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
     clock += 60_000;
     await idle.reconcileOne(new AbortController().signal);
   }
@@ -658,11 +740,12 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     body: { version: 1, requestId: health.requestId, result: { ready: true, generation: resumed.epoch } },
   });
   await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
   const verifiedId = randomUUID();
   await runtime.ready(f.actor, f.sandbox.id, verifiedId);
   const verified = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
   if (verified?.op !== "health") throw Error("missing verified health");
-  await commands.complete(resumed.runtimeToken, resumed.epoch, {
+  const verifiedReceipt = {
     epoch: resumed.epoch,
     requestId: verified.requestId,
     status: 200,
@@ -671,9 +754,51 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
       requestId: verified.requestId,
       result: { ready: true, generation: resumed.epoch, restoredFrom: proof },
     },
-  });
+  };
+  await expect(
+    commands.complete(resumed.runtimeToken, session.epoch, { ...verifiedReceipt, epoch: session.epoch }),
+  ).rejects.toThrow();
+  await db.query(
+    "update public.runtime_enrolments set lifecycle_generation=lifecycle_generation-1 where sandbox_id=$1",
+    [f.sandbox.id],
+  );
+  await expect(commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt)).rejects.toThrow();
+  await db.query(
+    "update public.runtime_enrolments set lifecycle_generation=lifecycle_generation+1 where sandbox_id=$1",
+    [f.sandbox.id],
+  );
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
+
+  const failingCommands = createRuntimeCommands(
+    createRuntimeEnrolments(failWrite("from public.sandbox_transition("), key),
+    key,
+  );
+  await expect(failingCommands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt)).rejects.toThrow();
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+
+  await db.query(
+    "update public.runtime_commands set result_enc=$4 where sandbox_id=$1 and epoch=$2 and request_id=$3",
+    [f.sandbox.id, resumed.epoch, verified.requestId, await encryptSecret(JSON.stringify(verifiedReceipt), key)],
+  );
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
-  expect((await reservations.get(f.actor, f.sandbox.id)).expiresAt).toBe(new Date(stored.expires_at).toISOString());
+  expect((await commands.next(resumed.runtimeToken, resumed.epoch)).command).toBeNull();
+  await commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt);
+  await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
+  expect(
+    (
+      await db.query(
+        `select t.actor,t.code from public.sandbox_transitions t join public.sandboxes s on s.id=t.sandbox_id
+       where s.id=$1 and t.generation=s.lifecycle_generation and t.to_status='ready'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
+  expect(await reservations.get(f.actor, f.sandbox.id)).toMatchObject({
+    status: "ready",
+    expiresAt: new Date(stored.expires_at).toISOString(),
+  });
 });
 
 test.each(["cleanup", "claim"] as const)(
@@ -778,6 +903,29 @@ test.each(["cleanup", "claim"] as const)(
       const lateId = randomUUID();
       expect((await service.resume(f.actor, f.sandbox.id, lateId)).state).toBe("claiming");
       expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+      expect(
+        (
+          await db.query(
+            `select t.from_status,t.to_status,t.actor,t.code,s.docker_retention_deadline,
+                    s.lifecycle_generation=c.lifecycle_generation+1 as advanced_once
+             from public.sandbox_transitions t
+             join public.sandboxes s on s.id=t.sandbox_id
+             join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+             where t.sandbox_id=$1 and t.to_status='starting'`,
+            [f.sandbox.id, requestId],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          from_status: "stopped",
+          to_status: "starting",
+          actor: "resume_admission",
+          code: "docker_resume_admitted",
+          docker_retention_deadline: null,
+          advanced_once: true,
+        },
+      ]);
       const { rows } = await database().query(
         `select l.stage,l.at = case l.stage when 'accepted' then c.created_at else c.claimed_at end as matched
            from public.sandbox_launch_stages l
@@ -798,5 +946,614 @@ test.each(["cleanup", "claim"] as const)(
       expect(deleted).toBe(false);
       expect(durable.resumeClaims?.every((claim) => !claim.active)).toBe(true);
     }
+  },
+);
+
+test("resume admission rejects a generation change after claim selection", async () => {
+  const db = database();
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [f.sandbox.id]);
+  const requestId = randomUUID();
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+
+  await db.exec(`create function public.advance_resume_generation() returns trigger language plpgsql as $$
+    begin
+      update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=new.sandbox_id;
+      return new;
+    end $$;
+    create trigger advance_resume_generation after update on public.docker_resume_claims for each row
+      execute function public.advance_resume_generation();`);
+  try {
+    await denied(service.resume(f.actor, f.sandbox.id, requestId));
+  } finally {
+    await db.exec(
+      "drop trigger advance_resume_generation on public.docker_resume_claims; drop function public.advance_resume_generation();",
+    );
+  }
+  expect(
+    (
+      await db.query(
+        `select s.status, s.lifecycle_generation=c.lifecycle_generation as same_generation,
+           r.lifecycle_generation=c.lifecycle_generation as same_ticket,
+           exists(select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.to_status='starting') as journaled,
+           exists(select 1 from public.docker_host_jobs j where j.request_id=c.request_id) as enqueued
+         from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+         join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.sandbox.id, requestId],
+      )
+    ).rows,
+  ).toEqual([{ status: "stopped", same_generation: true, same_ticket: true, journaled: false, enqueued: false }]);
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+});
+
+test("a failed resume mailbox insert rolls back admission and can replay the acknowledged claim", async () => {
+  const db = database();
+  const f = await fixture();
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+  await db.query(
+    "update public.sandboxes set status='stopped',stopped_at=now(),docker_retention_deadline=expires_at where id=$1",
+    [f.sandbox.id],
+  );
+  const requestId = randomUUID();
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("claiming");
+  await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+  await db.exec(`create function public.reject_resume_job() returns trigger language plpgsql as $$
+    begin if new.bound_operation='resume' then raise exception 'resume insert failed'; end if; return new; end $$;
+    create trigger reject_resume_job before insert on public.docker_host_jobs for each row
+      execute function public.reject_resume_job();`);
+  try {
+    await denied(service.resume(f.actor, f.sandbox.id, requestId));
+  } finally {
+    await db.exec(
+      "drop trigger reject_resume_job on public.docker_host_jobs; drop function public.reject_resume_job();",
+    );
+  }
+  expect(
+    (
+      await db.query(
+        `select s.status,s.docker_retention_deadline=s.expires_at as retains_deadline,
+           s.lifecycle_generation=c.lifecycle_generation as same_generation,
+           r.lifecycle_generation=c.lifecycle_generation as same_ticket,
+           exists(select 1 from public.sandbox_transitions t
+             where t.sandbox_id=s.id and t.code='docker_resume_admitted') as journaled
+         from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+         join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.sandbox.id, requestId],
+      )
+    ).rows,
+  ).toEqual([
+    { status: "stopped", retains_deadline: true, same_generation: true, same_ticket: true, journaled: false },
+  ]);
+  expect((await service.resume(f.actor, f.sandbox.id, requestId)).state).toBe("pending");
+});
+
+test("a failed Docker resume ACK only fails the activation admitted for that request", async () => {
+  const f = await fixture();
+  const stop = async () => {
+    const job = await hosts.enqueueSandbox(f.actor, f.sandbox.id, {
+      operation: "stop",
+      requestId: randomUUID(),
+    });
+    await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
+    return job.requestId;
+  };
+  await stop();
+  const first = await admittedResume(f, randomUUID());
+  expect(first.state).toBe("pending");
+  const previousStop = await stop();
+  const current = await admittedResume(f, randomUUID());
+  expect(current.state).toBe("pending");
+
+  const fail = (requestId: string) => hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "failed" });
+  await fail(first.requestId);
+  await fail(first.requestId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  expect((await service.resume(f.actor, f.sandbox.id, first.requestId)).state).toBe("failed");
+
+  await fail(current.requestId);
+  await fail(current.requestId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
+  expect(
+    (
+      await database().query(
+        `select t.from_status, t.to_status, t.actor, t.code,
+                t.generation = s.lifecycle_generation as current_generation
+         from public.sandbox_transitions t join public.sandboxes s on s.id=t.sandbox_id
+         where t.sandbox_id=$1 and t.code='resume_ack_failed'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      from_status: "starting",
+      to_status: "failed",
+      actor: "docker_host",
+      code: "resume_ack_failed",
+      current_generation: true,
+    },
+  ]);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: previousStop, outcome: "completed" });
+  expect(
+    (await database().query("select stopped_at from public.sandboxes where id=$1", [f.sandbox.id])).rows[0],
+  ).toEqual({ stopped_at: null });
+});
+
+const refusalOrders = [
+  "refusal first",
+  "failed ACK",
+  "ACK first",
+  "failed ACK first",
+  "previous server ACK",
+  "previous server failed ACK",
+  "ACK transaction rollback",
+  "missing ACK after daemon restart",
+  "failed retained-stop ACK",
+  "failed retained-stop ACK after early resume failure",
+  "owner stop before refused resume ACK",
+];
+
+test.each(refusalOrders)(
+  "a refused Docker resume returns to a retained stop after claim settlement (%s)",
+  async (order) => {
+    const f = await fixture();
+    const { id } = f.sandbox;
+    const authority = createRuntimeEnrolments(sql, key);
+    await service.bootstrap(f.actor, id, f.requestId);
+    const bootstrap = await hosts.poll(f.hostToken, f.installationId);
+    if (bootstrap?.operation !== "bootstrap") throw Error("missing bootstrap");
+    const source = await authority.enrol(bootstrap.bootstrap.enrolmentToken);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: bootstrap.requestId, outcome: "completed" });
+    const conversationId = randomUUID();
+    await database().query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
+      id,
+      conversationId,
+    ]);
+    await database().query(
+      `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+       values($1,$2,$3,0,now())`,
+      [id, source.epoch, randomUUID()],
+    );
+    const previousStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+    const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
+      hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
+    await ack(previousStop.requestId);
+    const missingAck = order === "missing ACK after daemon restart";
+    const earlier = missingAck
+      ? await reservations.reserve(f.actor, {
+          requestId: randomUUID(),
+          hostId: f.hostId,
+          image: `worker@sha256:${"a".repeat(64)}`,
+          credentialId: f.credentialId,
+          credentialVersion: 1,
+          harness: "codex",
+        })
+      : undefined;
+    const resume = await admittedResume(f, randomUUID());
+    const job = await hosts.poll(
+      f.hostToken,
+      f.installationId,
+      "3.0.0",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      earlier ? [earlier.id] : [],
+    );
+    if (job?.operation !== "resume") throw Error("missing resume");
+    const refuse = (enrolments = authority) =>
+      enrolments.route(
+        new Request("https://armada.example/api/runtime/enrol", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${job.bootstrap.enrolmentToken}`,
+            "x-armada-runtime-protocol": "0",
+          },
+        }),
+      );
+
+    if (order === "ACK first") await ack(job.requestId);
+    const failedAckFirst =
+      order === "failed ACK first" || order === "failed retained-stop ACK after early resume failure";
+    if (order === "failed ACK first") {
+      const durableState = async () =>
+        (
+          await database().query(
+            `select s.status, s.lifecycle_generation, s.status_reason,
+               exists(select 1 from public.sandbox_transitions t
+                 where t.sandbox_id=s.id and t.code='resume_ack_failed') as journaled
+             from public.sandboxes s where s.id=$1`,
+            [id],
+          )
+        ).rows[0];
+      const before = await durableState();
+      expect(before).toMatchObject({ status: "starting", journaled: false });
+      for (const write of [
+        "from public.sandbox_transition(",
+        "set status_reason=$2",
+        "set outcome=$2,completed_at=now()",
+      ]) {
+        await expect(
+          createDockerHostStore(failWrite(write), key).complete(f.hostToken, f.installationId, {
+            requestId: job.requestId,
+            outcome: "failed",
+          }),
+        ).rejects.toMatchObject({ cause: { message: "handoff write failed" } });
+        expect(await durableState()).toEqual(before);
+      }
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+    }
+    if (failedAckFirst) {
+      await ack(job.requestId, "failed");
+      expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+      await expect(authority.withBootstrap(job.bootstrap.enrolmentToken, async () => {})).rejects.toThrow(
+        "runtime_enrolment_denied",
+      );
+      for (const fragment of ["from public.sandbox_transition(", "insert into public.docker_host_jobs"]) {
+        const failedStop = createRuntimeEnrolments(failWrite(fragment), key);
+        expect((await refuse(failedStop))?.status).toBe(503);
+        expect((await reservations.get(f.actor, id)).status).toBe("failed");
+      }
+    }
+    const enrolmentDeadline = missingAck
+      ? (
+          await database().query<{ enrolment_expires_at: Date }>(
+            "select enrolment_expires_at from public.runtime_enrolments where sandbox_id=$1",
+            [id],
+          )
+        ).rows[0]?.enrolment_expires_at
+      : undefined;
+    const response = await refuse();
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
+    const reportRetained = (requestId: string, store = hosts) =>
+      createDockerHostRoutes(store, async () => ({ ok: false }))(
+        new Request("https://armada.example/api/docker-host/results", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${f.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          },
+          body: JSON.stringify({ installationId: f.installationId, requestId, outcome: "failed", retained: true }),
+        }),
+      );
+    if (order === "owner stop before refused resume ACK") {
+      const ownerStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+      await ack(job.requestId);
+      await ack(ownerStop.requestId, "failed");
+      expect((await reportRetained(ownerStop.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      return;
+    }
+    if (missingAck) {
+      if (!enrolmentDeadline) throw Error("missing original enrolment deadline");
+      await database().query(
+        `update public.docker_hosts set machine_cpus=8,machine_memory_bytes=17179869184,sandbox_cpus=2
+         where id=$1`,
+        [f.hostId],
+      );
+      const poll = (running: string[] = []) =>
+        hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, undefined, undefined, undefined, running);
+      expect(await poll([job.requestId])).toBeNull();
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      let durable: State = {
+        server: job.bootstrap.serverUrl,
+        installationId: f.installationId,
+        hostId: f.hostId,
+        hostToken: f.hostToken,
+        receipts: [
+          {
+            requestId: job.requestId,
+            operation: "resume",
+            request: job.request,
+            inputHash: createHash("sha256")
+              .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
+              .digest("hex"),
+          },
+        ],
+      };
+      const store: Store = {
+        load: async () => structuredClone(durable),
+        save: async (next) => {
+          durable = structuredClone(next);
+        },
+      };
+      const unexpected = async () => {
+        throw Error("unexpected daemon operation");
+      };
+      const resumeCompute = mock(async () => {});
+      const startRuntime = mock(async () => {});
+      await tick(
+        store,
+        {
+          register: unexpected,
+          poll: async () => ({ job: await poll() }),
+          result: async (_state, result) => ack(result.requestId, result.outcome),
+        },
+        {
+          create: unexpected,
+          stop: unexpected,
+          delete: unexpected,
+          stopIfExpired: async () => false,
+          resume: resumeCompute,
+          startRuntime,
+        },
+        false,
+        () => enrolmentDeadline.getTime() + 1,
+      );
+      expect(resumeCompute).not.toHaveBeenCalled();
+      expect(startRuntime).not.toHaveBeenCalled();
+    } else if (order !== "ACK first" && !failedAckFirst) {
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+      if (order === "previous server ACK" || order === "previous server failed ACK") {
+        await database().query("update public.docker_host_jobs set outcome=$2,completed_at=now() where request_id=$1", [
+          job.requestId,
+          order === "previous server ACK" ? "completed" : "failed",
+        ]);
+        expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], true)).toBe(true);
+        if (order === "previous server failed ACK") {
+          let checkedActorLock = false;
+          const observedSql: Sql = {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  query: async (statement, values) => {
+                    if (statement.includes("insert into public.docker_host_jobs")) {
+                      const membership = await tx.query<{ locked: boolean }>(
+                        `select xmax = pg_current_xact_id()::text::xid as locked
+                         from public.members where org_id=$1 and user_id=$2`,
+                        [f.actor.orgId, f.actor.userId],
+                      );
+                      expect(membership.rows[0]?.locked).toBe(true);
+                      checkedActorLock = true;
+                    }
+                    return tx.query(statement, values);
+                  },
+                }),
+              ),
+          };
+          await createDockerHostStore(observedSql, key).poll(f.hostToken, f.installationId);
+          expect(checkedActorLock).toBe(true);
+        } else {
+          await hosts.poll(f.hostToken, f.installationId);
+        }
+      } else {
+        if (order === "ACK transaction rollback") {
+          const failingSql: Sql = {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  query: (statement, values) => {
+                    if (statement.includes("insert into public.docker_host_jobs")) throw Error("stop insertion failed");
+                    return tx.query(statement, values);
+                  },
+                }),
+              ),
+          };
+          const failingStore = createDockerHostStore(failingSql, key);
+          await expect(
+            failingStore.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" }),
+          ).rejects.toMatchObject({ cause: { message: "stop insertion failed" } });
+          expect((await reservations.get(f.actor, id)).status).toBe("starting");
+          expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+        }
+        await ack(job.requestId, order === "failed ACK" ? "failed" : "completed");
+      }
+    }
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+    await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+    expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    if (order === "ACK first") {
+      await expect(reservations.job(f.actor, id, resume.requestId)).resolves.toMatchObject({ state: "failed" });
+      const controls = createDockerSandboxControls(sql, key, { resume: service });
+      await expect(
+        controls.invoke(
+          { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
+          "resume",
+          { id, request_id: resume.requestId },
+        ),
+      ).rejects.toMatchObject({ code: "conflict", message: "Docker resume failed." });
+    }
+    await ack(previousStop.requestId);
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+
+    const stop = await hosts.poll(f.hostToken, f.installationId);
+    if (stop?.operation !== "stop") throw Error("missing refusal stop");
+    expect(stop.request).toEqual(job.request);
+    const failedRetainedStop = order.startsWith("failed retained-stop ACK");
+    if (failedRetainedStop) {
+      for (const fragment of ["from public.sandbox_transition(", "set outcome=$2,completed_at=now()"]) {
+        const failingStore = createDockerHostStore(failWrite(fragment), key);
+        expect((await reportRetained(stop.requestId, failingStore))?.status).toBe(503);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(stop.requestId);
+      }
+      if (!failedAckFirst) {
+        await ack(stop.requestId, "failed");
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+        const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+        await ack(unrelated.requestId, "failed");
+        expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
+        expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+      }
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
+      await expect(ack(stop.requestId)).rejects.toThrow();
+    } else {
+      await ack(stop.requestId);
+    }
+    expect((await reservations.get(f.actor, id)).status).toBe("stopped");
+    if (earlier) {
+      expect((await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1))?.requestId).toBe(
+        earlier.id,
+      );
+      await ack(earlier.id);
+    }
+    const next = await admittedResume(f, randomUUID());
+    expect(next.state).toBe("pending");
+    const nextJob = missingAck
+      ? await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1)
+      : await hosts.poll(f.hostToken, f.installationId);
+    if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
+    if (order === "previous server failed ACK" || failedAckFirst || missingAck) {
+      await ack(job.requestId, "failed");
+      await ack(stop.requestId, failedRetainedStop ? "failed" : "completed");
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    }
+    expect(
+      (
+        await database().query(
+          `select t.from_status,t.to_status,t.actor,
+              t.generation=resume.refused_resume_generation+$3::bigint as generation_fenced
+           from public.sandbox_transitions t
+           join public.docker_host_jobs resume on resume.request_id=$2
+           where t.sandbox_id=$1 and t.code='docker_resume_refusal_stop'`,
+          [id, job.requestId, failedAckFirst ? 2 : 1],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        from_status: failedAckFirst ? "failed" : "starting",
+        to_status: "stopping",
+        actor: "docker_host",
+        generation_fenced: true,
+      },
+    ]);
+    if (failedRetainedStop) {
+      expect((await reportRetained(stop.requestId))?.status).toBe(200);
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      expect(
+        (
+          await database().query(
+            "select from_status,to_status from public.sandbox_transitions where sandbox_id=$1 and code='docker_resume_retention_confirmed'",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ from_status: "stopping", to_status: "stopped" }]);
+    }
+    expect(await authority.enrol(nextJob.bootstrap.enrolmentToken)).toMatchObject({
+      epoch: String(Number(source.epoch) + 1),
+      configuration: { restoreCheckpoint: { epoch: source.epoch, conversationId, watermark: 0 } },
+    });
+  },
+);
+
+test.each(["physical claim", "resume mailbox"] as const)(
+  "queued Docker wake rolls back when the lease expires during %s admission",
+  async (phase) => {
+    const db = database();
+    const f = await fixture();
+    const sandboxId = f.sandbox.id;
+    await service.bootstrap(f.actor, sandboxId, f.requestId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+    const {
+      rows: [stopped],
+    } = await sql.query<{ generation: string }>(
+      "update public.sandboxes set status='stopped',stopped_at=now() where id=$1 returning lifecycle_generation::text as generation",
+      [sandboxId],
+    );
+    const requestId = randomUUID();
+    const owner = randomUUID();
+    const store = createJobsStore(sql, key);
+    await store.enqueue(
+      "turn_dispatch",
+      sandboxId,
+      Number(stopped!.generation),
+      requestId,
+      { requestId },
+      {
+        orgId: f.actor.orgId,
+        maxAttempts: 3,
+      },
+    );
+    const {
+      rows: [row],
+    } = await sql.query<Job>(
+      `select id,kind,sandbox_id,generation::text,lease_epoch::text,attempts,max_attempts,outcome
+       from public.claim_job('turn_dispatch',$1,30,32)`,
+      [owner],
+    );
+    if (!row) throw new Error("Expected the queued turn job.");
+    const job = { ...row, payload: { requestId } };
+    const claim = {
+      canDispatch: async (tx?: Sql) => (await store.inspect(job, owner, tx)) === "dispatch",
+      handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+        store.handoffGeneration(job, owner, handoff),
+    };
+    if (phase === "resume mailbox") {
+      expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("claiming");
+      await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+    }
+
+    const table = phase === "physical claim" ? "docker_resume_claims" : "docker_host_jobs";
+    await db.exec(`create function public.expire_docker_turn_lease() returns trigger language plpgsql as $$
+      begin
+        update public.jobs set lease_until='-infinity' where id='${job.id}';
+        return new;
+      end $$;
+      create trigger expire_docker_turn_lease after insert on public.${table}
+        for each row execute function public.expire_docker_turn_lease();`);
+    try {
+      await denied(service.resume(f.actor, sandboxId, requestId, claim));
+    } finally {
+      await db.exec(
+        `drop trigger expire_docker_turn_lease on public.${table}; drop function public.expire_docker_turn_lease();`,
+      );
+    }
+    expect(
+      (
+        await sql.query(
+          `select s.status,s.lifecycle_generation=j.generation as same_generation,
+             r.lifecycle_generation=j.generation as same_enrolment,
+             exists(select 1 from public.sandbox_transitions t
+               where t.sandbox_id=s.id and t.code='docker_resume_admitted') as journaled,
+             exists(select 1 from public.docker_resume_claims c where c.request_id=$2) as physical_claim,
+             exists(select 1 from public.docker_host_jobs h where h.request_id=$2) as mailbox
+           from public.sandboxes s join public.jobs j on j.sandbox_id=s.id
+           join public.runtime_enrolments r on r.sandbox_id=s.id where j.id=$1`,
+          [job.id, requestId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        status: "stopped",
+        same_generation: true,
+        same_enrolment: true,
+        journaled: false,
+        physical_claim: phase === "resume mailbox",
+        mailbox: false,
+      },
+    ]);
+
+    if (phase === "physical claim") {
+      expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("claiming");
+      await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+    }
+    expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("pending");
+    expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("pending");
+    expect(
+      (
+        await sql.query(
+          `select s.status,j.generation=c.lifecycle_generation+1 as advanced,
+             s.lifecycle_generation=j.generation and r.lifecycle_generation=j.generation as same_generation
+           from public.sandboxes s join public.jobs j on j.sandbox_id=s.id
+           join public.runtime_enrolments r on r.sandbox_id=s.id
+           join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+           join public.docker_host_jobs h on h.bound_sandbox_id=s.id and h.request_id=c.request_id
+           where j.id=$1`,
+          [job.id, requestId],
+        )
+      ).rows,
+    ).toEqual([{ status: "starting", advanced: true, same_generation: true }]);
   },
 );

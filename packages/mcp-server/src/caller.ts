@@ -1,6 +1,7 @@
 import { type AuthFetch, type AuthStore, assertSupabaseUrl, authenticate, bearerKind } from "@armada/auth";
 import type { MemberRole } from "@armada/core";
-import { verifySessionJwt } from "./session-jwt.ts";
+import { decodeJwt } from "jose";
+import { acceptsSessionClient, verifySessionJwt } from "./session-jwt.ts";
 
 /**
  * Who one request is, and the orgs it may act in. An Armada token (service or OAuth access) is bound
@@ -9,12 +10,15 @@ import { verifySessionJwt } from "./session-jwt.ts";
 export interface Caller {
   userId: string;
   orgs: readonly { orgId: string; role: MemberRole }[];
+  orgNames?: Readonly<Record<string, string>>;
+  key?: { name: string; expiresAt: string | null };
   via: "service" | "mcp" | "supabase";
 }
 
 export interface SupabaseProject {
   supabaseUrl: string;
   anonKey: string;
+  cliOAuthClientId?: string | undefined;
   fetch?: AuthFetch;
 }
 
@@ -64,8 +68,8 @@ export async function authenticateCaller(
       throw new AuthUnavailable("The token store is unavailable.", error);
     }
     if (!result.ok) return { ok: false };
-    const { userId, orgId, role, kind: via } = result.principal;
-    return { ok: true, caller: { userId, orgs: [{ orgId, role }], via } };
+    const { userId, orgId, role, kind: via, key } = result.principal;
+    return { ok: true, caller: { userId, orgs: [{ orgId, role }], via, ...(key ? { key } : {}) } };
   }
   if (!JWT.test(token)) return { ok: false };
   if (options.store.sessionMemberships) {
@@ -89,6 +93,7 @@ export async function authenticateCaller(
           caller: {
             userId: session.userId,
             orgs: memberships.map(({ orgId, role }) => ({ orgId, role })),
+            orgNames: Object.fromEntries(memberships.map(({ orgId, name }) => [orgId, name])),
             via: "supabase",
           },
         };
@@ -107,15 +112,31 @@ export async function authenticateCaller(
   }
   return {
     ok: true,
-    caller: { userId, orgs: memberships.map(({ orgId, role }) => ({ orgId, role })), via: "supabase" },
+    caller: {
+      userId,
+      orgs: memberships.map(({ orgId, role }) => ({ orgId, role })),
+      orgNames: Object.fromEntries(memberships.map(({ orgId, name }) => [orgId, name])),
+      via: "supabase",
+    },
   };
 }
 
 /**
- * The user id of a Supabase access token, checked by the project itself (`/auth/v1/user`), so a token
+ * The user id of a Supabase access token, checked by the issuing Supabase project, so a token
  * of another project, an expired one or a signed-out session is refused. Null when refused.
+ * Unverified claims select the endpoint. The issuing project authenticates the same bearer.
  */
 export async function verifySupabaseUser(token: string, project: SupabaseProject): Promise<string | null> {
+  let client: unknown;
+  try {
+    client = decodeJwt(token).client_id;
+  } catch {
+    client = undefined;
+  }
+  if (!acceptsSessionClient(client, project.cliOAuthClientId)) return null;
+  const oauth = client !== undefined;
+  const endpoint = oauth ? "/oauth/userinfo" : "/user";
+  const identityField = oauth ? "sub" : "id";
   const controller = new AbortController();
   let response: Response | undefined;
   const cancelBody = () => {
@@ -130,7 +151,7 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
     }, 10_000);
   });
   const verify = async (): Promise<string | null> => {
-    response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1/user`, {
+    response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1${endpoint}`, {
       headers: { apikey: project.anonKey, authorization: `Bearer ${token}`, accept: "application/json" },
       signal: controller.signal,
     });
@@ -148,18 +169,16 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
       throw new AuthUnavailable(`Supabase answered ${response.status}.`);
     }
     const user: unknown = await response.json();
-    const id = typeof user === "object" && user !== null && "id" in user ? user.id : undefined;
+    const id = typeof user === "object" && user !== null ? (user as Record<string, unknown>)[identityField] : undefined;
     if (typeof id !== "string" || !UUID.test(id)) {
       throw new AuthUnavailable("Supabase returned an invalid identity.");
     }
     return id.toLowerCase();
   };
   try {
-    // The deadline covers both headers and the entire JSON body, even for custom transports.
     return await Promise.race([verify(), deadline]);
   } catch (error) {
     if (error instanceof AuthUnavailable) throw error;
-    // Transport/parser exceptions can include response contents or request credentials.
     throw new AuthUnavailable("Supabase verification is unavailable.");
   } finally {
     clearTimeout(timer);

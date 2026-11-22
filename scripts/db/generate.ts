@@ -40,8 +40,15 @@ const ROW_ALIASES: Record<string, string> = {
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
+  account_exhaustion: "AccountExhaustionRow",
+  account_spend: "AccountSpendRow",
+  account_spend_turns: "AccountSpendTurnRow",
   ordinary_launch_receipts: "OrdinaryLaunchReceiptRow",
   provider_launch_requests: "ProviderLaunchRequestRow",
+  jobs: "JobRow",
+  trigger_admin_audit: "TriggerAdminAuditRow",
+  trigger_deliveries: "TriggerDeliveryRow",
+  triggers: "TriggerRow",
   sandbox_account_usage_pricing: "SandboxAccountUsagePricingRow",
   runtime_github_capabilities: "RuntimeGitHubCapabilityRow",
   runtime_resumes: "RuntimeResumeRow",
@@ -72,7 +79,6 @@ const ROW_ALIASES: Record<string, string> = {
   sandbox_work_recovery: "SandboxWorkRecovery",
   orchestrator_child_operations: "OrchestratorChildOperation",
   orchestrator_lifecycle: "OrchestratorLifecycle",
-  model_auth_ownership: "ModelAuthOwnershipRow",
   model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
@@ -131,18 +137,17 @@ const ENUM_ALIASES: Record<string, string> = {
   sandbox_status: "SandboxStatus",
 };
 
-/** Renders `packages/core/src/database.types.ts` from the migrations on a fresh database. */
-export async function generateDatabaseTypes(): Promise<string> {
+export async function generateDatabaseTypes(directory?: string) {
   const db = await openDatabase();
   try {
-    await applyMigrations(db);
+    await applyMigrations(db, directory);
     return render(await introspect(db));
   } finally {
     await db.close();
   }
 }
 
-async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise<Schema> {
+async function introspect(db: Awaited<ReturnType<typeof openDatabase>>) {
   const columns = await db.query<{
     table_name: string;
     column_name: string;
@@ -263,12 +268,13 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
     });
   }
 
-  return {
+  const schema: Schema = {
     tables: [...tables.values()].sort((a, b) => a.name.localeCompare(b.name)),
     enums: [...enumLabels.entries()]
       .map(([name, labels]) => ({ name, labels }))
       .sort((a, b) => a.name.localeCompare(b.name)),
   };
+  return schema;
 }
 
 function columnType(row: {
@@ -277,7 +283,7 @@ function columnType(row: {
   type_category: string;
   element_name: string | null;
   element_kind: string | null;
-}): string {
+}) {
   if (row.type_category === "A") {
     if (!row.element_name || !row.element_kind) throw new Error(`array ${row.type_name} has no element type`);
     return `${scalarType(row.element_name, row.element_kind)}[]`;
@@ -285,11 +291,12 @@ function columnType(row: {
   return scalarType(row.type_name, row.type_kind);
 }
 
-function scalarType(name: string, kind: string): string {
+function scalarType(name: string, kind: string) {
   if (kind === "e") return `Database["public"]["Enums"]["${name}"]`;
   switch (name) {
     case "uuid":
     case "text":
+    case "date":
     case "timestamptz":
     case "bytea":
     case "varchar":
@@ -311,7 +318,7 @@ function scalarType(name: string, kind: string): string {
   }
 }
 
-function numbers(value: unknown): number[] {
+function numbers(value: unknown) {
   if (Array.isArray(value)) return value.map((item) => Number(item));
   if (typeof value === "string") {
     return value
@@ -323,7 +330,7 @@ function numbers(value: unknown): number[] {
   throw new Error(`expected a postgres int array, got ${typeof value}`);
 }
 
-function names(attributes: Map<string, string>, relid: string, keys: number[]): string[] {
+function names(attributes: Map<string, string>, relid: string, keys: number[]) {
   return keys.map((attnum) => {
     const name = attributes.get(`${relid}:${attnum}`);
     if (!name) throw new Error(`missing attribute ${relid} column ${attnum}`);
@@ -331,14 +338,14 @@ function names(attributes: Map<string, string>, relid: string, keys: number[]): 
   });
 }
 
-function sameSet(left: number[], right: number[]): boolean {
+function sameSet(left: number[], right: number[]) {
   if (left.length !== right.length) return false;
   const sortedLeft = [...left].sort((a, b) => a - b);
   const sortedRight = [...right].sort((a, b) => a - b);
   return sortedLeft.every((value, index) => value === sortedRight[index]);
 }
 
-function render(schema: Schema): string {
+function render(schema: Schema) {
   const tables = schema.tables
     .map((table) => {
       const relationships =
@@ -371,10 +378,9 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
     .join("\n");
 
   const aliases = [
-    ...schema.tables.map((table) => {
+    ...schema.tables.flatMap((table) => {
       const alias = ROW_ALIASES[table.name];
-      if (!alias) throw new Error(`no row alias for table ${table.name}`);
-      return `export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`;
+      return alias ? [`export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`] : [];
     }),
     ...schema.enums.flatMap((item) => {
       const alias = ENUM_ALIASES[item.name];
@@ -414,12 +420,12 @@ ${aliases}
 `;
 }
 
-function field(name: string, tsType: string, optional: boolean, notNull: boolean): string {
+function field(name: string, tsType: string, optional: boolean, notNull: boolean) {
   const type = notNull ? tsType : `${tsType} | null`;
   return `          ${name}${optional ? "?" : ""}: ${type};`;
 }
 
-function relationship(key: ForeignKey): string {
+function relationship(key: ForeignKey) {
   return `          {
             foreignKeyName: ${JSON.stringify(key.name)};
             columns: [${key.columns.map((name) => JSON.stringify(name)).join(", ")}];

@@ -4,7 +4,7 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 import { SQL } from "bun";
-import { sandbox } from "../../provider-boat/test/support.ts";
+import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
 import { sqlOver } from "../src/sql.ts";
 import { callSharedTool } from "../src/tool-api.ts";
@@ -16,7 +16,11 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
   const client = new SQL(url!, { max: 1 });
   try {
     await client.begin(async (tx) => {
-      const sql = sqlOver({ unsafe: (text, params) => tx.unsafe(text, params) });
+      const sql = sqlOver({
+        unsafe: (text, params) => tx.unsafe(text, params),
+        begin: (work) =>
+          tx.savepoint((savepoint) => work({ unsafe: (text, params) => savepoint.unsafe(text, params) })),
+      });
       const owner = crypto.randomUUID(),
         org = crypto.randomUUID(),
         golden = crypto.randomUUID(),
@@ -62,7 +66,7 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
             stopped = true;
             return Response.json({ ok: true });
           }
-          return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "idle" }) });
+          return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "idle" }) });
         }) as typeof fetch,
       });
       const context = {

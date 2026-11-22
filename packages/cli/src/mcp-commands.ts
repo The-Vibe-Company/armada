@@ -4,7 +4,6 @@ import type { AuthIo } from "./auth-commands.ts";
 import { authorizeConnection, type ConnectionStatus, validateConnectionStatus } from "./connection-authorization.ts";
 import { control } from "./control.ts";
 
-/** API-only MCP registry commands; sandbox mutation/retry policy does not belong here. */
 export async function mcpCommand(
   argv: readonly string[],
   auth: AuthIo,
@@ -22,7 +21,6 @@ export async function mcpCommand(
     "--org": "org",
     "--model": "model",
     "--reasoning-effort": "reasoning_effort",
-    "--conversation": "conversation_id",
     "--cwd": "cwd",
     "--prompt-id": "prompt_id",
   })) {
@@ -86,7 +84,6 @@ export async function mcpCommand(
   if (id) body.id = id;
   if (action === "sandbox-connections") {
     uuid(id, "sandbox id");
-    // sandboxId is the public read selector; id retains compatibility with the staged control adapter.
     body.sandboxId = id;
   }
   if (action === "enable" || action === "disable") {
@@ -136,13 +133,11 @@ export async function mcpCommand(
     if (!definition || typeof definition !== "object" || Array.isArray(definition))
       throw new GoldenError("invalid_config", "Expected a connection object.");
     Object.assign(body, definition);
-    // CLI selectors cannot be overridden by an imported definition; scope/auth policy stays backend-owned.
     if (id) body.id = id;
     if (single(args, "--org")) body.org = single(args, "--org");
   }
-  // Registry scope must always be explicit; never infer a grant's org from its UUID.
   if (typeof body.org !== "string" || !body.org)
-    throw new GoldenError("invalid_config", "Select an org with armada org use or --org UUID.");
+    throw new GoldenError("invalid_config", "Select an org with armada login --org NAME|UUID or --org UUID.");
   if (route === "mcp/connect") {
     const timeoutSeconds = body.timeout_seconds === undefined ? 300 : Number(body.timeout_seconds);
     if (timeoutSeconds < 0 || timeoutSeconds > 600)
@@ -168,7 +163,6 @@ export async function mcpCommand(
   return 0;
 }
 
-/** Secret hygiene only. The server remains authoritative for endpoint validation, discovery and authorization. */
 function publicConnectionUrl(value: string): void {
   try {
     const url = new URL(value);

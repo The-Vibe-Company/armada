@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
-import { sandbox } from "../../provider-boat/test/support.ts";
-import { createSqlData } from "../src/data.ts";
+import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
+import { createSqlData, type ServerSandboxPatch } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -25,6 +28,95 @@ function expectDeadlineWithin(deadline: number, before: number, after: number, t
   expect(deadline).toBeGreaterThanOrEqual(Math.floor(before) + ttlSeconds * 1000);
   expect(deadline).toBeLessThanOrEqual(Math.ceil(after) + ttlSeconds * 1000);
 }
+
+test.each(["ready", "publication failure", "activity lease", "stop intent"] as const)(
+  "native ready observation with %s",
+  async (scenario) => {
+    const { db, people } = await sharedDatabase();
+    const sql = bunLikeSql(db);
+    const id = crypto.randomUUID();
+    const placement = "bx_23456789";
+    await db.query(
+      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
+       select $1,'boat',$2,id,$3,$4,'claude','running',now()+interval '1 hour'
+       from public.goldens where name='shared'`,
+      [id, placement, people.org, people.owner],
+    );
+    const read = async () =>
+      (
+        await sql.query<{
+          status: string;
+          reconcile_lease: string | null;
+          reconcile_after: Date;
+          lifecycle_generation: string;
+          activity_lease_id: string | null;
+          stop_requested_at: Date | null;
+          last_observed_at: Date | null;
+        }>(
+          `select status,reconcile_lease,reconcile_after,lifecycle_generation::text,activity_lease_id,
+             stop_requested_at,last_observed_at from public.sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+    const activity = crypto.randomUUID();
+    if (scenario === "activity lease")
+      await sql.query(
+        "update public.sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 second' where id=$1",
+        [id, activity],
+      );
+    const publicationFailure = new Error("injected native turn publication failure");
+    let claimed: Awaited<ReturnType<typeof read>> | undefined;
+    const provider: Pick<Provider, "id" | "get"> = {
+      id: "boat",
+      async get() {
+        claimed = await read();
+        if (scenario === "stop intent")
+          await sql.query("update public.sandboxes set stop_requested_at=now() where id=$1", [id]);
+        return { id: placement, name: placement, state: "ready", providerState: "ready", labels: {} };
+      },
+    };
+    const workerSql: Sql =
+      scenario === "publication failure"
+        ? {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  async query<T>(statement: string, args?: unknown[]) {
+                    const result = await tx.query<T>(statement, args);
+                    if (statement.includes("public.sandbox_transition(") && args?.[5] === "native_turn_settled")
+                      throw publicationFailure;
+                    return result;
+                  },
+                }),
+              ),
+          }
+        : sql;
+    const run = createSandboxLifecycle(workerSql, async () => provider as Provider).reconcileOne();
+    if (scenario === "publication failure") {
+      await expect(run).rejects.toBe(publicationFailure);
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
+      expect(await read()).toEqual(claimed);
+    } else {
+      expect(await run).toBe(true);
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
+      const row = await read();
+      expect(row.status).toBe(scenario === "ready" ? "ready" : "running");
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.lifecycle_generation).toBe(claimed.lifecycle_generation);
+      if (scenario === "activity lease") expect(row.activity_lease_id).toBe(activity);
+      if (scenario === "stop intent") expect(row.stop_requested_at).toBeTruthy();
+    }
+    expect(
+      (await sql.query("select actor,code,generation::text from public.sandbox_transitions where sandbox_id=$1", [id]))
+        .rows,
+    ).toEqual(
+      scenario === "ready"
+        ? [{ actor: "native_turn", code: "native_turn_settled", generation: claimed?.lifecycle_generation }]
+        : [],
+    );
+  },
+);
 
 // Private Docker reservations have their own mailbox/local TTL owner, not a full
 // Provider adapter. The generic worker must neither claim nor diagnose them.
@@ -76,7 +168,7 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   const provider = createBoatProvider({
     apiKey: "test-key",
     fetch: (async (_input: Request | string | URL) =>
-      Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) })) as typeof fetch,
+      Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
   });
   const worker = createSandboxLifecycle(sql, async (id) => {
     resolutions.push(id);
@@ -110,6 +202,63 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   ]);
   expect(await readHistory(people.admin)).toEqual([]);
 });
+
+test.each(["accepted", "superseded", "stop intent", "journal failure"] as const)(
+  "promptless native launch settlement (%s)",
+  async (scenario) => {
+    const { db, people } = await sharedDatabase();
+    const store = createSqlData(bunLikeSql(db))({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    }).sandboxes;
+    const activityToken = crypto.randomUUID();
+    const {
+      rows: [launch],
+    } = await db.query<{ id: string }>(
+      `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
+       lifecycle_generation, activity_lease_id, activity_until, stop_requested_at)
+     select 'boat', 'fixture', id, org_id, $1, 'claude', $3::sandbox_status, 1, $2, now()+interval '1 minute',
+       case when $4 then now() end
+     from goldens where name='shared' returning id`,
+      [people.owner, activityToken, scenario === "superseded" ? "stopping" : "starting", scenario === "stop intent"],
+    );
+    if (!launch) throw Error("missing launch");
+    const accepted = scenario === "accepted";
+    const statusBefore = scenario === "superseded" ? "stopping" : "starting";
+    if (scenario === "journal failure") {
+      await db.exec(`alter table sandbox_transitions add constraint reject_native_ready
+        check (code <> 'native_launch_ready')`);
+    }
+    try {
+      const patch = { status: "ready", finishActivity: true, expectedGeneration: 1, activityToken } as const;
+      const finish = store.update(launch.id, patch);
+      if (accepted) await finish;
+      else
+        await expect(finish).rejects.toThrow(
+          scenario === "journal failure" ? "reject_native_ready" : "publication is stale",
+        );
+      const row = await db.query(
+        "select status, lifecycle_generation::int as generation, activity_lease_id from sandboxes",
+      );
+      expect(row.rows).toEqual([
+        {
+          status: accepted ? "ready" : statusBefore,
+          generation: accepted ? 2 : 1,
+          activity_lease_id: accepted ? null : activityToken,
+        },
+      ]);
+      const journal = await db.query<{ edge: unknown[] }>(`select jsonb_build_array(
+        from_status, to_status, actor, code, generation) as edge from sandbox_transitions`);
+      expect(journal.rows.map(({ edge }) => edge)).toEqual(
+        accepted ? [["starting", "ready", "lifecycle_runner", "native_launch_ready", 2]] : [],
+      );
+    } finally {
+      if (scenario === "journal failure")
+        await db.exec("alter table sandbox_transitions drop constraint reject_native_ready");
+    }
+  },
+);
 
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
   const { db, people } = await sharedDatabase();
@@ -149,21 +298,24 @@ test("an expired observation lease cannot publish a delayed terminal result", as
       fetch: (async (_input: Request | string | URL, init?: RequestInit) => {
         methods.push(init?.method ?? "GET");
         observations++;
-        return Response.json({ ok: true, sandbox: sandbox({ state: observations === 1 ? "archived" : "running" }) });
+        return Response.json({
+          ok: true,
+          sandbox: observations === 1 ? retainedSandbox() : sandbox({ state: "running" }),
+        });
       }) as typeof fetch,
     });
     let hold = true;
     lifecycle = createSandboxLifecycle(
       {
         ...sql,
-        query: async <T>(text: string, params?: unknown[]) => {
-          // Queue the final publication before SQL executes, as with pool/lock delay.
-          if (hold && text.includes("last_observed_at=case")) {
+        transaction: async (work) => {
+          // Queue final publication before it acquires a connection.
+          if (hold) {
             hold = false;
             publishing.resolve();
             await release.promise;
           }
-          return sql.query<T>(text, params);
+          return sql.transaction!(work);
         },
       },
       async () => provider,
@@ -197,10 +349,86 @@ test("an expired observation lease cannot publish a delayed terminal result", as
   }
 });
 
+for (const step of ["transition", "metadata", "lease expiry", "extension cleanup"] as const) {
+  test(`terminal settlement rolls back on ${step}`, async () => {
+    const { db, people } = await sharedDatabase();
+    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
+       values($1,'boat','bx_23456789',$2,$3,$4,'claude','running',$5)`,
+      [id, golden.id, people.org, people.owner, step === "extension cleanup"],
+    );
+    const base = bunLikeSql(db);
+    const jobId =
+      step === "extension cleanup"
+        ? await createJobsStore(base, ENCRYPTION_KEY).enqueue("boat_runtime_extend", id, 1, id, null, {
+            orgId: people.org,
+            maxAttempts: 3,
+            deadline: new Date("2099-01-01"),
+          })
+        : null;
+    if (jobId)
+      await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
+        id,
+        jobId,
+      ]);
+    const sql: Sql = {
+      ...base,
+      transaction: (work) =>
+        base.transaction!((tx) =>
+          work({
+            async query<T>(query: string, params?: unknown[]) {
+              if (step === "transition" && query.includes("from public.sandbox_transition(")) {
+                throw new Error("injected transition failure");
+              }
+              if (query.includes("last_observed_at=case")) {
+                if (step === "metadata") throw new Error("injected metadata failure");
+                if (step === "lease expiry") {
+                  await tx.query("update public.sandboxes set reconcile_lease_until='-infinity' where id=$1", [id]);
+                }
+              }
+              const result = await tx.query<T>(query, params);
+              if (step === "extension cleanup" && query.startsWith("update public.boat_runtime_extension_state"))
+                throw new Error("injected extension cleanup failure");
+              return result;
+            },
+          }),
+        ),
+    };
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (_input: Request | string | URL) =>
+        Response.json({ ok: true, sandbox: retainedSandbox() })) as typeof fetch,
+    });
+    const lifecycle = createSandboxLifecycle(sql, async () => provider);
+
+    if (step === "lease expiry") expect(await lifecycle.reconcileOne()).toBe(true);
+    else await expect(lifecycle.reconcileOne()).rejects.toThrow(`injected ${step} failure`);
+    expect(
+      (
+        await db.query(
+          `select status,stopped_at,last_observed_at,reconcile_lease is not null as claimed
+           from public.sandboxes where id=$1`,
+          [id],
+        )
+      ).rows,
+    ).toEqual([{ status: "running", stopped_at: null, last_observed_at: null, claimed: true }]);
+    expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    if (jobId)
+      expect(
+        (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id]))
+          .rows,
+      ).toEqual([{ pending_job_id: jobId }]);
+  });
+}
+
 // Primary regression owner: actual SDK HTTP decoding plus migrated SQL persistence.
 for (const outcome of [
   "external-stop",
   "invalid-stop-time",
+  "snapshot-pending",
+  "snapshot-owner-removed",
   "expired",
   "expired-external-stop",
   "interrupt-pending",
@@ -209,7 +437,8 @@ for (const outcome of [
   "stale",
   "manual-stop",
 ] as const) {
-  const externalStop = outcome === "external-stop" || outcome === "invalid-stop-time";
+  const waitingForRetention = outcome === "invalid-stop-time" || outcome === "snapshot-pending";
+  const externalStop = outcome === "external-stop" || waitingForRetention || outcome === "snapshot-owner-removed";
   const validStoppedAt = "2026-11-11T00:00:00.000Z";
   test(`lifecycle reconciles Boat ${outcome} without deleting retained data`, async () => {
     const { db, people } = await sharedDatabase();
@@ -237,7 +466,7 @@ for (const outcome of [
       effectiveTtlSeconds: 60,
     });
     if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-    if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
+    if (!externalStop && outcome !== "manual-stop")
       await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
     const requests: string[] = [];
     let stopped = false;
@@ -263,20 +492,103 @@ for (const outcome of [
             ok: true,
             conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
           });
+        if (outcome === "snapshot-owner-removed")
+          await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
         return Response.json({
           ok: true,
-          sandbox: sandbox({
-            stoppedAt:
-              outcome === "external-stop" ? validStoppedAt : outcome === "invalid-stop-time" ? "not-a-date" : undefined,
-            state:
-              stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
-                ? "archived"
-                : "running",
-          }),
+          sandbox:
+            stopped || externalStop || outcome === "expired-external-stop"
+              ? retainedSandbox({
+                  stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : validStoppedAt,
+                  snapshotVerifiedAt: validStoppedAt,
+                  ...(outcome === "snapshot-pending" || outcome === "snapshot-owner-removed"
+                    ? { lastSnapshotStatus: "in_progress" }
+                    : {}),
+                })
+              : sandbox({ state: "running" }),
         });
       }) as typeof fetch,
     });
-    await createSandboxLifecycle(sql, async () => provider).reconcileOne();
+    const readStopIntent = async () =>
+      (
+        await db.query<{
+          status: string;
+          stop_requested_at: Date | null;
+          stop_generation: number;
+          lifecycle_generation: number;
+          provider_sandbox_id: string;
+        }>(
+          `select status,stop_requested_at,stop_generation,lifecycle_generation,provider_sandbox_id
+             from sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0];
+    const before = waitingForRetention ? await readStopIntent() : undefined;
+    const worker = createSandboxLifecycle(sql, async () => provider);
+    if (outcome === "snapshot-pending") {
+      const fault = new Error("injected pending-retention settlement failure");
+      for (const boundary of ["transition", "retry update", "commit"]) {
+        const faultingSql: Sql = {
+          query: sql.query,
+          transaction: (work) =>
+            db.transaction(async (tx) => {
+              await work({
+                query: (statement, args) => {
+                  if (
+                    (boundary === "transition" && statement.includes("public.sandbox_transition(")) ||
+                    (boundary === "retry update" && statement.includes("last_observed_at=case"))
+                  )
+                    throw fault;
+                  return tx.query(statement, args);
+                },
+              });
+              if (boundary === "commit") throw fault;
+              throw Error("fault did not run at the expected boundary");
+            }),
+        };
+        await expect(createSandboxLifecycle(faultingSql, async () => provider).reconcileOne()).rejects.toBe(fault);
+        expect(await readStopIntent()).toEqual(before);
+        expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+        await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
+      }
+    }
+    if (outcome === "expired") {
+      const before = await readStopIntent();
+      for (const boundary of ["transition", "commit"]) {
+        let injected = false;
+        const faultingSql: Sql = {
+          query: sql.query,
+          transaction: (work) =>
+            db.transaction(async (tx) => {
+              let admitted = false;
+              const result = await work({
+                query: (statement, args) => {
+                  if (statement.includes("public.sandbox_transition(") && args?.[3] === "stopping") {
+                    admitted = true;
+                    if (boundary === "transition") {
+                      injected = true;
+                      throw new Error("injected stop transition failure");
+                    }
+                  }
+                  return tx.query(statement, args);
+                },
+              });
+              if (admitted && boundary === "commit") {
+                injected = true;
+                throw new Error("injected stop admission commit failure");
+              }
+              return result;
+            }),
+        };
+        await createSandboxLifecycle(faultingSql, async () => provider).reconcileOne();
+        expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
+        expect(injected).toBe(true);
+        expect(await readStopIntent()).toEqual(before);
+        expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      }
+    }
+    await worker.reconcileOne();
     const row = (
       await db.query<{
         status: string;
@@ -293,9 +605,12 @@ for (const outcome of [
       )
     ).rows[0]!;
     expect(row.status).toBe(
-      externalStop || outcome === "expired" || outcome === "expired-external-stop" || outcome === "manual-stop"
+      outcome === "external-stop" ||
+        outcome === "expired" ||
+        outcome === "expired-external-stop" ||
+        outcome === "manual-stop"
         ? "stopped"
-        : outcome === "stale"
+        : outcome === "stale" || outcome === "snapshot-owner-removed"
           ? "running"
           : "stopping",
     );
@@ -307,8 +622,57 @@ for (const outcome of [
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
-    // Confirmed stops close observed intervals; absent/bad timestamps fall back locally.
-    if (externalStop || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
+    if (outcome === "stale") {
+      expect(await readStopIntent()).toMatchObject({ stop_requested_at: null, stop_generation: 0 });
+      expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
+    }
+    if (outcome === "snapshot-owner-removed" || outcome === "stale")
+      expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    if (waitingForRetention) {
+      if (!before) throw Error("Missing sandbox before retention settlement");
+      expect(row.stop_time_finite).toBeNull();
+      const intent = await readStopIntent();
+      expect(intent).toEqual({
+        ...before,
+        status: "stopping",
+        stop_requested_at: expect.any(Date),
+        stop_generation: 1,
+      });
+      expect(await worker.reconcileOne()).toBe(false);
+      if (outcome === "snapshot-pending") {
+        expect(
+          (
+            await db.query(
+              "select isfinite(reconcile_after) and reconcile_after>now() as scheduled from sandboxes where id=$1",
+              [id],
+            )
+          ).rows,
+        ).toEqual([{ scheduled: true }]);
+        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect(await readStopIntent()).toEqual(intent);
+      }
+      expect(
+        (
+          await db.query(
+            `select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1`,
+            [id],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          actor: "reconciler",
+          code: "stop_requested",
+          generation: before.lifecycle_generation,
+          from_status: "running",
+          to_status: "stopping",
+        },
+      ]);
+      expect(row.lifecycle_error).toContain(
+        outcome === "snapshot-pending" ? "snapshot is pending" : "no verified retained snapshot",
+      );
+    }
+    if (outcome === "external-stop" || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
       expect(row.stop_time_finite).toBe(true);
       expect(row.usage_runtime_seconds).not.toBeNull();
       expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
@@ -321,6 +685,232 @@ for (const outcome of [
         ? 0
         : 1,
     );
+  });
+}
+
+test("Boat reconciliation skips an older due candidate while its extension lease is live", async () => {
+  const { db, people } = await sharedDatabase();
+  const sql = bunLikeSql(db);
+  const older = crypto.randomUUID();
+  const newer = crypto.randomUUID();
+  await db.query(
+    `insert into public.sandboxes
+      (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
+       lifecycle_generation, expires_at, boat_runtime, reconcile_after)
+     select due.id, 'boat', due.binding, g.id, $3, $4, 'codex', 'running',
+       2, 'infinity', true, now()-due.age
+     from public.goldens g cross join (values
+       ($1::uuid, 'bx_23456789', interval '2 minutes'),
+       ($2::uuid, 'bx_2345678a', interval '1 minute')
+     ) as due(id,binding,age) where g.name='shared'`,
+    [older, newer, people.org, people.owner],
+  );
+  const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+  const kind = "boat_runtime_extend";
+  const job = await jobs.enqueue(kind, older, 2, older, null, {
+    orgId: people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01"),
+  });
+  expect((await jobs.claim(kind, crypto.randomUUID(), 3600, 1))?.id).toBe(job);
+  const worker = createSandboxLifecycle(sql, async (id) =>
+    createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (_input: Request | string | URL) =>
+        Response.json({
+          ok: true,
+          sandbox: retainedSandbox({ id: id === older ? "bx_23456789" : "bx_2345678a" }),
+        })) as typeof fetch,
+    }),
+  );
+  const status = async (id: string) =>
+    (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [id])).rows[0]?.status;
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(await status(newer)).toBe("stopped");
+  expect(await status(older)).toBe("running");
+  await db.query("update public.jobs set lease_until='-infinity' where id=$1", [job]);
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(await status(older)).toBe("stopped");
+  await worker.drain();
+});
+
+for (const evidence of [
+  "covered",
+  "terminal-covered",
+  "terminal-short",
+  "short",
+  "scoped-short",
+  "unknown",
+  "native",
+  "superseded",
+  "lost-observation-response",
+  "lost-stop-response",
+] as const) {
+  test(`Boat reconciliation handles ${evidence} physical deadline evidence`, async () => {
+    const { db, people } = await sharedDatabase();
+    const id = crypto.randomUUID();
+    const {
+      rows: [binding],
+    } = await db.query<{ expires_at: Date; lifecycle_generation: number }>(
+      `insert into public.sandboxes
+        (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, expires_at, boat_runtime,
+         visibility, access_owner_id)
+       select $1, 'boat', 'bx_23456789', id, $2, $3, 'codex', 'running', now()+interval '1 hour', $4, 'private', $3
+       from public.goldens where name='shared' returning expires_at,lifecycle_generation`,
+      [id, people.org, people.owner, evidence !== "native"],
+    );
+    if (!binding) throw Error("Missing Boat sandbox.");
+    const sql = bunLikeSql(db);
+    const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
+    const shouldClear = evidence === "terminal-covered" || evidence === "lost-observation-response";
+    const terminalJob = shouldClear || evidence === "terminal-short";
+    const hasPendingJob = evidence === "covered" || evidence === "lost-stop-response" || terminalJob;
+    let physicalDeadline = evidence === "covered" || shouldClear ? coveredDeadline : binding.expires_at;
+    const pendingJobId = hasPendingJob
+      ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
+          "boat_runtime_extend",
+          id,
+          binding.lifecycle_generation,
+          id,
+          null,
+          { orgId: people.org, maxAttempts: 3, deadline: binding.expires_at },
+        )
+      : null;
+    if (pendingJobId)
+      await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
+        id,
+        pendingJobId,
+      ]);
+    const failureReceipt = { reason: "deadline" };
+    if (terminalJob)
+      await db.query("update public.jobs set state='failed', outcome=$2::jsonb where id=$1", [
+        pendingJobId,
+        JSON.stringify(failureReceipt),
+      ]);
+    if (evidence === "scoped-short")
+      await db.query(
+        `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+         values($1,'sandbox',$2,$3,$1,'ready')`,
+        [id, people.org, people.owner],
+      );
+    let stops = 0;
+    let stopped = false;
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
+          stops++;
+          if (evidence === "lost-stop-response" && stops === 1) throw Error("Injected lost stop response.");
+          stopped = true;
+          return Response.json({ ok: true });
+        }
+        if (evidence === "superseded")
+          await db.query("update sandboxes set expires_at=expires_at-interval '30 minutes' where id=$1", [id]);
+        return Response.json({
+          ok: true,
+          sandbox: stopped
+            ? retainedSandbox()
+            : sandbox({
+                state: "running",
+                archiveAfter: evidence === "unknown" || stops > 0 ? undefined : physicalDeadline.toISOString(),
+              }),
+        });
+      }) as typeof fetch,
+    });
+    const workerSql: Sql =
+      evidence === "lost-observation-response"
+        ? {
+            ...sql,
+            query: async <T>(statement: string, args?: unknown[]) => {
+              const result = await sql.query<T>(statement, args);
+              if (statement.includes("insert into public.boat_runtime_extension_state"))
+                throw Error("Injected lost observation write response.");
+              return result;
+            },
+          }
+        : sql;
+    const worker = createSandboxLifecycle(workerSql, async () => provider);
+    if (evidence === "short") await db.exec("set datestyle='German, DMY'");
+    try {
+      expect(await worker.reconcileOne()).toBe(true);
+      await worker.drain();
+    } finally {
+      if (evidence === "short") await db.exec("reset datestyle");
+    }
+
+    const readSandbox = async () =>
+      (
+        await db.query(
+          "select status, status_reason, expires_at, stop_requested_at, lifecycle_error from public.sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+    const readObservation = async () =>
+      (
+        await db.query(
+          `select pending_job_id,observed_provider_id,observed_generation,observed_at,observed_expires_at
+           from public.boat_runtime_extension_state where sandbox_id=$1`,
+          [id],
+        )
+      ).rows;
+    if (evidence === "lost-observation-response") {
+      expect(stops).toBe(0);
+      expect(await readSandbox()).toMatchObject({
+        status: "running",
+        expires_at: binding.expires_at,
+        lifecycle_error: expect.stringContaining("Provider lifecycle observation unavailable"),
+      });
+      expect(await readObservation()).toMatchObject([{ pending_job_id: null, observed_expires_at: coveredDeadline }]);
+      physicalDeadline = new Date(coveredDeadline.getTime() + 60_000);
+      await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+      const successor = createSandboxLifecycle(sql, async () => provider);
+      expect(await successor.reconcileOne()).toBe(true);
+      await successor.drain();
+      expect(await readSandbox()).toMatchObject({ lifecycle_error: null });
+    }
+    if (evidence === "lost-stop-response") {
+      expect(await readSandbox()).toMatchObject({
+        status: "stopping",
+        stop_requested_at: expect.any(Date),
+        expires_at: binding.expires_at,
+      });
+      expect(await readObservation()).toMatchObject([{ pending_job_id: pendingJobId }]);
+      await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+      const successor = createSandboxLifecycle(bunLikeSql(db), async () => provider);
+      expect(await successor.reconcileOne()).toBe(true);
+      await successor.drain();
+    }
+
+    const row = await readSandbox();
+    const shouldStop = ["short", "scoped-short", "terminal-short", "lost-stop-response"].includes(evidence);
+    expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
+    expect(row).toMatchObject(
+      shouldStop
+        ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
+        : {
+            status: "running",
+            status_reason: null,
+            expires_at: evidence === "superseded" ? expect.any(Date) : binding.expires_at,
+          },
+    );
+    expect(await readObservation()).toEqual(
+      shouldStop || hasPendingJob
+        ? [
+            {
+              pending_job_id: shouldClear || shouldStop ? null : pendingJobId,
+              observed_provider_id: "bx_23456789",
+              observed_generation: binding.lifecycle_generation,
+              observed_at: expect.any(Date),
+              observed_expires_at: physicalDeadline,
+            },
+          ]
+        : [],
+    );
+    if (terminalJob)
+      expect((await db.query("select state,outcome from public.jobs where id=$1", [pendingJobId])).rows).toEqual([
+        { state: "failed", outcome: failureReceipt },
+      ]);
   });
 }
 
@@ -362,7 +952,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
         }
         if (request.method === "POST") return Response.json({ ok: true });
         if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
-        return Response.json({ ok: true, sandbox: sandbox({ state: stopped ? "archived" : "running" }) });
+        return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "running" }) });
       }) as typeof fetch,
     });
     let resolutions = 0;
@@ -416,20 +1006,27 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       // The production send-admission owner rearms the persisted policy, then the
       // real SDK resumes the stopped machine and admits its next native prompt.
       const beforeRearm = await databaseNowMs(sql);
-      await sandboxActivity(
-        store,
-        confirmed,
-        { renewLifecycle: true, status: "starting", stoppedAt: null },
-        async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: confirmed.providerSandboxId,
-            harness: "claude",
-            text: "continue",
-            signal,
-          });
-          return { result: receipt, patch: { status: "running", stoppedAt: null } };
-        },
-      );
+      const admission = {
+        renewLifecycle: true,
+        stopRequested: false,
+        nativeResumeAdmission: confirmed.providerSandboxId,
+      } satisfies ServerSandboxPatch;
+      await sandboxActivity(store, confirmed, admission, async (signal) => {
+        const receipt = await provider.prompt({
+          sandboxId: confirmed.providerSandboxId,
+          harness: "claude",
+          text: "continue",
+          signal,
+        });
+        await store.recordNativePrompt?.(confirmed.id, confirmed.providerSandboxId, receipt.promptId);
+        const patch = {
+          nativeSendReceipt: { fromState: "starting", placement: confirmed.providerSandboxId },
+          taskPromptId: receipt.promptId,
+          conversationIds: [receipt.conversationId],
+          stoppedAt: null,
+        } satisfies ServerSandboxPatch;
+        return { result: receipt, patch };
+      });
       const afterRearm = await databaseNowMs(sql);
       const resumed = await store.get(id);
       expect(resumed?.stoppedAt).toBeNull();
@@ -453,7 +1050,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       const beforeObservation = methods.length;
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(resolutions).toBe(2);
-      expect(methods.slice(beforeObservation)).toEqual(["GET"]);
+      expect(methods.slice(beforeObservation)).toEqual(["GET", "GET"]);
       expect((await store.get(id))?.status).toBe("running");
     }
   });
@@ -499,7 +1096,7 @@ test("replicas lease one observation and resume admission fences old writes whil
         observations++;
         entered?.();
         await gate.promise;
-        return Response.json({ ok: true, sandbox: sandbox({ state: "archived" }) });
+        return Response.json({ ok: true, sandbox: retainedSandbox() });
       }) as typeof fetch,
     });
     worker = createSandboxLifecycle(sql, async () => provider);
@@ -536,15 +1133,25 @@ test("replicas lease one observation and resume admission fences old writes whil
     // The gap alone would accept a renewal backdated as a whole; bound the
     // deadline with database clock samples taken around the renewal.
     expectDeadlineWithin(renewed.expires_ms, beforeRenewal, afterRenewal, 90);
-    await expect(data.sandboxes.update(id, { status: "stopped", expectedGeneration: 1 })).rejects.toThrow();
+    await expect(
+      data.sandboxes.update(id, {
+        status: "running",
+        stoppedAt: null,
+        finishActivity: true,
+        expectedGeneration: 2,
+        activityToken,
+      }),
+    ).rejects.toThrow("Sandbox status changes require a lifecycle transition.");
+    await expect(
+      data.sandboxes.update(id, { finishActivity: true, activityToken, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
     await data.sandboxes.update(id, {
-      status: "running",
-      stoppedAt: null,
       finishActivity: true,
       activityToken,
       expectedGeneration: 2,
     });
     const row = await data.sandboxes.get(id);
+    expect(row?.status).toBe("stopped");
     expect(row?.lifecycleGeneration).toBe(3);
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
@@ -558,7 +1165,6 @@ test("replicas lease one observation and resume admission fences old writes whil
       ).rows,
     ).toEqual([
       { from_status: "running", to_status: "stopped", actor: "reconciler", code: "provider_stopped", generation: 1 },
-      { from_status: "stopped", to_status: "running", actor: "api", code: "sandbox_running", generation: 3 },
     ]);
   } finally {
     gate.resolve();
@@ -638,7 +1244,7 @@ for (const blocked of ["boat", "modal"] as const) {
             const index = ids.indexOf(id);
             entered[index]!.resolve();
             await gates[index]!.promise;
-            return { state: "stopped" };
+            return { state: "stopped", retainedSnapshot: "usable" };
           },
         }) as unknown as import("@armada/core").Provider,
     );
@@ -691,10 +1297,13 @@ for (const blocked of ["boat", "modal"] as const) {
   });
 }
 
-test("runtime lifecycle stops compute with explicit no-checkpoint note, without native quiescence or capture", async () => {
+test("runtime lifecycle stops compute without claiming a checkpoint invalidated by a late journal event", async () => {
   const { db, people } = await sharedDatabase();
 
-  const sql = bunLikeSql(db);
+  const sql: Sql = {
+    ...bunLikeSql(db),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
   const store = createSqlData(sql)({
     userId: people.owner,
     orgs: [{ orgId: people.org, role: "member" }],
@@ -715,6 +1324,18 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
     reasoningEffort: "high",
     boatRuntime: true,
   });
+  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const ticket = await enrolments.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} });
+  const active = await enrolments.enrol(ticket.enrolmentToken);
+  await db.query(
+    "insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at) values($1,$2,$3,0,now())",
+    [row.id, active.epoch, crypto.randomUUID()],
+  );
+  await createRuntimeEvents(enrolments, ENCRYPTION_KEY).append(active.runtimeToken, active.epoch, {
+    sandboxId: row.id,
+    generation: active.epoch,
+    events: [{ sequence: 1, event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} } }],
+  });
   await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
   let stopped = false;
   const calls: string[] = [];
@@ -727,7 +1348,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
         labels: {},
         state: stopped ? "stopped" : "ready",
         providerState: "x",
-        ...(stopped ? { stoppedAt: new Date() } : {}),
+        ...(stopped ? { stoppedAt: new Date(), retainedSnapshot: "usable" } : {}),
       };
     },
     async stop() {
@@ -750,8 +1371,7 @@ test("runtime lifecycle stops compute with explicit no-checkpoint note, without 
   await lifecycle.drain();
 });
 
-// Expiry must stop enrolled Modal compute even though native quiesce is unavailable.
-test("expired Modal dial-out reaches compute stop without tunnel quiescence or preservation exec", async () => {
+test.each(["active", "terminate", "booting"] as const)("expired Modal stop from %s", async (phase) => {
   const { db, people } = await sharedDatabase();
   const sql = bunLikeSql(db);
   const golden = (
@@ -770,8 +1390,36 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   let stopped = false;
   const provider = {
     id: "modal",
-    get: async () => ({ id: "compute", state: stopped ? "stopped" : "running" }),
+    get: async () => ({
+      id: "compute",
+      state: stopped ? "stopped" : "running",
+      providerState: phase,
+      physicalGeneration: "3",
+    }),
+    captureRuntimeWork: async () => {
+      if (phase !== "active") throw Error("Only active compute can preserve work");
+      return { status: "clean" };
+    },
     stop: async () => {
+      if (phase === "active")
+        expect(
+          (
+            await db.query(
+              "select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1",
+              [id],
+            )
+          ).rows,
+        ).toEqual([
+          { actor: "reconciler", code: "expired", generation: 1, from_status: "running", to_status: "stopping" },
+        ]);
+      expect(
+        (
+          await db.query(
+            "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ captured: phase === "active" }]);
       stopped = true;
     },
     quiesce: async () => {
@@ -786,7 +1434,7 @@ test("expired Modal dial-out reaches compute stop without tunnel quiescence or p
   expect(stopped).toBe(true);
   expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
     status: "stopped",
-    preservation_note: expect.stringContaining("disk retention, resume"),
+    preservation_note: null,
   });
   await worker.drain();
 });
@@ -859,3 +1507,94 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
     expect(await worker.reconcileOne()).toBe(false);
   });
 }
+
+test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %s work", async (state) => {
+  const { db, people } = await sharedDatabase();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const store = createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const id = crypto.randomUUID();
+  const runtime = state === "acknowledged";
+  const status = runtime ? "running" : "ready";
+  await db.query(
+    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, boat_runtime)
+     select $1,'boat','idle-stop-race',id,$2,$3,'claude',$4::sandbox_status,$5 from goldens where name='shared'`,
+    [id, people.org, people.owner, status, runtime],
+  );
+  const idle = await store.get(id);
+  if (!idle) throw Error("missing sandbox");
+  const promptId = crypto.randomUUID();
+  if (runtime) {
+    await db.query(
+      `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex')
+       from public.sandboxes where id=$1`,
+      [id],
+    );
+    await db.query(
+      `insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc,result_enc,accepted_prompt_id)
+       values($1,$2,1,decode('00','hex'),decode('00','hex'),$2::text::uuid)`,
+      [id, promptId],
+    );
+  } else {
+    await db.query(
+      `insert into account_turn_queue
+         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+       select $1,gen_random_uuid(),id,$2,$3,1,1,'hash',decode('00','hex'),'conversation',$4
+       from credentials where scope='org' and owner_id=$3 and kind='openai'`,
+      [id, people.owner, people.org, state],
+    );
+  }
+
+  const admission = { ownerStop: true, status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
+  const { onlyIfIdle: _, ...manualAdmission } = admission;
+  const settlement = {
+    ownerStop: true,
+    status: "stopped",
+    stoppedAt: new Date().toISOString(),
+    stopRequested: false,
+  } as const;
+  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
+    sandboxActivity(store, sandbox, patch, async () => ({
+      result: "stopped",
+      patch: settlement,
+    }));
+
+  await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
+  expect(await store.get(id)).toMatchObject({ status, lifecycleGeneration: idle.lifecycleGeneration });
+  if (runtime) {
+    await db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+      id,
+      promptId,
+    ]);
+    await db.query("update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    await expect(stop(admission)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    const current = (await store.get(id))!;
+    expect(await stop(admission, current)).toBe("stopped");
+  } else {
+    expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
+      { state },
+    ]);
+
+    expect(await stop(manualAdmission)).toBe("stopped");
+    expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
+      { state: "failed" },
+    ]);
+  }
+
+  const journal = await db.query(
+    `select from_status, to_status, actor, code from sandbox_transitions
+     where sandbox_id=$1 order by id`,
+    [id],
+  );
+  expect(journal.rows).toEqual([
+    { from_status: status, to_status: "stopping", actor: "owner", code: "owner_stop_admitted" },
+    { from_status: "stopping", to_status: "stopped", actor: "lifecycle_runner", code: "owner_stop_settled" },
+  ]);
+});

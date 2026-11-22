@@ -6,7 +6,8 @@ const token = "armada_sk_fixture_token";
 const response = {
   sandbox: {
     id: "11111111-1111-4111-8111-111111111111",
-    boatId: "bx_server",
+    provider: "boat",
+    providerSandboxId: "bx_server",
     goldenId: "golden",
     orgId: "org",
     ownerId: "owner",
@@ -25,11 +26,13 @@ const response = {
     orgId: "org",
     visibility: "private",
     ownerId: "owner",
-    boatSnapshotId: "snapshot",
-    boatSandboxId: null,
+    providerSnapshotId: "snapshot",
+    providerSandboxId: null,
     config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
     createdAt: "2026-01-01T00:00:00.000Z",
   },
+  runtime: null,
+  helper: null,
   promptId: "prompt",
   conversationId: "conversation",
   ttlSeconds: 1800,
@@ -39,16 +42,16 @@ const response = {
 
 describe("launch through the Armada API", () => {
   for (const selection of [undefined, [], ["chosen"]] as const) {
-    for (const repo of [undefined, "ACME/web", "defaults-only"]) {
+    for (const repo of [undefined, "ACME/web"]) {
       test(`works with ARMADA_TOKEN and a clean HOME (repo: ${repo ?? "omitted"}, selection: ${JSON.stringify(selection)})`, async () => {
         const machineSize =
           repo === undefined
             ? null
             : {
                 version: 1,
-                requested: "large",
+                requested: null,
                 effective: "large",
-                source: "override",
+                source: "repository",
                 repositoryDir: "web",
                 capacity: null,
               };
@@ -56,8 +59,10 @@ describe("launch through the Armada API", () => {
         let out = "";
         const code = await run(
           [
-            "launch",
+            "new",
             "web",
+            "--provider",
+            "boat",
             "--agent",
             "codex",
             "do it",
@@ -71,7 +76,7 @@ describe("launch through the Armada API", () => {
             "org",
             "--json",
             ...(repo === undefined ? ["--credential-id", "33333333-3333-4333-8333-333333333333"] : []),
-            ...(repo === undefined ? [] : repo === "defaults-only" ? ["--sized"] : ["--repo", repo, "--size", "large"]),
+            ...(repo === undefined ? [] : ["--repo", repo]),
             ...(selection === undefined
               ? []
               : selection.length
@@ -87,14 +92,7 @@ describe("launch through the Armada API", () => {
               fetch: async (input, init) => {
                 const request = input instanceof Request ? input : new Request(String(input), init);
                 calls.push(request);
-                return Response.json({
-                  ...response,
-                  sandbox: {
-                    ...response.sandbox,
-                    machineSize,
-                    ...(repo === undefined ? {} : { provider: "boat", providerSandboxId: "bx_server" }),
-                  },
-                });
+                return Response.json({ ...response, sandbox: { ...response.sandbox, machineSize } });
               },
               now: () => new Date(),
               open: () => undefined,
@@ -103,32 +101,16 @@ describe("launch through the Armada API", () => {
           },
         );
         expect(code).toBe(0);
-        expect(JSON.parse(out)).toMatchObject({
-          machineSize,
-          golden: "web",
-          sandbox: { id: "11111111-1111-4111-8111-111111111111", provider: "boat" },
-          credentialId: "33333333-3333-4333-8333-333333333333",
-          credentialVersion: 7,
-          harness: "codex",
-          promptId: "prompt",
-          provider: "boat",
-          providerSandboxId: "bx_server",
-          boatId: "bx_server",
-          id: "11111111-1111-4111-8111-111111111111",
-          expiresAt: "2026-11-08T16:00:00.000Z",
-        });
+        expect(JSON.parse(out)).toEqual({ ...response, sandbox: { ...response.sandbox, machineSize } });
         expect(calls).toHaveLength(1);
         const launchRequest = calls.at(-1);
         expect(launchRequest?.url).toBe(`https://armada.thevibecompany.co/api/v1/sandbox/launch`);
         expect(launchRequest?.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(await launchRequest?.json()).toEqual({
           skills: ["example/notes@1.0.0", "other@2.0.0"],
+          provider: "boat",
           golden: "web",
-          ...(repo === undefined
-            ? { credentialId: "33333333-3333-4333-8333-333333333333" }
-            : repo === "defaults-only"
-              ? { sizePolicyVersion: 1 }
-              : { repo, size: "large", sizePolicyVersion: 1 }),
+          ...(repo === undefined ? { credentialId: "33333333-3333-4333-8333-333333333333" } : { repo }),
           ...(selection === undefined ? {} : { connections: [...selection] }),
           harness: "codex",
           prompt: "do it",
@@ -139,17 +121,44 @@ describe("launch through the Armada API", () => {
     }
   }
 
-  test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
+  test("keeps delegated access in the Modal JSON envelope", async () => {
+    const receipt = {
+      ...response,
+      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server" },
+      runtime: { kind: "armada", epoch: "1" },
+      armadaAccess: { enabled: true, maxActiveChildren: 2 },
+    };
     let out = "";
     const code = await run(
-      ["launch", "web", "--agent", "codex", "do it", "--ttl", "30m"],
+      ["new", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
           out: () => undefined,
           err: () => undefined,
           env: { ARMADA_TOKEN: token },
-          fetch: async () => Response.json(response),
+          fetch: async () => Response.json(receipt),
+          now: () => new Date(),
+          open: () => undefined,
+          session: memorySessionStore(),
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual(receipt);
+  });
+
+  test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
+    let out = "";
+    const code = await run(
+      ["new", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
+      { out: (text) => (out += text), err: () => undefined },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          fetch: async () => Response.json({ ...response, sandbox: { ...response.sandbox, repositoryDir: "web" } }),
           now: () => new Date(),
           open: () => undefined,
           session: memorySessionStore(),
@@ -159,103 +168,32 @@ describe("launch through the Armada API", () => {
     expect(code).toBe(0);
     expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
     expect(out).not.toContain("Size:");
+    expect(out).toContain("Repository context: web (initial agent working directory, not an isolation boundary).");
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
-  test("invalid or repeated launch size fails before requesting allocation", async () => {
-    for (const flags of [["--size", "huge"], ["--size"], ["--size", "small", "--size", "large"]]) {
+  test("retired launch sizing flags are rejected before allocation", async () => {
+    for (const [option, ...values] of [["--size", "large"], ["--sized"]] as const) {
       let calls = 0;
-      let out = "";
+      let err = "";
+      const unexpectedRequest = () => {
+        calls++;
+        throw new Error("unexpected request");
+      };
       const code = await run(
-        ["launch", "web", "--agent", "codex", ...flags],
-        { out: (text) => (out += text), err: () => undefined },
+        ["new", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
+        { out: () => undefined, err: (text) => (err += text) },
         {
-          auth: {
-            out: () => undefined,
-            err: () => undefined,
-            env: { ARMADA_TOKEN: token },
-            session: memorySessionStore(),
-            now: () => new Date(),
-            open: () => undefined,
-            fetch: async () => {
-              calls++;
-              throw new Error("unexpected request");
-            },
-          },
+          env: { ARMADA_TOKEN: token },
+          fetch: Object.assign(unexpectedRequest, { preconnect: unexpectedRequest }),
         },
       );
       expect(code).toBe(2);
+      expect(err).toContain(`Unknown option '${option}'`);
       expect(calls).toBe(0);
-      expect(out).toBe("");
     }
-  });
-  test("explicit override refuses older servers before allocation instead of silently ignoring size", async () => {
-    const calls: Request[] = [];
-    let out = "";
-    const code = await run(
-      ["launch", "web", "--agent", "codex", "--size", "large"],
-      {
-        out: (text) => {
-          out += text;
-        },
-        err: () => undefined,
-      },
-      {
-        auth: {
-          out: () => undefined,
-          err: () => undefined,
-          env: { ARMADA_TOKEN: token },
-          session: memorySessionStore(),
-          now: () => new Date(),
-          open: () => undefined,
-          fetch: async (input, init) => {
-            calls.push(new Request(String(input), init));
-            return Response.json({ error: { message: "Unknown API route." } }, { status: 404 });
-          },
-        },
-      },
-    );
-    expect(code).toBe(1);
-    expect(out).toBe("");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toEndWith("/api/v1/sandbox/launch");
-  });
-  test("mixed-version launch retains created sandbox JSON and warns when override evidence is missing", async () => {
-    let out = "";
-    let err = "";
-    let calls = 0;
-    const code = await run(
-      ["launch", "web", "--agent", "codex", "--size", "large", "--json"],
-      {
-        out: (text) => {
-          out += text;
-        },
-        err: (text) => {
-          err += text;
-        },
-      },
-      {
-        auth: {
-          out: () => undefined,
-          err: () => undefined,
-          env: { ARMADA_TOKEN: token },
-          session: memorySessionStore(),
-          now: () => new Date(),
-          open: () => undefined,
-          fetch: async () => {
-            calls++;
-            return Response.json(response);
-          },
-        },
-      },
-    );
-    expect(code).toBe(0);
-    expect(calls).toBe(1);
-    expect(JSON.parse(out)).toMatchObject({ id: response.sandbox.id, machineSize: null });
-    expect(JSON.parse(err).warning.code).toBe("size_unconfirmed");
   });
 });
 
-// The parser must preserve producer-owned defaults: omitted, explicit and empty are distinct.
 for (const visibility of [undefined, "private", "org"]) {
   for (const selection of [undefined, "selected", "none"]) {
     test(`launch keeps connection selection ${selection ?? "default"} with legacy visibility ${visibility ?? "omitted"}`, async () => {
@@ -264,8 +202,10 @@ for (const visibility of [undefined, "private", "org"]) {
         err = "";
       const code = await run(
         [
-          "launch",
+          "new",
           "web",
+          "--provider",
+          "boat",
           "--agent",
           "codex",
           "--json",
@@ -312,7 +252,7 @@ for (const visibility of [undefined, "private", "org"]) {
 test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
   let errors = "";
   const code = await run(
-    ["launch", "web", "--agent", "codex", "--json"],
+    ["new", "web", "--provider", "boat", "--agent", "codex", "--json"],
     { out: () => {}, err: (text) => (errors += text) },
     {
       auth: {
@@ -327,7 +267,8 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
             {
               error: {
                 code: "no_credentials",
-                message: "Repository private needs a GitHub connection with read access. Run armada github connect.",
+                message:
+                  "Repository private needs a GitHub connection with read access. Run armada account login github.",
               },
             },
             { status: 400 },
@@ -339,5 +280,36 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
   const failure = JSON.parse(errors.trim().split("\n").at(-1)!);
   expect(failure.error.code).toBe("no_credentials");
   expect(failure.error.message).toContain("Repository private");
-  expect(failure.error.message).toContain("armada github connect");
+  expect(failure.error.message).toContain("armada account login github");
+});
+
+test("an admitted Modal launch reports and saves its sandbox before allocation metadata exists", async () => {
+  const id = response.sandbox.id;
+  const receipt = { sandbox: { id, status: "starting" } };
+  let saved: string | undefined;
+  let out = "";
+  const code = await run(
+    ["new", "web", "--provider", "modal", "--agent", "codex", "do it"],
+    { out: (text) => (out += text), err: () => undefined },
+    {
+      sandboxFile: {
+        read: async () => saved,
+        write: async (value) => {
+          saved = value;
+        },
+      },
+      auth: {
+        out: () => undefined,
+        err: () => undefined,
+        env: { ARMADA_TOKEN: token },
+        fetch: async () => Response.json(receipt),
+        now: () => new Date(),
+        open: () => undefined,
+        session: memorySessionStore(),
+      },
+    },
+  );
+  expect(code).toBe(0);
+  expect(out).toBe(`Sandbox: ${id}\nStatus: starting\n`);
+  expect(saved).toBe(id);
 });

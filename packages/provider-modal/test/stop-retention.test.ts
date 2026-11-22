@@ -10,8 +10,7 @@ import {
   settleDetachedModalCollections,
 } from "../src/index.ts";
 
-/** Stop-policy boundary: real adapter, injected persistence/SDK ports; no SQL startup. */
-function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {}) {
+function fixture(stage: "scrub" | "snapshot" | "missing image", { productionDetach = false } = {}) {
   const scope: Scope = {
     orgId: "org",
     userId: "owner",
@@ -79,10 +78,11 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     watermark: async () => 1,
   } as unknown as ModalStore;
   const sandbox = {
+    sandboxId: "physical",
     snapshotFilesystem: async () => {
       snapshots++;
       if (failing && stage === "snapshot") throw Error("snapshot outcome unknown");
-      return { imageId: "fresh-recovery" };
+      return { imageId: stage === "missing image" ? "" : "fresh-recovery" };
     },
     terminate: async () => {
       if (terminated) throw Error("terminated machine is unavailable for another stop");
@@ -124,7 +124,7 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     },
   } as unknown as RunnerDistribution;
   const detached: (() => Promise<void>)[] = [];
-  const provider = createModalProvider({
+  const { provider } = createModalProvider({
     scope,
     appName: "bound",
     client,
@@ -188,7 +188,6 @@ test("a confirmed Modal stop is deleted without another termination, even across
   f.recover();
   await f.provider.stop({ sandboxId: "logical" });
   f.rejectNextImageDelete();
-  // The transient timeout is retried inside the same delete.
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.cleanupDelays).toEqual([1_000]);
   expect(f.state().phase).toBe("deleted");
@@ -198,7 +197,6 @@ test("a confirmed Modal stop is deleted without another termination, even across
 
 test("a missing App during termination never publishes deletion of a live machine", async () => {
   const f = fixture("snapshot");
-  // The first lookup admits the delete; the one before termination finds no App.
   f.missAppOnLookup(2);
   await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
   expect(f.state().phase).toBe("deleting");
@@ -211,10 +209,8 @@ test("a missing App during termination never publishes deletion of a live machin
 
 test("a missing App during name reconciliation never publishes deletion of an unknown create", async () => {
   const f = fixture("snapshot");
-  // The create response was lost: no physical ID, outcome unknown.
   f.state().phase = "creating";
   delete f.state().physicalId;
-  // The first lookup admits the delete; the one inside name reconciliation finds no App.
   f.missAppOnLookup(2);
   await expect(f.provider.delete({ sandboxId: "logical" })).rejects.toMatchObject({ code: "unavailable" });
   expect(f.state().phase).toBe("creating");
@@ -230,12 +226,9 @@ test("a failing retired image never withholds the receipt of a completed delete"
   f.retireImage("retired-elsewhere", { denied: true });
   await expect(f.provider.delete({ sandboxId: "logical" })).resolves.toEqual({ status: "deleted" });
   expect(f.state().phase).toBe("deleted");
-  // The detached collection fails once on the denied image; the receipt was already published.
   await f.runDetached();
   expect(f.deletedImages).toEqual(["prior-recovery", "fresh-recovery"]);
-  // Another source's failure is not retried inside this delete.
   expect(f.cleanupDelays).toEqual([]);
-  // The tombstone keeps its durable retry record for the next collection in scope.
   expect(
     f
       .images()
@@ -243,7 +236,7 @@ test("a failing retired image never withholds the receipt of a completed delete"
       .map((x) => x.imageId),
   ).toEqual(["retired-elsewhere"]);
   f.retireImage("retired-elsewhere", { denied: false });
-  await f.provider.collectGarbage();
+  await expect(f.provider.collectRetiredSnapshot("retired-retired-elsewhere")).resolves.toBe("collected");
   expect(f.deletedImages).toContain("retired-elsewhere");
 });
 
@@ -268,6 +261,21 @@ test.each(["scrub", "snapshot"] as const)(
     }
   },
 );
+
+test.each(["native", "enrolled"] as const)("a missing Modal image receipt preserves the %s source", async (path) => {
+  const f = fixture("missing image");
+  if (path === "enrolled") f.state().commonRuntime = true;
+  const stop = () =>
+    path === "enrolled"
+      ? f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 })
+      : f.provider.stop({ sandboxId: "logical", requireRetention: true });
+
+  await expect(stop()).rejects.toMatchObject({ code: "unavailable" });
+  await expect(stop()).rejects.toMatchObject({ code: "conflict" });
+  expect(f.terminated()).toBe(0);
+  expect(f.snapshots()).toBe(1);
+  expect(f.state()).toMatchObject({ phase: "snapshot", recoveryImageId: "prior-recovery" });
+});
 
 test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)(
   "retention policy refuses compute-only state (%s)",

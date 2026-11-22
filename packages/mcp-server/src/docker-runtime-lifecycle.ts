@@ -1,11 +1,10 @@
 import type { AgentEvent, Sql } from "@armada/core";
-import { HARNESS_KINDS, isRecord as object, PROMPT_STATUSES } from "@armada/core";
+import { HARNESS_KINDS, isRecord as object } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
-import { runtimeHealthMatches } from "./runtime-agent.ts";
-import { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -29,23 +28,6 @@ function identity(actor: Actor, sandboxId: string) {
   )
     deny();
 }
-function result(
-  reply: { epoch: string; requestId: string; status: number; body: Record<string, unknown> },
-  epoch: string,
-  requestId: string,
-) {
-  if (
-    reply.epoch !== epoch ||
-    reply.requestId !== requestId ||
-    reply.status !== 200 ||
-    reply.body.version !== 1 ||
-    reply.body.requestId !== requestId ||
-    !object(reply.body.result) ||
-    Object.hasOwn(reply.body, "error")
-  )
-    deny();
-  return reply.body.result;
-}
 /** One native conversation per allocation. No provider projection or network/waiting in this service. */
 export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -64,9 +46,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       authority: ReturnType<typeof createRuntimeEnrolments>,
       sandbox: Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>,
       epoch: string,
+      generation: string,
     ) => Promise<T>,
     allowPending = false,
     reserveTurn = false,
+    expectedLifecycleGeneration?: string,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ) {
     return transaction(async (tx) => {
       if (options.enabled !== true) deny();
@@ -96,8 +81,9 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         if (!host.rows.length) deny();
         const live = await tx.query(
           `select id from public.sandboxes where id=$1 and status in ('starting','ready','running')
-           and stop_requested_at is null and deleted_at is null and expires_at>now() for update`,
-          [sandboxId],
+           and stop_requested_at is null and deleted_at is null and expires_at>now()
+           and ($2::bigint is null or lifecycle_generation=$2) for update`,
+          [sandboxId, expectedLifecycleGeneration ?? null],
         );
         if (!live.rows.length) deny();
       }
@@ -125,65 +111,50 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
-        return work(scoped, authority, current, scope.epoch);
+        await assertClaim?.(scoped);
+        const result = await work(scoped, authority, current, scope.epoch, scope.lifecycleGeneration);
+        await assertClaim?.(scoped);
+        return result;
       });
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string, activate = true) {
+    ready(
+      actor: Actor,
+      sandboxId: string,
+      requestId: string,
+      expectedLifecycleGeneration?: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
+    ) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
         sandboxId,
-        async (tx, authority) => {
-          const id = `docker_health_${requestId}`;
+        async (tx, authority, sandbox, epoch, generation) => {
+          const id = `docker_ready_${requestId}`;
           const commands = createRuntimeCommands(authority, key);
-          const queued = await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" });
-          const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
+          await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" }, epoch);
+          const response = await commands.result(actor.userId, sandboxId, id, epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
-          const health = result(response.reply, queued.epoch, id);
-          if (!runtimeHealthMatches(health, queued.epoch)) deny();
-          const checkpoint = (
-            await tx.query<{ epoch: string; watermark: string }>(
-              "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
-              [sandboxId, queued.epoch],
-            )
-          ).rows[0];
-          if (checkpoint) {
-            const saved = (
-              await tx.query<{ conversation_ids: string[] }>(
-                "select conversation_ids from public.sandboxes where id=$1",
-                [sandboxId],
-              )
-            ).rows[0];
-            if (
-              !object(health.restoredFrom) ||
-              saved?.conversation_ids.length !== 1 ||
-              !runtimeHealthMatches(health, queued.epoch, {
-                epoch: checkpoint.epoch,
-                watermark: Number(checkpoint.watermark),
-                conversationId: saved.conversation_ids[0] as string,
-              })
-            )
-              deny();
-          }
-          return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
-            if (scope.epoch !== queued.epoch) deny();
-            // Private lane status transitions must not revoke their own live epoch.
-            if (activate)
-              await fenced.query(
-                `update public.sandboxes set status='ready' where id=$1 and status='starting'
-              and not exists(select 1 from public.docker_launch_requests d where d.sandbox_id=$1 and d.result_enc is null)`,
-                [sandboxId],
-              );
-            return { state: "ready" as const, epoch: scope.epoch };
-          });
+          const health = readRuntimeCommandSuccess(response.reply, epoch, id);
+          const publication = await authority.confirmDockerRestore(tx, { sandboxId, epoch }, generation, health);
+          if (publication === "unverified" || (sandbox.status === "starting" && publication !== "applied")) deny();
+          return { state: "ready" as const, epoch };
         },
         true,
+        false,
+        expectedLifecycleGeneration,
+        assertClaim,
       );
     },
-    prompt(actor: Actor, sandboxId: string, input: { requestId: string; text: string; conversationId?: string }) {
+    prompt(
+      actor: Actor,
+      sandboxId: string,
+      input: { requestId: string; text: string; conversationId?: string },
+      preparedLaunchEpoch?: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
+    ) {
       return admitted(
         actor,
         sandboxId,
@@ -200,6 +171,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             !["ready", "running"].includes(sandbox.status)
           )
             deny();
+          if (preparedLaunchEpoch !== undefined && preparedLaunchEpoch !== epoch) deny();
           const refused = await tx.query(
             "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
             [sandboxId, input.requestId],
@@ -220,7 +192,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             repositoryDir = manifest.request.repos?.[0]?.dir;
             if (
               !launch.result_enc &&
-              (manifest.promptId !== input.requestId ||
+              (preparedLaunchEpoch === undefined ||
+                manifest.promptId !== input.requestId ||
                 manifest.request?.prompt !== input.text ||
                 (input.conversationId !== plannedConversation &&
                   !(manifest.conversationId === undefined && input.conversationId === undefined)))
@@ -310,17 +283,12 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
               cwd: previous.rows.length ? previousCwd : repositoryDir ? `/home/user/${repositoryDir}` : "/home/user",
             },
           });
-          await tx.query(`update public.sandboxes set status='running' where id=$1 and status='ready'`, [sandboxId]);
           const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
-          const receipt = result(response.reply, queued.epoch, id);
+          const receipt = readDockerPromptReceipt(response.reply, queued.epoch, id);
           if (
-            typeof receipt.promptId !== "string" ||
-            !uuid.test(receipt.promptId) ||
-            typeof receipt.conversationId !== "string" ||
-            !uuid.test(receipt.conversationId) ||
-            !PROMPT_STATUSES.some((status) => status === receipt.status) ||
+            !receipt ||
             (input.conversationId !== undefined && receipt.conversationId !== input.conversationId) ||
             saved.length > 1 ||
             (saved.length === 1 && receipt.conversationId !== saved[0])
@@ -359,15 +327,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           return {
             state: "admitted" as const,
             epoch: queued.epoch,
-            receipt: {
-              promptId: receipt.promptId,
-              conversationId: receipt.conversationId,
-              status: receipt.status as (typeof PROMPT_STATUSES)[number],
-            },
+            receipt,
           };
         },
         false,
         true,
+        undefined,
+        assertClaim,
       );
     },
     journal(actor: Actor, sandboxId: string, input: { cursor?: string; limit?: number } = {}) {
