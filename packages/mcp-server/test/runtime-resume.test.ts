@@ -410,9 +410,10 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         scenario === "restore admission loss" ||
         scenario === "before ticket loss" ||
         scenario === "ticket commit loss"
-      : !["scoped grant loss", "restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario),
+      : !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
+    const boatTicketRecovery = provider === "boat" && scenario === "before ticket loss";
     const scoped = scenario === "scoped grant loss";
     const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
     const ambiguous = scenario === "ambiguous deferral claim loss";
@@ -524,6 +525,34 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         generation: String(before + 1),
         intent: true,
       });
+      if (boatTicketRecovery) {
+        if (preparations === 1)
+          return {
+            async start(_signal, _restore, confirmActivation) {
+              restores++;
+              await confirmActivation!();
+              await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+              throw Error("Claim lost after confirmed Boat activation");
+            },
+            async stop() {
+              throw Error("Unexpected inline stop");
+            },
+          };
+        return boatRuntimeResume({
+          sql: f.sql,
+          vault: createSqlVaultStore(f.sql),
+          key: ENCRYPTION_KEY,
+          modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
+          policy: {
+            async start(value) {
+              if (!value.ticketGuard) throw Error("Expected recovered bootstrap");
+              await value.activate?.(value.signal);
+              bootstraps++;
+              throw Error("Fixture ends at ticket issuance");
+            },
+          },
+        })(f.caller, sandbox);
+      }
       if (["restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario))
         return modalPlacement(f.caller, sandbox);
       return {
@@ -699,10 +728,28 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         handoffGeneration: () => Promise.reject(Error("A confirmed restore cannot advance generation again.")),
       };
       expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
-      await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+      if (boatTicketRecovery) {
+        const network = spyOn(globalThis, "fetch").mockImplementation((async () =>
+          Response.json({
+            ok: true,
+            sandbox: sdkSandbox({ id: "physical", state: "running", archiveAfter: undefined }),
+          })) as typeof fetch);
+        try {
+          await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+          expect(preparations).toBe(2);
+          expect(bootstraps).toBe(0);
+          expect(await hasTicket()).toBe(false);
+          expect(network).toHaveBeenCalledTimes(1);
+          expect(await read()).toMatchObject({ status: "stopping" });
+        } finally {
+          network.mockRestore();
+        }
+      } else {
+        await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+        expect(bootstraps).toBe(1);
+        expect(bootstrappedEpoch).toBe("2");
+      }
       expect(restores).toBe(1);
-      expect(bootstraps).toBe(1);
-      expect(bootstrappedEpoch).toBe("2");
     } else if (scenario === "ticket commit loss") {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(restores).toBe(1);
