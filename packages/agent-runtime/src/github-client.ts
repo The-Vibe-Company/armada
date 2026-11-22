@@ -178,7 +178,31 @@ function splitGitAlias(value: string) {
   return words;
 }
 
-function gitExecution(git: string, args: string[], env: NodeJS.ProcessEnv): "direct" | "redact" | "retry" {
+function canRetryPush(git: string, prefix: string[], operands: string[], env: NodeJS.ProcessEnv) {
+  if (operands.some((arg) => arg.length > 2 && "--recurse-submodules".startsWith(arg.split("=", 1)[0]!))) return false;
+  const config = Bun.spawnSync(
+    [
+      git,
+      ...prefix,
+      "config",
+      "--null",
+      "--get-regexp",
+      "^remote\\..*\\.(url|pushurl)$|^push\\.recursesubmodules$|^submodule\\.recurse$",
+    ],
+    { env: { ...env, GIT_CONFIG: undefined }, stderr: "ignore" },
+  );
+  if (!config.success) return config.exitCode === 1;
+  const destinations = new Set<string>();
+  for (const entry of config.stdout.toString().split("\0")) {
+    if (!entry) continue;
+    const key = entry.split("\n", 1)[0]!;
+    if (key === "push.recursesubmodules" || key === "submodule.recurse" || destinations.has(key)) return false;
+    destinations.add(key);
+  }
+  return true;
+}
+
+function gitExecution(git: string, args: string[], env: NodeJS.ProcessEnv) {
   const index = gitCommandIndex(args);
   let command = args[index];
   if (!command) return "direct";
@@ -190,9 +214,9 @@ function gitExecution(git: string, args: string[], env: NodeJS.ProcessEnv): "dir
   for (let depth = 0; depth < 16; depth++) {
     if (command === "credential") return "redact";
     if (names.has(command)) {
-      // A fetch that consumes refspecs from stdin cannot safely be replayed.
-      if (command === "fetch" && operands.includes("--stdin")) return "direct";
-      return ["clone", "fetch", "push"].includes(command) ? "retry" : "direct";
+      if (command === "fetch" && operands.some((arg) => arg.length > 2 && "--stdin".startsWith(arg))) return "direct";
+      if (command === "push") return canRetryPush(git, prefix, operands, env) ? "retry-push" : "direct";
+      return command === "clone" || command === "fetch" ? "retry" : "direct";
     }
     const alias = Bun.spawnSync([git, ...prefix, "config", "--get", `alias.${command}`], { env, stderr: "ignore" });
     if (!alias.success) return alias.exitCode === 1 ? "direct" : "redact";
@@ -337,10 +361,11 @@ export async function runGitHubClient(argv: string[]) {
     }
     if (mode === "git-run") {
       stage = "redaction";
-      if (git === "retry") {
+      if (git === "retry" || git === "retry-push") {
         return await retryGitHubAuthentication(
-          (writeStderr) => execute(executable, rest, env, redactor, undefined, writeStderr),
+          (writeStderr) => execute(executable, rest, { ...env, LC_ALL: "C" }, redactor, undefined, writeStderr),
           (bytes) => writeOutput(process.stderr, bytes),
+          git === "retry-push",
         );
       }
       return await execute(executable, rest, env, redactor);
