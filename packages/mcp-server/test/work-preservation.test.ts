@@ -2522,9 +2522,8 @@ test.each([
   firstPass = false;
   await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
   await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
-  expect(provider.get).toHaveBeenCalledTimes(
-    tombstone ? 0 : lostReply || scenario.includes("cleanup commit reply") ? 1 : 2,
-  );
+  const inspectionCount = lostReply || scenario.includes("cleanup commit reply") ? 1 : 2;
+  expect(provider.get).toHaveBeenCalledTimes(tombstone ? 0 : inspectionCount);
 
   expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   expect(
