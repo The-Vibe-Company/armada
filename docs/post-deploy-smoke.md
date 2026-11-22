@@ -503,12 +503,16 @@ merge helper. No defaults are changed: concurrent settings edits can intentional
 fail the probe rather than overwrite someone else's configuration.
 
 The clean launch omits both explicit skills and opt-out, then
-`default_skills_receipts` requires exactly the effective pins in both the launch
-and persisted status receipts, including matching versions, IDs, checksums and
-registry origin. Its returned snapshot ID must match the queried environment.
-The dirty worker supplies `skipSkillDefaults: true` and no explicit pins;
-`default_skills_opt_out_receipts` requires empty receipt arrays. This still runs
-normal work preservation/recovery checks.
+`default_skills_receipts` checks the exact effective pins, including versions,
+IDs, checksums and registry origin. For a full launch response it compares the
+launch and persisted status receipts and checks the returned snapshot ID. For a
+Modal admission receipt it verifies the sandbox in owner inventory filtered to
+the expected snapshot, then waits for setup to settle successfully and checks
+persisted receipts on a fresh status read. Lost acknowledgements recover by
+request key and also require successful setup before accepting the receipts.
+The dirty worker supplies `skipSkillDefaults: true` and no explicit pins. Its
+`default_skills_opt_out_receipts` check expects zero pins. Both workers still
+run their normal work preservation and recovery checks.
 
 If all defaults are empty, empty receipt evidence is still checked, but delivery
 steps emit explicit `no_default_pins_configured` SKIPs instead of claiming a
@@ -518,10 +522,10 @@ Nonempty defaults must be installable, including a working key for private pins:
 broken configured defaults fail rather than skip. Explicit template-pin probes
 opt out of defaults so their separate receipt checks remain isolated.
 
-Cost: three read-only policy calls per pair and two status reads, plus only the
-installs already implied by normal defaults. No policy rows, writes, new secrets,
-migrations or extra workers. Model/registry latency stays inside the shared
-35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
+Each pair adds three read-only policy calls. Full acknowledgements add two
+status reads. Admission receipts add owner inventory and bounded status
+observation for each worker. Installs follow normal defaults. Model and registry
+latency stays within the shared work and cleanup deadlines.
 
 ### Scoped Armada access
 

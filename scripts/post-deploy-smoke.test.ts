@@ -718,6 +718,9 @@ describe("preservation checks", () => {
       "none",
       "default_policy",
       "default_empty",
+      "default_admission",
+      "default_admission_wrong_golden",
+      "default_admission_setup_failed",
       "default_wrong_receipt",
       "default_opt_out_ignored",
       "default_wrong_golden",
@@ -741,6 +744,7 @@ describe("preservation checks", () => {
     ] as const) {
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
         const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
+        const defaultAdmission = fault.startsWith("default_admission");
         const scopes = fault === "scoped_pair" || fault === "scoped_parent_timeout";
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -771,11 +775,14 @@ describe("preservation checks", () => {
         let recoverySandboxId: string | undefined;
         const attemptedRecoveries = new Map<string, string>();
         let statusReady = false;
+        let recoverySetupPending = false;
 
         let sandboxId = "";
         const recoveryId = crypto.randomUUID();
         const otherId = crypto.randomUUID();
         let recoveryReads = 0;
+        let skillStatusReads = 0;
+        let observedDefaultGolden = false;
         const fake = fixture((call) => {
           if (call.path === "skills/defaults/get") {
             expect(call.body.org).toBe(defaultOrg);
@@ -975,6 +982,8 @@ describe("preservation checks", () => {
             sandboxId = crypto.randomUUID();
             launches++;
             recoveryReads = 0;
+            skillStatusReads = 0;
+            observedDefaultGolden = false;
             if (scopes) {
               expect(call.body.model).toBe(selected.model);
               expect(call.body.credentialId).toBe(baselineScopeAccount);
@@ -994,13 +1003,14 @@ describe("preservation checks", () => {
               recoverySandboxId = sandboxId;
               attemptedRecoveries.set(recoveryKey, sandboxId);
               statusReady = false;
+              recoverySetupPending = fault === "default_policy";
               if (fault === "default_policy") throw new DOMException("timeout", "TimeoutError");
               return Response.json(
                 { error: { code: "outcome_unknown" } },
                 { status: 503, headers: { "x-request-id": recoveryId } },
               );
             }
-            if (fault === "none") return json({ sandbox: { id: sandboxId, status: "starting" } });
+            if (fault === "none" || defaultAdmission) return json({ sandbox: { id: sandboxId, status: "starting" } });
             return json({
               sandbox: {
                 id: sandboxId,
@@ -1020,6 +1030,18 @@ describe("preservation checks", () => {
               ...(defaults ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } } : {}),
             });
           }
+          if (defaultAdmission && call.path === "sandbox/list" && call.body.owner === "me" && !call.body.externalRef) {
+            expect(call.body.golden).toBe(defaultGolden);
+            observedDefaultGolden = true;
+            return json({
+              sandboxes:
+                fault === "default_admission_wrong_golden"
+                  ? []
+                  : [{ id: sandboxId, provider, harness: selected.harness, status: "ready", expiresAt: null }],
+              page: 1,
+              hasMore: false,
+            });
+          }
           if (fault === "none" && call.path === "sandbox/list" && call.body.owner === "me")
             return json({
               sandboxes: [{ id: sandboxId, provider, harness: selected.harness, status: "ready", expiresAt: null }],
@@ -1031,10 +1053,57 @@ describe("preservation checks", () => {
             statusReady = true;
             return json({ id: sandboxId, externalRef: recoveryKey, status: "starting", prompt: null, skills: [] });
           }
+          if (
+            call.path === "sandbox/status" &&
+            call.body.id === recoverySandboxId &&
+            recoverySetupPending &&
+            !stopping
+          ) {
+            recoverySetupPending = false;
+            return json({
+              id: sandboxId,
+              externalRef: recoveryKey,
+              status: "ready",
+              prompt: null,
+              skills: receipts(launches === 2 ? [] : pins),
+              settled: false,
+              statusMessage: "Modal launch setup is still in progress.",
+            });
+          }
+          if (call.path === "sandbox/status" && observedDefaultGolden && !stopping && ++skillStatusReads === 1)
+            return json({
+              id: sandboxId,
+              status: "ready",
+              prompt: null,
+              skills: [],
+              settled: false,
+              statusMessage: "Modal launch setup is still in progress.",
+            });
+          if (
+            call.path === "sandbox/status" &&
+            fault === "default_admission" &&
+            observedDefaultGolden &&
+            !stopping &&
+            skillStatusReads === 2
+          )
+            return json({
+              id: sandboxId,
+              status: "ready",
+              prompt: null,
+              skills: [],
+              settled: true,
+              statusMessage: null,
+            });
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
               id: sandboxId,
+              ...(defaultAdmission || fault === "default_policy"
+                ? {
+                    settled: true,
+                    statusMessage: fault === "default_admission_setup_failed" ? "Modal launch setup failed." : null,
+                  }
+                : {}),
               harness: selected.harness,
               expiresAt: null,
               externalRef: recoveryKey,
@@ -1061,6 +1130,7 @@ describe("preservation checks", () => {
                 : {}),
               ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
             });
+          if (defaultAdmission && call.path === "sandbox/exec") expect(skillStatusReads).toBeGreaterThanOrEqual(3);
           if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty")) {
             const command = String(call.body.command);
             expect(commitCommands.has(command)).toBe(false);
@@ -1108,7 +1178,7 @@ describe("preservation checks", () => {
           scopeFlag
             ? ["--work-preservation", "--scoped-access", ...(defaults ? ["--default-skills"] : [])]
             : defaults
-              ? ["--work-preservation", "--default-skills"]
+              ? ["--work-preservation", "--default-skills", ...(defaultAdmission ? ["--golden-runtime"] : [])]
               : ["--work-preservation"],
           {
             ...fake.io,
@@ -1123,6 +1193,7 @@ describe("preservation checks", () => {
           "none",
           "default_policy",
           "default_empty",
+          "default_admission",
           "scoped_pair",
           "scoped_parent_timeout",
           "scoped_unsupported",
@@ -1147,7 +1218,7 @@ describe("preservation checks", () => {
             .filter((line) => line.step === "launch");
           if (success)
             expect(launch).toEqual(
-              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 1_000 })),
+              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 2_000 })),
             );
           else
             expect(launch[0]).toMatchObject({
@@ -1240,11 +1311,13 @@ describe("preservation checks", () => {
               code:
                 fault === "recovery_wakes"
                   ? "provider_not_stopped"
-                  : fault === "default_wrong_golden"
+                  : fault === "default_wrong_golden" || fault === "default_admission_setup_failed"
                     ? "invalid_response"
-                    : fault.startsWith("default_")
-                      ? "invalid_receipt"
-                      : "preservation_failed",
+                    : fault === "default_admission_wrong_golden"
+                      ? "list_status_mismatch"
+                      : fault.startsWith("default_")
+                        ? "invalid_receipt"
+                        : "preservation_failed",
             }),
           );
       });
