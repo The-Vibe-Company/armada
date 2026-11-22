@@ -1787,7 +1787,7 @@ export function createSandboxLifecycle(
           boat_runtime: boolean;
           runtime_transport: string | null;
           lifecycle_generation: number;
-          expires_at: string;
+          expiry_epoch: string;
           status: string;
           status_reason: string | null;
           task_prompt_id: string | null;
@@ -1842,7 +1842,7 @@ export function createSandboxLifecycle(
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
-        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at::text,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
+        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
           (s.status='stopping' and s.stop_requested_at is not null and exists(
@@ -1937,7 +1937,8 @@ export function createSandboxLifecycle(
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let stoppedAt: Date | undefined;
-      const expired = new Date(row.expires_at).getTime() <= now();
+      const logicalDeadline = Number(row.expiry_epoch) * 1000;
+      const expired = logicalDeadline <= now();
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
@@ -2190,7 +2191,8 @@ export function createSandboxLifecycle(
           (info.state === "ready" || info.state === "running") &&
           !physicalExit &&
           Number.isFinite(physicalDeadline) &&
-          physicalDeadline < Date.parse(row.expires_at) + SANDBOX_STOP_MARGIN_SECONDS * 1000;
+          Number.isFinite(logicalDeadline) &&
+          physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
@@ -2245,7 +2247,7 @@ export function createSandboxLifecycle(
                   and status in ('starting','ready','running','stopping','failed')
                   and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
                   and (not $7 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
-                    and deleted_at is null and provider_sandbox_id=$8 and expires_at=$9::timestamptz))
+                    and deleted_at is null and provider_sandbox_id=$8 and extract(epoch from expires_at)=$9::numeric))
                   and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
                     and ${mergedWorkProof("sandboxes")}))
                   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
@@ -2265,7 +2267,7 @@ export function createSandboxLifecycle(
                   workMerged && idleStop,
                   shortBoatDeadline,
                   row.provider_sandbox_id,
-                  row.expires_at,
+                  row.expiry_epoch,
                 ],
               );
               if (!current) return false;
