@@ -4,7 +4,7 @@ This is the Step 1 design note for [#2733](https://github.com/The-Vibe-Company/a
 
 ## What runs today
 
-[Server config](../packages/mcp-server/src/config.ts) defaults `ARMADA_BOAT_AGENT_PATH` to `native` and `ARMADA_MODAL_AGENT_PATH` to `runtime`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
+Modal sandbox launches use the Armada runtime and require `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation.
 
 | Provider | Harness | With repository defaults | Enrolled replacement and harness-specific evidence still required |
 | --- | --- | --- | --- |
@@ -175,7 +175,7 @@ Counts are physical lines, including comments and blanks, at baseline commit `4c
 | [`packages/provider-modal/src/grants.ts`](../packages/provider-modal/src/grants.ts) | 42 |
 | [`packages/provider-modal/src/ingest.ts`](../packages/provider-modal/src/ingest.ts) | 91 |
 | [`packages/provider-modal/src/transport.ts`](../packages/provider-modal/src/transport.ts) | 107 |
-| [`packages/mcp-server/src/modal-event-usage.ts`](../packages/mcp-server/src/modal-event-usage.ts) | 46 |
+| [`packages/mcp-server/src/modal-event-usage.ts`](https://github.com/The-Vibe-Company/armada/blob/aed5e165e60281c67ea320f5adee10296b993b34/packages/mcp-server/src/modal-event-usage.ts) | 46 |
 | [`packages/mcp-server/src/native-idle.ts`](../packages/mcp-server/src/native-idle.ts) | 57 |
 | [`packages/mcp-server/src/native-webhook-prompts.ts`](../packages/mcp-server/src/native-webhook-prompts.ts) | 227 |
 | [`packages/mcp-server/src/subscription-boat.ts`](../packages/mcp-server/src/subscription-boat.ts) | 46 |
@@ -235,7 +235,7 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`mcp-server/launch-credentials.ts:1–323`](../packages/mcp-server/src/launch-credentials.ts#L1-L323) | 323 | Native auth admission/hydration and redaction. Retain shared account resolution |
 | [`mcp-server/model-auth.ts:1–573`](../packages/mcp-server/src/model-auth.ts#L1-L573) | 573 | Native observation, publishing and binding lookups. Retain account import and enrolled publication |
 | [`mcp-server/subscription-migration.ts:1–237`](../packages/mcp-server/src/subscription-migration.ts#L1-L237) | 237 | Native source/target migration. Retain account state and encrypted storage |
-| [`mcp-server/modal-launch-environment.ts:1–181`](../packages/mcp-server/src/modal-launch-environment.ts#L1-L181) | 181 | Native harness environment and pinned credential delivery |
+| [`mcp-server/modal-launch-environment.ts:1–181`](https://github.com/The-Vibe-Company/armada/blob/aed5e165e60281c67ea320f5adee10296b993b34/packages/mcp-server/src/modal-launch-environment.ts#L1-L181) | 181 | Native harness environment and pinned credential delivery |
 | [`mcp-server/modal-integration.ts:1–320`](../packages/mcp-server/src/modal-integration.ts#L1-L320) | 320 | Runner ingest HTTP route, grants and event projection. Keep provider binding, storage and host assembly |
 | [`mcp-server/sandbox-armada-access.ts:1–175`](../packages/mcp-server/src/sandbox-armada-access.ts#L1-L175) | 175 | Native delegated access bootstrap and generation checks. Preserve scoped access via its approved replacement |
 | [`mcp-server/sandbox-access-child-launch.ts:1–216`](../packages/mcp-server/src/sandbox-access-child-launch.ts#L1-L216) | 216 | Native credential hooks on scoped child launch |

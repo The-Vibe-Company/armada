@@ -4,7 +4,6 @@ import { ServerConfigError } from "./server-config-error.ts";
 
 export interface ServerConfig {
   boatAgentPath: "native" | "runtime";
-  modalAgentPath: "native" | "runtime";
   sandboxExtensionHeadroomSeconds: number;
   port: number;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
@@ -129,13 +128,9 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "native";
   if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
     throw new ServerConfigError("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
-  const modalAgentPath = env.ARMADA_MODAL_AGENT_PATH ?? "runtime";
-  if (modalAgentPath !== "native" && modalAgentPath !== "runtime")
-    throw new ServerConfigError("ARMADA_MODAL_AGENT_PATH must be native or runtime.");
-  if (modalAgentPath === "runtime" && (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim()))
-    throw new ServerConfigError(
-      "ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.",
-    );
+  if (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim())
+    throw new ServerConfigError("Modal requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.");
+
   const providers = (env.ARMADA_AUTH_PROVIDERS ?? "")
     .split(",")
     .map((name) => name.trim())
@@ -150,7 +145,6 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
 
   return {
     boatAgentPath,
-    modalAgentPath,
     sandboxExtensionHeadroomSeconds,
     port,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",

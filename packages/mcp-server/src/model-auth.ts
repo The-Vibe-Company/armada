@@ -8,8 +8,6 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
-import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
-import { scopeKey } from "@armada/provider-modal";
 import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
 import { NativeOutputPending } from "./event-pagination.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
@@ -405,97 +403,6 @@ export function createModelAuthOwnership(
       const secrets = await this.capture(provider, providerId, caller);
       if (provider.id === "boat" && secrets.length > 0 && !(broker && (await serverBackedSource(provider, providerId))))
         await sshNativeAuthAdmission(provider, providerId, true);
-    },
-    async publishFromModal(scope: Scope, claims: IngestGrantClaims, authJson: string, expectedRevision: number) {
-      const result = await sql.query<{
-        id: string;
-        credential_id: string;
-        credential_version: number;
-        current_version: number | null;
-        current_status: string | null;
-        expires_at: string | Date | null;
-      }>(
-        `select s.id,s.credential_id,s.credential_version,c.version as current_version,c.status as current_status,c.expires_at
-         from public.sandboxes s left join public.credentials c on c.id=s.credential_id
-         join public.goldens g on g.id=s.golden_id
-         where s.provider='modal' and s.provider_sandbox_id=$1 and s.org_id=$2::uuid and s.owner_id=$3::uuid
-         and s.deleted_at is null and s.credential_id is not null and s.credential_version is not null
-         and g.modal_workspace=$4 and g.modal_environment=$5 and g.modal_app_id=$6`,
-        [
-          claims.sandboxId,
-          scope.orgId,
-          scope.userId,
-          scope.binding.workspace,
-          scope.binding.environment,
-          scope.binding.appId,
-        ],
-      );
-      if (result.rows.length !== 1 || !result.rows[0])
-        throw new VaultError("not_found", "No native publication binding.");
-      const row = result.rows[0],
-        actor: GoldenActor = { userId: scope.userId, orgId: scope.orgId, role: "member" };
-      const source = { accountId: row.credential_id, version: row.credential_version, authJson, sandboxId: row.id };
-      if (
-        row.current_version !== row.credential_version ||
-        row.current_status !== "active" ||
-        (row.expires_at !== null &&
-          new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now())
-      ) {
-        await state.observeRedaction({
-          ...source,
-          authorize: async (tx) => {
-            const member = await tx.query(`select 1 from public.members where org_id=$1 and user_id=$2 for share`, [
-              scope.orgId,
-              scope.userId,
-            ]);
-            if (!member.rows.length) throw new VaultError("forbidden", "Native publication membership revoked.");
-            const permitted = await tx.query(
-              `select s.id from public.sandboxes s
-             join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-             join public.modal_machines native on native.scope=$1 and native.id=s.provider_sandbox_id
-               and native.org_id=s.org_id and native.owner_id=s.owner_id and native.record->>'generation'=$2
-             where s.id=$3::uuid and s.credential_id=$4::uuid and s.credential_version=$5 and s.deleted_at is null
-             for update of s,native for share of m`,
-              [scopeKey(scope), claims.generation, row.id, row.credential_id, row.credential_version],
-            );
-            if (!permitted.rows.length || claims.expiresAt <= now())
-              throw new VaultError("forbidden", "Native cleanup source is no longer authorized.");
-          },
-        });
-        // The revoked/replaced binding cannot accept usable auth state. ACK only
-        // permits private checkpoint scrubbing; the runtime has registered these
-        // leaves before emission and sanitizes its journal before snapshotting.
-        return { authRevision: expectedRevision, committed: true, discarded: true };
-      }
-      try {
-        const revision = await state.publish({
-          ...source,
-          actor,
-          generation: `modal:${claims.generation}`,
-          expectedRevision,
-          verifySource: async (tx) => {
-            const pinned = await tx.query(
-              "select id from public.sandboxes where id=$1::uuid and credential_id=$2::uuid and credential_version=$3 and deleted_at is null for update",
-              [row.id, row.credential_id, row.credential_version],
-            );
-            if (!pinned.rows[0]) throw new VaultError("forbidden", "Native publication account binding changed.");
-            const current = await tx.query(
-              `select id from public.modal_machines where scope=$1 and id=$2 and org_id=$3::uuid and owner_id=$4::uuid
-               and record->>'generation'=$5 for update`,
-              [scopeKey(scope), claims.sandboxId, scope.orgId, scope.userId, claims.generation],
-            );
-            if (!current.rows[0] || claims.expiresAt <= now())
-              throw new VaultError("forbidden", "Native publication source generation expired.");
-          },
-        });
-        if (broker && (await broker.enrolled(row.credential_id, row.credential_version)))
-          return { authRevision: revision, committed: true, discarded: true };
-        return { authRevision: revision, committed: true };
-      } catch (error) {
-        if (!(error instanceof VaultError) || error.code !== "conflict") throw error;
-        const revision = await state.publicationRevision(actor, row.credential_id, row.credential_version, row.id);
-        return { authRevision: revision, committed: false };
-      }
     },
     async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false) {
       const result = await sql.query<{

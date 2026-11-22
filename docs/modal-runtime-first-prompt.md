@@ -634,11 +634,10 @@ owned. The default-on release cycle and production checklist gate tunnel deletio
 
 ## Ordinary launch default
 
-Set `ARMADA_MODAL_DIALOUT=1` and point `ARMADA_MODAL_RUNTIME_MANIFEST` to the
-matching artifact manifest before releasing the default change. Leave
-`ARMADA_MODAL_AGENT_PATH` unset or set it to `runtime`. Incomplete or invalid
-runtime configuration fails server startup. The coordinator validates staging
-before releasing to production.
+Modal sandbox launches require the Armada runtime. Set `ARMADA_MODAL_DIALOUT=1`,
+point `ARMADA_MODAL_RUNTIME_MANIFEST` to the matching artifact manifest, and
+set `ARMADA_RUNTIME_ARTIFACT_DIR` to the installed artifact directory.
+Incomplete or invalid runtime configuration fails server startup.
 
 The shared core admission policy selects the compute-only Modal host, private
 model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
@@ -652,7 +651,7 @@ Fresh launch receipts expose `runtime.kind/epoch` and the actual persisted Modal
 `runtimeTransport:dialout`, including ordinary MCP and template receipts. Existing
 completed ordinary/native request receipts remain historical and unchanged after
 a default switch; replay is not a new launch. Existing sandboxes keep their frozen
-transport, so changing the default does not reroute active/stopped native rows.
+transport. The coordinator drained the provider-run Modal fleet before retirement.
 
 After coordinator-controlled staging activation, add `--ordinary` to the same
 single-allocation smoke:
@@ -667,11 +666,6 @@ selection. It still requires actual enrolled/immutable-routing receipts and all
 existing archive/session/epoch/checkpoint/tool/cost/disk proofs. New feature inputs,
 credentials, configuration mutations or artifact publication are not needed.
 Use matching account/harness flags. Unknown allocation or send is not retried.
-
-For the default-on release cycle, the coordinator can set
-`ARMADA_MODAL_AGENT_PATH=native` to roll back future launches. Keep dial-out,
-artifacts and resume/control services enabled for enrolled rows. Keep native
-control for pre-cutover rows until they drain.
 
 Verify ordinary and explicit paths across supported harness/account variants,
 templates/routines, busy-turn controls, GitHub/MCP/skills/readables, idle and empty

@@ -6,8 +6,6 @@ import {
   decryptSecret,
   EncryptionKeyError,
   type ModalBinding,
-  type Provider,
-  ProviderError,
   type ProviderTarget,
   parseModalTokenPair,
   resolveModalTokens,
@@ -17,8 +15,6 @@ import {
 import {
   type ComposedModalOptions,
   createComposedModalProvider,
-  createGenerationGrants,
-  createModalIngestHandler,
   createModalMachineInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
@@ -31,25 +27,18 @@ import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import { createModalLaunchCleanupJob, createModalLaunchJob } from "./jobs/modal-launch.ts";
-import type { GitHubLaunchOptions } from "./launch-credentials.ts";
-import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import {
   type createModalArtifactCache,
   type ModalArtifactBinding,
   modalArtifactFailure,
 } from "./modal-artifact-cache.ts";
-import { projectModalEventUsage } from "./modal-event-usage.ts";
-import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { boundedModalSql, createModalReaper } from "./modal-reaper.ts";
-import { createModelAuthOwnership } from "./model-auth.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
-import { STRICT_NATIVE_DRAIN_STOP } from "./sandbox-lifecycle.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
-export const MODAL_INGEST_PATH = "/api/internal/modal/events";
 
 /** Stable across deployments; distinct from encryption and every other signing purpose. */
 function runnerKey(value: string | undefined): Uint8Array {
@@ -63,66 +52,9 @@ export async function createModalIntegration(options: {
   vault: CredentialReader;
   encryptionKey: string | undefined;
   publicUrl: string;
-  github?: GitHubLaunchOptions;
-  /** Root523 lifecycle: called by the actual adapter after ready/restore, outside its lease. */
-  resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
-  beforeResume?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
-  beforePrompt?: (provider: Provider, sandboxId: string, actor: { userId: string; orgId: string }) => Promise<void>;
-  // MCP lifecycle belongs to #523 post-init/beforePrompt/beforeSnapshot, never bootstrap.
 }) {
   const key = runnerKey(options.encryptionKey);
   const artifact = { ...MODAL_IMAGE_LOCK, ...(await loadEmbeddedRunnerArtifact()) };
-  const ingestUrl = new URL(MODAL_INGEST_PATH, options.publicUrl).href;
-  const modelAuth = createModelAuthOwnership(options.sql, options.encryptionKey, undefined, undefined, {
-    origin: options.publicUrl,
-  });
-  const ingest = createModalIngestHandler({
-    projectEvents: (tx, scope, claims, events) => projectModalEventUsage(tx, scope, claims.sandboxId, events),
-    publishNativeAuth: (scope, claims, raw, revision) => modelAuth.publishFromModal(scope, claims, raw, revision),
-    sql: options.sql,
-    async verifyGrant(token) {
-      if (token.length > 4096) throw new Error("Invalid runner grant.");
-      const body = JSON.parse(Buffer.from(token.split(".")[0] ?? "", "base64url").toString());
-      if (typeof body.binding !== "string" || !/^[a-f0-9]{64}$/.test(body.binding))
-        throw new Error("Invalid runner scope.");
-      const result = await options.sql.query<{ context: Scope }>(
-        "select context from public.modal_server_scopes where scope=$1",
-        [body.binding],
-      );
-      const scope = result.rows[0]?.context;
-      if (!scope) throw new Error("Unknown runner scope.");
-      const verified = await createGenerationGrants(key, scope).verifyGrant(token);
-      // Org scope hashes deliberately omit userId. Its first registrant is not the event actor.
-      // Resolve the owner only after authenticating the exact sandbox/generation grant.
-      const machines = await options.sql.query<{
-        org_id: string;
-        owner_id: string;
-        visibility: Scope["visibility"];
-        record: { launchUserId?: string; generation: number };
-      }>("select org_id,owner_id,visibility,record from public.modal_machines where scope=$1 and id=$2 and org_id=$3", [
-        scopeKey(scope),
-        verified.claims.sandboxId,
-        scope.orgId,
-      ]);
-      const machine = machines.rows[0];
-      if (
-        !machine ||
-        String(machine.record.generation) !== verified.claims.generation ||
-        (machine.record.launchUserId !== undefined && machine.record.launchUserId !== machine.owner_id)
-      )
-        throw new VaultError("forbidden", "Runner machine ownership or generation does not match.");
-      const actualScope: Scope = {
-        ...scope,
-        orgId: machine.org_id,
-        userId: machine.owner_id,
-        visibility: machine.visibility,
-      };
-      if (scopeKey(actualScope) !== scopeKey(scope))
-        throw new VaultError("forbidden", "Runner machine scope does not match.");
-      // appendModalEvents rechecks this actual owner's membership and generation under its SQL lock.
-      return { claims: verified.claims, scope: actualScope };
-    },
-  });
   async function managementAuthority(
     target: ProviderTarget,
     caller: { userId: string },
@@ -253,12 +185,12 @@ export async function createModalIntegration(options: {
     if (!storedReads)
       await options.sql.query(
         "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
-        [scopeKey(scope), JSON.stringify({ ...scope, cleanup: undefined })],
+        [scopeKey(scope), JSON.stringify(scope)],
       );
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: ComposedModalOptions = {
-      ...(context.target.runtimeTransport === "dialout" ? { commonRuntime: true as const } : {}),
+      commonRuntime: true,
       measure: measureProviderPhase,
       storedReads,
       sql: options.sql,
@@ -272,47 +204,11 @@ export async function createModalIntegration(options: {
       ...tokens,
       appName,
       signingKey: key,
-      ingestUrl,
+      ingestUrl: options.publicUrl,
       artifact,
-      ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
-      async beforeResume(provider, sandboxId) {
-        const blocked = await options.sql.query(
-          `select 1 from public.sandboxes s
-           where s.org_id=$1 and s.provider='modal' and s.provider_sandbox_id=$2
-             and (s.native_drain_pending or ${STRICT_NATIVE_DRAIN_STOP})`,
-          [scope.orgId, sandboxId],
-        );
-        if (blocked.rows.length)
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            message: "Native drain has reserved this sandbox for preservation and deletion.",
-            retryable: false,
-          });
-        await options.beforeResume?.(provider, sandboxId, {
-          userId: context.caller.userId,
-          orgId: scope.orgId,
-        });
+      async resolveHarnessEnvironment() {
+        throw new VaultError("forbidden", "Modal sandboxes require Armada runtime enrolment.");
       },
-      ...(options.beforePrompt
-        ? {
-            beforePrompt: (provider, sandboxId) =>
-              options.beforePrompt!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
-      resolveHarnessEnvironment: modalLaunchEnvironment({
-        modelAuth,
-        sql: options.sql,
-        vault: options.vault,
-        encryptionKey: options.encryptionKey,
-        scope,
-        scopeKey: scopeKey(scope),
-        callerUserId: context.caller.userId,
-        ...(options.github ? { github: options.github } : {}),
-      }),
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
     if (storedReads) return createComposedModalProvider(composed);
@@ -506,12 +402,7 @@ export async function createModalIntegration(options: {
         { target, caller, credentialScope: tokens.scope },
         true,
       );
-      const provider =
-        target.runtimeTransport === "dialout"
-          ? await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller)
-          : target.id
-            ? observeNativeFirstToken(host, target.id, options.sql)
-            : host;
+      const provider = await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller);
       // Do not let a stored observation adapter accidentally drive admission.
       const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);
       return new Proxy(provider, {
@@ -527,6 +418,5 @@ export async function createModalIntegration(options: {
     },
     modalTokensFor,
     goldenTarget,
-    route: async (request: Request) => (new URL(request.url).pathname === MODAL_INGEST_PATH ? ingest(request) : null),
   };
 }

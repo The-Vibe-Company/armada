@@ -170,19 +170,18 @@ test("the first resume of a sandbox launched before measurement stays a resume",
   expect((await owner.sandboxes.launchTiming!(sandbox.id))?.activation).toBe("3");
 });
 
-// #2560: native Boat/Modal output reaches the server only through provider event reads, never the runtime upload.
-test("native Boat and Modal event reads record first_token per activation at the event's own time", async () => {
+// #2560: native Boat output reaches the server only through provider event reads, never the runtime upload.
+test("native Boat event reads record first_token per activation at the event's own time", async () => {
   const { db, people } = await database();
   const sql: Sql = { query: (q, v) => db.query(q, v) };
   const golden = (
     await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
   ).rows[0]!;
-  // The seeded golden is Boat; the Modal case exercises the Modal registry route with that sandbox identity.
-  const insert = (provider: "boat" | "modal") =>
+  const insert = () =>
     createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
       provider: "boat",
-      providerSandboxId: `physical-${provider}`,
+      providerSandboxId: "physical-boat",
       goldenId: golden.id,
       orgId: people.org,
       ownerId: people.owner,
@@ -200,8 +199,6 @@ test("native Boat and Modal event reads record first_token per activation at the
     vault: createSqlVaultStore(sql),
     encryptionKey: ENCRYPTION_KEY,
     providerFor: () => native("boat"),
-    modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
-    modalProviderFor: () => ({ provider: native("modal") }),
   });
   const firstToken = async (id: string) =>
     (
@@ -212,58 +209,56 @@ test("native Boat and Modal event reads record first_token per activation at the
     ).rows.map((row) => `${row.activation}:${new Date(row.at).getTime()}`);
   const message = (at: number, extra: Partial<AgentEvent> = {}) =>
     ({ id: `e${at}`, at, kind: "message", text: "hi", partial: false, tools: [], ...extra }) as AgentEvent;
-  for (const provider of ["boat", "modal"] as const) {
-    const sandbox = await insert(provider);
-    const target: ProviderTarget = {
-      id: sandbox.id,
-      provider,
-      orgId: people.org,
-      visibility: "org",
-      modal: provider === "modal" ? { workspace: "w", environment: "main", app: "armada" } : null,
-    } as ProviderTarget;
-    // The launch was accepted an hour ago, so its output predates the resume below.
-    const accepted = Date.parse(
-      (
-        await db.query<{ at: string }>(
-          "update sandbox_launch_stages set at=at-interval '1 hour' where sandbox_id=$1 and stage='accepted' returning at::text",
-          [sandbox.id],
-        )
-      ).rows[0]!.at,
-    );
-    const read = async () =>
-      (await registry.resolve(target, { userId: people.owner })).events({ sandboxId: sandbox.providerSandboxId });
-    // Prompt echoes, tool results and retracted output are not model output.
-    events = [
-      { id: "p", at: accepted + 1000, kind: "prompt", text: "go", status: "running" } as AgentEvent,
-      message(accepted + 1500, { responseKind: "tool_result" }),
-      message(accepted + 1700, { retracted: true }),
-    ];
-    expect((await read()).events).toBe(events);
-    expect(await firstToken(sandbox.id)).toEqual([]);
-    events = [message(accepted + 3000), message(accepted + 2000)];
-    await read();
-    events = [message(accepted + 1800)];
-    await read();
-    expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
-    // A resume: rereading the launch's history never dates the new activation.
-    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
-    await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
-    await read();
-    expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
-    // The resume was accepted half an hour ago; its output follows it.
-    const resumedAt = Date.parse(
-      (
-        await db.query<{ at: string }>(
-          "update sandbox_launch_stages set at=at-interval '30 minutes' where sandbox_id=$1 and activation=2 and stage='accepted' returning at::text",
-          [sandbox.id],
-        )
-      ).rows[0]!.at,
-    );
-    const resumed = resumedAt + 1000;
-    events = [message(accepted + 1800), message(resumed)];
-    await read();
-    expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`, `2:${resumed}`]);
-  }
+  const sandbox = await insert();
+  const target: ProviderTarget = {
+    id: sandbox.id,
+    provider: "boat",
+    orgId: people.org,
+    visibility: "org",
+    modal: null,
+  } as ProviderTarget;
+  // The launch was accepted an hour ago, so its output predates the resume below.
+  const accepted = Date.parse(
+    (
+      await db.query<{ at: string }>(
+        "update sandbox_launch_stages set at=at-interval '1 hour' where sandbox_id=$1 and stage='accepted' returning at::text",
+        [sandbox.id],
+      )
+    ).rows[0]!.at,
+  );
+  const read = async () =>
+    (await registry.resolve(target, { userId: people.owner })).events({ sandboxId: sandbox.providerSandboxId });
+  // Prompt echoes, tool results and retracted output are not model output.
+  events = [
+    { id: "p", at: accepted + 1000, kind: "prompt", text: "go", status: "running" } as AgentEvent,
+    message(accepted + 1500, { responseKind: "tool_result" }),
+    message(accepted + 1700, { retracted: true }),
+  ];
+  expect((await read()).events).toBe(events);
+  expect(await firstToken(sandbox.id)).toEqual([]);
+  events = [message(accepted + 3000), message(accepted + 2000)];
+  await read();
+  events = [message(accepted + 1800)];
+  await read();
+  expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
+  // A resume: rereading the launch's history never dates the new activation.
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
+  await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [sandbox.id]);
+  await read();
+  expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`]);
+  // The resume was accepted half an hour ago; its output follows it.
+  const resumedAt = Date.parse(
+    (
+      await db.query<{ at: string }>(
+        "update sandbox_launch_stages set at=at-interval '30 minutes' where sandbox_id=$1 and activation=2 and stage='accepted' returning at::text",
+        [sandbox.id],
+      )
+    ).rows[0]!.at,
+  );
+  const resumed = resumedAt + 1000;
+  events = [message(accepted + 1800), message(resumed)];
+  await read();
+  expect(await firstToken(sandbox.id)).toEqual([`1:${accepted + 1800}`, `2:${resumed}`]);
   // A failed record never fails the read it observes.
   const broken = providerRegistry({
     launchStageSql: {

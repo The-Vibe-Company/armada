@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { configFromEnv, dashboardOrigin } from "../src/config.ts";
 import { readStartupConfiguration } from "../src/startup-configuration.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -22,34 +25,15 @@ describe("config", () => {
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
       expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
   });
-  test("Modal defaults to runtime when its prerequisites are configured", () => {
-    expect(configFromEnv(ENV).modalAgentPath).toBe("runtime");
-  });
-  test("Modal accepts an explicit native rollback without runtime prerequisites", () => {
-    expect(
-      configFromEnv({
-        ...ENV,
-        ARMADA_MODAL_AGENT_PATH: "native",
-        ARMADA_MODAL_DIALOUT: undefined,
-        ARMADA_MODAL_RUNTIME_MANIFEST: undefined,
-      }).modalAgentPath,
-    ).toBe("native");
-  });
-  test("Modal rejects invalid selector values", () => {
-    for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
-      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: mode })).toThrow("ARMADA_MODAL_AGENT_PATH");
-  });
-  test("Modal runtime startup requires dial-out and a manifest", () => {
-    for (const path of [undefined, "runtime"]) {
-      for (const missing of [
-        { ARMADA_MODAL_DIALOUT: undefined },
-        { ARMADA_MODAL_RUNTIME_MANIFEST: undefined },
-        { ARMADA_MODAL_RUNTIME_MANIFEST: " " },
-      ]) {
-        expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: path, ...missing })).toThrow(
-          /ARMADA_MODAL_AGENT_PATH.*ARMADA_MODAL_DIALOUT=1.*ARMADA_MODAL_RUNTIME_MANIFEST/,
-        );
-      }
+  test("Modal startup requires dial-out and a manifest", () => {
+    for (const missing of [
+      { ARMADA_MODAL_DIALOUT: undefined },
+      { ARMADA_MODAL_RUNTIME_MANIFEST: undefined },
+      { ARMADA_MODAL_RUNTIME_MANIFEST: " " },
+    ]) {
+      expect(() => configFromEnv({ ...ENV, ...missing })).toThrow(
+        /ARMADA_MODAL_DIALOUT=1.*ARMADA_MODAL_RUNTIME_MANIFEST/,
+      );
     }
   });
   test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
@@ -169,57 +153,62 @@ test.each([
 test.each([
   ["ARMADA_BOAT_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "runtime" }],
   ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_MODAL_DIALOUT: "1" }],
-  ["ARMADA_DOCKER_RUNTIME_MANIFEST", { ARMADA_DOCKER_HOSTS: "1", ARMADA_DOCKER_PLACEMENT: "1" }],
 ] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
   await expect(
     readStartupConfiguration({
       ...ENV,
-      ARMADA_MODAL_AGENT_PATH: "native",
-      ARMADA_MODAL_DIALOUT: undefined,
       ...settings,
       [name]: "/nonexistent/manifest.json",
     }),
   ).rejects.toThrow(name);
 });
 
-test("startup checks PostgreSQL client URL syntax without connecting", async () => {
-  const databaseUrl = "postgres://user:%zz@example.com/db";
-  await expect(
-    readStartupConfiguration({
-      ...ENV,
-      ARMADA_MODAL_DIALOUT: undefined,
-      ARMADA_MODAL_AGENT_PATH: "native",
-      ARMADA_DATABASE_URL: databaseUrl,
-    }),
-  ).rejects.toThrow("ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.");
-});
-
-test("native startup accepts a sealed runtime artifact directory when dial-out is disabled", async () => {
-  const { config, sql } = await readStartupConfiguration({
-    ...ENV,
-    ARMADA_BOAT_AGENT_PATH: "native",
-    ARMADA_MODAL_AGENT_PATH: "native",
-    ARMADA_MODAL_DIALOUT: undefined,
-    get ARMADA_RUNTIME_ARTIFACT_DIR(): never {
-      throw new Error("Cannot validate sealed Railway variable ARMADA_RUNTIME_ARTIFACT_DIR.");
-    },
-  });
-  try {
-    expect(config.boatAgentPath).toBe("native");
-  } finally {
-    await sql.close();
+describe("startup with a valid Modal manifest", () => {
+  async function readWithManifest(overrides: Record<string, string>) {
+    const dir = await mkdtemp(join(tmpdir(), "armada-config-"));
+    try {
+      const path = join(dir, "runtime.json");
+      await Bun.write(
+        path,
+        JSON.stringify({
+          protocol: 1,
+          platform: "linux",
+          libc: "glibc",
+          architecture: "x64",
+          runtime: { sha256: "a".repeat(64), bytes: 1 },
+          harnesses: {},
+        }),
+      );
+      return await readStartupConfiguration({
+        ...ENV,
+        ARMADA_RUNTIME_ARTIFACT_DIR: dir,
+        ARMADA_MODAL_RUNTIME_MANIFEST: path,
+        ...overrides,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
-});
 
-test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
-  await expect(
-    readStartupConfiguration({
-      ...ENV,
-      ARMADA_MODAL_DIALOUT: undefined,
-      ARMADA_MODAL_AGENT_PATH: "native",
-      ARMADA_INVITATION_MAIL: "supabase",
-    }),
-  ).rejects.toThrow("ARMADA_DASHBOARD_URL");
+  test("rejects an unusable Docker manifest when placement is enabled", async () => {
+    await expect(
+      readWithManifest({
+        ARMADA_DOCKER_HOSTS: "1",
+        ARMADA_DOCKER_PLACEMENT: "1",
+        ARMADA_DOCKER_RUNTIME_MANIFEST: "/nonexistent/manifest.json",
+      }),
+    ).rejects.toThrow("ARMADA_DOCKER_RUNTIME_MANIFEST");
+  });
+
+  test("startup checks PostgreSQL client URL syntax without connecting", async () => {
+    await expect(readWithManifest({ ARMADA_DATABASE_URL: "postgres://user:%zz@example.com/db" })).rejects.toThrow(
+      "ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.",
+    );
+  });
+
+  test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
+    await expect(readWithManifest({ ARMADA_INVITATION_MAIL: "supabase" })).rejects.toThrow("ARMADA_DASHBOARD_URL");
+  });
 });
 
 test("validates the configured login providers before constructing the server", () => {

@@ -58,6 +58,7 @@ import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
+import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -227,19 +228,15 @@ export async function createServerServices(env: Record<string, string | undefine
     providerFor: (apiKey) => createObservedBoatProvider({ apiKey }),
   });
   const modal = await createModalIntegration({
-    resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
-    beforeResume: (provider, id, caller) => modelAuth.beforeResume(provider, id, caller),
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
-    github: { store, app: githubApp },
-    beforePrompt: async (provider, id, caller) => {
-      await mcp.beforePrompt(provider, id, caller);
-      await sandboxArmadaAccess.beforePrompt(provider, id);
-    },
   });
   const modalProviderFor: NonNullable<HandlerOptions["modalProviderFor"]> = async (...args) => {
+    const target = args[2].target;
+    if (diagnosticSandboxId(target) && target.runtimeTransport !== "dialout")
+      throw new VaultError("unavailable", "Modal sandboxes require Armada runtime enrolment.");
     const ports = await modal.modalProviderFor(...args);
     return { ...ports, provider: sandboxArmadaAccess.wrap(ports.provider) };
   };
@@ -304,53 +301,47 @@ export async function createServerServices(env: Record<string, string | undefine
     };
     if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
-  let warmModalArtifacts: ReturnType<typeof createModalArtifactCache> | undefined;
-  let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
-  if (modalRuntime) {
-    const { manifest, artifactDir } = modalRuntime;
-    warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);
-    modalRuntimePolicy = modalRuntimeLaunch({
-      sql,
-      encryptionKey: config.encryptionKey,
-      serverUrl: config.publicUrl,
-      manifest,
-      architecture: manifest.architecture,
-      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-      modelAuth,
-    });
-  }
+  const { manifest, artifactDir } = modalRuntime;
+  const warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);
+  const modalRuntimePolicy = modalRuntimeLaunch({
+    sql,
+    encryptionKey: config.encryptionKey,
+    serverUrl: config.publicUrl,
+    manifest,
+    architecture: manifest.architecture,
+    ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
+    modelAuth,
+  });
   const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
-  const modalLaunchJob =
-    modalRuntime &&
-    modal.launchJob(async (sandbox) => {
-      if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
-      const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
-      const credentials = await modalLaunchCredentials.resolve(
+  const modalLaunchJob = modal.launchJob(async (sandbox) => {
+    if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
+    const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
+    const credentials = await modalLaunchCredentials.resolve(
+      actor,
+      sandbox.harness,
+      sandbox.credentialId,
+      sandbox.credentialVersion,
+    );
+    const plan = await runtimeConfigurationWithVariables(
+      sql,
+      {
         actor,
-        sandbox.harness,
-        sandbox.credentialId,
-        sandbox.credentialVersion,
-      );
-      const plan = await runtimeConfigurationWithVariables(
-        sql,
-        {
-          actor,
-          sandbox,
-          credentials,
-          manifest: modalRuntime.manifest,
-          architecture: modalRuntime.manifest.architecture,
-          modelAuth,
-        },
-        "modal",
-        "modal_runtime_empty_v1",
-      );
-      return {
-        ...plan,
-        ownerId: sandbox.ownerId,
-        serverUrl: config.publicUrl,
-        ...modalLaunchTicketGuard(sandbox),
-      };
-    });
+        sandbox,
+        credentials,
+        manifest: modalRuntime.manifest,
+        architecture: modalRuntime.manifest.architecture,
+        modelAuth,
+      },
+      "modal",
+      "modal_runtime_empty_v1",
+    );
+    return {
+      ...plan,
+      ownerId: sandbox.ownerId,
+      serverUrl: config.publicUrl,
+      ...modalLaunchTicketGuard(sandbox),
+    };
+  });
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,
     app: githubApp,
@@ -380,50 +371,44 @@ export async function createServerServices(env: Record<string, string | undefine
         target.modal,
         { target, caller, credentialScope: tokens.scope },
         false,
-        (binding) => warmModalArtifacts?.beginWarming(binding, options.logError ?? console.error),
+        (binding) => warmModalArtifacts.beginWarming(binding, options.logError ?? console.error),
       )
     ).provider;
   };
-  if (config.modalAgentPath === "runtime" && modalRuntimePolicy) {
-    launch.modalRuntimeDefault = {
-      policy: modalRuntimePolicy,
-      credentials: modalLaunchCredentials,
-      connections: runtimeMcp.connections,
-      provider: (actor, golden) =>
-        modalRuntimeHostFor(
-          { ...golden, runtimeTransport: "dialout" },
-          {
-            userId: actor.userId,
-            orgs: [{ orgId: actor.orgId, role: actor.role }],
-            via: "service",
-          },
-        ),
-    };
-  }
+  launch.modalRuntimeDefault = {
+    policy: modalRuntimePolicy,
+    credentials: modalLaunchCredentials,
+    connections: runtimeMcp.connections,
+    provider: (actor, golden) =>
+      modalRuntimeHostFor(
+        { ...golden, runtimeTransport: "dialout" },
+        {
+          userId: actor.userId,
+          orgs: [{ orgId: actor.orgId, role: actor.role }],
+          via: "service",
+        },
+      ),
+  };
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
-  const modalResume = modalRuntimePolicy
-    ? modalRuntimeResume({
-        sql,
-        vault: store,
-        key: config.encryptionKey,
-        policy: modalRuntimePolicy,
-        modelAuth,
-        hostFor: modalRuntimeHostFor,
-      })
-    : undefined;
+  const modalResume = modalRuntimeResume({
+    sql,
+    vault: store,
+    key: config.encryptionKey,
+    policy: modalRuntimePolicy,
+    modelAuth,
+    hostFor: modalRuntimeHostFor,
+  });
   const runtimeResume = createRuntimeResume(
     sql,
     config.encryptionKey,
     runtimeCommands,
-    boatResume || modalResume
-      ? (caller, sandbox) => {
-          const prepare = { boat: boatResume, modal: modalResume }[sandbox.provider];
-          if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
-          return prepare(caller, sandbox);
-        }
-      : undefined,
+    (caller, sandbox) => {
+      const prepare = { boat: boatResume, modal: modalResume }[sandbox.provider];
+      if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
+      return prepare(caller, sandbox);
+    },
     runtimeMcp.prepare,
     runtimeGitHub?.prepareLaunch,
     sandboxArmadaAccess.restoreEnrolled,
@@ -505,12 +490,8 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
-    ...(modalRuntimePolicy
-      ? {
-          modalRuntimeLaunch: modalRuntimePolicy,
-          modalRuntimeHostFor,
-        }
-      : {}),
+    modalRuntimeLaunch: modalRuntimePolicy,
+    modalRuntimeHostFor,
     ...(runtimeLaunch ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor } : {}),
     launch,
     publicUrl: config.publicUrl,

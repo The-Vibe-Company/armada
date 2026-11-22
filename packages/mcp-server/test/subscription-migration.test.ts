@@ -9,9 +9,7 @@ import {
   ProviderError,
   type Sql,
 } from "@armada/core/server";
-import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSandboxLifecycle, requestNativeDrainStop } from "../src/sandbox-lifecycle.ts";
 import { createSubscriptionMigration, type SubscriptionMigrationTransports } from "../src/subscription-migration.ts";
@@ -38,48 +36,15 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
     )
   ).rows[0]!;
-  const boat = fakeBoat(),
-    modal = fakeBoat();
+  const boat = fakeBoat();
   const oldBoat = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
-  const oldModal = await modal.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
   const unknownPin = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
-  const boatId = "11111111-1111-4111-8111-111111111111",
-    modalId = "22222222-2222-4222-8222-222222222222";
-  const scope: Scope = {
-    orgId: people.org,
-    userId: people.owner,
-    visibility: "org",
-    binding: { workspace: "ws", environment: "main", appId: "app" },
-  };
+  const boatId = "11111111-1111-4111-8111-111111111111";
   const goldens = createSqlGoldenStore(db);
-  const modalGolden = await goldens.insert({
-    orgId: people.org,
-    ownerId: people.owner,
-    name: "legacy-modal",
-    visibility: "org",
-    provider: "modal",
-    modal: scope.binding,
-    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-  });
   await db.query(
     `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version)
     select $1,$2,$3,id,'codex','ready','boat',$4,$4,'org',$5,1 from goldens where org_id=$2 and name='shared'`,
     [boatId, people.org, people.owner, oldBoat.id, account.id],
-  );
-  await db.query(
-    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,visibility,credential_id,credential_version)
-    values($1,$2,$3,$4,'codex','ready','modal',$5,'org',$6,1)`,
-    [modalId, people.org, people.owner, modalGolden.id, oldModal.id, account.id],
-  );
-  await db.query(
-    `insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','migration',$5::jsonb)`,
-    [
-      scopeKey(scope),
-      oldModal.id,
-      people.org,
-      people.owner,
-      JSON.stringify({ generation: 1, launchUserId: people.owner }),
-    ],
   );
   for (const [id, physical, version] of [
     ["33333333-3333-4333-8333-333333333333", unknownPin.id, null],
@@ -108,7 +73,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   const grants = new Map<string, { url: string; capability: string }>();
   const submitted: string[] = [];
   const pendingHomes = new Set<string>();
-  let afterDrain = native(1);
+  let afterDrain = native(2);
   let vendorUnavailable = true;
   const transports: SubscriptionMigrationTransports = {
     admission: async (_provider, id, active) => {
@@ -171,28 +136,11 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     prepareAccount: (...args) => migration.prepareAccount(...args),
     prepareTurn: (...args) => migration.prepareTurn(...args),
   });
-  const modalProvider = {
-    ...modal.provider,
-    id: "modal" as const,
-    stop: async ({ sandboxId }: { sandboxId: string }) => {
-      const current = await auth.state.read(actor, account.id, 1, modalId);
-      expect(
-        await auth.publishFromModal(
-          scope,
-          { sandboxId, generation: "1", expiresAt: Date.now() + 60000 },
-          native(2),
-          current?.revision ?? 0,
-        ),
-      ).toMatchObject({ committed: true });
-      await modal.provider.stop({ sandboxId });
-    },
-  };
   migration = createSubscriptionMigration(
     db,
     async (_sql, id) => {
       resolved.push(id);
       if (id === boatId) return { provider: boat.provider, providerSandboxId: oldBoat.id };
-      if (id === modalId) return { provider: modalProvider, providerSandboxId: oldModal.id };
       if (id === "33333333-3333-4333-8333-333333333333")
         return { provider: boat.provider, providerSandboxId: unknownPin.id };
       throw new ProviderError({
@@ -206,8 +154,8 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     auth.broker!,
     transports,
   );
-  const worker = createSandboxLifecycle(db, async (id) => (id === modalId ? modalProvider : boat.provider));
-  for (const source of [modalId, "33333333-3333-4333-8333-333333333333"]) {
+  const worker = createSandboxLifecycle(db, async () => boat.provider);
+  for (const source of ["33333333-3333-4333-8333-333333333333"]) {
     await expect(auth.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
     await db.query("update sandboxes set reconcile_after='infinity' where id<>$1", [source]);
     expect(await worker.reconcileOne()).toBe(true);
@@ -243,42 +191,13 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(drained).toBe(1);
   expect(writer).toBe(false);
   expect(disk).toBeUndefined();
-  expect(modal.stops).toEqual([oldModal.id]);
   expect(resolved).not.toContain("66666666-6666-4666-8666-666666666666");
   expect(resolved).not.toContain("77777777-7777-4777-8777-777777777777");
-  await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-    scopeKey(scope),
-    JSON.stringify(scope),
-  ]);
-  const restored: Machine = {
-    info: { ...oldModal, labels: { sandbox: modalId, credentialId: account.id, credentialVersion: "1" } },
-    launchUserId: actor.userId,
-    golden: false,
-    phase: "active",
-    generation: 2,
-    ttlSeconds: 3600,
-    physicalName: "restored-modal",
-  };
-  const restoredEnv = await modalLaunchEnvironment({
-    sql: db,
-    vault: createSqlVaultStore(db),
-    encryptionKey: ENCRYPTION_KEY,
-    scope,
-    scopeKey: scopeKey(scope),
-    callerUserId: actor.userId,
-    modelAuth: auth,
-  })(restored, { ARMADA_SERVER_CODEX: "1" });
-  expect(restoredEnv.subscription?.capability).toBe(
-    auth.broker!.configuration(actor, account.id, 1, modalId).capability,
-  );
-  expect(restoredEnv.codexAuthJson).toBeUndefined();
-  expect(JSON.stringify(restoredEnv)).not.toContain("migration-refresh-");
-
   expect(boat.stops).toContain(unknownPin.id);
   expect(boat.prompts.map((prompt) => prompt.text.split("\n\n", 1)[0])).toEqual(["shared-0", "shared-1", "shared-2"]);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-2",
-    revision: 2,
+    revision: 1,
   });
   for (const id of ids) {
     await resolver.assertTurn!(actor, id, false);
@@ -292,9 +211,9 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     expect(access?.status).toBe(200);
     expect(await access!.json()).toMatchObject({ accessToken: "migration-access-2" });
   }
-  expect(await auth.broker!.access(actor, account.id, 1, 2)).toMatchObject({
+  expect(await auth.broker!.access(actor, account.id, 1, 1)).toMatchObject({
     accessToken: "migration-access-3",
-    revision: 3,
+    revision: 2,
   });
   expect(renewals).toBe(1);
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
@@ -303,7 +222,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(drained).toBe(1);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-3",
-    revision: 3,
+    revision: 2,
   });
   // A known old home can appear after global enrollment; validate its latest
   // private token instead of assuming the broker's older import is still valid.
@@ -314,9 +233,9 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   // A new shared guest encounters the spent saved token. Its renewal itself
   // must discover/drain the known legacy source and return verified access,
   // without requiring the old owner to prompt or sign in first.
-  expect(await auth.broker!.access(actor, account.id, 1, 3)).toMatchObject({
+  expect(await auth.broker!.access(actor, account.id, 1, 2)).toMatchObject({
     accessToken: "migration-access-5",
-    revision: 4,
+    revision: 3,
   });
   expect(writer).toBe(false);
   expect(disk).toBeUndefined();
@@ -337,7 +256,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 5,
+    revision: 4,
   });
   expect(submitted).not.toContain("migration-refresh-0");
   expect(renewals).toBe(4);
@@ -350,7 +269,7 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 6,
+    revision: 5,
   });
   expect(submitted.slice(-2)).toEqual(["migration-refresh--1", "migration-refresh-6"]);
   expect(renewals).toBe(6);
@@ -372,12 +291,12 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   expect(grants.has(oldBoat.id)).toBe(false);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-6",
-    revision: 6,
+    revision: 5,
   });
   await auth.beforePrompt(boat.provider, oldBoat.id, actor);
   expect(await auth.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-9",
-    revision: 7,
+    revision: 6,
   });
   await boat.provider.prompt({ sandboxId: oldBoat.id, harness: "codex", text: "retried after provider outage" });
   expect(boat.prompts.at(-1)?.text).toBe("retried after provider outage");
@@ -399,133 +318,6 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
   await expect(auth.broker!.access(actor, account.id, 1)).rejects.toThrow("Sign in again to this ChatGPT account.");
   expect(renewals).toBe(9);
   expect(submitted).not.toContain("migration-refresh-0");
-});
-
-test("Modal subscription replicas wait for the worker to publish its checkpoint before adopting auth", async () => {
-  const { db, people } = await database();
-  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
-  const account = (
-    await db.query<{ id: string }>(
-      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
-      [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const scope: Scope = {
-    orgId: actor.orgId,
-    userId: actor.userId,
-    visibility: "org",
-    binding: { workspace: "ws", environment: "main", appId: "app" },
-  };
-  const golden = await createSqlGoldenStore(db).insert({
-    orgId: actor.orgId,
-    ownerId: actor.userId,
-    name: "stopping-modal",
-    visibility: "org",
-    provider: "modal",
-    modal: scope.binding,
-    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-  });
-  const id = crypto.randomUUID(),
-    physical = "stopping-native";
-  await createSqlSandboxStore(db).insert({
-    id,
-    provider: "modal",
-    providerSandboxId: physical,
-    goldenId: golden.id,
-    orgId: actor.orgId,
-    ownerId: actor.userId,
-    harness: "codex",
-    status: "ready",
-    visibility: "org",
-    model: "gpt-6.1-sol",
-    reasoningEffort: "high",
-    credentialId: account.id,
-    credentialVersion: 1,
-  });
-  await db.query(
-    "insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','stopping-migration',$5::jsonb)",
-    [
-      scopeKey(scope),
-      physical,
-      actor.orgId,
-      actor.userId,
-      JSON.stringify({ generation: 1, launchUserId: actor.userId }),
-    ],
-  );
-  let complete = false;
-  const retryRetention: (boolean | undefined)[] = [];
-  let firstMigration!: ReturnType<typeof createSubscriptionMigration>,
-    secondMigration!: ReturnType<typeof createSubscriptionMigration>;
-  const first = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-    origin: "https://armada.example",
-    prepareAccount: (...args) => firstMigration.prepareAccount(...args),
-  });
-  const second = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-    origin: "https://armada.example",
-    prepareAccount: (...args) => secondMigration.prepareAccount(...args),
-  });
-  const provider = {
-    ...fakeBoat().provider,
-    id: "modal" as const,
-    get: async () => ({
-      id: physical,
-      name: physical,
-      state: complete ? ("stopped" as const) : ("running" as const),
-      providerState: complete ? "stopped" : "active",
-      labels: {},
-    }),
-    stop: async ({ requireRetention }: { requireRetention?: boolean }) => {
-      retryRetention.push(requireRetention);
-      if (retryRetention.length === 1)
-        throw new ProviderError({
-          provider: "modal",
-          code: "unavailable",
-          message: "Synthetic checkpoint failure",
-          retryable: true,
-        });
-      expect(
-        await first.publishFromModal(
-          scope,
-          { sandboxId: physical, generation: "1", expiresAt: Date.now() + 60000 },
-          native(1),
-          0,
-        ),
-      ).toEqual({ authRevision: 1, committed: true });
-      complete = true;
-    },
-  };
-  firstMigration = createSubscriptionMigration(
-    db,
-    async () => ({ provider, providerSandboxId: physical }),
-    (...args) => first.capture(...args),
-    first.broker!,
-  );
-  secondMigration = createSubscriptionMigration(
-    db,
-    async () => ({ provider, providerSandboxId: physical }),
-    (...args) => second.capture(...args),
-    second.broker!,
-  );
-  await expect(first.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  expect(retryRetention).toEqual([]);
-  const worker = createSandboxLifecycle(db, async () => provider);
-  expect(await worker.reconcileOne()).toBe(true);
-  await worker.drain();
-  await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  await db.query("update sandboxes set reconcile_after=now(), expires_at=now() where id=$1", [id]);
-  expect(await worker.reconcileOne()).toBe(true);
-  await worker.drain();
-  await Promise.all([first.broker!.enroll(actor, account.id, 1), second.broker!.enroll(actor, account.id, 1)]);
-  expect(retryRetention).toEqual([true, true]);
-  expect(await first.broker!.access(actor, account.id, 1)).toMatchObject({
-    accessToken: "migration-access-1",
-    revision: 1,
-  });
-  expect(await second.broker!.access(actor, account.id, 1)).toMatchObject({
-    accessToken: "migration-access-1",
-    revision: 1,
-  });
 });
 
 test.each(["boat", "modal"] as const)("subscription skips %s runtime guests", async (kind) => {

@@ -302,7 +302,7 @@ for (const entry of ["explicit", "default"] as const)
     const f = await fixture("claude", "modal", entry);
     const discovery = await f.api({}, "launch/options");
     expect(await discovery.json()).toMatchObject({
-      modalRuntime: { variablesVersion: 1, defaultPath: entry === "default" ? "runtime" : "native" },
+      modalRuntime: { variablesVersion: 1, defaultPath: "runtime" },
     });
     const template = await f.create();
     const request = f.request(template.id);
