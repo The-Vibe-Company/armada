@@ -135,6 +135,19 @@ test.each([
   }
 });
 
+test("Boat runtime GitHub configuration expires at the committed sandbox deadline", async () => {
+  const { f, service, config } = await fixture("boat", { commandGrantExpiresAt: Date.now() + 20 * 60_000 });
+  try {
+    await service.prepare(f.caller, f.row.id);
+    const { expires_at } = (
+      await f.db.query<{ expires_at: Date }>("select expires_at from sandboxes where id=$1", [f.row.id])
+    ).rows[0]!;
+    expect(config().expiresAt).toBe(expires_at.getTime());
+  } finally {
+    await f.close();
+  }
+});
+
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
   let clock = Date.now();
   const ceiling = new Date(clock + 20 * 60_000);
