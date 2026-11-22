@@ -224,35 +224,6 @@ const expected = {
       githubAfterResume: false,
     },
   },
-  ordinaryVariables: {
-    stdoutContains: [
-      '"ordinaryDefault":"verified"',
-      '"answer":"verified"',
-      '"checkpoint":"verified"',
-      '"followup":"verified"',
-      "compute stopped",
-    ],
-    success: true,
-    counters: {
-      launches: 1,
-      stops: 1,
-      checkpoints: 1,
-      resumes: 0,
-      sends: 1,
-    },
-    combinedExcludes: [
-      "fixture-token",
-      "private transport diagnostics",
-      "87695aff52e6ddfeec827188ef0d53e36cad584439ca428b5bffedfe4171ec6b",
-      "readable-canary\n$(not-a-command)",
-    ],
-    proofs: {
-      resume: false,
-      githubAfterResume: false,
-      variables: true,
-      variablesAfterResume: false,
-    },
-  },
   ordinaryIdleVariables: {
     stdoutContains: [
       '"ordinaryDefault":"verified"',
@@ -1912,10 +1883,10 @@ export const scenarios: Scenario[] = [
   { label: "ordinary-claude", args: ["--ordinary", "--claude"], defects: [], expected: expected.ordinary },
   { label: "ordinary-opencode", args: ["--ordinary", "--opencode"], defects: [], expected: expected.ordinary },
   {
-    label: "ordinary-variables",
-    args: ["--ordinary", "--variables"],
+    label: "explicit-pinned-job-variables",
+    args: ["--variables"],
     defects: ["job-admission"],
-    expected: expected.ordinaryVariables,
+    expected: expected.opencodeVariables,
   },
   {
     label: "ordinary-idle-variables",
@@ -2684,10 +2655,13 @@ export const scenarios: Scenario[] = [
     expected: expected.lostLaunch,
   },
   {
-    label: "ordinary-job-template-manifest-mismatch",
-    args: ["--ordinary", "--variables"],
+    label: "explicit-pinned-job-manifest-mismatch",
+    args: ["--variables"],
     defects: ["job-admission", "variables-receipt-mismatch"],
-    expected: expected.opencodeVariablesOldPrompt,
+    expected: {
+      ...expected.opencodeVariablesOldPrompt,
+      stderrContains: ["Modal template launch manifest identity is unavailable"],
+    },
   },
   {
     label: "variables-resume-replay",

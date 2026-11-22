@@ -785,6 +785,7 @@ try {
       throw Error("Admitted Modal sandbox entered a terminal lifecycle state.");
   };
   if (admission) {
+    jobAdmission = true;
     id = admission.sandbox.id;
     shouldStop = !explicitPinnedAdmission;
     if (ordinaryTemplate && (raw.status !== admission.sandbox.status || admission.sandbox.status !== "starting"))
@@ -838,7 +839,6 @@ try {
   }
   if (admission) {
     if (!explicitPinnedAdmission) await correlate(admission.sandbox.id);
-    jobAdmission = true;
     const turn = await observeAdmittedLaunch(admission.sandbox.id, observationDeadline);
     ({ promptId, conversationId, skills: launchSkills } = turn);
   } else {
@@ -1074,7 +1074,7 @@ async function stopKnown(requireRetained = false) {
       // Cleanup uncertainty is never hidden behind an earlier inference failure.
       throw Error(`Modal cleanup unconfirmed for ${id}; coordinator must inspect it, never launch again.`);
     }
-    await verifySkillStatus();
+    if (!jobAdmission || !failure || launchSkills !== undefined) await verifySkillStatus();
     if (!failure && usageProof) await verifyUsageStatus();
   }
 }

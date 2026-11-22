@@ -282,6 +282,11 @@ const admittedLaunch = (body: RequestBody) => {
   launchRef = body.externalRef;
   const envelope = { sandbox: { id: sandboxId, status: "starting" } };
   if (!variables) return envelope;
+  const manifest = templateReceipt(body, idle).manifest;
+  if (!ordinary) {
+    const { requestKey: _requestKey, skillReceipts: _skillReceipts, ...templateManifest } = manifest;
+    return { sandbox: { ...envelope.sandbox, templateManifest: { ...templateManifest, resolvedSkills: [] } } };
+  }
   return {
     requestId: "99999999-9999-4999-8999-999999999999",
     state: "succeeded",
@@ -289,7 +294,7 @@ const admittedLaunch = (body: RequestBody) => {
     provider: "modal",
     status: defects.includes("idle-bad-receipt") ? "running" : "starting",
     envelope,
-    manifest: templateReceipt(body, idle).manifest,
+    manifest,
   };
 };
 const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
