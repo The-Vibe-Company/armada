@@ -53,7 +53,7 @@ import type { RuntimeGitHub } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
-import { sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
+import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
 import {
   type RestoreScopedRuntimeAccess,
   registerSandboxArmadaParent,
@@ -490,7 +490,6 @@ export function createModalInitialTurnJob(
           call: (owner, command, options) =>
             commands.call(owner, command, {
               ...options,
-              expectedEpoch: epoch,
               assertClaim,
               ...(needsSkillpackKey && command.op === "installSkills" ? { resolveSkillpackKey } : {}),
             }),
@@ -582,15 +581,16 @@ export function createModalInitialTurnJob(
       if (payload.data.scopedAccess) {
         if (!restoreScopedAccess) return { status: "fail", reason: "modal_initial_turn_scoped_access_unavailable" };
         const projectDir = target.repository_dir ? `${GOLDEN_ROOT}/${target.repository_dir}` : GOLDEN_ROOT;
-        const installed = await agent.exec(
+        const installed = await agent.workspaceExec(
           {
             sandboxId: target.provider_sandbox_id,
             cwd: projectDir,
             command: sandboxAccessReferenceCommand(projectDir, target.harness),
             timeoutSeconds: 300,
-            signal: context.signal,
           },
-          `scoped_reference_${job.id}_${epoch}`,
+          SCOPED_REFERENCE_STEP,
+          epoch,
+          context.signal,
         );
         if (installed.detached || installed.timedOut || installed.truncated || installed.exitCode !== 0)
           return { status: "fail", reason: "modal_initial_turn_scoped_reference_refused" };

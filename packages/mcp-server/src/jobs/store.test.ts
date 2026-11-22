@@ -1166,12 +1166,11 @@ test.each(["first turn", "promptless setup"] as const)(
               result = { ready: true, generation: epoch, workspaceVersion: 1 };
               break;
             case "workspaceExec":
-              result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
-              break;
-            case "exec":
-              expect(command.input.command).toContain(".agents/skills/armada-tools/SKILL.md");
-              referenceCommands.push(command.requestId);
-              if (interrupt) throw new Error("Worker lost while waiting for the reference command.");
+              if (command.input.command.includes(".agents/skills/armada-tools/SKILL.md")) {
+                expect(command.input).toMatchObject({ phase: "init", index: 100, attempt: 0 });
+                referenceCommands.push(command.requestId);
+                if (interrupt) throw new Error("Worker lost while waiting for the reference command.");
+              }
               result = { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
               break;
             case "installOrchestratorEpoch":

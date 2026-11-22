@@ -21,6 +21,8 @@ owned children, expiry and active-child limits. Never use the owner's API token.
 No ticket routing, review, merge or scheduling policy is supplied by Armada.
 `;
 
+export const SCOPED_REFERENCE_STEP = { phase: "init", index: 100, attempt: 0 } as const;
+
 export function sandboxAccessReferenceCommand(projectDir: string, harness: Harness | undefined) {
   if (!projectDir.startsWith("/") || [...projectDir].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
     throw new Error("orchestrator_invalid_bootstrap");

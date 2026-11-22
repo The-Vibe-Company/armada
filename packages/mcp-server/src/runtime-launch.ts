@@ -8,12 +8,14 @@ import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enro
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 import { runtimeWorkspace } from "./runtime-workspace.ts";
+import { SCOPED_REFERENCE_STEP } from "./sandbox-access-bootstrap.ts";
 
 type LaunchPolicy = NonNullable<LaunchOptions["runtime"]>;
 type LaunchInput = Parameters<LaunchPolicy["start"]>[0] & {
   assertDispatch?: (tx?: Sql) => Promise<void>;
   ticketGuard?: RuntimeTicketGuard;
 };
+
 export type RuntimeLaunchPolicy = Omit<LaunchPolicy, "start"> & {
   start(input: LaunchInput): ReturnType<LaunchPolicy["start"]>;
 };
@@ -83,8 +85,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal, input.assertDispatch);
     return {
       ...runtimeWorkspace(input, agent, ready.epoch, options.github),
-      installScopedReference: (request) =>
-        agent.workspaceExec(request, { phase: "init", index: 100, attempt: 0 }, ready.epoch, signal),
+      installScopedReference: (request) => agent.workspaceExec(request, SCOPED_REFERENCE_STEP, ready.epoch, signal),
       installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),
       epoch: ready.epoch,
       prompt: (request) => agent.prompt(request, `launch_${sandbox.id}`, ready.epoch),
