@@ -21,6 +21,7 @@ import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
+import { RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runtime-resume.ts";
@@ -321,9 +322,22 @@ async function seedStoppedBoatExtension(f: Awaited<ReturnType<typeof stopped>>) 
 describe("retained Boat extension supersession", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test("detaches the prior activation's extension intent before restoring compute", async () => {
+  test("detaches extension intent before restore and rejects a late acknowledgement from the prior epoch", async () => {
     const f = await fixture();
     const jobId = await seedStoppedBoatExtension(f);
+    const prior = f.active;
+    const command = {
+      version: 1,
+      op: "extendCommandAuthority",
+      sandboxId: f.row.id,
+      requestId: `extend_${jobId}`,
+      epoch: prior.epoch,
+      expiresAt: Date.parse(f.row.expiresAt!),
+    };
+    await f.db.query(
+      `insert into public.runtime_commands (sandbox_id,request_id,epoch,request_enc) values ($1,$2,$3,$4)`,
+      [f.row.id, command.requestId, prior.epoch, await encryptSecret(JSON.stringify(command), ENCRYPTION_KEY)],
+    );
     let atRestore: unknown;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
@@ -341,6 +355,26 @@ describe("retained Boat extension supersession", () => {
     }));
     await expect(resume(f.caller, input(f.row.id))).resolves.toMatchObject({ resumed: true });
     expect(atRestore).toEqual([{ pending_job_id: null, state: "queued", advanced: true }]);
+    await expect(
+      f.bridge.complete(prior.runtimeToken, prior.epoch, {
+        requestId: command.requestId,
+        epoch: prior.epoch,
+        status: 200,
+        body: {
+          version: 1,
+          requestId: command.requestId,
+          result: { epoch: prior.epoch, expiresAt: command.expiresAt },
+        },
+      }),
+    ).rejects.toBeInstanceOf(RuntimeEnrolmentDenied);
+    const { rows } = await f.db.query(
+      `select e.pending_job_id,c.result_enc is not null as acknowledged
+       from public.boat_runtime_extension_state e
+       join public.runtime_commands c on c.sandbox_id=e.sandbox_id and c.request_id=$2
+       where e.sandbox_id=$1`,
+      [f.row.id, command.requestId],
+    );
+    expect(rows).toEqual([{ pending_job_id: null, acknowledged: false }]);
   });
 });
 
