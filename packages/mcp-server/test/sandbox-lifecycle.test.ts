@@ -649,8 +649,8 @@ for (const evidence of [
     );
     if (!binding) throw Error("Missing Boat sandbox.");
     const sql = bunLikeSql(db);
-    const physicalDeadline =
-      evidence === "covered" ? new Date(binding.expires_at.getTime() + 600_000) : binding.expires_at;
+    const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
+    let physicalDeadline = evidence === "covered" ? coveredDeadline : binding.expires_at;
     const pendingJobId =
       evidence === "covered"
         ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
@@ -726,9 +726,19 @@ for (const evidence of [
           [id],
         )
       ).rows[0];
+    const readObservation = async () =>
+      (
+        await db.query(
+          `select pending_job_id,observed_provider_id,observed_generation,observed_at,observed_expires_at
+           from public.boat_runtime_extension_state where sandbox_id=$1`,
+          [id],
+        )
+      ).rows;
     if (evidence === "lost-observation-response") {
       expect(stops).toBe(0);
       expect(await readSandbox()).toMatchObject({ status: "running", expires_at: binding.expires_at });
+      expect(await readObservation()).toMatchObject([{ observed_expires_at: binding.expires_at }]);
+      physicalDeadline = coveredDeadline;
       await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
       const successor = createSandboxLifecycle(sql, async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
@@ -747,20 +757,15 @@ for (const evidence of [
     }
 
     const row = await readSandbox();
-    const shouldStop = ["short", "scoped-short", "lost-observation-response", "lost-stop-response"].includes(evidence);
+    const shouldStop = ["short", "scoped-short", "lost-stop-response"].includes(evidence);
     expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
     expect(row).toMatchObject(
       shouldStop
         ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
         : { status: "running", status_reason: null },
     );
-    const observation = await db.query(
-      `select pending_job_id,observed_provider_id,observed_generation,observed_at,observed_expires_at
-       from public.boat_runtime_extension_state where sandbox_id=$1`,
-      [id],
-    );
-    expect(observation.rows).toEqual(
-      shouldStop || evidence === "covered"
+    expect(await readObservation()).toEqual(
+      shouldStop || evidence === "covered" || evidence === "lost-observation-response"
         ? [
             {
               pending_job_id: pendingJobId,
