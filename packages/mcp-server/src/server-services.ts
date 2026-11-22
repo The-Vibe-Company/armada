@@ -186,7 +186,7 @@ export async function createServerServices(env: Record<string, string | undefine
         ...boatInventory,
         sanitizeEvents: async (provider, id, events) => {
           if (!caller) throw Error("Native events require trusted Armada caller scope.");
-          return modelAuth.redactEvents(provider, id, caller, events);
+          return modelAuth.redactBoatEvents(provider, id, caller, events);
         },
         beforeStop: async (provider, id) => {
           if (caller) await modelAuth.beforeStop(provider, id, caller);

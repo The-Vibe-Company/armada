@@ -263,17 +263,10 @@ export function createModelAuthOwnership(
             : "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null and credential_id=$2::uuid and credential_version=$3 for update",
           retired ? [row.id] : [row.id, row.credential_id, row.credential_version],
         );
-        if (
-          provider.id === "boat" &&
-          current.rows[0] &&
-          current.rows[0].lifecycle_generation !== row.lifecycle_generation
-        )
+        const pinned = current.rows[0];
+        if (pinned && pinned.lifecycle_generation !== row.lifecycle_generation)
           throw new NativeObservationSuperseded("sandbox_generation");
-        if (
-          (!retired && !current.rows[0]) ||
-          current.rows[0]?.lifecycle_generation !== row.lifecycle_generation ||
-          (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
-        )
+        if (!pinned || (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation))
           throw new VaultError(
             "conflict",
             retired ? "Retired native source changed." : "Native source incarnation changed.",
@@ -322,7 +315,7 @@ export function createModelAuthOwnership(
       }
       throw new VaultError("conflict", "Native auth publication is not acknowledged.");
     },
-    async redactEvents(
+    async redactBoatEvents(
       provider: Provider,
       providerId: string,
       caller: { userId: string; orgId: string },
@@ -343,7 +336,6 @@ export function createModelAuthOwnership(
       };
       await pendingCommand();
       const secrets = await this.capture(provider, providerId, caller).catch((error: unknown) => {
-        if (provider.id !== "boat") throw error;
         recordNativeReadFailure("events", error);
         if (error instanceof NativeObservationSuperseded) throw new NativeOutputPending(provider.id);
         throw error;

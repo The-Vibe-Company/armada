@@ -154,7 +154,7 @@ test("real native state publication seals rotation without replacing binding, fe
         ],
         pageInfo: { hasMore: false },
       })) as unknown as typeof fetch,
-    sanitizeEvents: (_provider, id, events) => auth.redactEvents(provider, id, actor, events),
+    sanitizeEvents: (_provider, id, events) => auth.redactBoatEvents(provider, id, actor, events),
   });
   const safeEvents = await publicProvider.events({ sandboxId: "native" });
   expect(JSON.stringify(safeEvents)).not.toContain("synthetic-refresh-");
@@ -214,7 +214,7 @@ test("real native state publication seals rotation without replacing binding, fe
   );
   // Org viewers must redact the launching owner's token, not their own vault.
   expect(
-    await auth.redactEvents(provider, "claude-native", { userId: PEER, orgId: ORG }, [
+    await auth.redactBoatEvents(provider, "claude-native", { userId: PEER, orgId: ORG }, [
       {
         id: "claude-output",
         at: 1,
@@ -375,7 +375,7 @@ test("Modal private publication binds current app, native generation and account
       get: async (id: string) => ({ id, name: id, state: "running" as const, providerState: "active", labels: {} }),
     };
     expect(
-      await shared.redactEvents(observed, "native", actor, [
+      await shared.redactBoatEvents(observed, "native", actor, [
         {
           id: "late-native-output",
           at: 1,
@@ -414,7 +414,7 @@ test("Modal private publication binds current app, native generation and account
     expect(JSON.parse(await decryptSecret(new Uint8Array(preserved.state_enc), KEY)).authJson).toBe(native(2));
 
     expect(
-      await shared.redactEvents(observed, "native", actor, [
+      await shared.redactBoatEvents(observed, "native", actor, [
         {
           id: "retired-native-output",
           at: 2,
@@ -472,7 +472,7 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   expectedCapability = broker.configuration(actor, account.id, 1, id).capability;
   await broker.enroll(actor, account.id, 1);
   const events = (text: string) =>
-    shared.redactEvents(boat.provider, physical.id, actor, [
+    shared.redactBoatEvents(boat.provider, physical.id, actor, [
       {
         id: "disk-token-output",
         at: 1,
