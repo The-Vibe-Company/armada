@@ -152,9 +152,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         lifecycle_generation: string;
         provider_sandbox_id: string;
         runtime_transport: string | null;
+        boat_runtime: boolean;
         status: string;
       }>(
-        `select s.id,s.lifecycle_generation::text,s.provider_sandbox_id,s.runtime_transport,s.status from public.sandboxes s
+        `select s.id,s.lifecycle_generation::text,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.status from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
        and (s.status in ('starting','ready','running') or ($7 and s.status='failed'))
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
@@ -218,7 +219,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
       }
       const commandDeadline =
-        sandbox.runtime_transport === "dialout" && input.commandGrantExpiresAt !== undefined
+        (sandbox.runtime_transport === "dialout" || sandbox.boat_runtime) && input.commandGrantExpiresAt !== undefined
           ? new Date(input.commandGrantExpiresAt)
           : null;
       const pricing = await createSqlSandboxStore(tx, { turnModels: true }).captureUsagePricingContext!(

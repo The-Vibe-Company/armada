@@ -77,7 +77,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       ...plan,
       ...(input.onEnrolled ? { onEnrolled: input.onEnrolled } : {}),
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
-      ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
+      commandGrantExpiresAt: plan.configuration.grant.expiresAt,
       ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),
       ...(input.ticketGuard ? { ticketGuard: input.ticketGuard } : {}),
       signal,
