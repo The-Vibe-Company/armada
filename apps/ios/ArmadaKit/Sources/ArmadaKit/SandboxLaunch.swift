@@ -648,8 +648,12 @@ extension ArmadaClient {
             guard allocation.sandbox.orgId == request.org, allocation.sandbox.provider == request.provider else {
                 throw .unconfirmed
             }
-        case .admitted:
-            guard request.provider == "modal" else { throw .unconfirmed }
+        case .admitted(let admission):
+            // Match the UUID versions, variant and special values in the Modal receipt schema.
+            let uuid = #/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff/#
+            guard request.provider == "modal", admission.id.wholeMatch(of: uuid) != nil else {
+                throw .unconfirmed
+            }
         }
         return receipt
     }

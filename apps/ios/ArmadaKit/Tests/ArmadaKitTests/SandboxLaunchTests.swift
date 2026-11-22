@@ -267,6 +267,7 @@ func modalAdmissionReturnsTheAcknowledgedSandbox(status: String) async throws {
     #"{"sandbox":{"id":"\#(newSandbox)","status":"starting","provider":"modal"}}"#,
     #"{"sandbox":{"id":"\#(newSandbox)","status":"unknown"}}"#,
     #"{"sandbox":{"id":"not-a-uuid","status":"starting"}}"#,
+    #"{"sandbox":{"id":"7d1c2b4a-5d6e-0f70-1a9b-0c1d2e3f4a5b","status":"starting"}}"#,
 ])
 func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
     let (client, _) = try await signedIn([.init(status: 200, body: body)])
