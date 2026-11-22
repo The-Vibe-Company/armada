@@ -147,7 +147,7 @@ test("real native state publication seals rotation without replacing binding, fe
       sandboxId: SANDBOX,
       generation: "boat:1",
       expectedRevision: winningRevision,
-      authJson: native(winningRevision + 1),
+      authJson: native(10 + winningRevision),
       verifySource: async () => {},
     });
   };
@@ -155,7 +155,7 @@ test("real native state publication seals rotation without replacing binding, fe
     promptStatus,
   );
   onRead = undefined;
-  expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(5), revision: 5 });
+  expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(14), revision: 5 });
   authJson = native(2);
   let eventRevision = 2;
   const publicProvider = createBoatProvider({
