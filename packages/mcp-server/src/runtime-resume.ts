@@ -289,15 +289,14 @@ export function createRuntimeResume(
       });
       if (transition.kind === "conflict")
         throw new VaultError("conflict", "Runtime resume admission lost its retained stop or dispatch authority.");
-      if (current.provider === "boat") {
-        await tx.query(
-          `update public.boat_runtime_extension_state e set pending_job_id=null
-           from public.jobs j
-           where e.sandbox_id=$1 and j.id=e.pending_job_id and j.sandbox_id=e.sandbox_id
-             and j.kind='boat_runtime_extend' and j.generation<$2`,
-          [found.id, transition.generation],
-        );
-      }
+      await tx.query(
+        `update public.boat_runtime_extension_state e set pending_job_id=null
+         from public.sandboxes s, public.jobs j
+         where s.id=$1 and s.lifecycle_generation=$2 and s.provider='boat' and s.boat_runtime
+           and e.sandbox_id=s.id and j.id=e.pending_job_id and j.sandbox_id=s.id
+           and j.kind='boat_runtime_extend' and j.generation<s.lifecycle_generation`,
+        [found.id, transition.generation],
+      );
       await recordResumeAcceptedAt(tx, found.id, requestId);
       const active = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (!active) throw new VaultError("not_found", "Runtime resume admission disappeared.");
