@@ -711,6 +711,7 @@ test.each([
         );
       let observed = 0;
       let captures = 0;
+      let physicalGeneration = "7";
       const host: RuntimeWorkProvider = {
         ...provider,
         id: hostId,
@@ -723,12 +724,14 @@ test.each([
             state: observed === 1 && scenario === "archiving" ? "stopping" : "ready",
             providerState: observed === 1 && scenario === "archiving" ? "archiving" : "active",
             labels: {},
-            ...(observed === 1 && scenario === "physical_generation_missing" ? {} : { physicalGeneration: "7" }),
+            ...(observed === 1 && scenario === "physical_generation_missing" ? {} : { physicalGeneration }),
           };
         },
         async captureRuntimeWork(request) {
           expect(request.sandboxId).toBe(physical);
-          expect(request.physicalGeneration).toBe("7");
+          expect(request.physicalGeneration).toBe(
+            captures === 1 && scenario === "physical_generation_changed" ? "8" : "7",
+          );
           expect(request.signal.aborted).toBe(false);
           captures++;
           if (captures === 1) {
@@ -737,8 +740,10 @@ test.each([
               if (scenario === "takeover_on_failure") return { status: "failed", reason: "collector_failed" };
             }
             if (scenario === "quiescence_rejected") throw Error("unverified process quiescence");
-            if (scenario === "physical_generation_changed") throw Error("collector refused the replaced incarnation");
+            if (scenario === "physical_generation_changed") physicalGeneration = "8";
           }
+          if (request.physicalGeneration !== physicalGeneration)
+            throw Error("collector refused the replaced incarnation");
           return scenario === "clean" ? { status: "clean" } : { status: "preserved", archive };
         },
       };
@@ -781,15 +786,12 @@ test.each([
           "wrong_binding",
           "archiving",
         ].includes(scenario);
-        const pending =
-          takeover ||
-          collectorRefused ||
-          scenario === "lost_receipt_response" ||
-          (noFirstDispatch && scenario !== "archiving");
+        const pending = takeover || collectorRefused || scenario === "lost_receipt_response" || noFirstDispatch;
         expect(outcome).toBe(pending ? "pending" : undefined);
         expect(captures).toBe(noFirstDispatch ? 0 : 1);
         if (takeover || collectorRefused || noFirstDispatch)
           expect(await readWorkRecovery(sql, recoveryScope, id)).toBeNull();
+        if (scenario === "archiving") return;
         if (!takeover) await takeOver();
         const nextOwner = { kind: "reconcile", token: reconcile, generation } as const;
         expect(await preserveBeforeStop(sql, runtime, id, physical, "lifecycle_stop", nextOwner)).toBeUndefined();

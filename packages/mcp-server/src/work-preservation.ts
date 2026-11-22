@@ -344,7 +344,7 @@ async function captureAndStore(
     observed("observed", current.state);
     if (boatCapture && current.id !== providerId) return "pending";
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    if (boatCapture && current.state === "stopping") return;
+    if (boatCapture && current.state === "stopping") return "pending";
     const fencedNativeCapture = !runtimeCapture && provider.supportsExecPhysicalGeneration;
     const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
     if (
