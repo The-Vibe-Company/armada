@@ -95,7 +95,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   try {
     await io.step("expiry_launch", async () => {
       attempted = true;
-      const result = await io.launch<{ sandbox: { id: string; provider: string }; promptId?: string }>(
+      const result = await io.launch<{ sandbox: { id: string }; promptId?: string }>(
         {
           golden: item.golden,
           provider: item.provider,
@@ -112,8 +112,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
         },
       );
       if (typeof result?.sandbox?.id === "string" && result.sandbox.id) id = result.sandbox.id;
-      if (!id || result.sandbox.provider !== item.provider || result.promptId)
-        throw new ExpirySmokeFailure("invalid_receipt");
+      if (!id || result.promptId) throw new ExpirySmokeFailure("invalid_receipt");
     });
     const ready = await io.step("expiry_ready", () =>
       observe(

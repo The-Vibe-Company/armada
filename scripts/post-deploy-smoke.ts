@@ -24,6 +24,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { API_FAILURE_STATUS, type ApiFailureCode } from "../packages/core/src/api-failure.ts";
+import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
@@ -719,7 +720,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
         if (provider === "boat") fail("invalid_response");
-        if (provider !== input.provider)
+        const admission = expiry && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
+        if (!admission && provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
@@ -2159,7 +2161,16 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       const keyedModalLaunch = args[0] === "--parity" && requestKey === key && body.provider === "modal";
       const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
-      const provider = smokeReceiptProvider(result);
+      const admissionProvider =
+        args.includes("--expiry") &&
+        url.endsWith("/sandbox/launch") &&
+        requestKey === key &&
+        response.ok &&
+        body.provider === "modal" &&
+        parseLaunchAdmissionReceipt(body.provider, result)
+          ? body.provider
+          : undefined;
+      const provider = admissionProvider ?? smokeReceiptProvider(result);
       const unverifiedLaunch =
         keyedLaunch &&
         (!response.ok ||
