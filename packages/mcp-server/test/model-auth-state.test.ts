@@ -124,7 +124,7 @@ test("real native state publication seals rotation without replacing binding, fe
   };
   const before = reads;
   await expect(auth.capture(provider, "native", actor)).rejects.toMatchObject({ code: "conflict" });
-  expect(reads - before).toBe(3); // Bound retries; never publish the old incarnation.
+  expect(reads - before).toBe(1); // A new sample cannot publish under the old incarnation.
   expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toHaveProperty("authJson", native(1));
   await auth.capture(provider, "native", actor);
   expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(2), revision: 2 });
@@ -154,7 +154,7 @@ test("real native state publication seals rotation without replacing binding, fe
         ],
         pageInfo: { hasMore: false },
       })) as unknown as typeof fetch,
-    sanitizeEvents: (_provider, id, events) => auth.redactEvents(provider, id, actor, events),
+    sanitizeEvents: (_provider, id, events) => auth.redactBoatEvents(provider, id, actor, events),
   });
   const safeEvents = await publicProvider.events({ sandboxId: "native" });
   expect(JSON.stringify(safeEvents)).not.toContain("synthetic-refresh-");
@@ -214,7 +214,7 @@ test("real native state publication seals rotation without replacing binding, fe
   );
   // Org viewers must redact the launching owner's token, not their own vault.
   expect(
-    await auth.redactEvents(provider, "claude-native", { userId: PEER, orgId: ORG }, [
+    await auth.redactBoatEvents(provider, "claude-native", { userId: PEER, orgId: ORG }, [
       {
         id: "claude-output",
         at: 1,
@@ -375,7 +375,7 @@ test("Modal private publication binds current app, native generation and account
       get: async (id: string) => ({ id, name: id, state: "running" as const, providerState: "active", labels: {} }),
     };
     expect(
-      await shared.redactEvents(observed, "native", actor, [
+      await shared.redactBoatEvents(observed, "native", actor, [
         {
           id: "late-native-output",
           at: 1,
@@ -414,7 +414,7 @@ test("Modal private publication binds current app, native generation and account
     expect(JSON.parse(await decryptSecret(new Uint8Array(preserved.state_enc), KEY)).authJson).toBe(native(2));
 
     expect(
-      await shared.redactEvents(observed, "native", actor, [
+      await shared.redactBoatEvents(observed, "native", actor, [
         {
           id: "retired-native-output",
           at: 2,
@@ -472,7 +472,7 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   expectedCapability = broker.configuration(actor, account.id, 1, id).capability;
   await broker.enroll(actor, account.id, 1);
   const events = (text: string) =>
-    shared.redactEvents(boat.provider, physical.id, actor, [
+    shared.redactBoatEvents(boat.provider, physical.id, actor, [
       {
         id: "disk-token-output",
         at: 1,
@@ -495,7 +495,19 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   duringSample = async () => {
     await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
   };
-  await expect(events("synthetic-refresh-4")).rejects.toMatchObject({ code: "conflict" });
+  const logProvider = {
+    ...boat.provider,
+    async events() {
+      return { events: await events("synthetic-refresh-4"), cursor: "unverified", hasMore: true };
+    },
+  };
+  const page = await readLogs(
+    { logs: async () => ({ provider: logProvider, providerSandboxId: physical.id }) },
+    { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: "admin" }], via: "service" },
+    id,
+    { follow: true, cursor: "verified" },
+  );
+  expect(page).toMatchObject({ events: [], cursor: "verified", settled: false });
   expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
   duringSample = undefined;
   const runningInfo = boat.sandbox(physical.id).info;
