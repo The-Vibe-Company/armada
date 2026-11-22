@@ -5,6 +5,7 @@ import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runne
 
 function fixture(kind = "stop", dispatchBudgetMs?: number) {
   let now = 0;
+  let successfulRenewals = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
   const rows = ["one", "two"].map((id) => ({
@@ -53,6 +54,7 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
       const row = current(job, owner);
       if (!row || renewalUnavailable) return false;
       row.expires = now + seconds * 1000;
+      successfulRenewals++;
       return true;
     },
     async complete(job, owner, result) {
@@ -95,6 +97,9 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
       return settled.promise;
     },
     completed,
+    get successfulRenewals() {
+      return successfulRenewals;
+    },
     holdRenewal(gate: Promise<void>) {
       renewalGate = gate;
     },
@@ -117,6 +122,7 @@ test("a renewed Boat extension attempt aborts at its original dispatch deadline"
   try {
     f.advance(10_000);
     await Promise.resolve();
+    expect(f.successfulRenewals).toBe(1);
     expect(signal.aborted).toBe(false);
     f.advance(2_000);
     expect(signal.aborted).toBe(true);
@@ -127,14 +133,14 @@ test("a renewed Boat extension attempt aborts at its original dispatch deadline"
   expect(f.completed).toEqual([]);
 });
 
-test("a Boat extension claim delivered after its dispatch budget skips the handler", async () => {
-  const f = fixture("boat_runtime_extend", 0);
+test.each([0, -1])("a Boat extension claim with dispatch budget %i skips the handler", async (budget) => {
+  const f = fixture("boat_runtime_extend", budget);
   let entered = false;
   const runner = f.runner(async () => {
     entered = true;
     return { status: "done" };
   });
-  await runner.reconcileOne(tick);
+  expect(await runner.reconcileOne(tick)).toBe(true);
   await runner.drain();
   expect(entered).toBe(false);
   expect(f.completed).toEqual([]);
@@ -222,6 +228,8 @@ test.each([false, true])("dispatch timeout fences late completion only on owners
   const signal = await entered.promise;
   f.advance(10_000);
   await Promise.resolve();
+  expect(f.successfulRenewals).toBe(1);
+  expect(signal.aborted).toBe(false);
   f.advance(5_000);
   expect(signal.aborted).toBe(true);
   if (takeover) {
