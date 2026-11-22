@@ -58,6 +58,7 @@ import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
+  fencePreservedBoatDrainReplay,
   fencePreservedModalDrainIncarnation,
   finishLaunchFailure,
   finishLaunchSuccess,
@@ -1323,6 +1324,8 @@ export function createSqlData(
             )
               throw new DataError("Modal drain requires the preserved stopped incarnation.", "sandbox_not_ready");
             if (locked.native_drain_pending) {
+              if (!locked.requires_incarnation_proof && !(await fencePreservedBoatDrainReplay(tx, id)))
+                throw new DataError("Boat drain requires verified work preservation.", "sandbox_not_ready");
               const {
                 rows: [retry],
               } = await tx.query<{ allowed: boolean }>(
