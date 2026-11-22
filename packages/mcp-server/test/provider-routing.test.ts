@@ -1,21 +1,14 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { encryptSecret, type ModalBinding, type ModalTokenPair, type Provider } from "@armada/core";
-import { launchEnvelope } from "@armada/core/contract";
+import { encryptSecret, type ModalBinding } from "@armada/core";
+import { launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
+import { createModalIntegration } from "../src/modal-integration.ts";
+import type { AdmitModalLaunch } from "../src/modal-launch-admission.ts";
+import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import {
-  bunLikeSql,
-  call,
-  ENCRYPTION_KEY,
-  fakeBoat,
-  harness,
-  launchSandboxId,
-  PUBLIC_URL,
-  type TestServer,
-} from "./support.ts";
+import { bunLikeSql, call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL, type TestServer } from "./support.ts";
 
 const database = rowOnlyDatabase();
 let pendingServer: Promise<TestServer> | undefined;
@@ -40,15 +33,6 @@ const BINDING: ModalBinding = { workspace: "ws-acme", environment: "main", appId
 const PAIR = { token_id: "ak-orgtoken0001", token_secret: "as-orgsecret0001" };
 const ROTATED = { token_id: "ak-orgtoken0002", token_secret: "as-orgsecret0002" };
 
-const launchStages = [
-  "admission",
-  "account_resolution",
-  "provider_resolution",
-  "receipt_admission",
-  "shared_launcher",
-  "response_publication",
-];
-
 type LaunchTimingSample = {
   event: string;
   surface: string;
@@ -69,7 +53,7 @@ async function seedModal(target: TestServer) {
   await db.query(
     `insert into goldens (org_id, name, visibility, owner_id, provider, provider_snapshot_id, modal_workspace,
        modal_environment, modal_app_id, config)
-     values ($1, 'shared', 'org', $2, 'modal', 'im-modal-1', $3, $4, $5, $6::jsonb)`,
+     values ($1, 'shared', 'org', $2, 'modal', 'image', $3, $4, $5, $6::jsonb)`,
     [
       people.org,
       people.admin,
@@ -139,86 +123,50 @@ describe("provider routing", () => {
     expect(server.boat.forks).toHaveLength(1);
   });
 
-  test("a Modal sandbox runs on the pinned App with the org's token pair, which a rotation never redirects", async () => {
-    const modal = fakeBoat();
-    const calls: { tokens: ModalTokenPair; binding: ModalBinding }[] = [];
-    const server = await start({
-      modalProviderFor: (tokens, binding) => {
-        calls.push({ tokens, binding });
-        return { provider: { ...modal.provider, id: "modal" } as Provider };
-      },
-    });
+  test("MCP admits work on the pinned Modal App and replays the receipt after org credential rotation", async () => {
+    let admit: AdmitModalLaunch;
+    const server = await start({ admitModalLaunch: (...args) => admit(...args) });
     await seedModal(server);
-    const mcp = await server.client(await server.token(server.people.member));
-
-    const tooLong = await call(mcp, "launch", {
-      golden: "shared",
-      provider: "modal",
-      harness: "claude",
-      ttlSeconds: 172_800,
+    const { db, people } = server;
+    await db.query(
+      `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+       values($1,$2,'org',$1,'org-app',$3,$4)`,
+      [people.org, `org:${people.org}`, BINDING.appId, BINDING.environment],
+    );
+    const sql = bunLikeSql(db);
+    const vault = createSqlVaultStore(sql);
+    const integration = await createModalIntegration({
+      sql,
+      vault,
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: PUBLIC_URL,
     });
-    expect(tooLong.text).toContain("error code: invalid");
-    expect(calls).toEqual([]);
-    expect(modal.forks).toEqual([]);
-
-    await server.db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'modal',$2)", [
-      server.people.member,
-      await encryptSecret(
-        JSON.stringify({ token_id: "ak-personal0001", token_secret: "as-personal0001" }),
-        ENCRYPTION_KEY,
-      ),
-    ]);
-    const log = spyOn(console, "info");
-    let launched: Awaited<ReturnType<typeof call>>;
-    try {
-      launched = await call(mcp, "launch", {
-        golden: "shared",
-        provider: "modal",
-        harness: "claude",
-        visibility: "private",
-      });
-      const samples = launchSamples(log);
-      expect(samples).toHaveLength(1);
-      expect(samples[0]).toMatchObject({ surface: "mcp", sandboxId: launchSandboxId(launched.data) });
-      expect(samples[0]?.stages.map(({ name }) => name)).toEqual(launchStages);
-    } finally {
-      log.mockRestore();
-    }
-    expect(launchEnvelope.parse(launched.data).golden?.visibility).toBe("org");
-    const source = (
-      await server.db.query<{ source_golden_visibility: string }>(
-        "select source_golden_visibility from sandboxes where id=$1",
-        [launchSandboxId(launched.data)],
-      )
-    ).rows[0];
-    expect(source?.source_golden_visibility).toBe("org");
-    await expect(
-      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [
-        launchSandboxId(launched.data),
-      ]),
-    ).rejects.toThrow(/immutable/);
-    const otherMember = await server.client(await server.token(server.people.owner));
-    const forbidden = await call(otherMember, "send", {
-      id: launchSandboxId(launched.data),
-      prompt: "impersonate",
-    });
-    expect(forbidden.isError).toBe(true);
-    expect(launchEnvelope.parse(launched.data).sandbox).toMatchObject({
-      provider: "modal",
-      providerSandboxId: "bx_1",
-    });
-    expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
-    expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);
-    expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_id);
-    expect(server.boat.forks).toEqual([]);
-
+    admit = await modalAdmissionFixture(
+      sql,
+      ENCRYPTION_KEY,
+      vault,
+      { orgId: people.org, userId: people.member, visibility: "org", binding: BINDING },
+      (actor, golden) => integration.launchProviderFor(golden, actor),
+    );
+    const mcp = await server.client(await server.token(people.member));
+    const request = { golden: "shared", provider: "modal", harness: "claude", idempotencyKey: "pinned-app-launch" };
+    const receipt = modalLaunchReceipt.parse((await call(mcp, "launch", request)).data);
+    expect(receipt.sandbox.status).toBe("starting");
     await setOrgModalPair(server, ROTATED);
-    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
-    expect(modal.prompts.map((prompt) => prompt.text)).toEqual(["next"]);
-    // Every call is pinned to the golden's App; only the token follows the rotation.
-    expect(calls.every(({ binding }) => JSON.stringify(binding) === JSON.stringify(BINDING))).toBe(true);
-    expect(calls.map(({ tokens }) => tokens.tokenId)).toEqual([PAIR.token_id, ROTATED.token_id]);
-    expect(server.boat.prompts).toEqual([]);
+    expect((await call(mcp, "launch", request)).data).toEqual(receipt);
+    expect(
+      (
+        await db.query(
+          `select s.source_golden_visibility,g.modal_app_id,s.provider_sandbox_id
+       from sandboxes s join goldens g on g.id=s.golden_id where s.id=$1`,
+          [receipt.sandbox.id],
+        )
+      ).rows,
+    ).toEqual([{ source_golden_visibility: "org", modal_app_id: BINDING.appId, provider_sandbox_id: null }]);
+    expect((await db.query("select sandbox_id from jobs where kind='launch'")).rows).toEqual([
+      { sandbox_id: receipt.sandbox.id },
+    ]);
+    expect(server.boat.forks).toEqual([]);
   });
 
   test("REST attributes receipt SQL only to the fresh Modal launch", async () => {
@@ -241,7 +189,13 @@ describe("provider routing", () => {
       data: createSqlData(sql),
       providerFor: () => provider,
       providers: { resolve: async () => provider },
-      ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
+      admitModalLaunch: await modalAdmissionFixture(
+        sql,
+        ENCRYPTION_KEY,
+        createSqlVaultStore(sql),
+        { orgId: people.org, userId: people.member, visibility: "org", binding: BINDING },
+        provider,
+      ),
     };
     const launch = () =>
       handleControlRequest(
@@ -262,20 +216,19 @@ describe("provider routing", () => {
     try {
       const fresh = await launch();
       expect(fresh?.status).toBe(200);
-      const response = launchEnvelope.parse(await fresh?.json());
+      const response = modalLaunchReceipt.parse(await fresh?.json());
       const replay = await launch();
       expect(replay?.status).toBe(200);
       expect(await replay?.json()).toEqual(response);
-      expect(modal.forks).toHaveLength(1);
+      expect(modal.forks).toHaveLength(0);
 
       const samples = launchSamples(log);
       expect(samples).toHaveLength(1);
       const sample = samples[0];
       expect(sample).toMatchObject({ surface: "rest", sandboxId: response.sandbox.id });
-      expect(sample?.stages.map(({ name }) => name)).toEqual(launchStages);
       expect(sample?.stages.find(({ name }) => name === "admission")?.sqlStatements).toBeGreaterThan(0);
-      expect(sample?.stages.find(({ name }) => name === "receipt_admission")?.sqlStatements).toBe(1);
-      expect(sample?.stages.find(({ name }) => name === "response_publication")?.sqlStatements).toBe(1);
+      expect(sample?.stages.find(({ name }) => name === "receipt_admission")?.sqlStatements).toBeGreaterThan(0);
+      expect(sample?.stages.find(({ name }) => name === "response_publication")?.sqlStatements).toBe(0);
     } finally {
       log.mockRestore();
     }

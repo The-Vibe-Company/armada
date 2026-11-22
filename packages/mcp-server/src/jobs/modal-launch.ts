@@ -46,6 +46,7 @@ import {
   ordinaryLaunchFingerprint,
   replayOrdinaryLaunchFailure,
 } from "../ordinary-launch-receipts.ts";
+import { recordModalLaunchAdmission } from "../request-timing.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
@@ -201,6 +202,7 @@ export async function admitModalLaunch(
   const store = createJobsStore(sql, encryptionKey);
 
   try {
+    let admitted = false;
     const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
@@ -407,8 +409,10 @@ export async function admitModalLaunch(
           [reservation.id, JSON.stringify(result)],
         );
       }
+      admitted = true;
       return envelope;
     });
+    if (admitted) recordModalLaunchAdmission(receipt.sandbox.id);
     return receipt;
   } catch (error) {
     if (error instanceof ConflictingJobRequest)

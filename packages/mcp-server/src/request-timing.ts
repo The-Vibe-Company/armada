@@ -83,7 +83,11 @@ export type GoldenLaunchTiming = {
   launched(sandbox: { id: string; provider: string }): void;
 };
 
-const launchSql = new AsyncLocalStorage<{ statements: number }>();
+const launchSql = new AsyncLocalStorage<{
+  statements: number;
+  admitted(id: string): void;
+  checkpoint: GoldenLaunchTiming["checkpoint"];
+}>();
 
 export async function observeGoldenLaunch<T>(
   surface: "rest" | "mcp" | "template_rest" | "routine",
@@ -102,13 +106,20 @@ export async function observeGoldenLaunch<T>(
     previous = now;
     previousStatements = sql.statements;
   };
-  const result = await launchSql.run(sql, () =>
-    work({
+  const result = await launchSql.run(
+    Object.assign(sql, {
       checkpoint,
-      launched: (sandbox) => {
-        if (sandbox.provider === "modal") sandboxId = sandbox.id;
+      admitted: (id: string) => {
+        sandboxId = id;
       },
     }),
+    () =>
+      work({
+        checkpoint,
+        launched: (sandbox) => {
+          if (sandbox.provider === "modal") sandboxId = sandbox.id;
+        },
+      }),
   );
   if (sandboxId) {
     checkpoint(finalPhase);
@@ -128,6 +139,16 @@ export async function observeGoldenLaunch<T>(
     }
   }
   return result;
+}
+
+export function checkpointGoldenLaunch(phase: GoldenLaunchPhase) {
+  launchSql.getStore()?.checkpoint(phase);
+}
+
+export function recordModalLaunchAdmission(id: string) {
+  const timing = launchSql.getStore();
+  timing?.checkpoint("receipt_admission");
+  timing?.admitted(id);
 }
 
 /** Includes pool queue and database round trip, but never SQL text or parameters. */

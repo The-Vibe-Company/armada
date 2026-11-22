@@ -1,4 +1,4 @@
-import type { Provider, Sql, VaultStore } from "@armada/core";
+import type { LaunchOptions, Provider, Sql, VaultStore } from "@armada/core";
 import { type Scope, scopeKey } from "@armada/provider-modal";
 import { admitModalLaunch } from "../src/jobs/modal-launch.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -7,7 +7,13 @@ import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 
-export async function modalAdmissionFixture(sql: Sql, key: string, vault: VaultStore, scope: Scope, host: Provider) {
+export async function modalAdmissionFixture(
+  sql: Sql,
+  key: string,
+  vault: VaultStore,
+  scope: Scope,
+  host: Provider | NonNullable<LaunchOptions["modalRuntimeDefault"]>["provider"],
+) {
   const scopeId = scopeKey(scope);
   await sql.query(
     `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
@@ -31,7 +37,7 @@ export async function modalAdmissionFixture(sql: Sql, key: string, vault: VaultS
       },
       credentials: launchCredentials(vault, key),
       connections: mcp.connections,
-      provider: async () => host,
+      provider: typeof host === "function" ? host : async () => host,
     },
     {},
     (input) => admitModalLaunch(sql, key, input, mcp),

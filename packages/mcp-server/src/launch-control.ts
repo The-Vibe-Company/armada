@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
+import { type Harness, HOST_CAPABILITIES, launchFailureHelp, type VaultStore } from "@armada/core";
 import {
   controlRouteKey,
   type LaunchInput,
@@ -125,7 +125,8 @@ async function launchGolden(
     request,
     goldenId: golden.id,
   };
-  if (golden.provider === "modal") {
+  timing.checkpoint("admission");
+  if (HOST_CAPABILITIES[golden.provider].goldenLaunchAdmission) {
     if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
     const receipt = await options.admitModalLaunch(
       actor,
@@ -137,7 +138,6 @@ async function launchGolden(
         ...(armadaAccess ? { armadaAccess } : {}),
       },
     );
-    timing.checkpoint("receipt_admission");
     return receipt;
   }
   if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
@@ -163,7 +163,6 @@ async function launchGolden(
     options.modelAuth,
     runtime && options.github ? { ...options.github, store: options.store } : undefined,
   );
-  timing.checkpoint("admission");
   const prepare = async () => {
     const account = await prepareGoldenLaunchAccount(
       actor,

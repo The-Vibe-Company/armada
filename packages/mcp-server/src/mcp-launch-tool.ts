@@ -1,3 +1,4 @@
+import { HOST_CAPABILITIES, ProviderRoutingError } from "@armada/core";
 import { launch, launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
 import {
   type GoldenRecord,
@@ -81,8 +82,13 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
       ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
     };
     const payload = { ...args, goldenId: chosen.id };
-    if (chosen.provider === "modal") {
-      if (!context.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
+    if (HOST_CAPABILITIES[chosen.provider].goldenLaunchAdmission) {
+      if (!context.admitModalLaunch)
+        throw new ProviderRoutingError(
+          "provider_routing_unavailable",
+          chosen.provider,
+          "Modal launch admission is unavailable.",
+        );
       return context.admitModalLaunch(
         actor,
         chosen,

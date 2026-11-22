@@ -430,6 +430,7 @@ interface HarnessOptions {
   authStore?: (db: PGlite) => AuthStore;
   log?: (line: string) => void;
   /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
+  admitModalLaunch?: HandlerOptions["admitModalLaunch"];
   modalProviderFor?: HandlerOptions["modalProviderFor"];
   providerFor?: HandlerOptions["providerFor"];
   modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
@@ -517,6 +518,7 @@ function createTestServer(
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
+    ...(options.admitModalLaunch ? { admitModalLaunch: options.admitModalLaunch } : {}),
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),

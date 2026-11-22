@@ -3,6 +3,8 @@ import { type LaunchRequest, type LaunchStores, prepareGoldenLaunch, VaultError 
 import { type ModalLaunchAdmission, replayModalLaunch } from "./jobs/modal-launch.ts";
 import { requireLaunchAccountBinding } from "./launch-account-admission.ts";
 
+import { checkpointGoldenLaunch } from "./request-timing.ts";
+
 export type AdmitModalLaunch = (
   actor: GoldenActor,
   golden: GoldenRecord,
@@ -31,6 +33,7 @@ export function createModalLaunchAdmission(
       if (receipt) return receipt;
     }
     const provider = await placement.provider(actor, golden);
+    checkpointGoldenLaunch("provider_resolution");
     const { pin, armadaAccess } = admission ?? {};
     const { plan } = await prepareGoldenLaunch(
       provider,
@@ -52,6 +55,7 @@ export function createModalLaunchAdmission(
     if (plan.golden.id !== golden.id) throw new VaultError("conflict", "Modal launch golden changed.");
     const binding = requireLaunchAccountBinding(plan.credentials.binding);
     const project = plan.resourceProject;
+    checkpointGoldenLaunch("account_resolution");
     return admit({
       orgId: actor.orgId,
       ownerId: actor.userId,

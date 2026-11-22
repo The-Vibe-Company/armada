@@ -398,19 +398,7 @@ export async function createServerServices(env: Record<string, string | undefine
     sql,
     {
       ...launch.modalRuntimeDefault,
-      async provider(actor, golden) {
-        if (!golden.modal) throw Error("Modal binding required.");
-        const caller = { userId: actor.userId };
-        const tokens = await modal.modalTokensFor(golden, caller);
-        return (
-          await modal.modalProviderFor(
-            { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
-            golden.modal,
-            { target: golden, caller, credentialScope: tokens.scope },
-            true,
-          )
-        ).provider;
-      },
+      provider: (actor, golden) => modal.launchProviderFor(golden, actor),
     },
     launch,
     (input) => admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),

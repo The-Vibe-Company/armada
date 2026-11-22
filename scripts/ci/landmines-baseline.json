@@ -879,7 +879,7 @@
     "packages/mcp-server/test/ordinary-launch-recovery.test.ts": 1,
     "packages/mcp-server/test/outbound-webhooks.test.ts": 1,
     "packages/mcp-server/test/provider-metadata.test.ts": 1,
-    "packages/mcp-server/test/provider-routing.test.ts": 2,
+    "packages/mcp-server/test/provider-routing.test.ts": 1,
     "packages/mcp-server/test/public-http.test.ts": 3,
     "packages/mcp-server/test/published-response.ts": 4,
     "packages/mcp-server/test/push-ledger-git.ts": 8,

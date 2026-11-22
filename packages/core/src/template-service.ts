@@ -579,7 +579,13 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
-    if (!runtime.scheduled && def.provider === "modal" && routineKey) invalid();
+    if (
+      !runtime.scheduled &&
+      isSandboxProvider(def.provider) &&
+      HOST_CAPABILITIES[def.provider].goldenLaunchAdmission &&
+      routineKey
+    )
+      invalid();
     // Host launches record no external reference; refuse rather than drop it.
     if (input.externalRef !== undefined && usesHostPlacement(def)) unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
@@ -696,7 +702,14 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const active = runtime!;
       const previous = await replay(row, bodyDigest, active);
       const m = row.manifest;
-      if (active.scheduled || m.golden?.provider !== "modal" || row.state !== "claimed" || row.result) return previous;
+      if (
+        active.scheduled ||
+        !m.golden ||
+        !HOST_CAPABILITIES[m.golden.provider].goldenLaunchAdmission ||
+        row.state !== "claimed" ||
+        row.result
+      )
+        return previous;
       if (routineKey) invalid();
       if (!active.admitModal) unavailable("environment_admission_unavailable");
       const a = admittedActor ?? (await transaction((tx) => member(tx, actor, org)));
@@ -729,7 +742,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         manifest: m,
       };
     }
-    if (!claimed || (!runtime.scheduled && request.manifest.golden?.provider === "modal"))
+    if (
+      !claimed ||
+      (!runtime.scheduled &&
+        request.manifest.golden &&
+        HOST_CAPABILITIES[request.manifest.golden.provider].goldenLaunchAdmission)
+    )
       return resume(request, selection.a);
     const m = request.manifest;
     let allocating = false;
