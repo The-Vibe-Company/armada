@@ -36,17 +36,21 @@ test("a multi-repository refresh recovers when another runtime rotates its in-fl
   const second = launch("second");
   let requestedRepository = "";
   let helperOutput = "";
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed Git's helper protocol directly without starting Git.
   const stdin = spyOn(Bun.stdin, "stream").mockImplementation(() =>
     new Blob([`protocol=https\nhost=github.com\npath=${requestedRepository}.git\n\n`]).stream(),
   );
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Capture the helper reply privately in place of Git's stdin pipe.
   const stdout = spyOn(process.stdout, "write").mockImplementation((chunk) => {
     helperOutput += chunk.toString();
     return true;
   });
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Supply Git's builtin listing without starting a process.
   const builtins = spyOn(Bun, "spawnSync").mockReturnValue({
     success: true,
     stdout: Buffer.from("fetch\n"),
   } as ReturnType<typeof Bun.spawnSync>);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Reproduce upstream rejection at the Git process boundary without Git or network.
   const runGit = spyOn(Bun, "spawn").mockImplementation(((args: string[]) => {
     const repository = args.at(-1)!;
     const exited = (async () => {
@@ -74,13 +78,15 @@ test("a multi-repository refresh recovers when another runtime rotates its in-fl
       }),
     };
   }) as typeof Bun.spawn);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Fail safely if the regression bypasses the managed wrapper.
   const directGit = spyOn(process, "execve").mockImplementation(() => {
     throw Error("test_unexpected_git_exec");
   });
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Route private socket requests in-process to the real broker.
   const brokerSocket = spyOn(globalThis, "fetch").mockImplementation((async (url, options) => {
     if (url === "http://private/redact") return new Response(options?.body);
     expect(url).toBe("http://private/");
-    expect(options?.unix).toBe(gitSocket);
+    expect(options && "unix" in options && options.unix).toBe(gitSocket);
     const { repository, operation } = JSON.parse(String(options?.body));
     return Response.json({ token: await first.acquire(repository, operation) });
   }) as typeof fetch);
@@ -101,6 +107,31 @@ test("a multi-repository refresh recovers when another runtime rotates its in-fl
   }
 });
 
+test("a forced push with two configured destinations runs directly without whole-command replay", async () => {
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Supply the effective two-destination Git config without starting Git.
+  const gitConfig = spyOn(Bun, "spawnSync").mockImplementation(((args: string[]) => {
+    const stdout = args.includes("config")
+      ? "remote.origin.pushurl\nhttps://github.com/acme/first.git\0remote.origin.pushurl\nhttps://github.com/acme/second.git\0"
+      : "push\n";
+    return { success: true, stdout: Buffer.from(stdout) };
+  }) as typeof Bun.spawnSync);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Observe the exec boundary without replacing the test runner with Git.
+  const directGit = spyOn(process, "execve").mockImplementation(() => 0 as never);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Guard against spawning Git if the replay guard regresses.
+  const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
+    throw Error("test_unexpected_git_spawn");
+  });
+  try {
+    await runGitHubClient(["git-run", gitSocket, "git", "push", "--force", "origin"]);
+    expect(directGit).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally {
+    spawn.mockRestore();
+    directGit.mockRestore();
+    gitConfig.mockRestore();
+  }
+});
+
 test.each([
   [authFailure, false, 2],
   ["fatal: unable to access 'https://github.com/acme/repo-8.git/': The requested URL returned error: 401\n", false, 2],
@@ -109,7 +140,7 @@ test.each([
   [authFailure, true, 2],
   [`${authFailure}error: failed to push some refs\n`, true, 1],
   ["error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401\n", true, 1],
-])("preserves the terminal Git error %s (push=%s) after %d attempts", async (error, push, expectedAttempts) => {
+])("preserves the terminal Git error %j (push=%j) after %d attempts", async (error, push, expectedAttempts) => {
   let attempts = 0;
   const stderr: Buffer[] = [];
   expect(

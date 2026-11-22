@@ -351,7 +351,7 @@ export async function runGitHubClient(argv: string[]) {
     delete env.GITHUB_TOKEN;
     const git = mode === "git-run" ? gitExecution(executable, rest, env) : undefined;
     if (git === "direct") {
-      process.execve!(executable, [executable, ...rest], env);
+      return process.execve!(executable, [executable, ...rest], env);
     }
     stage = "registration";
     if (secrets.length) {
