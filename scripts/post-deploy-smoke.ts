@@ -136,8 +136,8 @@ type DockerModelCase = Pick<SmokeCase, "org" | "model" | "modelAccountId"> & {
 type RealModelCase = SmokeCase | DockerModelCase;
 type RealModelLaunchSource = { golden: string; connections: [] } | { hostId: string };
 const smokeLaunch = {
-  modal: { ready: ["ready"] },
-  docker: { ready: ["ready", "running"] },
+  modal: { ready: ["ready"], waitForRecoveredSetup: true },
+  docker: { ready: ["ready", "running"], waitForRecoveredSetup: false },
 };
 interface SmokeIo {
   fetch: (url: string, init: RequestInit, receipt?: "admission") => Promise<Response>;
@@ -1487,7 +1487,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
         if (!sandboxId || result.promptId) fail("invalid_response");
         hasAdmissionReceipt = acceptsAdmission && !!parseLaunchAdmissionReceipt(item.provider, result);
-        if (!scoped && !defaultSkills && (hasAdmissionReceipt || (recovered && item.provider === "modal")))
+        if (
+          !scoped &&
+          !defaultSkills &&
+          (hasAdmissionReceipt || (recovered && smokeLaunch[item.provider].waitForRecoveredSetup))
+        )
           launchSetupUntil = recoveryUntil ?? Math.min(deadline, io.now() + launchBudget);
         if (!recovered && parent?.provider !== item.provider && !hasAdmissionReceipt) fail("invalid_response");
         if (requiresLaunchReceipt && !hasAdmissionReceipt && result.golden?.id !== item.goldenId)
