@@ -89,7 +89,6 @@ const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
 const port = reservation.port;
 await reservation.stop(true);
 const env = {
-  ARMADA_MODAL_AGENT_PATH: "native",
   ARMADA_DATABASE_URL: "postgres://fixture",
   ARMADA_DATABASE_POOL_MAX: "5",
   ARMADA_RUNTIME_IDLE_MINUTES: "2.5",
@@ -260,7 +259,10 @@ try {
   schemaVersion = "20000101000000";
   repaired = false;
   schemaChecked = false;
-  await assert.rejects(startServer(env, { log: () => {}, logError: (line) => logs.push(line) }), /schema behind/);
+  await assert.rejects(
+    startServer(warmingEnv, { log: () => {}, logError: (line) => logs.push(line) }),
+    /schema behind/,
+  );
   assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
   assert.equal(repaired, false, "Outdated schema must fail before model repair");
   assert.deepEqual(
@@ -273,7 +275,10 @@ try {
   attempts = 0;
   failUntil = Infinity;
   now = 0;
-  await assert.rejects(startServer(env, { log: () => {}, logError: (line) => logs.push(line) }), /EMAXCONNSESSION/);
+  await assert.rejects(
+    startServer(warmingEnv, { log: () => {}, logError: (line) => logs.push(line) }),
+    /EMAXCONNSESSION/,
+  );
   assert.equal(attempts > 1, true);
   assert.equal(intervals.mock.calls.length, 0);
   assert.deepEqual(

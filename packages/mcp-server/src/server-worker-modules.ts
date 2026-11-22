@@ -237,8 +237,7 @@ const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServi
   };
 };
 
-export const modalModule: ServerModule = ({ mounts, workers }) => {
-  mounts.push(({ modal }) => [modal.route]);
+export const modalModule: ServerModule = ({ workers }) => {
   workers.background.set("modal-artifacts", modalArtifactWorker);
   workers.isolated.set("modal-inventory", ({ modal, options }) => modal.inventoryReaper(options.log));
 };

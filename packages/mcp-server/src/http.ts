@@ -80,7 +80,7 @@ export interface HandlerOptions {
   /** The project that checks a Supabase session bearer (the dashboard's). */
   supabase: SupabaseProject;
   data: DataSource;
-  /** #2560: where native Boat/Modal event reads record first_token. Absent: native output is not timed. */
+  /** #2560: where native Boat event reads record first_token. Absent: native output is not timed. */
   launchStageSql?: Pick<Sql, "query">;
   /** Ciphertext of the stored credentials: the server's privileged connection, read in this process. */
   vault: CredentialReader;
@@ -320,7 +320,7 @@ export function providerRegistry(
               if (!options.runtimeProviderFor || !target.id) throw new Error("Runtime routing unavailable.");
               return options.runtimeProviderFor(host, target, caller, captureRuntimeWork);
             }
-            return native(host, target);
+            return host;
           },
         }
       : {}),

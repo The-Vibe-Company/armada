@@ -88,10 +88,6 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       vault: store,
       encryptionKey,
       publicUrl: need("ARMADA_PUBLIC_URL"),
-      github: { store, app: githubApp },
-      beforePrompt: async (provider, id, caller) => {
-        await lifecycle().beforePrompt(provider, id, caller);
-      },
     }));
   const providers = providerRegistry({
     launchStageSql: sql,

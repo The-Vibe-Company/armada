@@ -1,159 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
-import { hkdfSync } from "node:crypto";
-import {
-  createSqlVaultStore,
-  createUsagePricingContext,
-  encryptSecret,
-  ProviderError,
-  type ProviderTarget,
-} from "@armada/core/server";
-import {
-  createGenerationGrants,
-  createSqlModalStore,
-  type Machine,
-  type Scope,
-  scopeKey,
-} from "@armada/provider-modal";
-import { App, AppService } from "modal";
+import { createSqlVaultStore, encryptSecret, type ProviderTarget } from "@armada/core/server";
+import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { AppService } from "modal";
 import { createSqlData } from "../src/data.ts";
-import { createModalIntegration, MODAL_INGEST_PATH } from "../src/modal-integration.ts";
+import { createModalIntegration } from "../src/modal-integration.ts";
 import { createModalReaper } from "../src/modal-reaper.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
-
-test.each(["claude", "codex"] as const)(
-  "server ingest persists %s usage before ACK, replays once and fences old generations",
-  async (harness) => {
-    const { db, people } = await sharedDatabase();
-
-    const sql = db;
-    const scope: Scope = {
-      orgId: people.org,
-      userId: people.owner,
-      visibility: "private",
-      binding: { workspace: "ws", appId: "ap-immutable", environment: "main" },
-    };
-    const machine: Machine = {
-      info: { id: "logical", name: "test", state: "ready", providerState: "active", labels: {} },
-      phase: "active",
-      generation: 1,
-      golden: false,
-      ttlSeconds: 60,
-      physicalName: "physical",
-      grantExpiresAt: Date.now() + 60_000,
-    };
-    await createSqlModalStore(sql, scope).reserve("request", machine);
-    await sql.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-      scopeKey(scope),
-      JSON.stringify(scope),
-    ]);
-    const key = new Uint8Array(
-      hkdfSync("sha256", Buffer.from(ENCRYPTION_KEY, "base64"), "armada/modal/v1", "runner-generation-grants", 32),
-    );
-    const grant = createGenerationGrants(key, scope).issue(machine);
-    const options = {
-      sql,
-      vault: createSqlVaultStore(sql),
-      encryptionKey: ENCRYPTION_KEY,
-      publicUrl: "https://armada.test",
-    };
-    await sql.query(
-      `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-      values($1,$2,'usage-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
-      [people.org, people.owner, scope.binding.workspace, scope.binding.environment, scope.binding.appId],
-    );
-    const sessionId = crypto.randomUUID();
-    const registerSession = () =>
-      sql.query(
-        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-    select $1,id,$2,$3,'modal',$4,$5,'ready' from goldens where name='usage-modal'`,
-        [sessionId, people.org, people.owner, machine.info.id, harness],
-      );
-    const model = "compatible_model";
-    const events = [
-      {
-        sequence: 1,
-        event: { id: "prompt", at: 1, kind: "prompt", promptId: "turn", text: "hello", status: "running" },
-      },
-      {
-        sequence: 2,
-        event: {
-          id: "usage",
-          at: 2,
-          kind: "other",
-          promptId: "turn",
-          type: harness === "claude" ? "result" : "armada/turnUsage",
-          data:
-            harness === "claude"
-              ? { modelUsage: { [model]: { inputTokens: 42, outputTokens: 7, cacheReadInputTokens: 3 } } }
-              : { model, inputTokens: 42, outputTokens: 7, cachedTokens: 3 },
-        },
-      },
-      {
-        sequence: 3,
-        event: { id: "finished", at: 3, kind: "prompt", promptId: "turn", text: "hello", status: "finished" },
-      },
-    ];
-    const readUsage = async () =>
-      (
-        await createSqlData(sql)({
-          userId: people.owner,
-          orgs: [{ orgId: people.org, role: "member" }],
-          via: "service",
-        }).sandboxes.get(sessionId)
-      )?.usage;
-    const request = () =>
-      new Request(`https://armada.test${MODAL_INGEST_PATH}`, {
-        method: "POST",
-        headers: { "x-armada-runner-grant": grant.token },
-        body: JSON.stringify({
-          sandboxId: machine.info.id,
-          generation: "1",
-          events,
-        }),
-      });
-    const first = await createModalIntegration(options);
-    expect((await first.route(request()))?.status).toBe(403);
-    expect((await sql.query("select * from modal_events")).rows).toHaveLength(0);
-    await registerSession();
-    const account = crypto.randomUUID();
-    await createSqlData(sql)({
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-      via: "service",
-    }).sandboxes.recordUsagePricingContext!(
-      sessionId,
-      createUsagePricingContext({
-        harness,
-        credentialKind: harness === "claude" ? "claude_oauth" : "openai",
-        credentialId: account,
-        credentialVersion: 1,
-        customEndpoint: true,
-      }),
-    );
-    expect((await first.route(request()))?.status).toBe(200);
-    expect((await readUsage())?.tokenTotals).toMatchObject({ inputTokens: 42, outputTokens: 7, cachedTokens: 3 });
-    expect((await readUsage())?.turns).toMatchObject([{ model, inputTokens: 42 }]);
-    const restarted = await createModalIntegration(options);
-    const replay = await restarted.route(request());
-    expect(await replay?.json()).toEqual({ acknowledgedSequence: 3 });
-    expect((await readUsage())?.tokenTotals?.inputTokens).toBe(42);
-    expect(
-      (
-        await sql.query("select trim_scale(usd)::text as usd, unpriced_turns from account_spend where account_id=$1", [
-          account,
-        ])
-      ).rows,
-    ).toEqual(harness === "claude" ? [] : [{ usd: "0", unpriced_turns: 1 }]);
-    expect((await sql.query("select * from modal_events")).rows).toHaveLength(3);
-    await sql.query("update modal_machines set record=jsonb_set(record,'{generation}','2') where id='logical'");
-    expect((await restarted.route(request()))?.status).toBe(403);
-    expect(await restarted.route(new Request("https://armada.test/api/internal/modal/events-extra"))).toBeNull();
-  },
-);
 
 test("private image org-fallback provenance survives adding a personal key, rotation and removal", async () => {
   const { db, people } = await sharedDatabase();
@@ -212,19 +68,21 @@ test("private image org-fallback provenance survives adding a personal key, rota
     );
     // A stored read reaches only Armada's database: the request records itself, never a Modal call.
     const records: { event: string }[] = [];
-    let reader!: Awaited<ReturnType<typeof integration.storedProviderFor>>;
     await observeRequest(
       async () => {
-        reader = await integration.storedProviderFor(target, caller);
-        expect(await reader.get(machine.info.id)).toMatchObject({ id: machine.info.id, state: "ready" });
+        const tokens = await integration.modalTokensFor(target, caller);
+        const { provider } = await integration.modalProviderFor(
+          { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+          binding,
+          { target, caller, credentialScope: tokens.scope },
+          true,
+        );
+        expect(await provider.get(machine.info.id)).toMatchObject({ id: machine.info.id, state: "ready" });
         return Response.json({});
       },
       (line) => records.push(JSON.parse(line)),
     );
     expect(records.map((record) => record.event)).toEqual(["http_request"]);
-    expect(() => reader.stop({ sandboxId: machine.info.id })).toThrow(
-      "Stored observations cannot perform live operations",
-    );
     expect(apps).not.toHaveBeenCalled();
     expect(await integration.modalTokensFor(target, caller)).toEqual({
       tokenId: pair("original").token_id,
@@ -238,58 +96,6 @@ test("private image org-fallback provenance survives adding a personal key, rota
   } finally {
     apps.mockRestore();
   }
-});
-
-test("org ingest uses each machine owner, not the first scope registrant, across membership revocation", async () => {
-  const { db, people } = await sharedDatabase();
-
-  const binding = { workspace: "ws", appId: "ap-org", environment: "main" };
-  const first: Scope = { orgId: people.org, userId: people.admin, visibility: "org", binding };
-  const owner: Scope = { ...first, userId: people.owner };
-  const machine: Machine = {
-    info: { id: "member-machine", name: "member", state: "ready", providerState: "active", labels: {} },
-    launchUserId: people.owner,
-    phase: "active",
-    generation: 1,
-    golden: false,
-    ttlSeconds: 60,
-    physicalName: "physical",
-    grantExpiresAt: Date.now() + 60_000,
-  };
-  await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-    scopeKey(first),
-    JSON.stringify(first),
-  ]);
-  await createSqlModalStore(db, owner).reserve("member-launch", machine);
-  const key = new Uint8Array(
-    hkdfSync("sha256", Buffer.from(ENCRYPTION_KEY, "base64"), "armada/modal/v1", "runner-generation-grants", 32),
-  );
-  const token = createGenerationGrants(key, owner).issue(machine).token;
-  const server = await createModalIntegration({
-    sql: db,
-    vault: createSqlVaultStore(db),
-    encryptionKey: ENCRYPTION_KEY,
-    publicUrl: "https://armada.test",
-  });
-  const send = (sequence: number) =>
-    server.route(
-      new Request(`https://armada.test${MODAL_INGEST_PATH}`, {
-        method: "POST",
-        headers: { "x-armada-runner-grant": token },
-        body: JSON.stringify({
-          sandboxId: machine.info.id,
-          generation: "1",
-          events: [{ sequence, event: { id: `e${sequence}`, at: sequence, kind: "text", text: "event" } }],
-        }),
-      }),
-    );
-  await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [people.org, people.owner]);
-  await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.admin]);
-  expect((await send(1))?.status).toBe(200);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [people.org, people.admin]);
-  await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
-  expect((await send(2))?.status).toBe(403);
-  expect((await db.query("select producer_sequence from modal_events")).rows).toEqual([{ producer_sequence: 1 }]);
 });
 
 test("scoped golden CAS supports NULL masters without broadening private-owner or live membership authority", async () => {
@@ -472,101 +278,4 @@ test("the Modal reaper only terminates unreferenced VMs and retries a failed ter
     overdue: 3,
     complete: true,
   });
-});
-
-test("native Modal restore preserves the stopped generation during a current strict drain stop", async () => {
-  const { db, people } = await sharedDatabase();
-  const binding = { workspace: "app:ap-drain", appId: "ap-drain", environment: "main" };
-  const scope: Scope = { orgId: people.org, userId: people.owner, visibility: "private", binding };
-  const placement = "native-modal-placement";
-  const sandboxId = crypto.randomUUID();
-  await db.query(
-    `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
-     values($1,$2,'org',$1,'drain-app',$3,'main')`,
-    [people.org, `org:${people.org}`, binding.appId],
-  );
-  await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2)", [
-    people.org,
-    await encryptSecret(
-      JSON.stringify({ token_id: ["ak", "fixturekey"].join("-"), token_secret: ["as", "fixturekey"].join("-") }),
-      ENCRYPTION_KEY,
-    ),
-  ]);
-  await db.query(
-    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-     values($1,$2,'drain-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
-    [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
-  );
-  await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,stop_generation,stopped_at)
-     select $1,id,$2,$3,'modal',$4,'claude','stopped',2,clock_timestamp() from goldens where name='drain-modal'`,
-    [sandboxId, people.org, people.owner, placement],
-  );
-  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,2)", [sandboxId]);
-  const store = createSqlModalStore(db, scope);
-  await store.reserve("native-modal-request", {
-    info: { id: placement, name: "retained", state: "stopped", providerState: "stopped", labels: {} },
-    phase: "stopped",
-    generation: 1,
-    golden: false,
-    ttlSeconds: 60,
-    physicalName: "retained-physical",
-    recoveryImageId: "retained-image",
-    managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
-  });
-  const afterReservation = new ProviderError({
-    provider: "modal",
-    code: "unavailable",
-    message: "Test stops before live Modal allocation",
-    retryable: false,
-  });
-  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Stub only the Modal gRPC App lookup to stop before live allocation while exercising the real SQL journal.
-  const apps = spyOn(AppService.prototype, "fromName").mockImplementationOnce(async () => new App(binding.appId));
-  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Any later App lookup is the boundary between restore reservation and live Modal work.
-  apps.mockImplementation(async () => {
-    throw afterReservation;
-  });
-  const capacityAdmissions: string[] = [];
-  try {
-    const integration = await createModalIntegration({
-      sql: db,
-      vault: createSqlVaultStore(db),
-      encryptionKey: ENCRYPTION_KEY,
-      publicUrl: "https://armada.test",
-      beforeResume: async (_provider, id) => {
-        capacityAdmissions.push(id);
-      },
-    });
-    const { provider } = await integration.modalProviderFor({ tokenId: "fixture", tokenSecret: "fixture" }, binding, {
-      target: { provider: "modal", orgId: people.org, visibility: "private", modal: binding },
-      caller: { userId: people.owner },
-      credentialScope: "org",
-    });
-    const restore = () => provider.exec!({ sandboxId: placement, command: "true" });
-    await expect(restore()).rejects.toMatchObject({ code: "conflict" });
-    expect(capacityAdmissions).toEqual([]);
-    expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
-
-    await db.query("update native_drain_stop_requests set stop_generation=1 where sandbox_id=$1", [sandboxId]);
-    await db.query("update sandboxes set native_drain_pending=true where id=$1", [sandboxId]);
-    await expect(restore()).rejects.toMatchObject({ code: "conflict" });
-    expect(capacityAdmissions).toEqual([]);
-    expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
-
-    await db.query("update sandboxes set native_drain_pending=false where id=$1", [sandboxId]);
-    await db.exec("alter table native_drain_stop_requests rename to unavailable_drain_stop_requests");
-    try {
-      await expect(restore()).rejects.toMatchObject({ code: "unknown" });
-      expect(capacityAdmissions).toEqual([]);
-      expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
-    } finally {
-      await db.exec("alter table unavailable_drain_stop_requests rename to native_drain_stop_requests");
-    }
-
-    await expect(restore()).rejects.toThrow(afterReservation.message);
-    expect(capacityAdmissions).toEqual([placement]);
-    expect(await store.get(placement)).toMatchObject({ phase: "reserved", generation: 2 });
-  } finally {
-    apps.mockRestore();
-  }
 });

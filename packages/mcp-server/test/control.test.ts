@@ -33,8 +33,6 @@ import { createCredentialBindingRecovery } from "../src/credential-binding-recov
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
-import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
-import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -2060,17 +2058,6 @@ test.each(["claude", "codex", "privatized"] as const)(
           options,
         ))!;
       };
-      const modelAuth = createModelAuthOwnership(db, KEY);
-      const resolver = modalLaunchEnvironment({
-        modelAuth,
-        sql: db,
-        vault: options.store,
-        encryptionKey: KEY,
-        scope,
-        scopeKey: key,
-        callerUserId: ADA,
-      });
-      await expect(resolver(machine, {})).rejects.toMatchObject({ code: "credential_binding_required" });
       let providerResolutions = 0;
       options.providers = {
         resolve: async () => {
@@ -2185,13 +2172,6 @@ test.each(["claude", "codex", "privatized"] as const)(
         launchUserId: ADA,
       });
       expect((await db.query("select count(*)::int as n from modal_machines")).rows[0]).toEqual({ n: 1 });
-      const restored = await resolver({ ...after, generation: 5, phase: "booting" }, {});
-      const token = winner.credentialId === chosen ? "chosen-token" : "alternate-token";
-      if (harness === "claude") expect(restored.claudeEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
-      else {
-        expect(restored.codexAuthJson).toBe(nativeToken(token));
-        expect(restored.nativeAuthRevision).toBe(0);
-      }
       const refusedBinding = await post(ADA, winner.credentialId === chosen ? alternate : chosen);
       expect(refusedBinding.status).toBe(409);
       expect(await refusedBinding.json()).toMatchObject({ error: { code: "conflict", message: expect.any(String) } });

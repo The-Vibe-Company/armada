@@ -45,15 +45,12 @@ export async function readStartupConfiguration(env: Record<string, string | unde
     config.boatAgentPath === "runtime" ? env.ARMADA_RUNTIME_ARTIFACT_DIR : undefined,
   );
 
-  let modalRuntime: { manifest: Awaited<ReturnType<typeof readManifest>>; artifactDir: string } | undefined;
-  if (env.ARMADA_MODAL_DIALOUT === "1") {
-    const manifest = await readManifest(env.ARMADA_MODAL_RUNTIME_MANIFEST, "ARMADA_MODAL_RUNTIME_MANIFEST");
-    if (!runtimeArtifactSet(manifest))
-      throw new ServerConfigError("ARMADA_MODAL_RUNTIME_MANIFEST must describe a valid runtime artifact set.");
-    const artifactDir = env.ARMADA_RUNTIME_ARTIFACT_DIR;
-    if (!artifactDir?.trim()) throw new ServerConfigError("Set ARMADA_RUNTIME_ARTIFACT_DIR.");
-    modalRuntime = { manifest, artifactDir };
-  }
+  const manifest = await readManifest(env.ARMADA_MODAL_RUNTIME_MANIFEST, "ARMADA_MODAL_RUNTIME_MANIFEST");
+  if (!runtimeArtifactSet(manifest))
+    throw new ServerConfigError("ARMADA_MODAL_RUNTIME_MANIFEST must describe a valid runtime artifact set.");
+  const artifactDir = env.ARMADA_RUNTIME_ARTIFACT_DIR;
+  if (!artifactDir?.trim()) throw new ServerConfigError("Set ARMADA_RUNTIME_ARTIFACT_DIR.");
+  const modalRuntime = { manifest, artifactDir };
 
   const dockerManifest =
     env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1"

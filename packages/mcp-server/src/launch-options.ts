@@ -178,7 +178,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
       Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
     ),
     modalRuntime: {
-      defaultPath: options.launch?.modalRuntimeDefault ? "runtime" : "native",
+      defaultPath: "runtime",
       enabled: Boolean(options.modalRuntimeLaunch),
       followupVersion: options.runtimeSend ? 1 : 0,
       idleLaunchVersion: options.modalRuntimeLaunch && options.runtimeSend ? 1 : 0,
