@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { shellQuote } from "../../core/src/shell-quote.ts";
+import { retryGitHubAuthentication } from "./github-git-retry.ts";
 
 type Mode = "git-run" | "git" | "gh" | "native";
 
@@ -177,29 +178,35 @@ function splitGitAlias(value: string) {
   return words;
 }
 
-function superviseGit(git: string, args: string[], env: NodeJS.ProcessEnv) {
+function gitExecution(git: string, args: string[], env: NodeJS.ProcessEnv): "direct" | "redact" | "retry" {
   const index = gitCommandIndex(args);
   let command = args[index];
-  if (!command) return false;
+  if (!command) return "direct";
   const prefix = args.slice(0, index);
+  let operands = args.slice(index + 1);
   const builtins = Bun.spawnSync([git, "--list-cmds=builtins"], { env, stderr: "ignore" });
-  if (!builtins.success) return true;
+  if (!builtins.success) return "redact";
   const names = new Set(builtins.stdout.toString().split("\n"));
   for (let depth = 0; depth < 16; depth++) {
-    if (command === "credential") return true;
-    if (names.has(command)) return false;
+    if (command === "credential") return "redact";
+    if (names.has(command)) {
+      // A fetch that consumes refspecs from stdin cannot safely be replayed.
+      if (command === "fetch" && operands.includes("--stdin")) return "direct";
+      return ["clone", "fetch", "push"].includes(command) ? "retry" : "direct";
+    }
     const alias = Bun.spawnSync([git, ...prefix, "config", "--get", `alias.${command}`], { env, stderr: "ignore" });
-    if (!alias.success) return alias.exitCode !== 1;
+    if (!alias.success) return alias.exitCode === 1 ? "direct" : "redact";
     const value = alias.stdout.toString().trim();
-    if (value.startsWith("!")) return true;
+    if (value.startsWith("!")) return "redact";
     const words = splitGitAlias(value);
-    if (!words) return true;
+    if (!words) return "redact";
     const offset = gitCommandIndex(words);
     command = words[offset];
-    if (!command) return true;
+    if (!command) return "redact";
     prefix.push(...words.slice(0, offset));
+    operands = [...words.slice(offset + 1), ...operands];
   }
-  return true;
+  return "redact";
 }
 
 function post(socket: string, path: string, body: string | Buffer, headers?: Record<string, string>) {
@@ -232,6 +239,7 @@ async function execute(
   env: NodeJS.ProcessEnv,
   redactor: string,
   nativeSecrets?: string[],
+  writeStderr = (bytes: Buffer) => writeOutput(process.stderr, bytes),
 ) {
   const child = Bun.spawn([executable, ...args], { env, stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
@@ -265,14 +273,8 @@ async function execute(
       }
     }
   }
-  async function pipe(source: ReadableStream<Uint8Array>, output: NodeJS.WriteStream) {
+  async function pipe(source: ReadableStream<Uint8Array>, write: (bytes: Buffer) => Promise<void>) {
     let pending = Buffer.alloc(0);
-    async function write(bytes: Buffer) {
-      if (bytes.length)
-        await new Promise<void>((resolve, reject) =>
-          output.write(bytes, (error) => (error ? reject(error) : resolve())),
-        );
-    }
     for await (const chunk of source) {
       for (let offset = 0; offset < chunk.length; offset += 65536) {
         pending = Buffer.concat([pending, chunk.subarray(offset, offset + 65536)]);
@@ -286,8 +288,8 @@ async function execute(
   try {
     const [code] = await Promise.all([
       child.exited,
-      pipe(child.stdout, process.stdout),
-      pipe(child.stderr, process.stderr),
+      pipe(child.stdout, (bytes) => writeOutput(process.stdout, bytes)),
+      pipe(child.stderr, writeStderr),
     ]);
     if (child.signalCode) {
       for (const signal of signals) process.off(signal, forward);
@@ -301,6 +303,11 @@ async function execute(
   } finally {
     for (const signal of signals) process.off(signal, forward);
   }
+}
+
+async function writeOutput(output: NodeJS.WriteStream, bytes: Buffer) {
+  if (bytes.length)
+    await new Promise<void>((resolve, reject) => output.write(bytes, (error) => (error ? reject(error) : resolve())));
 }
 
 export async function runGitHubClient(argv: string[]) {
@@ -318,7 +325,8 @@ export async function runGitHubClient(argv: string[]) {
     }
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
-    if (mode === "git-run" && !superviseGit(executable, rest, env)) {
+    const git = mode === "git-run" ? gitExecution(executable, rest, env) : undefined;
+    if (git === "direct") {
       process.execve!(executable, [executable, ...rest], env);
     }
     stage = "registration";
@@ -329,6 +337,12 @@ export async function runGitHubClient(argv: string[]) {
     }
     if (mode === "git-run") {
       stage = "redaction";
+      if (git === "retry") {
+        return await retryGitHubAuthentication(
+          (writeStderr) => execute(executable, rest, env, redactor, undefined, writeStderr),
+          (bytes) => writeOutput(process.stderr, bytes),
+        );
+      }
       return await execute(executable, rest, env, redactor);
     }
     stage = "repository_selection";
