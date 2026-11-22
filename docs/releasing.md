@@ -785,6 +785,6 @@ A different SHA after publication requires a new version.
 
 | Criterion | Evidence to record |
 | --- | --- |
-| Failed smoke leaves no stable publication | Scratch workflow run with a failing smoke and before/after checks of the tag, GitHub release and stable image |
-| First real tag-last release | Actions timeline showing smoke completed before image promotion and tag/release creation, followed by the existing production and npm jobs |
-| First-try reliability | Coordinator tracks the next ten releases against the 90% first-try green target |
+| Failed smoke leaves no stable publication | Open. Needs a scratch workflow run with a failing smoke and before/after checks of the tag, GitHub release and stable image. |
+| First real tag-last release | [8.0.0 release run](https://github.com/The-Vibe-Company/armada/actions/runs/45026146771). The exact-source staging job recorded a successful smoke for `3bf92d8c5e21cde3538fa73c37371b303039c408` and its candidate digest. Finalization promoted and verified that digest and created `v8.0.0` on the smoked SHA. Production and npm publication then succeeded. |
+| First-try reliability | Open. The coordinator tracks ten releases against the 90% first-try green target. |
