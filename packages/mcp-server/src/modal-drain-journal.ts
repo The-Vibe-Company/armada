@@ -83,7 +83,7 @@ const historicalReplay = `m.record->'historicalDrainAdmission'=${historicalAdmis
 const historicalAdmission = `case when s.native_drain_pending then ${historicalReplay}
   else m.record->'historicalDrainAdmission' is null and (
     (s.stop_requested_at is null and m.record->>'phase'='stopped')
-    or (s.stop_requested_at is not null and ${historicalTombstone})
+    or (${historicalTombstone})
   ) end`;
 
 export const historicalModalDrainCandidate = `${historicalModalCohort} and exists (
