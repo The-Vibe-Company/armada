@@ -2672,6 +2672,19 @@ test("native handoff refuses stale and missing proof even with a historical arch
   ).toEqual([]);
 });
 
+test("service role cannot directly delete detached native recovery", async () => {
+  const { db, copy, archiveId } = await seedNativeDrainReceipt();
+  expect(await copy()).toBe("archived");
+  await db.exec("set role service_role");
+  try {
+    await expect(db.query("delete from native_drain_recovery where archive_id=$1", [archiveId])).rejects.toMatchObject({
+      code: "42501",
+    });
+  } finally {
+    await db.exec("reset role");
+  }
+});
+
 test("native drain recovery is service-only and taint purges the detached copy", async () => {
   const { db, sandboxId, copy } = await seedNativeDrainReceipt();
   const privileges = await db.query(
@@ -2683,7 +2696,12 @@ test("native drain recovery is service-only and taint purges the detached copy",
   );
   expect(privileges.rows).toEqual([{ jwt_copy: false, jwt_read: false, service_copy: true, service_read: true }]);
   expect(await copy()).toBe("archived");
-  await db.query("update sandboxes set application_secret_tainted=true where id=$1", [sandboxId]);
+  await db.exec("set role service_role");
+  try {
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [sandboxId]);
+  } finally {
+    await db.exec("reset role");
+  }
   expect(await copy()).toBe("ineligible");
   expect(
     (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
