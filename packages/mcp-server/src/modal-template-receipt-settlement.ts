@@ -40,13 +40,12 @@ const reviewedRows = z
 type ReviewedRow = z.infer<typeof reviewedRows>[number];
 type Decision = ReviewedRow["evidence"]["kind"] | "deferred" | "already-terminal" | "busy";
 
-// Lock absence as well as presence. NOWAIT avoids waiting on ingest or lifecycle
-// transactions that may hold these tables in a different order.
+// WARNING: Keep NOWAIT on authority locks because ingest and lifecycle transactions may acquire them in a different order.
 const lockAuthority = `lock table public.sandboxes, public.modal_machines,
   public.jobs, public.provider_launch_requests, public.runtime_resumes,
   public.ordinary_launch_snapshot_intents, public.golden_operation_fences in share mode nowait`;
 
-async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean): Promise<Decision> {
+async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   const {
     rows: [receipt],
   } = await tx.query<{

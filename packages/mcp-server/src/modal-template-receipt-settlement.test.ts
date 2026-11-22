@@ -59,7 +59,7 @@ async function fixture() {
   };
   const read = async () =>
     (
-      await db.query(
+      await db.query<{ state: string; result: unknown }>(
         "select state, result from template_launch_requests where org_id=$1 and actor_id=$2 and client_key='fixture-key'",
         [people.org, people.owner],
       )
