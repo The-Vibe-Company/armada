@@ -1374,39 +1374,40 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       );
       stopped = true;
     }
+    type LaunchReceipt = {
+      sandbox: {
+        id: string;
+        provider?: string;
+        skills?: unknown;
+        harness?: string;
+        model?: string;
+        reasoningEffort?: string;
+        credentialId?: string;
+        credentialVersion?: number;
+        visibility?: string;
+      };
+      armadaAccess?: { enabled?: boolean; maxActiveChildren?: number };
+      golden?: { id: string };
+      promptId?: string;
+    };
+    const matchesParentConfiguration = (parent: LaunchReceipt["sandbox"]) =>
+      parent.harness === item.harness &&
+      parent.model === item.model &&
+      (!item.reasoningEffort || parent.reasoningEffort === item.reasoningEffort) &&
+      parent.credentialId === item.modelAccountId &&
+      typeof parent.credentialVersion === "number" &&
+      Number.isSafeInteger(parent.credentialVersion) &&
+      parent.credentialVersion >= 1 &&
+      (scope !== "enabled" || parent.visibility === "private");
     async function run() {
       if (scoped) {
         io.out(JSON.stringify({ step: "scoped_access", mode: scope, model: "scripted" }));
         await scoped.prepare();
       }
       const launchStep = scoped ? "scoped_parent_launch" : "launch";
+      const launchBudget = budgets[launchStep] ?? 600_000;
       await step(launchStep, async () => {
         launchAttempted = true;
-        type LaunchReceipt = {
-          sandbox: {
-            id: string;
-            provider?: string;
-            skills?: unknown;
-            harness?: string;
-            model?: string;
-            reasoningEffort?: string;
-            credentialId?: string;
-            credentialVersion?: number;
-            visibility?: string;
-          };
-          armadaAccess?: { enabled?: boolean; maxActiveChildren?: number };
-          golden?: { id: string };
-          promptId?: string;
-        };
-        const matchesParentConfiguration = (parent: LaunchReceipt["sandbox"]) =>
-          parent.harness === item.harness &&
-          parent.model === item.model &&
-          (!item.reasoningEffort || parent.reasoningEffort === item.reasoningEffort) &&
-          parent.credentialId === item.modelAccountId &&
-          typeof parent.credentialVersion === "number" &&
-          Number.isSafeInteger(parent.credentialVersion) &&
-          parent.credentialVersion >= 1 &&
-          (scope !== "enabled" || parent.visibility === "private");
         const body = {
           ...(scope === "enabled" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
           golden: item.golden,
@@ -1420,7 +1421,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const acceptsAdmission = scope === undefined && (lifecycle || preservation || goldenRuntime);
+        const acceptsAdmission = scope !== undefined || lifecycle || preservation || goldenRuntime;
         const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
@@ -1455,7 +1456,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status.prompt !== null
               )
                 return;
-              if (scope && !matchesParentConfiguration(status)) return;
+              if (
+                scope &&
+                (!matchesParentConfiguration(status) || status.settled !== true || status.statusMessage !== null)
+              )
+                return;
               if (defaultSkills && !scope) {
                 if (status.settled !== true || status.statusMessage !== null) return;
                 verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
@@ -1466,7 +1471,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const { result, recovered } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
-          budgets[launchStep] ?? 600_000,
+          launchBudget,
           request,
           (id) => {
             sandboxId = id;
@@ -1484,7 +1489,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (!recovered && parent?.provider !== item.provider && !hasAdmissionReceipt) fail("invalid_response");
         if (requiresLaunchReceipt && !hasAdmissionReceipt && result.golden?.id !== item.goldenId)
           fail("invalid_response");
-        if (scope)
+        if (scope && !hasAdmissionReceipt)
           await step("scoped_parent_configuration", async () => {
             if (!matchesParentConfiguration(parent)) fail("invalid_response");
             if (
@@ -1499,6 +1504,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         launchSkills = parent.skills;
       });
       const readinessStep = scoped ? "scoped_parent_ready" : "ready";
+      const scopedAdmissionUntil =
+        scoped && hasAdmissionReceipt ? Math.min(deadline, io.now() + launchBudget) : undefined;
       await step(readinessStep, async () => {
         let statusResponse: { status: string; providerState: string; statusReason: string } | undefined;
         try {
@@ -1525,7 +1532,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
-            { step: readinessStep },
+            scopedAdmissionUntil === undefined ? { step: readinessStep } : { until: scopedAdmissionUntil },
           );
         } catch (error) {
           if (error instanceof SmokeFailure) {
@@ -1544,6 +1551,34 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         }
       });
       if (scoped) {
+        if (scopedAdmissionUntil !== undefined)
+          await step("scoped_parent_configuration", async () => {
+            const remaining = () => scopedAdmissionUntil - io.now();
+            await consistent("ready", item.goldenId, remaining);
+            const read = (timeoutMs?: number) =>
+              sandbox<
+                LaunchReceipt["sandbox"] & {
+                  status: string;
+                  prompt: unknown;
+                  settled: boolean;
+                  statusMessage: string | null;
+                }
+              >("status", { id: sandboxId }, timeoutMs);
+            const settled = await poll(read, (status) => status?.settled === true, { until: scopedAdmissionUntil });
+            if (settled.statusMessage !== null) fail("invalid_response");
+            const parent = await read(remaining());
+            if (remaining() < 0) fail("poll_limit_exceeded");
+            if (
+              parent?.id !== sandboxId ||
+              parent.status !== "ready" ||
+              parent.prompt !== null ||
+              parent.settled !== true ||
+              parent.statusMessage !== null ||
+              !matchesParentConfiguration(parent)
+            )
+              fail("invalid_response");
+            parentCredentialVersion = parent.credentialVersion;
+          });
         await scoped.run(sandboxId!, parentCredentialVersion!);
         await measuredStep("scoped_parent_stop", stopSandbox);
         return;
@@ -1617,10 +1652,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       }
       if (githubRefresh && !dirty)
         await measuredStep("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
-      async function consistent(expected: string, golden?: string) {
+      async function consistent(expected: string, golden?: string, remaining?: () => number) {
         const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
           "status",
           { id: sandboxId },
+          remaining?.(),
         );
         if (status.id !== sandboxId || status.harness !== item.harness || status.status !== expected)
           fail("list_status_mismatch");
@@ -1631,14 +1667,18 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             page: number;
             hasMore: boolean;
             nextPage: number | null;
-          }>("list", {
-            owner: "me",
-            harness: item.harness,
-            status: [expected],
-            ...(golden ? { golden } : {}),
-            limit: 200,
-            page,
-          });
+          }>(
+            "list",
+            {
+              owner: "me",
+              harness: item.harness,
+              status: [expected],
+              ...(golden ? { golden } : {}),
+              limit: 200,
+              page,
+            },
+            remaining?.(),
+          );
           if (!Array.isArray(result?.sandboxes) || result.page !== page || typeof result.hasMore !== "boolean")
             fail("invalid_response");
           const matches = result.sandboxes.filter((row) => row.id === sandboxId);
