@@ -1153,7 +1153,7 @@ test.each(["first turn", "promptless setup"] as const)(
       (await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
     const referenceCommands: string[] = [];
     let grants = 0;
-    const runSetup = async (interrupt: boolean) => {
+    const runSetup = async (interrupt: boolean, loseAfterGrant = false) => {
       const commands = createRuntimeCommands(enrolments, launchEncryptionKey, {
         now: () => 0,
         async wait() {
@@ -1194,20 +1194,46 @@ test.each(["first turn", "promptless setup"] as const)(
         publicUrl: "https://armada.test",
         commands,
       });
-      const lane = await modalFirstTurnLane(f, queue, commands, undefined, undefined, access);
+      const lane = await modalFirstTurnLane(
+        f,
+        loseAfterGrant
+          ? {
+              async acceptInitialLaunch() {
+                throw new Error("Worker lost after the grant acknowledgement.");
+              },
+            }
+          : queue,
+        commands,
+        undefined,
+        undefined,
+        access,
+      );
       expect(await lane.reconcileOne(signal)).toBe(true);
       await lane.drain();
     };
+
+    const expireClaim = () =>
+      f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+    const grantReceipts = async () =>
+      (
+        await f.db.query(
+          "select acknowledged_at is not null as acknowledged from orchestrator_delegations where orchestrator_id=$1",
+          [id],
+        )
+      ).rows;
 
     await runSetup(true);
     expect(referenceCommands).toHaveLength(1);
     expect(grants).toBe(0);
     expect(await turns()).toEqual([]);
-    await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [
-      id,
-      MODAL_INITIAL_TURN,
-    ]);
+    await expireClaim();
 
+    if (mode === "first turn") {
+      await runSetup(false, true);
+      expect(await grantReceipts()).toEqual([{ acknowledged: true }]);
+      expect(await turns()).toEqual([]);
+      await expireClaim();
+    }
     await runSetup(false);
     expect(referenceCommands).toEqual([referenceCommands[0]!, referenceCommands[0]!]);
     expect(grants).toBe(1);
@@ -1215,14 +1241,7 @@ test.each(["first turn", "promptless setup"] as const)(
     expect(
       (await f.db.query("select state from jobs where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN])).rows,
     ).toEqual([{ state: "done" }]);
-    expect(
-      (
-        await f.db.query(
-          "select acknowledged_at is not null as acknowledged from orchestrator_delegations where orchestrator_id=$1",
-          [id],
-        )
-      ).rows,
-    ).toEqual([{ acknowledged: true }]);
+    expect(await grantReceipts()).toEqual([{ acknowledged: true }]);
   },
 );
 
