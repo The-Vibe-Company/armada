@@ -46,6 +46,7 @@ export interface ToolContext {
   now(): Date;
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
+  admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */

@@ -2,16 +2,15 @@ import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
 import { isRecord } from "@armada/core";
+import { pinnedModalLaunchReceipt } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlVaultStore,
   createTemplateService,
   encryptSecret,
   type LaunchTemplate,
-  ProviderError,
   resolveModelChoice,
   type Sql,
-  VaultError,
 } from "@armada/core/server";
 import * as boatProvider from "@armada/provider-boat";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
@@ -30,6 +29,7 @@ import {
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { sqlOver } from "../src/sql.ts";
 import { runtimeWakes } from "../src/wake-bus.ts";
+import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { publishedFailure, publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -230,6 +230,14 @@ async function fixture(
     };
   };
   if (entry === "default") enableDefault();
+  if (provider === "modal")
+    options.admitModalLaunch = await modalAdmissionFixture(
+      sql,
+      ENCRYPTION_KEY,
+      options.store,
+      { orgId: people.org, userId: people.owner, visibility: "private", binding },
+      host,
+    );
   const create = async (def: unknown = definition) =>
     (
       await templates.command(caller, "create", {
@@ -306,88 +314,43 @@ for (const entry of ["explicit", "default"] as const)
     });
     const template = await f.create();
     const request = f.request(template.id);
-    const log = spyOn(console, "info");
-    try {
-      const first = await f.api(request);
-      expect(first.status).toBe(200);
-      const launched = (await first.json()) as {
-        id: string;
-        state: string;
-        manifest: { variables: Record<string, string> };
-        sandbox: { id: string; templateManifest: { variables: Record<string, string> } };
-      };
-      if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
-      const sandboxId = entry === "explicit" ? launched.sandbox.id : launched.id;
-      const manifest = entry === "explicit" ? launched.sandbox.templateManifest : launched.manifest;
-      const active = f.active();
-      if (!active) throw Error("Expected enrolled launch runtime");
-      expect(launched).toMatchObject({ runtime: { kind: "armada", epoch: active.epoch } });
-      if (entry === "explicit") {
-        expect(launched).toMatchObject({
-          sandbox: { id: sandboxId, provider: "modal", externalRef: "pinned:variable-proof" },
-          golden: { name: "variables-modal" },
-        });
-        expect(launched).not.toHaveProperty("state");
-      } else {
-        expect(launched.state).toBe("succeeded");
-      }
-      expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
-      const delivered = f.starts[0];
-      if (!delivered) throw Error("Missing enrolled variable delivery");
-      expect(manifest.variables).toEqual(delivered);
-      await f.application.command(f.caller, "variable", "update", {
-        org: f.people.org,
-        id: f.variableId,
-        expectedVersion: 1,
-        value: "changed-source",
-      });
-      const replay = await f.api(request);
-      expect(replay.status).toBe(200);
-      expect(await replay.json()).toEqual(launched);
-      await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
-      if (entry === "explicit") {
-        const mismatched = await f.api({ ...request, harness: "codex" });
-        expect(mismatched.status).toBe(400);
-        const changed = await f.api({ ...request, externalRef: "pinned:different" });
-        expect(changed.status).toBe(409);
-      }
-      const tombstoneReplay = await f.api(request);
-      expect(tombstoneReplay.status).toBe(200);
-      expect(await tombstoneReplay.json()).toEqual(launched);
-      expect(f.physical.forks).toHaveLength(1);
-      expect(f.prompts()).toBe(1);
-      // Resume reads the admitted manifest, not the mutable current variable source.
-      expect(
-        (
-          await readRuntimeTemplateEnvironment(
-            f.sql,
-            { userId: f.people.owner, orgId: f.people.org },
-            sandboxId,
-            "modal",
-          )
-        ).variables,
-      ).toEqual({
-        APP_REGION: "original\n$(not-a-command)",
-      });
-      const samples = log.mock.calls
-        .map(([line]) => JSON.parse(String(line)))
-        .filter(({ event }) => event === "modal_golden_launch_timing");
-      expect(samples).toHaveLength(1);
-      const [sample] = samples;
-      expect(sample).toMatchObject({ surface: "template_rest", sandboxId });
-      expect(sample.stages.map(({ name }: { name: string }) => name)).toEqual([
-        "admission",
-        "provider_resolution",
-        "template_execution",
-      ]);
-      expect(sample.stages[0].sqlStatements).toBeGreaterThan(0);
-      expect(sample.stages[2].sqlStatements).toBeGreaterThan(0);
-      expect(sample.sqlStatements).toBe(
-        sample.stages.reduce((sum: number, stage: { sqlStatements: number }) => sum + stage.sqlStatements, 0),
-      );
-    } finally {
-      log.mockRestore();
-    }
+    const first = await f.api(request);
+    expect(first.status).toBe(200);
+    const launched = (await first.json()) as {
+      id: string;
+      status: string;
+      manifest: { variables: Record<string, string> };
+    };
+    if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
+    const {
+      id: sandboxId,
+      status,
+      templateManifest,
+    } = entry === "explicit"
+      ? pinnedModalLaunchReceipt.parse(launched).sandbox
+      : { id: launched.id, status: launched.status, templateManifest: launched.manifest };
+    expect(status).toBe("starting");
+    expect(launched).not.toHaveProperty("promptId");
+    expect(f.physical.forks).toHaveLength(0);
+    expect(templateManifest.variables).toEqual({ APP_REGION: "original\n$(not-a-command)" });
+    await f.application.command(f.caller, "variable", "update", {
+      org: f.people.org,
+      id: f.variableId,
+      expectedVersion: 1,
+      value: "changed-source",
+    });
+    await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+    expect(await (await f.api(request)).json()).toEqual(launched);
+    expect(
+      (
+        await readRuntimeTemplateEnvironment(
+          f.sql,
+          { userId: f.caller.userId, orgId: f.people.org },
+          sandboxId,
+          "modal",
+        )
+      ).variables,
+    ).toEqual(templateManifest.variables);
   });
 
 test("Modal template selection rejects foreign provider/harness, invalid pins and mixed source overrides before allocation", async () => {
@@ -571,7 +534,7 @@ test.each(["health", "configureReadableVariables"] as const)(
   },
 );
 
-test.each(["modal", "boat"] as const)(
+test.each(["boat"] as ("boat" | "modal")[])(
   "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
   async (provider) => {
     const f = await fixture("codex", provider, "explicit", true);
@@ -723,12 +686,8 @@ test.each(["modal", "boat"] as const)(
   },
 );
 
-test.each([
-  ["explicit", "secret_version_changed"],
-  ["default", "secret_unavailable"],
-  ["boat", "secret_version_changed"],
-] as const)("%s launch returns the vault conflict after allocation and on replay", async (path, reason) => {
-  const f = await fixture("codex", path === "boat" ? "boat" : "modal", path === "boat" ? "default" : path, true);
+test("Boat launch returns the vault conflict after allocation and on replay", async () => {
+  const f = await fixture("codex", "boat", "default", true);
   const secret = (
     await f.db.query<{ id: string }>(
       "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
@@ -747,40 +706,20 @@ test.each([
       return child;
     },
   });
-  if (path === "boat") {
-    const runtime = f.options.launch!.boatRuntimeDefault!;
-    const resolveHost = runtime.provider;
-    runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
-  } else if (path === "explicit") {
-    const resolveHost = f.options.modalRuntimeHostFor!;
-    f.options.modalRuntimeHostFor = async (golden, caller) => changeVersionAfterFork(await resolveHost(golden, caller));
-  } else {
-    const policy = f.options.modalRuntimeLaunch!;
-    f.options.modalRuntimeLaunch = {
-      async start(input) {
-        const agent = await policy.start(input);
-        return {
-          ...agent,
-          async prepareWorkspace() {
-            await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
-            return { status: "not_connected" };
-          },
-        };
-      },
-    };
-    f.enableDefault();
-  }
+  const runtime = f.options.launch!.boatRuntimeDefault!;
+  const resolveHost = runtime.provider;
+  runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
   const request = f.request(template.id);
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await f.api(request);
     expect(response.status).toBe(409);
     expect(publishedFailure().parse(await response.json())).toMatchObject({
-      error: { code: "conflict", message: `Template launch refused: ${reason}.` },
+      error: { code: "conflict", message: "Template launch refused: secret_version_changed." },
     });
   }
   expect(f.physical.forks).toHaveLength(1);
   expect(f.physical.stops).toHaveLength(1);
-  expect(f.deliveries).toHaveLength(path === "default" ? 1 : 0);
+  expect(f.deliveries).toHaveLength(0);
   expect(f.prompts()).toBe(0);
 });
 
@@ -841,112 +780,23 @@ test.each(["modal", "boat"] as const)(
   },
 );
 
-test("pinned Modal replay reports its reserved sandbox while the original request is claimed", async () => {
+test("pinned Modal replays a claimed reservation after interrupted preparation", async () => {
   const f = await fixture();
   const template = await f.create();
-  const request = f.request(template.id);
-  const resolve = f.options.modalRuntimeHostFor!;
-  let pending: Response | undefined;
-  f.options.modalRuntimeHostFor = async (golden, caller) => {
-    pending = await f.api(request);
-    return resolve(golden, caller);
+  const input = f.request(template.id);
+  const admit = f.options.admitModalLaunch!;
+  f.options.admitModalLaunch = async () => {
+    throw Error("Interrupted before admission");
   };
-  const reply = await f.api(request);
-  expect(reply.status).toBe(200);
-  const launched = (await reply.json()) as { sandbox: { id: string } };
-  expect(pending?.status).toBe(503);
-  expect(publishedFailure().parse(await pending?.json())).toMatchObject({
-    error: { code: "outcome_unknown", details: { sandboxId: launched.sandbox.id } },
-  });
-  expect(f.physical.forks).toHaveLength(1);
-  expect(f.prompts()).toBe(1);
-});
-
-test.each([
-  {
-    code: "payment_required",
-    status: 402,
-    error: new ProviderError({
-      provider: "modal",
-      code: "payment_required",
-      retryable: false,
-      message: "private provider diagnostics",
-    }),
-  },
-  {
-    code: "conflict",
-    status: 409,
-    error: new VaultError("conflict", "Template launch refused: connection_version_changed."),
-  },
-])("pinned Modal replays a definite $code refusal without redispatch", async ({ code, status, error }) => {
-  const f = await fixture();
-  const template = await f.create();
-  const request = f.request(template.id);
-  let attempts = 0;
-  f.options.modalRuntimeHostFor = async () => {
-    attempts++;
-    throw error;
-  };
-  const first = await f.api(request);
-  expect(first.status).toBe(status);
-  const failure = await first.json();
-  expect(publishedFailure().parse(failure)).toMatchObject({
-    error: { code, details: { sandboxId: expect.any(String) } },
-  });
-  expect(JSON.stringify(failure)).not.toContain(error.message);
-  const replay = await f.api(request);
-  expect(replay.status).toBe(status);
-  expect(await replay.json()).toEqual(failure);
-  expect(attempts).toBe(1);
-  expect(f.physical.forks).toHaveLength(0);
-});
-
-test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
-  const f = await fixture("claude", "modal");
-  const template = await f.create();
-  const { prompt: _prompt, ...request } = f.request(template.id);
-  const send = f.options.runtimeSend;
-  if (!send) throw Error("Missing first-send service in fixture");
-  delete f.options.runtimeSend;
-  expect((await f.api(request)).status).toBe(503);
-  expect(f.physical.forks).toHaveLength(0);
-  f.options.runtimeSend = send;
-  const response = await f.api(request);
+  expect((await f.api(input)).status).toBe(500);
+  const {
+    rows: [reserved],
+  } = await f.db.query<{ sandbox_id: string }>("select sandbox_id from template_launch_requests");
+  f.options.admitModalLaunch = admit;
+  const response = await f.api(input);
   expect(response.status).toBe(200);
-  const launched = (await response.json()) as {
-    sandbox: { id: string; status: string; templateManifest: { variables: Record<string, string> } };
-    promptId: null;
-    conversationId: null;
-  };
-  expect(launched).toMatchObject({ sandbox: { status: "ready" }, promptId: null, conversationId: null });
-  expect(f.prompts()).toBe(0);
-  expect(f.physical.forks).toHaveLength(1);
-  const active = f.active();
-  if (!active) throw Error("Missing enrolled idle template authority");
-  await expect(f.authority.withSession(active.runtimeToken, active.epoch, async () => true)).resolves.toBe(true);
-  await f.application.command(f.caller, "variable", "update", {
-    org: f.people.org,
-    id: f.variableId,
-    expectedVersion: 1,
-    value: "changed-source",
-  });
-  expect(await (await f.api(request)).json()).toEqual(launched);
-  expect((await f.api({ ...request, prompt: "changed request" })).status).toBe(409);
-  await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
-  expect(await (await f.api(request)).json()).toEqual(launched);
-  expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
-  expect(f.prompts()).toBe(0);
-  expect(f.physical.forks).toHaveLength(1);
-  expect(
-    (
-      await readRuntimeTemplateEnvironment(
-        f.sql,
-        { userId: f.people.owner, orgId: f.people.org },
-        launched.sandbox.id,
-        "modal",
-      )
-    ).variables,
-  ).toEqual(launched.sandbox.templateManifest.variables);
+  expect(await response.json()).toMatchObject({ sandbox: { id: reserved!.sandbox_id, status: "starting" } });
+  expect(f.physical.forks).toHaveLength(0);
 });
 
 for (const harness of ["codex", "claude"] as const)
@@ -980,21 +830,3 @@ for (const harness of ["codex", "claude"] as const)
     expect(f.physical.forks).toHaveLength(1);
     expect(f.starts).toHaveLength(1);
   });
-
-test("ordinary completed native template replay stays native after coordinator default selection", async () => {
-  const f = await fixture("codex", "modal", "ordinary");
-  const template = await f.create({ ...f.definition, variables: [] });
-  const request = f.request(template.id);
-  const first = await f.api(request);
-  expect(first.status).toBe(200);
-  const original = (await first.json()) as { runtime?: unknown };
-  expect(original.runtime).toBeUndefined();
-  expect(f.physical.prompts).toHaveLength(1);
-  f.enableDefault();
-  const replay = await f.api(request);
-  expect(replay.status).toBe(200);
-  expect(await replay.json()).toEqual(original);
-  expect(f.physical.forks).toHaveLength(1);
-  expect(f.physical.prompts).toHaveLength(1);
-  expect(f.starts).toEqual([]);
-});

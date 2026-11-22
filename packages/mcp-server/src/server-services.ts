@@ -38,7 +38,7 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
-import { modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
+import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -47,6 +47,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModalLaunchAdmission } from "./modal-launch-admission.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
@@ -312,7 +313,10 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
     modelAuth,
   });
-  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+    store,
+    app: githubApp,
+  });
   const modalLaunchJob = modal.launchJob(async (sandbox) => {
     if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
     const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
@@ -322,6 +326,7 @@ export async function createServerServices(env: Record<string, string | undefine
       sandbox.credentialId,
       sandbox.credentialVersion,
     );
+    await modalLaunchCredentials.enrollAccount?.(actor, credentials);
     const plan = await runtimeConfigurationWithVariables(
       sql,
       {
@@ -389,6 +394,15 @@ export async function createServerServices(env: Record<string, string | undefine
         },
       ),
   };
+  const admitModal = createModalLaunchAdmission(
+    sql,
+    {
+      ...launch.modalRuntimeDefault,
+      provider: (actor, golden) => modal.launchProviderFor(golden, actor),
+    },
+    launch,
+    (input) => admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),
+  );
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
@@ -473,6 +487,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const control: ConfiguredControlOptions = {
     ...(deviceLogin ? { deviceLogin } : {}),
     ordinaryLaunchReceipts,
+    admitModalLaunch: admitModal,
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),
     docker: {
@@ -608,6 +623,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
     ordinaryLaunchReceipts,
+    admitModalLaunch: admitModal,
     launch,
     modelAuth,
     publicUrl: config.publicUrl,

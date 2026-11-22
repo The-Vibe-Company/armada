@@ -21,9 +21,9 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { launchEnvelope, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
+import { launchEnvelope, modalLaunchReceipt, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
-import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
@@ -31,16 +31,15 @@ import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createModalIntegration } from "../src/modal-integration.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
@@ -2291,290 +2290,6 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
   });
 }
 
-test("access launch resolves an omitted account and grants only its persisted binding before the first prompt", async () => {
-  await withServer(async ({ db, options, cli }) => {
-    const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
-    const org = await options.store.createOrg("Access", STAN);
-    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-    const golden = (
-      await db.query<{ id: string }>(
-        `insert into goldens(org_id,name,visibility,owner_id,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-      values($1,'access','org',$2,'modal','image','workspace','main','app',$3::jsonb) returning id`,
-        [
-          org.id,
-          STAN,
-          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
-        ],
-      )
-    ).rows[0]!;
-    const account = (
-      await db.query<{ id: string }>(
-        `insert into credentials(scope,owner_id,kind,name,value_enc,is_default) values('user',$1,'openai','access account',$2,true) returning id`,
-        [STAN, await encryptSecret("synthetic-api-account", KEY)],
-      )
-    ).rows[0]!;
-    await db.query(
-      "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','unselected account',$2)",
-      [STAN, await encryptSecret("synthetic-other-account", KEY)],
-    );
-    const fake = fakeBoat();
-    let installedToken = "";
-    let statusAtInstall: unknown;
-    const access = createSandboxArmadaAccess({
-      sql: {
-        query: (q, v) => db.query(q, v),
-        transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-      },
-      encryptionKey: KEY,
-      publicUrl: "https://armada.test",
-    });
-    const provider = {
-      ...fake.provider,
-      id: "modal" as const,
-      get: async (id: string) => ({ ...(await fake.provider.get(id)), physicalGeneration: "1" }),
-      installOrchestratorEpoch: async (
-        request: Parameters<NonNullable<typeof fake.provider.installOrchestratorEpoch>>[0],
-      ) => {
-        statusAtInstall = (
-          await db.query<{ status: string }>("select status from sandboxes where golden_id=$1", [golden.id])
-        ).rows[0]?.status;
-        installedToken = request.token;
-        return { acknowledged: true };
-      },
-      scrubOrchestratorEpoch: async () => ({ acknowledged: true }),
-      quiesceOrchestrator: async () => ({ acknowledged: true }),
-      prompt: async (request: Parameters<typeof fake.provider.prompt>[0]) => {
-        expect(installedToken).not.toBe("");
-        return fake.provider.prompt(request);
-      },
-    };
-    const binding = { workspace: "workspace", environment: "main", appId: "app" };
-    const orgScope: Scope = { orgId: org.id, userId: STAN, visibility: "org", binding };
-    await db.query(
-      "insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment) values($1,$2,'org',$1,'scope-regression','app','main')",
-      [org.id, `org:${org.id}`],
-    );
-    const orgPair = { token_id: "ak-orgmanagement", token_secret: "as-orgmanagement" };
-    await db.query(
-      "insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2),('user',$3,'modal',$4)",
-      [
-        org.id,
-        await encryptSecret(JSON.stringify(orgPair), KEY),
-        STAN,
-        await encryptSecret(
-          JSON.stringify({ token_id: "ak-personalmanagement", token_secret: "as-personalmanagement" }),
-          KEY,
-        ),
-      ],
-    );
-    const orgStore = createSqlModalStore(db, orgScope);
-    await orgStore.reserve("golden-source", {
-      info: { id: "golden-source", name: "source", state: "ready", providerState: "active", labels: {} },
-      phase: "active",
-      generation: 1,
-      golden: true,
-      ttlSeconds: 60,
-      physicalName: "source",
-    });
-    await orgStore.saveImage({
-      sourceId: "golden-source",
-      info: { name: "image", status: "ready" },
-      imageId: "im-source",
-      goldenClean: true,
-      managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
-    });
-    const modal = await createModalIntegration({
-      sql: db,
-      vault: options.store,
-      encryptionKey: KEY,
-      publicUrl: "https://armada.test",
-    });
-    options.providerFor = () => provider;
-    options.providers = {
-      resolve: async (target, caller) => {
-        expect(await modal.modalTokensFor(target, caller)).toMatchObject({ tokenId: orgPair.token_id, scope: "org" });
-        const scope: Scope = {
-          orgId: target.orgId,
-          userId: caller.userId,
-          visibility: target.visibility,
-          binding: target.modal!,
-        };
-        const sourceScope: Scope = { ...scope, visibility: target.sourceGoldenVisibility ?? target.visibility };
-        const machines = createSqlModalStore(db, scope);
-        return access.wrap({
-          ...provider,
-          fork: async (request) => {
-            const image = await createSqlModalStore(db, sourceScope).image(request.from);
-            const info = await fake.provider.fork(request);
-            await machines.reserve(
-              info.id,
-              {
-                info,
-                phase: "active",
-                generation: 1,
-                launchUserId: caller.userId,
-                golden: false,
-                ttlSeconds: request.ttlSeconds ?? 900,
-                physicalName: info.id,
-                grantExpiresAt: Date.now() + 900_000,
-                managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
-                sourceImage: { scopeKey: scopeKey(sourceScope), name: request.from, imageId: image.imageId! },
-              },
-              image.sourceId,
-            );
-            return info;
-          },
-          get: async (id) => ({ ...(await machines.get(id)).info, physicalGeneration: "1" }),
-          prompt: async (request) => {
-            const receipt = await provider.prompt(request);
-            await machines.lease(request.sandboxId, async (machine, save) => {
-              machine.info.state = "running";
-              await save(machine);
-            });
-            return receipt;
-          },
-        });
-      },
-    };
-    options.sandboxArmadaAccess = access;
-    // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
-    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-    const stagingLaunch = (repo: string, placement: "boat" | "modal" = "modal") =>
-      handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            org: org.id,
-            golden: placement === "boat" ? "access-boat" : "access",
-            provider: placement,
-            harness: "codex",
-            model: "gpt-6.1-sol",
-            ttlSeconds: 900,
-            prompt: "Staging contract probe",
-            armadaAccessVersion: 1,
-            armadaAccess: { maxActiveChildren: 1 },
-            skills: [],
-            skipSkillDefaults: true,
-            connections: [],
-            repo,
-          }),
-        }),
-        options,
-      );
-    const refused = await stagingLaunch("/home/user/web");
-    expect(refused?.status).toBe(400);
-    expect(await refused?.json()).toMatchObject({ error: { code: "invalid_config" } });
-    expect(fake.forks).toHaveLength(0);
-    expect((await db.query("select id from sandboxes where org_id=$1", [org.id])).rows).toHaveLength(0);
-    const result = await cli(STAN).run([
-      "new",
-      "access",
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--repo",
-      "web",
-      "--armada-access",
-      "Remember the child task",
-      "--json",
-    ]);
-    expect(result).toMatchObject({ code: 0 });
-    const { sandbox: launched } = launchEnvelope.parse(JSON.parse(result.out));
-    expect(statusAtInstall).toBe("starting");
-    expect(launched.harness).toBe("codex");
-    expect(launched.credentialId).toBe(account.id);
-    expect(
-      (
-        await db.query<{ credential_ids: string[] }>(
-          "select credential_ids from armada_access_parents where sandbox_id=$1",
-          [launched.id],
-        )
-      ).rows[0]?.credential_ids,
-    ).toEqual([account.id]);
-    expect(launched.repositoryDir).toBe("web");
-    expect((await db.query("select id from orchestrators")).rows).toHaveLength(0);
-    expect(
-      (
-        await options.data!({ userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "supabase" }).sandboxes.get(
-          launched.id,
-        )
-      )?.visibility,
-    ).toBe("private");
-    expect(fake.prompts).toHaveLength(1);
-    expect(
-      (await db.query("select scope,visibility from modal_machines where id=$1", [launched.providerSandboxId])).rows,
-    ).toEqual([{ scope: scopeKey({ ...orgScope, visibility: "private" }), visibility: "private" }]);
-    const ordinary = await cli(STAN).run([
-      "new",
-      "access",
-      "--provider",
-      "modal",
-      "--agent",
-      "codex",
-      "--credential-id",
-      account.id,
-      "--json",
-    ]);
-    expect(ordinary.code).toBe(0);
-    const ordinaryId = launchEnvelope.parse(JSON.parse(ordinary.out)).sandbox.providerSandboxId;
-    expect((await db.query("select scope,visibility from modal_machines where id=$1", [ordinaryId])).rows).toEqual([
-      { scope: scopeKey(orgScope), visibility: "org" },
-    ]);
-
-    await db.query(
-      "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) select org_id,'access-boat','org',owner_id,'boat-image',config from goldens where id=$1",
-      [golden.id],
-    );
-    await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
-      await encryptSecret("org-boat-fixture-key", KEY),
-      org.id,
-    ]);
-    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'boat',$2)", [
-      STAN,
-      await encryptSecret("personal-boat-fixture-key", KEY),
-    ]);
-    const routed = options.providers;
-    delete options.providers;
-    let selectedBoatKey: string | undefined;
-    options.providerFor = (key) => {
-      selectedBoatKey = key;
-      throw new VaultError("unavailable", "Fixture stops before allocation.");
-    };
-    const forksBefore = fake.forks.length;
-    expect((await stagingLaunch("web", "boat"))?.status).toBe(503);
-    expect(selectedBoatKey).toBe("org-boat-fixture-key");
-    expect(fake.forks).toHaveLength(forksBefore);
-    options.providers = routed;
-    options.providerFor = () => provider;
-    const { DelegatedAuthority } = await import("@armada/core/server");
-    const sql: Sql = {
-      query: (q, v) => db.query(q, v),
-      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-    };
-    const authority = new DelegatedAuthority(sql, async (tx, input) => {
-      await resolveCredentials(createSqlVaultStore(tx), KEY, input);
-    });
-    expect(
-      await authority.admit(
-        installedToken,
-        { method: "launch", goldenId: golden.id, harness: "codex", credentialId: account.id, credentialVersion: 1 },
-        async (_tx, principal) => principal.ownerId,
-      ),
-    ).toBe(STAN);
-    // The same complete staging payload is accepted with its configured repository selector.
-    const beforeAccepted = fake.forks.length;
-    const accepted = await stagingLaunch("web");
-    expect(accepted?.status).toBe(200);
-    expect(launchEnvelope.parse(await accepted?.json())).toMatchObject({
-      sandbox: { credentialId: account.id, repositoryDir: "web" },
-      armadaAccess: { enabled: true, maxActiveChildren: 1 },
-    });
-    expect(fake.forks).toHaveLength(beforeAccepted + 1);
-  });
-});
-
 test("CLI/API connection checks require the owner and current bound revision, exposing only closed runtime diagnostics", async () => {
   await withServer(async ({ db, options, cli }) => {
     const owner = cli(STAN),
@@ -3141,21 +2856,12 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
-test.each([
-  { harness: "codex" as const, fromDefaults: false, entry: "explicit" },
-  { harness: "claude" as const, fromDefaults: true, entry: "explicit" },
-  { harness: "opencode" as const, fromDefaults: true, entry: "explicit" },
-  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-api" },
-  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
-  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped" },
-  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-idle" },
-  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-boat" },
-])(
-  "Enrolled golden launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
-  async ({ harness, fromDefaults, entry }) => {
+test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
+  "Enrolled golden launch prepares default MCP and skills before its first prompt ($entry)",
+  async ({ harness, entry }) => {
     const ordinary = entry.startsWith("ordinary");
     const scoped = entry.startsWith("ordinary-scoped");
-    const idle = entry === "ordinary-scoped-idle";
+    const idle = false;
     const boat = entry === "ordinary-scoped-boat";
     const provider = boat ? "boat" : "modal";
     const runtimeFields = boat ? { boatRuntime: true } : { runtimeTransport: "dialout" };
@@ -3164,11 +2870,7 @@ test.each([
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
       await db.query(
         "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
-        [
-          STAN,
-          await encryptSecret("fixture-model-key", KEY),
-          harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
-        ],
+        [STAN, await encryptSecret("fixture-model-key", KEY), "openai"],
       );
       await db.query(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
@@ -3196,12 +2898,9 @@ test.each([
         golden: `${provider}-runtime`,
         provider,
         harness,
-        ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         ...(idle ? {} : { prompt: "reply" }),
         ...(scoped ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
         ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
-        skipSkillDefaults: true,
-        connections: [],
       };
       const fake = fakeBoat();
       const host = {
@@ -3351,7 +3050,6 @@ test.each([
         },
         connections: {
           async defaults() {
-            expect(fromDefaults).toBe(true);
             return [connection];
           },
           async validate(_actor, ids) {
@@ -3390,44 +3088,7 @@ test.each([
           } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
         };
       }
-      const input = {
-        ...body,
-        connections: fromDefaults ? undefined : [connection],
-        skills: fromDefaults ? undefined : [skill],
-        skipSkillDefaults: fromDefaults ? undefined : true,
-      };
-      if (entry === "ordinary-mcp") {
-        const caller = { userId: STAN, orgs: [{ orgId: org.id, role: "admin" as const }], via: "service" as const };
-        if (!options.data || !options.launch || !options.skillDefaults) throw Error("Missing default scoped context");
-        const result = await callSharedTool(
-          {
-            caller,
-            data: options.data(caller),
-            provider: async () => native,
-            launchCredentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
-            exposedSecrets: async () => [],
-            launch: options.launch,
-            skillDefaults: options.skillDefaults,
-            now: () => new Date(),
-            sleep: async () => {
-              throw Error("No waits");
-            },
-          },
-          "launch",
-          input,
-        );
-        expect(launchEnvelope.parse(result)).toMatchObject({
-          runtime: { kind: "armada", epoch: "1" },
-          sandbox: { provider: "modal", runtimeTransport: "dialout" },
-          promptId: "modal-initial",
-        });
-        expect(starts).toBe(1);
-        expect(fake.forks).toHaveLength(1);
-        expect(fake.prompts).toHaveLength(0);
-        expect(fake.execs).toHaveLength(0);
-        return;
-      }
-      const response = await request(input);
+      const response = await request(body);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
       const launched = launchEnvelope.parse(await response?.json());
@@ -3506,101 +3167,91 @@ test.each([
   },
 );
 
-// Publication owns the idle epoch handoff; the real Runner first-send/replay
-// contract is covered by runtime-followup.test.ts at the durable bridge boundary.
-test("Modal promptless HTTP launch publishes ready without inference and retains enrolled authority", async () => {
+test.each(["rest", "explicit", "mcp"] as const)("public %s Modal launch admits before allocating", async (surface) => {
   await withServer(async ({ db, options }) => {
-    const org = await options.store.createOrg("Idle Modal", STAN);
+    const org = await options.store.createOrg("Modal admission", STAN);
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
       STAN,
-      await encryptSecret("offline-idle-model-key", KEY),
+      await encryptSecret("fixture-model-key", KEY),
     ]);
+    const binding = { workspace: "workspace", environment: "main", appId: "app" };
     await db.query(
       `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-    values($1,$2,'idle-modal','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')`,
-      [org.id, STAN],
+       values($1,$2,'modal-runtime','org','modal','master','image',$3,$4,$5,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')`,
+      [org.id, STAN, binding.workspace, binding.environment, binding.appId],
     );
-    const sql: Sql = {
-      query: (q, v) => db.query(q, v),
-      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-    };
-    const authority = createRuntimeEnrolments(sql, KEY);
-    let active: Awaited<ReturnType<typeof authority.enrol>> | undefined;
+    const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
+    const host = fakeBoat();
+    options.admitModalLaunch = await modalAdmissionFixture(
+      sql,
+      KEY,
+      options.store,
+      { orgId: org.id, userId: STAN, visibility: "org", binding },
+      { ...host.provider, id: "modal" },
+    );
     options.providerFor = () => {
-      throw Error("No native provider for enrolled Modal launch");
-    };
-    const fake = fakeBoat();
-    options.modalRuntimeHostFor = async () => ({ ...fake.provider, id: "modal" as const });
-    options.modalRuntimeLaunch = {
-      async start(input) {
-        active = await authority.enrol(
-          (await authority.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
-        );
-        return {
-          epoch: active.epoch,
-          async prepareWorkspace() {
-            return { status: "not_connected" as const };
-          },
-          async prompt() {
-            throw Error("Idle launch must not dispatch inference");
-          },
-        };
-      },
+      throw Error("Request must not resolve a synchronous provider");
     };
     const body = {
       org: org.id,
-      golden: "idle-modal",
       provider: "modal",
+      golden: "modal-runtime",
       harness: "codex",
-      runtimeVersion: 1,
-      runtimeTransport: "dialout",
-      connections: [],
-      skills: [],
-      skipSkillDefaults: true,
+      prompt: "reply",
+      idempotencyKey: "modal-admission-probe",
+      ...(surface === "explicit" ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
+      ...(surface === "rest" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
     };
-    const request = (input: object) =>
-      handleControlRequest(
+    const run = async () => {
+      if (surface === "mcp") {
+        const caller = { userId: STAN, orgs: [{ orgId: org.id, role: "admin" as const }], via: "service" as const };
+        return callSharedTool(
+          {
+            caller,
+            data: options.data!(caller),
+            admitModalLaunch: options.admitModalLaunch!,
+            provider: async () => {
+              throw Error("Request must not resolve a synchronous provider");
+            },
+            launchCredentials: launchCredentials(options.store, KEY),
+            exposedSecrets: async () => [],
+            now: () => new Date(),
+            sleep: async () => {
+              throw Error("No waits");
+            },
+          },
+          "launch",
+          body,
+        );
+      }
+      const reply = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           },
-          body: JSON.stringify(input),
+          body: JSON.stringify(body),
         }),
         options,
       );
-    expect((await request(body))?.status).toBe(503);
-    expect(fake.forks).toHaveLength(0);
-    options.runtimeSend = createRuntimeFollowup(sql, KEY, createRuntimeCommands(authority, KEY));
-    for (const prompt of ["", null, 7]) expect((await request({ ...body, prompt }))?.status).toBe(400);
-    expect(fake.forks).toHaveLength(0);
-    const response = await request(body);
-    if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
-    const launched = (await response.json()) as {
-      sandbox: { id: string; status: string; conversationIds: string[] };
-      runtime: { kind: string; epoch: string };
-      promptId?: string;
-      conversationId?: string;
+      expect(reply?.status).toBe(200);
+      const result = await reply?.json();
+      publishedResponse("sandbox/launch").parse(result);
+      return result;
     };
-    expect(launched).toMatchObject({
-      sandbox: { status: "ready", conversationIds: [] },
-      runtime: { kind: "armada", epoch: active?.epoch },
-    });
-    expect(launched.promptId).toBeNull();
-    expect(launched.conversationId).toBeNull();
-    expect(fake.prompts).toHaveLength(0);
-    if (!active) throw Error("Missing private runtime enrolment");
-    await expect(authority.withSession(active.runtimeToken, active.epoch, async () => true)).resolves.toBe(true);
+    if (surface === "rest") options.sandboxArmadaAccess = {} as NonNullable<ControlOptions["sandboxArmadaAccess"]>;
+    const result = modalLaunchReceipt.parse(await run());
+    expect(result.sandbox.status).toBe("starting");
+    await db.query("update credentials set status='revoked' where owner_id=$1 and kind='openai'", [STAN]);
+    expect(await run()).toEqual(result);
+    expect(host.forks).toHaveLength(0);
     expect(
-      (
-        await createSqlData(sql)({
-          userId: STAN,
-          orgs: [{ orgId: org.id, role: "admin" }],
-          via: "service",
-        }).sandboxes.get(launched.sandbox.id)
-      )?.status,
-    ).toBe("ready");
+      (await db.query("select sandbox_id from jobs where kind='launch' and payload_enc is not null")).rows,
+    ).toEqual([{ sandbox_id: result.sandbox.id }]);
+    expect((await db.query("select sandbox_id from armada_access_parents")).rows).toEqual(
+      surface === "rest" ? [{ sandbox_id: result.sandbox.id }] : [],
+    );
   });
 });
 
@@ -3624,13 +3275,8 @@ test("pinned Modal launch resolves personal org references and respects scoped t
       query: (query, values) => db.query(query, values),
       transaction: (work) => db.transaction((tx) => work(tx)),
     });
-    options.modalRuntimeHostFor = async () => {
-      throw Error("Missing template must never reach the provider");
-    };
-    options.modalRuntimeLaunch = {
-      async start() {
-        throw Error("Missing template must never reach runtime startup");
-      },
+    options.admitModalLaunch = async () => {
+      throw Error("Missing template must never reach admission");
     };
     const launch = (token: string, overrides: Record<string, unknown>) =>
       handleControlRequest(

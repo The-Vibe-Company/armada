@@ -384,6 +384,19 @@ export async function createModalIntegration(options: {
       },
     };
   };
+  async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
+    if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
+    const tokens = await modalTokensFor(target, caller);
+    const { provider } = await modalProviderFor(
+      // The resolver's scope label is not the structured machine Scope.
+      // Pass only the token pair, exactly as the live registry does.
+      { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+      target.modal,
+      { target, caller, credentialScope: tokens.scope },
+      true,
+    );
+    return provider;
+  }
   return {
     launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
     launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
@@ -391,17 +404,9 @@ export async function createModalIntegration(options: {
     inventoryReaper,
     warmRegisteredArtifactCaches,
     modalProviderFor,
+    launchProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
-      if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
-      const tokens = await modalTokensFor(target, caller);
-      const { provider: host } = await modalProviderFor(
-        // The resolver's scope label is not the structured machine Scope.
-        // Pass only the token pair, exactly as the live registry does.
-        { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
-        target.modal,
-        { target, caller, credentialScope: tokens.scope },
-        true,
-      );
+      const host = await launchProviderFor(target, caller);
       const provider = await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller);
       // Do not let a stored observation adapter accidentally drive admission.
       const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);

@@ -3,7 +3,7 @@ import { accountOperations } from "./accounts.ts";
 import type { ServerFailureCode } from "./failures.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
-import { launchEnvelope } from "./launch-response.ts";
+import { launchResponse } from "./launch-response.ts";
 import { memberOperations } from "./members.ts";
 import { organizationOperations } from "./organizations.ts";
 import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts";
@@ -35,7 +35,9 @@ export {
   launchEnvelope,
   type ModalLaunchReceipt,
   modalLaunchReceipt,
+  type PinnedModalLaunchReceipt,
   parseLaunchAdmissionReceipt,
+  pinnedModalLaunchReceipt,
   templateLaunchResponse,
 } from "./launch-response.ts";
 export { memberOperations } from "./members.ts";
@@ -113,21 +115,19 @@ export const launch = {
   name: "launch",
   toolName: "launch",
   mcpDescription:
-    "Forks a Boat or Modal snapshot into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-    "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-    "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-    "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-    "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
+    "Launches from a Boat or Modal golden. Modal returns a sandbox ID and starting status as soon as admitted. " +
+    "The worker prepares the sandbox and starts the optional first prompt after enrolment. " +
+    "Boat returns launch details after startup. " +
     "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },
-  output: launchEnvelope,
+  output: launchResponse,
   readOnly: false,
   destructive: false,
   audience: "agent",
   description: "Launch a sandbox and optionally start its first turn.",
   errors: ["invalid"],
-} as const satisfies Operation<typeof launchInput, typeof launchEnvelope>;
+} as const satisfies Operation<typeof launchInput, typeof launchResponse>;
 
 export const createInboundTrigger = {
   name: "createInboundTrigger",

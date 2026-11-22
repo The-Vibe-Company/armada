@@ -73,6 +73,7 @@ export function createServerRoutineScheduler({ sql, control, templates, provider
         input,
         {
           ...runtime,
+          scheduled: true,
           beforeDockerReserve: async (tx: Sql, id: string) => {
             await authorize(tx);
             await admission.beforeFork(tx);

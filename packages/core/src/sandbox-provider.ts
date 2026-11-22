@@ -95,6 +95,7 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
 export interface HostCapabilities {
   readonly requiresPinnedGoldenBinding: boolean;
   readonly canonicalGoldenAdoption: boolean;
+  readonly goldenLaunchAdmission?: "job";
   readonly templateReceiptTransport?: "dialout";
   readonly startRateLimit?: { readonly status: number; readonly detailsProvider: "boat" };
   readonly snapshotSourceBusyCode?: string;
@@ -152,6 +153,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   modal: {
     requiresPinnedGoldenBinding: true,
     canonicalGoldenAdoption: false,
+    goldenLaunchAdmission: "job",
     templateReceiptTransport: "dialout",
     snapshotSourceBusyCode: "snapshot_source_busy",
     builderImageFailureCode: "modal_builder_image_failed",

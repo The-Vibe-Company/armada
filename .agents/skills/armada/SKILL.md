@@ -78,8 +78,8 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
   The TypeScript SDK infers its request, response and error types from the API contract. Use `outputs.list` and `outputs.get` to read stored sandbox outputs.
-  Ordinary launches use `LaunchResult`. Use `sandbox.status` to recognize a
-  `starting` receipt and follow the existing sandbox by ID while it boots.
+  Modal REST and MCP launches return a sandbox ID and `starting` before allocation.
+  Follow that ID with status or logs to find the first prompt after enrolment.
   For template launches, check `"requestId" in result`
   before reading the receipt. Use the shared `SendInput` for follow-up prompts.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.

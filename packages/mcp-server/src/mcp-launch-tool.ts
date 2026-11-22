@@ -1,4 +1,5 @@
-import { launch, launchEnvelope } from "@armada/core/contract";
+import { HOST_CAPABILITIES, ProviderRoutingError } from "@armada/core";
+import { launch, launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
 import {
   type GoldenRecord,
   goldenForLaunch,
@@ -30,11 +31,24 @@ const mcpLaunchArguments = z.looseObject({}).meta({
   }),
 });
 
+const launchOutput = z.union([modalLaunchReceipt, launchEnvelope]);
+const mcpLaunchOutput = z
+  .looseObject({})
+  .superRefine((value, ctx) => {
+    if (!launchOutput.safeParse(value).success) ctx.addIssue({ code: "custom", message: "Invalid launch receipt" });
+  })
+  .meta({
+    anyOf: launchOutput.options.map((variant) => {
+      const { $schema: _dialect, ...schema } = z.toJSONSchema(variant);
+      return schema;
+    }),
+  });
+
 export const mcpLaunchContract = {
   title: "Launch an agent",
   description: launch.mcpDescription,
   input: mcpLaunchArguments,
-  output: launchEnvelope.shape,
+  output: mcpLaunchOutput,
 };
 
 export function runMcpLaunch(context: ToolContext, input: unknown) {
@@ -48,6 +62,41 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
     const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
     resolveRepositoryDir(chosen, args.repo);
     timing.checkpoint("admission");
+    const request = {
+      golden: args.golden,
+      ...(args.size === undefined ? {} : { size: args.size }),
+      provider: chosen.provider,
+      harness: args.harness,
+      ...(args.repo === undefined ? {} : { repo: args.repo }),
+      ...(args.model === undefined ? {} : { model: args.model }),
+      ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
+      ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
+      ...(args.skills === undefined ? {} : { skills: args.skills }),
+      ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
+      ...(args.connections === undefined ? {} : { connections: args.connections }),
+      ...(args.credentialId ? { credentialId: args.credentialId } : {}),
+      ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
+      ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+      ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
+      ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
+      ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+    };
+    const payload = { ...args, goldenId: chosen.id };
+    if (HOST_CAPABILITIES[chosen.provider].goldenLaunchAdmission) {
+      if (!context.admitModalLaunch)
+        throw new ProviderRoutingError(
+          "provider_routing_unavailable",
+          chosen.provider,
+          "Modal launch admission is unavailable.",
+        );
+      return context.admitModalLaunch(
+        actor,
+        chosen,
+        { ...data, ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}) },
+        request,
+        args.idempotencyKey === undefined ? undefined : { request: { key: args.idempotencyKey, payload } },
+      );
+    }
     const prepare = async () => {
       const account = await prepareGoldenLaunchAccount(
         actor,
@@ -76,25 +125,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
           ...(context.connections ? { connections: context.connections } : {}),
         },
         actor,
-        {
-          golden: args.golden,
-          ...(args.size === undefined ? {} : { size: args.size }),
-          provider: chosen.provider,
-          harness: args.harness,
-          ...(args.repo === undefined ? {} : { repo: args.repo }),
-          ...(args.model === undefined ? {} : { model: args.model }),
-          ...(args.visibility === undefined ? {} : { visibility: args.visibility }),
-          ...(args.skipSkillDefaults === undefined ? {} : { skipSkillDefaults: args.skipSkillDefaults }),
-          ...(args.skills === undefined ? {} : { skills: args.skills }),
-          ...(args.helperCapabilities === undefined ? {} : { helperCapabilities: args.helperCapabilities }),
-          ...(args.connections === undefined ? {} : { connections: args.connections }),
-          ...(args.credentialId ? { credentialId: args.credentialId } : {}),
-          ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
-          ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-          ...(args.ttlSeconds === undefined ? {} : { ttlSeconds: args.ttlSeconds }),
-          ...(args.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: args.stopWhenWorkMerged }),
-          ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-        },
+        request,
         { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
       );
       timing.checkpoint("shared_launcher");
@@ -127,7 +158,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
     const receipt = await context.ordinaryLaunchReceipts.run(
       actor,
       args.idempotencyKey ?? crypto.randomUUID(),
-      { ...args, goldenId: chosen.id },
+      payload,
       dispatch,
       authority,
     );

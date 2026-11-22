@@ -61,8 +61,8 @@ is not retried; reconcile that same request UUID.
 
 Success requires all of:
 
-1. The launch receipt identifies the Modal sandbox, immutable `dialout` route,
-   `runtime.kind:"armada"`, current epoch and prompt ID.
+1. The launch acknowledges a `starting` sandbox ID. Owner inventory and status
+   establish the `dialout` route, enrolled runtime epoch and first prompt ID.
 2. `logs/read` identifies `source:"armada-runtime"` and contains that prompt's
    non-partial, non-retracted main assistant nonce answer plus a finished event.
    Tool-result text, another prompt, Modal native ingest or selection metadata
@@ -639,19 +639,13 @@ point `ARMADA_MODAL_RUNTIME_MANIFEST` to the matching artifact manifest, and
 set `ARMADA_RUNTIME_ARTIFACT_DIR` to the installed artifact directory.
 Incomplete or invalid runtime configuration fails server startup.
 
-The shared core admission policy selects the compute-only Modal host, private
-model-account resolver, common MCP lifecycle and enrolled startup BEFORE fork.
-Ordinary HTTP `sandbox/launch`, MCP `launch`/sized launch, pinned templates and
-owner-scoped routines all use that policy. Request JSON cannot enable/bypass it.
-Selected provider identity must still equal the snapshot provider; runtime failure,
-missing account bindings and unsupported launch inputs are refused on the
-selected path.
-
-Fresh launch receipts expose `runtime.kind/epoch` and the actual persisted Modal
-`runtimeTransport:dialout`, including ordinary MCP and template receipts. Existing
-completed ordinary/native request receipts remain historical and unchanged after
-a default switch; replay is not a new launch. Existing sandboxes keep their frozen
-transport. The coordinator drained the provider-run Modal fleet before retirement.
+Ordinary HTTP, explicit runtime HTTP, MCP and template launches use shared
+admission policy for the model account, snapshot, workspace and runtime setup.
+Modal admission commits a starting sandbox and a launch job together. The
+worker creates and bootstraps compute after admission. Read owner inventory
+and status for the persisted dial-out transport and enrolled runtime epoch.
+Keep the original request key for replay. Existing sandboxes retain their
+frozen transport.
 
 After coordinator-controlled staging activation, add `--ordinary` to the same
 single-allocation smoke:

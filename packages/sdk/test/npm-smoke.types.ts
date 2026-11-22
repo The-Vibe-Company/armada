@@ -4,6 +4,7 @@ import {
   type GoldenLaunchInput,
   type LaunchResult,
   type ModalLaunchReceipt,
+  type PinnedModalLaunchReceipt,
   type SendInput,
 } from "@the-vibe-company/armada-sdk";
 
@@ -50,8 +51,10 @@ export type SendInputContract = Assert<Equal<Extract<"conversationId" | "convers
 
 type FullLaunchResult = Exclude<LaunchResult, ModalLaunchReceipt>;
 export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, FullLaunchResult>>;
-export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, FullLaunchResult>>;
-export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, LaunchResult>>;
+export type PinnedModalReceiptContract = Assert<
+  Equal<Awaited<ReturnType<typeof pinnedModal>>, PinnedModalLaunchReceipt>
+>;
+export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, ModalLaunchReceipt>>;
 export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, FullLaunchResult>>;
 export type LaunchFields = Assert<
   Equal<
