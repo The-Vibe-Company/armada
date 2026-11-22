@@ -1101,7 +1101,7 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
            and r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation'
          else (
            j.record->>'phase'='stopped'
-           or ($2 and j.record->>'phase' in ('deleting','deleted')
+           or ((j.record->>'phase'='deleted' or ($2 and j.record->>'phase'='deleting'))
              and jsonb_typeof(j.record->'generation')='number'
              and j.record->'deletePhysicalExitGeneration'=j.record->'generation')
            )

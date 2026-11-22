@@ -1222,6 +1222,43 @@ test("native drain retains its source archive when detached recovery disappears 
   ]);
 });
 
+test.each([
+  ["deleted", 1, true],
+  ["deleted", 2, false],
+  ["deleting", 1, false],
+] as const)(
+  "first strict Modal drain admission with journal phase %s and exit generation %i",
+  async (phase, exit, admitted) => {
+    const { db, people, sandboxId, archiveId, ciphertext } = await seedNativeDrainReceipt(undefined, "modal");
+    await db.query("update modal_machines set record=record || $2::jsonb where id=$1", [
+      `bx_${sandboxId}`,
+      JSON.stringify({ phase, deletePhysicalExitGeneration: exit }),
+    ]);
+    const { sandboxes } = createSqlData(bunLikeSql(db))({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    });
+    const remove = mock(async () => ({ status: "deleted" as const }));
+    const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
+    const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
+
+    if (!admitted) {
+      await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+      expect(remove).not.toHaveBeenCalled();
+      expect((await sandboxes.get(sandboxId))?.status).toBe("stopped");
+      return;
+    }
+
+    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted", drainProof: "with-proof" });
+    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(
+      (await db.query("select archive_enc from native_drain_recovery where archive_id=$1", [archiveId])).rows,
+    ).toEqual([{ archive_enc: ciphertext }]);
+  },
+);
+
 const unstampedDrainScenarios = [
   "archived",
   "clean",
