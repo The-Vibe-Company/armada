@@ -19,7 +19,7 @@ function fixture(enrolled = true) {
   const runner = new Runner(journal, grant, {}, undefined, undefined, undefined, { enrolled, configureGitHub });
   const body = (command: Record<string, unknown>) =>
     JSON.stringify({ version: 1, sandboxId: "sandbox", requestId: crypto.randomUUID(), ...command });
-  const send = (body: BodyInit, token = grant.token) =>
+  const send = (body: string | ReadableStream<Uint8Array>, token: string = grant.token) =>
     runner.handle(
       new Request("http://runtime/v1", {
         method: "POST",
@@ -119,7 +119,8 @@ test("unenrolled runtimes omit the health capability and refuse extension", asyn
   const { journal, call } = fixture(false);
   try {
     const health = await (await call({ op: "health" })).json();
-    expect(health.result).not.toHaveProperty("commandAuthorityExtension");
+    expect(health).toMatchObject({ result: { generation: epoch, ready: true } });
+    expect(health).not.toHaveProperty("result.commandAuthorityExtension");
     expect((await call(extension)).status).toBe(409);
   } finally {
     journal.close();
