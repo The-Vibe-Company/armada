@@ -19,6 +19,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { currentRequestId } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -416,7 +417,7 @@ export function createRuntimeGitHub(options: {
       const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, grant.binding.ownerId);
       if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
       reason = "binding_unavailable";
-      return await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
+      const response = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
         const now = await current(tx, grant.sandbox_id),
           cap = await read(tx, hash(token));
         if (
@@ -436,6 +437,26 @@ export function createRuntimeGitHub(options: {
         );
         return Response.json({ token: access.token }, { headers });
       });
+      try {
+        const event = "runtime_github_credentials_issued";
+        const tokenFingerprint = createHmac("sha256", Buffer.from(key, "base64"))
+          .update(JSON.stringify(["armada/runtime/github/token-log/v1", grant.binding.ownerId, access.token]))
+          .digest("hex")
+          .slice(0, 32);
+        console.info(
+          JSON.stringify({
+            level: "info",
+            message: event,
+            event,
+            requestId: currentRequestId(),
+            sandboxId,
+            tokenFingerprint,
+          }),
+        );
+      } catch {
+        return response;
+      }
+      return response;
     } catch {
       const response = new Response(null, { status: 403, headers });
       if (!sandboxId) return response;

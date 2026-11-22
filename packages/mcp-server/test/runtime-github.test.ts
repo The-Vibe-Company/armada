@@ -3,6 +3,7 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration, type Sql } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -13,30 +14,42 @@ const sharedDatabase = rowOnlyDatabase();
 
 async function fixture(
   provider: "boat" | "modal" = "boat",
-  options: { now?: () => number; commandGrantExpiresAt?: number; idle?: boolean; githubFetch?: typeof fetch } = {},
+  options: {
+    now?: () => number;
+    commandGrantExpiresAt?: number;
+    idle?: boolean;
+    githubFetch?: typeof fetch;
+    sibling?: NonNullable<Parameters<typeof runtimeFixture>[0]> & { access: string; goldenId: string };
+  } = {},
 ) {
   const f = await runtimeFixture(
-    await sharedDatabase(),
+    options.sibling ?? (await sharedDatabase()),
     provider,
     "codex",
     options.idle,
     options.commandGrantExpiresAt,
+    options.sibling ? { goldenId: options.sibling.goldenId, providerSandboxId: "sibling-physical" } : undefined,
   );
   return configureRuntimeFixture(f, async () => {
-    await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
-      f.row.goldenId,
-      JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
-    ]);
+    const access = options.sibling?.access ?? `ghu_offline_${crypto.randomUUID().replaceAll("-", "")}`;
     await f.db.query("update sandboxes set expires_at=now()+interval '45 seconds' where id=$1", [f.row.id]);
-    const access = `ghu_offline_${crypto.randomUUID().replaceAll("-", "")}`;
-    await f.db.query(
-      "insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')",
-      [
-        f.people.owner,
-        await encryptSecret("offline-refresh", ENCRYPTION_KEY),
-        await encryptSecret(access, ENCRYPTION_KEY),
-      ],
-    );
+    if (!options.sibling) {
+      await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
+        f.row.goldenId,
+        JSON.stringify({
+          repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+          init: [],
+        }),
+      ]);
+      await f.db.query(
+        "insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')",
+        [
+          f.people.owner,
+          await encryptSecret("offline-refresh", ENCRYPTION_KEY),
+          await encryptSecret(access, ENCRYPTION_KEY),
+        ],
+      );
+    }
     let githubRequests = 0;
     const { now, githubFetch } = options;
     const service = createRuntimeGitHub({
@@ -276,21 +289,24 @@ function runtimeCase(
 }
 describe("Boat GitHub access token rollover during launch", () => {
   let clock = 0;
+  let githubRotated = false;
   const renewedAccess = "renewed-offline-access";
+  const githubFetch = (async (url: string | URL | Request) => {
+    if (String(url) === "https://github.com/login/oauth/access_token") {
+      githubRotated = true;
+      return Response.json({ access_token: renewedAccess, refresh_token: "renewed-offline-refresh", expires_in: 3600 });
+    }
+    return Response.json({ id: 123, login: "owner", name: "Owner" });
+  }) as typeof fetch;
   const prepared = scopedRuntimeFixture(
     () => {
       clock = Date.now();
-      return fixture("boat", {
-        now: () => clock,
-        githubFetch: (async (url: string | URL | Request) =>
-          String(url) === "https://github.com/login/oauth/access_token"
-            ? Response.json({ access_token: renewedAccess, refresh_token: "renewed-offline-refresh", expires_in: 3600 })
-            : Response.json({ id: 123, login: "owner", name: "Owner" })) as typeof fetch,
-      });
+      githubRotated = false;
+      return fixture("boat", { now: () => clock, githubFetch });
     },
     { timeout: 20_000 },
   );
-  test("binds every repository and renews access for the eighth refresh after 37 seconds", async () => {
+  test("correlates token rotation across two same-owner launches during a multi-repository refresh", async () => {
     const x = await prepared();
     const { f, service } = x;
     const repositories = Array.from({ length: 8 }, (_, index) => `repo-${index + 1}`);
@@ -312,13 +328,53 @@ describe("Boat GitHub access token rollover during launch", () => {
 
     expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected" });
     expect(x.config().repositories).toEqual(repositories.map((repo) => `example/${repo}`));
-    for (const repo of repositories.slice(0, -1)) {
-      expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
-    }
-    clock += 37_000;
-    expect((await x.broker.acquire("example/repo-8", "git")) === renewedAccess).toBe(true);
+    const sibling = await fixture("boat", {
+      now: () => clock,
+      githubFetch,
+      sibling: { db: f.db, people: f.people, access: x.access, goldenId: f.row.goldenId },
+    });
+    const info = spyOn(console, "info");
     const log = spyOn(console, "warn");
     try {
+      await f.db.query(
+        "update sandboxes set status='starting',activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+        [sibling.f.row.id, crypto.randomUUID()],
+      );
+      for (const repo of repositories.slice(0, -2)) {
+        expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
+      }
+
+      const requestId = crypto.randomUUID();
+      const inFlightToken = await continueRequest(requestId, () => x.broker.acquire("example/repo-7", "git"));
+      const gitStatus = (token: string) => (token === (githubRotated ? renewedAccess : x.access) ? 200 : 401);
+      expect(gitStatus(inFlightToken)).toBe(200);
+      clock += 37_000;
+      expect(await sibling.service.prepareLaunch(sibling.f.caller, sibling.f.row.id)).toMatchObject({
+        status: "connected",
+      });
+      expect(gitStatus(inFlightToken)).toBe(401);
+      expect((await sibling.broker.acquire("example/repo-1", "git")) === renewedAccess).toBe(true);
+      expect((await x.broker.acquire("example/repo-8", "git")) === renewedAccess).toBe(true);
+
+      const events = info.mock.calls
+        .map(([value]) => JSON.parse(value))
+        .filter(({ event }) => event === "runtime_github_credentials_issued");
+      expect(events).toHaveLength(9);
+      const [before, rotated, after] = events.slice(-3);
+      expect(before).toMatchObject({
+        requestId,
+        sandboxId: f.row.id,
+        tokenFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/),
+      });
+      expect(rotated).toMatchObject({
+        sandboxId: sibling.f.row.id,
+        tokenFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/),
+      });
+      expect(rotated.tokenFingerprint).not.toBe(before.tokenFingerprint);
+      expect(after).toMatchObject({ sandboxId: f.row.id, tokenFingerprint: rotated.tokenFingerprint });
+      expect(JSON.stringify(events).includes(x.access)).toBe(false);
+      expect(JSON.stringify(events).includes(renewedAccess)).toBe(false);
+
       await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
       expect(log).toHaveBeenCalledWith(
         JSON.stringify({
@@ -330,7 +386,9 @@ describe("Boat GitHub access token rollover during launch", () => {
         }),
       );
     } finally {
+      info.mockRestore();
       log.mockRestore();
+      await sibling.close();
     }
   });
 });
