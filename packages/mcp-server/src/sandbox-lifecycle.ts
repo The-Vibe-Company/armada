@@ -8,6 +8,7 @@ import {
   type OutputFailureReason,
   type Provider,
   ProviderError,
+  SANDBOX_STOP_MARGIN_SECONDS,
   type SandboxStore,
   type Sql,
   VaultError,
@@ -1786,7 +1787,7 @@ export function createSandboxLifecycle(
           boat_runtime: boolean;
           runtime_transport: string | null;
           lifecycle_generation: number;
-          expires_at: Date | string;
+          expiry_epoch: string;
           status: string;
           status_reason: string | null;
           task_prompt_id: string | null;
@@ -1841,7 +1842,7 @@ export function createSandboxLifecycle(
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
-        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
+        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
           (s.status='stopping' and s.stop_requested_at is not null and exists(
@@ -1936,7 +1937,8 @@ export function createSandboxLifecycle(
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let stoppedAt: Date | undefined;
-      const expired = new Date(row.expires_at).getTime() <= now();
+      const logicalDeadline = Number(row.expiry_epoch) * 1000;
+      const expired = logicalDeadline <= now();
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
@@ -2178,6 +2180,19 @@ export function createSandboxLifecycle(
             await recordNativeIdleTurn(sql, row.id, token, row.lifecycle_generation, row.task_prompt_id);
           }
         }
+        const physicalDeadline = info.expiresAt?.getTime() ?? Number.NaN;
+        const shortBoatDeadline =
+          row.boat_runtime &&
+          !expired &&
+          row.stop_requested_at === null &&
+          (row.status === "ready" || row.status === "running") &&
+          provider.id === providerId &&
+          info.id === row.provider_sandbox_id &&
+          (info.state === "ready" || info.state === "running") &&
+          !physicalExit &&
+          Number.isFinite(physicalDeadline) &&
+          Number.isFinite(logicalDeadline) &&
+          physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
@@ -2201,6 +2216,7 @@ export function createSandboxLifecycle(
             row.status === "stopping" ||
             row.status === "starting" ||
             expired ||
+            shortBoatDeadline ||
             idleStop)
         ) {
           signal?.throwIfAborted();
@@ -2230,6 +2246,8 @@ export function createSandboxLifecycle(
                 where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                   and status in ('starting','ready','running','stopping','failed')
                   and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
+                  and (not $7 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
+                    and deleted_at is null and provider_sandbox_id=$8 and extract(epoch from expires_at)=$9::numeric))
                   and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
                     and ${mergedWorkProof("sandboxes")}))
                   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
@@ -2240,7 +2258,17 @@ export function createSandboxLifecycle(
                   case when $4 and status_reason is distinct from 'work_merged' then 'expired'
                     when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
                     else status_reason end as status_reason`,
-                [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
+                [
+                  row.id,
+                  token,
+                  row.lifecycle_generation,
+                  expired || shortBoatDeadline,
+                  idleStop,
+                  workMerged && idleStop,
+                  shortBoatDeadline,
+                  row.provider_sandbox_id,
+                  row.expiry_epoch,
+                ],
               );
               if (!current) return false;
               if (current.status !== "ready" && current.status !== "running") return true;
@@ -2359,7 +2387,7 @@ export function createSandboxLifecycle(
             provider.stop({
               sandboxId: row.provider_sandbox_id,
               ...(requireRetention ? { requireRetention: true } : {}),
-              ...(strictNativeStop ? { generation: row.lifecycle_generation } : {}),
+              ...(strictNativeStop || shortBoatDeadline ? { generation: row.lifecycle_generation } : {}),
             }),
           );
           info = await observe();
@@ -2392,7 +2420,10 @@ export function createSandboxLifecycle(
             info.retainedSnapshot === "pending"
               ? "Boat snapshot is pending. Retrying without deleting retained data."
               : "Boat archive has no verified retained snapshot. Retrying without deleting retained data.";
-        else if (!terminal && (expired || row.status === "stopping" || row.stop_requested_at !== null))
+        else if (
+          !terminal &&
+          (expired || shortBoatDeadline || row.status === "stopping" || row.stop_requested_at !== null)
+        )
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         if (handingOffObservedResume) throw caught;

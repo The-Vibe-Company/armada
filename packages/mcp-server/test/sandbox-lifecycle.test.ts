@@ -577,6 +577,85 @@ for (const outcome of [
   });
 }
 
+test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as const)(
+  "ordinary Boat reconciliation handles %s physical deadline evidence",
+  async (evidence) => {
+    const { db, people } = await sharedDatabase();
+    const id = crypto.randomUUID();
+    const {
+      rows: [binding],
+    } = await db.query<{ expires_at: Date }>(
+      `insert into public.sandboxes
+        (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, expires_at, boat_runtime)
+       select $1, 'boat', 'bx_23456789', id, $2, $3, 'codex', 'running', now()+interval '1 hour', $4
+       from public.goldens where name='shared' returning expires_at`,
+      [id, people.org, people.owner, evidence !== "native"],
+    );
+    if (!binding) throw Error("Missing Boat sandbox.");
+    let stops = 0;
+    let stopped = false;
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
+          stops++;
+          if (evidence === "lost-stop-response" && stops === 1) throw Error("Injected lost stop response.");
+          stopped = true;
+          return Response.json({ ok: true });
+        }
+        if (evidence === "superseded")
+          await db.query("update sandboxes set expires_at=expires_at-interval '30 minutes' where id=$1", [id]);
+        return Response.json({
+          ok: true,
+          sandbox: stopped
+            ? retainedSandbox()
+            : sandbox({
+                state: "running",
+                archiveAfter: evidence === "unknown" || stops > 0 ? undefined : binding.expires_at.toISOString(),
+              }),
+        });
+      }) as typeof fetch,
+    });
+    const worker = createSandboxLifecycle(bunLikeSql(db), async () => provider);
+    if (evidence === "short") await db.exec("set datestyle='German, DMY'");
+    try {
+      expect(await worker.reconcileOne()).toBe(true);
+      await worker.drain();
+    } finally {
+      if (evidence === "short") await db.exec("reset datestyle");
+    }
+
+    const readSandbox = async () =>
+      (
+        await db.query(
+          "select status, status_reason, expires_at, stop_requested_at from public.sandboxes where id=$1",
+          [id],
+        )
+      ).rows[0];
+    if (evidence === "lost-stop-response") {
+      expect(await readSandbox()).toMatchObject({
+        status: "stopping",
+        stop_requested_at: expect.any(Date),
+        expires_at: binding.expires_at,
+      });
+      await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+      const successor = createSandboxLifecycle(bunLikeSql(db), async () => provider);
+      expect(await successor.reconcileOne()).toBe(true);
+      await successor.drain();
+    }
+
+    const row = await readSandbox();
+    const shouldStop = evidence === "short" || evidence === "lost-stop-response";
+    expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
+    expect(row).toMatchObject(
+      shouldStop
+        ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
+        : { status: "running", status_reason: null },
+    );
+  },
+);
+
 for (const observation of ["stopped", "expired", "unavailable"] as const) {
   test(`failed launch reason survives terminal reconciliation (${observation})`, async () => {
     const { db, people } = await sharedDatabase();
