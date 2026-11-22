@@ -11,8 +11,8 @@ type NativeTurns = Required<Pick<Provider, "prompt" | "getPrompt" | "steer" | "i
 interface NativeLifecycleOptions {
   options: Pick<
     ModalProviderOptions,
-    "store" | "distribution" | "storedReads" | "admissionSleep" | "beforeResume" | "resumeRefused" | "beforePrompt"
-  >;
+    "store" | "storedReads" | "admissionSleep" | "beforeResume" | "resumeRefused" | "beforePrompt"
+  > & { distribution: Pick<ModalProviderOptions["distribution"], "restoreEnv"> };
   provider(): ModalProvider;
   runner: RunnerTransport;
   measure: NonNullable<ModalProviderOptions["measure"]>;
@@ -253,5 +253,5 @@ export function createNativeLifecycle({
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
   };
-  return { ready, healthyAdmission, admit, call, turns };
+  return { ready, readyLeased, healthyAdmission, admit, call, turns };
 }

@@ -112,12 +112,20 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
-export function createModalProvider(options: ModalProviderOptions) {
+type RuntimeProviderOptions = Omit<ModalProviderOptions, "runner" | "distribution"> & {
+  commonRuntime: true;
+  runner?: never;
+  distribution: Omit<RunnerDistribution, "start">;
+};
+
+export function createModalProvider(options: ModalProviderOptions | RuntimeProviderOptions) {
   const { store, distribution } = options;
+  const runtimeOnly = options.runner === undefined;
   const runner: RunnerTransport = {
     call(row, op, input) {
       if (row.commonRuntime)
         throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
+      if (!options.runner) throw refusal("invalid_request", "This Modal connection requires Armada runtime enrolment.");
       return options.runner.call(row, op, input);
     },
   };
@@ -155,6 +163,8 @@ export function createModalProvider(options: ModalProviderOptions) {
   const { collectImages } = imageCollection;
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
+    if (runtimeOnly && !row.golden && !row.commonRuntime)
+      throw refusal("invalid_request", "This Modal connection requires Armada runtime enrolment.");
     const origin = row.sourceImage?.scopeKey ?? scopeKey(options.scope);
     if (origin !== scopeKey(source.scope))
       throw refusal("forbidden", "Machine source golden authority does not match this provider connection.");
@@ -179,6 +189,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     ...(deploymentId ? { deploymentId } : {}),
     distribution,
     runner,
+    runtimeOnly,
     measure,
     assertMachineSource,
     sandboxInfo,
@@ -193,6 +204,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     store,
     runner,
     distribution,
+    runtimeOnly,
     bound,
     physicalLifecycle,
     assertMachineSource,
@@ -201,7 +213,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     detachCollection,
     cleanupSleep: options.cleanupSleep,
   });
-  const { ready, healthyAdmission, admit, call, turns } = createNativeLifecycle({
+  const { ready, readyLeased, healthyAdmission, admit, call, turns } = createNativeLifecycle({
     options,
     provider: () => provider,
     runner,
@@ -210,6 +222,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     assertMachineSource,
     physicalLifecycle,
   });
+  const admitGoldenCompute = runtimeOnly ? readyLeased : healthyAdmission;
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
       target.provider !== "modal" ||
@@ -372,12 +385,12 @@ export function createModalProvider(options: ModalProviderOptions) {
                 "conflict",
                 "Active golden master has a different restore context; edits were not discarded.",
               );
-            return sandboxInfo(await healthyAdmission(row, save));
+            return sandboxInfo(await admitGoldenCompute(row, save));
           }
           if (["reserved", "creating", "booting"].includes(row.phase)) {
             if (!same || row.goldenRestore?.generation !== row.generation)
               throw refusal("conflict", "Another golden restore is in progress.");
-            if (row.phase === "booting" && row.physicalId) {
+            if (!runtimeOnly && row.phase === "booting" && row.physicalId) {
               let health: { generation: string; ready: boolean; pid?: unknown } | undefined;
               try {
                 health = await runner.call(row, "health", {});
@@ -546,7 +559,7 @@ export function createModalProvider(options: ModalProviderOptions) {
       if (!target.golden) return call(r.sandboxId, "exec", { input: r }, r.signal);
       return admit(r.sandboxId, async (row, save) => {
         if (!row.golden) throw refusal("conflict", "Sandbox role changed during golden exec admission.");
-        const active = await healthyAdmission(row, save);
+        const active = await admitGoldenCompute(row, save);
         return executeGoldenCommand(await physical(active), r);
       });
     },

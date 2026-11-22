@@ -21,7 +21,8 @@ export function createPhysicalLifecycle(deps: {
   appName: string;
   scope: Scope;
   deploymentId?: string;
-  distribution: RunnerDistribution;
+  distribution: Omit<RunnerDistribution, "start"> & Partial<Pick<RunnerDistribution, "start">>;
+  runtimeOnly: boolean;
   runner: RunnerTransport;
   measure: NonNullable<ModalProviderOptions["measure"]>;
   assertMachineSource(row: Machine): void;
@@ -35,6 +36,7 @@ export function createPhysicalLifecycle(deps: {
     deploymentId,
     distribution,
     runner,
+    runtimeOnly,
     measure,
     assertMachineSource,
     sandboxInfo,
@@ -192,7 +194,7 @@ export function createPhysicalLifecycle(deps: {
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
     await bootStage("binding", () => save(row));
-    if (!row.commonRuntime && distribution.prepareRuntime)
+    if (!runtimeOnly && !row.commonRuntime && distribution.prepareRuntime)
       await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
     await bootStage("baseline", async () => {
       if (distribution.captureProcessBaseline && !row.processBaseline) {
@@ -221,9 +223,11 @@ export function createPhysicalLifecycle(deps: {
         await save(row);
       });
     }
-    if (!row.commonRuntime) {
+    if (!runtimeOnly && !row.commonRuntime) {
+      const { start } = distribution;
+      if (!start) throw refusal("conflict", "Runner startup requires a distribution.");
       await onResumeStage?.("machine_started");
-      await bootStage("start", () => distribution.start(sb, row, env));
+      await bootStage("start", () => start.call(distribution, sb, row, env));
       let managedRunnerPid: unknown;
       await bootStage("health", async () => {
         let healthy = false;
@@ -247,6 +251,8 @@ export function createPhysicalLifecycle(deps: {
         if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
       });
       await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
+    } else if (runtimeOnly && row.golden && (await sb.poll()) !== null) {
+      throw refusal("sandbox_not_ready", "Golden compute exited before admission.");
     }
     row.phase = "active";
     row.info.state = "ready";
