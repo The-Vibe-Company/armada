@@ -119,6 +119,10 @@ export function createJobsRunner(
         await store.retireStale(job, owner, "no_dispatch");
         return;
       }
+      if (state === "reconcile" && job.kind === "boat_runtime_extend") {
+        await settle({ status: "fail", reason: "extension_budget_exhausted" });
+        return;
+      }
       scheduleRenewal();
       const result = await handler.run(job, {
         signal,
