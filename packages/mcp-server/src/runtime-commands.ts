@@ -349,7 +349,13 @@ export function createRuntimeCommands(
     runtimeWakes.notify(`socket:${sandboxId}`);
     return receipt;
   }
-  async function result(ownerId: string, sandboxId: string, id: string, expectedEpoch?: string) {
+  async function result(
+    ownerId: string,
+    sandboxId: string,
+    id: string,
+    expectedEpoch?: string,
+    assertReceiptClaim?: (tx: Sql) => Promise<void>,
+  ) {
     if (!requestId(id)) throw new RuntimeCommandConflict();
     return authority.withOwner(sandboxId, ownerId, async (tx, scope) => {
       const row = (
@@ -361,11 +367,11 @@ export function createRuntimeCommands(
       if (!row) return { state: "missing" as const };
       if (expectedEpoch !== undefined && (scope.epoch !== expectedEpoch || row.epoch !== expectedEpoch))
         return { state: "superseded" as const };
-      if (row.result_enc)
-        return {
-          state: "finished" as const,
-          reply: JSON.parse(await decryptSecret(row.result_enc, key)) as RuntimeCommandReply,
-        };
+      if (row.result_enc) {
+        const reply = JSON.parse(await decryptSecret(row.result_enc, key)) as RuntimeCommandReply;
+        await assertReceiptClaim?.(tx);
+        return { state: "finished" as const, reply };
+      }
       return { state: row.epoch === scope.epoch ? ("pending" as const) : ("superseded" as const) };
     });
   }
@@ -443,9 +449,13 @@ export function createRuntimeCommands(
           const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
             woken = true;
           });
-          const response = await result(ownerId, request.sandboxId, request.requestId, admitted.epoch).finally(
-            unsubscribe,
-          );
+          const response = await result(
+            ownerId,
+            request.sandboxId,
+            request.requestId,
+            admitted.epoch,
+            request.op === "extendCommandAuthority" ? options.assertClaim : undefined,
+          ).finally(unsubscribe);
           signal.throwIfAborted();
           if (response.state === "finished") {
             if (options.strictDeadline && time.now() >= deadline) throw new RuntimeCommandPending();

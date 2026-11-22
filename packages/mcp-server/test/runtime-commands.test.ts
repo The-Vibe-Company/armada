@@ -16,13 +16,13 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(waitAdvanceMs = 20_000) {
+async function fixture(waitAdvanceMs = 20_000, boatRuntime = false) {
   const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
-    select $1,id,org_id,owner_id,'command-native','codex','ready' from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+    select $1,id,org_id,owner_id,'command-native','codex','ready',$3 from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner, boatRuntime],
   );
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -124,6 +124,84 @@ test.each([
   }
   if (kind === "stale expected epoch")
     expect((await f.db.query("select request_id from runtime_commands where sandbox_id=$1", [f.id])).rows).toEqual([]);
+});
+
+test.each([
+  "covers target",
+  "short deadline",
+  "wrong ACK epoch",
+  "replacement epoch",
+  "late ACK",
+  "lost claim",
+] as const)("extension authority receipt handles %s", async (kind) => {
+  const f = await fixture(kind === "late ACK" ? 2_500 : 250, true);
+  const bridge = f.bridge();
+  let active = await f.enrol();
+  let ownsClaim = true;
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  const target = 60_000;
+  const requestId = "extension-intent";
+  const extend = () =>
+    agent.extendCommandAuthority({
+      requestId,
+      expectedEpoch: active.epoch,
+      expiresAt: target,
+      signal: new AbortController().signal,
+      async assertClaim() {
+        if (!ownsClaim) throw Error("extension claim lost");
+      },
+    });
+  const answer = async (op: "health" | "extendCommandAuthority", result: Record<string, unknown>) => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== op) throw Error(`Expected ${op} command`);
+    if (op === "extendCommandAuthority")
+      expect(command).toMatchObject({ requestId, epoch: active.epoch, expiresAt: target });
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { version: 1, requestId: command.requestId, result },
+    });
+  };
+  const answerHealth = () => answer("health", { ready: true, generation: active.epoch, commandAuthorityExtension: 1 });
+  const answerAck = async () => {
+    await answer("extendCommandAuthority", {
+      epoch: kind === "wrong ACK epoch" ? "0" : active.epoch,
+      expiresAt: kind === "short deadline" ? target - 1 : target + 1,
+    });
+    if (kind === "lost claim") ownsClaim = false;
+  };
+  f.onWait(async () => {
+    await answerHealth();
+    f.onWait(() => {
+      if (kind !== "late ACK") return answerAck();
+      f.onWait(answerAck);
+      return Promise.resolve();
+    });
+  });
+  if (kind === "short deadline" || kind === "wrong ACK epoch") {
+    await expect(extend()).rejects.toMatchObject({ code: "unavailable" });
+  } else if (kind === "late ACK") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+  } else if (kind === "lost claim") {
+    await expect(extend()).rejects.toThrow("extension claim lost");
+  } else {
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
+    if (kind === "replacement epoch") {
+      active = await f.enrol();
+      f.onWait(answerHealth);
+      await expect(extend()).rejects.toThrow("runtime_command_conflict");
+      expect((await bridge.next(active.runtimeToken, active.epoch)).command).toBeNull();
+    }
+  }
 });
 
 test("an exact command replay checks the claim again before returning a stored reply", async () => {
