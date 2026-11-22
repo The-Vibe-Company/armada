@@ -18,7 +18,8 @@ export function createStopDeleteLifecycle(deps: {
   client: ReturnType<typeof modalConnection>;
   store: ModalStore;
   runner: RunnerTransport;
-  distribution: RunnerDistribution;
+  distribution: Pick<RunnerDistribution, "prepareSnapshot">;
+  runtimeOnly: boolean;
   bound: () => ReturnType<typeof boundModalApp>;
   physicalLifecycle: Pick<ReturnType<typeof createPhysicalLifecycle>, "physical" | "namedOwned" | "boundNotAbsence">;
   assertMachineSource(row: Machine): void;
@@ -32,6 +33,7 @@ export function createStopDeleteLifecycle(deps: {
     store,
     runner,
     distribution,
+    runtimeOnly,
     bound,
     physicalLifecycle: { physical, namedOwned, boundNotAbsence },
     assertMachineSource,
@@ -42,6 +44,7 @@ export function createStopDeleteLifecycle(deps: {
   } = deps;
 
   async function checkpoint(row: Machine, save: (row: Machine) => Promise<void>) {
+    if (runtimeOnly && row.golden) return;
     const result = await runner.call<{ watermark: number; acknowledgedSequence: number; generation: string }>(
       row,
       "checkpoint",
@@ -151,6 +154,7 @@ export function createStopDeleteLifecycle(deps: {
       let observed: Machine | undefined;
       try {
         await store.lease(sandboxId, async (row, save) => {
+          assertMachineSource(row);
           observed = row;
           if (
             requireRetention &&

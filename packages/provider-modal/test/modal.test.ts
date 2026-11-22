@@ -28,8 +28,10 @@ import {
   createModalIngestHandler,
   createModalProvider,
   createRunnerTransport,
+  createRuntimeModalProvider,
   createSqlModalStore,
   type Machine,
+  MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
   type ModalProviderOptions,
   mergeModalResourceReceipts,
@@ -1494,6 +1496,17 @@ function admissionBarrier() {
     },
   };
 }
+function runtimeComposition(f: ReturnType<typeof fixture>) {
+  return createRuntimeModalProvider({
+    scope,
+    client: f.client,
+    sql: fixtureSql,
+    appName: "pinned",
+    image: MODAL_IMAGE_LOCK,
+    publicUrl: "https://armada.example",
+  });
+}
+
 function compositionOptions(
   f: ReturnType<typeof fixture>,
   target: Scope = scope,
@@ -2975,6 +2988,59 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(restored.physicalGeneration).toBe("2");
     expect(f.creates).toBe(count);
     expect(f.log.filter((x) => x === "start-2")).toHaveLength(starts);
+  });
+  test("runtime-only composition builds, snapshots, retains and restores a golden without runner bootstrap", async () => {
+    const f = fixture();
+    const { provider, close } = await runtimeComposition(f);
+    try {
+      const builder = await provider.createGolden({});
+      expect(builder.state).toBe("ready");
+      expect(await provider.exec({ sandboxId: builder.id, command: "true" })).toMatchObject({ exitCode: 0 });
+      const name = crypto.randomUUID();
+      const beforeSnapshot = f.log.length;
+      const snapshot = await provider.snapshot({ sandboxId: builder.id, name });
+      expect(snapshot.status).toBe("ready");
+      expect(f.log.slice(beforeSnapshot)).toEqual(["quiesce-processes", "snapshot"]);
+      await provider.stop({ sandboxId: builder.id, requireRetention: true });
+      expect((await provider.get(builder.id)).state).toBe("stopped");
+
+      const restored = await provider.restoreGoldenMaster({ sandboxId: builder.id, snapshotId: name });
+      expect(restored).toMatchObject({ id: builder.id, physicalGeneration: "2", state: "ready" });
+      expect(await provider.restoreGoldenMaster({ snapshotId: name })).toEqual(restored);
+      expect(await provider.exec({ sandboxId: builder.id, command: "true" })).toMatchObject({ exitCode: 0 });
+
+      const fork = await provider.fork({ from: name });
+      expect(await f.store.get(fork.id)).toMatchObject({ commonRuntime: true, phase: "active" });
+      expect(f.bootstraps.size).toBe(0);
+    } finally {
+      close();
+    }
+  });
+  test("runtime-only composition restores a golden checkpoint recorded before cutover", async () => {
+    const f = fixture();
+    const { builder, name } = await savedGolden(f);
+    const snapshot = await f.store.image(name);
+    const { provider, close } = await runtimeComposition(f);
+    try {
+      const restored = await provider.restoreGoldenMaster({ snapshotId: name });
+      expect(restored).toMatchObject({ id: builder.id, physicalGeneration: "2", state: "ready" });
+      expect(await f.store.get(restored.id)).toMatchObject({ imageId: snapshot.imageId, phase: "active" });
+      expect(f.bootstraps.size).toBe(0);
+    } finally {
+      close();
+    }
+  });
+  test("runtime-only stop refuses an unenrolled fork before recording a stop attempt", async () => {
+    const f = fixture();
+    const worker = await f.seedMachine(workerTemplate);
+    const before = await f.store.get(worker.id);
+    const { provider, close } = await runtimeComposition(f);
+    try {
+      await expect(provider.stop({ sandboxId: worker.id })).rejects.toMatchObject({ code: "invalid_request" });
+      expect(await f.store.get(worker.id)).toEqual(before);
+    } finally {
+      close();
+    }
   });
   test("actual source-scoped golden restore keeps org-fallback provenance and boots without model/session credentials", async () => {
     const f = fixture();

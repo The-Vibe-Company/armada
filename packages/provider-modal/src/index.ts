@@ -2,10 +2,12 @@ export { loadRunnerArtifact } from "./artifact.ts";
 export {
   type ComposedModalOptions,
   createComposedModalProvider,
+  createRuntimeModalProvider,
   type HarnessEnvironment,
   type McpConfiguration,
   type ModalManagementAuthority,
   type ResolvedModalManagementCredentials,
+  type RuntimeModalOptions,
 } from "./composed.ts";
 export { runModalConformance } from "./conformance.ts";
 export { createRunnerDistribution, type DistributionOptions } from "./distribution.ts";
