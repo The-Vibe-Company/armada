@@ -624,21 +624,55 @@ test("Boat reconciliation skips an older due candidate while its extension lease
   await worker.drain();
 });
 
-test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as const)(
-  "ordinary Boat reconciliation handles %s physical deadline evidence",
-  async (evidence) => {
+for (const evidence of [
+  "covered",
+  "short",
+  "scoped-short",
+  "unknown",
+  "native",
+  "superseded",
+  "lost-observation-response",
+  "lost-stop-response",
+] as const) {
+  test(`Boat reconciliation handles ${evidence} physical deadline evidence`, async () => {
     const { db, people } = await sharedDatabase();
     const id = crypto.randomUUID();
     const {
       rows: [binding],
-    } = await db.query<{ expires_at: Date }>(
+    } = await db.query<{ expires_at: Date; lifecycle_generation: number }>(
       `insert into public.sandboxes
-        (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, expires_at, boat_runtime)
-       select $1, 'boat', 'bx_23456789', id, $2, $3, 'codex', 'running', now()+interval '1 hour', $4
-       from public.goldens where name='shared' returning expires_at`,
+        (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, expires_at, boat_runtime,
+         visibility, access_owner_id)
+       select $1, 'boat', 'bx_23456789', id, $2, $3, 'codex', 'running', now()+interval '1 hour', $4, 'private', $3
+       from public.goldens where name='shared' returning expires_at,lifecycle_generation`,
       [id, people.org, people.owner, evidence !== "native"],
     );
     if (!binding) throw Error("Missing Boat sandbox.");
+    const sql = bunLikeSql(db);
+    const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
+    let physicalDeadline = evidence === "covered" ? coveredDeadline : binding.expires_at;
+    const pendingJobId =
+      evidence === "covered"
+        ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
+            "boat_runtime_extend",
+            id,
+            binding.lifecycle_generation,
+            id,
+            null,
+            { orgId: people.org, maxAttempts: 3, deadline: binding.expires_at },
+          )
+        : null;
+    if (pendingJobId)
+      await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
+        id,
+        pendingJobId,
+      ]);
+    if (evidence === "scoped-short")
+      await db.query(
+        `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+         values($1,'sandbox',$2,$3,$1,'ready')`,
+        [id, people.org, people.owner],
+      );
     let stops = 0;
     let stopped = false;
     const provider = createBoatProvider({
@@ -659,12 +693,24 @@ test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as 
             ? retainedSandbox()
             : sandbox({
                 state: "running",
-                archiveAfter: evidence === "unknown" || stops > 0 ? undefined : binding.expires_at.toISOString(),
+                archiveAfter: evidence === "unknown" || stops > 0 ? undefined : physicalDeadline.toISOString(),
               }),
         });
       }) as typeof fetch,
     });
-    const worker = createSandboxLifecycle(bunLikeSql(db), async () => provider);
+    const workerSql: Sql =
+      evidence === "lost-observation-response"
+        ? {
+            ...sql,
+            query: async <T>(statement: string, args?: unknown[]) => {
+              const result = await sql.query<T>(statement, args);
+              if (statement.includes("insert into public.boat_runtime_extension_state"))
+                throw Error("Injected lost observation write response.");
+              return result;
+            },
+          }
+        : sql;
+    const worker = createSandboxLifecycle(workerSql, async () => provider);
     if (evidence === "short") await db.exec("set datestyle='German, DMY'");
     try {
       expect(await worker.reconcileOne()).toBe(true);
@@ -680,6 +726,24 @@ test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as 
           [id],
         )
       ).rows[0];
+    const readObservation = async () =>
+      (
+        await db.query(
+          `select pending_job_id,observed_provider_id,observed_generation,observed_at,observed_expires_at
+           from public.boat_runtime_extension_state where sandbox_id=$1`,
+          [id],
+        )
+      ).rows;
+    if (evidence === "lost-observation-response") {
+      expect(stops).toBe(0);
+      expect(await readSandbox()).toMatchObject({ status: "running", expires_at: binding.expires_at });
+      expect(await readObservation()).toMatchObject([{ observed_expires_at: binding.expires_at }]);
+      physicalDeadline = coveredDeadline;
+      await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+      const successor = createSandboxLifecycle(sql, async () => provider);
+      expect(await successor.reconcileOne()).toBe(true);
+      await successor.drain();
+    }
     if (evidence === "lost-stop-response") {
       expect(await readSandbox()).toMatchObject({
         status: "stopping",
@@ -693,15 +757,28 @@ test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as 
     }
 
     const row = await readSandbox();
-    const shouldStop = evidence === "short" || evidence === "lost-stop-response";
+    const shouldStop = ["short", "scoped-short", "lost-stop-response"].includes(evidence);
     expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
     expect(row).toMatchObject(
       shouldStop
         ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
         : { status: "running", status_reason: null },
     );
-  },
-);
+    expect(await readObservation()).toEqual(
+      shouldStop || evidence === "covered" || evidence === "lost-observation-response"
+        ? [
+            {
+              pending_job_id: pendingJobId,
+              observed_provider_id: "bx_23456789",
+              observed_generation: binding.lifecycle_generation,
+              observed_at: expect.any(Date),
+              observed_expires_at: physicalDeadline,
+            },
+          ]
+        : [],
+    );
+  });
+}
 
 for (const observation of ["stopped", "expired", "unavailable"] as const) {
   test(`failed launch reason survives terminal reconciliation (${observation})`, async () => {
