@@ -2,6 +2,7 @@ interface RequestBody {
   command: string;
   connections: string[];
   cursor?: string;
+  golden?: string;
   goldenId: string;
   harness: string;
   id: string;
