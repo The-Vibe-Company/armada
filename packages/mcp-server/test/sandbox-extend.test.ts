@@ -201,6 +201,31 @@ test("a definite physical refusal preserves the old logical deadline and release
   expect(f.patches.some((patch) => patch.expiresAt !== undefined)).toBe(false);
 });
 
+test.each([{ boatRuntime: true, runtimeTransport: "dialout" }, { boatRuntime: true }] as const)(
+  "enrolled Boat extension refuses before provider I/O (%j)",
+  async (runtime) => {
+    const f = fixture();
+    const sandbox: SandboxRecord = { ...f.sandbox, ...runtime, provider: "boat" };
+    const calls: string[] = [];
+    const expiresAt = new Date("2026-11-13T12:25:00.000Z");
+    const provider = {
+      id: "boat",
+      async get() {
+        calls.push("read");
+        return { state: "ready", providerState: "active", expiresAt };
+      },
+      async extendLifetime() {
+        calls.push("extend");
+        return expiresAt;
+      },
+    } as Provider;
+
+    await expect(extendSandbox(f.store, sandbox, provider, 1_200)).rejects.toMatchObject({ code: "extension_state" });
+    expect(calls).toEqual([]);
+    expect(f.patches).toEqual([]);
+  },
+);
+
 test("runtime Modal extension uses live headroom and an enrolled command grant without revoking the session", async () => {
   const { db, people } = await database();
   const { now } = (await db.query<{ now: Date }>("select clock_timestamp() as now")).rows[0]!;
