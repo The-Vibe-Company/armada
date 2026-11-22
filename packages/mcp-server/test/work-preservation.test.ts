@@ -1028,6 +1028,49 @@ test.each(["Modal stamped", "Boat unclaimed", "Boat acknowledged"] as const)(
   },
 );
 
+test("Boat drain leaves the dispatch unclaimed when its archive disappears during scoped cleanup", async () => {
+  const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt();
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+  const remove = mock(async () => ({ status: "deleted" as const }));
+  const providers = {
+    resolve: async () => ({ ...fakeBoat().provider, delete: remove }),
+    beforeNativeDrainDelete: async () => {
+      await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
+    },
+  };
+
+  await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  expect(remove).not.toHaveBeenCalled();
+  expect(
+    (await db.query("select sandbox_id from native_drain_unclaimed_dispatches where sandbox_id=$1", [sandboxId])).rows,
+  ).toEqual([{ sandbox_id: sandboxId }]);
+});
+
+test("native drain retains its source archive when detached recovery disappears during provider deletion", async () => {
+  const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+  const remove = mock(async () => {
+    await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
+    return { status: "deleted" as const };
+  });
+  const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
+
+  await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect((await db.query("select status,native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { status: "stopped", native_drain_pending: true },
+  ]);
+  expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([
+    { id: archiveId },
+  ]);
+});
+
 const unstampedDrainScenarios = [
   "archived",
   "clean",
@@ -1955,15 +1998,11 @@ test.each([
   };
   const query = sql.query;
   sql.query = async <T>(statement: string, params?: unknown[]) => {
-    if (
-      scenario === "Boat evidence read failed" &&
-      retry &&
-      !allowEvidenceRead &&
-      statement.includes("select o.operation_id from public.sandboxes")
-    ) {
+    const readsDispatchEvidence = statement.includes("left join public.native_drain_delete_operations");
+    if (scenario === "Boat evidence read failed" && retry && !allowEvidenceRead && readsDispatchEvidence) {
       throw new Error("Operation evidence read unavailable");
     }
-    if (!retry && statement.includes("select o.operation_id from public.sandboxes")) {
+    if (!retry && readsDispatchEvidence) {
       if (scenario === "Boat failed dispatch claim") throw new Error("Dispatch claim unavailable");
       if (scenario === "Boat lost dispatch claim reply") {
         await query(statement, params);
@@ -2153,7 +2192,8 @@ test.each([
   "unavailable cleanup",
   "rolled back cleanup receipt",
   "lost cleanup commit reply",
-] as const)("scoped Modal drain recovers from %s without bypassing cleanup", async (scenario) => {
+  "lost detached archive during cleanup",
+] as const)("scoped Modal drain handles %s without bypassing cleanup", async (scenario) => {
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
   await db.query(
     "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
@@ -2194,6 +2234,8 @@ test.each([
     get: mock(async () => {
       if (removed) throw new Error("Physical placement cannot be observed after deletion");
       if (firstPass && scenario === "unavailable cleanup") throw interruption;
+      if (scenario === "lost detached archive during cleanup")
+        await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
       return { ...info, state: "stopped" as const };
     }),
     delete: mock(async () => {
@@ -2207,11 +2249,17 @@ test.each([
   const drain = () =>
     deleteSandboxWithActivity(
       sandboxes,
-      { resolve: async () => access.wrap(provider, sandboxId) },
+      { resolve: async () => provider, beforeNativeDrainDelete: access.beforeNativeModalDrainDelete },
       sandboxId,
       "native-drain",
     );
   const lostReply = scenario === "lost delete reply";
+  if (scenario === "lost detached archive during cleanup") {
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(provider.get).toHaveBeenCalledTimes(1);
+    expect(provider.delete).not.toHaveBeenCalled();
+    return;
+  }
   await expect(drain()).rejects.toThrow(scenario);
   expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
   firstPass = false;

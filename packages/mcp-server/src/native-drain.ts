@@ -31,13 +31,12 @@ export function configureNativeDrain(
     modalProviderFor: async (tokens, binding, context) => {
       const sandboxId = context.target.id;
       if (!sandboxId) throw new Error("Native drain requires a persisted Modal sandbox.");
-      const ports = await (await modalIntegration()).modalProviderFor(tokens, binding, context);
-      return { ...ports, provider: scopedAccess.wrap(ports.provider, sandboxId) };
+      return (await modalIntegration()).modalProviderFor(tokens, binding, context);
     },
   });
   const deletionPreparation = {
     boat: { beforeNativeDrainDelete: scopedAccess.beforeNativeDrainDelete },
-    modal: {},
+    modal: { beforeNativeDrainDelete: scopedAccess.beforeNativeModalDrainDelete },
   }[provider];
   const data = createSqlData(sql);
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {

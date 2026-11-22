@@ -179,7 +179,12 @@ async function observeBoatDrainDeletion(
 export async function deleteSandboxWithActivity(
   sandboxes: ServerSandboxStore,
   providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve"> & {
-    beforeNativeDrainDelete?(provider: Provider, sandboxId: string, placement: string): Promise<void>;
+    beforeNativeDrainDelete?(
+      provider: Provider,
+      sandboxId: string,
+      placement: string,
+      generation: number,
+    ): Promise<void>;
   },
   id: string,
   mode?: "native-drain",
@@ -226,7 +231,7 @@ export async function deleteSandboxWithActivity(
               operationId = await dispatch(id, target.sandboxId, generation, activityToken, "inspect");
               signal.throwIfAborted();
               if (operationId === null) {
-                await prepare(provider, id, target.sandboxId);
+                await prepare(provider, id, target.sandboxId, generation);
                 signal.throwIfAborted();
               }
             }

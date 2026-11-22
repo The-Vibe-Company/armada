@@ -1052,16 +1052,17 @@ const NATIVE_DRAIN_DETACHED_PROOF = `(r.archive_id is null or exists (
   for share of a
 ))`;
 
+const NATIVE_DRAIN_PENDING_PROOF = `(not s.application_secret_tainted and exists (
+  select 1 from public.sandbox_native_preservation_receipts r
+  where r.sandbox_id=s.id and r.generation<s.lifecycle_generation
+    and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
+    and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
+    and ${NATIVE_DRAIN_DETACHED_PROOF}
+))`;
+
 export async function fencePreservedBoatDrainReplay(tx: Sql, id: string) {
   const { rows } = await tx.query<{ eligible: boolean }>(
-    `select exists (
-       select 1 from public.sandboxes s
-       join public.sandbox_native_preservation_receipts r on r.sandbox_id=s.id
-       where s.id=$1 and r.generation<s.lifecycle_generation
-         and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
-         and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
-         and ${NATIVE_DRAIN_DETACHED_PROOF}
-     ) as eligible`,
+    `select ${NATIVE_DRAIN_PENDING_PROOF} as eligible from public.sandboxes s where s.id=$1`,
     [id],
   );
   return rows[0]?.eligible === true;
@@ -1151,21 +1152,22 @@ export async function nativeDrainDispatch(
     rows: [owned],
   } = await sql.query<{ operation_id: string | null }>(
     `with locked as materialized (
-       select s.id, s.activity_until
+       select s.*
        from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider in ('boat','modal')
          and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
          and s.native_drain_pending and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
          and s.deleted_at is null
        for update of s
+     ), preserved as materialized (
+       select s.id,s.provider,s.activity_until from locked s where ${NATIVE_DRAIN_PENDING_PROOF}
      ), owned as materialized (
-       select * from locked where activity_until>clock_timestamp()
+       select id,provider from preserved where activity_until>clock_timestamp()
      ), claimed as (
        delete from public.native_drain_unclaimed_dispatches d using owned
        where d.sandbox_id=owned.id and $7 returning d.sandbox_id
      )
-     select o.operation_id from public.sandboxes s
-     join owned on owned.id=s.id
+     select o.operation_id from owned s
      left join claimed on claimed.sandbox_id=s.id
      left join public.native_drain_delete_operations o on o.sandbox_id=s.id
      where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null
@@ -1215,11 +1217,14 @@ export async function completeSandboxDeletion(
   nativeDrain: boolean,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
-    `with owned as materialized (
-       select s.id, s.activity_until from public.sandboxes s
+    `with locked as materialized (
+       select s.* from public.sandboxes s
        where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
          and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending=$6::boolean
        for update of s
+     ), owned as materialized (
+       select s.id,s.activity_until from locked s where
+         case when $6::boolean then ${NATIVE_DRAIN_PENDING_PROOF} else true end
      ), settled as (update public.sandboxes s set
        lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
