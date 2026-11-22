@@ -316,6 +316,8 @@ export function createModelAuthOwnership(
           await state.publish({ ...observation, expectedRevision: saved?.revision ?? 0 });
           return (await readState())?.secrets ?? [];
         } catch (error) {
+          // A new sample cannot restore the captured sandbox generation.
+          if (error instanceof NativeObservationSuperseded && error.reason === "sandbox_generation") throw error;
           if (!(error instanceof VaultError) || error.code !== "conflict" || attempt === 2) throw error;
         }
       }

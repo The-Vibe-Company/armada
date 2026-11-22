@@ -124,7 +124,7 @@ test("real native state publication seals rotation without replacing binding, fe
   };
   const before = reads;
   await expect(auth.capture(provider, "native", actor)).rejects.toMatchObject({ code: "conflict" });
-  expect(reads - before).toBe(3); // Bound retries; never publish the old incarnation.
+  expect(reads - before).toBe(1); // A new sample cannot publish under the old incarnation.
   expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toHaveProperty("authJson", native(1));
   await auth.capture(provider, "native", actor);
   expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(2), revision: 2 });
