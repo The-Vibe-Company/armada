@@ -2005,8 +2005,13 @@ subsequently deleted the machine. Docker's inventory path reports overdue
 containers. Frequent replacement can move older deployments out of the query
 scope before their observations reach 15 minutes.
 
-The ordinary journal cleanup submits a bounded delete request per receipt and
-retains IDs with unresolved outcomes for the next run or manual sweep.
+Ordinary and pinned staging smoke submit one bounded DELETE per receipt.
+For cleanup-only Modal stops, the journal-backed lanes submit stop and then
+check the DELETE acknowledgement without polling status. DELETE requires a
+terminal row, so a refusal fails cleanup and leaves the receipt in the journal
+for the next run or manual sweep. Docker keeps stop observation before DELETE.
+Lifecycle and preservation proofs, expiry, and scoped parent quiescence still
+observe stop state where it proves the behavior under test.
 
 ### Real Codex authentication
 

@@ -74,7 +74,7 @@ export interface TemplateSkillIo {
   measuredStep<T>(name: string, action: () => Promise<T>): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
-  stopSandbox(id: string): Promise<void>;
+  cleanupSandbox(id: string): Promise<void>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
 }
 type Metadata = { id?: string; kind?: string; version?: number };
@@ -128,7 +128,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     requestKey: string;
     requestId?: string;
     uncertain: boolean;
-    stopConfirmed: boolean;
+    cleanupConfirmed: boolean;
   }[] = [];
   const api = <T>(path: string, body: object = {}, timeoutMs?: number) =>
     io.request<T>(path, { org: item.org, ...body }, timeoutMs);
@@ -171,7 +171,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         launchAttempted: false,
         requestKey: `post-deploy-smoke:${crypto.randomUUID()}`,
         uncertain: false,
-        stopConfirmed: false,
+        cleanupConfirmed: false,
       };
       templates.push(record);
       await io.measuredStep(`${label}_create`, async () => {
@@ -460,7 +460,9 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     await io.withCleanup(async () => {
       for (const record of templates.toReversed()) {
         if (record.sandboxId)
-          record.stopConfirmed = await cleanup("cleanup_template_sandbox", () => io.stopSandbox(record.sandboxId!));
+          record.cleanupConfirmed = await cleanup("cleanup_template_sandbox", () =>
+            io.cleanupSandbox(record.sandboxId!),
+          );
         else if (record.launchAttempted)
           await cleanup("cleanup_template_sandbox", async () => fail("cleanup_unconfirmed"));
         if (!record.resource && record.attempted)
@@ -506,7 +508,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       if (!deleted) leftoverVariable = key;
     });
     const leftoverSandboxIds = templates
-      .filter((record) => record.sandboxId && !record.stopConfirmed)
+      .filter((record) => record.sandboxId && !record.cleanupConfirmed)
       .map((record) => record.sandboxId);
     const uncertainLaunches = templates
       .filter((record) => record.uncertain)

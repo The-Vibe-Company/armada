@@ -23,6 +23,7 @@ interface Io {
   out(line: string): void;
   /** Called once the sandbox is ready and idle, when it no longer occupies model-account capacity. */
   idle?(): void;
+  deleteSandbox?(id: string): Promise<void>;
 }
 interface Status {
   id: string;
@@ -176,12 +177,19 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
     passed = false; // step reports the closed reason; never print a response or provider exception.
   } finally {
     if (id && !stopped) {
+      const cleanupId = id;
       await io.withCleanup(async () => {
         try {
-          // One mutation attempt only; a lost acknowledgement is reconciled by observation.
+          // Submit one stop. Cleanup can still succeed if its acknowledgement was lost.
           try {
             await api("stop", { id });
           } catch {}
+          const deleteSandbox = io.deleteSandbox;
+          if (deleteSandbox) {
+            await io.step("expiry_cleanup_delete", () => deleteSandbox(cleanupId));
+            stopped = true;
+            return;
+          }
           await io.step("expiry_cleanup_stop", async () => {
             await observe(async (status) => {
               if (physicalStop(status)) return true;

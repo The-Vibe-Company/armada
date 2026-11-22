@@ -64,7 +64,7 @@ test("cleanup refuses production and malformed/non-smoke manifests without netwo
   expect(() => smokeReceipts([{ ...row, requestKey: "all-stopped" }])).toThrow();
 });
 
-test("a malformed launch receipt still gets deleted and a failed delete persists in the journal", async () => {
+test("a malformed Modal launch is cleaned up without stop polling and a refused delete persists", async () => {
   for (const deleted of [true, false]) {
     const directory = await mkdtemp(join(tmpdir(), "smoke-cleanup-"));
     const path = join(directory, "journal.json");
@@ -107,22 +107,17 @@ test("a malformed launch receipt still gets deleted and a failed delete persists
             if (action === "launch")
               return Response.json({ sandbox: { id: row.id, provider: "modal" }, promptId: "unexpected-prompt" });
             if (action === "stop") return Response.json({ id: JSON.parse(String(init.body)).id, status: "stopped" });
-            if (action === "status")
-              return Response.json({
-                id: JSON.parse(String(init.body)).id,
-                status: "stopped",
-                providerState: "stopped",
-              });
             if (action === "delete") {
               const id = new URL(url).pathname.split("/").at(-1);
-              return Response.json({ id, status: id === row.id && deleted ? "deleted" : "stopped" });
+              if (id === row.id && deleted) return Response.json({ id, status: "deleted" });
+              return Response.json({ error: { code: "conflict" } }, { status: 409 });
             }
             throw new Error("unexpected request");
           },
         },
       );
       expect(passed).toBe(false);
-      expect(calls).toContain("delete");
+      expect(calls.slice(calls.indexOf("launch"))).toEqual(["launch", "stop", "delete"]);
       expect(await readSmokeJournal(path)).toHaveLength(deleted ? 100 : 101);
     } finally {
       await rm(directory, { recursive: true, force: true });

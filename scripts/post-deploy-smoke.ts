@@ -145,6 +145,7 @@ interface SmokeIo {
   now: () => number;
   out: (line: string) => void;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
+  deleteModalCleanup?: (org: string, id: string) => Promise<void>;
   recordSandboxDelete?: (org: string, id: string, accepted: boolean) => void;
 }
 const OBSERVED_SANDBOX_STATUSES: readonly string[] = [
@@ -892,12 +893,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         measuredStep: (name, action) => step(name, () => withStepDeadline(name, action)),
         out,
         withCleanup,
-        stopSandbox: async (id) => {
+        cleanupSandbox: async (id) => {
           try {
             await request("sandbox/stop", { org: item.org, id });
           } catch (error) {
             if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
           }
+          if (io.deleteModalCleanup) return io.deleteModalCleanup(item.org, id);
           await poll(
             () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
             (result) => {
@@ -1002,6 +1004,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, out, step, budgets } = unit(index, item.provider, "expiry");
     const timeoutMs = budgets.expiry_launch ?? 120_000;
+    const deleteSandbox = io.deleteModalCleanup;
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
@@ -1023,6 +1026,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         step,
         withCleanup,
         idle: release,
+        deleteSandbox: deleteSandbox ? (id) => deleteSandbox(item.org, id) : undefined,
       }),
     );
   }
@@ -1212,9 +1216,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       passed = false;
     } finally {
       if (id) {
+        const cleanupId = id;
+        const deleteSandbox = item.provider === "modal" ? io.deleteModalCleanup : undefined;
         try {
-          await withCleanup(() =>
-            step("real_model_stop", () =>
+          await withCleanup(async () => {
+            await step("real_model_stop", () =>
               withStepDeadline(
                 "real_model_stop",
                 async (until) => {
@@ -1223,6 +1229,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   } catch (error) {
                     if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
                   }
+                  if (deleteSandbox) return;
                   await poll(
                     status,
                     (result) => {
@@ -1235,8 +1242,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 },
                 { measureCleanup: true },
               ),
-            ),
-          );
+            );
+            if (deleteSandbox) await step("real_model_cleanup_delete", () => deleteSandbox(item.org, cleanupId));
+          });
         } catch {
           passed = false;
         }
@@ -1339,7 +1347,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
-    async function stopSandbox(until?: number) {
+    const cleanupDelete = scoped ? undefined : io.deleteModalCleanup;
+    async function requestStop() {
       if (!stopRequested) {
         try {
           const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
@@ -1354,6 +1363,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         }
         stopRequested = true;
       }
+    }
+    async function stopSandbox(until?: number) {
+      await requestStop();
       await poll(
         () =>
           sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
@@ -2050,7 +2062,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             fail("invalid_receipt");
           commit = result.stdout.trim();
         });
-      if (!github) await measuredStep("stop", stopSandbox);
+      if (!github && (lifecycle || preservation || !cleanupDelete)) await measuredStep("stop", stopSandbox);
       if (preservation) {
         // Recovery is a read-only operation, but do not reuse the earlier stop
         // receipt if verification fails or a regression wakes the worker.
@@ -2125,6 +2137,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         await measuredStep("list_stopped_final", () => consistent("stopped"));
       }
     }
+    let deleted = false;
     try {
       await run();
     } catch {
@@ -2159,22 +2172,31 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         }
       }
       if (sandboxId && !stopped) {
+        const id = sandboxId;
         try {
-          await withCleanup(() => step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", stopSandbox));
+          await withCleanup(() =>
+            step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", async () => {
+              if (!cleanupDelete) return stopSandbox();
+              await requestStop();
+              await cleanupDelete(item.org, id);
+              deleted = true;
+            }),
+          );
         } catch {
           passed = false;
         }
       }
     }
     if (scoped) return (await scoped.cleanup(sandboxId, stopped, launchAttempted)) && passed;
+    const cleaned = stopped || deleted;
     if (preservation)
       io.out(
         JSON.stringify({
           case: index,
           step: "preservation_cleanup_summary",
-          pass: !!sandboxId && stopped,
+          pass: !!sandboxId && cleaned,
           phase: dirty ? "archive" : "clean",
-          leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
+          leftoverSandboxIds: sandboxId && !cleaned ? [sandboxId] : [],
           launchOutcomeUnknown: launchAttempted && !sandboxId,
           recoveryId: verifiedRecoveryId ?? null,
           org: item.org,
@@ -2188,11 +2210,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           case: index,
           phase: dirty ? "preservation" : "lifecycle",
           step: "lifecycle_cleanup_summary",
-          pass: !!sandboxId && stopped,
+          pass: !!sandboxId && cleaned,
           provider: item.provider,
           harness: item.harness,
           elapsedMs: io.now() - startedAt,
-          leftoverSandboxIds: sandboxId && !stopped ? [sandboxId] : [],
+          leftoverSandboxIds: sandboxId && !cleaned ? [sandboxId] : [],
           launchOutcomeUnknown: launchAttempted && !sandboxId,
           startedAt: new Date(startedAt).toISOString(),
           org: item.org,
@@ -2270,10 +2292,18 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   let passed = false;
   let unknownLaunch = false;
   const unacknowledgedLaunches = new Set<string>();
-  const parityDeletes = new Map<string, boolean>();
+  const deleteResults = new Map<string, boolean>();
+  const token = env.ARMADA_TOKEN;
   const trackedIo: SmokeIo = {
     ...io,
-    recordSandboxDelete: (org, id, accepted) => parityDeletes.set(`${org}/${id}`, accepted),
+    deleteModalCleanup: async (org, id) => {
+      const receipt = rows.find((row) => row.org === org && row.id === id && row.provider === "modal");
+      if (!receipt) fail("invalid_receipt");
+      const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, token, [receipt], io);
+      deleteResults.set(`${org}/${id}`, remaining.length === 0);
+      if (remaining.length) fail("operation_failed");
+    },
+    recordSandboxDelete: (org, id, accepted) => deleteResults.set(`${org}/${id}`, accepted),
     recordSandbox: async (org, id, requestKey, provider) => {
       if (!rows.some((row) => row.id === id)) rows.push({ org, id, requestKey, ...(provider ? { provider } : {}) });
       await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
@@ -2351,10 +2381,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     unknownLaunch ||= unacknowledgedLaunches.size > 0;
     deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
     rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
-    const parityFailures = rows.filter((row) => parityDeletes.get(`${row.org}/${row.id}`) === false);
-    const untouched = rows.filter((row) => !parityDeletes.has(`${row.org}/${row.id}`));
+    const failedDeletes = rows.filter((row) => deleteResults.get(`${row.org}/${row.id}`) === false);
+    const untouched = rows.filter((row) => !deleteResults.has(`${row.org}/${row.id}`));
     rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, untouched, io, { limit: 64 });
-    rows = [...earlierRows, ...parityFailures, ...rows];
+    rows = [...earlierRows, ...failedDeletes, ...rows];
     await saveSmokeJournal(path, [...deferred, ...rows]);
     io.out(
       JSON.stringify({

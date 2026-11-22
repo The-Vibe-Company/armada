@@ -1,4 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promptFailureReason } from "../packages/core/src/native-failure.ts";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
@@ -32,6 +35,9 @@ test.each([
   { scenario: "finished without complete text", state: "finished", code: "invalid_receipt" },
 ])("real-model staging smoke handles $scenario and stops both sandboxes", async ({ scenario, state, code }) => {
   const budgets = (provider: string) => deadlinesFor(deadlineTable, provider, "real-model");
+  const journalDir =
+    scenario === "finished with complete text" ? await mkdtemp(join(tmpdir(), "real-model-")) : undefined;
+  const runEnv = journalDir ? { ...env, ARMADA_SMOKE_JOURNAL: join(journalDir, "journal.json") } : env;
   const timeouts = new Map<string, number[]>();
   const timeout = spyOn(AbortSignal, "timeout");
   let now = 0;
@@ -39,8 +45,10 @@ test.each([
   let dockerAllocation: { id: string; externalRef: string } | undefined;
   const sent: string[] = [];
   const stopped = new Set<string>();
+  const stopObserved: string[] = [];
+  const deleted: string[] = [];
   const receipts: Record<string, unknown>[] = [];
-  const passed = await postDeploySmoke(env, ["--real-model"], {
+  const passed = await postDeploySmoke(runEnv, ["--real-model"], {
     now: () => now,
     sleep: async (ms) => {
       now += ms;
@@ -49,8 +57,15 @@ test.each([
       if (line.startsWith("{")) receipts.push(JSON.parse(line));
     },
     fetch: async (url, init) => {
-      const body = JSON.parse(String(init.body));
       const path = new URL(url).pathname;
+      if (init.method === "DELETE") {
+        const sandboxId = path.split("/").at(-1)!;
+        expect(stopped.has(sandboxId)).toBe(true);
+        if (sandboxId === id(7)) expect(stopObserved).toContain(sandboxId);
+        deleted.push(sandboxId);
+        return Response.json({ id: sandboxId, status: "deleted" });
+      }
+      const body = JSON.parse(String(init.body));
       const request = path.endsWith("/status") && stopped.has(body.id) ? "stop-confirmation" : path.split("/").at(-1)!;
       const signalIndex = timeout.mock.results.findIndex((result) => result.value === init.signal);
       const budget = timeout.mock.calls[signalIndex]?.[0];
@@ -84,6 +99,7 @@ test.each([
           expect(body.externalRef).toBe(dockerAllocation?.externalRef);
           return Response.json({ sandboxes: [{ ...dockerAllocation, provider: "docker", status: "ready" }] });
         case "/api/v1/sandbox/status":
+          if (stopped.has(body.id)) stopObserved.push(body.id);
           return Response.json(
             stopped.has(body.id) ? { status: "stopped", providerState: "stopped" } : { status: "ready" },
           );
@@ -123,7 +139,10 @@ test.each([
           throw new Error(`Unexpected request ${url}`);
       }
     },
-  }).finally(() => timeout.mockRestore());
+  }).finally(async () => {
+    timeout.mockRestore();
+    if (journalDir) await rm(journalDir, { recursive: true, force: true });
+  });
   if (scenario === "finished with complete text") {
     const providers = ["modal", "docker"];
     for (const [request, step, fallback] of [
@@ -135,15 +154,14 @@ test.each([
     ] as const) {
       expect(timeouts.get(request)).toEqual(providers.map((provider) => budgets(provider)[step] ?? fallback));
     }
-    const confirmations = timeouts.get("stop-confirmation")!;
-    expect(confirmations).toHaveLength(2);
-    for (const [index, provider] of providers.entries()) {
-      const stopBudget = budgets(provider).real_model_stop;
-      if (stopBudget === undefined) expect(confirmations[index]).toBe(120_000);
-      else {
-        expect(confirmations[index]).toBeGreaterThan(0);
-        expect(confirmations[index]).toBeLessThanOrEqual(stopBudget - 100);
-      }
+    expect(deleted.sort()).toEqual([id(5), id(7)]);
+    expect(stopObserved).toEqual([id(7)]);
+    const [confirmation] = timeouts.get("stop-confirmation")!;
+    const stopBudget = budgets("docker").real_model_stop;
+    if (stopBudget === undefined) expect(confirmation).toBe(120_000);
+    else {
+      expect(confirmation).toBeGreaterThan(0);
+      expect(confirmation).toBeLessThanOrEqual(stopBudget - 100);
     }
   }
   expect(passed).toBe(code === undefined);

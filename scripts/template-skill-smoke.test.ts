@@ -296,7 +296,7 @@ function fixture(
     out(line: string) {
       lines.push(JSON.parse(line));
     },
-    async stopSandbox(id: string) {
+    async cleanupSandbox(id: string) {
       expect(cleaning).toBe(true);
       stopped.push(id);
       if (fault === "cleanup") throw new Error("secret stop refusal");
