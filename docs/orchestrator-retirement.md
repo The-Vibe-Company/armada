@@ -26,10 +26,12 @@ after the schema change and run the real migration/security tests and full
 
 ## Intentionally retained shared/schema identifiers in step 1
 
-The generated database contract and `scripts/db/generate.ts` still describe
-orchestrator tables because step 1 does not change the database. Schema-only
-checks may still mention those names. They are removed with the authorized
-step-2 migration, not by falsifying the generated contract now.
+The step-2 cleanup removes the retired tables' row aliases from the type
+generator first. The generated database contract still describes the tables
+while they exist. After the alias removal ships in a release, the drop-safety
+check must pass against main and that release before a separate migration
+drops the tables. The migration also removes the retired schema-only test
+references and regenerates the database contract.
 
 The existing scoped sandbox wire namespace `armada_orchestrator` and private
 `orchestrator-tools` paths remain shared access contracts, not the removed
