@@ -145,6 +145,7 @@ interface SmokeIo {
   now: () => number;
   out: (line: string) => void;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
+  recordSandboxDelete?: (org: string, id: string, accepted: boolean) => void;
 }
 const OBSERVED_SANDBOX_STATUSES: readonly string[] = [
   "starting",
@@ -2269,8 +2270,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   let passed = false;
   let unknownLaunch = false;
   const unacknowledgedLaunches = new Set<string>();
+  const parityDeletes = new Map<string, boolean>();
   const trackedIo: SmokeIo = {
     ...io,
+    recordSandboxDelete: (org, id, accepted) => parityDeletes.set(`${org}/${id}`, accepted),
     recordSandbox: async (org, id, requestKey, provider) => {
       if (!rows.some((row) => row.id === id)) rows.push({ org, id, requestKey, ...(provider ? { provider } : {}) });
       await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
@@ -2348,8 +2351,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     unknownLaunch ||= unacknowledgedLaunches.size > 0;
     deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
     rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
-    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, { limit: 64 });
-    rows = [...earlierRows, ...rows];
+    const parityFailures = rows.filter((row) => parityDeletes.get(`${row.org}/${row.id}`) === false);
+    const untouched = rows.filter((row) => !parityDeletes.has(`${row.org}/${row.id}`));
+    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, untouched, io, { limit: 64 });
+    rows = [...earlierRows, ...parityFailures, ...rows];
     await saveSmokeJournal(path, [...deferred, ...rows]);
     io.out(
       JSON.stringify({

@@ -198,6 +198,7 @@ interface Io {
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
+  recordSandboxDelete?: (org: string, id: string, accepted: boolean) => void;
 }
 
 /** Observational parity; production Boat verification requires explicit coordinator opt-in. */
@@ -649,6 +650,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let keyedLaunchUnconfirmed = false;
     let stopped = false;
     let deleted = false;
+    const stagingDeletes = new Map<string, Promise<{ id: string; status: "deleted" }>>();
     let stopRequested = false;
     const memory = `PARITY_${crypto.randomUUID().replaceAll("-", "")}`;
     let afterResume = false;
@@ -657,7 +659,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
     let clientStopEligible = false;
-    const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
+    const api = <T>(path: string, body: object = {}, timeoutMs?: number) =>
+      request<T>(path, { org: c.org, ...body }, timeoutMs);
     function dockerLaunchInput() {
       return {
         hostId: c.hostId,
@@ -1511,8 +1514,36 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         requestDeadline = previous;
       }
     }
+    async function submitStagingDelete(sandboxId: string) {
+      if (!stopped && !stopRequested) {
+        stopRequested = true;
+        // Docker requires stop before delete. The DELETE receipt determines cleanup success.
+        await api("sandbox/stop", { id: sandboxId, request_id: crypto.randomUUID() }, 120_000).catch(() => {});
+      }
+      const query = new URLSearchParams({ org: c.org, requestId: crypto.randomUUID() });
+      const path = `sandboxes/${encodeURIComponent(sandboxId)}?${query}`;
+      try {
+        const receipt = await request<{ id?: string; status?: string } | null>(path, undefined, 120_000);
+        if (receipt?.id !== sandboxId || receipt.status !== "deleted") throw new Error("delete_unconfirmed");
+      } catch (error) {
+        const detail = diagnostic(error);
+        if (detail.httpStatus !== 404 || detail.code !== "not_found") throw error;
+      }
+      return { id: sandboxId, status: "deleted" as const };
+    }
+
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
+      if (!productionBoat) {
+        let submission = stagingDeletes.get(id);
+        if (!submission) {
+          submission = submitStagingDelete(id);
+          stagingDeletes.set(id, submission);
+        }
+        const receipt = await submission;
+        deleted = true;
+        return receipt;
+      }
       const cleanupDeadline = io.now() + OBSERVATION_MS;
       {
         let stopError: unknown;
@@ -2575,6 +2606,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         // Known resources remain unconfirmed even when the refusal is quota.
         record("cleanup", c.provider, "fail", "cleanup_unconfirmed", detail);
       }
+      if (!productionBoat) io.recordSandboxDelete?.(c.org, cleanupId, deleted);
       io.out(JSON.stringify({ step: "parity_cleanup", provider: c.provider, id, deleted }));
     }
     if (templateIntentUnknown || keyedLaunchUnconfirmed)
