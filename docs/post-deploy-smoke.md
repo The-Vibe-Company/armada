@@ -503,12 +503,14 @@ merge helper. No defaults are changed: concurrent settings edits can intentional
 fail the probe rather than overwrite someone else's configuration.
 
 The clean launch omits both explicit skills and opt-out, then
-`default_skills_receipts` requires exactly the effective pins in both the launch
-and persisted status receipts, including matching versions, IDs, checksums and
-registry origin. Its returned snapshot ID must match the queried environment.
-The dirty worker supplies `skipSkillDefaults: true` and no explicit pins;
-`default_skills_opt_out_receipts` requires empty receipt arrays. This still runs
-normal work preservation/recovery checks.
+`default_skills_receipts` checks the exact effective pins, including versions,
+IDs, checksums and registry origin. For a full launch response it compares the
+launch and persisted status receipts and checks the returned snapshot ID. For a
+Modal admission receipt it verifies the sandbox in owner inventory filtered to
+the expected snapshot, then waits for setup to settle successfully before
+checking persisted receipts. The dirty worker supplies `skipSkillDefaults: true`
+and no explicit pins. Its `default_skills_opt_out_receipts` check expects zero
+pins. Both workers still run their normal work preservation and recovery checks.
 
 If all defaults are empty, empty receipt evidence is still checked, but delivery
 steps emit explicit `no_default_pins_configured` SKIPs instead of claiming a

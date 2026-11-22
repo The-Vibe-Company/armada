@@ -1420,7 +1420,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const acceptsAdmission = !requiresLaunchReceipt && (lifecycle || preservation || goldenRuntime);
+        const acceptsAdmission = scope === undefined && (lifecycle || preservation || goldenRuntime);
         const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
@@ -1466,7 +1466,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          recoverLaunch ? { recover: recoverLaunch } : acceptsAdmission ? { receipt: "admission" } : undefined,
+          { recover: recoverLaunch, receipt: acceptsAdmission ? "admission" : undefined },
         );
         const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
@@ -1474,7 +1474,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (!sandboxId || result.promptId) fail("invalid_response");
         hasAdmissionReceipt = acceptsAdmission && !!parseLaunchAdmissionReceipt(item.provider, result);
         if (!recovered && parent?.provider !== item.provider && !hasAdmissionReceipt) fail("invalid_response");
-        if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
+        if (requiresLaunchReceipt && !hasAdmissionReceipt && result.golden?.id !== item.goldenId)
+          fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
             if (!matchesParentConfiguration(parent)) fail("invalid_response");
@@ -1550,7 +1551,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             elapsedMs: io.now() - startedAt,
           }),
         );
-      if (hasAdmissionReceipt) await measuredStep("list_ready", () => consistent("ready"));
+      if (hasAdmissionReceipt)
+        await measuredStep("list_ready", () => consistent("ready", defaultSkills ? item.goldenId : undefined));
       if (goldenRuntime && !dirty) {
         await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
         await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
@@ -1561,9 +1563,36 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const expected = defaultPins.get(index)!;
         const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
         await step(receiptStep, () =>
-          withStepDeadline(receiptStep, async () => {
-            const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
-            verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
+          withStepDeadline(receiptStep, async (until) => {
+            const pins = dirty ? [] : expected;
+            if (!hasAdmissionReceipt) {
+              const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
+              verifyDefaultReceipts(launchSkills, status.skills, pins);
+              return;
+            }
+
+            // Enrolment publishes readiness before the job finishes installing skills.
+            const status = await poll(
+              (timeoutMs) =>
+                sandbox<{
+                  id: string;
+                  status: string;
+                  prompt: unknown;
+                  settled: boolean;
+                  statusMessage: string | null;
+                  skills?: unknown;
+                }>("status", { id: sandboxId }, timeoutMs),
+              (status) => status?.settled === true,
+              { until },
+            );
+            if (
+              status.id !== sandboxId ||
+              status.status !== "ready" ||
+              status.prompt !== null ||
+              status.statusMessage !== null
+            )
+              fail("invalid_response");
+            verifyReceipts(status.skills, pins);
           }),
         );
         if (!expected.length)
@@ -1576,7 +1605,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             }),
           );
       }
-      async function consistent(expected: string) {
+      async function consistent(expected: string, golden?: string) {
         const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
           "status",
           { id: sandboxId },
@@ -1590,7 +1619,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             page: number;
             hasMore: boolean;
             nextPage: number | null;
-          }>("list", { owner: "me", harness: item.harness, status: [expected], limit: 200, page });
+          }>("list", {
+            owner: "me",
+            harness: item.harness,
+            status: [expected],
+            ...(golden ? { golden } : {}),
+            limit: 200,
+            page,
+          });
           if (!Array.isArray(result?.sandboxes) || result.page !== page || typeof result.hasMore !== "boolean")
             fail("invalid_response");
           const matches = result.sandboxes.filter((row) => row.id === sandboxId);
