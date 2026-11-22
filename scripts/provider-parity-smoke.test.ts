@@ -149,6 +149,9 @@ for (const mode of [
   "docker_launch_recovers",
   "docker_launch_unresolved",
   "docker_launch_incomplete",
+  "modal_launch_admitted",
+  "modal_launch_setup_failed",
+  "modal_launch_terminal_failed",
   "modal_launch_recovers",
   "modal_launch_unresolved",
   "modal_launch_malformed",
@@ -211,6 +214,11 @@ for (const mode of [
     const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
     const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
     const launchRequestId = "30000000-0000-4000-8000-000000000006";
+    const modalAdmission =
+      mode === "modal_launch_admitted" ||
+      mode === "modal_launch_setup_failed" ||
+      mode === "modal_launch_terminal_failed";
+    let modalSetupReads = 0;
     let modalLaunchKey: string | undefined;
     let modalExternalRef: string | undefined;
     const ordinaryIds = new Map<string, string>();
@@ -274,6 +282,7 @@ for (const mode of [
     const snapshotOwner = "10000000-0000-4000-8000-000000000008";
     const snapshotImage = `sha256:${"a".repeat(64)}`;
     const journalDir =
+      mode === "modal_launch_admitted" ||
       mode === "modal_launch_missing_provider" ||
       mode === "modal_launch_top_level_id" ||
       mode === "docker_launch_recovers" ||
@@ -765,7 +774,14 @@ for (const mode of [
               result = {
                 sandboxes:
                   mode !== "modal_launch_unresolved" && modalInventoryReads > 1
-                    ? [{ id: recoveredSandbox, provider: "modal", externalRef: modalExternalRef, status: "ready" }]
+                    ? [
+                        {
+                          id: recoveredSandbox,
+                          provider: "modal",
+                          externalRef: modalExternalRef,
+                          status: mode === "modal_launch_terminal_failed" ? "failed" : "ready",
+                        },
+                      ]
                     : [],
               };
               break;
@@ -790,6 +806,10 @@ for (const mode of [
                 modalLaunchKey = body.idempotencyKey;
                 modalExternalRef = body.externalRef;
                 await advance(500);
+                if (modalAdmission) {
+                  states.set(p, "ready");
+                  return Response.json({ sandbox: { id: recoveredSandbox, status: "starting" } });
+                }
                 if (mode === "modal_launch_malformed") {
                   states.set(p, "ready");
                   return Response.json({ sandbox: { id: "malformed", provider: "modal" } });
@@ -919,6 +939,7 @@ for (const mode of [
               result = { connections: [{ id: mcpConnection, status: "connected" }] };
               break;
             case "sandbox/send": {
+              if (modalAdmission) expect(modalSetupReads).toBe(2);
               if (clientFull && String(body.prompt).includes("PARITY_CLIENT_CLI_")) {
                 result = acceptClient(p, body);
                 break;
@@ -1183,6 +1204,17 @@ for (const mode of [
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/status":
+              if (modalAdmission && modalSetupReads < 2 && !calls.includes(`${p}:${sandboxDeletePath}`)) {
+                expect(body.id).toBe(recoveredSandbox);
+                modalSetupReads++;
+                result = {
+                  id: body.id,
+                  status: "ready",
+                  settled: modalSetupReads === 2,
+                  statusMessage: modalSetupReads === 1 || mode === "modal_launch_setup_failed" ? "setup" : null,
+                };
+                break;
+              }
               if (mode === "snapshot_lost_receipt" && p === "docker" && snapshotStatusReads++ === 0) {
                 result = { id: sandboxId(p), provider: p, status: "starting" };
                 break;
@@ -1233,6 +1265,7 @@ for (const mode of [
                     ? body.id
                     : sandboxId(p),
                 settled: true,
+                statusMessage: null,
                 prompt: null,
                 status: states.get(p),
                 ...(clientFull ? { conversationIds: ["client_conversation"] } : {}),
@@ -1516,6 +1549,18 @@ for (const mode of [
       expect(calls.filter((call) => call === "modal:sandbox/launch")).toHaveLength(1);
       expect(modalLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
       expect(modalExternalRef).toBe(modalLaunchKey);
+      if (mode === "modal_launch_setup_failed" || mode === "modal_launch_terminal_failed") {
+        expect(passed).toBe(false);
+        expect(report.features["prerequisite:launch"].modal).toMatchObject({
+          status: "fail",
+          diagnostic: { code: "sandbox_not_ready" },
+        });
+        expect(journalClaims).toEqual([recoveredSandbox]);
+        if (mode === "modal_launch_terminal_failed") expect(modalInventoryReads).toBe(2);
+        expect(calls).not.toContain("modal:sandbox/send");
+        expect(report.features.cleanup.modal.status).toBe("pass");
+        return;
+      }
       if (mode !== "modal_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
@@ -1538,7 +1583,7 @@ for (const mode of [
           provider: "modal",
           lane: "parity",
           pass: true,
-          elapsedMs: 1_500,
+          elapsedMs: modalAdmission ? 2_500 : 1_500,
         });
       } else {
         expect(passed).toBe(false);

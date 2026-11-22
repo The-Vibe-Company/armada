@@ -1,4 +1,5 @@
 import { appendFile } from "node:fs/promises";
+import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import { isHarness } from "../packages/core/src/harnesses.ts";
 import type { LaunchProviderOption } from "../packages/core/src/index.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
@@ -74,6 +75,7 @@ const localCodes = new Set([
   "skills_content_mismatch",
   "control_turn_not_active",
   "invalid_status_receipt",
+  "sandbox_not_ready",
   "invalid_logs_receipt",
   "delete_unconfirmed",
 ]);
@@ -421,6 +423,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         ...correlation,
       });
     })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown } } | null;
+    if (modalLaunch && parseLaunchAdmissionReceipt("modal", result)) return result as T;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
       if (
@@ -711,7 +714,62 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       }
 
       const dockerInput = provider === "docker" ? dockerLaunchInput() : undefined;
-      let result: { sandbox: LaunchSandbox };
+      const observeAllocation = (until: number, detail?: Diagnostic) =>
+        observeSmokeLaunch(until, io, async (remainingMs) => {
+          const readStarted = io.now();
+          const inventory = await request<{
+            sandboxes?: { id: string; provider: string; externalRef: string; status: string }[];
+          }>("sandbox/list", { org: c.org, owner: "me", externalRef: requestKey }, Math.min(5_000, remainingMs)).catch(
+            () => undefined,
+          );
+          const rows = inventory?.sandboxes;
+          const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+          if (
+            row?.provider !== provider ||
+            row.externalRef !== requestKey ||
+            typeof row.id !== "string" ||
+            !UUID.test(row.id)
+          )
+            return;
+          if (!id) await claim(row.id);
+          if (row.id !== id) return;
+          if (!dockerInput && row.status === "failed") throw new Error("sandbox_not_ready");
+          if (row.status !== "ready" && !(dockerInput && row.status === "running")) return;
+          const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
+          const statusBudget = readBudget();
+          if (statusBudget <= 0) return;
+          const status = await request<{
+            id: string;
+            status: string;
+            settled?: boolean;
+            statusMessage?: string | null;
+          }>("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
+          if (status?.id !== row.id) return;
+          if (!dockerInput) {
+            if (status.settled !== true) return;
+            if (status.status !== "ready" || status.statusMessage !== null) throw new Error("sandbox_not_ready");
+            return row;
+          }
+          if (status.status !== "ready" && status.status !== "running") return;
+          if (!dockerSnapshot) return row;
+          const receiptBudget = readBudget();
+          if (receiptBudget <= 0) return;
+          const receipt = await request<LaunchSandbox & { status: string }>(
+            "docker/sandboxes/get",
+            { org: dockerSnapshot.orgId, sandboxId: row.id },
+            receiptBudget,
+          ).catch(() => undefined);
+          if (!receipt) return;
+          if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))
+            throw new ParityError({
+              ...detail,
+              code: "invalid_snapshot_source",
+              message: "The recovered sandbox does not match the requested Docker snapshot.",
+              requestKey,
+            });
+          if (receipt.status === "ready" || receipt.status === "running") return receipt;
+        });
+      let result: { sandbox: LaunchSandbox } | ModalLaunchReceipt;
       try {
         result = await request<typeof result>(
           "sandbox/launch",
@@ -736,54 +794,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           ["outcome_unknown", "launch_response_unreadable"].includes(detail.code) ||
           (detail.httpStatus ?? 0) >= 500
         ) {
-          const sandbox = await observeSmokeLaunch(Math.min(budget, io.now() + timeoutMs), io, async (remainingMs) => {
-            const readStarted = io.now();
-            const inventory = await request<{
-              sandboxes?: { id: string; provider: string; externalRef: string; status: string }[];
-            }>(
-              "sandbox/list",
-              { org: c.org, owner: "me", externalRef: requestKey },
-              Math.min(5_000, remainingMs),
-            ).catch(() => undefined);
-            const rows = inventory?.sandboxes;
-            const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
-            if (
-              row?.provider !== provider ||
-              row.externalRef !== requestKey ||
-              typeof row.id !== "string" ||
-              !UUID.test(row.id)
-            )
-              return;
-            if (!id) await claim(row.id);
-            if (row.id !== id || (row.status !== "ready" && !(dockerInput && row.status === "running"))) return;
-            if (!dockerInput) return row;
-            const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
-            const statusBudget = readBudget();
-            if (statusBudget <= 0) return;
-            const status = await request<{ id: string; status: string }>(
-              "sandbox/status",
-              { org: c.org, id: row.id },
-              statusBudget,
-            ).catch(() => undefined);
-            if (status?.id !== row.id || (status.status !== "ready" && status.status !== "running")) return;
-            if (!dockerSnapshot) return row;
-            const receiptBudget = readBudget();
-            if (receiptBudget <= 0) return;
-            const receipt = await request<LaunchSandbox & { status: string }>(
-              "docker/sandboxes/get",
-              { org: dockerSnapshot.orgId, sandboxId: row.id },
-              receiptBudget,
-            ).catch(() => undefined);
-            if (!receipt) return;
-            if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))
-              throw new ParityError({
-                ...detail,
-                code: "invalid_snapshot_source",
-                message: "The recovered sandbox does not match the requested Docker snapshot.",
-                requestKey,
-              });
-            if (receipt.status === "ready" || receipt.status === "running") return receipt;
-          });
+          const sandbox = await observeAllocation(Math.min(budget, io.now() + timeoutMs), detail);
           if (sandbox) result = { sandbox };
           else {
             keyedLaunchUnconfirmed = id === undefined;
@@ -791,11 +802,23 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           }
         } else throw new ParityError({ ...detail, requestKey });
       }
-      if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== provider)
+      const admission = parseLaunchAdmissionReceipt(provider, result);
+      if (admission) {
+        await claim(admission.sandbox.id);
+        const sandbox = await observeAllocation(Math.min(budget, started + timeoutMs));
+        if (!sandbox) throw new Error("poll_limit_exceeded");
+        result = { sandbox };
+      }
+      if (
+        typeof result.sandbox?.id !== "string" ||
+        !result.sandbox.id ||
+        !("provider" in result.sandbox) ||
+        result.sandbox.provider !== provider
+      )
         throw new Error("invalid_launch_receipt");
       if (!id) await claim(result.sandbox.id);
       if (!dockerSnapshot) io.out(JSON.stringify({ step, provider, lane, pass: true, elapsedMs: io.now() - started }));
-      return result;
+      return { sandbox: result.sandbox };
     }
     const readableUntil = Math.min(deadline, io.now() + 110_000);
     let mcp: Awaited<ReturnType<typeof prepareMcpProbe>> | undefined;
