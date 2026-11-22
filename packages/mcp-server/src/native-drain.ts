@@ -28,11 +28,11 @@ export function configureNativeDrain(
     vault,
     encryptionKey,
     providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
-    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
+    modalTokensFor: async (target, caller) => modalIntegration().modalTokensFor(target, caller),
     modalProviderFor: async (tokens, binding, context) => {
       const sandboxId = context.target.id;
       if (!sandboxId) throw new Error("Native drain requires a persisted Modal sandbox.");
-      return (await modalIntegration()).modalProviderFor(tokens, binding, context);
+      return modalIntegration().modalProviderFor(tokens, binding, context);
     },
   });
   const remove = createNativeDrainRemoval(sql, provider, actorId, scopedAccess, providers, allowHistoricalModal);

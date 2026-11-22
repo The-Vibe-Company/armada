@@ -135,7 +135,7 @@ describe("provider routing", () => {
     );
     const sql = bunLikeSql(db);
     const vault = createSqlVaultStore(sql);
-    const integration = await createModalIntegration({
+    const integration = createModalIntegration({
       sql,
       vault,
       encryptionKey: ENCRYPTION_KEY,
