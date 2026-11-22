@@ -537,6 +537,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     id(input.id);
     const key = input.requestKey;
     if (typeof key !== "string") invalid();
+    const routineKey = key.startsWith("routine:");
     const validKey = runtime.explicitModal
       ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
       : templateLaunchFields.requestKey.safeParse(key).success;
@@ -578,6 +579,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    if (!runtime.scheduled && def.provider === "modal" && routineKey) invalid();
     // Host launches record no external reference; refuse rather than drop it.
     if (input.externalRef !== undefined && usesHostPlacement(def)) unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
@@ -695,7 +697,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const previous = await replay(row, bodyDigest, active);
       const m = row.manifest;
       if (active.scheduled || m.golden?.provider !== "modal" || row.state !== "claimed" || row.result) return previous;
-      if (key.startsWith("routine:")) invalid();
+      if (routineKey) invalid();
       if (!active.admitModal) unavailable("environment_admission_unavailable");
       const a = admittedActor ?? (await transaction((tx) => member(tx, actor, org)));
       const receipt = await active.admitModal(

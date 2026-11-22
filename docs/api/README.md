@@ -69,15 +69,11 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   control characters). The reference can be shared by several sandboxes.
   Authorized status and list reads and webhooks return it.
 - After a dropped response or HTTP 503 `outcome_unknown`, keep the original
-  key and body. A replay returns the recorded result only if the request
-  still passes launch preflight: the same snapshot must still be visible to
-  the caller under the same name and provider, its provider account must still
-  be configured, and the server must still be able to pin an allocation
-  authority. Armada runs these checks before it reads the receipt. For example,
-  if the snapshot was removed, the replay returns `not_found` without
-  consulting the receipt. If it was recreated under the same name, the new
-  snapshot ID changes the request and the replay returns 409 `conflict`.
-  Neither error means the original launch failed.
+  key and body. Both providers check that the caller can still see the named
+  golden. Modal looks up the receipt before preparing any new launch. Boat also
+  checks the provider account and allocation authority before reading its
+  receipt. A removed golden can return `not_found`. Recreating it under the
+  same name changes its ID and returns HTTP 409 `conflict`.
 - When a replay returns one of these errors, never launch with a new key. Look
   up recorded sandboxes with `POST /api/v1/sandbox/list` and
   `{"externalRef":"application-1042"}`. An empty list is expected when the
