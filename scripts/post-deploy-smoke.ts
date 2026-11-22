@@ -1509,6 +1509,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       const readinessStep = scoped ? "scoped_parent_ready" : "ready";
       const scopedAdmissionUntil =
         scoped && hasAdmissionReceipt ? Math.min(deadline, io.now() + launchBudget) : undefined;
+      const readinessUntil = scopedAdmissionUntil ?? launchSetupUntil;
       await step(readinessStep, async () => {
         let statusResponse: { status: string; providerState: string; statusReason: string } | undefined;
         try {
@@ -1535,7 +1536,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
-            scopedAdmissionUntil === undefined ? { step: readinessStep } : { until: scopedAdmissionUntil },
+            readinessUntil === undefined ? { step: readinessStep } : { until: readinessUntil },
           );
         } catch (error) {
           if (error instanceof SmokeFailure) {

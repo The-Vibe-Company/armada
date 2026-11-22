@@ -1861,7 +1861,7 @@ function lifecycleFixture(
   fault: LifecycleFault = "none",
   handler?: (call: Call) => Response | undefined,
   launchElapsedMs = 500,
-  setupPendingReads = 0,
+  { startingReads = 1, setupPendingReads = 0 } = {},
 ) {
   // Per-sandbox state: concurrent case lanes interleave their calls.
   interface Life {
@@ -1923,7 +1923,7 @@ function lifecycleFixture(
       return json({
         id,
         harness,
-        status: life.stopped ? "stopped" : !life.sends && ++life.readiness === 1 ? "starting" : "ready",
+        status: life.stopped ? "stopped" : !life.sends && ++life.readiness <= startingReads ? "starting" : "ready",
         providerState: life.stopped ? "stopped" : "active",
         expiresAt: life.expiry,
         prompt: null,
@@ -2008,7 +2008,7 @@ test("an ordinary lifecycle case never reads goldenId, which only scoped Codex c
 });
 
 test("lifecycle follows Modal admission through extend/list, closed idle steer refusal and send-after-stop", async () => {
-  const fake = lifecycleFixture("admission_receipt");
+  const fake = lifecycleFixture("admission_receipt", undefined, 500, { startingReads: 12 });
   const cases = ["modal"].flatMap((provider) =>
     ["claude", "codex"].map((harness) => ({ ...selected, provider, harness })),
   );
@@ -2044,7 +2044,7 @@ test("lifecycle follows Modal admission through extend/list, closed idle steer r
     fake
       .receipts()
       .filter((line) => line.step === "time_to_ready")
-      .map((line) => line.elapsedMs >= 1500),
+      .map((line) => line.elapsedMs > 10_000),
   ).toEqual([true, true]);
   expect(fake.receipts().filter((line) => line.step === "lifecycle_cleanup_summary")).toHaveLength(2);
   expect(
@@ -2340,7 +2340,7 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 test("an ordinary lifecycle launch continues on the sandbox observed after a response timeout", async () => {
-  const fake = lifecycleFixture("recovered_launch", undefined, 500, 4);
+  const fake = lifecycleFixture("recovered_launch", undefined, 500, { setupPendingReads: 4 });
   expect(await fake.run()).toBe(true);
   const starts = fake.calls.filter((call) => call.path === "sandbox/launch");
   expect(starts).toHaveLength(1);
@@ -2868,7 +2868,7 @@ test("GitHub refresh accepts the runtime receipt after proving launch access", a
           })
         : undefined,
     500,
-    4,
+    { setupPendingReads: 4 },
   );
   const timeout = spyOn(AbortSignal, "timeout");
   try {
