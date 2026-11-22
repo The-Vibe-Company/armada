@@ -348,7 +348,6 @@ export function createSandboxArmadaAccess(input: {
           [parent.id],
         );
         if (!current || current.modal_drain_cleaned_placement === placement) return true;
-        // Exit is journal-proven. Invalidate the scoped token without inspecting the deleted workspace.
         await authorityFor(tx).revoke(parent.id);
         await recordCleanup(tx);
         return true;

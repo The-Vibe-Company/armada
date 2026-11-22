@@ -26,7 +26,7 @@ export function isFullModalDrainTombstone(record: string) {
 }
 
 export async function lockFullModalDrainTombstone(tx: Sql, id: string) {
-  // Modal ingest takes the sandbox and journal locks in reverse order.
+  // WARNING: Modal ingest takes the sandbox and journal locks in reverse order.
   const {
     rows: [journal],
   } = await tx.query<{ scope: string; id: string; lease_id: string | null }>(
