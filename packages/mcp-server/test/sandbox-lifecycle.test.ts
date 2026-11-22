@@ -757,7 +757,7 @@ for (const evidence of [
       const successor = createSandboxLifecycle(sql, async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
       await successor.drain();
-      expect((await readSandbox()).lifecycle_error).toBeNull();
+      expect(await readSandbox()).toMatchObject({ lifecycle_error: null });
     }
     if (evidence === "lost-stop-response") {
       expect(await readSandbox()).toMatchObject({
