@@ -44,7 +44,15 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
     );
     const read = async () =>
       (
-        await sql.query(
+        await sql.query<{
+          status: string;
+          reconcile_lease: string | null;
+          reconcile_after: Date;
+          lifecycle_generation: string;
+          activity_lease_id: string | null;
+          stop_requested_at: Date | null;
+          last_observed_at: Date | null;
+        }>(
           `select status,reconcile_lease,reconcile_after,lifecycle_generation::text,activity_lease_id,
              stop_requested_at,last_observed_at from public.sandboxes where id=$1`,
           [id],
@@ -58,7 +66,7 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
       );
     const publicationFailure = new Error("injected native turn publication failure");
     let claimed: Awaited<ReturnType<typeof read>> | undefined;
-    const provider = {
+    const provider: Pick<Provider, "id" | "get"> = {
       id: "boat",
       async get() {
         claimed = await read();
@@ -66,7 +74,7 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
           await sql.query("update public.sandboxes set stop_requested_at=now() where id=$1", [id]);
         return { id: placement, name: placement, state: "ready", providerState: "ready", labels: {} };
       },
-    } as Pick<Provider, "id" | "get"> as Provider;
+    };
     const workerSql: Sql =
       scenario === "publication failure"
         ? {
@@ -74,8 +82,8 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
             transaction: (work) =>
               sql.transaction!((tx) =>
                 work({
-                  async query(statement, args) {
-                    const result = await tx.query(statement, args);
+                  async query<T>(statement: string, args?: unknown[]) {
+                    const result = await tx.query<T>(statement, args);
                     if (statement.includes("public.sandbox_transition(") && args?.[5] === "native_turn_settled")
                       throw publicationFailure;
                     return result;
@@ -84,10 +92,10 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
               ),
           }
         : sql;
-    const run = createSandboxLifecycle(workerSql, async () => provider).reconcileOne();
+    const run = createSandboxLifecycle(workerSql, async () => provider as Provider).reconcileOne();
     if (scenario === "publication failure") {
       await expect(run).rejects.toBe(publicationFailure);
-      expect(claimed?.reconcile_lease).toBeTruthy();
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
       expect(await read()).toEqual(claimed);
     } else {
       expect(await run).toBe(true);
