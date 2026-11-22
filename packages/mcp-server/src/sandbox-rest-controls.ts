@@ -188,6 +188,7 @@ export async function deleteSandboxWithActivity(
   },
   id: string,
   mode?: "native-drain",
+  allowHistoricalModal = false,
 ) {
   const nativeDrain = mode === "native-drain";
   if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
@@ -197,13 +198,26 @@ export async function deleteSandboxWithActivity(
   if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
   if (nativeDrain && !found.providerSandboxId)
     throw new ToolError("conflict", "Native drain requires an exact provider placement.");
+  const historicalModal =
+    nativeDrain && allowHistoricalModal && (await sandboxes.historicalModalDrainCandidate?.(id)) === true;
+  if (nativeDrain && found.stopRequestedAt && !historicalModal)
+    throw new ToolError("sandbox_not_ready", "Native drain is waiting for the stop to settle.");
   const admission: ServerSandboxPatch = {
     deleteRequested: true,
-    ...(nativeDrain ? { nativeDrainAdmission: { provider: found.provider, placement: found.providerSandboxId } } : {}),
+    ...(nativeDrain
+      ? {
+          nativeDrainAdmission: {
+            provider: found.provider,
+            placement: found.providerSandboxId,
+            allowHistoricalModal: historicalModal,
+          },
+        }
+      : {}),
   };
   const exitConfirmed = !nativeDrain && isFailedModalLaunch(found) && found.stoppedAt !== null;
-  const provider =
-    found.providerSandboxId && !exitConfirmed ? await providers.resolve(found, { userId: found.ownerId }) : null;
+  const resolveProvider = async () =>
+    found.providerSandboxId && !exitConfirmed ? providers.resolve(found, { userId: found.ownerId }) : null;
+  const resolved = historicalModal ? null : await resolveProvider();
   const failurePatch = (error: unknown) => {
     if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
     throw error;
@@ -214,29 +228,51 @@ export async function deleteSandboxWithActivity(
     admission,
     async (signal, activityToken) => {
       signal.throwIfAborted();
+      const target = {
+        sandboxId: found.providerSandboxId,
+        ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
+      };
+      const dispatch = sandboxes.nativeDrainDispatch?.bind(sandboxes);
+      const generation = target.generation;
+      const inspect = async (action: "inspect" | "claim") => {
+        if (!dispatch || generation === undefined)
+          throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
+        return dispatch(id, target.sandboxId, generation, activityToken, action, historicalModal);
+      };
+      const prepare = providers.beforeNativeDrainDelete;
+      const evidence = nativeDrain && (prepare || historicalModal) ? await inspect("inspect") : undefined;
+      signal.throwIfAborted();
+      const historical = !!evidence?.historical_phase;
+      const patch: ServerSandboxPatch = {
+        deleteCompleted: true,
+        ...(nativeDrain ? { nativeDrain: true } : {}),
+        ...(historical ? { historicalModalDrainPlacement: target.sandboxId } : {}),
+      };
+      const settled = {
+        result: {
+          id: found.id,
+          status: "deleted" as const,
+          ...(nativeDrain ? { drainProof: historical ? ("without-proof" as const) : ("with-proof" as const) } : {}),
+        },
+        patch,
+      };
+      if (evidence?.historical_phase === "deleted") return settled;
+      const provider = historicalModal ? await resolveProvider() : resolved;
+      signal.throwIfAborted();
       if (provider) {
         try {
-          const target = {
-            sandboxId: found.providerSandboxId,
-            ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
-          };
-          let operationId: string | null = null;
+          let operationId = evidence?.operation_id ?? null;
           if (nativeDrain) {
-            const generation = target.generation;
-            const dispatch = sandboxes.nativeDrainDispatch?.bind(sandboxes);
-            if (!dispatch || generation === undefined)
-              throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
-            const prepare = providers.beforeNativeDrainDelete;
-            if (prepare) {
-              operationId = await dispatch(id, target.sandboxId, generation, activityToken, "inspect");
-              signal.throwIfAborted();
-              if (operationId === null) {
+            if (operationId === null) {
+              if (prepare && generation !== undefined) {
                 await prepare(provider, id, target.sandboxId, generation);
                 signal.throwIfAborted();
               }
+              const claimed = await inspect("claim");
+              if (claimed.historical_phase !== (evidence?.historical_phase ?? null))
+                throw new ToolError("conflict", "Native drain evidence changed before provider deletion.");
+              operationId = claimed.operation_id;
             }
-            if (operationId === null)
-              operationId = await dispatch(id, target.sandboxId, generation, activityToken, "claim");
             signal.throwIfAborted();
           }
           const boat = provider as Partial<BoatProvider>;
@@ -265,8 +301,7 @@ export async function deleteSandboxWithActivity(
           if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
         }
       }
-      const patch: ServerSandboxPatch = { deleteCompleted: true, ...(nativeDrain ? { nativeDrain: true } : {}) };
-      return { result: { id: found.id, status: "deleted" as const }, patch };
+      return settled;
     },
     nativeDrain ? undefined : { failurePatch },
   );
