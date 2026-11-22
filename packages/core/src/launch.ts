@@ -288,7 +288,7 @@ function modalLaunchTiming(startedAt: number) {
     report(sandboxId: string, path: "native" | "enrolled") {
       if (!enabled) return;
       try {
-        console.error(
+        console.info(
           JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
         );
       } catch {
@@ -694,7 +694,11 @@ export async function launchSandbox(
           },
           reportGitHub: (launchGithub) => {
             try {
-              console.error(
+              const log =
+                launchGithub.status === "revoked" || launchGithub.status === "unavailable"
+                  ? console.warn
+                  : console.info;
+              log(
                 JSON.stringify({
                   event: "launch_github_prepared",
                   sandboxId: record.id,
