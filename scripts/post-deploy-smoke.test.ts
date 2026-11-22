@@ -727,6 +727,8 @@ describe("preservation checks", () => {
       "default_recovery_wrong_golden",
       "default_recovery_expired",
       "scoped_pair",
+      "scoped_admission",
+      "scoped_admission_wrong_account",
       "scoped_parent_timeout",
       "scoped_unsupported",
       "missing",
@@ -745,13 +747,16 @@ describe("preservation checks", () => {
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
         const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
         const defaultAdmission = fault.startsWith("default_admission");
-        const scopes = fault === "scoped_pair" || fault === "scoped_parent_timeout";
+        const scopedAdmission = fault.startsWith("scoped_admission");
+        const scopes = scopedAdmission || fault === "scoped_pair" || fault === "scoped_parent_timeout";
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
         const scriptedParents = new Map<string, boolean>();
         const scopedKeys = new Map<string, string>();
+        const scopedSetupReads = new Map<string, number>();
+        const scopedGoldenChecks = new Set<string>();
         const scopedLaunchTimeouts: Array<number | undefined> = [];
         const scopedReadyTimeouts = new Map<string, number | undefined>();
         const scopedStopTimeouts: Array<number | undefined> = [];
@@ -814,6 +819,18 @@ describe("preservation checks", () => {
           if (scopes && call.path === "sandbox/list") {
             expect(call.body.owner).toBe("me");
             expect(call.body.golden).toBe(defaultGolden);
+            if (scopedAdmission && Array.isArray(call.body.status)) {
+              return json({
+                sandboxes: [...scriptedParents].flatMap(([id, stopped]) => {
+                  if (stopped) return [];
+                  scopedGoldenChecks.add(id);
+                  return [{ id, provider, harness: "codex", status: "ready", expiresAt: null }];
+                }),
+                hasMore: false,
+                nextPage: null,
+                page: 1,
+              });
+            }
             return json({
               sandboxes: [
                 ...[...scriptedParents.keys()].map((id) => ({ id })),
@@ -841,6 +858,10 @@ describe("preservation checks", () => {
             });
             const parent = String(call.body.id);
             expect(scriptedParents.has(parent)).toBe(true);
+            if (scopedAdmission) {
+              expect(scopedGoldenChecks.has(parent)).toBe(true);
+              expect(scopedSetupReads.get(parent)).toBeGreaterThan(3);
+            }
             expect(launches).toBeGreaterThan(0);
             if (parent === scriptedParents.keys().next().value) {
               const message = { idempotencyKey: messageKey, text: prefix + JSON.stringify({ lane: "child", answer }) };
@@ -929,15 +950,20 @@ describe("preservation checks", () => {
               if (!scopedReadyTimeouts.has(requestedId))
                 scopedReadyTimeouts.set(requestedId, timeout?.mock.lastCall?.[0]);
               const stopped = scriptedParents.get(requestedId);
+              const reads = scopedSetupReads.get(requestedId) ?? 0;
+              if (scopedAdmission) scopedSetupReads.set(requestedId, reads + 1);
               return json({
                 id: requestedId,
                 externalRef: [...scopedKeys].find(([, id]) => id === requestedId)?.[0],
                 status: stopped ? "stopped" : "ready",
                 providerState: stopped ? "stopped" : "active",
                 prompt: null,
+                settled: !scopedAdmission || reads >= 3,
+                statusMessage: scopedAdmission && reads < 3 ? "Modal launch setup is still in progress." : null,
+                expiresAt: null,
                 harness: "codex",
                 model: "scripted",
-                credentialId: scopeAccount,
+                credentialId: fault === "scoped_admission_wrong_account" ? baselineScopeAccount : scopeAccount,
                 credentialVersion: 7,
                 visibility: "private",
                 skills: requestedId === scriptedParents.keys().next().value ? receipts(pins) : [],
@@ -964,6 +990,7 @@ describe("preservation checks", () => {
                 scopedLaunchTimeouts.push(timeout?.mock.lastCall?.[0]);
                 throw new DOMException("timeout", "TimeoutError");
               }
+              if (scopedAdmission) return json({ sandbox: { id, status: "starting" } });
               return json({
                 sandbox: {
                   id,
@@ -1195,6 +1222,7 @@ describe("preservation checks", () => {
           "default_empty",
           "default_admission",
           "scoped_pair",
+          "scoped_admission",
           "scoped_parent_timeout",
           "scoped_unsupported",
         ].includes(fault);
@@ -1257,7 +1285,16 @@ describe("preservation checks", () => {
             false,
           );
         }
-        if (scopes) {
+        if (fault === "scoped_admission_wrong_account") {
+          expect(scriptedParents.size).toBe(2);
+          expect([...scriptedParents.values()]).toEqual([true, true]);
+          expect(
+            fake.calls.some((call) => call.path === "sandbox/send" && scriptedParents.has(String(call.body.id))),
+          ).toBe(false);
+          expect(
+            fake.receipts().filter((line) => line.step === "scoped_parent_configuration" && !line.pass),
+          ).toHaveLength(2);
+        } else if (scopes) {
           const scriptedSteps = fake.lines
             .filter((line) => line !== boatNotice)
             .map((line) => JSON.parse(line))
@@ -1274,7 +1311,9 @@ describe("preservation checks", () => {
             const launchBudget = budgets.scoped_parent_launch ?? 600_000;
             expect(scopedLaunchTimeouts).toEqual([launchBudget, launchBudget]);
           } else {
-            const readyBudget = budgets.scoped_parent_ready ?? 120_000;
+            const readyBudget = scopedAdmission
+              ? (budgets.scoped_parent_launch ?? 600_000)
+              : (budgets.scoped_parent_ready ?? 120_000);
             const stopBudget = budgets.scoped_parent_stop ?? 120_000;
             expect([...scopedReadyTimeouts.values()]).toEqual([readyBudget, readyBudget]);
             expect(scopedStopTimeouts).toEqual([stopBudget, stopBudget]);
@@ -1304,7 +1343,7 @@ describe("preservation checks", () => {
         }
         expect(fake.lines.join("")).not.toContain(commit);
         expect(fake.lines.join("")).not.toContain("secret");
-        if (!success && !attemptedRecoveries.size)
+        if (!success && !attemptedRecoveries.size && fault !== "scoped_admission_wrong_account")
           expect(fake.receipts()).toContainEqual(
             expect.objectContaining({
               pass: false,

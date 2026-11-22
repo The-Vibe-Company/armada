@@ -538,6 +538,13 @@ work-preservation turns still use the case's ordinary model and account.
 Claude cases emit a `codex_only` skip. Codex cases require staging scoped
 access to be configured.
 
+For a prompt-free Modal admission receipt, the runner follows the parent ID.
+Owner inventory confirms the provider and harness under the requested snapshot
+filter. After setup settles, a fresh ready status confirms the parent's model,
+account version and visibility before the scoped turn. Readiness and
+configuration share the scoped launch budget from acknowledgement, capped by
+the run deadline.
+
 The parent drives the configured scoped MCP launch, message, read, and stop
 tools. The runner uses the owner API to verify receipts and clean up compute.
 
