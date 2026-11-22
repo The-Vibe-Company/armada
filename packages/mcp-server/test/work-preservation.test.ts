@@ -948,7 +948,6 @@ test.each([
   "unmarked pending intent",
   "admission rollback",
   "lost provider reply",
-  "provider reply without exit proof",
   "journal replacement before dispatch",
   "journal replacement before settlement",
 ] as const)("historical Modal drain handles %s", async (scenario) => {
@@ -1073,6 +1072,7 @@ test.each([
   "stopped journal",
   "stopped journal with stop intent",
   "lost provider reply",
+  "provider reply without exit proof",
   "interrupted stopped admission",
   "interrupted stopped settlement",
   "membership contention",
