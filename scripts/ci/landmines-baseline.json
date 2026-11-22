@@ -1082,7 +1082,6 @@
     "packages/mcp-server/test/database-boot.test.ts": 3,
     "packages/mcp-server/test/database-readiness.test.ts": 3,
     "packages/mcp-server/test/docker-launch-predispatch.test.ts": 1,
-    "packages/mcp-server/test/docker-normal-launch.test.ts": 2,
     "packages/mcp-server/test/docker-reservation-sql.test.ts": 1,
     "packages/mcp-server/test/fixtures/serve-database-boot.ts": 2,
     "packages/mcp-server/test/github-legacy.test.ts": 1,
