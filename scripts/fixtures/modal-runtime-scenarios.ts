@@ -36,6 +36,7 @@ export type Defect =
   | "idle-wrong-first-request"
   | "lost-followup"
   | "job-admission"
+  | "idle-setup-failed"
   | "lost-launch"
   | "mcp-error-result"
   | "mcp-no-result"
@@ -1945,6 +1946,12 @@ export const scenarios: Scenario[] = [
     defects: ["variables-no-tool", "ordinary-template-missing-transport"],
     expected: expected.ordinaryTemplateMissingTransport,
   },
+  {
+    label: "empty-job-admission",
+    args: ["--empty-resume"],
+    defects: ["job-admission"],
+    expected: expected.emptySuccess,
+  },
   { label: "empty-success", args: ["--empty-resume"], defects: [], expected: expected.emptySuccess },
   { label: "empty-claude", args: ["--empty-resume", "--claude"], defects: [], expected: expected.emptySuccess },
   { label: "empty-opencode", args: ["--empty-resume", "--opencode"], defects: [], expected: expected.emptySuccess },
@@ -2015,6 +2022,13 @@ export const scenarios: Scenario[] = [
     args: ["--empty-resume"],
     defects: ["tool-result", "empty-disk-mismatch"],
     expected: expected.emptyDiskMismatch,
+  },
+  { label: "idle-job-admission", args: ["--idle"], defects: ["job-admission"], expected: expected.idle },
+  {
+    label: "idle-job-admission-failed-setup",
+    args: ["--idle"],
+    defects: ["job-admission", "idle-setup-failed"],
+    expected: { ...expected.idleBadReceipt, stderrContains: ["Admitted Modal launch or initial turn failed."] },
   },
   { label: "idle", args: ["--idle"], defects: [], expected: expected.idle },
   { label: "idle-resume", args: ["--resume", "--idle"], defects: [], expected: expected.idleResume },
