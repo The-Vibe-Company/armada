@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration, type Sql } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
@@ -271,6 +271,41 @@ function runtimeCase(
     test(name, async () => action(await prepared()));
   });
 }
+runtimeCase("Boat runtime launch binds every repository in a multi-repository golden", async (x) => {
+  const { f, service } = x;
+  const repositories = ["api", "docs", "infra", "worker", "cli", "sdk", "web", "dashboard"];
+  await f.db.query("update goldens set config=$2::jsonb where id=$1", [
+    f.row.goldenId,
+    JSON.stringify({
+      repos: repositories.map((dir) => ({ url: `https://github.com/example/${dir}.git`, branch: "main", dir })),
+      init: [],
+    }),
+  ]);
+  await f.db.query(
+    "update sandboxes set status='starting',activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+    [f.row.id, crypto.randomUUID()],
+  );
+
+  expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected" });
+  expect(x.config().repositories).toEqual(repositories.map((repo) => `example/${repo}`));
+  for (const repo of repositories) {
+    expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
+  }
+  const log = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({
+        event: "runtime_github_credentials_denied",
+        sandboxId: f.row.id,
+        reason: "repository_outside_binding",
+      }),
+    );
+  } finally {
+    log.mockRestore();
+  }
+});
+
 for (const provider of ["boat", "modal"] as const)
   runtimeCase(
     `${provider} launch GitHub authority works only in an actively leased starting sandbox before private repository setup`,
