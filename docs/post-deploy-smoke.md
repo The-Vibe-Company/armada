@@ -507,8 +507,9 @@ The clean launch omits both explicit skills and opt-out, then
 IDs, checksums and registry origin. For a full launch response it compares the
 launch and persisted status receipts and checks the returned snapshot ID. For a
 Modal admission receipt it verifies the sandbox in owner inventory filtered to
-the expected snapshot, then waits for setup to settle successfully before
-checking persisted receipts. The dirty worker supplies `skipSkillDefaults: true`
+the expected snapshot, then waits for setup to settle successfully and checks
+persisted receipts on a fresh status read. Lost acknowledgements recover by
+request key and also require successful setup before accepting the receipts. The dirty worker supplies `skipSkillDefaults: true`
 and no explicit pins. Its `default_skills_opt_out_receipts` check expects zero
 pins. Both workers still run their normal work preservation and recovery checks.
 

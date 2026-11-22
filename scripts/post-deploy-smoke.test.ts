@@ -775,6 +775,7 @@ describe("preservation checks", () => {
         let recoverySandboxId: string | undefined;
         const attemptedRecoveries = new Map<string, string>();
         let statusReady = false;
+        let recoverySetupPending = false;
 
         let sandboxId = "";
         const recoveryId = crypto.randomUUID();
@@ -1002,6 +1003,7 @@ describe("preservation checks", () => {
               recoverySandboxId = sandboxId;
               attemptedRecoveries.set(recoveryKey, sandboxId);
               statusReady = false;
+              recoverySetupPending = fault === "default_policy";
               if (fault === "default_policy") throw new DOMException("timeout", "TimeoutError");
               return Response.json(
                 { error: { code: "outcome_unknown" } },
@@ -1051,6 +1053,23 @@ describe("preservation checks", () => {
             statusReady = true;
             return json({ id: sandboxId, externalRef: recoveryKey, status: "starting", prompt: null, skills: [] });
           }
+          if (
+            call.path === "sandbox/status" &&
+            call.body.id === recoverySandboxId &&
+            recoverySetupPending &&
+            !stopping
+          ) {
+            recoverySetupPending = false;
+            return json({
+              id: sandboxId,
+              externalRef: recoveryKey,
+              status: "ready",
+              prompt: null,
+              skills: receipts(launches === 2 ? [] : pins),
+              settled: false,
+              statusMessage: "Modal launch setup is still in progress.",
+            });
+          }
           if (call.path === "sandbox/status" && observedDefaultGolden && !stopping && ++skillStatusReads === 1)
             return json({
               id: sandboxId,
@@ -1060,11 +1079,26 @@ describe("preservation checks", () => {
               settled: false,
               statusMessage: "Modal launch setup is still in progress.",
             });
+          if (
+            call.path === "sandbox/status" &&
+            fault === "default_admission" &&
+            observedDefaultGolden &&
+            !stopping &&
+            skillStatusReads === 2
+          )
+            return json({
+              id: sandboxId,
+              status: "ready",
+              prompt: null,
+              skills: [],
+              settled: true,
+              statusMessage: null,
+            });
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
               id: sandboxId,
-              ...(defaultAdmission
+              ...(defaultAdmission || fault === "default_policy"
                 ? {
                     settled: true,
                     statusMessage: fault === "default_admission_setup_failed" ? "Modal launch setup failed." : null,
@@ -1096,7 +1130,7 @@ describe("preservation checks", () => {
                 : {}),
               ...(stopping && fault === "clean_note" && launches === 1 ? { preservationNote: "secret-failure" } : {}),
             });
-          if (defaultAdmission && call.path === "sandbox/exec") expect(skillStatusReads).toBeGreaterThanOrEqual(2);
+          if (defaultAdmission && call.path === "sandbox/exec") expect(skillStatusReads).toBeGreaterThanOrEqual(3);
           if (call.path === "sandbox/exec" && String(call.body.command).includes("commit --allow-empty")) {
             const command = String(call.body.command);
             expect(commitCommands.has(command)).toBe(false);
@@ -1144,7 +1178,7 @@ describe("preservation checks", () => {
           scopeFlag
             ? ["--work-preservation", "--scoped-access", ...(defaults ? ["--default-skills"] : [])]
             : defaults
-              ? ["--work-preservation", "--default-skills"]
+              ? ["--work-preservation", "--default-skills", ...(defaultAdmission ? ["--golden-runtime"] : [])]
               : ["--work-preservation"],
           {
             ...fake.io,
@@ -1184,7 +1218,7 @@ describe("preservation checks", () => {
             .filter((line) => line.step === "launch");
           if (success)
             expect(launch).toEqual(
-              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 1_000 })),
+              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 2_000 })),
             );
           else
             expect(launch[0]).toMatchObject({

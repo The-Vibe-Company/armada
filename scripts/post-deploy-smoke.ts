@@ -1444,6 +1444,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   externalRef?: string;
                   status: string;
                   prompt: unknown;
+                  settled: boolean;
+                  statusMessage: string | null;
                 }
               >("status", { id }, Math.min(5_000, remaining));
               if (
@@ -1454,7 +1456,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               )
                 return;
               if (scope && !matchesParentConfiguration(status)) return;
-              if (defaultSkills && !scope) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              if (defaultSkills && !scope) {
+                if (status.settled !== true || status.statusMessage !== null) return;
+                verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              }
               return { sandbox: status, golden: { id: goldenId } };
             }
           : undefined;
@@ -1556,12 +1561,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       if (hasAdmissionReceipt)
         await measuredStep("list_ready", () => consistent("ready", defaultSkills ? item.goldenId : undefined));
-      if (goldenRuntime && !dirty) {
-        await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
-        await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
-      }
-      if (githubRefresh && !dirty)
-        await measuredStep("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
@@ -1574,23 +1573,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               return;
             }
 
-            const status = await poll(
-              (timeoutMs) =>
-                sandbox<{
-                  id: string;
-                  status: string;
-                  prompt: unknown;
-                  settled: boolean;
-                  statusMessage: string | null;
-                  skills?: unknown;
-                }>("status", { id: sandboxId }, timeoutMs),
+            const readSetupStatus = (timeoutMs?: number) =>
+              sandbox<{
+                id: string;
+                status: string;
+                prompt: unknown;
+                settled: boolean;
+                statusMessage: string | null;
+                skills?: unknown;
+              }>("status", { id: sandboxId }, timeoutMs);
+            const settled = await poll(
+              readSetupStatus,
               (status) => status?.settled === true,
               until === undefined ? {} : { until },
             );
+            if (settled.statusMessage !== null) fail("invalid_response");
+
+            const status = await readSetupStatus();
             if (
-              status.id !== sandboxId ||
+              status?.id !== sandboxId ||
               status.status !== "ready" ||
               status.prompt !== null ||
+              status.settled !== true ||
               status.statusMessage !== null
             )
               fail("invalid_response");
@@ -1607,6 +1611,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             }),
           );
       }
+      if (goldenRuntime && !dirty) {
+        await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
+        await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
+      }
+      if (githubRefresh && !dirty)
+        await measuredStep("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       async function consistent(expected: string, golden?: string) {
         const status = await sandbox<{ id: string; harness: string; status: string; expiresAt: string | null }>(
           "status",
