@@ -288,8 +288,8 @@ function modalLaunchTiming(startedAt: number) {
     report(sandboxId: string, path: "native" | "enrolled") {
       if (!enabled) return;
       try {
-        console.info(
-          JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
+        process.stderr.write(
+          `${JSON.stringify({ level: "info", event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages })}\n`,
         );
       } catch {
         // Timing must not change the launch outcome.
@@ -694,12 +694,11 @@ export async function launchSandbox(
           },
           reportGitHub: (launchGithub) => {
             try {
-              const log =
-                launchGithub.status === "revoked" || launchGithub.status === "unavailable"
-                  ? console.warn
-                  : console.info;
-              log(
-                JSON.stringify({
+              const level =
+                launchGithub.status === "revoked" || launchGithub.status === "unavailable" ? "warn" : "info";
+              process.stderr.write(
+                `${JSON.stringify({
+                  level,
                   event: "launch_github_prepared",
                   sandboxId: record.id,
                   goldenId: golden.id,
@@ -708,7 +707,7 @@ export async function launchSandbox(
                   status: launchGithub.status,
                   repositorySelected: repositoryDir !== null,
                   configuredRepositories: golden.config.repos.length,
-                }),
+                })}\n`,
               );
             } catch {
               // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.

@@ -2168,7 +2168,7 @@ test("Modal golden forks receive the allocated Armada sandbox UUID as their prov
   expect(key).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: id }));
 });
 
-test("Modal launch attributes readiness intervals in order and excludes the prompt", async () => {
+test("Modal launch writes readiness intervals and GitHub diagnostics to stderr", async () => {
   const world = setup({
     boundCredentials: true,
     golden: {
@@ -2181,7 +2181,7 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
   });
   let time = 100;
   const clock = spyOn(performance, "now").mockImplementation(() => time);
-  const logger = spyOn(console, "info");
+  const logger = spyOn(process.stderr, "write");
   const resolve = world.stores.credentials.resolve;
   world.stores.credentials.resolve = async (...args) => {
     time += 11;
@@ -2227,16 +2227,18 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
         },
       },
     );
-    const logs = logger.mock.calls.map(([line]) => JSON.parse(line));
+    const logs = logger.mock.calls.map(([line]) => JSON.parse(String(line)));
     expect(logs).toContainEqual(
       expect.objectContaining({
         event: "launch_github_prepared",
+        level: "info",
         sandboxId: result.sandbox.id,
         status: "not_connected",
       }),
     );
     expect(logs).toContainEqual({
       event: "modal_launch_timing",
+      level: "info",
       sandboxId: result.sandbox.id,
       path: "enrolled",
       totalMs: 99,
