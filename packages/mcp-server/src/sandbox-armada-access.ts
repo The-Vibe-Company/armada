@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatOrchestratorProvider } from "./boat-delegated-access-provider.ts";
+import { lockFullModalDrainTombstone } from "./modal-drain-journal.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
@@ -329,15 +330,34 @@ export function createSandboxArmadaAccess(input: {
     await assertOwner(sql);
     const parent = await scope(provider, placement, sandboxId);
     if (parent && parent.modal_drain_cleaned_placement !== placement) {
-      await scrubParent(provider, placement, parent, "delete");
       if (!sql.transaction) throw new VaultError("unavailable", "Scoped cleanup requires a transaction.");
-      await sql.transaction(async (tx) => {
-        await assertOwner(tx, true);
+      const recordCleanup = async (tx: Sql) => {
         const recorded = await tx.query(
           "update public.armada_access_parents set modal_drain_cleaned_placement=$2 where id=$1 returning id",
           [parent.id, placement],
         );
         if (!recorded.rows.length) throw new VaultError("conflict", "Scoped parent changed during cleanup.");
+      };
+      const tombstoneCleaned = await sql.transaction(async (tx) => {
+        await assertOwner(tx, true);
+        if (!(await lockFullModalDrainTombstone(tx, sandboxId))) return false;
+        const {
+          rows: [current],
+        } = await tx.query<{ modal_drain_cleaned_placement: string | null }>(
+          "select modal_drain_cleaned_placement from public.armada_access_parents where id=$1 for update",
+          [parent.id],
+        );
+        if (!current || current.modal_drain_cleaned_placement === placement) return true;
+        await authorityFor(tx).revoke(parent.id);
+        await recordCleanup(tx);
+        await assertOwner(tx);
+        return true;
+      });
+      if (tombstoneCleaned) return;
+      await scrubParent(provider, placement, parent, "delete");
+      await sql.transaction(async (tx) => {
+        await assertOwner(tx, true);
+        await recordCleanup(tx);
       });
     }
   }
