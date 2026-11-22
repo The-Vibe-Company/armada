@@ -2007,6 +2007,12 @@ scope before their observations reach 15 minutes.
 
 The ordinary journal cleanup submits a bounded delete request per receipt and
 retains IDs with unresolved outcomes for the next run or manual sweep.
+A matching `stopped` or `deleted` stop receipt is enough for cleanup-only
+stops in the ordinary and pinned lanes. Pending, failed, or ambiguous stop
+results still need the lane's existing confirmation before cleanup can count
+as settled. Docker DELETE requires a stopped or failed row. Explicit
+stop/resume, preservation, natural expiry, and scoped parent quiescence still
+use their own observations as functional evidence.
 
 ### Real Codex authentication
 

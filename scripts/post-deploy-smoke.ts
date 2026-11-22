@@ -4,6 +4,7 @@ import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provide
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
+  confirmsCleanupStop,
   deleteSmokeReceipts,
   readSmokeJournal,
   type SmokeSandboxReceipt,
@@ -894,7 +895,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         withCleanup,
         stopSandbox: async (id) => {
           try {
-            await request("sandbox/stop", { org: item.org, id });
+            const receipt = await request<{ id: string; status: string }>("sandbox/stop", { org: item.org, id });
+            if (confirmsCleanupStop(receipt, id)) return;
           } catch (error) {
             if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
           }
@@ -1219,7 +1221,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 "real_model_stop",
                 async (until) => {
                   try {
-                    await sandbox("stop", { request_id: crypto.randomUUID() });
+                    const receipt = await sandbox<{ id: string; status: string }>("stop", {
+                      request_id: crypto.randomUUID(),
+                    });
+                    if (confirmsCleanupStop(receipt, id!)) return;
                   } catch (error) {
                     if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
                   }
@@ -1286,7 +1291,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
           stopSandbox: async (id) => {
             try {
-              await sandbox("stop", { id });
+              const receipt = await sandbox<{ id: string; status: string }>("stop", { id });
+              if (confirmsCleanupStop(receipt, id)) return;
             } catch (error) {
               if (!(error instanceof SmokeFailure) || !["outcome_unknown", "request_failed"].includes(error.code))
                 throw error;
@@ -1339,11 +1345,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
-    async function stopSandbox(until?: number) {
+    async function stopSandbox(until?: number, observe = true) {
+      let receipt: { id: string; status: string; preservationNote?: string } | null = null;
       if (!stopRequested) {
         try {
-          const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
-          preservationNote = receipt.preservationNote;
+          receipt = await sandbox<{ id: string; status: string; preservationNote?: string }>("stop", {
+            id: sandboxId,
+          });
+          preservationNote = receipt?.preservationNote;
         } catch (error) {
           // The stop may already be in flight. Observe it; never replay an unknown mutation.
           if (
@@ -1354,26 +1363,23 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         }
         stopRequested = true;
       }
-      await poll(
-        () =>
-          sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
-        (status) => {
-          if (status.status !== "stopped" && status.status !== "failed") return false;
-          if (status.providerState !== "stopped") fail("provider_not_stopped");
-          if (
-            status.providerState === "stopped" &&
-            [preservationNote, status.preservationNote].some((note) =>
-              note?.includes("checkpoint_failed_disk_not_retained"),
-            )
-          )
-            io.out(
-              JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }),
-            );
-          preservationNote = status.preservationNote ?? preservationNote;
-          return true;
-        },
-        until === undefined ? undefined : { until },
-      );
+      let stopWarning = preservationNote?.includes("checkpoint_failed_disk_not_retained");
+      if (observe || !confirmsCleanupStop(receipt, sandboxId!)) {
+        const status = await poll(
+          () =>
+            sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
+          (status) => {
+            if (status.status !== "stopped" && status.status !== "failed") return false;
+            if (status.providerState !== "stopped") fail("provider_not_stopped");
+            return true;
+          },
+          until === undefined ? undefined : { until },
+        );
+        stopWarning ||= status.preservationNote?.includes("checkpoint_failed_disk_not_retained");
+        preservationNote = status.preservationNote ?? preservationNote;
+      }
+      if (stopWarning)
+        io.out(JSON.stringify({ case: index, step: "stop_warning", warning: "checkpoint_failed_disk_not_retained" }));
       stopped = true;
     }
     type LaunchReceipt = {
@@ -2050,7 +2056,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             fail("invalid_receipt");
           commit = result.stdout.trim();
         });
-      if (!github) await measuredStep("stop", stopSandbox);
+      if (!github) await measuredStep("stop", (until) => stopSandbox(until, preservation || lifecycle));
       if (preservation) {
         // Recovery is a read-only operation, but do not reuse the earlier stop
         // receipt if verification fails or a regression wakes the worker.
@@ -2160,7 +2166,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       }
       if (sandboxId && !stopped) {
         try {
-          await withCleanup(() => step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", stopSandbox));
+          await withCleanup(() =>
+            step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", () => stopSandbox(undefined, !!scoped)),
+          );
         } catch {
           passed = false;
         }

@@ -1,3 +1,5 @@
+import { confirmsCleanupStop } from "./smoke-sandbox-cleanup.ts";
+
 export class ExpirySmokeFailure extends Error {
   constructor(readonly code: "invalid_receipt" | "expiry_not_stopped" | "poll_limit_exceeded") {
     super(code);
@@ -179,10 +181,12 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
       await io.withCleanup(async () => {
         try {
           // One mutation attempt only; a lost acknowledgement is reconciled by observation.
-          try {
-            await api("stop", { id });
-          } catch {}
           await io.step("expiry_cleanup_stop", async () => {
+            const receipt = await api<{ id: string; status: string }>("stop", { id }).catch(() => null);
+            if (confirmsCleanupStop(receipt, id!)) {
+              stopped = true;
+              return;
+            }
             await observe(async (status) => {
               if (physicalStop(status)) return true;
               if (status.status !== "failed") return false;

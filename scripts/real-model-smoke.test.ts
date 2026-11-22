@@ -117,7 +117,10 @@ test.each([
           });
         case "/api/v1/sandbox/stop":
           stopped.add(body.id);
-          if (scenario === "finished with complete text") now += 100;
+          if (scenario === "finished with complete text") {
+            now += 100;
+            return Response.json({ id: body.id, status: body.id === id(7) ? "stopping" : "stopped" });
+          }
           return Response.json({});
         default:
           throw new Error(`Unexpected request ${url}`);
@@ -136,15 +139,15 @@ test.each([
       expect(timeouts.get(request)).toEqual(providers.map((provider) => budgets(provider)[step] ?? fallback));
     }
     const confirmations = timeouts.get("stop-confirmation")!;
-    expect(confirmations).toHaveLength(2);
-    for (const [index, provider] of providers.entries()) {
-      const stopBudget = budgets(provider).real_model_stop;
-      if (stopBudget === undefined) expect(confirmations[index]).toBe(120_000);
-      else {
-        expect(confirmations[index]).toBeGreaterThan(0);
-        expect(confirmations[index]).toBeLessThanOrEqual(stopBudget - 100);
-      }
+    expect(confirmations).toHaveLength(1);
+    const stopBudget = budgets("docker").real_model_stop;
+    if (stopBudget === undefined) expect(confirmations[0]).toBe(120_000);
+    else {
+      expect(confirmations[0]).toBeGreaterThan(0);
+      expect(confirmations[0]).toBeLessThanOrEqual(stopBudget - 100);
     }
+  } else {
+    expect(timeouts.get("stop-confirmation")).toHaveLength(2);
   }
   expect(passed).toBe(code === undefined);
   expect(launches).toEqual([
