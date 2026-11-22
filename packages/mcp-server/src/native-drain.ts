@@ -1,4 +1,4 @@
-import type { MemberRole, Sql } from "@armada/core";
+import type { MemberRole, ProviderRegistry, Sql } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { settleDetachedModalCollections } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
@@ -35,19 +35,39 @@ export function configureNativeDrain(
       return (await modalIntegration()).modalProviderFor(tokens, binding, context);
     },
   });
+  const remove = createNativeDrainRemoval(sql, provider, actorId, scopedAccess, providers, allowHistoricalModal);
+  return { remove, settle: settleDetachedModalCollections };
+}
+
+export function createNativeDrainRemoval(
+  sql: Sql,
+  provider: "modal" | "boat",
+  actorId: string,
+  scopedAccess: Pick<
+    ReturnType<typeof createSandboxArmadaAccess>,
+    "beforeNativeDrainDelete" | "beforeNativeModalDrainDelete" | "revokeNativeDrainParent"
+  >,
+  providers: ProviderRegistry,
+  allowHistoricalModal: boolean,
+) {
   const deletionPreparation = {
     boat: { beforeNativeDrainDelete: scopedAccess.beforeNativeDrainDelete },
     modal: { beforeNativeDrainDelete: scopedAccess.beforeNativeModalDrainDelete },
   }[provider];
   const managedSettlement = { boat: undefined, modal: settleHistoricalManagedModalDeletion }[provider];
   const data = createSqlData(sql);
-  const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
+  return async (row: { id: string; org_id: string; role: MemberRole | null }) => {
     if (!row.role) throw new Error("The operator has no organization membership.");
-    if (allowHistoricalModal && managedSettlement) {
-      const settled = await managedSettlement(sql, row, actorId, scopedAccess.revokeNativeDrainParent);
-      if (settled) return settled === "without-proof" ? settled : undefined;
-    }
-    const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
+    const settled = allowHistoricalModal
+      ? await managedSettlement?.(sql, row, actorId, scopedAccess.revokeNativeDrainParent)
+      : undefined;
+    if (settled === "without-proof") return settled;
+    if (settled === "already-deleted") return;
+    const managed = settled === "with-activity";
+    const source = managed
+      ? createSqlData(sql, undefined, undefined, { ...row, revoke: scopedAccess.revokeNativeDrainParent })
+      : data;
+    const { sandboxes } = source({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     const target = await sandboxes.get(row.id);
     if (target && (target.status === "ready" || target.status === "running")) {
       if (!(await requestNativeDrainStop(sql, target, provider, actorId)))
@@ -59,7 +79,7 @@ export function configureNativeDrain(
     const result = await deleteSandboxWithActivity(
       sandboxes,
       {
-        ...deletionPreparation,
+        ...(managed ? {} : deletionPreparation),
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw new Error("The sandbox route changed after inventory.");
@@ -72,5 +92,4 @@ export function configureNativeDrain(
     );
     return result.drainProof;
   };
-  return { remove, settle: settleDetachedModalCollections };
 }

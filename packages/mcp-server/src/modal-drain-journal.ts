@@ -118,10 +118,20 @@ const historicalAdmission = `case when s.native_drain_pending then ${historicalR
     or (${historicalTombstone})
   ) end`;
 
-export const historicalModalDrainCandidate = `${historicalModalCohort} and exists (
-  select 1 from public.modal_machines m
-  where ${historicalJournalMatch} and ${availableJournal} and ${historicalAdmission}
-)`;
+const managedHistoricalJournal = `s.stop_requested_at is null
+  and (m.record->'deleteScope' is null or m.record->>'deleteScope'='physical-and-retained')
+  and case when m.record->>'phase' in ('deleting','deleted')
+    then ${hasModalDrainExitProof("m.record")}
+    else m.record->'deletePhysicalExitGeneration' is null or ${hasModalDrainExitProof("m.record")}
+  end`;
+
+export function historicalModalDrainCandidate(managed: boolean) {
+  return `${historicalModalCohort} and exists (
+    select 1 from public.modal_machines m
+    where ${historicalJournalMatch} and ${availableJournal}
+      and ${managed ? managedHistoricalJournal : "true"} and ${historicalAdmission}
+  )`;
+}
 
 export async function lockHistoricalManagedModalTombstone(tx: Sql, id: string) {
   // WARNING: Modal ingest can acquire the journal before the sandbox.
@@ -146,15 +156,16 @@ export async function lockHistoricalManagedModalTombstone(tx: Sql, id: string) {
   return !!journal && (!journal.lease_id || (await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id)));
 }
 
-export function historicalModalDrainPhase(allow: string) {
+export function historicalModalDrainPhase(allow: string, managed = false) {
   return `case when ${allow} and ${historicalModalCohort} then (
     select m.record->>'phase' from public.modal_machines m
     where ${historicalJournalMatch} and ${availableJournal} and ${historicalReplay}
+      and ${managed ? managedHistoricalJournal : "true"}
     for update of m nowait
   ) end`;
 }
 
-export async function admitHistoricalModalDrain(tx: Sql, id: string, pending: boolean) {
+export async function admitHistoricalModalDrain(tx: Sql, id: string, pending: boolean, managed = false) {
   // WARNING: Modal ingest can lock the journal before the sandbox. Refuse contention without waiting.
   const {
     rows: [journal],
@@ -167,7 +178,7 @@ export async function admitHistoricalModalDrain(tx: Sql, id: string, pending: bo
     `select m.scope,m.id,m.lease_id,${historicalAdmissionStamp} as stamp
      from public.sandboxes s join public.modal_machines m on ${historicalJournalMatch}
      where s.id=$1 and ${historicalModalCohort} and ${availableJournal}
-       and ${historicalAdmission}
+       and ${historicalAdmission} and ${managed ? managedHistoricalJournal : "true"}
      for update of m nowait`,
     [id],
   );

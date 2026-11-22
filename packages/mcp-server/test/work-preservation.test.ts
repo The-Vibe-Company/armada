@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
+import { decryptSecret, encryptSecret, type Provider, ProviderError, type Sql } from "@armada/core/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { createSqlData } from "../src/data.ts";
-import { configureNativeDrain } from "../src/native-drain.ts";
+import { configureNativeDrain, createNativeDrainRemoval } from "../src/native-drain.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
@@ -1070,6 +1070,13 @@ test.each([
   "legacy stop-requested tombstone",
   "physical-only tombstone",
   "stopped journal",
+  "stopped journal with stop intent",
+  "lost provider reply",
+  "interrupted provider resolution",
+  "provider reply without exit proof",
+  "interrupted stopped admission",
+  "interrupted stopped settlement",
+  "membership contention",
   "no opt-in",
   "nonowner member",
   "mismatched authority mirror",
@@ -1085,12 +1092,21 @@ test.each([
   const parentId = crypto.randomUUID();
   const placement = `managed-${id}`;
   const legacy = scenario === "legacy stop-requested tombstone";
+  const stopped = [
+    "stopped journal",
+    "stopped journal with stop intent",
+    "lost provider reply",
+    "interrupted provider resolution",
+    "provider reply without exit proof",
+    "interrupted stopped admission",
+    "interrupted stopped settlement",
+  ].includes(scenario);
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,access_owner_id,visibility,provider,
        provider_sandbox_id,harness,status,created_at,stopped_at,stop_requested_at,lifecycle_generation)
      values($1,$2,$3,$4,$4,'private','modal',$5,'codex','stopped','2026-11-21',now(),
        case when $6::boolean then now() end,4)`,
-    [id, modalGoldenId, people.org, people.owner, placement, legacy],
+    [id, modalGoldenId, people.org, people.owner, placement, legacy || scenario === "stopped journal with stop intent"],
   );
   await db.query(`insert into orchestrators(id,org_id,owner_id,sandbox_id,state) values($1,$2,$3,$4,'stopped')`, [
     parentId,
@@ -1106,9 +1122,9 @@ test.each([
       people.owner,
       placement,
       JSON.stringify({
-        phase: scenario === "stopped journal" ? "stopped" : "deleted",
+        phase: stopped ? "stopped" : "deleted",
         generation: 1,
-        ...(legacy ? {} : { deletePhysicalExitGeneration: 1 }),
+        ...(legacy || stopped ? {} : { deletePhysicalExitGeneration: 1 }),
         ...(scenario === "physical-only tombstone" ? { deleteScope: "physical-only" } : {}),
       }),
     ],
@@ -1133,7 +1149,12 @@ test.each([
       expiredLease,
       placement,
     ]);
-  const sql = bunLikeSql(db, (statement) => {
+  let injectSettlementFailure = scenario === "interrupted stopped settlement";
+  const backing = bunLikeSql(db, (statement) => {
+    if (scenario === "interrupted stopped admission" && statement.includes("native_drain_pending = true"))
+      throw new Error("Interrupted stopped admission");
+    if (injectSettlementFailure && statement.includes("from public.sandbox_transition("))
+      throw new Error("Interrupted stopped settlement");
     if (expiredLease && statement.includes("set lifecycle_generation=lifecycle_generation+1"))
       throw new Error("Interrupted generation update");
     if (scenario === "interrupted transition" && statement.includes("from public.sandbox_transition("))
@@ -1146,6 +1167,28 @@ test.each([
     )
       throw new Error("Interrupted capacity release");
   });
+  const membershipRequested = Promise.withResolvers<void>();
+  const releaseMembership = Promise.withResolvers<void>();
+  const sql: Sql =
+    scenario === "membership contention"
+      ? {
+          ...backing,
+          transaction: (work) =>
+            backing.transaction!((tx) =>
+              work({
+                async query<T>(statement: string, params?: unknown[]) {
+                  if (statement.includes("join public.members actor")) {
+                    membershipRequested.resolve();
+                    if (/for share[^\n]*nowait/i.test(statement))
+                      throw new Error("could not obtain lock on relation members");
+                    await releaseMembership.promise;
+                  }
+                  return tx.query<T>(statement, params);
+                },
+              }),
+            ),
+        }
+      : backing;
   const actorId = scenario === "nonowner member" ? people.member : people.owner;
   const drain = configureNativeDrain(
     sql,
@@ -1165,6 +1208,103 @@ test.each([
         [id],
       )
     ).rows[0];
+  if (scenario === "membership contention") {
+    let finished = false;
+    const result = drain.remove(candidate).finally(() => {
+      finished = true;
+    });
+    try {
+      await Promise.race([result, membershipRequested.promise]);
+      await Promise.resolve();
+      expect(finished).toBe(false);
+    } finally {
+      releaseMembership.resolve();
+      await expect(result).resolves.toBe("without-proof");
+    }
+    expect(await state()).toEqual({ status: "deleted", generation: "5", epoch: "2", legacy_epoch: "2" });
+    return;
+  }
+  if (stopped && scenario !== "stopped journal with stop intent") {
+    const resolutionInterrupted = scenario === "interrupted provider resolution";
+    const dispatchGeneration = resolutionInterrupted ? 6 : 5;
+    let failResolution = resolutionInterrupted;
+    const deleteMachine = mock(async (target: Parameters<Provider["delete"]>[0]) => {
+      expect<Record<string, unknown>>(target).toEqual({ sandboxId: placement, generation: dispatchGeneration });
+      expect(await state()).toEqual({
+        status: "stopped",
+        generation: String(dispatchGeneration),
+        epoch: "2",
+        legacy_epoch: "2",
+      });
+      await db.query(
+        `update modal_machines set record=record||jsonb_build_object('phase','deleted',
+          'deletePhysicalExitGeneration',$2::int) where id=$1`,
+        [placement, scenario === "provider reply without exit proof" ? 2 : 1],
+      );
+      if (scenario === "lost provider reply") throw new Error("Interrupted provider reply");
+      return { status: "deleted" as const };
+    });
+    const scopedAccess = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
+    const remove = createNativeDrainRemoval(
+      sql,
+      "modal",
+      actorId,
+      scopedAccess,
+      {
+        async resolve() {
+          if (failResolution) {
+            failResolution = false;
+            throw new Error("Interrupted provider resolution");
+          }
+          return { ...fakeBoat().provider, id: "modal", delete: deleteMachine };
+        },
+      },
+      true,
+    );
+    if (scenario === "provider reply without exit proof") {
+      await expect(remove(candidate)).rejects.toThrow("Sandbox deletion receipt is stale.");
+      expect(deleteMachine).toHaveBeenCalledTimes(1);
+      expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
+      return;
+    }
+    if (scenario === "interrupted stopped admission") {
+      await expect(remove(candidate)).rejects.toThrow("Interrupted stopped admission");
+      expect(deleteMachine).not.toHaveBeenCalled();
+      expect(await state()).toEqual({ status: "stopped", generation: "4", epoch: "1", legacy_epoch: "1" });
+      const { rows } = await db.query(
+        "select record ? 'historicalDrainAdmission' as stamped from modal_machines where id=$1",
+        [placement],
+      );
+      expect(rows).toEqual([{ stamped: false }]);
+      return;
+    }
+    if (scenario !== "stopped journal") {
+      await expect(remove(candidate)).rejects.toThrow(/Interrupted/);
+      expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
+      await expect(remove(candidate)).rejects.toThrow();
+      if (resolutionInterrupted) {
+        expect(deleteMachine).not.toHaveBeenCalled();
+        const { rows } = await db.query(
+          `select record->>'phase' as phase, record->'historicalDrainAdmission' as stamp
+           from modal_machines where id=$1`,
+          [placement],
+        );
+        expect(rows).toEqual([{ phase: "stopped", stamp: { sandboxId: id, physicalGeneration: 1 } }]);
+      }
+      injectSettlementFailure = false;
+      await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [id]);
+    }
+    await expect(remove(candidate)).resolves.toBe("without-proof");
+    await expect(remove(candidate)).resolves.toBeUndefined();
+    expect(deleteMachine).toHaveBeenCalledTimes(1);
+    expect(await state()).toEqual({
+      status: "deleted",
+      generation: scenario === "stopped journal" ? "6" : "7",
+      epoch: "2",
+      legacy_epoch: "2",
+    });
+    return;
+  }
   if (scenario === "full tombstone" || legacy) {
     await expect(drain.remove(candidate)).resolves.toBe("without-proof");
     await expect(drain.remove(candidate)).resolves.toBeUndefined();
