@@ -7,9 +7,9 @@ test.each([
   ["resumed request", (work: () => Promise<Response>) => continueRequest(crypto.randomUUID(), work)],
 ] as const)("%s logs provider success at info and refusal at warn", async (_context, run) => {
   const sinks = {
-    info: spyOn(console, "info").mockImplementation(() => {}),
-    warn: spyOn(console, "warn").mockImplementation(() => {}),
-    error: spyOn(console, "error").mockImplementation(() => {}),
+    info: spyOn(console, "info"),
+    warn: spyOn(console, "warn"),
+    error: spyOn(console, "error"),
   };
   try {
     await run(async () => {
