@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { modalLaunchReceipt } from "@armada/core/contract";
-import { createSqlVaultStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createSqlVaultStore, decryptSecret, encryptSecret, GoldenError, type Sql } from "@armada/core/server";
 import {
   createModalProvider,
   createSqlModalStore,
@@ -323,7 +323,7 @@ async function modalAdmissionFixture(visibility: "org" | "private" = "private") 
   const input: ModalLaunchAdmission = {
     orgId: f.people.org,
     ownerId: f.people.owner,
-    request: { key: "launch-key", digest: "launch-digest" },
+    request: { key: "launch-key", payload: "launch-digest" },
     sandbox: { goldenId, harness: "codex", model: "gpt-5", reasoningEffort: "medium", effectiveTtlSeconds: 1800 },
     allocation: { source: { kind: "snapshot", ref: "snapshot" }, size: null, computeTtlSeconds: 3600 },
     initialPrompt: "initial instructions",
@@ -340,46 +340,82 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
   await db.query("delete from jobs where sandbox_id=$1", [accepted]);
 
   const key = 'historical-launch-"\\雪\n';
+  const actor = { orgId: input.orgId, userId: input.ownerId };
+  const receipts = createOrdinaryLaunchReceipts(sql);
+  const payload = { surface: "control", route: "modal-runtime", request: { prompt: null, repo: "workspace" } };
+  const refusalKey = `${key}refused`;
+  await expect(
+    receipts.run(
+      actor,
+      refusalKey,
+      payload,
+      async () => {
+        throw new GoldenError("setup_failed", "Fixture refusal");
+      },
+      {
+        target: { provider: "modal", orgId: actor.orgId, visibility: "private", modal: null },
+        backendId: "modal",
+        management: { scope: "user", ownerId: actor.userId },
+      },
+    ),
+  ).rejects.toMatchObject({ code: "setup_failed" });
+  const historical = await db.query("select fingerprint from ordinary_launch_receipts where request_key=$1", [
+    refusalKey,
+  ]);
+  expect(historical.rows).toEqual([
+    { fingerprint: "58fd07ec69fc5341b486d99ee4011e65f3ea41ed7e3fbb787ad66dc579952b21" },
+  ]);
+
   const requests = [
-    { key: `${key}accepted\ud800`, digest: "historical-accepted", id: accepted },
-    { key: `${key}refused`, digest: "historical-refused", id: crypto.randomUUID() },
-    { key: `${key}unknown`, digest: "historical-unknown", id: crypto.randomUUID() },
-    { key: `${key}unattributed`, digest: "historical-unattributed", id: crypto.randomUUID() },
-    { key: `${key}boat`, digest: "historical-boat", id: crypto.randomUUID() },
+    { key: `${key}accepted\ud800`, payload: "historical-accepted", id: accepted },
+    { key: `${key}unknown`, payload: "historical-unknown", id: crypto.randomUUID() },
+    { key: `${key}unattributed`, payload: "historical-unattributed", id: crypto.randomUUID() },
+    { key: `${key}boat`, payload: "historical-boat", id: crypto.randomUUID() },
   ] as const;
-  const [success, refusal, unknown, unattributed, boat] = requests;
+  const [success, unknown, unattributed, boat] = requests;
   for (const request of requests) {
     await db.query(
       `insert into ordinary_launch_receipts
-        (id, org_id, owner_id, request_key, fingerprint, authority, response, failure)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        (id, org_id, owner_id, request_key, fingerprint, authority, response)
+       values ($1,$2,$3,$4,$5,$6,$7)`,
       [
         request.id,
         input.orgId,
         input.ownerId,
         request === success ? `${key}accepted\ufffd` : request.key,
-        request.digest,
+        new Bun.CryptoHasher("sha256").update(JSON.stringify(request.payload)).digest("hex"),
         request === unattributed ? null : { target: { provider: request === boat ? "boat" : "modal" } },
         request === success ? { sandbox: { id: accepted, status: "ready" }, promptId: "prior-prompt" } : null,
-        request === refusal ? { kind: "golden", code: "unsupported" } : null,
       ],
     );
   }
 
-  await db.query("delete from jobs where sandbox_id=$1", [boat.id]);
-
   for (let replay = 0; replay < 2; replay++) {
     const { rows } = await db.query("select backfill_modal_launch_receipts()::int as verified");
-    expect(rows).toEqual([{ verified: requests.length }]);
+    expect(rows).toEqual([{ verified: requests.length + 1 }]);
   }
-  const admit = ({ key, digest }: { key: string; digest: string }) =>
-    admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, digest } });
+  const admit = ({ key, payload }: { key: string; payload: unknown }) =>
+    admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, payload } });
+  await expect(
+    admit({
+      key: refusalKey,
+      payload: {
+        request: { repo: "workspace", prompt: null, size: undefined },
+        route: payload.route,
+        surface: payload.surface,
+      },
+    }),
+  ).rejects.toMatchObject({ code: "setup_failed" });
+  await expect(
+    admit({
+      key: refusalKey,
+      payload: { ...payload, request: { repo: "workspace" } },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
   expect(await admit(success)).toEqual({ sandbox: { id: accepted, status: "starting" } });
-  await expect(admit(refusal)).rejects.toMatchObject({ code: "unsupported" });
   for (const receipt of [unknown, unattributed, boat]) {
     await expect(admit(receipt)).rejects.toMatchObject({ code: "outcome_unknown" });
   }
-  await expect(admit({ ...success, digest: "changed" })).rejects.toMatchObject({ code: "conflict" });
   expect(await store.claim("launch", crypto.randomUUID(), 30, 1)).toBeUndefined();
   expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: accepted }]);
 
@@ -457,12 +493,18 @@ test("Modal backfill rolls back when a destination key belongs to a different re
   const { db, sql, input } = await modalAdmissionFixture();
   await admitModalLaunch(sql, launchEncryptionKey, {
     ...input,
-    request: { key: "colliding-launch-key", digest: "new-digest" },
+    request: { key: "colliding-launch-key", payload: "new-digest" },
   });
   await db.query(
     `insert into ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint)
-     values ($1,$3,$4,'another-historical-key','old-digest'), ($2,$3,$4,'colliding-launch-key','new-digest')`,
-    [crypto.randomUUID(), crypto.randomUUID(), input.orgId, input.ownerId],
+     values ($1,$3,$4,'another-historical-key','old-digest'), ($2,$3,$4,'colliding-launch-key',$5)`,
+    [
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      input.orgId,
+      input.ownerId,
+      new Bun.CryptoHasher("sha256").update(JSON.stringify("new-digest")).digest("hex"),
+    ],
   );
   await expect(db.query("select backfill_modal_launch_receipts()")).rejects.toThrow(
     "Modal launch receipt backfill conflicts",
@@ -481,16 +523,12 @@ test.each(["boat", "modal"] as const)("a %s reservation excludes the competing l
       backendId: "boat",
       management: { scope: "org", ownerId: actor.orgId },
     });
-  const modal = (digest: string) => admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, digest } });
+  const modal = (payload: unknown) =>
+    admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, payload } });
 
   if (first === "boat") {
-    const boatId = await boat(async (id) => id);
-    const {
-      rows: [receipt],
-    } = await db.query<{ fingerprint: string }>("select fingerprint from ordinary_launch_receipts where id=$1", [
-      boatId,
-    ]);
-    await expect(modal(receipt!.fingerprint)).rejects.toMatchObject({ code: "outcome_unknown" });
+    await boat(async (id) => id);
+    await expect(modal({ golden: "boat-golden" })).rejects.toMatchObject({ code: "outcome_unknown" });
     expect((await db.query("select id from sandboxes")).rows).toEqual([]);
     expect((await db.query("select backfill_modal_launch_receipts()::int as verified")).rows).toEqual([
       { verified: 1 },
@@ -589,7 +627,7 @@ test("ordinary Modal admission freezes defaults and honors explicit opt-out", as
   expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual(admitted);
   await admitModalLaunch(sql, launchEncryptionKey, {
     ...input,
-    request: { key: "no-connections", digest: "explicit-empty" },
+    request: { key: "no-connections", payload: "explicit-empty" },
     connections: [],
   });
   expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
@@ -837,7 +875,7 @@ test("Modal keyed replay returns the current status and refuses a changed reques
   await expect(
     admitModalLaunch(sql, launchEncryptionKey, {
       ...input,
-      request: { key: input.request!.key, digest: "different" },
+      request: { key: input.request!.key, payload: "different" },
     }),
   ).rejects.toMatchObject({ code: "conflict" });
   expect((await db.query("select kind from jobs order by kind")).rows).toEqual([
