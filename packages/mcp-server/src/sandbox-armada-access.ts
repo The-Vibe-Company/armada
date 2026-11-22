@@ -16,8 +16,6 @@ import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
 import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
 
-type NativeModalDrainDelete = Parameters<Provider["delete"]>[0] & { generation?: number };
-
 const enrolledPlacement =
   "((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))";
 
@@ -292,14 +290,18 @@ export function createSandboxArmadaAccess(input: {
       }),
     );
   }
-  async function deleteNativeModal(provider: Provider, sandboxId: string, request: NativeModalDrainDelete) {
-    const placement = request.sandboxId;
+  async function beforeNativeModalDrainDelete(
+    provider: Provider,
+    sandboxId: string,
+    placement: string,
+    generation: number,
+  ) {
     async function assertOwner(store: Sql, lock = false) {
       const owned = await store.query(
         `select id from public.sandboxes where id=$1 and provider='modal' and provider_sandbox_id=$2
          and runtime_transport is null and native_drain_pending and lifecycle_generation=$3
          and activity_lease_id is not null and activity_until>clock_timestamp()${lock ? " for update" : ""}`,
-        [sandboxId, placement, request.generation ?? null],
+        [sandboxId, placement, generation],
       );
       if (!owned.rows.length) throw new VaultError("conflict", "Native drain no longer owns this placement.");
     }
@@ -317,21 +319,18 @@ export function createSandboxArmadaAccess(input: {
         if (!recorded.rows.length) throw new VaultError("conflict", "Scoped parent changed during cleanup.");
       });
     }
-    await assertOwner(sql);
-    return provider.delete(request);
   }
   return {
     beforePrompt: install,
     beforeSnapshot: scrub,
     beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>
       scrub(provider, placement, "delete", sandboxId),
+    beforeNativeModalDrainDelete,
     restoreEnrolled,
     prepare,
-    wrap(provider: Provider, modalDrainSandboxId?: string): Provider {
+    wrap(provider: Provider): Provider {
       return new Proxy(provider, {
         get(target, key) {
-          if (key === "delete" && modalDrainSandboxId)
-            return (request: NativeModalDrainDelete) => deleteNativeModal(target, modalDrainSandboxId, request);
           if (key === "stop" || key === "delete")
             return async (request: { sandboxId: string }) => {
               await scrub(target, request.sandboxId, key);
