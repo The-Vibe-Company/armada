@@ -383,6 +383,7 @@ export function createRuntimeCommands(
   type CallOptions = {
     signal?: AbortSignal;
     timeoutMs?: number;
+    strictDeadline?: true;
     expectedEpoch?: string;
     assertClaim?: (tx: Sql) => Promise<void>;
     resolveSkillpackKey?: (tx: Sql) => Promise<string>;
@@ -446,7 +447,10 @@ export function createRuntimeCommands(
             unsubscribe,
           );
           signal.throwIfAborted();
-          if (response.state === "finished") return response.reply;
+          if (response.state === "finished") {
+            if (options.strictDeadline && time.now() >= deadline) throw new RuntimeCommandPending();
+            return response.reply;
+          }
           if (response.state !== "pending") throw new RuntimeCommandConflict();
           // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
           noteAdmission();

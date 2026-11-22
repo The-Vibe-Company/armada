@@ -16,7 +16,7 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture() {
+async function fixture(waitAdvanceMs = 20_000) {
   const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
@@ -37,7 +37,7 @@ async function fixture() {
       const callback = waiting;
       waiting = undefined;
       await callback?.();
-      now += 20000;
+      now += waitAdvanceMs;
     },
   };
   const bridge = (time = clock) => createRuntimeCommands(authority, ENCRYPTION_KEY, time);
@@ -78,9 +78,12 @@ test.each([
   ["absent", undefined, false],
   ["unknown version", 2, false],
   ["stale generation", 1, false],
+  ["stale expected epoch", 1, false],
+  ["late reply", 1, false],
 ] as const)("extension capability health handles %s", async (kind, capability, supported) => {
-  const f = await fixture();
-  const active = await f.enrol();
+  const f = await fixture(kind === "late reply" ? 5_000 : 250);
+  const initial = await f.enrol();
+  const active = kind === "stale expected epoch" ? await f.enrol() : initial;
   const bridge = f.bridge();
   const agent = createRuntimeAgent(bridge, {
     provider: "boat",
@@ -110,7 +113,7 @@ test.each([
     });
   });
   const health = agent.health(undefined, undefined, {
-    expectedEpoch: active.epoch,
+    expectedEpoch: initial.epoch,
     async assertClaim() {},
     requireCommandAuthorityExtension: true,
   });
@@ -119,6 +122,8 @@ test.each([
   } else {
     await expect(health).rejects.toMatchObject({ code: "sandbox_not_ready" });
   }
+  if (kind === "stale expected epoch")
+    expect((await f.db.query("select request_id from runtime_commands where sandbox_id=$1", [f.id])).rows).toEqual([]);
 });
 
 test("an exact command replay checks the claim again before returning a stored reply", async () => {

@@ -197,6 +197,7 @@ export function createRuntimeAgent(
           ...(requiresExtension
             ? {
                 timeoutMs: 5_000,
+                strictDeadline: true,
                 assertClaim: async (tx: Sql) => {
                   signal?.throwIfAborted();
                   await admission.assertClaim(tx);
