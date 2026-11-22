@@ -308,7 +308,7 @@ const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
       status: receipt.status,
       goldenId: golden.id,
       runtimeTransport: receipt.runtimeTransport,
-      externalRef: defects.includes("variables-unrelated-launch") ? "another-launch" : body.externalRef,
+      externalRef: body.externalRef,
       skills: skillReceipts,
       templateManifest,
     },
@@ -1015,7 +1015,15 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("unsafe inventory lookup");
     admissionInventoryRead = true;
     return Response.json({
-      sandboxes: [{ id: sandboxId, provider: "modal", harness: "codex", status: "starting", externalRef: launchRef }],
+      sandboxes: [
+        {
+          id: defects.includes("variables-unrelated-launch") ? "foreign" : sandboxId,
+          provider: "modal",
+          harness: "codex",
+          status: "starting",
+          externalRef: launchRef,
+        },
+      ],
     });
   }
   if (path.endsWith("/sandbox/list")) {

@@ -2649,10 +2649,13 @@ export const scenarios: Scenario[] = [
     expected: expected.opencodeVariablesOldPrompt,
   },
   {
-    label: "variables-unrelated-launch",
+    label: "explicit-pinned-job-unrelated-inventory",
     args: ["--variables"],
-    defects: ["variables-unrelated-launch"],
-    expected: expected.lostLaunch,
+    defects: ["job-admission", "variables-unrelated-launch"],
+    expected: {
+      ...expected.lostLaunch,
+      stderrContains: ["Admitted Modal sandbox does not match the owner inventory"],
+    },
   },
   {
     label: "explicit-pinned-job-manifest-mismatch",
