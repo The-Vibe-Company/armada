@@ -390,7 +390,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     else throw Error("wrong queued turn status");
     return Response.json({
       id: sandboxId,
-      status: "ready",
+      status: defects.includes("idle-stopped-first-turn") ? "stopped" : "ready",
       settled: true,
       prompt: { promptId: body.prompt_id, state: "finished" },
     });

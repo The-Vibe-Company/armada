@@ -436,7 +436,8 @@ const verifyPrompt = async (
       if (turn.id !== id || turn.prompt?.promptId !== expectedPromptId)
         throw Error("Queued Modal turn does not match its status.");
       if (turn.settled === true) {
-        if (turn.prompt.state !== "finished") throw Error("Queued Modal turn did not finish successfully.");
+        if (turn.prompt.state !== "finished" || !["ready", "running"].includes(turn.status ?? ""))
+          throw Error("Queued Modal turn did not finish on an active sandbox.");
         break;
       }
       await Bun.sleep(1000);
