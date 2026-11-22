@@ -2280,8 +2280,9 @@ export function createSandboxLifecycle(
           }
         }
         const physicalDeadline = info.expiresAt?.getTime() ?? Number.NaN;
-        const shortBoatDeadline =
+        const observedBoatDeadline =
           row.boat_runtime &&
+          providerId === "boat" &&
           !expired &&
           row.stop_requested_at === null &&
           (row.status === "ready" || row.status === "running") &&
@@ -2290,8 +2291,41 @@ export function createSandboxLifecycle(
           (info.state === "ready" || info.state === "running") &&
           !physicalExit &&
           Number.isFinite(physicalDeadline) &&
-          Number.isFinite(logicalDeadline) &&
-          physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
+          Number.isFinite(logicalDeadline);
+        if (observedBoatDeadline) {
+          signal?.throwIfAborted();
+          const saved = await sql.query(
+            `with locked as materialized (
+               select s.* from public.sandboxes s where s.id=$1 for update
+             )
+             insert into public.boat_runtime_extension_state
+               (sandbox_id,observed_provider_id,observed_generation,observed_at,observed_expires_at)
+             select s.id,s.provider_sandbox_id,s.lifecycle_generation,to_timestamp($6::float8),to_timestamp($7::float8)
+             from locked s
+             where s.provider='boat' and s.boat_runtime and s.provider_sandbox_id=$2 and s.lifecycle_generation=$3
+               and s.reconcile_lease=$4 and s.reconcile_lease_until>clock_timestamp()
+               and (s.activity_until is null or s.activity_until<=clock_timestamp())
+               and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null
+               and extract(epoch from s.expires_at)=$5::numeric and s.expires_at>clock_timestamp()
+               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+             on conflict (sandbox_id) do update set
+               observed_provider_id=excluded.observed_provider_id, observed_generation=excluded.observed_generation,
+               observed_at=excluded.observed_at, observed_expires_at=excluded.observed_expires_at
+             returning sandbox_id`,
+            [
+              row.id,
+              row.provider_sandbox_id,
+              row.lifecycle_generation,
+              token,
+              row.expiry_epoch,
+              now() / 1000,
+              physicalDeadline / 1000,
+            ],
+          );
+          if (!saved.rows.length) return true;
+        }
+        const shortBoatDeadline =
+          observedBoatDeadline && physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
