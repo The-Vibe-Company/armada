@@ -327,7 +327,6 @@ export function createModelAuthOwnership(
         await this.capture(provider, providerId, caller);
       } catch (error) {
         recordNativeReadFailure("getPrompt", error);
-        // Terminal prompt metadata does not depend on the proof required for archived output.
         if (!(error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing))
           throw error;
       }
