@@ -70,7 +70,7 @@ export interface RuntimeResumePlacement {
     restore: { epoch: string; watermark: number; conversationId: string | null },
     confirmActivation?: () => Promise<void>,
     assertDispatch?: (tx?: Sql) => Promise<void>,
-    ticketGuard?: RuntimeTicketGuard,
+    ticket?: { recovery: boolean; guard: RuntimeTicketGuard },
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -383,12 +383,30 @@ export function createRuntimeResume(
               restore,
               confirmActivation,
               claim ? assertClaim : undefined,
-              admitted.bootstrap
+              admitted.bootstrap || found.boatRuntime
                 ? {
-                    lockPrerequisites: lockAccount,
-                    async check(tx) {
-                      if (!(await canBootstrap(tx)))
-                        throw new VaultError("conflict", "Confirmed resume bootstrap authority changed.");
+                    recovery: admitted.bootstrap,
+                    guard: {
+                      lockPrerequisites: lockAccount,
+                      async check(tx) {
+                        const authorized = admitted.bootstrap
+                          ? await canBootstrap(tx)
+                          : (
+                              await tx.query(
+                                `select 1 from public.sandboxes s join public.runtime_resumes r
+                                   on r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+                                 where s.id=$1 and r.request_id=$2 and s.lifecycle_generation=$3
+                                   and s.boat_runtime and s.status='starting' and not s.application_secret_tainted
+                                   and s.activity_until>clock_timestamp()
+                                   and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+                                   and s.expires_at>clock_timestamp() and date_trunc('milliseconds',s.expires_at)=$4::timestamptz
+                                   and r.phase='dispatched' and r.activated_at is not null and r.receipt is null`,
+                                [found.id, requestId, admitted.current.lifecycleGeneration, admitted.current.expiresAt],
+                              )
+                            ).rows.length > 0;
+                        if (!authorized)
+                          throw new VaultError("conflict", "Confirmed resume bootstrap authority changed.");
+                      },
                     },
                   }
                 : undefined,

@@ -6,6 +6,7 @@ import {
   decryptSecret,
   encryptSecret,
   type Provider,
+  SANDBOX_STOP_MARGIN_SECONDS,
   type Sql,
 } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -409,9 +410,10 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         scenario === "restore admission loss" ||
         scenario === "before ticket loss" ||
         scenario === "ticket commit loss"
-      : !["scoped grant loss", "restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario),
+      : !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
+    const boatTicketRecovery = provider === "boat" && scenario === "before ticket loss";
     const scoped = scenario === "scoped grant loss";
     const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
     const ambiguous = scenario === "ambiguous deferral claim loss";
@@ -523,6 +525,34 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         generation: String(before + 1),
         intent: true,
       });
+      if (boatTicketRecovery) {
+        if (preparations === 1)
+          return {
+            async start(_signal, _restore, confirmActivation) {
+              restores++;
+              await confirmActivation!();
+              await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+              throw Error("Claim lost after confirmed Boat activation");
+            },
+            async stop() {
+              throw Error("Unexpected inline stop");
+            },
+          };
+        return boatRuntimeResume({
+          sql: f.sql,
+          vault: createSqlVaultStore(f.sql),
+          key: ENCRYPTION_KEY,
+          modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
+          policy: {
+            async start(value) {
+              if (!value.ticketGuard) throw Error("Expected recovered bootstrap");
+              await value.activate?.(value.signal);
+              bootstraps++;
+              throw Error("Fixture ends at ticket issuance");
+            },
+          },
+        })(f.caller, sandbox);
+      }
       if (["restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario))
         return modalPlacement(f.caller, sandbox);
       return {
@@ -698,10 +728,29 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         handoffGeneration: () => Promise.reject(Error("A confirmed restore cannot advance generation again.")),
       };
       expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
-      await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+      if (boatTicketRecovery) {
+        const { requests, restore } = interceptBoatResume(() =>
+          Response.json({
+            ok: true,
+            sandbox: sdkSandbox({ id: "physical", state: "running", archiveAfter: undefined }),
+          }),
+        );
+        try {
+          await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+          expect(preparations).toBe(2);
+          expect(bootstraps).toBe(0);
+          expect(await hasTicket()).toBe(false);
+          expect(requests).toHaveLength(1);
+          expect(await read()).toMatchObject({ status: "stopping" });
+        } finally {
+          restore();
+        }
+      } else {
+        await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+        expect(bootstraps).toBe(1);
+        expect(bootstrappedEpoch).toBe("2");
+      }
       expect(restores).toBe(1);
-      expect(bootstraps).toBe(1);
-      expect(bootstrappedEpoch).toBe("2");
     } else if (scenario === "ticket commit loss") {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(restores).toBe(1);
@@ -1499,11 +1548,24 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
+function interceptBoatResume(reply: (url: string) => Response | Promise<Response>) {
+  const requests: string[] = [];
+  const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
+    const url = String(value instanceof Request ? value.url : value);
+    requests.push(url);
+    return reply(url);
+  }) as typeof fetch);
+  return { requests, restore: () => network.mockRestore() };
+}
+
 const boatResumeRecoveryCases = [
   "confirmed",
   "tainted",
   "lease expired",
   "archive unverified",
+  "short coverage",
+  "missing coverage",
+  "coverage lease lost",
   "response lost",
   "handoff rollback",
   "transition fault",
@@ -1521,13 +1583,17 @@ test.each(boatResumeRecoveryCases)(
     const fault = condition.endsWith(" fault");
     const responseLost = condition === "response lost" || rollbackHandoff;
     const f = await stopped();
-    const requests: string[] = [];
+    const shortCoverage = condition === "short coverage";
+    const missingCoverage = condition === "missing coverage";
+    const coverageLeaseLost = condition === "coverage lease lost";
+    const unsafeCoverage = shortCoverage || missingCoverage;
+    const logicalDeadline = new Date("2099-01-01T00:00:00Z");
+    const physicalDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
     let activated = false;
+    let activeReads = 0;
     let canIssueTicket = false;
     let beforeFailure: { generation: number; stop_generation: number } | undefined;
-    const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
-      const url = String(value instanceof Request ? value.url : value);
-      requests.push(url);
+    const { requests, restore } = interceptBoatResume(async (url) => {
       if (url.endsWith("/resume")) {
         activated = true;
         if (responseLost) return new Response(null, { status: 504 });
@@ -1535,14 +1601,29 @@ test.each(boatResumeRecoveryCases)(
           await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
       }
       if (url.endsWith("/stop")) activated = false;
+      const afterRestore = activated && !url.endsWith("/resume") && ++activeReads > 1;
+      if (afterRestore && coverageLeaseLost)
+        await f.db.query(
+          `update sandboxes set activity_until='-infinity',
+             reconcile_lease=$2,reconcile_lease_until='infinity' where id=$1`,
+          [f.row.id, crypto.randomUUID()],
+        );
       return Response.json({
         ok: true,
         sandbox: activated
-          ? sdkSandbox({ id: "physical", state: "running" })
+          ? sdkSandbox({
+              id: "physical",
+              state: "running",
+              archiveAfter:
+                afterRestore && missingCoverage
+                  ? undefined
+                  : new Date(physicalDeadline.getTime() - (afterRestore && shortCoverage ? 1_000 : 0)).toISOString(),
+            })
           : retainedSandbox({ id: "physical", snapshotAvailable: !unverified }),
       });
-    }) as typeof fetch);
+    });
     try {
+      await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, logicalDeadline.toISOString()]);
       const prepare = boatRuntimeResume({
         sql: f.sql,
         vault: createSqlVaultStore(f.sql),
@@ -1560,6 +1641,16 @@ test.each(boatResumeRecoveryCases)(
               beforeFailure = rows[0];
             }
             await value.activate?.(value.signal);
+            if (condition === "confirmed" || coverageLeaseLost) {
+              await f.authority.issue({
+                sandboxId: value.sandbox.id,
+                ownerId: f.caller.userId,
+                configuration: {},
+                expectedProviderSandboxId: value.sandbox.providerSandboxId,
+                expectedGeneration: value.sandbox.lifecycleGeneration!,
+                ...(value.ticketGuard ? { ticketGuard: value.ticketGuard } : {}),
+              });
+            }
             canIssueTicket = true;
             throw Error("Fixture ends before ticket issuance");
           },
@@ -1600,7 +1691,9 @@ test.each(boatResumeRecoveryCases)(
         createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
       ).rejects.toThrow();
       expect(handoffRolledBack).toBe(rollbackHandoff || fault);
-      expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost);
+      expect(canIssueTicket).toBe(
+        !taint && !expired && !unverified && !responseLost && !unsafeCoverage && !coverageLeaseLost,
+      );
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
@@ -1613,14 +1706,14 @@ test.each(boatResumeRecoveryCases)(
         ...(taint || unverified || responseLost
           ? []
           : [
-              ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
+              ...(expired || unsafeCoverage ? [] : [{ stage: "machine_started", dated_correctly: true }]),
               { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint && !unverified);
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe(
-        taint ? "failed" : expired || responseLost || fault ? "starting" : "stopping",
+        taint ? "failed" : expired || responseLost || fault || coverageLeaseLost ? "starting" : "stopping",
       );
       const expectedEdge = taint
         ? { to_status: "failed", code: "restore_unconfirmed", phase: "failed" }
@@ -1634,7 +1727,9 @@ test.each(boatResumeRecoveryCases)(
         [f.row.id, request.request_id],
       );
       expect(result.rows).toEqual(
-        expired || responseLost || fault ? [{ to_status: null, code: null, phase: "dispatched" }] : [expectedEdge],
+        expired || responseLost || fault || coverageLeaseLost
+          ? [{ to_status: null, code: null, phase: "dispatched" }]
+          : [expectedEdge],
       );
       if (taint) {
         if (!beforeFailure) throw Error("Missing admitted resume fence.");
@@ -1712,7 +1807,7 @@ test.each(boatResumeRecoveryCases)(
         });
       }
     } finally {
-      network.mockRestore();
+      restore();
       await f.close();
     }
   },
