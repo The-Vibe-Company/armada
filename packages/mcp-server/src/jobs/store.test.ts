@@ -149,8 +149,14 @@ test("a Boat extension lease is capped and an elapsed deadline permits recovery 
     (await f.db.query<{ capped: boolean }>("select lease_until=deadline_at as capped from jobs where id=$1", [jobId]))
       .rows[0]?.capped;
 
+  const uncapped = (await f.store.claim(kind, owner, 30, 1))!;
+  expect(uncapped.dispatchBudgetMs).toBeUndefined();
+  expect(await f.store.complete(uncapped, owner, { status: "retry", after: new Date(0) })).toBe(true);
+
   const first = (await f.store.claim(kind, owner, 172800, 1))!;
   expect(first.id).toBe(jobId);
+  expect(first.dispatchBudgetMs).toBeGreaterThan(0);
+  expect(first.dispatchBudgetMs).toBeLessThanOrEqual(86_400_000);
   expect(await readCap()).toBe(true);
   await f.db.query("update jobs set lease_until=deadline_at-interval '1 hour' where id=$1", [jobId]);
   expect(await f.store.renew(first, owner, 172800)).toBe(true);
@@ -161,6 +167,7 @@ test("a Boat extension lease is capped and an elapsed deadline permits recovery 
   const successor = crypto.randomUUID();
   const recovered = (await f.store.claim(kind, successor, 30, 1))!;
   expect(recovered.id).toBe(jobId);
+  expect(recovered.dispatchBudgetMs).toBeUndefined();
   expect(await f.store.inspect(first, owner)).toBe("lost");
   expect(await f.store.inspect(recovered, successor)).toBe("reconcile");
   expect(await f.store.complete(recovered, successor, { status: "fail", reason: "deadline elapsed" })).toBe(true);

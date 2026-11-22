@@ -3,8 +3,9 @@ import { createGoldenBuildJob } from "../golden-worker.ts";
 import { retentionMaintenanceJob } from "../retention-maintenance.ts";
 import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
-function fixture(kind = "stop") {
+function fixture(kind = "stop", dispatchBudgetMs?: number) {
   let now = 0;
+  let successfulRenewals = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
   const rows = ["one", "two"].map((id) => ({
@@ -38,7 +39,7 @@ function fixture(kind = "stop") {
       row.owner = owner;
       row.expires = now + seconds * 1000;
       row.lease_epoch = String(++row.attempts);
-      return { ...row };
+      return { ...row, ...(dispatchBudgetMs === undefined ? {} : { dispatchBudgetMs }) };
     },
     async inspect(job, owner) {
       if (!current(job, owner)) return "lost";
@@ -53,6 +54,7 @@ function fixture(kind = "stop") {
       const row = current(job, owner);
       if (!row || renewalUnavailable) return false;
       row.expires = now + seconds * 1000;
+      successfulRenewals++;
       return true;
     },
     async complete(job, owner, result) {
@@ -95,6 +97,9 @@ function fixture(kind = "stop") {
       return settled.promise;
     },
     completed,
+    get successfulRenewals() {
+      return successfulRenewals;
+    },
     holdRenewal(gate: Promise<void>) {
       renewalGate = gate;
     },
@@ -102,6 +107,44 @@ function fixture(kind = "stop") {
 }
 
 const tick = new AbortController().signal;
+
+test("a renewed Boat extension attempt aborts at its original dispatch deadline", async () => {
+  const f = fixture("boat_runtime_extend", 12_000);
+  const entered = Promise.withResolvers<AbortSignal>();
+  const finish = Promise.withResolvers<void>();
+  const runner = f.runner(async (_job, { signal }) => {
+    entered.resolve(signal);
+    await finish.promise;
+    return { status: "done" };
+  });
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  const signal = await entered.promise;
+  try {
+    f.advance(10_000);
+    await Promise.resolve();
+    expect(f.successfulRenewals).toBe(1);
+    expect(signal.aborted).toBe(false);
+    f.advance(2_000);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    finish.resolve();
+    await runner.drain();
+  }
+  expect(f.completed).toEqual([]);
+});
+
+test.each([0, -1])("a Boat extension claim with dispatch budget %i skips the handler", async (budget) => {
+  const f = fixture("boat_runtime_extend", budget);
+  let entered = false;
+  const runner = f.runner(async () => {
+    entered = true;
+    return { status: "done" };
+  });
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  await runner.drain();
+  expect(entered).toBe(false);
+  expect(f.completed).toEqual([]);
+});
 
 test("lease loss aborts the active handler, allows takeover, and ignores the late result", async () => {
   const f = fixture();
@@ -185,6 +228,8 @@ test.each([false, true])("dispatch timeout fences late completion only on owners
   const signal = await entered.promise;
   f.advance(10_000);
   await Promise.resolve();
+  expect(f.successfulRenewals).toBe(1);
+  expect(signal.aborted).toBe(false);
   f.advance(5_000);
   expect(signal.aborted).toBe(true);
   if (takeover) {

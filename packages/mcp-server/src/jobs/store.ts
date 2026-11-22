@@ -513,19 +513,29 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return existingRows[0].id;
     },
     async claim(kind, owner, seconds, concurrency) {
-      const { rows } = await sql.query<JobRow>(
+      const claimStartedAt = performance.now();
+      const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
         `select id, kind, sandbox_id, generation::text, lease_epoch::text, attempts, max_attempts, outcome,
+                case when kind = 'boat_runtime_extend' and lease_until = deadline_at
+                     then (1000 * extract(epoch from deadline_at - statement_timestamp()))::double precision
+                end as dispatch_budget_ms,
                 encode(payload_enc, 'hex') as payload_enc
          from public.claim_job($1,$2,$3,$4)`,
         [kind, owner, seconds, concurrency],
       );
       if (!rows[0]) return;
-      const { payload_enc, ...job } = rows[0];
+      const { payload_enc, dispatch_budget_ms, ...job } = rows[0];
       const payload =
         payload_enc === null
           ? null
           : JSON.parse(await decryptSecret(Uint8Array.from(Buffer.from(payload_enc, "hex")), encryptionKey));
-      const claimed = { ...job, payload };
+      const claimed = {
+        ...job,
+        payload,
+        ...(dispatch_budget_ms == null
+          ? {}
+          : { dispatchBudgetMs: Math.floor(dispatch_budget_ms - (performance.now() - claimStartedAt)) }),
+      };
       return kind === "turn_dispatch" ? reconcileTurnClaim(claimed, owner, "claim") : claimed;
     },
     async inspect(job, owner, tx?: Sql) {
