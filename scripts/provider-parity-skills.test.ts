@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Owns the real parity HTTP boundary: exact pins, installed bytes, reporting and cleanup.
@@ -70,8 +71,7 @@ for (const mode of [
           now += ms;
         },
         fetch: async (url, init) => {
-          const route = url.split("/api/v1/")[1]!;
-          const body = JSON.parse(String(init.body));
+          const { path: route, body } = parityRequest(url, init);
           const id = body.org;
           calls.push(`${id}:${route}`);
           let result: unknown;
@@ -186,7 +186,7 @@ for (const mode of [
               if (mode === "resume_stop_budget") now += 110_001;
               result = { id: body.id, status: "stopped" };
               break;
-            case "sandbox/delete":
+            case sandboxDeletePath:
               states.set(id, "deleted");
               result = { id: body.id, status: "deleted" };
               break;
@@ -258,7 +258,7 @@ for (const mode of [
         ["valid", "claude", "opencode", "no_followup"].includes(mode) ? "pass" : "not-run",
       );
       if (["valid", "claude", "opencode", "no_followup", "manifest", "status", "content"].includes(mode)) {
-        expect(calls).toContain(`${provider}:sandbox/delete`);
+        expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
         expect(report.features.cleanup[provider].status).toBe("pass");
       }
       if (["missing", "source", "no_exec"].includes(mode)) expect(calls).not.toContain(`${provider}:templates/launch`);

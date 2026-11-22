@@ -98,6 +98,33 @@ describe("orgs and members", () => {
 });
 
 describe("credentials", () => {
+  test.each(["named", "kind-based"] as const)(
+    "%s org account creation records the creator across rotations by a different admin",
+    async (path) => {
+      await withVault(async ({ db, store, people }) => {
+        const org = await createOrg(store, people.stan, "Shared");
+        await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "admin" });
+        await db.exec("set role service_role");
+        const input = { scope: "org", org: org.id, kind: "openai", value: "first-key" } as const;
+        if (path === "named") {
+          const account = await mutateCredentialAccount(store, KEY, people.stan, { ...input, action: "set" });
+          await mutateCredentialAccount(store, KEY, people.ada, {
+            ...input,
+            action: "set",
+            id: account.id!,
+            expectedVersion: 1,
+            value: "rotated-key",
+          });
+        } else {
+          await setCredential(store, KEY, people.stan, input);
+          await setCredential(store, KEY, people.ada, { ...input, value: "rotated-key" });
+        }
+        const result = await db.query("select created_by, version from public.credentials where owner_id=$1", [org.id]);
+        expect(result.rows).toEqual([{ created_by: people.stan, version: 2 }]);
+      });
+    },
+  );
+
   test("legacy org account writes recheck locked authorization at persistence after validation", async () => {
     await withVault(async ({ db, store, people }) => {
       const org = await createOrg(store, people.stan, "Azure admission");
@@ -260,7 +287,7 @@ describe("credentials", () => {
       const org = await createOrg(store, people.stan, "Vibe");
       const input = { userId: people.stan, orgId: org.id };
       await expect(resolveCredentials(store, KEY, { ...input, harness: "codex" })).rejects.toThrow(
-        /armada creds set openai/,
+        /armada account add openai/,
       );
       await setCredential(store, KEY, people.stan, {
         scope: "user",
@@ -321,6 +348,26 @@ describe("credentials", () => {
       expect(resolved.env).toEqual({ ANTHROPIC_API_KEY: "sk-ant-api03-two" });
     });
   });
+});
+
+test("singleton credentials can be replaced with the provider-only index", async () => {
+  const db = database();
+  await db.exec("begin");
+  try {
+    await withVault(async ({ store, people }) => {
+      const credential = { scope: "user", org: undefined, kind: "boat" } as const;
+      await setCredential(store, KEY, people.stan, { ...credential, value: "first" });
+      await setCredential(store, KEY, people.stan, { ...credential, value: "second" });
+      const { rows } = await db.query<{ value_enc: Uint8Array }>(
+        "select value_enc from public.credentials where owner_id = $1 and kind = 'boat'",
+        [people.stan],
+      );
+      expect(rows).toHaveLength(1);
+      expect(await decryptSecret(new Uint8Array(rows[0]!.value_enc), KEY)).toBe("second");
+    }, db);
+  } finally {
+    await db.exec("rollback");
+  }
 });
 
 describe("Skillpack registry credentials", () => {
@@ -386,59 +433,66 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
-  test("account creation defaults agree across legacy and named paths without resetting overrides", async () => {
+  test("legacy account creation applies defaults and replacement preserves overrides", async () => {
+    await withVault(async ({ db, store, people }) => {
+      const org = await createOrg(store, people.stan, "Defaults");
+      for (const { scope, kind, expected } of [
+        { scope: "user", kind: "openai", expected: null },
+        { scope: "org", kind: "morph", expected: 2 },
+      ] as const) {
+        const owner = scope === "user" ? people.stan : org.id;
+        const write = () =>
+          setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
+        const current = async () => {
+          const { rows: active } = await db.query<{ id: string; maxAgents: number | null }>(
+            `select id, max_agents as "maxAgents" from credentials
+             where scope=$1 and owner_id=$2 and kind=$3 and status <> 'deleted'`,
+            [scope, owner, kind],
+          );
+          expect(active).toHaveLength(1);
+          return active[0]!;
+        };
+        await write();
+        const initial = await current();
+        expect(initial.maxAgents).toBe(expected);
+        for (const maxAgents of [5, null]) {
+          await store.mutateAccount!(
+            people.stan,
+            {
+              action: "limits",
+              scope,
+              org: org.id,
+              id: initial.id,
+              maxAgents,
+            },
+            undefined,
+            KEY,
+          );
+          await write();
+          expect(await current()).toMatchObject({ id: initial.id, maxAgents });
+        }
+        await store.mutateAccount!(
+          people.stan,
+          {
+            action: "remove",
+            scope,
+            org: org.id,
+            id: initial.id,
+          },
+          undefined,
+          KEY,
+        );
+        await write();
+        expect((await current()).maxAgents).toBe(expected);
+      }
+    });
+  });
+
+  test("named account creation applies kind defaults and accepts explicit unlimited", async () => {
     await withVault(async ({ store, people }) => {
       const org = await createOrg(store, people.stan, "Defaults");
       for (const scope of ["user", "org"] as const) {
-        const owner = scope === "user" ? people.stan : org.id;
         for (const kind of ["morph", "openai"] as const) {
-          const expected = kind === "morph" ? 2 : null;
-          const write = () =>
-            setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
-          const current = async () =>
-            (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
-          await write();
-          expect((await current()).maxAgents).toBe(expected);
-          for (const maxAgents of [5, null]) {
-            await store.mutateAccount!(
-              people.stan,
-              {
-                action: "limits",
-                scope,
-                org: org.id,
-                id: (await current()).id!,
-                maxAgents,
-              },
-              undefined,
-              KEY,
-            );
-            await write();
-            expect((await current()).maxAgents).toBe(maxAgents);
-          }
-          await store.mutateAccount!(
-            people.stan,
-            {
-              action: "remove",
-              scope,
-              org: org.id,
-              id: (await current()).id!,
-            },
-            undefined,
-            KEY,
-          );
-          await write();
-          expect((await current()).maxAgents).toBe(expected);
-          await store.mutateAccount!(
-            people.stan,
-            {
-              action: "remove",
-              scope,
-              org: org.id,
-              id: (await current()).id!,
-            },
-            undefined,
-            KEY,
-          );
           const named = await store.mutateAccount!(
             people.stan,
             {
@@ -450,7 +504,7 @@ describe("named model accounts", () => {
             new Uint8Array([1]),
             KEY,
           );
-          expect(named.maxAgents).toBe(expected);
+          expect(named.maxAgents).toBe(kind === "morph" ? 2 : null);
           const unlimited = await store.mutateAccount!(
             people.stan,
             {
@@ -464,8 +518,6 @@ describe("named model accounts", () => {
             KEY,
           );
           expect(unlimited.maxAgents).toBeNull();
-          for (const id of [named.id!, unlimited.id!])
-            await store.mutateAccount!(people.stan, { action: "remove", scope, org: org.id, id }, undefined, KEY);
         }
       }
     });
@@ -823,6 +875,7 @@ describe("credential values", () => {
     expect(parseCredentialKind("Codex-Auth")).toBe("codex_auth");
     expect(parseCredentialKind("opencode")).toBe("opencode");
     expect(() => parseCredentialKind("unknown")).toThrow(/Unknown credential 'unknown'/);
+    expect(() => parseCredentialKind("antigravity")).toThrow(/Unknown credential 'antigravity'/);
   });
 });
 
@@ -883,26 +936,30 @@ describe("GitHub connections", () => {
         create trigger refuse_profile before update on github_connections
           for each row execute function refuse_profile();
       `);
-      const result = await resolveGitHubAccess(
-        {
-          store,
-          encryptionKey: KEY,
-          app: { clientId: "app", clientSecret: "secret" },
-          fetch: (async (url) =>
-            Response.json(
-              String(url).includes("access_token")
-                ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
-                : { id: 1, login: "renamed", name: null },
-            )) as typeof fetch,
-        },
-        people.stan,
-      );
-      expect(result.status).toBe("connected");
-      const saved = await store.getGitHubConnection(people.stan);
-      expect(saved?.login).toBe("before");
-      expect(saved?.accessTokenEnc).not.toBeNull();
-      if (!saved) throw new Error("Connection disappeared");
-      expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      try {
+        const result = await resolveGitHubAccess(
+          {
+            store,
+            encryptionKey: KEY,
+            app: { clientId: "app", clientSecret: "secret" },
+            fetch: (async (url) =>
+              Response.json(
+                String(url).includes("access_token")
+                  ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
+                  : { id: 1, login: "renamed", name: null },
+              )) as typeof fetch,
+          },
+          people.stan,
+        );
+        expect(result.status).toBe("connected");
+        const saved = await store.getGitHubConnection(people.stan);
+        expect(saved?.login).toBe("before");
+        expect(saved?.accessTokenEnc).not.toBeNull();
+        if (!saved) throw new Error("Connection disappeared");
+        expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      } finally {
+        await db.exec("drop trigger refuse_profile on github_connections; drop function refuse_profile()");
+      }
     });
   });
 
@@ -1028,13 +1085,7 @@ async function withVault(run: VaultRun, db = database()): Promise<void> {
     "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
     [people.stan, people.ada, people.bob],
   );
-  try {
-    await run({ db, store: createSqlVaultStore(db), people });
-  } finally {
-    await db.exec(
-      "reset role; reset all; set search_path=public; drop trigger if exists refuse_profile on github_connections; drop function if exists refuse_profile()",
-    );
-  }
+  await run({ db, store: createSqlVaultStore(db), people });
 }
 
 // Token resolution in these fixtures must not leak audit records to stdout.

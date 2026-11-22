@@ -5,7 +5,7 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { parseMachineSizePolicy } from "./machine-size.ts";
-import { isSandboxProvider, sandboxRowModalBinding } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, isSandboxProvider, sandboxRowModalBinding } from "./sandbox-provider.ts";
 
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
@@ -51,6 +51,7 @@ const COLUMNS = `id, org_id, name, visibility::text as visibility, owner_id, pro
  */
 export function createSqlGoldenStore(sql: Sql): GoldenStore {
   return {
+    beginSnapshotLaunch: (golden, actor, sandboxId) => beginSnapshotLaunch(sql, golden, actor, sandboxId),
     reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
     beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
     assertMutation: (golden, actor) => assertSqlGoldenMutation(sql, golden, actor),
@@ -183,7 +184,8 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
   if (!isSandboxProvider(provider)) throw new Error("Golden row provider is invalid.");
   const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
   const modal = sandboxRowModalBinding(row);
-  if (provider === "modal" && !modal) throw new Error("Modal golden row has no pinned binding.");
+  if (HOST_CAPABILITIES[provider].requiresPinnedGoldenBinding && !modal)
+    throw new Error("Modal golden row has no pinned binding.");
   return {
     id: row.id,
     orgId: row.org_id,
@@ -262,4 +264,47 @@ export async function reconcileGoldenOperations(sql: Sql, golden: GoldenRecord, 
          and ((g.visibility='private' and g.owner_id=$3) or (g.visibility='org' and m.role='admin')))`,
     [golden.id, actor.orgId, actor.userId],
   );
+}
+
+export async function beginSnapshotLaunch(sql: Sql, golden: GoldenRecord, actor: GoldenActor, sandboxId: string) {
+  const snapshot = golden.providerSnapshotId;
+  const unavailable = () => new GoldenError("conflict", "Golden snapshot could not be admitted.");
+  if (!snapshot || !sql.transaction) throw unavailable();
+  try {
+    await sql.transaction(async (tx) => {
+      const current = await tx.query(
+        `select g.id from public.goldens g
+         where g.id=$1 and g.org_id=$2 and g.removed_at is null
+           and g.visibility=$3::public.visibility and (g.visibility='org' or g.owner_id=$4)
+           and g.provider=$5 and g.provider_snapshot_id=$6 and g.provider_sandbox_id is not distinct from $7
+         for share of g`,
+        [golden.id, actor.orgId, golden.visibility, actor.userId, golden.provider, snapshot, golden.providerSandboxId],
+      );
+      if (!current.rows.length) throw unavailable();
+      await tx.query("select public.lock_golden_snapshot($1,$2)", [golden.provider, snapshot]);
+      const sealed = await tx.query(
+        "select 1 from public.golden_snapshot_retirements where provider=$1 and old_snapshot=$2 and sealed",
+        [golden.provider, snapshot],
+      );
+      if (sealed.rows.length) throw unavailable();
+      const membership = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+        actor.orgId,
+        actor.userId,
+      ]);
+      if (!membership.rows.length) throw unavailable();
+      await tx.query(
+        "insert into public.ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id) values ($1,$2,$3,$4)",
+        [sandboxId, golden.id, golden.provider, snapshot],
+      );
+    });
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const { code, errno } = error as { code?: unknown; errno?: unknown };
+      if (code === "42501" || errno === "42501") throw unavailable();
+    }
+    throw error;
+  }
+  return async () => {
+    await sql.query("delete from public.ordinary_launch_snapshot_intents where sandbox_id=$1", [sandboxId]);
+  };
 }

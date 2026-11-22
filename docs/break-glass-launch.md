@@ -37,9 +37,30 @@ staging_armada() {
     "$break_glass_dir/node_modules/.bin/armada" --profile staging "$@"
 }
 staging_armada --version
-staging_armada login --url https://armada-mcp-staging.up.railway.app --provider github
+staging_armada login --url https://armada-mcp-staging.up.railway.app
+staging_armada --help
+```
+
+For both staging paths, set `sandbox_create_command` to the top-level sandbox creation command shown by
+`staging_armada --help` for the installed version. Current releases use `new`.
+The rehearsed 2.57.2 binary below uses `launch`. Current releases use `info` to
+inspect a sandbox. The rehearsed binary uses `status`.
+
+```bash
+read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
+read -r -p 'Sandbox listing command from pinned CLI help: ' sandbox_list_command
+read -r -p 'Sandbox inspection command from pinned CLI help: ' sandbox_inspect_command
+```
+
+For the Modal path, use the listing verb shown by the pinned version's snapshot
+help. The rehearsed 2.57.2 binary uses `list`. The current snapshot family uses
+`ls`. Reuse the selected verb when recovering an uncertain launch.
+
+```bash
 staging_armada org list
-staging_armada snapshot list --org "$staging_org" --provider modal
+staging_armada snapshot --help
+read -r -p 'Snapshot listing verb from pinned CLI help: ' snapshot_list_verb
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal
 ```
 
 Once the version matches the pin and the org and snapshot are visible, launch
@@ -47,7 +68,7 @@ the rehearsal worker. During an incident, replace the prompt with the repair
 task and include the assigned branch and acceptance criteria.
 
 ```bash
-staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal \
+staging_armada "$sandbox_create_command" "$staging_snapshot" --org "$staging_org" --provider modal \
   --agent codex "Summarize the repository without changing any files."
 ```
 
@@ -57,16 +78,19 @@ attempt before trying another launch. Find the snapshot UUID in the first
 command's output, then match the sandbox by launch start time.
 
 ```bash
-staging_armada snapshot list --org "$staging_org" --provider modal --json
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
-staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
+staging_armada "$sandbox_list_command" --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```
 
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
-staging_armada status "$sandbox_id" --org "$staging_org"
-staging_armada logs "$sandbox_id" --org "$staging_org" --follow
+staging_armada "$sandbox_inspect_command" "$sandbox_id" --org "$staging_org"
+staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
+
+For a pinned client released before the `events` command, use that client's
+`staging_armada logs "$sandbox_id" --org "$staging_org" --follow`.
 
 ### Coordinator rehearsal record
 
@@ -83,45 +107,41 @@ The coordinator ran `armada stop` and confirmed `stopped` with `armada status`.
 
 ## 2. Launch on the owner's Docker host through staging
 
-Use the same staging wrapper and login. Staging must already allow Docker
+Use the staging wrapper, login, and command selection from the common setup above. Staging must already allow Docker
 placement and the owner must have registered an online host in that staging org.
 The daemon uses its existing staging registration. Its credential stays on the
 host. Staging supplies the Codex account and authorized repository access as in
 path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
+Use the command supported by the pinned CLI. The verified 2.57.2 release below
+uses `host list` and `creds list`. Current releases use `host ls` and `account ls`.
+
 ```bash
-staging_armada host list --org "$staging_org" --json
-staging_armada creds list --org "$staging_org" --json
+staging_armada host list --org "$staging_org" --json  # Pinned CLI 2.57.2
+staging_armada creds list --org "$staging_org" --json  # Pinned CLI 2.57.2
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account
 read -r -p 'Repository and ref (owner/repo@ref): ' worker_repo
 docker_prompt='Summarize the repository without changing any files.'
-docker_request_id="$(node -p 'require("node:crypto").randomUUID()')"
-printf '%s\n' "$docker_request_id" > "$break_glass_dir/docker-request-id"
+docker_launch_key="$(node -p 'require("node:crypto").randomUUID()')"
+printf '%s\n' "$docker_launch_key" > "$break_glass_dir/docker-launch-key"
 ```
 
 During an incident, set `docker_prompt` to the repair task before submitting
-the launch. Record the request ID, org, host, account UUID, repo and exact prompt in your
+the launch. Record the launch key, org, host, account UUID, repo and exact prompt in your
 incident notes so you can recover the submission if you lose the terminal.
 Keep credentials out of the prompt and notes.
 
 ```bash
-staging_armada launch "$docker_prompt" \
+staging_armada "$sandbox_create_command" "$docker_prompt" \
   --provider docker --host "$staging_host" --org "$staging_org" \
   --agent codex --credential-id "$docker_account" --repo "$worker_repo" \
-  --request-id "$docker_request_id"
+  --idempotency-key "$docker_launch_key"
 ```
 
 Use the returned sandbox ID with the same status and logs commands. If the
-response was lost, check for the Docker sandbox using the request ID as its ID.
-
-```bash
-staging_armada status "$docker_request_id" --org "$staging_org"
-```
-
-If you still need the receipt, recover `docker_request_id` from the saved file
-or incident notes and rerun the exact launch command above with the original
-inputs and request ID. Keep that ID for this attempt.
+response was lost, recover `docker_launch_key` from the saved file or incident
+notes and rerun the exact launch command above with the original inputs and key.
 
 ## 3. Run a local Codex worker
 
@@ -163,7 +183,7 @@ session and close the dedicated shell.
 
 ```bash
 staging_armada stop "$sandbox_id" --org "$staging_org"
-staging_armada status "$sandbox_id" --org "$staging_org"
+staging_armada "$sandbox_inspect_command" "$sandbox_id" --org "$staging_org"
 staging_armada logout
 ```
 

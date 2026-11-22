@@ -1,15 +1,25 @@
-import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import {
+  modalLaunchSetupKeySql,
+  ProviderError,
+  retainFailureDiagnostic,
+  type Sql,
+  sandboxActivity,
+  VaultError,
+} from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
+import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import type { RuntimeResume } from "./runtime-resume.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import type { RuntimeResume, RuntimeTurnClaim } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
+import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 export interface RuntimeFollowupInput {
@@ -20,6 +30,21 @@ export interface RuntimeFollowupInput {
   reasoning_effort?: string | undefined;
 }
 export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
+export class RuntimeFollowupConflict extends VaultError {
+  constructor(
+    readonly reason:
+      | "sandbox_not_ready"
+      | "runtime_binding_missing"
+      | "runtime_prompt_running"
+      | "runtime_reconciliation_active"
+      | "runtime_admission_changed"
+      | "runtime_activity_busy",
+    message: string,
+  ) {
+    super("conflict", message);
+  }
+}
+
 /** Running, owner-scoped, model-only continuation. No host, native credential
  * hooks, model switching or arbitrary new conversations. Idle Boat workers
  * open their first conversation using a request-derived identity. Stopped workers use the existing
@@ -32,10 +57,11 @@ export function createRuntimeFollowup(
   commands: ReturnType<typeof createRuntimeCommands>,
   prepareMcp?: RuntimeMcp["prepare"],
   resume?: RuntimeResume,
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  return async (caller: Caller, input: RuntimeFollowupInput) => {
+  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -51,6 +77,27 @@ export function createRuntimeFollowup(
       (input.reasoning_effort !== undefined && (!repeatPinned || input.reasoning_effort !== found.reasoningEffort))
     )
       throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
+    const assertDirectLaunchReady = async () => {
+      if (claim) return;
+      const {
+        rows: [setup],
+      } = await sql.query<{ state: string | null; prompt_pending: boolean }>(
+        `select j.state, exists (
+           select 1 from public.account_turn_queue q
+           where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
+         ) as prompt_pending
+         from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+        [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
+      );
+      if (!setup)
+        throw new RuntimeFollowupConflict(
+          "runtime_admission_changed",
+          "Runtime admission changed; inspect status before retrying.",
+        );
+      assertModalLaunchSetup(setup.state);
+      if (setup.prompt_pending) throw new ModalLaunchSetupConflict("modal_launch_prompt_pending");
+    };
     // Route replays by durable operation identity, not today's machine state.
     // A completed wake may already be running (or paused again) on retry.
     const waking =
@@ -69,13 +116,9 @@ export function createRuntimeFollowup(
       ).rows[0];
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
+      if (!waking) await assertDirectLaunchReady();
       if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
-      return resume(caller, {
-        id: found.id,
-        request_id: requestId,
-        runtimeVersion: 1,
-        prompt: input.prompt,
-      });
+      return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, claim);
     }
     if (
       !found.model ||
@@ -86,7 +129,12 @@ export function createRuntimeFollowup(
       found.stopRequestedAt ||
       found.deletedAt
     )
-      throw new VaultError("conflict", "Runtime send requires an already-running, bound sandbox.");
+      throw new RuntimeFollowupConflict(
+        ["ready", "running"].includes(found.status) && !found.stopRequestedAt && !found.deletedAt
+          ? "runtime_binding_missing"
+          : "sandbox_not_ready",
+        "Runtime send requires an already-running, bound sandbox.",
+      );
     // A stable server-owned first-conversation ID keeps uncertain first-send
     // payloads identical even after publication adds that conversation to SQL.
     const firstConversation = `first_${requestId}`;
@@ -99,15 +147,29 @@ export function createRuntimeFollowup(
       model: found.model,
       reasoningEffort: found.reasoningEffort,
     });
+    const assertClaim = async (tx: Sql) => {
+      if (claim && !(await claim.canDispatch(tx)))
+        throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
+    };
+    const commandGuard = claim ? assertClaim : undefined;
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
+    if (previous.state === "missing") await assertDirectLaunchReady();
     if (previous.state === "missing" && found.taskPromptId) {
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
-      if (!last.done) throw new VaultError("conflict", "Wait for the current runtime prompt to finish.");
+      if (!last.done)
+        throw new RuntimeFollowupConflict("runtime_prompt_running", "Wait for the current runtime prompt to finish.");
     }
     const configuredEpoch =
       previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
-        ? await environment.deliver(found.provider, { userId: caller.userId, orgId: found.orgId }, found.id)
+        ? await environment.deliver(
+            found.provider,
+            { userId: caller.userId, orgId: found.orgId },
+            found.id,
+            undefined,
+            undefined,
+            commandGuard,
+          )
         : undefined;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
@@ -115,18 +177,24 @@ export function createRuntimeFollowup(
       // Reuse this transaction; never hold its locks across a second connection or runtime I/O.
       const local = runtimeTransaction(tx);
       return createRuntimeEnrolments(local, key).withOwner(found.id, caller.userId, async (locked, scope) => {
+        await assertClaim(locked);
         const current = await createSqlData(locked)(caller).sandboxes.get(found.id);
         const lease = (
-          await locked.query<{ activity_lease_id: string | null; reconciling: boolean }>(
-            "select activity_lease_id,(reconcile_lease_until>now()) as reconciling from public.sandboxes where id=$1",
+          await locked.query<{ activity_lease_id: string | null; reconciling: boolean; extending: boolean }>(
+            `select s.activity_lease_id,(s.reconcile_lease_until>now()) as reconciling,
+               (s.provider='boat' and s.boat_runtime and exists (
+                 select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='boat_runtime_extend'
+                   and j.state='leased' and j.lease_until>clock_timestamp()
+               )) as extending
+             from public.sandboxes s where s.id=$1`,
             [found.id],
           )
         ).rows[0];
         if (
           !current ||
           current.lifecycleGeneration === undefined ||
+          current.lifecycleGeneration !== found.lifecycleGeneration ||
           !lease ||
-          lease.reconciling ||
           !["ready", "running"].includes(current.status) ||
           current.credentialId !== found.credentialId ||
           current.credentialVersion !== found.credentialVersion ||
@@ -137,7 +205,10 @@ export function createRuntimeFollowup(
             (idleFirst && current.conversationIds.length === 0 && !current.taskPromptId)
           )
         )
-          throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
+          throw new RuntimeFollowupConflict(
+            "runtime_admission_changed",
+            "Runtime admission changed; inspect status before retrying.",
+          );
         // The durable command identity decides first: an admitted turn may have executed, so the
         // checkpoint fence below refuses only new work and never hides a stored reply.
         const saved = (
@@ -146,6 +217,18 @@ export function createRuntimeFollowup(
             [found.id, commandId],
           )
         ).rows[0];
+        if (lease.reconciling) {
+          const wake = await locked.query(
+            "select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$2",
+            [found.id, requestId],
+          );
+          if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId || wake.rows.length)
+            throw new RuntimeFollowupConflict(
+              "runtime_reconciliation_active",
+              "Runtime admission changed; inspect status before retrying.",
+            );
+          throw new RuntimeReconciliationConflict();
+        }
         const checkpoint =
           !saved &&
           (
@@ -170,26 +253,30 @@ export function createRuntimeFollowup(
           throw new VaultError("conflict", "Runtime environment epoch changed; retry the same request.");
         if (saved?.finished && lease.activity_lease_id !== requestId)
           return { current, epoch: scope.epoch, replay: true };
+        if (lease.extending || (lease.activity_lease_id !== requestId && (lease.activity_lease_id || saved)))
+          throw new RuntimeFollowupConflict(
+            "runtime_activity_busy",
+            "Runtime admission is busy or uncertain; reuse the original request_id.",
+          );
         if (lease.activity_lease_id === requestId) {
           await createSqlData(locked)(caller).sandboxes.update(found.id, {
             renewActivity: true,
             activityToken: requestId,
             expectedGeneration: current.lifecycleGeneration,
           });
+          await assertClaim(locked);
           return { current, epoch: scope.epoch, replay: false };
         }
-        if (lease.activity_lease_id || saved)
-          throw new VaultError("conflict", "Runtime admission is busy or uncertain; reuse the original request_id.");
         await createSqlData(locked)(caller).sandboxes.update(found.id, {
-          status: "running",
+          turnActivity: "claim",
           clearTaskOutcome: true,
-          advanceGeneration: true,
           queueRequestId: requestId,
           activityToken: requestId,
           expectedGeneration: current.lifecycleGeneration,
         });
         const active = await createSqlData(locked)(caller).sandboxes.get(found.id);
         if (!active) throw new VaultError("not_found", "Runtime admission disappeared.");
+        await assertClaim(locked);
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });
@@ -205,6 +292,8 @@ export function createRuntimeFollowup(
         },
         commandId,
         admitted.epoch,
+        undefined,
+        commandGuard,
       );
     const receipt = (value: Awaited<ReturnType<typeof submit>>) => ({
       id: found.id,
@@ -215,11 +304,16 @@ export function createRuntimeFollowup(
     if (admitted.replay) return receipt(await submit()); // Validates identical payload; never rewrites a newer task.
     const publishingStore = {
       ...store,
-      update: (id: string, patch: Parameters<typeof store.update>[1]) =>
+      update: (id: string, { finishActivity, ...patch }: Parameters<typeof store.update>[1]) =>
         authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.epoch)
             throw new VaultError("conflict", "Runtime epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          await assertClaim(tx);
+          await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, {
+            ...patch,
+            ...(finishActivity ? { turnActivity: "finish" } : {}),
+          });
+          await assertClaim(tx);
         }),
     };
     return sandboxActivity(
@@ -228,7 +322,18 @@ export function createRuntimeFollowup(
       {},
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing") await prepareMcp?.(caller, found.id, signal);
+        if (existing.state === "missing") {
+          await prepareMcp?.(caller, found.id, signal, commandGuard);
+          if (found.boatRuntime || found.runtimeTransport === "dialout")
+            await restoreScopedAccess?.(
+              caller.userId,
+              found.id,
+              admitted.epoch,
+              String(admitted.current.lifecycleGeneration),
+              signal,
+              commandGuard,
+            );
+        }
         const accepted = await submit(signal);
         try {
           await store.recordTurnModel?.(found.id, accepted.promptId, found.model, pricingContext);
@@ -238,7 +343,6 @@ export function createRuntimeFollowup(
         return {
           result: receipt(accepted),
           patch: {
-            status: "running",
             taskPromptId: accepted.promptId,
             conversationIds: appendConversation(admitted.current.conversationIds, conversation),
             statusReason: null,
@@ -249,9 +353,12 @@ export function createRuntimeFollowup(
     ).catch((error) => {
       // Unknown work retains its lease; only identical request_id/input can reconcile it.
       if (error instanceof ProviderError || error instanceof VaultError) throw error;
-      throw new VaultError(
-        "conflict",
-        "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+      throw retainFailureDiagnostic(
+        new VaultError(
+          "conflict",
+          "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+        ),
+        error,
       );
     });
   };

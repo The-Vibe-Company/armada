@@ -9,6 +9,13 @@ export function publicationMode(status: number, tagSha: string, sha: string, rec
   return recovery ? "recover" : "prepare";
 }
 
+export function admissionTagSha(status: number, readTag: () => string, fetchTag: () => void) {
+  const sha = readTag();
+  if (sha || status !== 200) return sha;
+  fetchTag();
+  return readTag();
+}
+
 export function promotionRequired(published: boolean, stableDigest: string, smokedDigest: string) {
   if (stableDigest === smokedDigest) return false;
   if (published) throw new Error("Published image differs from the smoked image");
@@ -43,6 +50,20 @@ function tagSha(version: string) {
   if (result.exitCode === 1) return "";
   if (result.exitCode !== 0) throw new Error("Cannot resolve release tag");
   return result.stdout.toString().trim();
+}
+
+function fetchTag(version: string) {
+  command(
+    "git",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "credential.helper=!gh auth git-credential",
+    "fetch",
+    "--no-tags",
+    "origin",
+    `refs/tags/v${version}:refs/tags/v${version}`,
+  );
 }
 
 function releasePr(sha: string) {
@@ -100,7 +121,11 @@ function reconcile(version: string, sha: string) {
     command("gh", "api", "--method", "POST", endpoint, "-f", "labels[]=autorelease: tagged");
   }
   if (pr.labels.some(({ name }) => name === "autorelease: pending")) {
-    command("gh", "api", "--method", "DELETE", `${endpoint}/autorelease%3A%20pending`);
+    try {
+      command("gh", "api", "--method", "DELETE", `${endpoint}/autorelease%3A%20pending`);
+    } catch (error) {
+      if (releasePr(sha).pr.labels.some(({ name }) => name === "autorelease: pending")) throw error;
+    }
   }
 }
 
@@ -136,7 +161,11 @@ function main() {
     command("git", "merge-base", "--is-ancestor", sha, "origin/main");
     if (recovery && version !== REQUESTED_VERSION) throw new Error("Requested version differs from source");
     const status = releaseStatus(version);
-    const publishedSha = tagSha(version);
+    const publishedSha = admissionTagSha(
+      status,
+      () => tagSha(version),
+      () => fetchTag(version),
+    );
     const mode =
       !recovery && version !== versionAt(SOURCE_SHA)
         ? "superseded"

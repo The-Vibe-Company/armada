@@ -1,83 +1,52 @@
-import { HARNESSES, MACHINE_SIZES, MAX_SANDBOX_EXTENSION_TTL_SECONDS, VERSION } from "@armada/core";
-import { DelegatedAuthorityDenied } from "@armada/core/server";
+import { VERSION } from "@armada/core";
+import {
+  isScopedMethod,
+  ORCHESTRATOR_SCOPED_PATH,
+  type ScopedErrorCode,
+  scopedOperations,
+  scopedRestOperations,
+} from "@armada/core/contract";
+import { type DelegatedAuthority, DelegatedAuthorityDenied } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Route } from "./http.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import type { createSandboxChildren } from "./sandbox-access-children.ts";
 import { InvalidOrchestratorBody, readOrchestratorBody } from "./sandbox-access-http-body.ts";
 
-/** Trusted662 bootstrap URL: never point an epoch grant at the generic owner /mcp. */
-export const ORCHESTRATOR_SCOPED_PATH = "/api/v1/orchestrator-tools";
+/** Resolve the scoped MCP endpoint for an epoch grant. */
 export function orchestratorScopedMcpUrl(publicUrl: string): string {
   const url = new URL(publicUrl);
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)
     throw new Error("Invalid scoped gateway origin.");
   return new URL(`${ORCHESTRATOR_SCOPED_PATH}/mcp`, url).toString();
 }
-const key = z.string().regex(/^[ -~]{1,128}$/);
-const text = z
-  .string()
-  .min(1)
-  .max(100_000)
-  .refine((value) => value.trim().length > 0);
-const selection = z
-  .object({
-    goldenId: z.uuid(),
-    harness: z.enum(HARNESSES),
-    credentialId: z.uuid(),
-    credentialVersion: z.number().int().positive().safe(),
-    model: z.string().min(1).max(200),
-    skills: z.array(z.string()).max(20).optional(),
-    reasoningEffort: z.string().min(1).optional(),
-    repo: z.string().min(1).optional(),
-    prompt: text.optional(),
-    size: z.enum(MACHINE_SIZES).optional(),
-  })
-  .strict();
-const schemas = {
-  finish: z.object({}).strict(),
-  launch: z.object({ idempotencyKey: key, selection }).strict(),
-  read: z.object({ sandboxId: z.uuid() }).strict(),
-  message: z.object({ idempotencyKey: key, sandboxId: z.uuid(), text }).strict(),
-  stop: z.object({ idempotencyKey: key, sandboxId: z.uuid() }).strict(),
-  extend: z
-    .object({
-      idempotencyKey: key,
-      sandboxId: z.uuid(),
-      ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS),
-    })
-    .strict(),
-};
-const restSchemas = {
-  finish: schemas.finish,
-  launch: schemas.launch.omit({ idempotencyKey: true }),
-  read: schemas.read,
-  message: schemas.message.omit({ idempotencyKey: true }),
-  stop: schemas.stop.omit({ idempotencyKey: true }),
-  extend: schemas.extend.omit({ idempotencyKey: true }),
-};
-type Method = keyof typeof schemas;
-const childMethod = (value: string): value is Method => Object.hasOwn(schemas, value);
 const waitMethods = new Set(["wait_record", "wait_renew", "wait_complete"]);
 class InvalidScopedRequest extends Error {}
 class WaitAuthorityUnavailable extends Error {}
-const fail = (status: number, code: string) =>
+const fail = (status: number, code: ScopedErrorCode | "admit_wait_not_supported") =>
   Response.json({ error: { code, message: code } }, { status, headers: { "cache-control": "no-store" } });
 
-/** Separate principal surface. Metadata/init are static and convey NO authenticated identity;
- * every data/effect call reaches the real Authority boundary through children. No Caller exists. */
 export function createSandboxScopedGateway(
   children: ReturnType<typeof createSandboxChildren>,
+  authority: Pick<DelegatedAuthority, "catalogGrant">,
   finish?: (token: string) => Promise<unknown>,
   runtimeFinish?: (token: string) => Promise<unknown>,
+  configureMutationRequest?: (request: Request) => void,
 ): Route {
-  async function call(token: string, name: string, args: unknown): Promise<unknown> {
+  async function call(
+    token: string,
+    name: string,
+    args: unknown,
+    request: Request,
+    signal = request.signal,
+  ): Promise<unknown> {
     if (waitMethods.has(name)) throw new WaitAuthorityUnavailable();
-    if (!childMethod(name) || (token.startsWith("armada_finish_") && name !== "finish"))
+    if (!isScopedMethod(name) || (token.startsWith("armada_finish_") && name !== "finish"))
       throw new InvalidScopedRequest();
-    const parsed = schemas[name].safeParse(args);
+    const parsed = scopedOperations[name].input.safeParse(args);
     if (!parsed.success) throw new InvalidScopedRequest();
     if (name === "finish") {
       const handler = token.startsWith("armada_finish_") ? runtimeFinish : finish;
@@ -85,7 +54,7 @@ export function createSandboxScopedGateway(
       return handler(token);
     }
     if (name === "launch") {
-      const input = schemas.launch.parse(args);
+      const input = scopedOperations.launch.input.parse(args);
       const chosen = input.selection;
       return children.launch(token, input.idempotencyKey, {
         goldenId: chosen.goldenId,
@@ -101,19 +70,20 @@ export function createSandboxScopedGateway(
       });
     }
     if (name === "read") {
-      const input = schemas.read.parse(args);
+      const input = scopedOperations.read.input.parse(args);
       return children.read(token, input.sandboxId);
     }
+    configureMutationRequest?.(request);
     if (name === "message") {
-      const input = schemas.message.parse(args);
-      return children.message(token, input.idempotencyKey, input.sandboxId, input.text);
+      const input = scopedOperations.message.input.parse(args);
+      return children.message(token, input.idempotencyKey, input.sandboxId, input.text, signal);
     }
     if (name === "extend") {
-      const input = schemas.extend.parse(args);
-      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds);
+      const input = scopedOperations.extend.input.parse(args);
+      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds, signal);
     }
-    const input = schemas.stop.parse(args);
-    return children.stop(token, input.idempotencyKey, input.sandboxId);
+    const input = scopedOperations.stop.input.parse(args);
+    return children.stop(token, input.idempotencyKey, input.sandboxId, signal);
   }
   return async (request) => {
     const url = new URL(request.url);
@@ -125,58 +95,71 @@ export function createSandboxScopedGateway(
       request.headers.get("authorization") ?? "",
     );
     if (!match?.[1]) return fail(401, "invalid_epoch_authority");
-    if (request.method !== "POST") return fail(405, "use_post");
+    const operation = isScopedMethod(suffix) ? scopedRestOperations[suffix] : undefined;
+    if (request.method !== (operation?.route.method ?? "POST")) return fail(405, "use_post");
     const token = match[1];
     try {
       const raw = await readOrchestratorBody(request);
       const decoded: unknown = JSON.parse(raw);
       if (suffix !== "mcp") {
         if (waitMethods.has(suffix)) return fail(503, "admit_wait_not_supported");
-        if (!childMethod(suffix)) return fail(403, "scoped_method_denied");
-        const input = restSchemas[suffix].safeParse(decoded);
+        if (!operation || operation.route.path !== url.pathname) return fail(403, "scoped_method_denied");
+        const input = operation.input.body.safeParse(decoded);
         if (!input.success) throw new InvalidScopedRequest();
-        const args =
-          suffix === "read" || suffix === "finish"
-            ? input.data
-            : { ...input.data, idempotencyKey: request.headers.get("idempotency-key") };
-        return Response.json({ result: await call(token, suffix, args) }, { headers: { "cache-control": "no-store" } });
+        const headers = operation.input.headers;
+        const args = headers
+          ? { ...input.data, idempotencyKey: headers["Idempotency-Key"].parse(request.headers.get("Idempotency-Key")) }
+          : input.data;
+        return Response.json(
+          { result: await call(token, suffix, args, request) },
+          { headers: { "cache-control": "no-store" } },
+        );
       }
       if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new InvalidScopedRequest();
       const rpc = decoded as { method?: unknown; params?: { name?: unknown; arguments?: unknown }; id?: unknown };
       if (rpc.method === "tools/call") {
         const name = rpc.params?.name;
         // Validate BEFORE SDK defaults can strip extra fields from a tool's arguments.
-        if (typeof name !== "string" || (!childMethod(name) && !waitMethods.has(name)))
+        if (typeof name !== "string" || (!isScopedMethod(name) && !waitMethods.has(name)))
           return fail(403, "scoped_method_denied");
         if (waitMethods.has(name)) return fail(503, "admit_wait_not_supported");
-        if (!childMethod(name) || !schemas[name].safeParse(rpc.params?.arguments).success)
+        if (!isScopedMethod(name) || !scopedOperations[name].input.safeParse(rpc.params?.arguments).success)
           throw new InvalidScopedRequest();
       }
       const server = new McpServer({ name: "armada-owned-worker-tools", version: VERSION });
-      for (const name of (Object.keys(schemas) as Method[]).filter((name) =>
-        token.startsWith("armada_finish_") ? name === "finish" : name !== "finish" || finish,
-      ))
+      const runtime = token.startsWith("armada_finish_");
+      const grant = rpc.method === "tools/list" && !runtime ? await authority.catalogGrant(token) : undefined;
+      for (const name of Object.keys(scopedOperations).filter(isScopedMethod)) {
+        const operation = scopedOperations[name];
+        if (
+          runtime
+            ? name !== "finish" || !runtimeFinish
+            : name === "finish" && (!finish || (grant && grant.kind !== "sandbox"))
+        )
+          continue;
+        if (grant && !grant.scopes.includes(operation.scope)) continue;
         server.registerTool(
           name,
           {
-            description:
-              name === "finish"
-                ? "Declare this sandbox finished. Stops Boat/Modal; permanently removes the Docker container and home volume immediately after work-preservation policy runs. Runtime Git archives are unavailable: push all work first. No target id; affects only this sandbox."
-                : "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
-            inputSchema: schemas[name],
+            description: operation.description,
+            inputSchema: operation.input,
             outputSchema: z.object({ result: z.unknown() }),
           },
-          async (args: unknown): Promise<CallToolResult> => {
+          async (args: unknown, extra: { signal: AbortSignal }): Promise<CallToolResult> => {
             try {
-              const result = { result: await call(token, name, args) };
+              const result = {
+                result: await call(token, name, args, request, AbortSignal.any([request.signal, extra.signal])),
+              };
               return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
-              const code =
-                error instanceof DelegatedAuthorityDenied ? "scoped_authority_denied" : "scoped_operation_unavailable";
-              return { isError: true, content: [{ type: "text", text: code }] };
+              if (error instanceof DelegatedAuthorityDenied)
+                return { isError: true, content: [{ type: "text", text: "scoped_authority_denied" }] };
+              recordOperatorFailure(`scoped.mcp.${name}`, error);
+              return { isError: true, content: [{ type: "text", text: "scoped_operation_unavailable" }] };
             }
           },
         );
+      }
       const transport = createObservedMcpTransport();
       await server.connect(transport);
       try {
@@ -194,6 +177,7 @@ export function createSandboxScopedGateway(
         error instanceof z.ZodError
       )
         return fail(400, "invalid_scoped_request");
+      recordOperatorFailure(operation ? `scoped.rest.${suffix}` : "scoped.gateway", error);
       return fail(503, "scoped_operation_unavailable");
     }
   };

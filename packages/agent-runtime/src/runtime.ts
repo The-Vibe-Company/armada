@@ -1,7 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validOutputChunk } from "@armada/core";
-import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { captureCommandOutput, commandOutputLimit } from "./command-output.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -21,6 +20,7 @@ import {
   AUTH_HEADER,
   type ConfigureMcpResult,
   type Driver,
+  type ExtendCommandAuthorityResult,
   type Grant,
   type IngestClient,
   type McpConfiguration,
@@ -33,8 +33,14 @@ import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
 import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
-import { installRuntimeSkills } from "./skills.ts";
+import { installRuntimeSkills, skillInstallResult } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
+
+function driverFailureReason(error: unknown, fallback: string) {
+  if (error instanceof HarnessError) return error.reason;
+  return error instanceof RequestRefused ? error.message : fallback;
+}
+
 export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
@@ -53,6 +59,7 @@ export class Runner {
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
+  private workspaceEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
   private exclusiveNativeAuth = false;
   private publishNativeAuth: (() => Promise<void>) | undefined;
@@ -87,18 +94,19 @@ export class Runner {
     this.publishNativeAuth = execution.publishNativeAuth;
     this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
+    const workspaceReadables = validateExecReadables(execution.readableVariables, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_TERMINAL_PROMPT: "0",
-      ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
       ...(execution.githubToolsRoot
         ? githubRuntimeEnvironment({ PATH: execEnv.PATH ?? process.env.PATH }, execution.githubToolsRoot)
         : {}),
     });
+    this.workspaceEnvironment = Object.freeze({ ...workspaceReadables, ...this.execEnvironment });
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
     journal.bindIdentity(grant);
@@ -292,6 +300,26 @@ export class Runner {
         this.readableConfigurations.configure(r.harness, r.variables, r.secretKeys);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
+      if (r.op === "extendCommandAuthority") {
+        const now = Date.now();
+        if (now >= this.grant.expiresAt) throw Error("unauthorized");
+        if (!this.execution.enrolled || this.credentialFreeBuilder || r.epoch !== this.grant.generation)
+          throw Error("command_authority_extension_denied");
+        if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
+        if (
+          !Number.isSafeInteger(r.expiresAt) ||
+          r.expiresAt <= now ||
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "epoch", "expiresAt"].includes(key))
+        )
+          throw Error("invalid_request");
+
+        this.grant.expiresAt = Math.max(this.grant.expiresAt, r.expiresAt);
+        const result: ExtendCommandAuthorityResult = {
+          epoch: this.grant.generation,
+          expiresAt: this.grant.expiresAt,
+        };
+        return Response.json({ version: 1, requestId: r.requestId, result });
+      }
       if (r.op === "configureGitHub") {
         // Private configuration is never persisted in request receipts or returned to callers.
         if (
@@ -374,6 +402,7 @@ export class Runner {
         op:
           | "configureMcp"
           | "configureGitHub"
+          | "extendCommandAuthority"
           | "configureReadableVariables"
           | "testModelConnection"
           | "resourceObservation"
@@ -471,6 +500,7 @@ export class Runner {
         stdioMcpEnv: true,
         skillsVersion: 1,
         workspaceVersion: 1,
+        ...(this.execution.enrolled && !this.credentialFreeBuilder ? { commandAuthorityExtension: 1 as const } : {}),
         ready: !this.barrier,
         pid: process.pid,
       };
@@ -570,7 +600,7 @@ export class Runner {
       workspaceEvent("running");
       const work = (async () => {
         await this.execution.prepareWorkspace?.();
-        return executeWorkspace(input, this.journal, this.execEnvironment, signal, this.execution.workspaceHost);
+        return executeWorkspace(input, this.journal, this.workspaceEnvironment, signal, this.execution.workspaceHost);
       })();
       this.commands.add(work);
       try {
@@ -603,19 +633,7 @@ export class Runner {
       const work = installRuntimeSkills({ ...r.input, cwd }, this.journal, this.execEnvironment, signal);
       this.commands.add(work);
       try {
-        return { receipts: await work };
-      } catch (error) {
-        const reason =
-          error instanceof Error &&
-          [
-            ...PRIVATE_SKILL_FAILURES,
-            "skillpack_credential_missing",
-            "skillpack_credential_refused",
-            "skillpack_skill_unavailable",
-          ].includes(error.message as never)
-            ? error.message
-            : "skillpack_install_state_invalid";
-        return { failure: { reason } };
+        return await skillInstallResult(work);
       } finally {
         this.commands.delete(work);
         this.installingSkills = false;
@@ -747,7 +765,7 @@ export class Runner {
             this.journal.transition(
               p,
               stopped ? "interrupted" : "failed",
-              stopped ? undefined : error instanceof HarnessError ? error.reason : "harness_failed",
+              stopped ? undefined : driverFailureReason(error, "harness_failed"),
             );
           },
         )
@@ -765,15 +783,7 @@ export class Runner {
         error instanceof HarnessError ? error.reason : undefined,
       );
       // Keep a definite start refusal's own code instead of flattening it into a generic failure.
-      this.journal.transition(
-        p,
-        "failed",
-        error instanceof HarnessError
-          ? error.reason
-          : error instanceof RequestRefused
-            ? error.message
-            : "harness_start_failed",
-      );
+      this.journal.transition(p, "failed", driverFailureReason(error, "harness_start_failed"));
     }
   }
   startOutboxDelivery(): void {

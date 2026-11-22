@@ -1,7 +1,8 @@
-import { type AgentDefault, type CredentialReader, parseCredentialValue } from "./credentials.ts";
+import { type AgentDefault, CREDENTIAL_KINDS, type CredentialReader, parseCredentialValue } from "./credentials.ts";
 import { encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore } from "./github.ts";
+import { memberEmailPattern } from "./member-email.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface OrgSummary {
@@ -93,7 +94,6 @@ export interface VaultStore extends CredentialReader, GitHubConnectionStore {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function parseOrgName(raw: string): string {
   const name = raw.trim();
@@ -231,7 +231,7 @@ export async function setCredential(
   await validate?.(input.kind, value);
   const sealed = await encryptSecret(value, encryptionKey);
   await resolveAdminOrg(store, userId, org.id);
-  if (input.kind === "boat") await store.setOrgBoatKey(org.id, sealed);
+  if (CREDENTIAL_KINDS[input.kind].orgStorage === "org-boat-key") await store.setOrgBoatKey(org.id, sealed);
   else await store.upsertCredential("org", org.id, input.kind, sealed, userId, encryptionKey);
 }
 
@@ -245,7 +245,7 @@ export async function removeCredential(
     removed = await store.deleteCredential("user", userId, input.kind);
   } else {
     const org = await resolveAdminOrg(store, userId, input.org);
-    if (input.kind === "boat") {
+    if (CREDENTIAL_KINDS[input.kind].orgStorage === "org-boat-key") {
       removed = await store.hasOrgBoatKey(org.id);
       await store.setOrgBoatKey(org.id, null);
     } else {
@@ -277,7 +277,7 @@ export async function listCredentials(
 
 async function findMember(store: VaultStore, email: string): Promise<{ id: string; email: string }> {
   const trimmed = email.trim();
-  if (!EMAIL.test(trimmed)) throw new VaultError("invalid", "Give the person's email address.");
+  if (!memberEmailPattern.test(email)) throw new VaultError("invalid", "Give the person's email address.");
   const user = await store.findUserByEmail(trimmed);
   if (!user) {
     throw new VaultError(
@@ -306,7 +306,7 @@ export async function mutateCredentialAccount(
     throw new VaultError("invalid", "maxAgents is required.");
   if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
   if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
-  if (input.kind === "boat" || input.kind === "modal" || input.kind === "skillpack")
+  if (input.kind !== undefined && CREDENTIAL_KINDS[input.kind].singleton)
     throw new VaultError("invalid", "Provider and registry credentials are singletons.");
   if (input.name !== undefined && (input.name.trim().length < 1 || input.name.trim().length > 120))
     throw new VaultError("invalid", "An account name is 1 to 120 characters.");

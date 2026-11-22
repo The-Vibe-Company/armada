@@ -8,7 +8,6 @@ const response = {
     id: "11111111-1111-4111-8111-111111111111",
     provider: "boat",
     providerSandboxId: "bx_server",
-    boatId: "bx_server",
     goldenId: "golden",
     orgId: "org",
     ownerId: "owner",
@@ -27,8 +26,8 @@ const response = {
     orgId: "org",
     visibility: "private",
     ownerId: "owner",
-    boatSnapshotId: "snapshot",
-    boatSandboxId: null,
+    providerSnapshotId: "snapshot",
+    providerSandboxId: null,
     config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
     createdAt: "2026-01-01T00:00:00.000Z",
   },
@@ -60,7 +59,7 @@ describe("launch through the Armada API", () => {
         let out = "";
         const code = await run(
           [
-            "launch",
+            "new",
             "web",
             "--provider",
             "boat",
@@ -125,13 +124,13 @@ describe("launch through the Armada API", () => {
   test("keeps delegated access in the Modal JSON envelope", async () => {
     const receipt = {
       ...response,
-      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server", boatId: null },
+      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server" },
       runtime: { kind: "armada", epoch: "1" },
       armadaAccess: { enabled: true, maxActiveChildren: 2 },
     };
     let out = "";
     const code = await run(
-      ["launch", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
+      ["new", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
@@ -152,14 +151,14 @@ describe("launch through the Armada API", () => {
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
     let out = "";
     const code = await run(
-      ["launch", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
+      ["new", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
           out: () => undefined,
           err: () => undefined,
           env: { ARMADA_TOKEN: token },
-          fetch: async () => Response.json(response),
+          fetch: async () => Response.json({ ...response, sandbox: { ...response.sandbox, repositoryDir: "web" } }),
           now: () => new Date(),
           open: () => undefined,
           session: memorySessionStore(),
@@ -169,6 +168,7 @@ describe("launch through the Armada API", () => {
     expect(code).toBe(0);
     expect(out).toContain("Sandbox: 11111111-1111-4111-8111-111111111111");
     expect(out).not.toContain("Size:");
+    expect(out).toContain("Repository context: web (initial agent working directory, not an isolation boundary).");
     expect(out).toContain("Stops by itself at 2026-11-08T16:00:00.000Z (TTL 1800s).");
   });
   test("retired launch sizing flags are rejected before allocation", async () => {
@@ -180,7 +180,7 @@ describe("launch through the Armada API", () => {
         throw new Error("unexpected request");
       };
       const code = await run(
-        ["launch", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
+        ["new", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
         { out: () => undefined, err: (text) => (err += text) },
         {
           env: { ARMADA_TOKEN: token },
@@ -194,7 +194,6 @@ describe("launch through the Armada API", () => {
   });
 });
 
-// The parser must preserve producer-owned defaults: omitted, explicit and empty are distinct.
 for (const visibility of [undefined, "private", "org"]) {
   for (const selection of [undefined, "selected", "none"]) {
     test(`launch keeps connection selection ${selection ?? "default"} with legacy visibility ${visibility ?? "omitted"}`, async () => {
@@ -203,7 +202,7 @@ for (const visibility of [undefined, "private", "org"]) {
         err = "";
       const code = await run(
         [
-          "launch",
+          "new",
           "web",
           "--provider",
           "boat",
@@ -253,7 +252,7 @@ for (const visibility of [undefined, "private", "org"]) {
 test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
   let errors = "";
   const code = await run(
-    ["launch", "web", "--provider", "boat", "--agent", "codex", "--json"],
+    ["new", "web", "--provider", "boat", "--agent", "codex", "--json"],
     { out: () => {}, err: (text) => (errors += text) },
     {
       auth: {
@@ -268,7 +267,8 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
             {
               error: {
                 code: "no_credentials",
-                message: "Repository private needs a GitHub connection with read access. Run armada github connect.",
+                message:
+                  "Repository private needs a GitHub connection with read access. Run armada account login github.",
               },
             },
             { status: 400 },
@@ -280,5 +280,36 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
   const failure = JSON.parse(errors.trim().split("\n").at(-1)!);
   expect(failure.error.code).toBe("no_credentials");
   expect(failure.error.message).toContain("Repository private");
-  expect(failure.error.message).toContain("armada github connect");
+  expect(failure.error.message).toContain("armada account login github");
+});
+
+test("an admitted Modal launch reports and saves its sandbox before allocation metadata exists", async () => {
+  const id = response.sandbox.id;
+  const receipt = { sandbox: { id, status: "starting" } };
+  let saved: string | undefined;
+  let out = "";
+  const code = await run(
+    ["new", "web", "--provider", "modal", "--agent", "codex", "do it"],
+    { out: (text) => (out += text), err: () => undefined },
+    {
+      sandboxFile: {
+        read: async () => saved,
+        write: async (value) => {
+          saved = value;
+        },
+      },
+      auth: {
+        out: () => undefined,
+        err: () => undefined,
+        env: { ARMADA_TOKEN: token },
+        fetch: async () => Response.json(receipt),
+        now: () => new Date(),
+        open: () => undefined,
+        session: memorySessionStore(),
+      },
+    },
+  );
+  expect(code).toBe(0);
+  expect(out).toBe(`Sandbox: ${id}\nStatus: starting\n`);
+  expect(saved).toBe(id);
 });

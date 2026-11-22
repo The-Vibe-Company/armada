@@ -7,9 +7,7 @@ import type { Machine, RunnerDistribution } from "./ports.ts";
 import { prepareRuntimeArtifact } from "./runtime-overlay.ts";
 
 export interface DistributionOptions {
-  /** Immutable OCI digest. Image must contain Debian apt and node/npm. */
   base: string;
-  /** Exact Debian package versions from a pinned Debian snapshot repository in the base image. */
   apt: {
     gh: string;
     opensshServer: string;
@@ -19,13 +17,9 @@ export interface DistributionOptions {
     unzip: string;
     python3: string;
   };
-  /** Self-contained bundled runtime main.js, built by #510; no workspace imports. */
   bundle: Uint8Array;
   sha256: string;
   capabilities: RunnerDistribution["capabilities"];
-  /** Bootstrap carries root,cwd,port,grant,claudeExecutable,codexExecutable,claudeEnv,codexEnv,
-   * ingestUrl,optional codexAuthJson,mcp. grant.generation is String(machine.generation).
-   * Resolves grants/config/credentials server-side. Must not log or persist returned JSON. */
   bootstrap(machine: Machine, env: Readonly<Record<string, string>>): Promise<object>;
   restoreEnv: RunnerDistribution["restoreEnv"];
   prepareSnapshot: RunnerDistribution["prepareSnapshot"];
@@ -33,8 +27,6 @@ export interface DistributionOptions {
   captureProcessBaseline?: NonNullable<RunnerDistribution["captureProcessBaseline"]>;
   sealProcessBaseline?: NonNullable<RunnerDistribution["sealProcessBaseline"]>;
 }
-/** No bootstrap, authorization or session data enters image construction. Pinned npm packages provide
- * official native binaries. OCI + apt locks are deployment inputs, not mutable latest tags. */
 export function createRunnerDistribution(options: DistributionOptions): RunnerDistribution {
   if (
     !/^[A-Za-z0-9][A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(options.base) ||
@@ -46,8 +38,6 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     if (typeof value !== "string" || !/^[a-zA-Z0-9.+:~_-]+$/.test(value))
       throw refusal("invalid_request", "Missing or invalid exact apt version lock.");
   }
-  // Linux limits *each* execve argument to 128 KiB, independently of ARG_MAX.
-  // Every Docker RUN becomes a shell -c argument: never inline a complete bundle in one RUN.
   const artifact = gzipSync(options.bundle, { level: 9 }).toString("base64");
   const artifactRuns = ["RUN mkdir -p /opt/armada && : > /opt/armada/.main.js.gz.b64"];
   for (let offset = 0; offset < artifact.length; offset += 32 * 1024) {
@@ -86,7 +76,6 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
     },
     async start(sandbox: Sandbox, machine: Machine, env: Readonly<Record<string, string>>) {
       const bootstrap = await options.bootstrap(machine, env);
-      // An empty process env does not inherit caller/management credentials. Bootstrap secrets use stdin.
       const process = await sandbox.exec(
         [
           "/usr/bin/flock",
@@ -109,7 +98,6 @@ export function createRunnerDistribution(options: DistributionOptions): RunnerDi
       );
       await process.stdin.writeText(JSON.stringify(bootstrap));
       await process.stdin.close();
-      // Health/readiness is verified by the injected transport before serving user operations.
     },
     restoreEnv: options.restoreEnv,
     prepareSnapshot: options.prepareSnapshot,

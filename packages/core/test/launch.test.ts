@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { prepareGoldenLaunch } from "@armada/core/server";
 import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
@@ -32,6 +33,7 @@ import {
   toHarnessCredentials,
 } from "../src/index.ts";
 import { prepareLaunchWorkspace } from "../src/launch.ts";
+import { CoreLaunchSettlementConflict } from "../src/sandbox.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -60,10 +62,16 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  const boatModes = ["prompted", "idle"] as const;
+  const modalModes = [...boatModes, "private", "stale epoch", "lost prompt epoch", "unknown settlement"] as const;
   for (const provider of ["boat", "modal"] as const)
-    test.each([true, false])(
-      `${provider} runtime default prepares workspace before publication/inference (prompt=%s)`,
-      async (prompted) => {
+    test.each([...(provider === "modal" ? modalModes : boatModes)])(
+      `${provider} runtime default prepares workspace before publication/inference (%s)`,
+      async (mode) => {
+        const promptFailed = mode === "lost prompt epoch" || mode === "unknown settlement";
+        const prompted = mode === "prompted" || promptFailed;
+        const visibility = mode === "private" ? "private" : "org";
+        const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
         const source = golden("org");
         const world = setup({
             golden: {
@@ -105,20 +113,44 @@ describe("launch", () => {
             return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
           },
         };
-        const result = await launchSandbox(
+        const store = world.stores.sandboxes;
+        const settlements: SandboxPatch[] = [];
+        world.stores.sandboxes = {
+          ...store,
+          activityOwnership: true,
+          async update(id, patch) {
+            if (patch.finishActivity) {
+              settlements.push(patch);
+              if (
+                (mode === "stale epoch" && patch.status === "ready") ||
+                (mode === "lost prompt epoch" && patch.status === "failed")
+              )
+                throw new CoreLaunchSettlementConflict();
+              if (mode === "unknown settlement" && patch.status === "failed") throw Error("Transaction disconnected.");
+            }
+            await store.update(id, patch);
+          },
+        };
+        const launched = launchSandbox(
           native,
           world.stores,
           owner,
           { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
           {
-            beforeStart: async () => {
-              order.push("admit");
-            },
+            ...(mode === "private"
+              ? { privateVisibility: true }
+              : {
+                  beforeStart: async () => {
+                    order.push("admit");
+                  },
+                }),
             [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
               provider: async () => compute,
               credentials,
               connections: {
-                async validate() {},
+                async validate(_actor, _ids, scope) {
+                  expect(scope).toBe(visibility);
+                },
                 async bind() {
                   order.push("bind");
                 },
@@ -169,7 +201,8 @@ describe("launch", () => {
                       return { status: "not_connected" };
                     },
                     async prompt() {
-                      expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+                      expect(order).toEqual(readyOrder);
+                      if (promptFailed) throw Error("Runtime prompt did not complete.");
                       return { promptId: "runtime", conversationId: "conversation", status: "queued" };
                     },
                   };
@@ -178,12 +211,28 @@ describe("launch", () => {
             } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
           },
         );
+        if (mode === "stale epoch" || promptFailed) {
+          await expect(launched).rejects.toThrow(
+            mode === "unknown settlement"
+              ? "Runtime launch failure settlement could not be confirmed."
+              : "Core launch settlement is stale.",
+          );
+          expect(settlements).toMatchObject([
+            { status: mode === "stale epoch" ? "ready" : "failed", expectedRuntimeEpoch: "1" },
+          ]);
+          expect(world.stopped).toEqual([]);
+          return;
+        }
+        const result = await launched;
+        expect(settlements).toMatchObject([{ expectedRuntimeEpoch: "1" }]);
         expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
         expect(result.sandbox.provider).toBe(provider);
+        expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);
+        expect(result.golden.visibility).toBe("org");
         expect(result.sandbox.providerSandboxId).toBe(childId);
         expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
         expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
-        expect(order).toEqual(["bind", "start", "workspace", "mcp", "admit"]);
+        expect(order).toEqual(readyOrder);
         if (!prompted) {
           expect(result.sandbox.status).toBe("ready");
           expect(result.sandbox.conversationIds).toEqual([]);
@@ -261,7 +310,9 @@ describe("launch", () => {
       ).rejects.toMatchObject(
         failure === "account"
           ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
-          : { code: failure === "startup" ? "start_failed" : "invalid_request" },
+          : {
+              code: failure === "startup" ? "start_failed" : "invalid_request",
+            },
       );
       expect(nativeForks).toBe(0);
       expect(world.prompts).toEqual([]);
@@ -608,7 +659,6 @@ describe("launch", () => {
     const g = {
       ...golden("org"),
       provider: "modal" as const,
-      boatSnapshotId: null,
       modal: { workspace: "ws", environment: "main", appId: "ap" },
     };
     const world = setup({ golden: g });
@@ -804,22 +854,58 @@ describe("launch", () => {
     }
   });
 
+  test("Modal golden preparation returns the resolved inputs before placement", async () => {
+    const source = { ...golden("org"), provider: "modal" as const, providerSnapshotId: "modal-image" };
+    const world = setup({ golden: source, boundCredentials: true });
+    world.stores.credentials.defaults = async () => ({ credentialId: OWNER, model: "claude-sonnet-5-5" });
+    const resolve = world.stores.credentials.resolve;
+    world.stores.credentials.resolve = async (actor, harness, credentialId, version) => {
+      expect(credentialId).toBe(OWNER);
+      return resolve(actor, harness, credentialId, version);
+    };
+    world.stores.credentials.admit = async () => {
+      throw Error("Account admission must wait for placement.");
+    };
+    world.stores.goldens.beginSnapshotLaunch = async () => {
+      throw Error("Snapshot reservation must wait for placement.");
+    };
+
+    const { plan } = await prepareGoldenLaunch(
+      { ...world.provider, id: "modal" },
+      world.stores,
+      owner,
+      { golden: "web", provider: "modal", harness: "claude", ttlSeconds: 900 },
+      {
+        runtime: {
+          async start() {
+            throw Error("Runtime startup must wait for placement.");
+          },
+        },
+      },
+    );
+
+    expect(plan).toMatchObject({
+      golden: { id: source.id },
+      snapshot: "modal-image",
+      choice: { model: "claude-sonnet-5-5" },
+      credentials: { binding: { credentialId: OWNER, credentialVersion: 1 } },
+      ttlSeconds: 900,
+    });
+    expect(world.forks).toEqual([]);
+    expect(world.rows.size).toBe(0);
+  });
+
   test.each(["ready", "prompted", "failed"] as const)(
-    "cleanup failures preserve the %s launch outcome and still release the fence",
+    "cleanup failures preserve the %s launch outcome",
     async (outcome) => {
       const world = setup({
         golden: golden("org"),
         ...(outcome === "failed" ? { promptError: new Error("original prompt refusal") } : {}),
       });
       let releases = 0;
-      let fences = 0;
       world.stores.credentials.releaseAdmission = async () => {
         releases++;
         throw new Error("private cleanup details");
-      };
-      world.stores.goldens.beginOperation = async () => async () => {
-        fences++;
-        throw new Error("private fence details");
       };
       const warn = spyOn(console, "warn").mockImplementation(() => {
         throw new Error("diagnostic sink unavailable");
@@ -837,7 +923,6 @@ describe("launch", () => {
           });
         else expect((await launch).sandbox.status).toBe(outcome === "ready" ? "ready" : "running");
         expect(releases).toBe(2);
-        expect(fences).toBe(1);
         expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
       } finally {
         warn.mockRestore();
@@ -1875,7 +1960,7 @@ test("repository authorization preflight refuses before fork", async () => {
   world.stores.credentials.authorizeRepositories = async (actor, _credentials, repos) => {
     expect(actor.userId).toBe(owner.userId);
     expect(repos.map((repo) => repo.dir)).toEqual(["web", "api"]);
-    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada github connect.");
+    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada account login github.");
   };
   await expect(
     launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),
@@ -2096,8 +2181,7 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
   });
   let time = 100;
   const clock = spyOn(performance, "now").mockImplementation(() => time);
-  const logs: unknown[] = [];
-  const logger = spyOn(console, "error").mockImplementation((line) => logs.push(JSON.parse(line)));
+  const logger = spyOn(console, "info");
   const resolve = world.stores.credentials.resolve;
   world.stores.credentials.resolve = async (...args) => {
     time += 11;
@@ -2142,6 +2226,14 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
           },
         },
       },
+    );
+    const logs = logger.mock.calls.map(([line]) => JSON.parse(line));
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: "launch_github_prepared",
+        sandboxId: result.sandbox.id,
+        status: "not_connected",
+      }),
     );
     expect(logs).toContainEqual({
       event: "modal_launch_timing",

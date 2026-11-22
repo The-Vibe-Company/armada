@@ -1,32 +1,39 @@
 import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
-import { type Args, flag, single } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
+import { type Args, flag, single, uuid } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
+import { waitForSnapshot } from "./snapshot-wait.ts";
 export async function dockerSnapshotCommand(
-  operation: string,
+  operation: "ls" | "new" | "update" | "rebuild" | "rm" | "show",
   args: Args,
   io: Pick<AuthIo, "out" | "err">,
   auth: AuthIo,
-  config?: GoldenConfig<string | undefined>,
+  sleep: ((ms: number) => Promise<void>) | undefined,
+  readConfig: () => Promise<GoldenConfig<string | undefined>>,
+  waitSeconds: () => number,
 ) {
+  if (operation === "update" || operation === "rm")
+    throw new GoldenError("invalid_config", `snapshot ${operation} supports Boat and Modal only.`);
   const allowed = new Set([
     "--org",
     "--provider",
     "--json",
     ...(operation === "rebuild" ? ["--request-id"] : []),
-    ...(operation === "create" ? ["--host", "--request-id", "--private", "--config", "--repo", "--init"] : []),
+    ...(operation === "new"
+      ? ["--host", "--request-id", "--private", "--config", "--repo", "--init", "--wait", "--timeout"]
+      : []),
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)))
     throw new GoldenError("invalid_config", "Unsupported Docker snapshot option.");
   const org = single(args, "--org");
   if (!org || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(org))
     throw new GoldenError("invalid_config", "Docker snapshots require --org UUID.");
-  const client = await createArmadaApiClient(auth);
-  const post = (operation: Parameters<typeof client.dockerSnapshot>[0], body: object) =>
-    client.dockerSnapshot<Record<string, unknown>>(operation, { org, ...body });
-  if (operation === "list") {
-    if (args.positionals.length) throw new GoldenError("invalid_config", "golden list takes no name.");
+  const client = await createSdkCommandClient(auth);
+  const post = (operation: Parameters<typeof client.dockerSnapshot>[0], body: object, signal?: AbortSignal) =>
+    client.control<Record<string, unknown>>(`docker/snapshots/${operation}`, { org, ...body }, signal);
+  if (operation === "ls") {
+    if (args.positionals.length) throw new GoldenError("invalid_config", "snapshot ls takes no name.");
     const data = await post("list", {});
     if (!Array.isArray(data.snapshots)) throw Error("Invalid snapshot response.");
     const rows = data.snapshots.map(parseDockerSnapshotRecord);
@@ -68,25 +75,30 @@ export async function dockerSnapshotCommand(
     );
     return 0;
   }
-  if (operation === "get") {
-    if (args.positionals.length !== 1) throw new GoldenError("invalid_config", "golden get requires a snapshot UUID.");
-    const row = parseDockerSnapshotRecord((await post("get", { id: args.positionals[0] })).snapshot);
+  if (operation === "show") {
+    if (args.positionals.length !== 1)
+      throw new GoldenError("invalid_config", "snapshot show requires a snapshot UUID.");
+    const id = args.positionals[0];
+    uuid(id, "snapshot ID");
+    const row = parseDockerSnapshotRecord((await post("get", { id })).snapshot);
     io.out(JSON.stringify(row, null, 2) + "\n");
     return 0;
   }
-  if (operation !== "create" || args.positionals.length !== 1 || !config)
+  if (args.positionals.length !== 1)
     throw new GoldenError(
       "invalid_config",
-      "Use snapshot create NAME --provider docker --host UUID|NAME --config FILE [--private].",
+      "Use snapshot new NAME --provider docker --host UUID|NAME --config FILE [--private].",
     );
   const selector = single(args, "--host");
   if (!selector) throw new GoldenError("invalid_config", "Docker snapshot creation requires --host UUID|NAME.");
   const requestId = single(args, "--request-id") ?? crypto.randomUUID();
   if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId))
     throw new GoldenError("invalid_config", "--request-id requires a UUID.");
+  const config = await readConfig();
+  const seconds = waitSeconds();
   const hostId = await resolveHost(client, org, selector);
   io.err(`Snapshot request ${requestId}. Reuse this --request-id with identical input after an unknown outcome.\n`);
-  const row = parseDockerSnapshotRecord(
+  let row = parseDockerSnapshotRecord(
     (
       await post("create", {
         name: args.positionals[0],
@@ -97,10 +109,31 @@ export async function dockerSnapshotCommand(
       })
     ).snapshot,
   );
+  if (row.id !== requestId)
+    throw new GoldenError(
+      "build_failed",
+      `Build outcome unknown. Inspect ${requestId} with snapshot show before retrying.`,
+    );
+  try {
+    row = await waitForSnapshot(
+      row,
+      seconds,
+      sleep,
+      ({ status }) => status === "building",
+      async (signal) => parseDockerSnapshotRecord((await post("get", { id: requestId }, signal)).snapshot),
+    );
+  } catch {
+    throw new GoldenError(
+      "build_failed",
+      `Polling stopped; use snapshot show ${requestId} --provider docker --org ${org}.`,
+    );
+  }
   io.out(
     flag(args, "--json")
       ? JSON.stringify(row, null, 2) + "\n"
-      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\n${row.baselineWarning ? `${row.baselineWarning}\n` : ""}Read: armada snapshot get ${row.id} --provider docker --org ${org}\n`,
+      : `Docker snapshot: ${row.id}\nName: ${row.name}\nBuild: ${row.status}\nBuilt on Armada: ${row.builtOnVersion ?? "unknown version"}\n${row.baselineWarning ? `${row.baselineWarning}\n` : ""}Read: armada snapshot show ${row.id} --provider docker --org ${org}\n`,
   );
+  if (row.status === "failed")
+    throw new GoldenError("build_failed", `Docker snapshot ${row.id} failed. Inspect it with snapshot show.`);
   return 0;
 }

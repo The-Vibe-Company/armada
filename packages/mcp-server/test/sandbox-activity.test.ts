@@ -18,7 +18,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("send completion fences an old stopped SDK observation captured after admission expiry", async () => {
+test("expired native send stays unresolved after stopped SDK reconciliation", async () => {
   const server = await harness({}, await sharedDatabase());
   const resumed = deferred<void>();
   const resumeRequested = deferred<void>();
@@ -78,11 +78,10 @@ test("send completion fences an old stopped SDK observation captured after admis
       model: "claude-sonnet-5",
       reasoningEffort: "high",
     });
-    await scoped.sandboxes.update(id, {
-      status: "stopped",
-      statusReason: "idle_paused",
-      stoppedAt: new Date().toISOString(),
-    });
+    await server.db.query(
+      "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
+      [id],
+    );
     const token = await server.token(server.people.owner);
     send = handleControlRequest(
       new Request(PUBLIC_URL + "/api/v1/sandbox/send", {
@@ -106,15 +105,17 @@ test("send completion fences an old stopped SDK observation captured after admis
     observation = createSandboxLifecycle(sql, async () => provider).reconcileOne();
     await observed.promise;
     resumed.resolve();
-    expect((await send)?.status).toBe(200);
-    const completed = await scoped.sandboxes.get(id);
-    expect(completed?.status).toBe("running");
+    const response = await send;
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
     oldObservation.resolve();
     await observation;
-    const row = await scoped.sandboxes.get(id);
-    expect(row?.status).toBe("running");
-    expect(row?.stoppedAt).toBeNull();
-    expect(row?.lifecycleGeneration).toBe(3);
+    const row = await server.db.query("select task_prompt_id from sandboxes where id=$1", [id]);
+    expect(row.rows).toEqual([{ task_prompt_id: null }]);
+    const attempts = await server.db.query("select generation from sandbox_native_send_attempts where sandbox_id=$1", [
+      id,
+    ]);
+    expect(attempts.rows).toEqual([{ generation: 2 }]);
     expect(methods.filter((method) => method.includes("/resume"))).toHaveLength(1);
     expect(methods.filter((method) => method.includes("/prompt"))).toHaveLength(1);
   } finally {

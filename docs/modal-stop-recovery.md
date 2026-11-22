@@ -24,10 +24,10 @@ existing stopping rows automatically after their activity/reconciliation leases
 expire. Legacy rows without an attempt marker get at most one further checkpoint
 dispatch, then plain terminate on the next pass. No SQL edits or migrations are
 required. An authorized operator can also retry `armada stop <full-sandbox-id>`
-after the lease expires, then check `armada status <full-sandbox-id>`.
+after the lease expires, then check `armada info <full-sandbox-id>`.
 
 Reported rows to verify: production `3a21e24d-a035-4893-ad2c-ce256f622e16`,
 `250320dc-d28b-4bdc-9f27-1bdef3ceb619`; staging prefixes `a2af8c47`,
-`64a6353b`, `2fae4971` (resolve full IDs with `armada list`).
+`64a6353b`, `2fae4971` (resolve full IDs with `armada ls`).
 This patch does not assert these machines have already been reconciled.
 No production operations or deployments were performed during implementation.

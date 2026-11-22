@@ -1,4 +1,5 @@
 import {
+  failureDiagnostic,
   isFinalPromptStatus,
   type MemberRole,
   type Provider,
@@ -7,9 +8,11 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
@@ -20,7 +23,12 @@ import { createRuntimeProvider } from "./runtime-provider.ts";
 export function createRuntimeServing(sql: Sql, key: string) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const history = createRuntimeHistory(sql, key);
-  return async (apiKey: string | Provider, target: ProviderTarget, actor: { userId: string }) => {
+  return async (
+    apiKey: string | Provider,
+    target: ProviderTarget,
+    actor: { userId: string },
+    captureRuntimeWork?: ModalRuntimeCapture,
+  ) => {
     const member = (
       await sql.query<{ role: MemberRole }>(
         "select role::text as role from public.members where org_id=$1 and user_id=$2",
@@ -129,6 +137,14 @@ export function createRuntimeServing(sql: Sql, key: string) {
     const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }, sandbox.id) : apiKey;
     // Native Modal stop expects its private listener. This lane may retain disk
     // only after the common journal checkpoint committed, never on a host ACK.
+    const refuseRetainedStop = (refusalCode: string, message: string) => {
+      const error = new VaultError("conflict", message);
+      recordOperatorDiagnostic("sandbox.stop.runtime_dispatch", failureDiagnostic(error), {
+        sandboxId: sandbox.id,
+        refusalCode,
+      });
+      return error;
+    };
     const compute =
       sandbox.provider !== "modal"
         ? host
@@ -138,7 +154,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                 const value = Reflect.get(instance, property, instance);
                 return typeof value === "function" ? value.bind(instance) : value;
               }
-              return async (request: { sandboxId: string }) => {
+              return async (request: Parameters<Provider["stop"]>[0]) => {
                 if (request.sandboxId !== sandbox.providerSandboxId)
                   throw new VaultError("not_found", "No runtime stop target.");
                 const proof = (
@@ -153,9 +169,16 @@ export function createRuntimeServing(sql: Sql, key: string) {
                     [sandbox.id, sandbox.ownerId, sandbox.providerSandboxId],
                   )
                 ).rows[0];
-                if (!proof) return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
+                if (!proof) {
+                  if (request.requireRetention)
+                    throw refuseRetainedStop(
+                      "checkpoint_proof_missing",
+                      "Retained stop requires a verified runtime checkpoint.",
+                    );
+                  return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
+                }
                 const current = await instance.get(request.sandboxId);
-                if (current.state === "stopped") return;
+                if (current.state === "stopped" && !request.requireRetention) return;
                 const watermark = Number(proof.watermark);
                 if (
                   !Number.isSafeInteger(watermark) ||
@@ -163,7 +186,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
                   !current.physicalGeneration ||
                   !/^[1-9][0-9]*$/.test(current.physicalGeneration)
                 )
-                  throw new VaultError("conflict", "No physical checkpoint binding.");
+                  throw refuseRetainedStop("physical_checkpoint_unbound", "No physical checkpoint binding.");
                 return (instance as import("@armada/provider-modal").ModalProvider).stopRuntime({
                   ...request,
                   physicalGeneration: current.physicalGeneration!,
@@ -239,6 +262,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
             },
           }
         : undefined,
+      captureRuntimeWork,
     );
   };
 }

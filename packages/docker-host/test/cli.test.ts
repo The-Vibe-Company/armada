@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The real CLI boundary must answer help before opening private state or reading stdin.
 test("Docker host help succeeds without registration, state or Docker access", () => {
   for (const args of [
     [],
@@ -29,7 +28,6 @@ test("Docker host help succeeds without registration, state or Docker access", (
   }
 });
 
-// Status must work before registration and never attempts a network/Docker call.
 test("Docker host status identifies an unregistered installation without Docker access", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-host-status-"));
   try {

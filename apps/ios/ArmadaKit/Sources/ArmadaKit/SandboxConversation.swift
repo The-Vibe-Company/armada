@@ -1,6 +1,6 @@
 import Foundation
 
-/// The latest turn of a sandbox, as `sandbox/detail` reports it (`prompt` of the MCP `status` tool).
+/// The latest turn of a sandbox, as `sandbox/status` reports it (`prompt` of the MCP `status` tool).
 public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let promptId: String
     public let conversationId: String?
@@ -33,7 +33,7 @@ public struct ModelRateLimit: Decodable, Sendable, Equatable {
     public let message: String
 }
 
-/// Interior detail of one sandbox: `POST /api/v1/sandbox/detail`, the same route `armada status`
+/// Interior detail of one sandbox: `POST /api/v1/sandbox/status`, the same route `armada info`
 /// uses. Only the owner or a current admin receives it (#680); the server decides on every read.
 /// Fields the app does not need (golden, repository directory, legacy visibility) are not decoded.
 public struct SandboxDetail: Decodable, Sendable, Equatable {
@@ -89,7 +89,7 @@ public enum SandboxPromptAdmission: Sendable, Equatable {
     case open, turnRunning, starting, stopping, failed, deleted, unknownStatus, expired, cannotResume
 }
 
-/// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada logs`).
+/// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada events`).
 /// Cursors are opaque and passed back unchanged; an event read twice keeps its id. `olderCursor`
 /// (backward reads only) continues before the oldest event of the page.
 public struct SandboxEventPage: Decodable, Sendable {
@@ -99,7 +99,7 @@ public struct SandboxEventPage: Decodable, Sendable {
     public let hasMore: Bool
 }
 
-/// The server's acceptance of a prompt: `POST /api/v1/sandbox/send` (`armada send`).
+/// The server's acceptance of a prompt: `POST /api/v1/sandbox/send` (`armada prompt`).
 public struct SandboxPromptReceipt: Decodable, Sendable, Equatable {
     public let id: String
     public let promptId: String
@@ -182,7 +182,7 @@ extension ArmadaClient {
     /// Interior detail for the owner or a current admin. Never called for a list row to enrich it.
     public func sandboxDetail(id: String) async throws -> SandboxDetail {
         struct Read: Encodable, Sendable { let id: String; let org: String }
-        let result: SandboxDetail = try await post("sandbox/detail", Read(id: try sandboxID(id), org: try sandboxOrganization()))
+        let result: SandboxDetail = try await post("sandbox/status", Read(id: try sandboxID(id), org: try sandboxOrganization()))
         guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
         return result
     }

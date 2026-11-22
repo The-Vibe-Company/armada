@@ -10,8 +10,11 @@ RUN bun install --frozen-lockfile --os linux --cpu x64 \
 FROM debian:bookworm-slim
 # openssh-client: golden create's pinned SSH stdin checkout transport shells out to ssh-keygen and ssh.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openssh-client \
+  && apt-get install -y --no-install-recommends ca-certificates openssh-client python3-venv \
+  && python3 -m venv /opt/armada/modal \
+  && /opt/armada/modal/bin/pip install --no-cache-dir modal==1.6.3 \
   && rm -rf /var/lib/apt/lists/*
+COPY packages/mcp-server/src/modal-artifact-seed.py /opt/armada/modal-artifact-seed.py
 COPY --from=build /src/dist/armada-server /usr/local/bin/armada-server
 COPY --from=build /src/dist/runtime-artifacts /opt/armada/runtime-artifacts
 COPY --from=build /src/dist/runtime-manifests /opt/armada/runtime-manifests

@@ -30,22 +30,7 @@ async function invoke(argv: string[], token = false, response?: Response) {
 }
 
 test("bare families share login-free successful discovery", async () => {
-  for (const family of [
-    "snapshot",
-    "golden",
-    "host",
-    "template",
-    "routine",
-    "vars",
-    "secrets",
-    "mcp",
-    "creds",
-    "org",
-    "account",
-    "github",
-    "token",
-    "skill",
-  ]) {
+  for (const family of ["snapshot", "host", "template", "mcp", "org", "account", "skill"]) {
     const bare = await invoke([family]);
     const help = await invoke([family, "--help"]);
     expect(bare).toEqual(help);
@@ -61,40 +46,41 @@ test("completion covers every root help command and options in every shell", asy
   for (const shell of ["bash", "zsh", "fish"]) {
     const result = await invoke(["completion", shell]);
     for (const match of help.out.matchAll(/armada ([a-z][a-z-]*)/g)) expect(result.out).toContain(match[1]!);
-    for (const command of ["recovery", "interrupt", "steer", "exec"]) expect(result.out).toContain(command);
+    for (const command of ["info", "stop", "prompt", "exec"]) expect(result.out).toContain(command);
     expect(result.out).toContain(shell === "fish" ? "-l 'request-id'" : "--request-id");
     expect(result.out).toContain(shell === "fish" ? "-l 'page-info'" : "--page-info");
-    for (const option of ["since", "prompt-file", "cron", "timezone", "max-runs-per-day"])
-      expect(result.out).toContain(shell === "fish" ? `-l '${option}'` : `--${option}`);
+    expect(result.out).toContain(shell === "fish" ? "-l 'tail'" : "--tail");
+    expect(result.out).toContain(shell === "fish" ? "-l 'after'" : "--after");
+    expect(result.out).toContain(shell === "fish" ? "-l 'turn'" : "--turn");
   }
 });
 
 test("usage and authentication failures give relevant recovery", async () => {
-  const usage = await invoke(["list", "--limit", "0"]);
+  const usage = await invoke(["ls", "--limit", "0"]);
   expect(usage.code).toBe(2);
-  expect(usage.err).toContain("armada list --help");
-  expect(usage.err).not.toContain("inspect armada list");
+  expect(usage.err).toContain("armada ls --help");
+  expect(usage.err).not.toContain("inspect armada ls");
   for (const args of [
-    ["creds", "set", "bogus"],
-    ["launch", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
+    ["account", "add", "bogus"],
+    ["new", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
     ["frobnicate"],
   ]) {
     const invalid = await invoke(args);
     expect(invalid.code).toBe(2);
     expect(invalid.err).toContain(args[0] === "frobnicate" ? "armada --help" : `armada ${args[0]}`);
-    expect(invalid.err).not.toContain("armada doctor");
+    expect(invalid.err).not.toContain("armada info --setup");
     expect(invalid.err).not.toContain("frobnicate --help");
   }
   const auth = await invoke(["org", "list"]);
   expect(auth.code).toBe(3);
   expect(auth.err).toContain("armada login");
-  expect(auth.err).not.toContain("armada doctor");
+  expect(auth.err).not.toContain("armada info --setup");
 });
 
 test("invalid agents list the catalog for list and Docker launch", async () => {
   for (const argv of [
-    ["list", "--agent", "bogus"],
-    ["launch", "--provider", "docker", "--agent", "bogus"],
+    ["ls", "--agent", "bogus"],
+    ["new", "--provider", "docker", "--agent", "bogus"],
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
@@ -104,8 +90,8 @@ test("invalid agents list the catalog for list and Docker launch", async () => {
 
 test("explicit launches require an agent on both Docker and golden paths", async () => {
   for (const argv of [
-    ["launch", "starter", "--provider", "boat"],
-    ["launch", "--provider", "docker", "--host", "office"],
+    ["new", "starter", "--provider", "boat"],
+    ["new", "--provider", "docker", "--host", "office"],
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
@@ -114,7 +100,7 @@ test("explicit launches require an agent on both Docker and golden paths", async
 });
 
 test("Docker placement distinguishes absent and malformed host selectors", async () => {
-  const args = ["launch", "--provider", "docker", "--agent", "codex", "--org", "00000000-0000-0000-0000-000000000001"];
+  const args = ["new", "--provider", "docker", "--agent", "codex", "--org", "00000000-0000-0000-0000-000000000001"];
   const missing = await invoke(args);
   expect(missing.code).toBe(2);
   expect(missing.err).toContain("requires --host UUID|NAME or --golden SNAPSHOT_UUID");
@@ -131,15 +117,15 @@ test("token, deployment and uncertain launch errors retain appropriate recovery"
   );
   expect(token.code).toBe(3);
   expect(token.err).toContain("check or replace ARMADA_TOKEN");
-  expect(token.err).not.toContain("armada doctor");
+  expect(token.err).not.toContain("armada info --setup");
   const deployment = await invoke(
     ["org", "list"],
     true,
     Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
   );
   expect(deployment.err).toContain("Ask an administrator");
-  expect(deployment.err).not.toContain("armada doctor");
-  const launch = await invoke(["launch", "web", "--provider", "boat", "--agent", "codex"], true);
-  expect(launch.err).toContain("Run armada list to check before retrying");
-  expect(launch.err).not.toContain("armada doctor");
+  expect(deployment.err).not.toContain("armada info --setup");
+  const launch = await invoke(["new", "web", "--provider", "boat", "--agent", "codex"], true);
+  expect(launch.err).toContain("Run armada ls to check before retrying");
+  expect(launch.err).not.toContain("armada info --setup");
 });

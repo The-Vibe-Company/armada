@@ -1,14 +1,30 @@
 import {
   decryptSecret,
   encryptSecret,
+  HOST_CAPABILITIES,
   type Provider,
   ProviderError,
   preserveWork,
   SANDBOX_STATES,
   type Sql,
+  type WorkPreservation,
   workPreservationError,
 } from "@armada/core/server";
+import type { RuntimeWorkProvider } from "./runtime-provider.ts";
+import {
+  COMPLETE_PRESERVATION,
+  lockedNativePreservationWriter,
+  NOTE_FENCE,
+  readNativeCaptureAcknowledgements,
+  recordCleanWork,
+  recordWorkRecovery,
+  STOP_EPOCH,
+  type StopFence,
+  WORK_STOP_OWNER,
+  writePreservationNote,
+} from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -30,17 +46,17 @@ function unknownNote(reason: string): string {
   return `could not check for unpushed work (${reason}). If this sandbox had local work, resume it and push or copy it before stopping again.`;
 }
 
-// Fence all writes to the stop epoch observed at entry. A completed receipt wins
-// over any late failure/timeout, even one whose provider request began earlier.
-const NOTE_FENCE = `id=$1::uuid
-  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $3::bigint
-  and ($3::bigint is null or preservation_stop_generation is distinct from $3::bigint)`;
-function writeNote(sql: Sql, id: string, note: string | null, stopToken: string | null) {
-  return sql.query(`update public.sandboxes set preservation_note=$2 where ${NOTE_FENCE}`, [id, note, stopToken]);
-}
+export type StopAuthority = {
+  kind: "activity" | "reconcile";
+  token: string;
+  generation: number | undefined;
+  signal?: AbortSignal | undefined;
+};
+
+const NO_EXTRA_FENCE: StopFence = [null, null, null, null, null];
 
 /** Runtime preservation policy records acknowledged journal evidence, never a Git archive. */
-export async function runtimePreservationNote(sql: Sql, id: string, transport: string | null): Promise<string> {
+export async function runtimePreservationNote(sql: Sql, id: string): Promise<string> {
   const checkpoint = (
     await sql.query<{ epoch: string; watermark: string }>(
       `select p.epoch::text,p.watermark::text from public.runtime_checkpoints p
@@ -52,9 +68,7 @@ export async function runtimePreservationNote(sql: Sql, id: string, transport: s
   ).rows[0];
   return checkpoint
     ? `Armada runtime checkpoint acknowledged for epoch ${checkpoint.epoch} through event ${checkpoint.watermark}; disk retention requires confirmed host stop. No Git work archive is claimed.`
-    : transport === "dialout"
-      ? "Experimental Modal runtime stop: disk retention, resume and Git work preservation are unavailable."
-      : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.";
+    : "Experimental runtime stop: no acknowledged runtime checkpoint; resume and Git work preservation are unavailable.";
 }
 
 type StopSource = "user_stop" | "lifecycle_stop" | "managed_child_stop" | "unspecified";
@@ -65,6 +79,7 @@ export async function stopAndObserve(
   providerSandboxId: string,
   source: StopSource,
   signal: AbortSignal,
+  requireRetention = false,
 ) {
   if (provider.id === "boat") {
     const archived = await provider.get(providerSandboxId);
@@ -72,7 +87,7 @@ export async function stopAndObserve(
     if (archived.state === "stopped") return archived;
   }
   recordStopDispatch(sandboxId, providerSandboxId, source);
-  await provider.stop({ sandboxId: providerSandboxId });
+  await provider.stop({ sandboxId: providerSandboxId, ...(requireRetention ? { requireRetention } : {}) });
   signal.throwIfAborted();
   return provider.get(providerSandboxId);
 }
@@ -94,18 +109,43 @@ export async function preserveBeforeStop(
   id: string,
   providerId: string,
   source: StopSource = "unspecified",
+  authority?: StopAuthority,
 ): Promise<"pending" | void> {
   const started = Date.now();
+  const progress: CaptureProgress = {
+    receiptWriter: sql,
+    stage: "observe",
+    workAtRisk: false,
+    checkedClean: false,
+    deferOnFailure: false,
+    writingReceipt: false,
+    stopToken: null,
+    fence: NO_EXTRA_FENCE,
+  };
+  const ownsStop = async () => {
+    if (progress.fence[0] === null) return true;
+    try {
+      const owned = await sql.query(`select id from public.sandboxes where ${STOP_EPOCH}`, [
+        id,
+        ...progress.fence,
+        progress.stopToken,
+      ]);
+      return owned.rows.length > 0;
+    } catch {
+      return false;
+    }
+  };
   let outcome: "pending" | void;
   try {
-    outcome = await preserveGitWork(sql, provider, id, providerId, source);
+    outcome = await preserveGitWork(sql, provider, id, providerId, progress, source, authority);
   } catch (error) {
-    await finalOutputs(sql, provider, id, started);
+    if (!authority?.signal?.aborted && (await ownsStop())) await finalOutputs(sql, provider, id, started);
     throw error;
   }
   // A pending stop retries later; its final capture runs on that pass.
-  if (outcome !== "pending") await finalOutputs(sql, provider, id, started);
-  return outcome;
+  if (outcome === "pending" || authority?.signal?.aborted || !(await ownsStop())) return "pending";
+  await finalOutputs(sql, provider, id, started);
+  if (!(await ownsStop())) return "pending";
 }
 
 /** Git preservation and final output capture share one pre-stop budget so callers'
@@ -133,22 +173,36 @@ async function preserveGitWork(
   provider: Provider,
   id: string,
   providerId: string,
+  progress: CaptureProgress,
   source: StopSource = "unspecified",
+  authority?: StopAuthority,
 ): Promise<"pending" | void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
   const controller = new AbortController();
-  const progress = { stage: "observe", workAtRisk: false, checkedClean: false, stopToken: null as string | null };
+  const signal = authority?.signal ? AbortSignal.any([controller.signal, authority.signal]) : controller.signal;
   try {
     return await Promise.race([
-      captureAndStore(sql, provider, id, providerId, () => expired, progress, controller.signal, source),
+      captureAndStore(
+        sql,
+        provider,
+        id,
+        providerId,
+        () => expired || signal.aborted,
+        progress,
+        signal,
+        source,
+        authority,
+      ),
       new Promise<"pending" | void>((resolve) => {
         timer = setTimeout(() => {
           expired = true;
           controller.abort();
+          if (authority?.signal?.aborted) return resolve("pending");
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
-          const pending = progress.checkedClean || ["observe", "quiesce"].includes(progress.stage);
+          const pending =
+            progress.checkedClean || ["observe", "quiesce"].includes(progress.stage) || pendingOnFailure(progress);
           console.warn(
             JSON.stringify({
               event: pending ? "work_preservation_deferred" : "work_preservation_failed",
@@ -163,8 +217,8 @@ async function preserveGitWork(
             resolve("pending");
             return;
           }
-          void writeNote(
-            sql,
+          void writePreservationNote(
+            progress.receiptWriter,
             id,
             progress.workAtRisk
               ? failureNote(`${progress.stage}_timeout`)
@@ -172,6 +226,7 @@ async function preserveGitWork(
                 ? null
                 : unknownNote(`${progress.stage}_timeout`),
             progress.stopToken,
+            progress.fence,
           ).catch(() => {});
           resolve();
         }, 20_000);
@@ -183,21 +238,38 @@ async function preserveGitWork(
   }
 }
 
+function pendingOnFailure(progress: CaptureProgress) {
+  return progress.deferOnFailure || (progress.fence[0] !== null && progress.writingReceipt);
+}
+
+type CaptureProgress = {
+  receiptWriter: Sql;
+  stage: string;
+  workAtRisk: boolean;
+  checkedClean: boolean;
+  deferOnFailure: boolean;
+  writingReceipt: boolean;
+  stopToken: string | null;
+  fence: StopFence;
+};
+
 async function captureAndStore(
   sql: Sql,
-  provider: Provider,
+  provider: RuntimeWorkProvider,
   id: string,
   providerId: string,
   expired: () => boolean,
-  progress: { stage: string; workAtRisk: boolean; checkedClean: boolean; stopToken: string | null },
+  progress: CaptureProgress,
   signal: AbortSignal,
   source: StopSource,
+  authority?: StopAuthority,
 ): Promise<"pending" | void> {
   let reason = "failed";
   let stage = "observe";
   let diagnostic: ReturnType<typeof workPreservationError> | undefined;
   let note: string | null;
   let stopLoaded = false;
+  let defer = false;
   const observed = (phase: string, state?: string) => {
     try {
       console.info(
@@ -225,32 +297,39 @@ async function captureAndStore(
         complete: boolean;
         application_secret_tainted: boolean;
         boat_runtime: boolean;
-        runtime_transport: string | null;
+        modal_runtime: boolean;
+        work_stop_owned: boolean | null;
       }>(
-        `select runtime_transport,boat_runtime,application_secret_tainted, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
-        (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
+        `select boat_runtime,application_secret_tainted,
+        (provider='modal' and runtime_transport='dialout') as modal_runtime,
+        (${WORK_STOP_OWNER}) as work_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+        (${COMPLETE_PRESERVATION}) as complete
        from public.sandboxes where id=$1::uuid`,
-        [id],
+        [id, providerId, authority?.token ?? null, authority?.generation ?? null, authority?.kind ?? null, provider.id],
       )
     ).rows[0];
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
-    // Null is intentional for managed-child stops: their core store does not
-    // create a stop generation, and their operation journal publishes stopped
-    // directly (no ordinary lifecycle recapture). These one-off calls stay uncached.
+    if (stop.modal_runtime || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
+      if (!stop.work_stop_owned || !authority) return "pending";
+      progress.deferOnFailure = stop.modal_runtime;
+      if (!stop.modal_runtime) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
+      progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind, provider.id];
+    }
     progress.stopToken = stop.stop_token;
     if (stop.application_secret_tainted) {
-      await writeNote(
-        sql,
+      await writePreservationNote(
+        progress.receiptWriter,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
         stop.stop_token,
+        progress.fence,
       );
       return;
     }
-    if (stop.boat_runtime || stop.runtime_transport === "dialout") {
-      await writeNote(sql, id, await runtimePreservationNote(sql, id, stop.runtime_transport), stop.stop_token);
+    if (stop.boat_runtime) {
+      await writePreservationNote(sql, id, await runtimePreservationNote(sql, id), stop.stop_token, progress.fence);
       return;
     }
     if (stop.complete) {
@@ -258,31 +337,100 @@ async function captureAndStore(
       return;
     }
     // Exec may implicitly resume retained compute. Never activate a machine known stopped.
-    const current = await provider.get(providerId);
+    const current = await provider.get(providerId, { signal });
     if (expired()) return;
     observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    // Native runtimes acknowledge interrupt only after active turns settle.
-    // The stop activity lease prevents new Armada turns during capture.
-    stage = progress.stage = "quiesce";
-    reason = "failed";
-    observed("quiesce_started");
-    await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
-    if (expired()) return;
-    observed("quiesce_finished");
-    stage = progress.stage = "capture";
-    reason = "failed";
+    const fencedNativeCapture = !stop.modal_runtime && provider.supportsExecPhysicalGeneration;
+    const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
+    if (
+      fencedNativeCapture &&
+      (current.id !== providerId || !["ready", "running"].includes(current.state) || !physicalGeneration)
+    )
+      throw new ProviderError({
+        provider: provider.id,
+        code: "sandbox_not_ready",
+        message: "Native work capture requires the exact active physical incarnation.",
+        retryable: false,
+      });
+    if (stop.modal_runtime) {
+      if (
+        HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
+        ["reserved", "restoring", "creating", "booting"].includes(current.providerState)
+      )
+        return;
+    }
+    const ownsCapture = async () => {
+      if (progress.fence[0] === null) return true;
+      try {
+        const owned = await sql.query(
+          `select id from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
+          [id, ...progress.fence, progress.stopToken],
+        );
+        return !expired() && owned.rows.length > 0;
+      } catch {
+        return false;
+      }
+    };
+    if (!(await ownsCapture())) return "pending";
+    const context = { source, captureId: crypto.randomUUID() };
+    let acknowledgements: string | null = null;
+    if (!stop.modal_runtime) {
+      // Native runtimes acknowledge interrupt only after active turns settle.
+      stage = progress.stage = "quiesce";
+      observed("quiesce_started");
+      await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
+      if (expired()) return "pending";
+      if (progress.fence[0] !== null) {
+        try {
+          const evidence = await readNativeCaptureAcknowledgements(
+            sql,
+            id,
+            progress.fence,
+            progress.stopToken,
+            context.captureId,
+            physicalGeneration ?? null,
+          );
+          if (expired() || evidence === undefined) return "pending";
+          acknowledgements = evidence;
+        } catch {
+          return "pending";
+        }
+      }
+      observed("quiesce_finished");
+    }
+    stage = progress.stage = stop.modal_runtime ? "quiesce" : "capture";
     observed("capture_started");
-    const result = await preserveWork(
-      provider,
-      providerId,
-      signal,
-      () => {
-        progress.workAtRisk = true;
-      },
-      { source, captureId: crypto.randomUUID() },
-    );
+    const onWorkAtRisk = () => {
+      progress.workAtRisk = true;
+    };
+    let result: WorkPreservation;
+    if (stop.modal_runtime) {
+      if (!provider.captureRuntimeWork || !current.physicalGeneration || current.id !== providerId)
+        throw new ProviderError({
+          provider: provider.id,
+          code: "sandbox_not_ready",
+          message: "No bound runtime work collector for this physical generation.",
+          retryable: false,
+        });
+      result = await provider.captureRuntimeWork({
+        sandboxId: providerId,
+        physicalGeneration: current.physicalGeneration,
+        signal,
+        context,
+        onWorkAtRisk,
+      });
+    } else {
+      const collector = physicalGeneration
+        ? {
+            exec: (request: Parameters<Provider["exec"]>[0]) =>
+              provider.exec({ ...request, expectedPhysicalGeneration: physicalGeneration }),
+          }
+        : provider;
+      result = await preserveWork(collector, providerId, signal, onWorkAtRisk, context);
+    }
     if (expired()) return;
+    stage = progress.stage = "capture";
     observed(`capture_${result.status}`);
     if (result.status === "preserved") {
       progress.workAtRisk = true;
@@ -294,13 +442,16 @@ async function captureAndStore(
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
       // Receipt and encrypted archive commit atomically. A competing successful
       // pass or a changed stop epoch cannot create/replace a recovery receipt.
-      const saved = await sql.query<{ id: string }>(
-        `with accepted as (
-        update public.sandboxes set preservation_note=$2,preservation_stop_generation=$3::bigint
-        where ${NOTE_FENCE} returning id
-      ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
-        select $4::uuid,id,$5::bytea from accepted returning id`,
-        [id, note, progress.stopToken, recoveryId, encrypted],
+      progress.writingReceipt = true;
+      const saved = await recordWorkRecovery(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        note,
+        recoveryId,
+        encrypted,
+        acknowledgements,
       );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
@@ -310,10 +461,12 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await sql.query<{ id: string }>(
-        `update public.sandboxes set preservation_note=$2::text,
-        preservation_stop_generation=$3::bigint where ${NOTE_FENCE} returning id`,
-        [id, null, progress.stopToken],
+      const saved = await recordCleanWork(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        acknowledgements,
       );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
@@ -354,6 +507,7 @@ async function captureAndStore(
       if (expired()) return "pending";
       return "pending";
     }
+    defer = pendingOnFailure(progress);
     diagnostic = workPreservationError(error);
     note = progress.workAtRisk
       ? failureNote(`${stage}_failed`)
@@ -366,7 +520,7 @@ async function captureAndStore(
   if (!note?.startsWith("unpushed work preserved"))
     console.warn(
       JSON.stringify({
-        event: "work_preservation_failed",
+        event: defer ? "work_preservation_deferred" : "work_preservation_failed",
         sandboxId: id,
         stage,
         reason,
@@ -375,8 +529,9 @@ async function captureAndStore(
       }),
     );
   try {
-    await writeNote(sql, id, note, progress.stopToken);
+    await writePreservationNote(progress.receiptWriter, id, note, progress.stopToken, progress.fence);
   } catch (error) {
+    defer ||= progress.deferOnFailure;
     if (!expired() && note?.startsWith("unpushed work preserved"))
       console.warn(
         JSON.stringify({
@@ -388,15 +543,46 @@ async function captureAndStore(
         }),
       );
   }
-  if (progress.checkedClean) return "pending";
+  if (progress.checkedClean || defer) return "pending";
 }
 
-export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
+export async function purgeWorkRecovery(sql: Sql, id: string) {
+  await sql.query("delete from public.sandbox_work_recovery where sandbox_id=$1", [id]);
+}
+
+export async function readWorkRecovery(
+  sql: Sql,
+  scope: [string[], string],
+  id: string,
+  recoveryId?: string,
+): Promise<string | null | undefined> {
   const row = (
-    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(
-      "select r.archive_enc from public.sandbox_work_recovery r join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1::uuid and not s.application_secret_tainted and ($2::uuid is null or r.id=$2::uuid) order by r.created_at desc limit 1",
-      [id, recoveryId ?? null],
+    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> | null }>(
+      `with visible as (
+         select s.id, s.org_id, s.owner_id, s.application_secret_tainted,
+           (s.status='deleted' and s.provider in ('boat','modal')
+           and not s.boat_runtime and s.runtime_transport is distinct from 'dialout') as detached
+         from public.sandboxes s join public.goldens g on g.id=s.golden_id
+         where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+       )
+       select recovery.archive_enc
+       from visible s
+       left join lateral (
+         select r.archive_enc, r.created_at, r.id
+         from public.sandbox_work_recovery r
+         where not s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and ($4::uuid is null or r.id=$4)
+         union all
+         select r.archive_enc, r.created_at, r.archive_id
+         from public.native_drain_recovery r
+         where s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and r.org_id=s.org_id and r.owner_id=s.owner_id
+           and ($4::uuid is null or r.archive_id=$4)
+         order by created_at desc, id desc limit 1
+       ) recovery on true`,
+      [...scope, id, recoveryId ?? null],
     )
   ).rows[0];
-  return row ? decryptSecret(row.archive_enc) : null;
+  if (!row) return undefined;
+  return row.archive_enc ? decryptSecret(row.archive_enc) : null;
 }

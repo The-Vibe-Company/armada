@@ -1,3 +1,4 @@
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,17 +11,72 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { closeableFixture } from "./closeable.fixture.ts";
+import { database, ENCRYPTION_KEY, type People } from "./support.ts";
+
+export function scopedRuntimeFixture<T extends { close(): Promise<void> }>(
+  setup: () => Promise<T>,
+  { timeout, perTest }: { timeout?: number; perTest?: boolean } = {},
+) {
+  const fixture = closeableFixture(setup);
+  const before = perTest ? beforeEach : beforeAll;
+  const after = perTest ? afterEach : afterAll;
+  before(fixture.setup, timeout);
+  after(fixture.close);
+  return async () => fixture.get();
+}
+
+export async function configureRuntimeFixture<T>(
+  fixture: Awaited<ReturnType<typeof runtimeFixture>>,
+  configure: () => Promise<T>,
+) {
+  try {
+    return await configure();
+  } catch (error) {
+    try {
+      await fixture.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Runtime fixture configuration and cleanup failed");
+    }
+    throw error;
+  }
+}
+
+export async function runtimeFixtureGolden(
+  db: Awaited<ReturnType<typeof database>>["db"],
+  people: People,
+  provider: "boat" | "modal",
+) {
+  if (provider === "boat") {
+    const { rows } = await db.query<{ id: string }>(
+      "select id from goldens where org_id=$1 and visibility='org' and provider='boat'",
+      [people.org],
+    );
+    return rows[0]!.id;
+  }
+  const { rows } = await db.query<{ id: string }>(
+    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+    [people.org, people.owner],
+  );
+  return rows[0]!.id;
+}
 
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
   provider: "boat" | "modal" = "boat",
   harness: "codex" | "claude" | "opencode" = "codex",
   idle = false,
+  commandGrantExpiresAt?: number,
+  placement?: { goldenId: string; providerSandboxId: string },
 ) {
+  await using setup = new AsyncDisposableStack();
   const { db, people } = fixture ?? (await database());
+  if (!fixture) setup.defer(() => db.close());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
+  setup.defer(() => rm(root, { recursive: true, force: true }));
   let journal = new Journal(join(root, "journal"), (value) => value);
+  setup.defer(() => journal.close());
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -45,22 +101,13 @@ export async function runtimeFixture(
       [people.org, harness === "claude" ? "claude_oauth" : harness === "opencode" ? "opencode" : "openai"],
     )
   ).rows[0]!;
-  let golden = (
-    await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
-  ).rows[0]!;
-  if (provider === "modal")
-    golden = (
-      await db.query<{ id: string }>(
-        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-    values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
-        [people.org, people.owner],
-      )
-    ).rows[0]!;
+  const goldenId = placement?.goldenId ?? (await runtimeFixtureGolden(db, people, provider));
+  const providerSandboxId = placement?.providerSandboxId ?? "physical";
   const row = await createSqlSandboxStore(sql).insert({
     id: crypto.randomUUID(),
     provider,
-    providerSandboxId: "physical",
-    goldenId: golden.id,
+    providerSandboxId,
+    goldenId,
     orgId: people.org,
     ownerId: people.owner,
     harness,
@@ -73,10 +120,19 @@ export async function runtimeFixture(
   });
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   let active = await authority.enrol(
-    (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
+    (
+      await authority.issue({
+        sandboxId: row.id,
+        ownerId: people.owner,
+        configuration: {},
+        ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+      })
+    ).enrolmentToken,
   );
   const starts: (string | undefined)[] = [];
   const mcpSnapshots: (import("@armada/agent-runtime").McpConfiguration | undefined)[] = [];
+  let dropReplyFor: RunnerRequest["op"] | undefined;
+  let eventsBeforePromptReply = false;
   let lost = false,
     now = 0;
   let nextDone: Promise<"finished" | "interrupted"> | undefined;
@@ -108,7 +164,7 @@ export async function runtimeFixture(
     sandboxId: row.id,
     generation: active.epoch,
     token: active.runtimeToken,
-    expiresAt: Date.now() + 60000,
+    expiresAt: commandGrantExpiresAt ?? Date.now() + 60_000,
   };
   let state = new HarnessState(root, (value) => value);
   await state.restore(grant, journal.assertRestoreSource(grant));
@@ -156,6 +212,7 @@ export async function runtimeFixture(
           body: JSON.stringify(wire),
         }),
       );
+      if (eventsBeforePromptReply && command.op === "prompt") await runner.flushOutbox();
       const responseBody = (await reply.json()) as {
         result?: { watermark: number; acknowledgedSequence: number; generation: string };
       };
@@ -166,6 +223,10 @@ export async function runtimeFixture(
           responseBody.result.acknowledgedSequence++;
         }
         if (checkpointFault === "ack") responseBody.result.acknowledgedSequence--;
+      }
+      if (dropReplyFor === command.op) {
+        dropReplyFor = undefined;
+        throw Error("Guest reply lost before completion");
       }
       const replyAuthority: typeof authority = {
         ...authority,
@@ -199,17 +260,16 @@ export async function runtimeFixture(
     harness,
     ownerId: people.owner,
     sandboxId: row.id,
-    providerSandboxId: "physical",
+    providerSandboxId,
     cwd: root,
     defaults,
   });
-  const first = idle ? undefined : await agent.prompt({ sandboxId: "physical", harness, text: "initial" });
+  const first = idle ? undefined : await agent.prompt({ sandboxId: providerSandboxId, harness, text: "initial" });
   if (first)
-    await createSqlData(sql)(caller).sandboxes.update(row.id, {
-      status: "running",
-      taskPromptId: first.promptId,
-      conversationIds: [first.conversationId],
-    });
+    await db.query(
+      "update sandboxes set status='running',task_prompt_id=$2,conversation_ids=array[$3]::text[] where id=$1",
+      [row.id, first.promptId, first.conversationId],
+    );
   await runner.flushOutbox();
   const send = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge);
   const context: ToolContext = {
@@ -237,6 +297,7 @@ export async function runtimeFixture(
     prompt,
     request_id: crypto.randomUUID(),
   });
+  const resources = setup.move();
   return {
     root,
     mcpSnapshots,
@@ -347,14 +408,18 @@ export async function runtimeFixture(
     refuse(op: RunnerRequest["op"]) {
       refused.add(op);
     },
+    deliverPromptEventsBeforeReply() {
+      eventsBeforePromptReply = true;
+    },
+    dropReplyOnce(op: RunnerRequest["op"]) {
+      dropReplyFor = op;
+    },
     lose() {
       lost = true;
     },
     async close() {
       await runner.flushOutbox().catch(() => {});
-      journal.close();
-      if (!fixture) await db.close();
-      await rm(root, { recursive: true, force: true });
+      await resources.disposeAsync();
     },
   };
 }

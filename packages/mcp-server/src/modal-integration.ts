@@ -7,6 +7,7 @@ import {
   EncryptionKeyError,
   type ModalBinding,
   type Provider,
+  ProviderError,
   type ProviderTarget,
   parseModalTokenPair,
   resolveModalTokens,
@@ -18,9 +19,10 @@ import {
   createComposedModalProvider,
   createGenerationGrants,
   createModalIngestHandler,
-  createModalInventory,
+  createModalMachineInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
+  modalDeploymentId,
   type ResolvedModalManagementCredentials,
   type Scope,
   scopeKey,
@@ -28,16 +30,23 @@ import {
 import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
+import { createModalLaunchCleanupJob, createModalLaunchJob } from "./jobs/modal-launch.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
+import {
+  type createModalArtifactCache,
+  type ModalArtifactBinding,
+  modalArtifactFailure,
+} from "./modal-artifact-cache.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
-import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
+import { boundedModalSql, createModalReaper } from "./modal-reaper.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
+import { STRICT_NATIVE_DRAIN_STOP } from "./sandbox-lifecycle.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -143,9 +152,9 @@ export async function createModalIntegration(options: {
   async function resolveManagementCredentials(
     authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
     vault: CredentialReader = options.vault,
-  ): Promise<ResolvedModalManagementCredentials> {
+  ): Promise<ResolvedModalManagementCredentials & { id: string | undefined; version: number | undefined }> {
     const row = (await vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
-      (candidate) => candidate.kind === "modal",
+      (candidate) => candidate.kind === "modal" && candidate.status === "active",
     );
     if (!row)
       throw new VaultError(
@@ -158,9 +167,63 @@ export async function createModalIntegration(options: {
         ...parseModalTokenPair(value),
         credentialScope: authority.credentialScope,
         credentialOwnerId: authority.credentialOwnerId,
+        id: row.id,
+        version: row.version,
       };
     } catch {
       throw new VaultError("unavailable", "The bound Modal credential is invalid. Replace that credential slot.");
+    }
+  }
+  async function warmRegisteredArtifactCaches(
+    cache: ReturnType<typeof createModalArtifactCache>,
+    stop: AbortSignal,
+    logError: (line: string) => void,
+  ) {
+    const startupBudget = AbortSignal.any([stop, AbortSignal.timeout(120_000)]);
+    const startupSql = boundedModalSql(options.sql);
+    const vault = createSqlVaultStore(startupSql);
+    const { rows } = await startupSql.query<{
+      app_id: string;
+      app_name: string;
+      environment: string;
+      authority_scope: "org" | "user";
+      authority_owner_id: string;
+    }>(
+      "select distinct app_id, app_name, environment, authority_scope, authority_owner_id from public.modal_server_apps",
+    );
+    const reportFailure = (cause: string) => {
+      if (stop.aborted) return;
+      logError(
+        `Modal startup artifact warming failed for a registered App: ${startupBudget.aborted ? "startup warming deadline exceeded" : cause}. Retrying on enrolled allocation.`,
+      );
+    };
+    for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
+      const seeds: Promise<void>[] = [];
+      for (const row of rows.slice(offset, offset + 4)) {
+        if (startupBudget.aborted) break;
+        try {
+          const { tokenId, tokenSecret } = await resolveManagementCredentials(
+            { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
+            vault,
+          );
+          startupBudget.throwIfAborted();
+          seeds.push(
+            cache
+              .warm(
+                { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
+                startupBudget,
+              )
+              .catch((error) => reportFailure(modalArtifactFailure(error))),
+          );
+        } catch (error) {
+          reportFailure(
+            error instanceof VaultError && error.code === "missing_credential"
+              ? "registered Modal credential is missing"
+              : "could not resolve the registered Modal credential",
+          );
+        }
+      }
+      await Promise.all(seeds);
     }
   }
   const modalTokensFor: NonNullable<HandlerOptions["modalTokensFor"]> = async (target, caller) => {
@@ -173,7 +236,8 @@ export async function createModalIntegration(options: {
     binding: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[1],
     context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
     storedReads = false,
-  ): Promise<Provider> => {
+    onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
+  ) => {
     const authority = await options.sql.query<{ app_name: string }>(
       "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
       [context.target.orgId, binding.appId, binding.environment],
@@ -211,15 +275,25 @@ export async function createModalIntegration(options: {
       ingestUrl,
       artifact,
       ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
-      ...(options.beforeResume
-        ? {
-            beforeResume: (provider: Provider, sandboxId: string) =>
-              options.beforeResume!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
+      async beforeResume(provider, sandboxId) {
+        const blocked = await options.sql.query(
+          `select 1 from public.sandboxes s
+           where s.org_id=$1 and s.provider='modal' and s.provider_sandbox_id=$2
+             and (s.native_drain_pending or ${STRICT_NATIVE_DRAIN_STOP})`,
+          [scope.orgId, sandboxId],
+        );
+        if (blocked.rows.length)
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            message: "Native drain has reserved this sandbox for preservation and deletion.",
+            retryable: false,
+          });
+        await options.beforeResume?.(provider, sandboxId, {
+          userId: context.caller.userId,
+          orgId: scope.orgId,
+        });
+      },
       ...(options.beforePrompt
         ? {
             beforePrompt: (provider, sandboxId) =>
@@ -241,16 +315,20 @@ export async function createModalIntegration(options: {
       }),
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
-    if (storedReads) return (await createComposedModalProvider(composed)).provider;
+    if (storedReads) return createComposedModalProvider(composed);
     const sandbox = { sandboxId: () => diagnosticSandboxId(context.target) };
-    const { provider } = await observeProviderCall(
+    const { provider, captureRuntimeWork } = await observeProviderCall(
       "modal",
       "initialize",
       () => createComposedModalProvider(composed),
       undefined,
       sandbox,
     );
-    return observeProvider("modal", provider, sandbox);
+    onRuntimeBinding?.({ appId: binding.appId, appName, environment: binding.environment, ...tokens });
+    return {
+      provider: observeProvider("modal", provider, sandbox),
+      captureRuntimeWork: observeProvider("modal", { captureRuntimeWork }, sandbox).captureRuntimeWork,
+    };
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,
@@ -287,7 +365,7 @@ export async function createModalIntegration(options: {
     }
   }
   function inventoryReaper(log?: (line: string) => void) {
-    const sql = modalReaperSql(options.sql);
+    const sql = boundedModalSql(options.sql);
     const vault = createSqlVaultStore(sql);
     const clients = new Map<string, ModalClient>();
     const terminationDeadline = new AsyncLocalStorage<AbortSignal>();
@@ -336,7 +414,7 @@ export async function createModalIntegration(options: {
         }
         const inventoryClient = client;
         return {
-          ...createModalInventory(inventoryClient, registration.app_name, binding, deploymentId),
+          ...createModalMachineInventory(inventoryClient, registration.app_name, binding, deploymentId),
           async openSandbox(machineId) {
             const sandbox = await inventoryClient.sandboxes.fromId(machineId);
             return {
@@ -368,13 +446,59 @@ export async function createModalIntegration(options: {
       },
     };
   }
+  const openMachine = async (
+    { appName, binding, ...authority }: Parameters<Parameters<typeof createModalLaunchCleanupJob>[1]>[0],
+    signal: AbortSignal,
+  ) => {
+    const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority);
+    if (!id || !version) throw new Error("Modal platform credential revision is unavailable.");
+    signal.throwIfAborted();
+    const deploymentId = modalDeploymentId(binding.environment, options.publicUrl);
+    const client = new ModalClient({
+      tokenId,
+      tokenSecret,
+      maxThrottleWaitSecs: 0,
+      grpcMiddleware: [
+        async function* (call, rpc) {
+          const requestSignal = rpc.signal ? AbortSignal.any([rpc.signal, signal]) : signal;
+          requestSignal.throwIfAborted();
+          const boundedRpc = { ...rpc, signal: requestSignal, retries: 0, timeoutMs: 10_000 };
+          return yield* call.next(call.request, boundedRpc);
+        },
+      ],
+    });
+    return {
+      client,
+      appName,
+      binding,
+      deploymentId,
+      async canUseModalCredential(tx: Sql) {
+        const { rows } = await tx.query(
+          `select 1 from public.credentials where id=$1 and version=$2 and status='active'
+            and kind='modal' and scope=$3 and owner_id=$4 and (expires_at is null or expires_at>clock_timestamp())
+            for share`,
+          [id, version, authority.credentialScope, authority.credentialOwnerId],
+        );
+        return rows.length > 0;
+      },
+      close: () => client.close(),
+      resolveRuntimeTicket: async () => null,
+      async prepareCheckpoint() {
+        throw new Error("Modal launch and cleanup cannot prepare a checkpoint.");
+      },
+    };
+  };
   return {
+    launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
+    launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
+      createModalLaunchJob(options.sql, options.encryptionKey!, openMachine, prepare),
     inventoryReaper,
+    warmRegisteredArtifactCaches,
     modalProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
       const tokens = await modalTokensFor(target, caller);
-      const host = await modalProviderFor(
+      const { provider: host } = await modalProviderFor(
         // The resolver's scope label is not the structured machine Scope.
         // Pass only the token pair, exactly as the live registry does.
         { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },

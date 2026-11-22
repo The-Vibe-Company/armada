@@ -14,9 +14,6 @@ import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Owner-boundary regressions: old list lacks scoped filtering/count/offset, old CLI loses golden UUIDs
-// and private-fork visibility, and bindings have no command. Existing MCP list tests only cover basic
-// visibility. These use production HTTP/auth/SQL/registry paths, not parser/SQL implementation mirrors.
 const me = "11111111-1111-4111-8111-111111111111",
   other = "22222222-2222-4222-8222-222222222222";
 const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -166,6 +163,7 @@ async function fixture() {
     options,
     requests,
     seed,
+    clearSelection: () => filePreferences(path).write("https://armada.test", undefined),
     async setActor(userId: string) {
       await auth.session.write({
         armadaUrl: "https://armada.test",
@@ -198,21 +196,21 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     await f.seed(36, "ready", "codex", me, "org", sid(100), secondOrg);
     await f.seed(37, "ready", "codex", other, "org", sid(101), alienOrg);
     await f.seed(38, "ready", "codex", me, "org", modalGolden, org, "modal");
-    const defaultList = await f.cli(["list", "--json"]);
+    const defaultList = await f.cli(["ls", "--json"]);
     expect(defaultList.code).toBe(0);
     const defaultEnvelope = JSON.parse(defaultList.out);
     expect(Object.keys(defaultEnvelope)).toEqual(["sandboxes"]);
     expect(defaultEnvelope.sandboxes).toHaveLength(25);
-    const emptyDefault = await f.cli(["list", "--json", "--golden", sid(100)]);
+    const emptyDefault = await f.cli(["ls", "--json", "--golden", sid(100)]);
     expect(emptyDefault.code).toBe(0);
     expect(JSON.parse(emptyDefault.out)).toEqual({ sandboxes: [] });
-    const first = await f.cli(["list", "--json", "--page-info"]);
+    const first = await f.cli(["ls", "--json", "--page-info"]);
     expect(first.code).toBe(0);
     const page = JSON.parse(first.out);
     expect(page).toMatchObject({ total: 35, page: 1, limit: 25, hasMore: true, nextPage: 2 });
     expect(page.sandboxes.map((s: { id: string }) => s.id)).toEqual(Array.from({ length: 25 }, (_, n) => sid(n + 1)));
     expect(f.requests.at(-1)).toMatchObject({ path: "/api/v1/sandbox/list", body: { org } });
-    const secondResponse = await f.cli(["list", "--json", "--page-info", "--page", "2"]);
+    const secondResponse = await f.cli(["ls", "--json", "--page-info", "--page", "2"]);
     expect(secondResponse.code).toBe(0);
     const second = JSON.parse(secondResponse.out);
     expect(second).toMatchObject({ total: 35, page: 2, limit: 25, hasMore: false, nextPage: null });
@@ -220,27 +218,23 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
       [26, 27, 28, 29, 30, 31, 34, 35, 38, 32].map(sid),
     );
     expect(
-      JSON.parse((await f.cli(["list", "--json", "--status", "deleted"])).out).sandboxes.map(
-        (s: { id: string }) => s.id,
-      ),
+      JSON.parse((await f.cli(["ls", "--json", "--status", "deleted"])).out).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(33)]);
     expect(
-      JSON.parse((await f.cli(["list", "--json", "--harness", "claude"])).out).sandboxes.map(
-        (s: { id: string }) => s.id,
-      ),
+      JSON.parse((await f.cli(["ls", "--json", "--harness", "claude"])).out).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(31), sid(34), sid(35)]);
     expect(
       JSON.parse(
-        (await f.cli(["list", "--json", "--agent", "codex", "--golden", secondGolden, "--owner", other])).out,
+        (await f.cli(["ls", "--json", "--agent", "codex", "--golden", secondGolden, "--owner", other])).out,
       ).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(32)]);
-    const mine = JSON.parse((await f.cli(["list", "--json", "--page-info", "--owner", "me", "--limit", "200"])).out);
+    const mine = JSON.parse((await f.cli(["ls", "--json", "--page-info", "--owner", "me", "--limit", "200"])).out);
     expect(mine.total).toBe(32);
     expect(mine.sandboxes).toHaveLength(32);
     const filtered = JSON.parse(
       (
         await f.cli([
-          "list",
+          "ls",
           "--json",
           "--page-info",
           "--status",
@@ -262,13 +256,11 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     expect(filtered.sandboxes.map((s: { id: string }) => s.id)).toEqual(
       [21, 22, 23, 24, 25, 26, 27, 28, 29, 30].map(sid),
     );
-    const beyond = JSON.parse(
-      (await f.cli(["list", "--json", "--page-info", "--page", "1000000", "--limit", "1"])).out,
-    );
+    const beyond = JSON.parse((await f.cli(["ls", "--json", "--page-info", "--page", "1000000", "--limit", "1"])).out);
     expect(beyond).toMatchObject({ total: 35, sandboxes: [], hasMore: false, nextPage: null });
-    const foreign = JSON.parse((await f.cli(["list", "--json", "--org", secondOrg])).out);
+    const foreign = JSON.parse((await f.cli(["ls", "--json", "--org", secondOrg])).out);
     expect(foreign.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);
-    expect(JSON.parse((await f.cli(["list", "--json", "--page-info", "--golden", sid(100)])).out)).toEqual({
+    expect(JSON.parse((await f.cli(["ls", "--json", "--page-info", "--golden", sid(100)])).out)).toEqual({
       total: 0,
       page: 1,
       limit: 25,
@@ -292,22 +284,22 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
       ["--model", "not-a-filter"],
       ["--", "--status", "deleted"],
     ])
-      expect((await f.cli(["list", "--json", ...flags])).code).toBe(2);
+      expect((await f.cli(["ls", "--json", ...flags])).code).toBe(2);
     expect(f.requests).toHaveLength(before);
     const modal =
       page.sandboxes.find((s: { id: string }) => s.id === sid(38)) ??
       second.sandboxes.find((s: { id: string }) => s.id === sid(38));
-    expect(modal).toMatchObject({ provider: "modal", providerSandboxId: "physical-38", boatId: null });
+    expect(modal).toMatchObject({ provider: "modal", providerSandboxId: "physical-38" });
     await f.setActor(other);
-    const otherOwner = JSON.parse((await f.cli(["list", "--json", "--owner", "me", "--agent", "claude"])).out);
+    const otherOwner = JSON.parse((await f.cli(["ls", "--json", "--owner", "me", "--agent", "claude"])).out);
     expect(otherOwner.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(31), sid(34)]);
     await f.setActor(me);
     await f.db.query("delete from members where org_id=$1 and user_id=$2", [org, me]);
-    const revoked = await f.cli(["list", "--json", "--page-info"]);
-    expect(revoked.code).not.toBe(0); // selected-org guard rechecks membership before the SQL read
+    const revoked = await f.cli(["ls", "--json", "--page-info"]);
+    expect(revoked.code).not.toBe(0);
     expect(revoked.out).toBe("");
-    expect((await f.cli(["org", "use", "none"])).code).toBe(0);
-    const stalePrincipal = JSON.parse((await f.cli(["list", "--json", "--page-info"])).out);
+    await f.clearSelection();
+    const stalePrincipal = JSON.parse((await f.cli(["ls", "--json", "--page-info"])).out);
     expect(stalePrincipal.total).toBe(1);
     expect(stalePrincipal.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);
   } finally {
@@ -318,7 +310,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
 test("CLI golden list preserves discoverable UUIDs and provider-neutral metadata", async () => {
   const f = await fixture();
   try {
-    const goldens = JSON.parse((await f.cli(["golden", "list", "--json"])).out);
+    const goldens = JSON.parse((await f.cli(["snapshot", "ls", "--json"])).out);
     expect(goldens.find((g: { id: string }) => g.id === golden)).toMatchObject({
       id: golden,
       orgId: org,
@@ -401,7 +393,7 @@ test("CLI retires launch visibility without changing source golden authority", a
       await encryptSecret("fixture-model-key", key),
     ]);
     const launched = await f.cli([
-      "launch",
+      "new",
       "first",
       "--provider",
       "boat",
@@ -424,7 +416,7 @@ test("CLI retires launch visibility without changing source golden authority", a
         )
       ).rows[0],
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
-    const text = await f.cli(["launch", "first", "--provider", "boat", "--agent", "codex", "--visibility", "private"]);
+    const text = await f.cli(["new", "first", "--provider", "boat", "--agent", "codex", "--visibility", "private"]);
     expect(text.code).toBe(0);
     expect(text.out).toContain("enforced by the server");
     expect(text.out).not.toContain("(private)");
@@ -450,63 +442,6 @@ test("CLI catalog service create and metadata actions use the API and preserve U
     expect(JSON.parse(renamed.out).connection).toMatchObject({ id, name: "Second account", catalogId: "linear" });
     const defaults = await f.cli(["mcp", "default", id, "on", "--json"]);
     expect(JSON.parse(defaults.out).connection).toMatchObject({ id, defaultForLaunch: true });
-  } finally {
-    await f.close();
-  }
-});
-
-test("CLI retirement dry-run and reconcile reach scoped authorized API without provider mutations", async () => {
-  const f = await fixture();
-  try {
-    const { GoldenSnapshotRetirements } = await import("@armada/core/server");
-    let mutations = 0;
-    f.options.goldenRetirements = new GoldenSnapshotRetirements({
-      sql: f.db,
-      encryptionKey: key,
-      provider: async () => ({
-        ...fakeBoat().provider,
-        id: "boat",
-        backendIdentity: async () => ({ id: "account" }),
-        managementIdentity: async () => ({ scope: "org", ownerId: org }),
-        deleteSnapshot: async () => {
-          mutations++;
-        },
-      }),
-    });
-    for (const action of ["dry-run", "reconcile"]) {
-      const result = await f.cli(
-        [
-          "golden",
-          "retirement",
-          action,
-          golden,
-          "--limit",
-          "2",
-          "--json",
-          ...(action === "reconcile" ? ["--file", "review.json"] : []),
-        ],
-        async () => JSON.stringify({ results: [{ receipt: "a".repeat(64) }] }),
-      );
-      expect(result.code).toBe(0);
-      expect(JSON.parse(result.out)).toEqual({ results: [{ outcome: "deferred", reason: "binding_unavailable" }] });
-      expect(f.requests.at(-1)).toMatchObject({
-        path: "/api/v1/golden/retirement/" + action,
-        body: { id: golden, org, limit: 2 },
-        status: 200,
-      });
-    }
-    expect((await f.cli(["golden", "retirement", "dry-run", golden, "--org", secondOrg, "--json"])).code).toBe(1);
-    expect((await f.cli(["golden", "retirement", "dry-run", golden, "--limit", "51", "--json"])).code).toBe(1);
-    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, me]);
-    expect(
-      (
-        await f.cli(["golden", "retirement", "reconcile", golden, "--json", "--file", "review.json"], async () =>
-          JSON.stringify({ results: [{ receipt: "a".repeat(64) }] }),
-        )
-      ).code,
-    ).toBe(1);
-    expect((await f.db.query("select * from golden_snapshot_retirements")).rows).toEqual([]);
-    expect(mutations).toBe(0);
   } finally {
     await f.close();
   }

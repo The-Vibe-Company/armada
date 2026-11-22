@@ -7,12 +7,12 @@ import {
   type OrgCredentials,
   VERSION,
 } from "@armada/core";
-import { flag, parseArgs, single } from "./args.ts";
-import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
+import { accountOperations, controlRouteKey } from "@armada/core/contract";
+import { parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
-/** Interactive discovery only fills missing choices; ordinary scripted launches retain their exact API contract. */
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
@@ -21,7 +21,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
       "--host",
       "--golden",
       "--skill",
-      "--request-id",
+      "--idempotency-key",
       "--credential-version",
       "--variable",
       "--secret",
@@ -29,7 +29,6 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     ],
     ["--armada-access", "--keep-after-merge"],
   );
-  // An explicit launch already describes placement and agent: let normal validation handle it unchanged.
   if (
     single(args, "--org") &&
     single(args, "--credential-id") &&
@@ -42,7 +41,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   const origin = await resolveArmadaOrigin(auth);
   const choose = async (key: string, title: string, options: { value: string; label: string }[], fallback?: string) => {
     if (!options.length)
-      throw new AuthError(`${title}: no choices available. Run armada doctor to check your setup.`, "usage");
+      throw new AuthError(`${title}: no choices available. Run armada info --setup to check your setup.`, "usage");
     const remembered = await auth.launchPreferences?.read(`${origin}/${key}`);
     const preferred = options.find((o) => o.value === remembered)?.value ?? fallback ?? options[0]?.value;
     const value = options.length === 1 ? options[0]?.value : await auth.chooseLaunch?.(title, options, preferred);
@@ -86,7 +85,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   }
   if (provider === "docker") {
     if (!single(args, "--host") && !single(args, "--golden")) {
-      const client = await createArmadaApiClient(auth);
+      const client = await createSdkCommandClient(auth);
       const hosts = await listHosts(client, await resolveHostOrganization(client, org));
       const host = await choose(
         `${org}/host`,
@@ -99,7 +98,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     const { goldens } = await control<{ goldens: GoldenRecord[] }>(auth, "golden/list", { org });
     const golden = await choose(
       `${org}/${provider}/golden`,
-      "Snapshot (create one with armada snapshot create)",
+      "Snapshot (create one with armada snapshot new)",
       goldens.filter((g) => g.provider === provider).map((g) => ({ value: g.name, label: g.name })),
     );
     result.unshift(golden);
@@ -112,7 +111,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     );
     const account = await choose(
       `${org}/${agent}/account`,
-      "Model account (connect one with armada creds --help)",
+      "Model account (connect one with armada account --help)",
       rows.flatMap((c) => (c.id ? [{ value: c.id, label: c.name ?? c.kind }] : [])),
       rows.find((c) => c.isDefault)?.id,
     );
@@ -121,31 +120,26 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   return result;
 }
 
-export async function doctor(argv: readonly string[], auth: AuthIo): Promise<number> {
-  const args = parseArgs(argv);
-  if (args.positionals.length || [...args.options.keys()].some((k) => !["--org", "--json"].includes(k)))
-    throw new AuthError("Run armada doctor [--org UUID] [--json].", "usage");
+export async function setupStatus(org: string | undefined, json: boolean, auth: AuthIo): Promise<number> {
   const rows: { check: string; status: string; detail: string }[] = [];
   const add = (check: string, status: string, detail: string) => rows.push({ check, status, detail });
   const origin = await resolveArmadaOrigin(auth);
-  let org = single(args, "--org") ?? (await auth.preferences?.read(origin));
+  let visibleOrgs: readonly { orgId: string }[] | undefined;
   try {
-    const account = await control<{ version?: string; orgs: { orgId: string; name: string }[] }>(
-      auth,
-      "account/status",
-      {},
-    );
-    add("Session", "ok", "Signed in");
+    const operation = accountOperations.readAccountStatus;
+    const account = operation.output.parse(await control(auth, controlRouteKey(operation.route), {}));
+    visibleOrgs = account.orgs;
+    org ??= visibleOrgs.length === 1 ? visibleOrgs[0]?.orgId : undefined;
+    add("Session", "ok", `Signed in as ${account.userId} (${account.authentication})`);
     add(
       "Server",
       !account.version ? "unknown" : account.version === VERSION ? "ok" : "warning",
       !account.version
         ? "Server version unavailable. Ask the server operator to update Armada."
         : account.version === VERSION
-          ? account.version
-          : `CLI ${VERSION}; server ${account.version}. Update CLI: npm i -g @the-vibe-company/armada (if CLI is newer, ask the server operator to update).`,
+          ? `${origin} · ${account.version}`
+          : `${origin} · CLI ${VERSION}; server ${account.version}. Update CLI: npm i -g @the-vibe-company/armada (if CLI is newer, ask the server operator to update).`,
     );
-    org ??= account.orgs.length === 1 ? account.orgs[0]?.orgId : undefined;
   } catch {
     add(
       "Session",
@@ -154,7 +148,11 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
         ? "Check or replace ARMADA_TOKEN; check ARMADA_URL and your network."
         : "Run armada login; check ARMADA_URL and your network if already signed in.",
     );
-    add("Server", "unknown", "Could not read server version. Restore the session/connection and run armada doctor.");
+    add(
+      "Server",
+      "unknown",
+      "Could not read server version. Restore the session/connection and run armada info --setup.",
+    );
   }
   try {
     const { connection } = await control<{
@@ -187,25 +185,25 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
         installations.length ? "ok" : "warning",
         `Connected as ${connection.login ?? "unknown user"}; ${
           installations.length
-            ? `App installations: ${installations.join(", ")}. Per-repository access is checked at launch. Run armada github status to inspect grants.`
+            ? `App installations: ${installations.join(", ")}. Per-repository access is checked at launch. Run armada account ls github to inspect grants.`
             : connection.installations
-              ? "no authorized App installations. Run armada github install, then armada github status."
-              : "installation scope unavailable. Run armada github status to inspect grants."
+              ? "no authorized App installations. Run armada account add github, then armada account ls github."
+              : "installation scope unavailable. Run armada account ls github to inspect grants."
         }`,
       );
     } else if (connection.status === "not_connected") {
-      add("GitHub", "warning", "Not connected. Run armada github connect, then armada github status.");
+      add("GitHub", "warning", "Not connected. Run armada account login github, then armada account ls github.");
     } else if (connection.status === "needs_reconnect" || connection.status === "revoked") {
       add(
         "GitHub",
         "warning",
-        "Connection expired or revoked. Run armada github reconnect, then armada github status.",
+        "Connection expired or revoked. Run armada account login github, then armada account ls github.",
       );
     } else {
       add(
         "GitHub",
         "unknown",
-        "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
+        "Could not confirm GitHub access. Run armada account ls github; reconnect only if it reports an expired or revoked connection.",
       );
     }
   } catch {
@@ -213,16 +211,19 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
       "GitHub",
       "unknown",
       auth.env.ARMADA_TOKEN
-        ? "Could not read GitHub connection. For a service token, unset ARMADA_TOKEN and run armada login as a person, then armada github status; otherwise check the token and server connection."
-        : "Could not read GitHub connection. Run armada github status; check the server connection and sign in with armada login if the session expired.",
+        ? "Could not read GitHub connection. For a service token, unset ARMADA_TOKEN and run armada login as a person, then armada account ls github; otherwise check the token and server connection."
+        : "Could not read GitHub connection. Run armada account ls github; check the server connection and sign in with armada login if the session expired.",
     );
   }
+  if (!org) add("Organization", "unknown", "No organization selected. Use --org UUID.");
+  else if (!visibleOrgs) add("Organization", "unknown", org);
+  else if (visibleOrgs.some(({ orgId }) => orgId.toLowerCase() === org?.toLowerCase())) add("Organization", "ok", org);
+  else add("Organization", "warning", `${org} is outside your visible memberships. Check armada org list.`);
   if (!org) {
-    add("Hosts", "unknown", "Select an organization: armada org list, then armada org use NAME.");
-    add("Model accounts", "unknown", "Select an organization, then run armada doctor.");
+    add("Hosts", "unknown", "Select an organization with --org UUID. Find IDs with armada org list.");
   } else {
     try {
-      const hosts = await listHosts(await createArmadaApiClient(auth), org);
+      const hosts = await listHosts(await createSdkCommandClient(auth), org);
       if (!hosts.hosts.length)
         add("Hosts", "optional", "No Docker hosts. Run armada host add for a host; Modal does not need one.");
       for (const host of hosts.hosts.filter((h) => h.state !== "revoked"))
@@ -233,32 +234,32 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
             host.state === "draining"
               ? DOCKER_HOST_DRAINING_MESSAGE
               : host.state !== "online"
-                ? "Check the host machine; run armada host status there."
+                ? "On the host machine, check the status of the daemon instance for this server."
                 : host.version === VERSION
                   ? ""
-                  : `CLI ${VERSION}. Check the host installation with armada host status on the host machine.`
+                  : `CLI ${VERSION}. On the host machine, check the status of the daemon instance for this server.`
           }`,
         );
     } catch {
-      add("Hosts", "unknown", "Could not read hosts. Run armada host list.");
-    }
-    try {
-      const accounts = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(auth, "creds/list", { org });
-      const models = [...accounts.user, ...accounts.orgs.flatMap((o) => o.credentials)].filter((c) => c.id);
-      if (!models.length)
-        add("Model accounts", "failed", "No named model accounts. Run armada creds --help to connect one.");
-      for (const model of models)
-        add(
-          `Account ${model.name ?? model.kind}`,
-          model.status ?? "unknown",
-          `${model.kind}; metadata only. Run armada creds list to inspect or test the connection.`,
-        );
-    } catch {
-      add("Model accounts", "unknown", "Could not read model accounts. Run armada creds list.");
+      add("Hosts", "unknown", "Could not read hosts. Run armada host ls.");
     }
   }
+  try {
+    const accounts = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(auth, "creds/list", { org });
+    const models = [...accounts.user, ...accounts.orgs.flatMap((o) => o.credentials)].filter((c) => c.id);
+    if (!models.length)
+      add("Model accounts", "failed", "No named model accounts. Run armada account --help to connect one.");
+    for (const model of models)
+      add(
+        `Account ${model.name ?? model.kind}`,
+        model.status ?? "unknown",
+        `${model.kind}; metadata only. Run armada account ls to inspect or test the connection.`,
+      );
+  } catch {
+    add("Model accounts", "unknown", "Could not read model accounts. Run armada account ls.");
+  }
   auth.out(
-    flag(args, "--json")
+    json
       ? `${JSON.stringify({ checks: rows }, null, 2)}\n`
       : `CHECK\tSTATUS\tDETAIL / NEXT STEP\n${rows.map((r) => `${r.check}\t${r.status}\t${r.detail.replace(/[\t\r\n]/g, " ")}`).join("\n")}\n`,
   );

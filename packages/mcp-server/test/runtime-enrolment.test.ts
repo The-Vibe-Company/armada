@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
-import type { Sql } from "@armada/core/server";
+import { CoreLaunchSettlementConflict, DelegatedAuthority, type Sql } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const connection = rowOnlyConnection();
 
-async function fixture() {
+async function fixture(provider: "boat" | "modal" = "boat") {
   const db = await connection();
   const people = { org: crypto.randomUUID(), owner: crypto.randomUUID(), member: crypto.randomUUID() };
   // Enrolment needs sandbox ownership and membership, not model/provider credentials.
@@ -18,16 +19,21 @@ async function fixture() {
     people.owner,
     people.member,
   ]);
-  await db.query("insert into goldens(org_id,owner_id,name,visibility) values($1,$2,'enrolment-source','private')", [
-    people.org,
-    people.owner,
-  ]);
+  await db.query(
+    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
+      modal_workspace,modal_environment,modal_app_id)
+    select $1,$2,'enrolment-source','private',p,'master','image',
+      case when p='modal' then 'workspace' end,case when p='modal' then 'main' end,case when p='modal' then 'app' end
+    from (values ($3::sandbox_provider)) as target(p)`,
+    [people.org, people.owner, provider],
+  );
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,provider_sandbox_id,harness,status,boat_runtime)
-   select $1,id,org_id,owner_id,'runtime-native','runtime-native','codex','ready',true from goldens
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,boat_runtime,runtime_transport)
+   select $1,id,org_id,owner_id,$3::sandbox_provider,'runtime-native','codex','ready',
+    $3::sandbox_provider='boat',case when $3::sandbox_provider='modal' then 'dialout' end from goldens
    where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
+    [id, people.owner, provider],
   );
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -50,6 +56,7 @@ async function fixture() {
   };
   return {
     db,
+    sql,
     people,
     id,
     service,
@@ -99,6 +106,297 @@ test("enrolment is single-use across replicas and replacement epochs fence every
   await expect(f.service().issue({ sandboxId: f.id, ownerId: f.people.member, configuration: {} })).rejects.toThrow(
     "runtime_enrolment_denied",
   );
+});
+
+test.each(["boat", "modal"] as const)(
+  "promptless %s launch journals readiness for the enrolled generation",
+  async (provider) => {
+    const f = await fixture(provider);
+    const activityToken = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set status='starting',activity_lease_id=$2,
+      activity_until=now()+interval '1 minute' where id=$1`,
+      [f.id, activityToken],
+    );
+    const ticket = await f.issue();
+    const owner = { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" } as const;
+    const expectedGeneration = Number(ticket.lifecycleGeneration);
+    const patch = { status: "ready", finishActivity: true, activityToken, expectedGeneration } as const;
+    const store = createSqlData(f.sql)({ ...owner, orgs: [...owner.orgs] }).sandboxes;
+    const journal = async () =>
+      (
+        await f.db.query(
+          "select from_status,to_status,actor,code,generation::text from sandbox_transitions where sandbox_id=$1",
+          [f.id],
+        )
+      ).rows;
+
+    await expect(store.update(f.id, patch)).rejects.toThrow("Runtime readiness publication is stale.");
+    const session = await f.service().enrol(ticket.enrolmentToken);
+    const prepared = { ...patch, expectedRuntimeEpoch: session.epoch };
+    await expect(store.update(f.id, { ...prepared, expectedGeneration: expectedGeneration + 1 })).rejects.toThrow();
+    expect(await journal()).toEqual([]);
+
+    await f.db.exec(`alter table sandboxes add constraint test_readiness_lease_release
+      check (status <> 'ready' or activity_lease_id is not null) not valid`);
+    try {
+      await expect(store.update(f.id, prepared)).rejects.toThrow("test_readiness_lease_release");
+    } finally {
+      await f.db.exec("alter table sandboxes drop constraint test_readiness_lease_release");
+    }
+    expect(await journal()).toEqual([]);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
+
+    const replacementTicket = await f.issue();
+    const replacement = await f.service().enrol(replacementTicket.enrolmentToken);
+    expect(replacementTicket.lifecycleGeneration).toBe(ticket.lifecycleGeneration);
+    const stale = { ...patch, expectedRuntimeEpoch: session.epoch };
+    await expect(store.update(f.id, stale)).rejects.toThrow("Runtime readiness publication is stale.");
+    await expect(
+      store.update(f.id, { ...stale, status: "failed", statusReason: "Old prompt lost runtime authority." }),
+    ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
+    expect(await journal()).toEqual([]);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
+
+    const current = { ...patch, expectedRuntimeEpoch: replacement.epoch };
+    await store.update(f.id, current);
+    expect(await store.get(f.id)).toMatchObject({ status: "ready", lifecycleGeneration: expectedGeneration });
+    expect(
+      (await f.db.query("select activity_lease_id,activity_until from sandboxes where id=$1", [f.id])).rows,
+    ).toEqual([{ activity_lease_id: null, activity_until: null }]);
+    expect(await journal()).toEqual([
+      {
+        from_status: "starting",
+        to_status: "ready",
+        actor: "runtime_enrolment",
+        code: "runtime_enrolled",
+        generation: ticket.lifecycleGeneration,
+      },
+    ]);
+    expect((await f.request("session", replacement.runtimeToken, replacement.epoch)).status).toBe(200);
+  },
+);
+
+test("membership revocation makes enrolled launch settlement a lost claim", async () => {
+  const f = await fixture();
+  const activityToken = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+      activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+  await expect(
+    store.update(f.id, {
+      status: "ready",
+      finishActivity: true,
+      activityToken,
+      expectedGeneration: Number(ticket.lifecycleGeneration),
+      expectedRuntimeEpoch: session.epoch,
+    }),
+  ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "starting" }]);
+  expect((await f.db.query("select 1 from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+});
+
+test("an accepted initial launch prompt publishes under the enrolled generation", async () => {
+  const f = await fixture("modal");
+  const activityToken = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+     activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const expectedGeneration = Number(ticket.lifecycleGeneration);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const patch = {
+    status: "running",
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+    finishActivity: true,
+    activityToken,
+    expectedGeneration,
+    expectedRuntimeEpoch: session.epoch,
+  } satisfies Parameters<typeof store.update>[1];
+
+  await expect(store.update(f.id, { ...patch, activityToken: crypto.randomUUID() })).rejects.toThrow();
+  await f.db.query(
+    `with account as (
+       insert into credentials(scope,owner_id,kind,value_enc) values('user',$2,'openai',$3) returning id
+     )
+     insert into account_agent_reservations(sandbox_id,account_id) select $1,id from account`,
+    [f.id, f.people.owner, new Uint8Array([1])],
+  );
+  const lease = () => f.db.query("select activity_lease_id from sandboxes where id=$1", [f.id]);
+  const reservations = () =>
+    f.db.query("select account_id from account_agent_reservations where sandbox_id=$1", [f.id]);
+  const publish = () => store.update(f.id, patch);
+  await f.db.exec(`alter table sandboxes add constraint test_running_publication
+    check (status <> 'running' or activity_lease_id is not null) not valid`);
+  try {
+    await expect(publish()).rejects.toThrow("test_running_publication");
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint test_running_publication");
+  }
+  expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+
+  await f.db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+    f.id,
+    patch.taskPromptId,
+  ]);
+  const journal = async () =>
+    (
+      await f.db.query(
+        "select to_status,actor,generation::text from sandbox_transitions where sandbox_id=$1 order by id",
+        [f.id],
+      )
+    ).rows;
+  await f.db.exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(publish()).rejects.toThrow("test_reject_settlement");
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+    expect((await lease()).rows).toEqual([{ activity_lease_id: activityToken }]);
+    expect((await reservations()).rows).toHaveLength(1);
+    expect(await journal()).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+
+  await publish();
+  expect(await store.get(f.id)).toMatchObject({
+    status: "ready",
+    lifecycleGeneration: expectedGeneration,
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+  });
+  expect((await lease()).rows).toEqual([{ activity_lease_id: null }]);
+  expect((await reservations()).rows).toEqual([]);
+  expect(await journal()).toEqual([
+    { to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration },
+    { to_status: "ready", actor: "runtime_turn", generation: ticket.lifecycleGeneration },
+  ]);
+  expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+});
+
+test.each(["ready", "failed"] as const)(
+  "runtime %s publication rechecks the activity deadline after locking the enrolled runtime",
+  async (status) => {
+    const f = await fixture();
+    const activityToken = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set status='starting',activity_lease_id=$2,
+      activity_until=now()+interval '1 minute' where id=$1`,
+      [f.id, activityToken],
+    );
+    const ticket = await f.issue();
+    const session = await f.service().enrol(ticket.enrolmentToken);
+    const sql: Sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            async query<T>(statement: string, params?: unknown[]) {
+              const result = await tx.query<T>(statement, params);
+              if (statement.includes("runtime_hash is not null for update"))
+                await tx.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [f.id]);
+              return result;
+            },
+          }),
+        ),
+    };
+    const store = createSqlData(sql)({
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    await expect(
+      store.update(f.id, {
+        status,
+        ...(status === "failed" ? { statusReason: "Prompt rejected" } : {}),
+        finishActivity: true,
+        activityToken,
+        expectedGeneration: Number(ticket.lifecycleGeneration),
+        expectedRuntimeEpoch: session.epoch,
+      }),
+    ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting" });
+  },
+);
+
+test("replacement ticket issue atomically fences a scoped parent's old bearer", async () => {
+  const f = await fixture("modal");
+  const authority = new DelegatedAuthority(f.sql, async () => {});
+  const initial = await f.service().enrol((await f.issue()).enrolmentToken);
+  await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.id]);
+  await f.db.query(
+    `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+     values($1,'sandbox',$2,$3,$1,'ready')`,
+    [f.id, f.people.org, f.people.owner],
+  );
+  let bearer = "";
+  await authority.installEpoch(
+    f.id,
+    {
+      lifecycleGeneration: "1",
+      physicalGeneration: initial.epoch,
+      async deliver(token) {
+        bearer = token;
+        return { acknowledged: true };
+      },
+      async scrub() {
+        throw Error("Unexpected delivery failure");
+      },
+    },
+    { scopes: ["worker:stop"], goldenIds: [], credentialIds: [] },
+  );
+  const admit = () => authority.admit(bearer, { method: "finish" }, async () => true);
+  const oldSession = () => f.request("session", initial.runtimeToken, initial.epoch);
+  const issueWithFault = (fault: "parent locked" | "ticket write failed") =>
+    createRuntimeEnrolments(
+      {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              async query(statement, values) {
+                if (fault === "parent locked" && statement.endsWith("for update skip locked")) return { rows: [] };
+                if (fault === "ticket write failed" && statement.startsWith("insert into public.runtime_enrolments"))
+                  throw Error(fault);
+                return tx.query(statement, values);
+              },
+            }),
+          ),
+      },
+      ENCRYPTION_KEY,
+    ).issue({ sandboxId: f.id, ownerId: f.people.owner, configuration: {} });
+  await expect(issueWithFault("parent locked")).rejects.toThrow("runtime_enrolment_denied");
+  await expect(admit()).resolves.toBe(true);
+  expect((await oldSession()).status).toBe(200);
+  await expect(issueWithFault("ticket write failed")).rejects.toThrow("ticket write failed");
+  await expect(admit()).resolves.toBe(true);
+  expect((await oldSession()).status).toBe(200);
+
+  const ticket = await f.issue();
+  expect((await oldSession()).status).toBe(401);
+  await expect(admit()).rejects.toThrow("denied");
+  const replacement = await f.service().enrol(ticket.enrolmentToken);
+  expect(replacement.epoch).toBe("2");
+  await expect(admit()).rejects.toThrow("denied");
 });
 
 test("enrolment refuses unsupported wire versions without spending the ticket", async () => {
@@ -209,11 +507,9 @@ test("runtime bootstrap SQL is service-only and private routes reject ambient/ma
   expect(mutation).toBe(false);
 });
 
-// The happy-path owner is control.test.ts's real launch completion. These are
-// lookalike completions which must NOT turn the exception into a fencing bypass.
-test("initial handoff exception refuses expired leases, generation jumps, missing prompt and concurrent stop", async () => {
+test("launch-shaped publication cannot carry runtime authority to another generation", async () => {
   const f = await fixture();
-  for (const change of ["expired", "jump", "missing-prompt", "stop"]) {
+  for (const change of ["ordinary", "expired", "jump", "missing-prompt", "stop"]) {
     await f.db.query(
       "update sandboxes set status='starting',stop_requested_at=null,activity_lease_id=$2,activity_until=now()+interval '2 minutes',task_prompt_id=null where id=$1",
       [f.id, crypto.randomUUID()],

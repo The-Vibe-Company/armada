@@ -5,17 +5,36 @@ import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
-import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, launchSandboxId, PUBLIC_URL, type TestServer } from "./support.ts";
+import {
+  bunLikeSql,
+  call,
+  ENCRYPTION_KEY,
+  fakeBoat,
+  harness,
+  launchSandboxId,
+  PUBLIC_URL,
+  type TestServer,
+} from "./support.ts";
 
 const database = rowOnlyDatabase();
-let server: TestServer | undefined;
+let pendingServer: Promise<TestServer> | undefined;
 
 afterEach(async () => {
+  const pending = pendingServer;
+  pendingServer = undefined;
+  const server = await pending?.catch(() => undefined);
   await server?.close();
-  server = undefined;
 });
+
+function start(options: Parameters<typeof harness>[0] = {}) {
+  const pending = database().then((fixture) => harness(options, fixture));
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
+}
 
 const BINDING: ModalBinding = { workspace: "ws-acme", environment: "main", appId: "ap-0123456789abcdef" };
 const PAIR = { token_id: "ak-orgtoken0001", token_secret: "as-orgsecret0001" };
@@ -73,7 +92,7 @@ async function setOrgModalPair(target: TestServer, pair: typeof PAIR) {
 
 describe("provider routing", () => {
   test("a same-name Modal golden is listed apart, named explicitly, and never launched on Boat", async () => {
-    server = await harness({}, await database());
+    const server = await start();
     await seedModal(server);
     const token = await server.token(server.people.member);
     const mcp = await server.client(token);
@@ -94,15 +113,14 @@ describe("provider routing", () => {
     const body = (await listed?.json()) as { goldens: Record<string, unknown>[] };
     const shared = body.goldens.filter((golden) => golden.name === "shared");
     expect(
-      shared.map(({ provider, boatSnapshotId, providerSnapshotId, modal }) => ({
+      shared.map(({ provider, providerSnapshotId, modal }) => ({
         provider,
-        boatSnapshotId: boatSnapshotId === null ? null : "set",
         providerSnapshotId: providerSnapshotId === null ? null : "set",
         modal,
       })),
     ).toEqual([
-      { provider: "boat", boatSnapshotId: "set", providerSnapshotId: "set", modal: null },
-      { provider: "modal", boatSnapshotId: null, providerSnapshotId: "set", modal: BINDING },
+      { provider: "boat", providerSnapshotId: "set", modal: null },
+      { provider: "modal", providerSnapshotId: "set", modal: BINDING },
     ]);
     expect(JSON.stringify(body)).not.toContain(PAIR.token_secret);
 
@@ -117,7 +135,6 @@ describe("provider routing", () => {
     expect(launchEnvelope.parse(onBoat.data).sandbox).toMatchObject({
       provider: "boat",
       providerSandboxId: "bx_1",
-      boatId: "bx_1",
     });
     expect(server.boat.forks).toHaveLength(1);
   });
@@ -125,15 +142,12 @@ describe("provider routing", () => {
   test("a Modal sandbox runs on the pinned App with the org's token pair, which a rotation never redirects", async () => {
     const modal = fakeBoat();
     const calls: { tokens: ModalTokenPair; binding: ModalBinding }[] = [];
-    server = await harness(
-      {
-        modalProviderFor: (tokens, binding) => {
-          calls.push({ tokens, binding });
-          return { ...modal.provider, id: "modal" } as Provider;
-        },
+    const server = await start({
+      modalProviderFor: (tokens, binding) => {
+        calls.push({ tokens, binding });
+        return { provider: { ...modal.provider, id: "modal" } as Provider };
       },
-      await database(),
-    );
+    });
     await seedModal(server);
     const mcp = await server.client(await server.token(server.people.member));
 
@@ -192,7 +206,6 @@ describe("provider routing", () => {
     expect(launchEnvelope.parse(launched.data).sandbox).toMatchObject({
       provider: "modal",
       providerSandboxId: "bx_1",
-      boatId: null,
     });
     expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);
@@ -210,11 +223,11 @@ describe("provider routing", () => {
 
   test("REST attributes receipt SQL only to the fresh Modal launch", async () => {
     const modal = fakeBoat();
-    server = await harness({}, await database());
+    const server = await start();
     await seedModal(server);
     const { db, people } = server;
     const token = await server.token(people.member);
-    const sql = sqlOver({ unsafe: async (query, params) => (await db.query(query, params)).rows });
+    const sql = bunLikeSql(db);
     const provider = {
       ...modal.provider,
       id: "modal" as const,

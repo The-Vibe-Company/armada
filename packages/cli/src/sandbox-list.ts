@@ -1,11 +1,9 @@
 import { GoldenError, idlePauseMessage, isSandboxPlacementProvider, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
 
-/** Render the #680 sandbox-access-v1 safe DTO, never an interior/golden lookup. */
 export function sandboxListText(rows: unknown[], now: Date): string {
   if (!rows.length) return "No sandboxes.\n";
   const text = (value: unknown): string => {
     if (typeof value !== "string") throw new GoldenError("invalid_config", "Invalid safe sandbox metadata.");
-    // API labels/owners are untrusted terminal data, not escape sequences.
     return Array.from(value, (character) => {
       const code = character.codePointAt(0) ?? 0;
       return code < 32 || (code >= 127 && code <= 159) ? " " : character;

@@ -6,11 +6,14 @@ import {
   parseOpenCodeEndpoint,
   type Sql,
 } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 
-const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
   "An account can change only when no turn is running. Wait for the turn and any start or stop operation to finish, then try again.";
 type Target = {
@@ -27,6 +30,7 @@ type Target = {
   deleted_at: unknown;
   stopped_at: unknown;
   leased: boolean;
+  native_drain_pending: boolean;
   credential_id: string | null;
   credential_version: number | null;
 };
@@ -59,13 +63,24 @@ export function createSandboxAccountChange(
     ]);
     if (!membership.rows.length)
       throw new VaultError("forbidden", "You must still be a member of this sandbox's organization.");
-    if (row.deleted_at || !["ready", "stopped"].includes(row.status) || row.leased)
+    const runtimeRunning =
+      row.status === "running" &&
+      runtimeBridgeTarget({
+        provider: row.provider,
+        harness: row.harness,
+        boatRuntime: row.boat_runtime,
+        ...(row.runtime_transport ? { runtimeTransport: row.runtime_transport } : {}),
+      });
+    if (row.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
+    // WARNING: Read the marker after the locking SELECT to see a strict stop admitted while waiting.
+    if (await hasStrictNativeDrainStop(db, row.id))
+      throw new VaultError("conflict", "Native sandbox preservation is pending.");
+    if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
     return row;
   }
   return async (caller, input, quiesce) => {
-    if (!UUID.test(input.id) || !UUID.test(input.credentialId))
-      throw new VaultError("invalid", "Sandbox and account IDs must be UUIDs.");
+    if (!bindingIds.safeParse(input).success) throw new VaultError("invalid", "Sandbox and account IDs must be UUIDs.");
     if (!transaction) throw new VaultError("unavailable", "Account changes require a transaction.");
     const before = await target(sql, caller, input.id);
     const stopOwnedIdle = async () => {
@@ -114,7 +129,7 @@ export function createSandboxAccountChange(
         resolved.usagePricing.credentialVersion !== pin.credentialVersion)
     )
       throw new VaultError("unavailable", "The selected account's pricing identity is inconsistent.");
-    if (before.status === "ready") await stopOwnedIdle();
+    if (before.status !== "stopped") await stopOwnedIdle();
     await credentials.enrollAccount?.(actor, resolved);
     return transaction(async (tx) => {
       // Follow the member -> account -> sandbox lock order used by turn admission.

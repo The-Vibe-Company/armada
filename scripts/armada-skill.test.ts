@@ -82,14 +82,9 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   const contract: Command[] = [];
   for (const prefix of [
     [],
+    ...["ls", "add", "login", "import", "default", "limits", "rm", "test"].map((action) => ["account", action]),
     ["template"],
-    ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
-    ["routine"],
-    ...["create", "list", "show", "update", "enable", "pause", "delete", "runs"].map((action) => ["routine", action]),
-    ["vars"],
-    ...["set", "list", "read"].map((action) => ["vars", action]),
-    ["secrets"],
-    ...["set", "list", "rotate", "revoke", "delete"].map((action) => ["secrets", action]),
+    ...["list", "get", "launch"].map((action) => ["template", action]),
     ["skill"],
   ]) {
     let out = "";
@@ -134,20 +129,8 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada unknown-command", contract)).toContain("Unknown command");
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada template nonexistent-subcommand", contract)).toContain("Unknown command");
+  expect(validate("armada account rename ACCOUNT_UUID NAME", contract)).toContain("Unknown command");
   expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
-  expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
+  expect(validate("armada new example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
-  expect(validate("armada vars nonexistent-command", contract)).toContain("Unknown command");
-  expect(validate("armada secrets read secret", contract)).toContain("Unknown command");
-  expect(validate("armada vars list --file accidental", contract)).toContain("Unknown flag");
-  expect(validate("armada routine nonexistent-command", contract)).toContain("Unknown command");
-  expect(validate("armada routine enable routine --revision 1", contract)).toContain("Unknown flag");
-  expect(
-    validate("armada routine create nightly --cron '0 9 * * MON-FRI' --timezone Europe/Paris", contract),
-  ).toBeUndefined();
-  expect(
-    validate("armada routine update routine --expected-version 3 --cron '0 10 * * *' --timezone UTC", contract),
-  ).toBeUndefined();
-  expect(validate("armada routine create nightly --interval-hours 1", contract)).toContain("Unknown flag");
-  expect(validate("armada routine enable routine --cron '0 9 * * *'", contract)).toContain("Unknown flag");
 });

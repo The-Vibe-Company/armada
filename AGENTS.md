@@ -1,14 +1,14 @@
 # Armada: rules for coding agents
 
-Rules only. Procedures live in the documents listed under "Where truth lives".
+Procedures are listed under "Where truth lives".
 
 ## Product
-- Armada launches coding agents (Claude Code, Codex, OpenCode) in sandboxes on Boat, Modal or a user's Docker host, and exposes them through the API, SDK, CLI, MCP and dashboard.
-- It is a launcher, not a workflow engine. Waits, captains and orchestration live in API clients, not in Armada.
+- Armada launches Claude Code, Codex and OpenCode sandboxes on Boat, Modal or a user Docker host through the API, SDK, CLI, MCP and dashboard.
+- Waits, captains and orchestration belong in API clients.
 - `armada-server` is one TypeScript/Bun server on PostgreSQL (Supabase). The `armada` CLI and the SDK are API-only clients.
-- Two agent paths exist until the native retirement finishes: the provider-run path (Boat agent API, Modal runner) and the Armada runtime (`packages/agent-runtime`). The target is the runtime only.
+- Modal defaults to the Armada runtime (`packages/agent-runtime`). Boat defaults to its native agent API. Keep both provider-run paths (Boat agent API, Modal runner) until native retirement.
 - New machine lifecycle adapters implement the server-only `Machine` contract and expose capabilities through the core registry. Integration and cutover follow `docs/machine-contract.md`.
-- `docs/architecture.md` is the target for new code. Do not migrate existing code toward it outside a program ticket.
+- `docs/architecture.md` guides new code. Migrate existing code only in program tickets.
 
 ## Layout
 | Path | Holds |
@@ -26,7 +26,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 
 ## Non-negotiables
 1. **No compatibility layers.** When you replace a route, tool, command, field or table, delete the old one and update every in-repo caller (CLI, SDK, dashboard, iOS, MCP, `.agents/skills/armada`, docs, smoke scripts). No aliases, `-vN` routes, deprecation windows, feature flags or decoders for old shapes. Three things keep an overlap: database objects, the runtime protocol and the Docker host daemon protocol. A breaking change may span modules; move callers first, delete last, within one ticket. Bump `PROTOCOL_VERSION` only for a breaking change as defined in `packages/agent-runtime/src/protocol.ts`. The server keeps N and N-1.
-2. **Lifecycle.** Only the sandbox module writes `sandboxes.status`; one lease and one deadline per sandbox; every provider call carries `(sandboxId, generation)`; no new cleanup loop or retry timer. These bind new and changed code; details in `packages/mcp-server/AGENTS.md`.
+2. **Lifecycle.** Sandbox status changes use `sandbox_transition()`; one lease and one deadline per sandbox; every provider call carries `(sandboxId, generation)`; no new cleanup loop or retry timer. These bind new and changed code; details in `packages/mcp-server/AGENTS.md`.
 3. **Separate client and server.** Never import Supabase, provider implementations or server startup into the CLI or SDK graph (enforced by `scripts/ci/import-boundaries.ts`).
 4. **Secrets.** Never print a secret or write one to a file, fixture, log or argument. Goldens hold no secrets. Credential values arrive on stdin or from a file. In the database a secret is `*_enc` ciphertext (`encryptSecret`/`decryptSecret` with `ARMADA_ENCRYPTION_KEY`) or a lowercase SHA-256 hash, and no user JWT can read either. The only argv exception is the single-use, five-minute Docker host install token.
 5. **Database access.** Row-level security is the access rule. Members see organization resources, owners alone see private resources, and only admins change organization goldens, membership or organization keys. New user-JWT access needs explicit grants; JWT writes name their returned columns (`select=`), never bare `*`. Server SQL bypasses RLS and must enforce visibility itself. Schema changes are new migrations; never edit an applied one (`docs/database-migrations.md`). Place new TypeScript table writes with the owner in `scripts/ci/tables.ts` and remove exceptions as writes move or are deleted.
@@ -36,6 +36,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
 10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
 11. **Landmines rules are mandatory.** Give the reason for any inline disable in the PR and only shrink baselines.
+12. **Self-register.** Define routes, MCP tools, workers, mounts and CLI commands in their owning modules. Wire server routes, workers and mounts through `packages/mcp-server/src/modules.ts` and commands through `packages/cli/src/commands/index.ts`. Use `@armada/core/<area>` subpaths.
 
 ## Pull requests
 - **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.

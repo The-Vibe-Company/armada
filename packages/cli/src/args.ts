@@ -1,8 +1,7 @@
 import { GoldenError, isSandboxProvider, SANDBOX_PROVIDERS, type SandboxProviderId } from "@armada/core";
 
-const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser", "--no-connections"]);
+const BOOLEAN = new Set(["--private", "--json", "--no-browser", "--no-connections"]);
 const VALUE = new Set([
-  "--since",
   "--id",
   "--expected-version",
   "--credential-id",
@@ -30,7 +29,6 @@ const VALUE = new Set([
 
 export interface Args {
   positionals: string[];
-  /** Repeatable options keep every value, in order. Boolean options map to an empty list. */
   options: Map<string, string[]>;
 }
 
@@ -52,7 +50,8 @@ export function parseArgs(
       positionals.push(arg);
       continue;
     }
-    if (!arg.startsWith("--")) throw new GoldenError("invalid_config", `Unknown option '${arg}'.`);
+    if (!arg.startsWith("--") && !additionalValues.includes(arg) && !additionalBooleans.includes(arg))
+      throw new GoldenError("invalid_config", `Unknown option '${arg}'.`);
     const eq = arg.indexOf("=");
     const key = eq === -1 ? arg : arg.slice(0, eq);
     if (BOOLEAN.has(key) || additionalBooleans.includes(key)) {
@@ -101,7 +100,6 @@ export function providerFlag(args: Args): SandboxProviderId | undefined {
   return value;
 }
 
-/** Reject recognized but unused flags before a command can perform I/O. */
 export function acceptedOptions(args: Args, command: string, allowed: readonly string[]): void {
   for (const key of args.options.keys()) {
     if (!allowed.includes(key)) throw new GoldenError("invalid_config", `Unsupported ${command} option '${key}'.`);
@@ -114,4 +112,15 @@ export function oneName(positionals: string[]) {
     throw new GoldenError("invalid_config", "Give exactly one snapshot name.");
   }
   return name;
+}
+
+export function jsonRequested(argv: readonly string[]) {
+  const end = argv.indexOf("--");
+  return (end < 0 ? argv : argv.slice(0, end)).includes("--json");
+}
+
+export function withJsonFlag(argv: readonly string[]) {
+  if (jsonRequested(argv)) return argv;
+  const end = argv.indexOf("--");
+  return end < 0 ? [...argv, "--json"] : [...argv.slice(0, end), "--json", ...argv.slice(end)];
 }

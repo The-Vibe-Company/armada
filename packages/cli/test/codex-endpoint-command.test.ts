@@ -22,7 +22,7 @@ test("custom Codex save refuses missing deployment names before reading a key or
   let reads = 0;
   expect(
     await run(
-      ["creds", "set", "openai", "--name", "Azure", "--base-url", "https://resource.openai.azure.com/openai/v1"],
+      ["account", "add", "openai", "--name", "Azure", "--base-url", "https://resource.openai.azure.com/openai/v1"],
       { out: h.auth.out, err: h.auth.err },
       {
         auth: h.auth,
@@ -44,8 +44,8 @@ test.each(["stdin", "file"] as const)(
     const apiKey = randomUUID();
     const baseUrl = "https://resource.services.ai.azure.com/api/projects/project/openai/v1";
     const args = [
-      "creds",
-      "set",
+      "account",
+      "add",
       "openai",
       "--name",
       "Foundry",
@@ -92,20 +92,20 @@ test.each(["stdin", "file"] as const)(
       }),
     });
     expect(h.output.join("")).not.toContain(apiKey);
-    expect(h.output.join("")).toContain("Modal only");
+    expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
     expect(h.output.join("")).toContain("Responses API");
   },
 );
 
 test.each(
   [
-    ["set", "openai", "--api-version", "v1"],
-    ["set", "claude-oauth", "--name", "Subscription", "--base-url", "https://example.com"],
-    ["set", "openai", "--base-url", "https://example.com"],
-    ["list", "--base-url", "https://example.com"],
-    ["set", "openai", "--name", "Foundry", "--base-url", "https://user:password@example.com"],
+    ["add", "openai", "--api-version", "v1"],
+    ["add", "claude-oauth", "--name", "Subscription", "--base-url", "https://example.com"],
+    ["add", "openai", "--base-url", "https://example.com"],
+    ["ls", "--base-url", "https://example.com"],
+    ["add", "openai", "--name", "Foundry", "--base-url", "https://user:password@example.com"],
     [
-      "set",
+      "add",
       "openai",
       "--name",
       "Foundry",
@@ -122,7 +122,7 @@ test.each(
   let reads = 0;
   expect(
     await run(
-      ["creds", ...args],
+      ["account", ...args],
       { out: h.auth.out, err: h.auth.err },
       {
         auth: h.auth,
@@ -148,8 +148,8 @@ test("CLI rotation preserves account revision and JSON output without requiring 
   expect(
     await run(
       [
-        "creds",
-        "set",
+        "account",
+        "add",
         "openai",
         "--id",
         "account",
@@ -186,8 +186,8 @@ test("CLI refuses connection JSON when endpoint options require a raw key", asyn
   expect(
     await run(
       [
-        "creds",
-        "set",
+        "account",
+        "add",
         "openai",
         "--name",
         "Foundry",
@@ -212,8 +212,8 @@ test.each([
   const h = setup();
   const apiKey = randomUUID();
   const args = [
-    "creds",
-    "set",
+    "account",
+    "add",
     "anthropic",
     "--name",
     "Gateway",
@@ -253,16 +253,17 @@ test.each([
     }),
   });
   expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
   expect(h.output.join("")).toContain("supports Claude models only");
 });
 
 test.each(
   [
-    ["set", "anthropic", "--name", "Gateway", "--endpoint-auth", "bearer"],
-    ["set", "openai", "--name", "Foundry", "--base-url", "https://example.com", "--endpoint-auth", "bearer"],
-    ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--api-version", "v1"],
-    ["set", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--endpoint-auth", "oauth"],
-    ["list", "--endpoint-auth", "bearer"],
+    ["add", "anthropic", "--name", "Gateway", "--endpoint-auth", "bearer"],
+    ["add", "openai", "--name", "Foundry", "--base-url", "https://example.com", "--endpoint-auth", "bearer"],
+    ["add", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--api-version", "v1"],
+    ["add", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--endpoint-auth", "oauth"],
+    ["ls", "--endpoint-auth", "bearer"],
   ].map((args) => ({
     args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
   })),
@@ -271,7 +272,7 @@ test.each(
   let reads = 0;
   expect(
     await run(
-      ["creds", ...args],
+      ["account", ...args],
       { out: h.auth.out, err: h.auth.err },
       {
         auth: h.auth,
@@ -315,7 +316,7 @@ test.each([
     }) as typeof fetch;
     expect(
       await run(
-        ["creds", "test", "sandbox", "--model", "deployment"],
+        ["account", "test", "sandbox", "--model", "deployment"],
         { out: h.auth.out, err: h.auth.err },
         { auth: h.auth },
       ),
@@ -335,7 +336,7 @@ test.each(["code", "retryAfterSeconds"])(
       })) as unknown as typeof fetch;
     expect(
       await run(
-        ["creds", "test", "sandbox", "--model", "deployment", "--json"],
+        ["account", "test", "sandbox", "--model", "deployment", "--json"],
         { out: h.auth.out, err: h.auth.err },
         { auth: h.auth },
       ),
@@ -350,8 +351,8 @@ test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s co
   expect(
     await run(
       [
-        "creds",
-        "set",
+        "account",
+        "add",
         kind,
         "--id",
         "account",
@@ -390,8 +391,8 @@ test.each(["openai", "anthropic"])("CLI stores exact per-model prices on a %s co
 
 test.each(
   [
-    ["list", "--price-model", "deployment"],
-    ["set", "openai", "--name", "Price", "--price-model", "deployment", "--price-input", "1", "--price-output", "2"],
+    ["ls", "--price-model", "deployment"],
+    ["add", "openai", "--name", "Price", "--price-model", "deployment", "--price-input", "1", "--price-output", "2"],
     ...[
       ["--price-model", "deployment"],
       ["--price-model", "deployment", "--price-input", "-1", "--price-output", "2"],
@@ -400,7 +401,7 @@ test.each(
       ["--price-model", "deployment", "--price-input", "1", "--price-output", "2", "--price-cached-input", ""],
       ["--price-model", "__proto__", "--price-input", "1", "--price-output", "2"],
       ["--price-model", "deployment", "--price-model", "other", "--price-input", "1", "--price-output", "2"],
-    ].map((flags) => ["set", "openai", "--name", "Price", "--base-url", "https://gateway.example/v1", ...flags]),
+    ].map((flags) => ["add", "openai", "--name", "Price", "--base-url", "https://gateway.example/v1", ...flags]),
   ].map((args) => ({
     args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
   })),
@@ -409,7 +410,7 @@ test.each(
   let reads = 0;
   expect(
     await run(
-      ["creds", ...args],
+      ["account", ...args],
       { out: h.auth.out, err: h.auth.err },
       {
         auth: h.auth,
@@ -430,8 +431,8 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
   expect(
     await run(
       [
-        "creds",
-        "set",
+        "account",
+        "add",
         "opencode",
         "--name",
         "DeepSeek",
@@ -459,6 +460,7 @@ test("CLI creates an OpenCode chat-compatible account with explicit upstream mod
     apiKey,
   });
   expect(h.output.join("")).not.toContain(apiKey);
+  expect(h.output.join("")).toContain("Modal, Docker hosts and runtime-backed Boat");
   expect(h.output.join("")).toContain("armada/<upstream-model>");
 });
 
@@ -478,7 +480,18 @@ test("CLI connects shared provider presets without connection JSON or a user-sel
   ]) {
     const h = setup();
     const key = randomUUID();
-    const args = ["creds", "connect", preset!, "--name", "Provider", "--models", models!, "--file", "private-key"];
+    const args = [
+      "account",
+      "add",
+      "--preset",
+      preset!,
+      "--name",
+      "Provider",
+      "--models",
+      models!,
+      "--file",
+      "private-key",
+    ];
     if (url) args.push("--base-url", url);
     if (kind === "openai") args.push("--json");
     expect(
@@ -508,7 +521,9 @@ test("CLI connects shared provider presets without connection JSON or a user-sel
 test("CLI lists shared presets locally and refuses incompatible connect options before reading a key", async () => {
   const h = setup();
   let secretReads = 0;
-  expect(await run(["creds", "presets", "--json"], { out: h.auth.out, err: h.auth.err }, { auth: h.auth })).toBe(0);
+  expect(
+    await run(["account", "ls", "--presets", "--json"], { out: h.auth.out, err: h.auth.err }, { auth: h.auth }),
+  ).toBe(0);
   const listed = JSON.parse(h.output.join(""));
   expect(listed.presets.find((p: { id: string }) => p.id === "opencode-azure")).toMatchObject({ harness: "opencode" });
   for (const args of [
@@ -519,7 +534,7 @@ test("CLI lists shared presets locally and refuses incompatible connect options 
   ]) {
     expect(
       await run(
-        ["creds", "connect", ...args, "--name", "Account"],
+        ["account", "add", "--preset", ...args, "--name", "Account"],
         { out: h.auth.out, err: h.auth.err },
         {
           auth: h.auth,
@@ -538,7 +553,7 @@ test("CLI lists shared presets locally and refuses incompatible connect options 
 test.each(["stdin", "file"] as const)("Morph connect saves one account with a private %s key", async (source) => {
   const h = setup();
   const key = "morph_test_key";
-  const args = ["creds", "connect", "morph", "--name", "Shared Morph"];
+  const args = ["account", "add", "--preset", "morph", "--name", "Shared Morph"];
   if (source === "file") args.push("--file", "private-input");
   expect(
     await run(

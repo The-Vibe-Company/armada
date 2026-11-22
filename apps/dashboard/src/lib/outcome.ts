@@ -128,8 +128,9 @@ export function settledOutcome(
 }
 
 /** The command that retrieves the latest recovery archive; its output is sensitive, so it goes to a private file. */
-export function recoveryCommand(sandboxId: string): string {
-  return `armada recovery ${sandboxId} > armada-recovery.json`;
+function recoveryCommand(sandboxId: string): string {
+  const body = JSON.stringify({ id: sandboxId }).replaceAll("'", "'\\''");
+  return `armada api sandbox/recovery '${body}' > armada-recovery.json`;
 }
 
 export type PreservationView =

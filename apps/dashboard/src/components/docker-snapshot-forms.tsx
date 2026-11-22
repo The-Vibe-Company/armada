@@ -35,6 +35,7 @@ import { useMutationState } from "@/components/use-mutation-state";
 import { isUuid } from "@/lib/action";
 import { type DockerHost, hostBuildBlocker } from "@/lib/docker-hosts";
 import { goldenRequest, type RepoRow } from "@/lib/golden-form";
+import { embeddedSnapshotParams } from "@/lib/launch-repositories";
 
 type SnapshotPlacement = {
   value: string;
@@ -51,6 +52,16 @@ export function SnapshotPlacementWord() {
 }
 
 /** One create dialog, with the same provider choice for cloud and host-local snapshots. */
+export type EmbeddedSnapshotBuild = {
+  repository: string;
+  name: string;
+  confirmedDockerBuild?: string | undefined;
+  onBuilding: (name: string) => void;
+  readDocker: (
+    id: string,
+  ) => Promise<{ golden: string; building?: boolean; failed?: boolean; reason?: string } | undefined>;
+};
+
 export function SnapshotCreateChoice({
   cloudForms,
   hosts,
@@ -60,6 +71,8 @@ export function SnapshotCreateChoice({
   githubConnected = true,
   snapshots = [],
   launch,
+  embedded,
+  initialPlacement,
 }: {
   cloudForms: Partial<Record<"boat" | "modal", ReactNode>>;
   hosts: DockerHost[];
@@ -68,11 +81,15 @@ export function SnapshotCreateChoice({
   canBuild: boolean;
   githubConnected?: boolean;
   snapshots?: DockerSnapshotRecord[];
+  embedded?: EmbeddedSnapshotBuild | undefined;
+  initialPlacement?: string | undefined;
   launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories" | "snapshotId">;
 }) {
   const cloud = (Object.keys(cloudForms) as ("boat" | "modal")[]).slice(0, 1);
   const [provider, setProvider] = useState<string>(
-    cloud[0] ?? hosts.find((host) => host.state === "online")?.id ?? hosts[0]?.id ?? "",
+    initialPlacement && hosts.some((host) => host.id === initialPlacement)
+      ? initialPlacement
+      : (cloud[0] ?? hosts.find((host) => host.state === "online")?.id ?? hosts[0]?.id ?? ""),
   );
   const options = [
     ...Object.keys(cloudForms).map((value) => ({ value, label: `${value === "boat" ? "Boat" : "Modal"} cloud` })),
@@ -97,6 +114,7 @@ export function SnapshotCreateChoice({
             canBuild={canBuild}
             githubConnected={githubConnected}
             snapshots={snapshots}
+            embedded={embedded}
             {...(launch ? { launch } : {})}
           />
         </div>
@@ -110,6 +128,25 @@ export function SnapshotCreateChoice({
   );
 }
 
+export function SnapshotDetails({ openInComposer, children }: { openInComposer: boolean; children: ReactNode }) {
+  if (!openInComposer) return children;
+  return (
+    <details className="space-y-3">
+      <summary className="cursor-pointer text-sm font-medium">More options</summary>
+      {children}
+    </details>
+  );
+}
+
+function DockerRepositoryDetails({ embedded, children }: { embedded: boolean; children: ReactNode }) {
+  if (embedded) return children;
+  return (
+    <details>
+      <summary className="cursor-pointer text-sm">Details</summary>
+      {children}
+    </details>
+  );
+}
 function DockerSnapshotForm({
   hosts,
   orgId,
@@ -118,6 +155,7 @@ function DockerSnapshotForm({
   githubConnected = true,
   snapshots = [],
   launch,
+  embedded,
 }: {
   hosts: DockerHost[];
   orgId: string;
@@ -125,6 +163,7 @@ function DockerSnapshotForm({
   canBuild: boolean;
   githubConnected?: boolean;
   snapshots?: DockerSnapshotRecord[];
+  embedded?: EmbeddedSnapshotBuild | undefined;
   launch?: Omit<ComponentProps<typeof LaunchDialog>, "golden" | "provider" | "repositories" | "snapshotId">;
 }) {
   const placement = useSnapshotPlacement();
@@ -132,9 +171,12 @@ function DockerSnapshotForm({
   const [visibility, setVisibility] = useState("private");
   const [result, action, pending] = useMutationState(buildDockerSnapshot);
   const [config, setConfig] = useState("");
+  const [buildName, setBuildName] = useState(embedded?.name ?? "");
+  const [embeddedFailed, setEmbeddedFailed] = useState("");
+  const [embeddedReceipt, setEmbeddedReceipt] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [repos, setRepos] = useState<(RepoRow & { key: string })[]>([
-    { key: "first", url: "", branch: "", dir: "", history: "full" },
+    { key: "first", url: embedded?.repository ?? "", branch: "", dir: "", history: "full" },
   ]);
   const [commands, setCommands] = useState("");
   const parsed = goldenRequest({
@@ -151,6 +193,7 @@ function DockerSnapshotForm({
   const updateRepo = (index: number, field: keyof RepoRow, value: string) =>
     setRepos((rows) => rows.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
   useEffect(() => {
+    if (embedded) return;
     const refresh = () => router.refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
@@ -159,31 +202,101 @@ function DockerSnapshotForm({
   const [requestId, setRequestId] = useState("");
   const form = useRef<HTMLFormElement>(null),
     close = useRef<HTMLButtonElement>(null);
-  const router = useRouter(),
-    id = useId(),
-    param = `snapshot-build-key.${orgId}`;
+  const router = useRouter();
+  const id = useId();
+  const paramsForComposer = embedded && embeddedSnapshotParams(orgId, embedded.repository);
+  const param = paramsForComposer?.dockerKey ?? `snapshot-build-key.${orgId}`;
+  const receiptParam = paramsForComposer?.dockerReceipt ?? "";
+  const confirmedDockerBuild = embedded?.confirmedDockerBuild;
+  const readDocker = embedded?.readDocker;
+  const onBuilding = embedded?.onBuilding;
   useEffect(() => {
-    const stored = new URL(window.location.href).searchParams.get(param);
+    const params = new URL(window.location.href).searchParams;
+    const stored = params.get(param);
+    const receipt = (receiptParam && params.get(receiptParam)) || confirmedDockerBuild;
+    if (receipt && isUuid(receipt)) setEmbeddedReceipt(receipt);
     setRequestId(stored && isUuid(stored) ? stored : crypto.randomUUID());
     const keep = (event: Event) => event.preventDefault();
     const node = form.current;
     node?.addEventListener("reset", keep);
     return () => node?.removeEventListener("reset", keep);
-  }, [param]);
+  }, [param, receiptParam, confirmedDockerBuild]);
   useEffect(() => {
-    if (!result?.ok) return;
+    if (!result?.ok || embedded) return;
     const url = new URL(window.location.href);
     url.searchParams.delete(param);
     url.searchParams.set("item", result.snapshotId);
     window.history.replaceState(window.history.state, "", url);
 
     router.refresh();
-  }, [result, param, router]);
+  }, [result, param, router, embedded]);
+  useEffect(() => {
+    if (!receiptParam || !result?.ok) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set(receiptParam, result.snapshotId);
+    window.history.replaceState(window.history.state, "", url);
+    setEmbeddedReceipt(result.snapshotId);
+  }, [result, receiptParam]);
+  useEffect(() => {
+    if (!readDocker || !embeddedReceipt) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function follow() {
+      if (!readDocker) return;
+      try {
+        const target = await readDocker(embeddedReceipt);
+        if (!active) return;
+        if (!target || target.building) {
+          if (target) onBuilding?.(target.golden);
+          timer = setTimeout(follow, 4000);
+        } else if (target.failed) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete(receiptParam);
+          url.searchParams.delete(param);
+          window.history.replaceState(window.history.state, "", url);
+          setEmbeddedFailed(target.reason ?? "The build did not finish.");
+          onBuilding?.("");
+          setEmbeddedReceipt("");
+          setRequestId(crypto.randomUUID());
+        }
+      } catch {
+        if (active) timer = setTimeout(follow, 4000);
+      }
+    }
+    void follow();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [readDocker, onBuilding, embeddedReceipt, param, receiptParam]);
+
+  useEffect(() => {
+    if (result && !result.ok) onBuilding?.("");
+  }, [onBuilding, result]);
   const built = result?.ok ? snapshots.find((row) => row.id === result.snapshotId) : null;
   useEffect(() => {
     if (built?.status === "failed") setRequestId(crypto.randomUUID());
   }, [built?.status]);
   const online = hosts.filter((host) => host.state === "online");
+  const visibilityField = (
+    <>
+      <LaunchChoice
+        inline
+        label="Who sees it"
+        value={visibility}
+        onChange={setVisibility}
+        options={[
+          { value: "private", label: "only you" },
+          {
+            value: "org",
+            label: "everyone in the organization",
+            ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+          },
+        ]}
+      />
+      <input type="hidden" name="visibility" value={visibility} />
+    </>
+  );
   return (
     <>
       <form
@@ -192,6 +305,10 @@ function DockerSnapshotForm({
         className="space-y-4"
         onSubmit={() => {
           const url = new URL(window.location.href);
+          if (embedded) {
+            setEmbeddedFailed("");
+            embedded.onBuilding(buildName);
+          }
           url.searchParams.set(param, requestId);
           window.history.replaceState(window.history.state, "", url);
         }}
@@ -208,13 +325,20 @@ function DockerSnapshotForm({
             . Opens in a new tab; this form keeps what you typed.
           </p>
         )}
-        <fieldset disabled={pending || (result?.ok && built?.status !== "failed")} className="space-y-4">
+        <fieldset
+          disabled={
+            pending || Boolean(embeddedReceipt) || (result?.ok && built?.status !== "failed" && !embeddedFailed)
+          }
+          className="space-y-4"
+        >
           <div className="text-lg leading-loose">
             Build{" "}
             <Input
               id={`${id}-name`}
               aria-label="Snapshot name"
               name="name"
+              value={buildName}
+              onChange={(event) => setBuildName(event.target.value)}
               required
               maxLength={80}
               placeholder="armada-warm"
@@ -242,134 +366,138 @@ function DockerSnapshotForm({
               />
             )}
             <input type="hidden" name="hostId" value={placement?.value ?? hostId} />
-            {", visible to "}
-            <LaunchChoice
-              inline
-              label="Who sees it"
-              value={visibility}
-              onChange={setVisibility}
-              options={[
-                { value: "private", label: "only you" },
-                {
-                  value: "org",
-                  label: "everyone in the organization",
-                  ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
-                },
-              ]}
-            />
-            .
-            <input type="hidden" name="visibility" value={visibility} />
+            {!embedded && ", visible to "}
+            {!embedded && visibilityField}
           </div>
           <p className="flex gap-2 text-sm">
             <LockIcon className="size-4 shrink-0" />
             Where it is built and who sees it are permanent.
           </p>
-          <Button type="button" variant="link" onClick={() => setAdvanced(!advanced)}>
-            {advanced ? "Use repositories and commands instead" : "Use a snapshot file instead"}
-          </Button>
-          {advanced ? (
-            <div className="space-y-1.5">
-              <Label htmlFor={`${id}-file`}>Snapshot JSON file</Label>
-              <Input
-                id={`${id}-file`}
-                type="file"
-                accept=".json,application/json"
-                onChange={async (event) => {
-                  const source = event.currentTarget;
-                  const file = source.files?.[0];
-                  setConfig("");
-                  setFileError("");
-                  if (!file) return;
-                  try {
-                    if (file.size > 1_048_576) throw new Error();
-                    const parsed = parseSnapshotConfig(JSON.parse(await file.text()));
-                    if (source.files?.[0] === file) setConfig(JSON.stringify(parsed));
-                  } catch {
-                    if (source.files?.[0] === file)
-                      setFileError("Choose a snapshot JSON file under 1 MiB with repositories and init commands.");
-                  }
-                }}
-              />
-              <p className="text-xs text-muted-foreground">
-                The same versionable repos, branches and init configuration as Boat or Modal. Never include credentials.
-              </p>
-            </div>
-          ) : (
-            <>
-              <Label>Repositories to put on the machine</Label>
-              {repos.map((repo, index) => (
-                <div key={repo.key} className="border-b py-2 space-y-2">
-                  <div className="flex gap-2 items-center">
-                    <Input
-                      aria-label={`Repository ${index + 1}`}
-                      value={repo.url}
-                      onChange={(e) => updateRepo(index, "url", e.target.value)}
-                      placeholder="owner/repo or a github.com link"
-                      required
-                    />
-                    <span className="text-xs text-muted-foreground">{repo.branch || "Default branch"}</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      aria-label={`Remove repository ${index + 1}`}
-                      disabled={repos.length === 1}
-                      onClick={() => setRepos((rows) => rows.filter((_, i) => i !== index))}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                  <details>
-                    <summary className="cursor-pointer text-sm">Details</summary>
-                    <div className="space-y-2 py-2">
-                      <Label htmlFor={`${id}-branch-${index}`}>Branch</Label>
+          <SnapshotDetails openInComposer={Boolean(embedded)}>
+            {embedded && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Who sees it</p>
+                {visibilityField}
+              </div>
+            )}
+            <Button type="button" variant="link" onClick={() => setAdvanced(!advanced)}>
+              {advanced ? "Use repositories and commands instead" : "Use a snapshot file instead"}
+            </Button>
+            {advanced ? (
+              <div className="space-y-1.5">
+                <Label htmlFor={`${id}-file`}>Snapshot JSON file</Label>
+                <Input
+                  id={`${id}-file`}
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={async (event) => {
+                    const source = event.currentTarget;
+                    const file = source.files?.[0];
+                    setConfig("");
+                    setFileError("");
+                    if (!file) return;
+                    try {
+                      if (file.size > 1_048_576) throw new Error();
+                      const parsed = parseSnapshotConfig(JSON.parse(await file.text()));
+                      if (source.files?.[0] === file) setConfig(JSON.stringify(parsed));
+                    } catch {
+                      if (source.files?.[0] === file)
+                        setFileError("Choose a snapshot JSON file under 1 MiB with repositories and init commands.");
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The same versionable repos, branches and init configuration as Boat or Modal. Never include
+                  credentials.
+                </p>
+              </div>
+            ) : (
+              <>
+                <Label>Repositories to put on the machine</Label>
+                {repos.map((repo, index) => (
+                  <div key={repo.key} className="border-b py-2 space-y-2">
+                    <div className="flex gap-2 items-center">
                       <Input
-                        id={`${id}-branch-${index}`}
-                        value={repo.branch}
-                        placeholder="Default branch"
-                        onChange={(e) => updateRepo(index, "branch", e.target.value)}
+                        aria-label={`Repository ${index + 1}`}
+                        value={repo.url}
+                        onChange={(e) => updateRepo(index, "url", e.target.value)}
+                        placeholder="owner/repo or a github.com link"
+                        required
                       />
-                      <Label htmlFor={`${id}-dir-${index}`}>Folder on the machine</Label>
-                      <div className="flex items-center gap-2 text-xs">
-                        <span>/home/user/</span>
-                        <Input
-                          id={`${id}-dir-${index}`}
-                          value={repo.dir}
-                          pattern="[^/\\\\]+"
-                          placeholder="repo name"
-                          onChange={(e) => updateRepo(index, "dir", e.target.value)}
-                        />
-                      </div>
-                      <Label htmlFor={`${id}-history-${index}`}>History to download</Label>
-                      <NativeSelect
-                        id={`${id}-history-${index}`}
-                        value={repo.history}
-                        onChange={(e) => updateRepo(index, "history", e.target.value)}
+                      <span className="text-xs text-muted-foreground">{repo.branch || "Default branch"}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label={`Remove repository ${index + 1}`}
+                        disabled={repos.length === 1}
+                        onClick={() => setRepos((rows) => rows.filter((_, i) => i !== index))}
                       >
-                        <option value="full">Everything</option>
-                        <option value="shallow">Latest commit only</option>
-                      </NativeSelect>
-                      <p className="text-xs text-muted-foreground">
-                        Armada checks downloaded GitHub, Skillpack and Armada tokens before saving. Latest commit only
-                        is faster on large repositories.
-                      </p>
+                        Remove
+                      </Button>
                     </div>
-                  </details>
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                disabled={repos.length >= 16}
-                onClick={() =>
-                  setRepos((rows) => [
-                    ...rows,
-                    { key: crypto.randomUUID(), url: "", branch: "", dir: "", history: "full" },
-                  ])
-                }
-              >
-                Add repository
-              </Button>
-              <Label htmlFor={`${id}-commands`}>Commands to run once, while building (optional)</Label>
+                    <DockerRepositoryDetails embedded={Boolean(embedded)}>
+                      <div className="space-y-2 py-2">
+                        <Label htmlFor={`${id}-branch-${index}`}>Branch</Label>
+                        <Input
+                          id={`${id}-branch-${index}`}
+                          value={repo.branch}
+                          placeholder="Default branch"
+                          onChange={(e) => updateRepo(index, "branch", e.target.value)}
+                        />
+                        <Label htmlFor={`${id}-dir-${index}`}>Folder on the machine</Label>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span>/home/user/</span>
+                          <Input
+                            id={`${id}-dir-${index}`}
+                            value={repo.dir}
+                            pattern="[^/\\\\]+"
+                            placeholder="repo name"
+                            onChange={(e) => updateRepo(index, "dir", e.target.value)}
+                          />
+                        </div>
+                        <Label htmlFor={`${id}-history-${index}`}>History to download</Label>
+                        <NativeSelect
+                          id={`${id}-history-${index}`}
+                          value={repo.history}
+                          onChange={(e) => updateRepo(index, "history", e.target.value)}
+                        >
+                          <option value="full">Everything</option>
+                          <option value="shallow">Latest commit only</option>
+                        </NativeSelect>
+                        <p className="text-xs text-muted-foreground">
+                          Armada checks downloaded GitHub, Skillpack and Armada tokens before saving. Latest commit only
+                          is faster on large repositories.
+                        </p>
+                      </div>
+                    </DockerRepositoryDetails>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={repos.length >= 16}
+                  onClick={() =>
+                    setRepos((rows) => [
+                      ...rows,
+                      { key: crypto.randomUUID(), url: "", branch: "", dir: "", history: "full" },
+                    ])
+                  }
+                >
+                  Add repository
+                </Button>
+                {!parsed.ok && repos.some((repo) => repo.url) && (
+                  <p role="alert" className="text-sm">
+                    {parsed.error}
+                  </p>
+                )}
+              </>
+            )}
+          </SnapshotDetails>
+          {!advanced && (
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-commands`}>
+                {embedded ? "Init commands (optional)" : "Commands to run once, while building (optional)"}
+              </Label>
               <Textarea
                 id={`${id}-commands`}
                 value={commands}
@@ -381,12 +509,7 @@ function DockerSnapshotForm({
                 One per line, each starting from the home folder. At most 32 commands. Never put a password or key here;
                 an agent gets secrets through a template.
               </p>
-              {!parsed.ok && repos.some((repo) => repo.url) && (
-                <p role="alert" className="text-sm">
-                  {parsed.error}
-                </p>
-              )}
-            </>
+            </div>
           )}
         </fieldset>
         {(fileError || (result && !result.ok)) && (
@@ -409,8 +532,9 @@ function DockerSnapshotForm({
               !(advanced ? config : generated) ||
               !githubConnected ||
               !requestId ||
+              Boolean(embeddedReceipt) ||
               pending ||
-              (result?.ok && built?.status !== "failed")
+              (result?.ok && built?.status !== "failed" && !embeddedFailed)
             }
           >
             {pending ? "Starting build…" : built?.status === "failed" ? "Try again" : "Build snapshot"}
@@ -418,14 +542,15 @@ function DockerSnapshotForm({
         </div>
         <DialogClose ref={close} className="hidden" aria-label="Close snapshot build" />
       </form>
-      {result?.ok && (
+      {(result?.ok || embeddedReceipt || embeddedFailed) && (
         <div role="status" className="space-y-3 text-sm">
           <p>
-            {built?.status === "ready"
-              ? `${built.name} is ready`
-              : built?.status === "failed"
-                ? `The build did not finish. ${built.failureReason ?? "Check the host before trying again."}`
-                : "Building on the Docker host… You can close this window meanwhile."}
+            {embeddedFailed ||
+              (built?.status === "ready"
+                ? `${built.name} is ready`
+                : built?.status === "failed"
+                  ? `The build did not finish. ${built.failureReason ?? "Check the host before trying again."}`
+                  : "Building on the Docker host… You can close this window meanwhile.")}
           </p>
           {built?.status === "ready" && launch && (
             <LaunchDialog

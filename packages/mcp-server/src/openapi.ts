@@ -2,150 +2,17 @@ import {
   API_FAILURE_STATUS,
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
-  MACHINE_SIZES,
-  OUTPUT_DIRECTORY,
-  OUTPUT_MAX_FILE_BYTES,
-  OUTPUT_MAX_FILES,
-  OUTPUT_MAX_ORG_BYTES,
-  OUTPUT_MAX_SANDBOX_BYTES,
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch, templateLaunchResponse } from "@armada/core/contract";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { controlRouteKey, type Operation, operations, sandboxOutputOperations } from "@armada/core/contract";
 import { z } from "zod";
-import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
-import { GITHUB_REST_CONTRACTS, isGitHubRestControl } from "./github-rest-controls.ts";
-import {
-  GOLDEN_ADOPTION_REQUEST,
-  GOLDEN_ADOPTION_RESPONSE,
-  GOLDEN_CAPABILITIES_REQUEST,
-  GOLDEN_CAPABILITIES_RESPONSE,
-} from "./golden-rest-schemas.ts";
-import {
-  GOLDEN_LIST_RESPONSE,
-  LAUNCH_OPTIONS_RESPONSE,
-  REST_LOGS_RESPONSE,
-  requestJsonSchema,
-  responseJsonSchema,
-} from "./launch-response-schemas.ts";
-import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
-import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
+import { requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
-import { createRestToolServer, type ToolContext } from "./tools.ts";
 
-/** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
-export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "logs/read": { since_cursor: "cursor" },
-};
-/** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
-const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
-  ...CONTROL_TOOL_ROUTES,
-  "sandbox/launch": "launch",
-  "logs/read": "logs",
-};
-/** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
-const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
-  "launch/options": LAUNCH_OPTIONS_RESPONSE,
-  "golden/list": GOLDEN_LIST_RESPONSE,
-  "sandbox/resume": SANDBOX_REST_CONTRACTS["sandbox/resume"].output,
-  "sandbox/extend": SANDBOX_REST_CONTRACTS["sandbox/extend"].output,
-  "sandbox/delete": SANDBOX_REST_CONTRACTS["sandbox/delete"].output,
-  "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
-  "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
-  "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
-  "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
-  "sandbox/launch": launch.output,
-  "templates/launch": templateLaunchResponse,
-  "logs/read": REST_LOGS_RESPONSE,
-};
-/** Handled directly by the REST dispatcher, not through an MCP tool. */
-const REST_ONLY: Readonly<
-  Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
-> = {
-  "sandbox/resume": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/resume"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/resume"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/extend": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/extend"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/extend"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/delete": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/delete"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/delete"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/advice": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/advice"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/advice"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/recovery": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/recovery"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/recovery"].input.extend({ org: z.string().optional() })),
-  },
-  "golden/list": {
-    description:
-      "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
-    input: requestJsonSchema(z.object({ org: z.string().optional() })),
-  },
-  "golden/adopt": {
-    description:
-      "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
-    input: requestJsonSchema(GOLDEN_ADOPTION_REQUEST),
-  },
-  "golden/capabilities": {
-    description:
-      "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown/unbounded, not a workspace quota.",
-    input: requestJsonSchema(GOLDEN_CAPABILITIES_REQUEST),
-  },
-  "templates/launch": {
-    description:
-      "Launch an immutable template revision. requestKey is required: same key/body returns the recorded request and never allocates twice. Readable variables are NOT secrets; no secret bindings or authority-enlarging overrides.",
-    input: requestJsonSchema(
-      z.strictObject({
-        org: z.string().uuid(),
-        id: z.string().uuid(),
-        revision: z.number().int().positive().optional(),
-        requestKey: z.string(),
-        prompt: z.string().optional(),
-        ttlSeconds: z.number().int().positive().optional(),
-        size: z.enum(MACHINE_SIZES).optional(),
-        repo: z.string().optional(),
-        skills: z.array(z.string()).max(20).optional(),
-        skipSkillDefaults: z.boolean().optional(),
-        stopWhenWorkMerged: z.boolean().optional(),
-      }),
-    ),
-  },
-  "launch/options": {
-    description:
-      "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
-    input: { type: "object", properties: {} },
-  },
-};
-/** Additional request fields published for REST. */
-const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>>>> = {
-  "logs/read": { follow: { type: "boolean", description: "Follow events within the bounded HTTP request." } },
-  "templates/launch": {
-    modelAccount: {
-      type: "object",
-      required: ["id", "version"],
-      additionalProperties: false,
-      properties: { id: { type: "string", format: "uuid" }, version: { type: "integer", minimum: 1 } },
-      description:
-        "Model credential account to run with, by id and version, when the revision pins none. Refused when the revision pins one.",
-    },
-    externalRef: {
-      type: "string",
-      minLength: 1,
-      maxLength: 200,
-      description:
-        "Opaque caller reference recorded on the sandbox, 1 to 200 characters without control characters. Refused for Docker templates.",
-    },
-  },
-};
+type OpenApiOperation = Operation<z.ZodType, z.ZodType | undefined>;
+
 /**
  * Bound a top-level string field by the route's serialized-body limit: no longer string
  * can arrive through either public boundary, whatever the handler itself would admit.
@@ -158,49 +25,47 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
-function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
-  if (typeof value === "string")
-    return Object.entries(rename).reduce(
-      (text, [from, to]) => text.replace(new RegExp(`\\b${from}\\b`, "g"), to),
-      value as string,
-    ) as T;
-  if (Array.isArray(value)) return value.map((item) => restNames(item, rename)) as T;
-  if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restNames(item, rename)])) as T;
-  return value;
+/** The mounted route, dashboard proxy, and ingress each have their own failure body. */
+function outputFailure(errorOutput: z.ZodType) {
+  return {
+    "application/json": {
+      schema: {
+        anyOf: [
+          responseJsonSchema(errorOutput),
+          { $ref: "#/components/schemas/Failure" },
+          { $ref: "#/components/schemas/DrainRefusal" },
+          { type: "object", required: ["error"], properties: { error: { const: "internal" } } },
+        ],
+      },
+    },
+  };
 }
-
-/** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
-const OUTPUT_FAILURE = {
-  "application/json": {
-    schema: { anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/OutputFailure" }] },
-  },
-};
+const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
 const SANDBOX_ID_PARAMETER = {
   name: "id",
   in: "path",
   required: true,
   description: "The sandbox id, a lowercase UUID.",
-  schema: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+  schema: requestJsonSchema(listSandboxOutputs.input.path.id),
 };
-const OUTPUT_ACCESS =
-  " Only the sandbox owner or an org admin can read it, the sandbox must not be deleted or application-secret tainted, and stopped compute is never read: the last snapshot taken while compute was live is served. See docs/sandbox-outputs.md.";
-const OUTPUT_COMMON_RESPONSES = {
-  "401": { description: "Missing or invalid bearer.", content: OUTPUT_FAILURE },
-  "404": {
-    description:
-      "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
-    content: OUTPUT_FAILURE,
-  },
-  default: { description: "Public API failure", content: OUTPUT_FAILURE },
-};
+const downloadFailure = outputFailure(readSandboxOutput.errorOutput);
+function outputCommonResponses(content: ReturnType<typeof outputFailure>) {
+  return {
+    "401": { description: "Missing or invalid bearer.", content },
+    "404": {
+      description:
+        "No such sandbox or file, or the caller is neither its owner nor an org admin, or the sandbox is deleted or application-secret tainted.",
+      content,
+    },
+    default: { description: "Public API failure", content },
+  };
+}
 /** Declared output snapshots (`sandbox-outputs.ts`): GET, path parameters, no request body. */
-const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], object> = {
-  "sandboxes/{id}/outputs": {
-    get: {
+const OUTPUT_OPERATIONS = {
+  [listSandboxOutputs.route.path]: {
+    [listSandboxOutputs.route.method.toLowerCase()]: {
       operationId: "sandbox_outputs_list",
-      description: `The files of the sandbox's last output snapshot, from its declared outputs directory (${OUTPUT_DIRECTORY} on every provider), in name order.${OUTPUT_ACCESS} A sandbox.output.available webhook names a new or changed file.`,
+      description: listSandboxOutputs.description,
       security: [{ serviceToken: [] }],
       parameters: [SANDBOX_ID_PARAMETER],
       responses: {
@@ -209,56 +74,18 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
           headers: { "Cache-Control": { schema: { type: "string", const: "private, no-store" } } },
           content: {
             "application/json": {
-              schema: {
-                type: "object",
-                required: ["directory", "files", "limits"],
-                additionalProperties: false,
-                properties: {
-                  directory: { type: "string", description: "The declared outputs directory in the sandbox." },
-                  limits: {
-                    type: "object",
-                    required: ["maxFiles", "maxFileBytes", "maxSandboxBytes", "maxOrgBytes"],
-                    additionalProperties: false,
-                    properties: {
-                      maxFiles: { type: "integer", const: OUTPUT_MAX_FILES },
-                      maxFileBytes: { type: "integer", const: OUTPUT_MAX_FILE_BYTES },
-                      maxSandboxBytes: { type: "integer", const: OUTPUT_MAX_SANDBOX_BYTES },
-                      maxOrgBytes: { type: "integer", const: OUTPUT_MAX_ORG_BYTES },
-                    },
-                  },
-                  unavailable: { type: "string", const: "collector_unsupported" },
-                  files: {
-                    type: "array",
-                    maxItems: OUTPUT_MAX_FILES,
-                    items: {
-                      type: "object",
-                      required: ["name", "size", "sha256", "updatedAt"],
-                      additionalProperties: false,
-                      properties: {
-                        name: { type: "string", minLength: 1, maxLength: 255 },
-                        size: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
-                        sha256: {
-                          type: ["string", "null"],
-                          description: "Hex SHA-256 digest of the file bytes. Null for skipped files.",
-                        },
-                        skipped: { type: "string", enum: ["too_large", "sandbox_limit", "org_limit"] },
-                        updatedAt: { type: "string", format: "date-time" },
-                      },
-                    },
-                  },
-                },
-              },
+              schema: responseJsonSchema(listSandboxOutputs.output),
             },
           },
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(outputFailure(listSandboxOutputs.errorOutput)),
       },
     },
   },
-  "sandboxes/{id}/outputs/{name}": {
-    get: {
+  [readSandboxOutput.route.path]: {
+    [readSandboxOutput.route.method.toLowerCase()]: {
       operationId: "sandbox_outputs_download",
-      description: `Download one file of the sandbox's last output snapshot as an attachment.${OUTPUT_ACCESS}`,
+      description: readSandboxOutput.description,
       security: [{ serviceToken: [] }],
       parameters: [
         SANDBOX_ID_PARAMETER,
@@ -266,20 +93,20 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
           name: "Range",
           in: "header",
           description: "One byte range, for example bytes=0-1023.",
-          schema: { type: "string" },
+          schema: requestJsonSchema(readSandboxOutput.input.headers.Range),
         },
         {
           name: "If-Range",
           in: "header",
           description: "Apply the Range only when the file's ETag matches.",
-          schema: { type: "string" },
+          schema: requestJsonSchema(readSandboxOutput.input.headers["If-Range"]),
         },
         {
           name: "name",
           in: "path",
           required: true,
           description: "The file name from the outputs list, percent-encoded as one path segment.",
-          schema: { type: "string", minLength: 1 },
+          schema: requestJsonSchema(readSandboxOutput.input.path.name),
         },
       ],
       responses: {
@@ -296,7 +123,7 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
             "X-Content-Type-Options": { schema: { type: "string", const: "nosniff" } },
             "Cache-Control": { schema: { type: "string", const: "private, no-store" } },
           },
-          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+          content: { "*/*": { schema: { type: "string", contentMediaType: readSandboxOutput.outputMediaType } } },
         },
         "206": {
           description: "The requested byte range.",
@@ -304,215 +131,273 @@ const OUTPUT_OPERATIONS: Record<(typeof PUBLISHED_REST_GET_ROUTES)[number], obje
             "Content-Range": { schema: { type: "string" } },
             "Content-Length": { schema: { type: "integer", minimum: 1 } },
           },
-          content: { "*/*": { schema: { type: "string", contentMediaType: "application/octet-stream" } } },
+          content: { "*/*": { schema: { type: "string", contentMediaType: readSandboxOutput.outputMediaType } } },
         },
         "416": {
           description: "The byte range is invalid or unsatisfiable.",
           headers: { "Content-Range": { schema: { type: "string" } } },
         },
-        "400": { description: "The file name is invalid.", content: OUTPUT_FAILURE },
+        "400": { description: "The file name is invalid.", content: downloadFailure },
         "503": {
           description: "Stored outputs cannot be decrypted on this server, or the API is temporarily unavailable.",
-          content: OUTPUT_FAILURE,
+          content: downloadFailure,
         },
-        ...OUTPUT_COMMON_RESPONSES,
+        ...outputCommonResponses(downloadFailure),
       },
     },
   },
 };
 
-/**
- * Describe shared REST operations using the very schemas registered by the server.
- * Registration performs no provider/database I/O; no tool is invoked.
- */
-export async function generateOpenApi() {
-  const context = { caller: { userId: "", orgs: [] }, data: {} } as unknown as ToolContext;
-  const server = createRestToolServer(context, VERSION);
-  const client = new Client({ name: "armada-openapi", version: VERSION });
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  try {
-    await server.connect(a);
-    await client.connect(b);
-    const { tools } = await client.listTools();
-    const paths: Record<string, unknown> = {};
-    for (const route of PUBLISHED_REST_ROUTES) {
-      const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
-      const restOnly: (typeof REST_ONLY)[string] | undefined = github
-        ? {
-            description: github.description,
-            input: requestJsonSchema(github.input.extend({ org: z.string().optional() })),
-          }
-        : REST_ONLY[route];
-      const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
-      if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
-      const rename = REST_FIELD_NAMES[route] ?? {};
-      // REST handlers read their own field names (an unknown name is ignored, not
-      // refused), so schema keys, required lists and prose must all use them.
-      const input = restNames(structuredClone(tool?.inputSchema ?? restOnly!.input), rename);
-      let description = restNames(tool?.description ?? restOnly!.description, rename);
-      for (const [from, to] of Object.entries(rename)) {
-        if (input.properties?.[from]) {
-          input.properties[to] = input.properties[from];
-          delete input.properties[from];
-        }
-      }
-      if (REST_EXTRA_FIELDS[route]) input.properties = { ...input.properties, ...REST_EXTRA_FIELDS[route] };
-      // REST selects org scope before calling shared tools.
-      if (tool) input.properties = { ...input.properties, org: { type: "string" } };
-      let request: object = input;
-      const maxBodyBytes = controlBodyMaxBytes(route);
-      // The server's own refusal of a body over maxBodyBytes: the vault reader's opaque 400, or 413.
-      const oversizedStatus = vaultControlRoute(route) ? 400 : 413;
-      if (route === "sandbox/launch") {
-        request = {
-          oneOf: launch.input.body.options.map((variant) => {
-            const { $schema: _dialect, ...schema } = requestJsonSchema(variant);
-            boundByBody(schema, "prompt", maxBodyBytes);
-            return schema;
+/** Project a REST document from the browser-safe operation table. */
+export function generateOpenApi({
+  projection = "integration",
+  table = Object.values(operations),
+}: {
+  projection?: "integration" | "admin";
+  table?: readonly OpenApiOperation[];
+} = {}) {
+  const admin = projection === "admin";
+  const paths: Record<string, Record<string, unknown>> = {};
+  const ids = new Set<string>();
+  for (const operation of table) {
+    if ((operation.audience === "admin") !== admin) continue;
+    const method = operation.route.method.toLowerCase();
+    const route = controlRouteKey(operation.route);
+    paths[operation.route.path] ??= {};
+    const path = paths[operation.route.path]!;
+    if (Object.hasOwn(path, method)) throw new Error(`Duplicate REST operation: ${method} ${operation.route.path}`);
+    const output = OUTPUT_OPERATIONS[operation.route.path as keyof typeof OUTPUT_OPERATIONS]?.get;
+    if (output && method === "get") {
+      reserveOperationId(output.operationId);
+      path[method] = output;
+      continue;
+    }
+    const input = operation.input.body instanceof z.ZodUndefined ? undefined : requestJsonSchema(operation.input.body);
+    let description = operation.description;
+    let request = input;
+    const viewer = route.startsWith("viewer/");
+    const viewerControl = viewer || route === "sandbox/viewer-token";
+    const maxBodyBytes = operation.input.maxBodyBytes ?? controlBodyMaxBytes(route);
+    const oversizedStatus =
+      operation.input.oversizedBodyStatus ?? (viewerControl ? 503 : vaultControlRoute(route) ? 400 : 413);
+    if (route === "sandbox/launch" && operation.input.body instanceof z.ZodUnion) {
+      request = {
+        oneOf: operation.input.body.options.map((variant) => {
+          const { $schema: _dialect, ...schema } = requestJsonSchema(variant as z.ZodType);
+          boundByBody(schema, "prompt", maxBodyBytes);
+          return schema;
+        }),
+      };
+      description +=
+        ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests require idempotencyKey and return the shared launch envelope. An unresolved replay returns outcome_unknown with error.details.sandboxId.';
+    }
+    if (route === "sandbox/send" && input) {
+      // One public path, two admissions chosen by the sandbox's provider: Docker
+      // also applies its own admission rules (docker-normal-send.ts).
+      const { $schema: _shared, ...shared } = input as Record<string, unknown>;
+      const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_SEND_REQUEST);
+      // Docker admission alone allows a 256 KiB prompt (MCP has no such body cap), but the
+      // REST body limit is lower and applies first, so publish the effective bound.
+      boundByBody(shared, "prompt", maxBodyBytes);
+      boundByBody(
+        docker,
+        "prompt",
+        maxBodyBytes,
+        `The instruction: not blank. Over REST the whole serialized JSON request body is limited to ${maxBodyBytes} bytes, below Docker's own 256 KiB prompt admission limit, so maxLength is only an upper bound: the other fields, JSON escaping and multibyte UTF-8 count against the same limit.`,
+      );
+      // A Docker body must satisfy the shared send input and Docker admission.
+      request = {
+        anyOf: [
+          { title: "Golden sandbox send", ...shared },
+          { title: "Docker sandbox send", allOf: [shared, docker] },
+        ],
+      };
+      description +=
+        " A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.";
+    }
+    const query = operation.input.query;
+    const parameters = [
+      ...Object.entries(operation.input.path ?? {}).map(([name, schema]) => ({
+        name,
+        in: "path",
+        required: true,
+        schema: requestJsonSchema(schema),
+      })),
+      ...Object.entries(query instanceof z.ZodObject ? query.shape : {}).map(([name, schema]) => ({
+        name,
+        in: "query",
+        required: !(schema as z.ZodType).safeParse(undefined).success,
+        schema: requestJsonSchema(schema as z.ZodType),
+      })),
+      ...Object.entries(operation.input.headers ?? {}).map(([name, schema]) => ({
+        name,
+        in: "header",
+        required: !schema.safeParse(undefined).success,
+        schema: requestJsonSchema(schema),
+      })),
+    ];
+    const operationId =
+      method === "delete" && route === "sandboxes/{id}"
+        ? "sandbox_delete"
+        : method === "post"
+          ? route.replaceAll("/", "_").replaceAll("-", "_")
+          : operation.name;
+    reserveOperationId(operationId);
+    path[method] = {
+      operationId,
+      description,
+      ...(operation.directServer && { "x-armada-direct-server": true }),
+      security: operation.anonymous
+        ? []
+        : (operation.scopedAuth ?? [viewer ? "viewerGrant" : "serviceToken"]).map((scheme) => ({ [scheme]: [] })),
+      ...(parameters.length ? { parameters } : {}),
+      ...(request && {
+        requestBody: {
+          required: operation.input.bodyRequired ?? (route !== "viewer/logs" && route !== "viewer/status"),
+          description: viewerControl
+            ? `Send a JSON object of at most ${maxBodyBytes} bytes. A larger body returns HTTP 503 with viewer_access_denied before dispatch. Reduce the body before retrying.`
+            : operation.directServer
+              ? `Send at most ${maxBodyBytes} bytes of serialized JSON.`
+              : operation.input.oversizedBodyStatus === 400
+                ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server refuses larger bodies with HTTP 400 before processing the request. The dashboard proxy refuses bodies over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413.`
+                : vaultControlRoute(route)
+                  ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
+                  : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
+          "x-max-body-bytes": maxBodyBytes,
+          "x-oversized-body-status": oversizedStatus,
+          content: { "application/json": { schema: request } },
+        },
+      }),
+      responses: {
+        [operation.successStatus ?? 200]: {
+          description: "Success",
+          ...(operation.successHeaders && {
+            headers: Object.fromEntries(
+              Object.entries(operation.successHeaders).map(([name, schema]) => [
+                name,
+                { schema: responseJsonSchema(schema) },
+              ]),
+            ),
           }),
-        };
-        description +=
-          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
-      }
-      if (route === "sandbox/send") {
-        // One public path, two admissions chosen by the sandbox's provider: Docker
-        // also applies its own admission rules (docker-normal-send.ts).
-        const { $schema: _shared, ...shared } = input as Record<string, unknown>;
-        const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_SEND_REQUEST);
-        // Docker admission alone allows a 256 KiB prompt (MCP has no such body cap), but the
-        // REST body limit is lower and applies first, so publish the effective bound.
-        boundByBody(shared, "prompt", maxBodyBytes);
-        boundByBody(
-          docker,
-          "prompt",
-          maxBodyBytes,
-          `The instruction: not blank. Over REST the whole serialized JSON request body is limited to ${maxBodyBytes} bytes, below Docker's own 256 KiB prompt admission limit, so maxLength is only an upper bound: the other fields, JSON escaping and multibyte UTF-8 count against the same limit.`,
-        );
-        // A Docker body must satisfy the shared send input and Docker admission.
-        request = {
-          anyOf: [
-            { title: "Golden sandbox send", ...shared },
-            { title: "Docker sandbox send", allOf: [shared, docker] },
-          ],
-        };
-        description +=
-          " A Docker sandbox admits only the Docker sandbox send variant: model and reasoning_effort are refused because they remain pinned to launch. Supply request_id (a lowercase UUID) to replay uncertain delivery; when it is omitted the server generates one.";
-      }
-      paths[`/api/v1/${route}`] = {
-        post: {
-          operationId: route.replaceAll("/", "_").replaceAll("-", "_"),
-          description,
-          security: [{ serviceToken: [] }],
-          requestBody: {
-            required: true,
-            description: vaultControlRoute(route)
-              ? `Send at most ${maxBodyBytes} bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over ${CONTROL_BODY_MAX_BYTES} bytes with HTTP 413. Nothing is dispatched in either case.`
-              : `Send at most ${maxBodyBytes} bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.`,
-            "x-max-body-bytes": maxBodyBytes,
-            "x-oversized-body-status": oversizedStatus,
-            content: { "application/json": { schema: request } },
-          },
-          responses: {
-            "200": {
-              description: "Success",
-              content: {
-                "application/json": {
-                  schema:
-                    github || REST_RESPONSES[route]
-                      ? responseJsonSchema(github?.output ?? REST_RESPONSES[route]!)
-                      : (tool?.outputSchema ?? {}),
-                },
-              },
+          ...(operation.output && {
+            content: {
+              [operation.outputMediaType ?? "application/json"]: { schema: responseJsonSchema(operation.output) },
             },
-            ...(oversizedStatus === 400
-              ? {
-                  "400": {
-                    description: `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
-                    content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
-                  },
-                }
-              : {}),
+          }),
+        },
+        ...(request && !viewerControl && oversizedStatus === 400
+          ? {
+              "400": {
+                description: operation.errorOutput
+                  ? `The request could not be completed, including when the serialized body exceeds ${maxBodyBytes} bytes.`
+                  : `Invalid request, including a serialized body over ${maxBodyBytes} bytes. Nothing was dispatched.`,
+                content: operation.errorOutput
+                  ? outputFailure(operation.errorOutput)
+                  : { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
+              },
+            }
+          : {}),
+        ...(request &&
+          !viewerControl &&
+          !operation.scopedAuth?.includes("epochGrant") &&
+          !(operation.directServer && oversizedStatus === 400) && {
             "413": {
               description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
             },
-            "503": {
-              description:
-                "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
-              headers: {
-                "Retry-After": {
-                  description: "Seconds to wait before retrying.",
-                  schema: { type: "integer", minimum: 0 },
-                },
-              },
-              content: {
+          }),
+        "503": {
+          description:
+            (request && viewerControl
+              ? "A request body exceeding the viewer limit returns viewer_access_denied. "
+              : "") +
+            "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+          headers: {
+            "Retry-After": {
+              description: "Seconds to wait before retrying.",
+              schema: { type: "integer", minimum: 0 },
+            },
+          },
+          content: operation.errorOutput
+            ? outputFailure(operation.errorOutput)
+            : {
                 "application/json": {
                   schema: {
                     anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/DrainRefusal" }],
                   },
                 },
               },
-            },
-            default: {
-              description: "Public API failure",
-              content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
-            },
-          },
         },
-      };
-    }
-    for (const route of PUBLISHED_REST_GET_ROUTES) paths[`/api/v1/${route}`] = OUTPUT_OPERATIONS[route];
-    return {
-      openapi: "3.1.0",
-      info: {
-        title: "Armada shared control API",
-        version: VERSION,
-        description:
-          "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
-      },
-      paths,
-      components: {
-        securitySchemes: { serviceToken: { type: "http", scheme: "bearer" } },
-        schemas: {
-          OutputFailure: {
-            type: "object",
-            required: ["error"],
-            properties: {
-              error: {
-                type: "string",
-                description: "Bare failure code answered by the outputs routes, for example not_found or invalid_name.",
-              },
-            },
-          },
-          DrainRefusal: {
-            type: "object",
-            required: ["error"],
-            properties: { error: { type: "string", const: DRAIN_REFUSAL.body.error as string } },
-          },
-          Failure: {
-            type: "object",
-            required: ["error"],
-            properties: {
-              error: {
-                type: "object",
-                required: ["code", "message"],
-                properties: {
-                  code: {
-                    type: "string",
-                    description: "Public failure code; clients must tolerate future codes.",
-                    examples: Object.keys(API_FAILURE_STATUS),
-                  },
-                  message: { type: "string" },
-                  details: {},
-                },
-              },
-            },
-          },
+        default: {
+          description: admin ? "Administrative API failure" : "Public API failure",
+          content: operation.errorOutput
+            ? outputFailure(operation.errorOutput)
+            : { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
         },
       },
     };
-  } finally {
-    await client.close();
-    await server.close();
   }
+  function reserveOperationId(id: string) {
+    if (ids.has(id)) throw new Error(`Duplicate OpenAPI operation ID: ${id}`);
+    ids.add(id);
+  }
+
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: admin ? "Armada administrative control API" : "Armada shared control API",
+      version: VERSION,
+      description: admin
+        ? "Generated dashboard administration REST contracts. Each operation enforces its own caller, role and resource access requirements."
+        : "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
+    },
+    paths,
+    components: {
+      securitySchemes: {
+        serviceToken: { type: "http", scheme: "bearer" },
+        personalSession: {
+          type: "http",
+          scheme: "bearer",
+          description: "The access token of a personal Supabase login session.",
+        },
+        viewerGrant: { type: "http", scheme: "bearer", description: "A short-lived sandbox viewer grant." },
+        epochGrant: {
+          type: "http",
+          scheme: "bearer",
+          description: "A scoped epoch grant for the required worker authority.",
+        },
+        finishGrant: {
+          type: "http",
+          scheme: "bearer",
+          description: "A sandbox runtime grant that authorizes self-finish.",
+        },
+      },
+      schemas: {
+        DrainRefusal: {
+          type: "object",
+          required: ["error"],
+          properties: { error: { type: "string", const: DRAIN_REFUSAL.body.error as string } },
+        },
+        Failure: {
+          type: "object",
+          required: ["error"],
+          properties: {
+            error: {
+              type: "object",
+              required: ["code", "message"],
+              properties: {
+                code: {
+                  type: "string",
+                  description: "Public failure code; clients must tolerate future codes.",
+                  examples: Object.keys(API_FAILURE_STATUS),
+                },
+                message: { type: "string" },
+                details: {},
+              },
+            },
+          },
+        },
+      },
+    },
+  };
 }

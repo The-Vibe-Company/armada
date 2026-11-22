@@ -12,25 +12,26 @@ Global: --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
 Names: 1–64 letters/digits/underscores/hyphens, starting with a letter or digit.
 ARMADA_TOKEN is not isolated by profiles: it still overrides every saved login.
 Use a matching ARMADA_URL for token-authenticated scripts; never put tokens in arguments.
-Example: armada --profile staging login --url https://staging.example.com --provider github
+Example: armada --profile staging login --url https://staging.example.com
 
 Exit codes: 0 success; 1 server/operation failure; 2 invalid usage or missing configuration; 3 authentication failure.
 Scripts: check exit status before consuming stdout; failed operations may have partial output.
-Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
-Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+Sandbox commands use JSON when stdout is redirected or when you pass --json.
+In machine mode, the final stderr line on failure is {error:{code,message,hint}}.
+Progress and warnings can appear earlier on stderr.
 See command --help for supported JSON output; keep captured values/tokens out of shared logs.
 
 Quick start / common examples:
-  armada login --email you@example.com
+  armada login
   armada org list
-  armada org use my-team
-  armada doctor
+  armada login --org my-team
+  armada info --setup
   armada host add --name my-workstation
-  armada launch
-  armada list
-  armada status SANDBOX_ID
-  armada send SANDBOX_ID "Continue the task"
-  armada logs SANDBOX_ID --tail 20
+  armada new
+  armada ls
+  armada info SANDBOX_ID
+  armada prompt SANDBOX_ID "Continue the task"
+  armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
 
@@ -43,33 +44,32 @@ ${sandboxUsage("setup")}
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
 ${sandboxUsage("snapshots")}
-${sandboxUsage("launch")}
-${sandboxUsage("list")}
+${sandboxUsage("new")}
+${sandboxUsage("ls")}
 ${sandboxUsage("mcp-bindings")}
-${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
-${sandboxUsage("snapshot-admin")}
 ${sandboxUsage("mcp")}
-${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-${sandboxUsage("github")}
-${sandboxUsage("invitations")}
-${sandboxUsage("credential-setup")}
 ${sandboxUsage("automation")}
-${sandboxUsage("vault")}
-                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
-${sandboxUsage("credential-accounts")}
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
+
+Give an agent access:
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+  ARMADA_SANDBOX                           Current sandbox UUID or unique prefix. A sandbox argument overrides it;
+                                           otherwise the CLI falls back to .armada/sandbox in the current directory.
 `;
 
 export const commandWords = [
@@ -82,7 +82,7 @@ function optionFlags(help: string) {
   return [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]);
 }
 
-export const optionWords = [
+const optionWords = [
   ...new Set([
     ...commands
       .flatMap(({ help, subcommandHelp }) => [help, ...Object.values(subcommandHelp ?? {})])

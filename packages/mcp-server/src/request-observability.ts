@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type FailureDiagnostic, failureDiagnostic } from "@armada/core/server";
 import { redactForLog } from "./log.ts";
+import type { StopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 type Log = (line: string) => void;
-const current = new AsyncLocalStorage<{ id: string; log: Log }>();
+const current = new AsyncLocalStorage<{ id: string; log: Log | undefined }>();
 const stderr: Log = (line) => console.error(line);
 
 export function currentRequestId(): string | undefined {
@@ -17,12 +18,18 @@ const serverId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
  * Resume a request's correlation inside durable background work it handed off, so provider records there carry the ID returned to the caller. Without a well-formed ID
  * the work runs uncorrelated, like other background provider work.
  */
-export function continueRequest<T>(id: string | undefined, work: () => Promise<T>, log: Log = stderr): Promise<T> {
+export function continueRequest<T>(id: string | undefined, work: () => Promise<T>, log?: Log): Promise<T> {
   return id && serverId.test(id) ? current.run({ id, log }, work) : current.exit(work);
 }
 
+function requestLogForStatus(status: number) {
+  if (status >= 500) return console.error;
+  if (status >= 400) return console.warn;
+  return console.info;
+}
+
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
-export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log: Log = stderr) {
+export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log?: Log) {
   const id = crypto.randomUUID();
   return current.run({ id, log }, async () => {
     const started = performance.now();
@@ -36,11 +43,13 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
       errorClass = diagnostic.errorClass;
       response = Response.json({ error: "internal" }, { status: 500 });
     }
-    log(
+    const status = response?.status ?? 101;
+    const requestLog = log ?? requestLogForStatus(status);
+    requestLog(
       JSON.stringify({
         event: "http_request",
         requestId: id,
-        status: response?.status ?? 101,
+        status,
         durationMs: Math.round(performance.now() - started),
         ...(errorClass ? { errorClass } : {}),
       }),
@@ -65,7 +74,17 @@ export function recordOperatorFailure(
 export function recordOperatorDiagnostic(
   phase: string,
   diagnostic: FailureDiagnostic,
-  options: { sandboxId?: string | undefined; correlationId?: string | null; log?: Log } = {},
+  options: {
+    sandboxId?: string | undefined;
+    correlationId?: string | null;
+    operationId?: string;
+    operationSequence?: string;
+    code?: string | undefined;
+    refusalCode?: string | undefined;
+    causeCode?: string | undefined;
+    stopEvidence?: StopRefusalEvidence | null;
+    log?: Log;
+  } = {},
 ): void {
   const request = current.getStore();
   const log = options.log ?? request?.log ?? stderr;
@@ -76,6 +95,15 @@ export function recordOperatorDiagnostic(
         phase: redactForLog(phase),
         requestId: options.correlationId && serverId.test(options.correlationId) ? options.correlationId : request?.id,
         sandboxId: options.sandboxId && serverId.test(options.sandboxId) ? options.sandboxId : undefined,
+        operationId: options.operationId && serverId.test(options.operationId) ? options.operationId : undefined,
+        operationSequence:
+          options.operationSequence && /^[0-9]{1,19}$/.test(options.operationSequence)
+            ? options.operationSequence
+            : undefined,
+        code: options.code,
+        refusalCode: options.refusalCode,
+        causeCode: options.causeCode,
+        stopEvidence: options.stopEvidence,
         ...diagnostic,
       }),
     );
@@ -131,7 +159,8 @@ export async function observeProviderCall<T>(
   } finally {
     if (outcome !== null) {
       const name = typeof provider === "function" ? provider() : provider;
-      request.log(
+      const log = request.log ?? (outcome === "ok" ? console.info : console.warn);
+      log(
         JSON.stringify({
           event: "provider_call",
           requestId: request.id,
@@ -155,8 +184,6 @@ export function observeProvider<T extends object>(
     get(instance, property) {
       const value = Reflect.get(instance, property, instance);
       if (typeof value !== "function" || typeof property !== "string") return value;
-      // Inventory is consumed directly as an async iterable by the reaper.
-      if (property === "listInventory") return value.bind(instance);
       return (...args: unknown[]) =>
         observeProviderCall(provider, property, () => Reflect.apply(value, instance, args), undefined, options);
     },

@@ -1,3 +1,4 @@
+import { controlRouteKey, githubCallbackOperations } from "@armada/core/contract";
 import {
   createSqlVaultStore,
   encryptSecret,
@@ -12,6 +13,9 @@ import {
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
+import type { ControlOptions } from "./control.ts";
+import { fail } from "./control-response.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
 export interface GitHubAccountApi {
   command(action: string, caller: Caller, body: Record<string, unknown>): Promise<unknown>;
@@ -252,7 +256,8 @@ export function createGitHubAccountApi(options: {
 }
 
 export const CLI_GITHUB_STATE_PREFIX = "armada_cli_";
-const CALLBACK_BODY_LIMIT = 8192;
+const { githubOAuthCallback, githubOAuthRelay } = githubCallbackOperations;
+const CALLBACK_BODY_LIMIT = githubOAuthRelay.input.maxBodyBytes;
 function callbackResult(ok: boolean): Response {
   return Response.json(
     { ok, status: ok ? "connected" : "failed" },
@@ -344,7 +349,26 @@ async function callbackInput(request: Request): Promise<{ state: string; code: s
     if (declared !== null && Number(declared) !== size) throw new Error("Invalid callback.");
     values = relayObject(raw);
   } else throw new Error("Invalid callback.");
-  if (!/^armada_cli_[0-9a-f-]{72}$/.test(values.state ?? "") || !/^[\x21-\x7e]{1,1024}$/.test(values.code ?? ""))
-    throw new Error("Invalid callback.");
-  return { state: values.state ?? "", code: values.code ?? "" };
+  const schema = request.method === "GET" ? githubOAuthCallback.input.query : githubOAuthRelay.input.body;
+  return schema.parse(values);
 }
+
+function githubAccountCommand({ route, caller, body, options }: ControlRouteContext) {
+  if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
+  return options.githubAccount.command(route.slice("github/".length), caller, body);
+}
+
+export const githubAccountRoutes = defineRoutes("github-account", {
+  "github/status": githubAccountCommand,
+  "github/disconnect": githubAccountCommand,
+  "github/install": githubAccountCommand,
+  "github/connect": githubAccountCommand,
+  "github/reconnect": githubAccountCommand,
+  [controlRouteKey(githubOAuthCallback.route)]: {
+    methods: [githubOAuthCallback.route.method, githubOAuthRelay.route.method],
+    respond: (request: Request, options: ControlOptions) =>
+      options.githubAccount
+        ? options.githubAccount.callback(request)
+        : fail(503, "dependency_unavailable", "GitHub account authorization is not configured."),
+  },
+});

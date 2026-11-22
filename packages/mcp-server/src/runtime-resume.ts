@@ -1,19 +1,30 @@
 import { sha256Hex } from "@armada/auth";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
+import { CONFIRMED_WAKE_WITHOUT_TICKET } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
-import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import type { JobContext } from "./jobs/runner.ts";
+import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
-import { requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
+import {
+  confirmRuntimeResumeActivation,
+  deferAmbiguousBoatResume,
+  publishRuntimeWake,
+  requestFailedRuntimeResumeStop,
+  restoreModalResumeSchedule,
+  transitionSandbox,
+} from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -21,6 +32,9 @@ export interface RuntimeResumeInput {
   runtimeVersion: 1;
   prompt: string;
 }
+/** Shared runner authority for an exact queued send. */
+export type RuntimeTurnClaim = Pick<JobContext, "canDispatch" | "handoffGeneration">;
+
 export interface RuntimeResumeReceipt {
   id: string;
   requestId: string;
@@ -44,12 +58,21 @@ interface Operation {
   verified_at: string | null;
   receipt: RuntimeResumeReceipt | null;
 }
+export class BoatResumeActivationUncertain extends Error {
+  constructor(cause: unknown) {
+    super("Boat runtime activation outcome is uncertain.", { cause });
+  }
+}
+
 export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
     restore: { epoch: string; watermark: number; conversationId: string | null },
     confirmActivation?: () => Promise<void>,
+    assertDispatch?: (tx?: Sql) => Promise<void>,
+    ticket?: { recovery: boolean; guard: RuntimeTicketGuard },
   ): Promise<{ epoch: string }>;
+  checkDispatchCoverage?(signal: AbortSignal): Promise<void>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
 }
@@ -66,6 +89,7 @@ export function createRuntimeResume(
   prepare?: RuntimeResumePrepare,
   prepareMcp?: RuntimeMcp["prepare"],
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -77,7 +101,7 @@ export function createRuntimeResume(
         [id, request],
       )
     ).rows[0];
-  return async (caller: Caller, input: RuntimeResumeInput): Promise<RuntimeResumeReceipt> => {
+  return async (caller: Caller, input: RuntimeResumeInput, claim?: RuntimeTurnClaim): Promise<RuntimeResumeReceipt> => {
     refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
@@ -106,21 +130,50 @@ export function createRuntimeResume(
       await environment.validate(found.provider, actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
-    const admitted = await sql.transaction(async (tx) => {
-      await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
+    const lockAccount = (tx: Sql) =>
+      lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
+    const assertClaim = async (tx?: Sql) => {
+      if (claim && !(await claim.canDispatch(tx)))
+        throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
+    };
+    const canBootstrap = async (tx: Sql) =>
+      (
+        await tx.query(
+          `select 1 from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
+           join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
+           join public.mcp_actor_epochs e on e.org_id=q.org_id and e.user_id=q.owner_id
+           where q.sandbox_id=$1 and q.request_id=$2 and ${CONFIRMED_WAKE_WITHOUT_TICKET}
+             and q.org_id=s.org_id and q.owner_id=s.owner_id and e.epoch=q.actor_epoch
+             and q.account_id=c.id and q.credential_version=c.version and c.status='active'
+             and (c.expires_at is null or c.expires_at>now())
+             and ((c.scope='user' and c.owner_id=q.owner_id) or (c.scope='org' and c.owner_id=q.org_id))`,
+          [found.id, requestId],
+        )
+      ).rows.length > 0;
+    const firstWakeClaim = prior ? undefined : claim;
+    const admit = async (tx: Sql) => {
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
           "select expires_at>now() as unexpired,application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
           [found.id, caller.userId],
         )
       ).rows[0];
+      const existing = await read(tx, found.id, requestId);
+      if (fence?.busy) {
+        const followup = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+          found.id,
+          `follow_${requestId}`,
+        ]);
+        if (prior || existing || fence.lease === requestId || followup.rows.length)
+          throw new VaultError("conflict", "Runtime resume target changed or cannot retain secrets safely.");
+        throw new RuntimeReconciliationConflict();
+      }
       const current = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (
         !fence ||
         !current ||
         fence.tainted ||
         !fence.unexpired ||
-        fence.busy ||
         !current.model ||
         !current.reasoningEffort ||
         current.deletedAt ||
@@ -140,14 +193,15 @@ export function createRuntimeResume(
           [found.id],
         )
       ).rows[0];
-      const existing = await read(tx, found.id, requestId);
       if (existing) {
+        if (firstWakeClaim) throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
         if (existing.request_hash !== hash) throw new VaultError("conflict", "Resume request input changed.");
-        if (existing.receipt) return { current, op: existing, first: false };
+        await assertClaim(tx);
+        if (existing.receipt) return { current, op: existing, first: false, bootstrap: false };
+        const bootstrap = Boolean(claim && prepare && (await canBootstrap(tx)));
         if (
           existing.phase !== "dispatched" ||
-          !epoch?.live ||
-          epoch.epoch !== existing.target_epoch ||
+          (!bootstrap && (!epoch?.live || epoch.epoch !== existing.target_epoch)) ||
           fence.lease !== requestId ||
           !["starting", "ready", "running"].includes(current.status) ||
           current.stopRequestedAt ||
@@ -163,11 +217,20 @@ export function createRuntimeResume(
           activityToken: requestId,
           ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),
         });
-        return { current, op: existing, first: false };
+        await assertClaim(tx);
+        return { current, op: existing, first: false, bootstrap };
       }
+      if (claim && !firstWakeClaim) throw new VaultError("conflict", "Runtime resume intent disappeared.");
       if (!prepare)
         throw new VaultError("unavailable", "Trusted runtime resume policy is unavailable; no compute was activated.");
-      if (current.status !== "stopped" || !current.stoppedAt || current.stopRequestedAt || fence.lease || !epoch)
+      if (
+        current.status !== "stopped" ||
+        !current.stoppedAt ||
+        current.stopRequestedAt ||
+        fence.lease ||
+        !epoch ||
+        current.lifecycleGeneration === undefined
+      )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
       const proof = (
         await tx.query<{ watermark: string }>(
@@ -209,28 +272,62 @@ export function createRuntimeResume(
           op.empty_checkpoint,
         ],
       );
-      await createSqlData(tx)(caller).sandboxes.update(found.id, {
-        status: "starting",
-        stoppedAt: null,
-        stopRequested: false,
-        advanceGeneration: true,
-        queueRequestId: requestId,
-        activityToken: requestId,
-        clearTaskOutcome: true,
-        ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),
+      const transition = await transitionSandbox(tx, {
+        sandboxId: found.id,
+        expectedGeneration: current.lifecycleGeneration,
+        fromStates: ["stopped"],
+        toState: "starting",
+        actor: "resume_admission",
+        code: "runtime_resume_admitted",
+        effects: [],
+        settlement: {
+          lease: null,
+          statusReason: null,
+          stopRequestedAt: null,
+          stoppedAt: null,
+          activityLease: requestId,
+        },
       });
+      if (transition.kind === "conflict")
+        throw new VaultError("conflict", "Runtime resume admission lost its retained stop or dispatch authority.");
       await tx.query(
-        `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
-           from public.runtime_resumes r
-          where l.sandbox_id=$1 and l.stage='accepted'
-            and l.activation=(select max(a.activation) from public.sandbox_launch_stages a where a.sandbox_id=$1)
-            and r.sandbox_id=l.sandbox_id and r.request_id=$2`,
-        [found.id, requestId],
+        `update public.boat_runtime_extension_state e set pending_job_id=null
+         from public.sandboxes s, public.jobs j
+         where s.id=$1 and s.lifecycle_generation=$2 and s.provider='boat' and s.boat_runtime
+           and e.sandbox_id=s.id and j.id=e.pending_job_id and j.sandbox_id=s.id
+           and j.kind='boat_runtime_extend' and j.generation<s.lifecycle_generation`,
+        [found.id, transition.generation],
       );
+      await recordResumeAcceptedAt(tx, found.id, requestId);
       const active = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (!active) throw new VaultError("not_found", "Runtime resume admission disappeared.");
-      return { current: active, op, first: true };
-    });
+      return { current: active, op, first: true, bootstrap: false };
+    };
+    let admission: Awaited<ReturnType<typeof admit>> | undefined;
+    if (firstWakeClaim) {
+      await firstWakeClaim.handoffGeneration({
+        lockPrerequisites: lockAccount,
+        async advance(tx, job) {
+          const { payload } = job;
+          if (
+            job.sandbox_id !== found.id ||
+            !payload ||
+            typeof payload !== "object" ||
+            !("requestId" in payload) ||
+            payload.requestId !== requestId
+          )
+            throw new VaultError("conflict", "Queued wake does not match the claimed turn job.");
+          admission = await admit(tx);
+        },
+      });
+    } else {
+      admission = await sql.transaction(async (tx) => {
+        await lockAccount(tx);
+        return admit(tx);
+      });
+    }
+    const admitted = admission;
+    if (!admitted) throw new Error("Runtime wake handoff did not admit a resume.");
     if (admitted.op.receipt) return admitted.op.receipt;
     const restore = {
       epoch: admitted.op.source_epoch,
@@ -245,16 +342,34 @@ export function createRuntimeResume(
     const publishing = {
       ...store,
       async update(id: string, patch: Parameters<typeof store.update>[1]) {
+        if (patch.renewActivity && claim) {
+          return sql.transaction!(async (tx) => {
+            await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+            await assertClaim(tx);
+            await createSqlData(tx)(caller).sandboxes.update(id, patch);
+            await assertClaim(tx);
+          });
+        }
         if (!patch.finishActivity) return store.update(id, patch);
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
-          if (scope.epoch !== admitted.op.target_epoch || !receipt)
+          if (scope.epoch !== admitted.op.target_epoch || !receipt || patch.expectedGeneration === undefined)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          await assertClaim(tx);
+          await publishRuntimeWake(
+            tx,
+            id,
+            patch.expectedGeneration,
+            requestId,
+            receipt.promptId,
+            admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
+          );
+          if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
             [found.id, requestId, JSON.stringify(receipt)],
           );
           if (!saved.rows.length) throw new VaultError("conflict", "Resume publication changed.");
+          await assertClaim(tx);
         });
       },
     };
@@ -264,36 +379,64 @@ export function createRuntimeResume(
         admitted.current,
         {},
         async (signal) => {
-          if (admitted.first) {
+          if (admitted.first || admitted.bootstrap) {
             placement = await prepare!(caller, admitted.current);
-            const confirmActivation =
-              found.provider === "boat"
-                ? async () => {
-                    const saved = await sql.query(
-                      `with active as (
-                  select id from public.sandboxes where id=$1 and status='starting'
-                    and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
-                    and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
-                    and stop_requested_at is null and deleted_at is null for update
-                )
-                update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
-                from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
-                returning r.request_id`,
-                      [found.id, requestId, admitted.current.lifecycleGeneration],
-                    );
-                    if (!saved.rows.length) throw new VaultError("conflict", "Resume activation authority changed.");
+            const confirmActivation = async () => {
+              if (
+                !(await confirmRuntimeResumeActivation(sql, found.id, requestId, admitted.current.lifecycleGeneration))
+              )
+                throw new VaultError("conflict", "Resume activation authority changed.");
+            };
+            const ready = await placement.start(
+              signal,
+              restore,
+              confirmActivation,
+              claim ? assertClaim : undefined,
+              admitted.bootstrap || found.boatRuntime
+                ? {
+                    recovery: admitted.bootstrap,
+                    guard: {
+                      lockPrerequisites: lockAccount,
+                      async check(tx) {
+                        const authorized = admitted.bootstrap
+                          ? await canBootstrap(tx)
+                          : (
+                              await tx.query(
+                                `select 1 from public.sandboxes s join public.runtime_resumes r
+                                   on r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+                                 where s.id=$1 and r.request_id=$2 and s.lifecycle_generation=$3
+                                   and s.boat_runtime and s.status='starting' and not s.application_secret_tainted
+                                   and s.activity_until>clock_timestamp()
+                                   and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+                                   and s.expires_at>clock_timestamp() and date_trunc('milliseconds',s.expires_at)=$4::timestamptz
+                                   and r.phase='dispatched' and r.activated_at is not null and r.receipt is null`,
+                                [found.id, requestId, admitted.current.lifecycleGeneration, admitted.current.expiresAt],
+                              )
+                            ).rows.length > 0;
+                        if (!authorized)
+                          throw new VaultError("conflict", "Confirmed resume bootstrap authority changed.");
+                      },
+                    },
                   }
-                : undefined;
-            const ready = await placement.start(signal, restore, confirmActivation);
+                : undefined,
+            );
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
-          await agent.health(signal, restore); // Also required on reconciliation; old binaries cannot echo an unverified restore.
+          const commandGuard = claim ? assertClaim : undefined;
+          // Reconciliation also needs live proof that the checkpoint was restored.
+          await agent.health(
+            signal,
+            restore,
+            commandGuard ? { expectedEpoch: admitted.op.target_epoch, assertClaim: commandGuard } : undefined,
+          );
           await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
             if (scope.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Resume epoch changed.");
+            await assertClaim(tx);
             await tx.query(
               "update public.runtime_resumes set verified_at=coalesce(verified_at,now()) where sandbox_id=$1 and request_id=$2",
               [found.id, requestId],
             );
+            await assertClaim(tx);
           });
           const existing = await commands.result(
             caller.userId,
@@ -304,13 +447,37 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
-            if (!admitted.first && (found.provider === "modal" || found.provider === "boat"))
-              await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
-            await prepareGitHub?.(caller, found.id);
-            await prepareMcp?.(caller, found.id, signal);
+            if (!admitted.first && !admitted.bootstrap && (found.provider === "modal" || found.provider === "boat"))
+              await environment.deliver(
+                found.provider,
+                actor,
+                found.id,
+                admitted.op.target_epoch,
+                signal,
+                commandGuard,
+              );
+            await prepareGitHub?.(caller, found.id, commandGuard);
+            await prepareMcp?.(caller, found.id, signal, commandGuard);
+            if (found.boatRuntime || found.runtimeTransport === "dialout")
+              await restoreScopedAccess?.(
+                caller.userId,
+                found.id,
+                admitted.op.target_epoch,
+                String(admitted.current.lifecycleGeneration),
+                signal,
+                commandGuard,
+              );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
           await recordLaunchStageQuietly(sql, found.id, "harness_ready", admitted.current.lifecycleGeneration);
+          if (found.boatRuntime && existing.state === "missing") {
+            placement ??= await prepare?.(caller, admitted.current);
+            if (!placement?.checkDispatchCoverage)
+              throw new VaultError("unavailable", "Boat resume deadline verification is unavailable.");
+            await assertClaim();
+            signal.throwIfAborted();
+            await placement.checkDispatchCoverage(signal);
+          }
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,
@@ -325,6 +492,7 @@ export function createRuntimeResume(
               if (receipt.conversationId !== conversation || !receipt.promptId)
                 throw new VaultError("conflict", "Runtime did not acknowledge the admitted conversation.");
             },
+            commandGuard,
           );
           receipt = {
             id: found.id,
@@ -347,12 +515,7 @@ export function createRuntimeResume(
           }
           return {
             result: receipt,
-            patch: {
-              status: "running",
-              statusReason: null,
-              taskPromptId: accepted.promptId,
-              conversationIds: admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
-            },
+            patch: {},
           };
         },
         { initialLeaseId: requestId, deadlineMs: 600_000 },
@@ -361,7 +524,6 @@ export function createRuntimeResume(
       const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
-      // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
       const cleanup = await sql
         .transaction(async (tx) => {
           const member = await tx.query(
@@ -371,24 +533,33 @@ export function createRuntimeResume(
           if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
           const runtime = (
-            await tx.query<{ epoch: string; live: boolean; activation_confirmed: boolean }>(
+            await tx.query<{ epoch: string; live: boolean; ticket_issued: boolean; activation_confirmed: boolean }>(
               `select epoch::text,(runtime_hash is not null) as live,
-                  ((enrolment_hash is not null and lifecycle_generation=$2) or exists(
+                  (enrolment_hash is not null and lifecycle_generation=$2) as ticket_issued,
+                  exists(
                     select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$3
                       and phase='dispatched' and activated_at is not null
-                  )) as activation_confirmed
+                  ) as activation_confirmed
                from public.runtime_enrolments where sandbox_id=$1 for update`,
               [found.id, admitted.current.lifecycleGeneration, requestId],
             )
           ).rows[0];
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
+          const boatSourceEpoch =
+            found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
           const retained = Boolean(
-            found.provider === "boat" &&
-              runtime &&
-              (runtime.activation_confirmed || preActivationArchive) &&
-              !runtime.live &&
-              runtime.epoch === admitted.op.source_epoch,
+            (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
+              (found.runtimeTransport === "dialout" &&
+                runtime?.activation_confirmed &&
+                !runtime.live &&
+                runtime.epoch === admitted.op.source_epoch),
           );
+          await assertClaim(tx);
+          if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
+            await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
+            await assertClaim(tx);
+            return;
+          }
           const status = await requestFailedRuntimeResumeStop(
             tx,
             found.id,

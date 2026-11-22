@@ -3,18 +3,28 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
+type Step = {
+  id?: string;
+  name?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, string>;
+  "continue-on-error"?: boolean;
+};
 type Job = {
   steps: Step[];
   needs?: string | string[];
+  if?: string;
+  environment?: string;
+  permissions?: Record<string, string>;
   outputs?: Record<string, string>;
   env?: Record<string, string>;
 };
 const workflow = Bun.YAML.parse(
-  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
+  readFileSync(resolve(import.meta.dir, "../../.github/workflows/release-pipeline.yml"), "utf8"),
 ) as { jobs: Record<string, Job> };
 
-function script(step: Step | undefined): string {
+function script(step: Step | undefined) {
   if (!step?.run) throw new Error("The selected workflow step must execute its preflight");
   return step.run;
 }
@@ -129,6 +139,41 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
+test("production approval gates deployment after finalization accepts work or receipts", () => {
+  const approval = workflow.jobs["production-approval"];
+  expect(approval?.environment).toBe("production-deploy");
+  expect(approval?.needs).toEqual(["release-metadata", "finalize-release"]);
+  expect(workflow.jobs.production?.needs).toContain("production-approval");
+});
+
+test("a recovery that reuses check, binary and smoke receipts still reaches production", () => {
+  const approval = workflow.jobs["production-approval"]?.if ?? "";
+  const production = workflow.jobs.production?.if ?? "";
+  expect(approval).toContain("!cancelled()");
+  expect(approval).toContain("needs.finalize-release.result == 'success'");
+  expect(production).toContain("!cancelled()");
+  expect(production).toContain("needs.production-approval.result == 'success'");
+});
+
+test("the publishing token can write version PR labels through the reusable workflow", () => {
+  const caller = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  expect(caller.jobs["release-pipeline"]?.permissions?.["pull-requests"]).toBe("write");
+  expect(workflow.jobs["finalize-release"]?.permissions?.["pull-requests"]).toBe("write");
+});
+
+test("production approval requires publication verification even if PR labelling fails", () => {
+  const steps = workflow.jobs["finalize-release"]?.steps ?? [];
+  const verify = steps.findIndex((step) => step.name === "Verify the published release and tag");
+  const reconcile = steps.findIndex((step) => step.id === "reconcile");
+  expect(verify).toBeGreaterThanOrEqual(0);
+  expect(reconcile).toBeGreaterThan(verify);
+  expect(steps[verify]?.["continue-on-error"]).not.toBe(true);
+  expect(steps[reconcile]?.["continue-on-error"]).toBe(true);
+});
+
 test("binary and publish jobs use the validated release version for npm artifacts", () => {
   const binary = workflow.jobs.binary;
   const publish = workflow.jobs.publish;
@@ -144,8 +189,9 @@ test("binary and publish jobs use the validated release version for npm artifact
   expect(publish.needs).toContain("release-metadata");
   expect(collection?.env?.VERSION).toBe(version);
   expect(publish.env?.VERSION).toBe(version);
-  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
-  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
+  const sha = `\${{ needs.release-metadata.outputs.sha }}`;
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-${sha}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-${sha}-*`);
 });
 
 const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
@@ -186,5 +232,28 @@ test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs 
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("candidate configuration failure blocks production migrations", () => {
+  const steps = workflow.jobs.production?.steps ?? [];
+  const validate = steps.findIndex((step) => step.run?.includes("armada-server --check-config"));
+  const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+  expect(validate).toBeGreaterThanOrEqual(0);
+  expect(deploy).toBeGreaterThan(validate);
+  expect(steps[validate]?.["continue-on-error"]).not.toBe(true);
+});
+
+test("device login configuration is checked before staging and production deployment", () => {
+  const stagingWorkflow = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/staging-gated-production.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  for (const steps of [workflow.jobs.production?.steps ?? [], stagingWorkflow.jobs.staging?.steps ?? []]) {
+    const check = steps.findIndex((step) => step.run?.includes("/device-login-configuration.ts"));
+    const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(deploy).toBeGreaterThan(check);
+    expect(steps[check]?.["continue-on-error"]).not.toBe(true);
   }
 });

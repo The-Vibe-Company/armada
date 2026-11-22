@@ -1,6 +1,13 @@
+import {
+  HOST_CAPABILITIES,
+  type HostCapabilities,
+  isSandboxProvider,
+  SANDBOX_PLACEMENT_LABELS,
+} from "./sandbox-provider.ts";
+
 /** Safe presentation data, not a new failure category. Unknown upstream fields never leave the server. */
 export interface ProviderRateLimitDetails {
-  provider?: "boat";
+  provider?: NonNullable<HostCapabilities["startRateLimit"]>["detailsProvider"];
   window?: "minute" | "hour" | "day" | "concurrency";
   nextStartAt?: string;
   retryAfterSeconds?: number;
@@ -9,7 +16,11 @@ export interface ProviderRateLimitDetails {
 export function providerRateLimitDetails(value: unknown): ProviderRateLimitDetails {
   const input = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const result: ProviderRateLimitDetails = {};
-  if (input.provider === "boat") result.provider = "boat";
+  const inputProvider = input.provider;
+  const provider = isSandboxProvider(inputProvider)
+    ? HOST_CAPABILITIES[inputProvider].startRateLimit?.detailsProvider
+    : undefined;
+  if (provider) result.provider = provider;
   if (input.window === "minute" || input.window === "hour" || input.window === "day" || input.window === "concurrency")
     result.window = input.window;
   if (
@@ -31,16 +42,16 @@ export function providerRateLimitDetails(value: unknown): ProviderRateLimitDetai
 /** Closed copy built only from validated fields; never display the upstream message or guess a reset time. */
 export function providerRateLimitMessage(value: unknown): string {
   const detail = providerRateLimitDetails(value);
-  const name = detail.provider === "boat" ? "Boat" : "provider";
+  const providerLabel = detail.provider && SANDBOX_PLACEMENT_LABELS[detail.provider];
   const period =
     detail.window === "minute" || detail.window === "hour" || detail.window === "day" ? detail.window : null;
   const limit = period ? `plan start limit per ${period}` : "account rate or capacity limit";
   const timing = detail.nextStartAt
-    ? ` ${name === "Boat" ? "Boat" : "The provider"} says the next start is available at ${detail.nextStartAt}.`
+    ? ` ${providerLabel ?? "The provider"} says the next start is available at ${detail.nextStartAt}.`
     : detail.retryAfterSeconds === undefined
       ? detail.window === "day"
         ? " Try again after the daily start allowance resets."
         : ""
       : ` Wait at least ${detail.retryAfterSeconds} seconds before another start.`;
-  return `The ${name} ${limit} has been reached.${timing} Check the selected provider account's plan and limits before another start.`;
+  return `The ${providerLabel ?? "provider"} ${limit} has been reached.${timing} Check the selected provider account's plan and limits before another start.`;
 }

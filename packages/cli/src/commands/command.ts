@@ -2,28 +2,20 @@ import type { AuthIo } from "../auth-commands.ts";
 import type { Deps, Io } from "../run.ts";
 
 export type UsageGroup =
-  | "invitations"
   | "org"
   | "host"
   | "docker-launch"
-  | "launch"
-  | "list"
-  | "advice"
+  | "new"
+  | "ls"
   | "sandbox"
-  | "logs"
   | "setup"
   | "session"
   | "account"
   | "automation"
-  | "github"
-  | "vault"
   | "mcp"
   | "mcp-bindings"
   | "bind-credential"
-  | "snapshots"
-  | "snapshot-admin"
-  | "credential-setup"
-  | "credential-accounts";
+  | "snapshots";
 
 export type Command = {
   name: string;
@@ -31,8 +23,10 @@ export type Command = {
   usage: string | Partial<Record<UsageGroup, string>>;
   help: string;
   subcommandHelp?: Readonly<Record<string, string>>;
+  automaticJson?: boolean;
   helpWhenBare?: boolean;
   validateProfileForHelp?: boolean;
-  useSelectedOrg?: boolean | ((argv: readonly string[]) => boolean);
+  requireKnownSubcommand?: boolean;
+  useSelectedOrg?: true | ((argv: readonly string[]) => boolean);
   run: (argv: readonly string[], context: { io: Io; deps: Deps; auth: AuthIo }) => Promise<number>;
 };

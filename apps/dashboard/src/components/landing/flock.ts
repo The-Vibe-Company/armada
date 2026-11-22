@@ -11,8 +11,8 @@
 
 /** The mark's colors (components/shell/Logo.tsx) and the harnesses' (globals.css `--h-*`). */
 export const LIME = "#b6f15a";
-export const BONE = "#f0efec";
-export const HARNESS_COLORS = ["#bb87fc", "#d97757", "#10a37f"] as const;
+const BONE = "#f0efec";
+const HARNESS_COLORS = ["#bb87fc", "#d97757", "#10a37f"] as const;
 
 /** Three depths: far ships are small, slow and faint. */
 export const LAYERS = [
@@ -21,7 +21,7 @@ export const LAYERS = [
   { scale: 1, speed: 1, alpha: 1 },
 ] as const;
 
-export interface Ship {
+interface Ship {
   x: number;
   y: number;
   vx: number;
@@ -59,13 +59,13 @@ export interface Squadron {
   bearing: number | null;
 }
 
-export interface Ripple {
+interface Ripple {
   x: number;
   y: number;
   age: number;
 }
 
-export interface Box {
+interface Box {
   x: number;
   y: number;
   width: number;
@@ -118,7 +118,7 @@ const V_SIDE = (6 / 4) * 1.35;
 /** A ship's length at size 1, in CSS pixels, before its layer's scale: 4 grid units of the mark. */
 export const SHIP = 10;
 /** How much longer than the mark's triangle a ship in flight is. */
-export const DART = 1.55;
+const DART = 1.55;
 const CRUISE = 66;
 
 function random(s: SkyState): number {
@@ -135,7 +135,7 @@ const ease = (rate: number, dt: number) => 1 - Math.exp(-rate * dt);
 const easeOutCubic = (u: number) => 1 - (1 - u) ** 3;
 const easeInOutCubic = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2);
 
-export function angleTo(from: number, to: number): number {
+function angleTo(from: number, to: number): number {
   let d = (to - from) % (2 * Math.PI);
   if (d > Math.PI) d -= 2 * Math.PI;
   if (d < -Math.PI) d += 2 * Math.PI;
@@ -143,7 +143,7 @@ export function angleTo(from: number, to: number): number {
 }
 
 /** Where slot `k` of a V sits behind a leader heading `angle`, at ship length `len`. */
-export function slotOffset(k: number, angle: number, len: number): { x: number; y: number } {
+function slotOffset(k: number, angle: number, len: number): { x: number; y: number } {
   if (k === 0) return { x: 0, y: 0 };
   const row = Math.ceil(k / 2);
   const side = k % 2 ? -1 : 1;
@@ -158,10 +158,9 @@ export function slotOffset(k: number, angle: number, len: number): { x: number; 
 const wind = (time: number) => -0.18 + Math.sin(time * 0.045) * 0.14;
 
 /** The ships a sky this size holds: fewer on a phone. */
-export const capOf = (width: number, height: number) =>
-  Math.round(Math.max(20, Math.min(80, (width * height) / 16_000)));
+const capOf = (width: number, height: number) => Math.round(Math.max(20, Math.min(80, (width * height) / 16_000)));
 
-export const shipCount = (s: SkyState) => s.squadrons.reduce((n, q) => n + q.ships.length, 0);
+const shipCount = (s: SkyState) => s.squadrons.reduce((n, q) => n + q.ships.length, 0);
 
 const pickColor = (s: SkyState) => HARNESS_COLORS[Math.floor(random(s) * HARNESS_COLORS.length)] ?? BONE;
 

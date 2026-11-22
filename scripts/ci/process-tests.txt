@@ -1,6 +1,3 @@
-apps/dashboard/test/routine-staging-transport.test.ts
-apps/dashboard/test/staging-check-route-parity.test.ts
-apps/dashboard/test/stats-db.test.ts
 packages/agent-runtime/test/exec-env.test.ts
 packages/agent-runtime/test/github-bootstrap.test.ts
 packages/agent-runtime/test/github-parent.test.ts
@@ -13,7 +10,6 @@ packages/cli/test/skill-hint.test.ts
 packages/cli/test/skill-install.test.ts
 packages/core/test/docker-machine.test.ts
 packages/core/test/docker-snapshot-build.test.ts
-packages/core/test/docker-snapshot-init.test.ts
 packages/core/test/golden-helper.test.ts
 packages/core/test/golden-script-shell.test.ts
 packages/core/test/golden-skillpack.test.ts
@@ -21,15 +17,11 @@ packages/core/test/launch.test.ts
 packages/core/test/sandbox-outputs.test.ts
 packages/core/test/ssh-executor.test.ts
 packages/core/test/ssh-github-token.test.ts
-packages/core/test/ssh-orchestrator.test.ts
 packages/core/test/ssh-readable-variables.test.ts
 packages/docker-host/test/cli.test.ts
 packages/docker-host/test/runtime-install.test.ts
-packages/docker-host/test/service.test.ts
-packages/mcp-gateway/test/network.test.ts
 packages/mcp-server/test/boat-orchestrator-private.test.ts
 packages/mcp-server/test/docker-host-install.test.ts
-packages/mcp-server/test/github-boat-os.test.ts
 packages/mcp-server/test/main.test.ts
 packages/mcp-server/test/managed-inspection.test.ts
 packages/mcp-server/test/mcp-codex-bridge.test.ts
@@ -43,7 +35,6 @@ packages/provider-boat/test/usage-probe.test.ts
 packages/provider-modal/test/artifact-validation.test.ts
 packages/provider-modal/test/distribution.test.ts
 packages/provider-modal/test/security.test.ts
-packages/provider-modal/test/ssh-os.test.ts
 scripts/build.test.ts
 scripts/check-boat-runtime.test.ts
 scripts/check-boat-subscription.test.ts

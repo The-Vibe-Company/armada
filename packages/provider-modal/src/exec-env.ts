@@ -3,9 +3,6 @@ import { refusal } from "./errors.ts";
 import type { ExecEnvironment } from "./ports.ts";
 
 const allowed = new Set(["GH_TOKEN", "GITHUB_TOKEN", "HOME", "PATH", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"]);
-/** Model/fork environments are NOT exec environments. Initial trusted launch input contributes only
- * the two GitHub aliases. An explicit server resolver result is authoritative ({} disables GitHub)
- * and can set the runtime's narrow public path options. Never persist this projection. */
 export function projectGitHubExecEnvironment(
   launchEnv: Readonly<Record<string, string>>,
   resolved?: ExecEnvironment,
@@ -39,8 +36,6 @@ export function projectGitHubExecEnvironment(
 }
 
 const TRUSTED_TOOL_PATH = "/usr/local/bin:/usr/bin:/bin";
-/** npm's Codex launcher uses /usr/bin/env node. Supply a public tool baseline explicitly instead
- * of relying on Claude SDK's parent-env merge (Codex intentionally uses the exact provided env). */
 export function withTrustedHarnessPath(env: Readonly<Record<string, string>>): Record<string, string> {
   const path = env.PATH ?? TRUSTED_TOOL_PATH;
   if (

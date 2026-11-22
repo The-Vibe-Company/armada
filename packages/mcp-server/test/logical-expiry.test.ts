@@ -22,7 +22,6 @@ test("status and list project only persisted logical lifetime, including stopped
         ownerId: "owner",
         provider: "boat",
         providerSandboxId: "bx",
-        boatId: "bx",
         harness: "codex",
         model: null,
         reasoningEffort: null,

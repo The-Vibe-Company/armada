@@ -13,14 +13,15 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
-import { databasePoolMax } from "./config.ts";
+import { dashboardOrigin, databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
+import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { providerRegistry } from "./http.ts";
-import { invitationsFromEnv } from "./invitations.ts";
+import { Invitations, invitationMailFromEnv } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
@@ -122,7 +123,13 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
       modelAuth.broker,
     );
+  const deviceLogin = deviceLoginFromConfig(
+    sql,
+    dashboardOrigin(env.ARMADA_DASHBOARD_URL, env.NODE_ENV === "development"),
+    env,
+  );
   return {
+    ...(deviceLogin ? { deviceLogin } : {}),
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     sandboxBillingAccount: createSandboxBillingAccount(sql),
     credentialBindingRecovery: createSandboxAccountChange(
@@ -130,7 +137,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       launchCredentials(store, encryptionKey, undefined, modelAuth),
       createCredentialBindingRecovery(sql, encryptionKey),
     ),
-    invitations: invitationsFromEnv(sql, env),
+    invitations: new Invitations(sql, env.ARMADA_ENCRYPTION_KEY, invitationMailFromEnv(env)),
     templates,
     skillDefaults: createSkillDefaultsService(sql),
     routines: createRoutineService(sql),
@@ -138,7 +145,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
-    supabase: { supabaseUrl, anonKey },
+    supabase: { supabaseUrl, anonKey, cliOAuthClientId: env.ARMADA_CLI_OAUTH_CLIENT_ID },
     encryptionKey,
     github: { app: githubApp },
     store,

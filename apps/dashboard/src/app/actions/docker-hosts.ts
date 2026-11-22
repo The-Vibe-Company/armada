@@ -17,7 +17,14 @@ import {
   HOSTS_PATH,
   hostNameInput,
 } from "@/lib/docker-hosts";
-import { dockerHarnesses, dockerLaunchBlocker, dockerLaunchBody, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import {
+  dockerHarnesses,
+  dockerLaunchBlocker,
+  dockerLaunchBody,
+  isDockerLaunchKey,
+  PREVIOUS_DOCKER_LAUNCH,
+  UNKNOWN_DOCKER_LAUNCH,
+} from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { postSandboxLaunch } from "@/lib/launch";
@@ -40,7 +47,7 @@ async function adminControl(org: string) {
   return control;
 }
 
-export type HostRegistrationResult =
+type HostRegistrationResult =
   | { ok: true; hostId: string; command: string; expiresAt: string }
   | { ok: false; error: string };
 
@@ -105,7 +112,7 @@ export async function revokeDockerHost(_previous: ActionResult | null, data: For
 
 /**
  * Launches the chosen agent from Armada's image on one of the organization's Docker hosts, as the signed-in viewer, then
- * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `requestId`: a retry of the same form
+ * answers the new sandbox's id for the dialog to follow. The form's request key is the server's `idempotencyKey`: a retry of the same form
  * (same choices) after an unanswered launch reuses it, so the server reconciles it instead of starting another.
  */
 export async function launchOnDockerHost(
@@ -114,8 +121,11 @@ export async function launchOnDockerHost(
 ): Promise<ActionResult & { sandboxId?: string }> {
   const org = formString(data, "org");
   const hostId = formString(data, "hostId");
-  const requestId = formString(data, LAUNCH_KEY_FIELD);
-  if (!isUuid(org) || !isUuid(hostId) || !isUuid(requestId)) return fail("That request is not valid.");
+  const idempotencyKey = formString(data, LAUNCH_KEY_FIELD);
+  if (!isUuid(org) || !isUuid(hostId)) return fail("That request is not valid.");
+  if (isUuid(idempotencyKey))
+    return fail(PREVIOUS_DOCKER_LAUNCH, { href: `/sandboxes/${idempotencyKey}`, label: "Inspect previous sandbox" });
+  if (!isDockerLaunchKey(idempotencyKey)) return fail("That launch key is not valid.");
   if (!(await isSelectedOrganization(org))) return fail("Switch to that organization first.");
   const [hosts, option, accounts] = await Promise.all([
     readSelectedDockerHosts(),
@@ -176,7 +186,7 @@ export async function launchOnDockerHost(
           hostId,
           harness,
           credentialId: account.id,
-          requestId,
+          idempotencyKey,
           model: choice.args.model,
           reasoningEffort: choice.args.reasoningEffort,
           ...(ttl.value === undefined ? {} : { ttlSeconds: ttl.value }),

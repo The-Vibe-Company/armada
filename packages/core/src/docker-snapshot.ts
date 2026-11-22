@@ -1,4 +1,4 @@
-import { DOCKER_SNAPSHOT_STATUSES, type DockerSnapshotRecord } from "./docker-api.ts";
+import { DOCKER_SNAPSHOT_PROVIDER, DOCKER_SNAPSHOT_STATUSES, type DockerSnapshotRecord } from "./docker-api.ts";
 import { parseGoldenConfig } from "./golden-config.ts";
 export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw Error("Invalid snapshot response.");
@@ -8,7 +8,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     ["id", "orgId", "ownerId", "hostId", "installationId"].some(
       (key) => typeof r[key] !== "string" || !uuid.test(r[key] as string),
     ) ||
-    r.provider !== "docker" ||
+    r.provider !== DOCKER_SNAPSHOT_PROVIDER ||
     !(
       r.builtOnVersion === null ||
       (typeof r.builtOnVersion === "string" &&
@@ -44,7 +44,7 @@ export function parseDockerSnapshotRecord(input: unknown): DockerSnapshotRecord 
     ownerId: r.ownerId as string,
     hostId: r.hostId as string,
     installationId: r.installationId as string,
-    provider: "docker",
+    provider: DOCKER_SNAPSHOT_PROVIDER,
     name: r.name,
     visibility: r.visibility,
     hostName: r.hostName as string | null,

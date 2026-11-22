@@ -46,7 +46,7 @@ export async function sshHydrateAuthState(
   authJson: string,
   deps: SshExecDeps = {},
 ): Promise<void> {
-  const path = launchInfrastructure(provider.id).authPath;
+  const { authPath: path, managedNativeAuthWriter } = launchInfrastructure(provider.id);
   if (!path || Buffer.byteLength(authJson) > 65536) throw Error("Private native hydration is unavailable.");
   try {
     const value = JSON.parse(authJson);
@@ -76,7 +76,7 @@ export async function sshHydrateAuthState(
       " fd=fs.openSync(tmp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);",
       " fs.writeFileSync(fd,text);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;",
       " fs.chownSync(tmp,home.uid,home.gid);fs.renameSync(tmp,target);tmp=undefined;",
-      ...(provider.id === "boat"
+      ...(managedNativeAuthWriter
         ? [
             " const marker=path.join(path.dirname(target),'.armada-managed-native'); const mf=fs.openSync(marker,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_NOFOLLOW,0o600); try{fs.writeFileSync(mf,'active');fs.ftruncateSync(mf,6);fs.fsyncSync(mf);fs.fchownSync(mf,home.uid,home.gid);}finally{fs.closeSync(mf);}",
           ]
@@ -103,7 +103,7 @@ export async function sshNativeAuthAdmission(
   active: boolean,
   deps: SshExecDeps = {},
 ) {
-  if (provider.id !== "boat") throw Error("Native admission requires Boat.");
+  if (!launchInfrastructure(provider.id).managedNativeAuthWriter) throw Error("Native admission requires Boat.");
   const script = `set +x
 node <<'ARMADA_NATIVE_ADMISSION'
 const fs=require('node:fs');
@@ -171,7 +171,7 @@ export async function sshPrivateAuthState(
   quiesced = false,
   expectedSharedCapability?: string,
 ): Promise<string> {
-  const path = launchInfrastructure(provider.id).authPath;
+  const { authPath: path, managedNativeAuthWriter } = launchInfrastructure(provider.id);
   if (!path) throw Error("Private native auth transport is unavailable.");
   const script = `set +x
 umask 077
@@ -199,7 +199,7 @@ try {
  try { text=readPrivate(path); }
  catch(error) {
   const expected=process.env.ARMADA_GIT_TOKEN;
-  if(${provider.id === "boat" ? "true" : "false"} && expected && error.code==='ENOENT' &&
+  if(${managedNativeAuthWriter} && expected && error.code==='ENOENT' &&
      JSON.parse(readPrivate('/home/user/.armada/model-access.json')).capability===expected)
   {
    let managed=false;

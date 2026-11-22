@@ -22,20 +22,31 @@ The dashboard uses short admission/status actions,
 records the job ID in its URL, and polls sequentially for a bounded local window,
 then offers manual refresh.
 
-CLI create/update print the admission key and job ID, then poll short requests.
---timeout 0..600 is the local wait only (default 60s), not worker execution.
+CLI new/update print the admission key and job ID. With `--wait`, they poll short requests.
+`--timeout` bounds the local wait to 1–600 seconds (default 60).
 Each request has a 10-second AbortSignal; timeout:false disables Bun's independent
-idle timer. Poll failures never resubmit builds. Resume with:
+idle timer. Poll failures never resubmit builds. Resume with the returned build
+UUID (`JOB_UUID`) or the saved admission key (`SAVED_KEY`) and organization UUID
+(`ORG_UUID`).
 
-    armada snapshot build-status <job-id>
-    armada snapshot build-status --idempotency-key <saved-key> --org <org-id>
+    armada snapshot show --build JOB_UUID
+    armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID
 
 ## Worker and atomic publication
 
-armada-server owns a tracked, awaited worker loop independent of HTTP requests.
-Claims use FOR UPDATE SKIP LOCKED, a unique fence, renewable 60-second lease and
-fixed 60-minute job deadline. Heartbeats cannot resurrect expired leases. The job
-ID is the buildId in existing allowlisted phase/failure logs.
+Admission adds a `golden_build` job in the same transaction as the receipt.
+The shared jobs runner dispatches one golden build at a time using the receipt UUID
+and the current job lease epoch. Dispatch locks the receipt to arbitrate with
+cancellation and older replicas during deployment overlap. The runner renews the only execution lease.
+The receipt records its dispatch epoch as the attempt fence and retains a fixed
+60-minute deadline. During deployment overlap, a live finite receipt lease from
+the previous revision still occupies the build slot.
+The shared handler expires and reconciles the receipt by UUID. A successor claim
+can dispatch a still-queued receipt after a pre-dispatch crash. The handler waits
+for active receipts, retries unresolved recovery, and completes terminal receipts
+without provider calls. Recovery that exceeds 30 seconds yields the shared slot
+and is requeued. The server tracks outstanding provider calls through shutdown.
+The receipt ID is the buildId in existing allowlisted phase/failure logs.
 
 Execution resolves current credentials, revalidates membership/role and verifies
 the admitted provider account. Every phase checks ownership. Publication locks
@@ -129,10 +140,12 @@ For staging incident **aa2f54f7**, after migrations/server rollout:
    and current resource/state guards under a job lock, atomically releases only
    that pending reservation, and records failed/provider_payment_required.
    Repeating a completed confirmation is read-only.
-3. The owner runs:
+3. The owner replaces `JOB_UUID` with the original job’s full UUID and
+   `ORG_UUID` with the staging organization UUID. Use the original config
+   file in place of `same-config.json`.
 
-       armada snapshot build-status <full-job-uuid> --json
-       armada snapshot create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
+       armada snapshot show --build JOB_UUID --json
+       armada snapshot new smoke-boat --provider boat --org ORG_UUID --config same-config.json --wait --timeout 600
 
    Expect the old job failed with failureReason=provider_payment_required
    (build-status exits 1 for terminal failure). Retry with a fresh admission key;

@@ -5,11 +5,16 @@ import Foundation
 /// their unavailable fallback stay as they are: a service that does not launch simply does not
 /// conform, and the New sandbox button explains that. The catalog, the draft and the refusal
 /// mapping are ArmadaKit's pure values; this file only reaches the client.
+enum SandboxLaunchDestination: Sendable {
+    case conversation(SandboxSummary)
+    case list
+}
+
 protocol SandboxLauncher: Sendable {
     /// `launch/options`, `golden/list` and `creds/list` for the selected organization.
     func launchCatalog(orgID: String) async throws(ServiceFailure) -> ArmadaKit.SandboxLaunchCatalog
-    /// `sandbox/launch`, sent exactly once. On success, the new sandbox as the list shows it.
-    func launch(_ request: ArmadaKit.SandboxLaunchRequest) async throws(ArmadaKit.SandboxLaunchFailure) -> SandboxSummary
+    /// `sandbox/launch`, sent exactly once. Open the sandbox when its metadata is available.
+    func launch(_ request: ArmadaKit.SandboxLaunchRequest) async throws(ArmadaKit.SandboxLaunchFailure) -> SandboxLaunchDestination
 }
 
 extension ArmadaKitServices: SandboxLauncher {
@@ -32,18 +37,25 @@ extension ArmadaKitServices: SandboxLauncher {
         }
     }
 
-    func launch(_ request: ArmadaKit.SandboxLaunchRequest) async throws(ArmadaKit.SandboxLaunchFailure) -> SandboxSummary {
+    func launch(_ request: ArmadaKit.SandboxLaunchRequest) async throws(ArmadaKit.SandboxLaunchFailure) -> SandboxLaunchDestination {
         let receipt = try await client.launchSandbox(request)
-        // The list row carries the server's own label and permission hints; read it when it is there.
-        if let row = try? await list(orgID: request.org, page: 1).items.first(where: { $0.id == receipt.sandbox.id }) {
-            return row
+        // Use server-authorized metadata for navigation when the new row is available.
+        let sandboxID = UUID(uuidString: receipt.sandboxID)
+        if let row = try? await list(orgID: request.org, page: 1).items.first(where: {
+            $0.orgID == request.org && UUID(uuidString: $0.id) == sandboxID
+        }) {
+            return row.canOpen ? .conversation(row) : .list
         }
-        return Self.summary(receipt)
+        switch receipt {
+        case .allocated(let allocation):
+            return .conversation(Self.summary(allocation))
+        case .admitted:
+            return .list
+        }
     }
 
-    /// The new sandbox from the launch answer alone, when the list could not be read. The person
-    /// launched it, so they own it; the server still reauthorizes every read.
-    private static func summary(_ receipt: ArmadaKit.SandboxLaunchReceipt) -> SandboxSummary {
+    /// The full launch envelope can open a conversation when the list could not be read.
+    private static func summary(_ receipt: ArmadaKit.SandboxLaunchReceipt.Allocation) -> SandboxSummary {
         let sandbox = receipt.sandbox
         let parse: (String) -> Date? = { value in
             (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value)) ?? (try? Date.ISO8601FormatStyle().parse(value))

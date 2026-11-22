@@ -7,7 +7,7 @@ type DestructiveStatement =
 
 const RELEASE_VERSION = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-function compareVersions(left: string, right: string): number {
+function compareVersions(left: string, right: string) {
   const rightParts = right.slice(1).split(".").map(BigInt);
   for (const [index, part] of left.slice(1).split(".").map(BigInt).entries()) {
     if (part !== rightParts[index]) return part > rightParts[index]! ? 1 : -1;
@@ -15,7 +15,7 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-function latestRelease(tags: string): string | undefined {
+function latestRelease(tags: string) {
   return tags
     .split("\n")
     .map((line) => line.split("\t")[1]?.replace(/^refs\/tags\//, "") ?? "")
@@ -26,11 +26,13 @@ function latestRelease(tags: string): string | undefined {
 
 // Tokenize top-level SQL so comments, strings and function bodies cannot supply
 // keywords or statement separators. Preserve spelling for quoted identifiers.
-function* sqlStatements(sql: string): Generator<{ tokens: string[]; startsAt: number }> {
+function* sqlStatements(sql: string) {
   const lexer =
     /--[^\r\n]*|\/\*|((?:[uU]&)?"(?:[^"]|"")*")|([eE]'(?:[^'\\]|\\[\s\S]|'')*'|(?:[uU]&)?'(?:[^']|'')*')|(\$(?:[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff]*)?\$)|[a-zA-Z_\u0080-\uffff][\w$\u0080-\uffff]*|[^\s]/g;
   let tokens: string[] = [];
   let startsAt = 0;
+  let expressionDepth = 0;
+  const routineHeaders: string[][] = [];
   for (let match = lexer.exec(sql); match; match = lexer.exec(sql)) {
     let token = match[0];
     if (match[3]) {
@@ -51,17 +53,86 @@ function* sqlStatements(sql: string): Generator<{ tokens: string[]; startsAt: nu
       continue;
     }
     if (token === ";") {
-      if (tokens.length) yield { tokens, startsAt };
+      const closesRoutineBody = routineHeaders.length > 0 && tokens.length === 1 && tokens[0] === "end";
+      if (closesRoutineBody) tokens = routineHeaders.pop()!;
+      if (routineHeaders.length === 0 && tokens.length) yield { tokens, startsAt };
       tokens = [];
+      expressionDepth = 0;
     } else {
-      if (!tokens.length) startsAt = match.index;
-      tokens.push(match[1] || match[2] || match[3] ? token : token.toLowerCase());
+      if (!tokens.length && routineHeaders.length === 0) startsAt = match.index;
+      const normalized = match[1] || match[2] || match[3] ? token : token.toLowerCase();
+      if (normalized === "(" || normalized === "[") expressionDepth++;
+      if (normalized === ")" || normalized === "]") expressionDepth--;
+      const opensBody = expressionDepth === 0 && normalized === "atomic" && tokens.at(-1) === "begin";
+      tokens.push(normalized);
+      if (opensBody && tokens[0] === "create") {
+        const kind = tokens[1] === "or" && tokens[2] === "replace" ? tokens[3] : tokens[1];
+        if (kind === "function" || kind === "procedure") {
+          routineHeaders.push(tokens);
+          tokens = [];
+        }
+      }
     }
   }
-  if (tokens.length) yield { tokens, startsAt };
+  const lastStatement = routineHeaders[0] ?? tokens;
+  if (lastStatement.length) yield { tokens: lastStatement, startsAt };
+}
+
+function transactionOnlyCommand(tokens: string[], rollbackTo: boolean, prepareTransaction: boolean) {
+  const [verb] = tokens;
+  if (verb === "lock") return "LOCK";
+  if (verb === "savepoint") return "SAVEPOINT";
+  if (verb === "release") return "RELEASE SAVEPOINT";
+  if (rollbackTo) return "ROLLBACK TO SAVEPOINT";
+  if (verb === "declare") {
+    const queryStart = tokens.indexOf("for", 2);
+    if (tokens[queryStart - 2] !== "with" || tokens[queryStart - 1] !== "hold") return "DECLARE CURSOR";
+  }
+  if (prepareTransaction) return "PREPARE TRANSACTION";
+  return undefined;
+}
+
+export function transactionErrors(sql: string) {
+  const errors: string[] = [];
+  let explicitTransaction = false;
+  for (const { tokens, startsAt } of sqlStatements(sql)) {
+    const [verb, keyword] = tokens;
+    const transactionKeyword = keyword === "work" || keyword === "transaction" ? tokens[2] : keyword;
+    const rollbackTo = verb === "rollback" && transactionKeyword === "to";
+    const prepareTransaction =
+      verb === "prepare" && keyword === "transaction" && tokens[2] !== "as" && tokens[2] !== "(";
+    if (verb === "begin" || (verb === "start" && keyword === "transaction")) {
+      explicitTransaction = true;
+    } else if (["commit", "end", "rollback", "abort"].includes(verb ?? "") && !rollbackTo) {
+      explicitTransaction &&= tokens.at(-2) === "and" && tokens.at(-1) === "chain";
+    } else if (!explicitTransaction) {
+      const command = transactionOnlyCommand(tokens, rollbackTo, prepareTransaction);
+      if (command) {
+        const line = sql.slice(0, startsAt).split(/\r\n|\r|\n/).length;
+        errors.push(`Line ${line}: ${command} requires an explicit BEGIN transaction.`);
+      }
+    }
+    if (prepareTransaction) explicitTransaction = false;
+  }
+  return errors;
+}
+
+function unicodeEscapeCharacter(literal: string | undefined) {
+  if (!literal) return "\\";
+  if (!/^e'/i.test(literal)) return literal.slice(1, -1);
+  const value = literal.slice(2, -1);
+  if (value === "\\b") return "\b";
+  const numeric = /^\\(?:x([\da-f]{1,2})|u([\da-f]{4})|U([\da-f]{8})|([0-7]{1,3}))$/i.exec(value);
+  if (numeric) {
+    const octal = numeric[4];
+    const codePoint = octal ? Number.parseInt(octal, 8) & 0xff : Number.parseInt(value.slice(2), 16);
+    if (codePoint <= 0x10ffff) return String.fromCodePoint(codePoint);
+  }
+  return value.startsWith("\\") ? value.slice(1) : value;
 }
 
 function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
+  const parts: string[] = [];
   let name: string | undefined;
   let next = start;
   do {
@@ -70,8 +141,13 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
       const content = token!.slice(3, -1).replaceAll('""', '"');
       let escapeCharacter = "\\";
       if (tokens[next] === "uescape") {
-        escapeCharacter = tokens[next + 1]?.slice(1, -1) ?? escapeCharacter;
+        let literal = tokens[next + 1];
         next += 2;
+        while (literal && tokens[next]?.startsWith("'")) {
+          literal = literal.slice(0, -1) + tokens[next]!.slice(1);
+          next++;
+        }
+        escapeCharacter = unicodeEscapeCharacter(literal);
       }
       const marker = escapeCharacter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const escapes = new RegExp(`${marker}(${marker}|[\\da-fA-F]{4}|\\+[\\da-fA-F]{6})`, "g");
@@ -85,15 +161,48 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
     } else {
       name = token && /^[a-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(token) ? token : undefined;
     }
+    if (name !== undefined) parts.push(name);
     if (tokens[next] !== ".") break;
     next++;
   } while (name !== undefined);
-  return { name, next };
+  return { name, next, parts };
+}
+
+export function routineSettingErrors(sql: string) {
+  const errors: string[] = [];
+  for (const { tokens, startsAt } of sqlStatements(sql)) {
+    const [verb, second, third] = tokens;
+    const kind = verb === "create" && second === "or" && third === "replace" ? tokens[3] : second;
+    if (verb !== "create" && verb !== "alter") continue;
+    if (kind !== "function" && kind !== "procedure" && !(verb === "alter" && kind === "routine")) continue;
+
+    let depth = 0;
+    for (const [index, token] of tokens.entries()) {
+      if (token === "(" || token === "[") depth++;
+      if (token === ")" || token === "]") depth--;
+      if (depth !== 0) continue;
+      if (token !== "set") continue;
+
+      const { next, parts } = qualifiedName(tokens, index + 1);
+      const parameter = parts.join(".");
+      const assignment = tokens[next];
+      if (!parameter.includes(".")) continue;
+      if (assignment !== "=" && assignment !== "to" && !(assignment === "from" && tokens[next + 1] === "current")) {
+        continue;
+      }
+      const line = sql.slice(0, startsAt).split(/\r\n|\r|\n/).length;
+      errors.push(
+        `Line ${line}: ${verb.toUpperCase()} ${kind.toUpperCase()} cannot SET custom parameter ${parameter}. ` +
+          "Use pg_catalog.set_config(name, value, true) in the routine body.",
+      );
+    }
+  }
+  return errors;
 }
 
 // Split lists of DROP targets and ALTER TABLE actions, while retaining commas
 // inside function signatures, type modifiers and expressions.
-function* commaSeparated(tokens: string[]): Generator<string[]> {
+function* commaSeparated(tokens: string[]) {
   let depth = 0;
   let start = 0;
   for (const [index, token] of tokens.entries()) {
@@ -107,7 +216,7 @@ function* commaSeparated(tokens: string[]): Generator<string[]> {
   yield tokens.slice(start);
 }
 
-export function destructiveStatements(sql: string): DestructiveStatement[] {
+export function destructiveStatements(sql: string) {
   const statements: DestructiveStatement[] = [];
   for (const { tokens, startsAt } of sqlStatements(sql)) {
     const [verb, kind] = tokens;
@@ -162,7 +271,7 @@ type DropSources = {
   references: (name: string, ref: string) => readonly string[];
 };
 
-export function dropSafety(statements: readonly DestructiveStatement[], sources: DropSources): string[] {
+export function dropSafety(statements: readonly DestructiveStatement[], sources: DropSources) {
   const errors: string[] = [];
   for (const statement of statements) {
     if (statement.kind === "object") {
@@ -199,7 +308,7 @@ const SOURCE_PATHS = [
   ...["test", "spec", "probe", "fixture", "fixtures"].map((suffix) => `:(exclude,glob)**/*.${suffix}.*`),
 ];
 
-function gitReferences(name: string, ref: string): string[] {
+function gitReferences(name: string, ref: string) {
   const result = spawnSync("git", ["grep", "-l", "-z", "-I", "-F", "-w", "-e", name, ref, "--", ...SOURCE_PATHS], {
     encoding: "utf8",
   });
@@ -212,12 +321,21 @@ function gitReferences(name: string, ref: string): string[] {
     .map((entry) => entry.slice(ref.length + 1));
 }
 
-function checkDrops(paths: string[], base: string, head: string): void {
-  const changes = paths.flatMap((path) => {
-    const statements = destructiveStatements(execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }));
+function checkMigrationSql(paths: string[], base: string, head: string) {
+  const migrations = paths.map((path) => ({
+    path,
+    sql: execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }),
+  }));
+  const sqlFailures = migrations.flatMap(({ path, sql }) =>
+    [...transactionErrors(sql), ...routineSettingErrors(sql)].map((error) => `${path}: ${error}`),
+  );
+  if (sqlFailures.length) throw new Error(sqlFailures.join("\n"));
+
+  const drops = migrations.flatMap(({ path, sql }) => {
+    const statements = destructiveStatements(sql);
     return statements.length ? [{ path, statements }] : [];
   });
-  if (!changes.length) return;
+  if (!drops.length) return;
   const tag = latestRelease(
     execFileSync("git", ["ls-remote", "--tags", "--refs", "origin", "v*"], { encoding: "utf8" }),
   );
@@ -231,13 +349,13 @@ function checkDrops(paths: string[], base: string, head: string): void {
     packageVersion,
     references: (name: string, ref: string) => gitReferences(name, ref === tag ? `refs/tags/${tag}` : ref),
   };
-  const errors = changes.flatMap(({ path, statements }) =>
+  const errors = drops.flatMap(({ path, statements }) =>
     dropSafety(statements, sources).map((error) => `${path}: ${error}`),
   );
   if (errors.length) throw new Error(errors.join("\n"));
 }
 
-function main(): void {
+function main() {
   const base = process.argv[2];
   if (!base) throw new Error("Usage: bun scripts/db/check-migrations.ts <base-ref> [head-ref]");
   const headRef = process.argv[3] ?? "HEAD";
@@ -278,7 +396,7 @@ function main(): void {
     );
     throw new Error(errors.join("\n"));
   }
-  checkDrops(
+  checkMigrationSql(
     [...head.keys()].filter((path) => !baseline.has(path)),
     base,
     headRef,

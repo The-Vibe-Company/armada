@@ -42,7 +42,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="mx-auto flex w-full max-w-[880px] flex-col gap-7">
-      <PageHeader title="Your connections" />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PageHeader title="Your connections" />
+        <Button asChild variant="outline">
+          <a href="/settings/api-keys">API keys</a>
+        </Button>
+      </div>
       {result && (
         <Alert variant={result.ok ? "default" : "destructive"}>
           <AlertDescription>{result.text}</AlertDescription>

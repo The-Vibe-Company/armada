@@ -21,6 +21,30 @@ type Fixture = {
 };
 
 describe("database", () => {
+  test("legacy Boat writes keep provider identity in sync", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const golden = await insertGolden(db, people, { name: "legacy", visibility: "org", owner: people.admin });
+      await db.query("update goldens set provider_snapshot_id = 'snap-1' where id = $1", [golden]);
+
+      await asUser(db, people.admin, () =>
+        db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [golden]),
+      );
+      expect(
+        (await db.query("select provider_snapshot_id, boat_snapshot_id from goldens where id = $1", [golden])).rows,
+      ).toEqual([{ provider_snapshot_id: "snap-2", boat_snapshot_id: "snap-2" }]);
+
+      await db.query(
+        `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
+         values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
+        [golden, people.org, people.admin],
+      );
+      expect(
+        (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
+      ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
+    });
+  });
+
   test("sandbox repository context must name a configured repo and stays immutable", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
@@ -134,8 +158,8 @@ describe("database", () => {
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
-        "service_tokens INSERT",
-        "service_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
+        "service_tokens INSERT(created_at,expires_at,hash,id,label,org_id,revoked_at,user_id)",
+        "service_tokens SELECT(created_at,expires_at,id,label,last_used_at,org_id,revoked_at,user_id)",
         "service_tokens UPDATE(revoked_at)",
         "template_launch_requests SELECT",
       ]);
@@ -145,14 +169,17 @@ describe("database", () => {
       expect(secretSelects).toEqual([]);
 
       // A table or function created by a later migration starts with nothing for anon or a user JWT.
-      await db.exec("create table public.later (id int primary key, value_enc bytea)");
-      await db.exec("create function public.later_fn() returns int language sql as 'select 1'");
-      const later = await db.query<{ any: boolean }>(
-        `select has_table_privilege('authenticated', 'public.later', 'select, insert, update, delete, truncate')
-            or has_table_privilege('anon', 'public.later', 'select, insert, update, delete, truncate')
-            or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
-      );
-      expect(later.rows[0]?.any).toBe(false);
+      await db.transaction(async (tx) => {
+        await tx.exec("create table public.later (id int primary key, value_enc bytea)");
+        await tx.exec("create function public.later_fn() returns int language sql as 'select 1'");
+        const later = await tx.query<{ any: boolean }>(
+          `select has_table_privilege('authenticated', 'public.later', 'select, insert, update, delete, truncate')
+              or has_table_privilege('anon', 'public.later', 'select, insert, update, delete, truncate')
+              or has_function_privilege('anon', 'public.later_fn()', 'execute') as any`,
+        );
+        expect(later.rows[0]?.any).toBe(false);
+        await tx.exec("drop table public.later; drop function public.later_fn()");
+      });
     });
   });
 
@@ -185,7 +212,7 @@ describe("database", () => {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
         }
-        if (id === "armada_access_parents.credential_ids") {
+        if (id === "armada_access_parents.credential_ids" || id === "agent_defaults.credential_ids") {
           // Allowlisted account references are UUIDs, never credential values.
           expect(column.data_type).toBe("ARRAY");
           expect(column.udt_name).toBe("_uuid");
@@ -228,6 +255,7 @@ describe("database", () => {
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
         "model_auth_state.state_enc",
+        "native_drain_recovery.archive_enc",
         "notify_subscriptions.secret_enc",
         "org_langfuse.config_enc",
         "organization_invitations.token_enc",
@@ -949,14 +977,7 @@ describe("database", () => {
 });
 
 async function withDb(run: (db: PGlite) => Promise<void>): Promise<void> {
-  const db = database();
-  try {
-    await run(db);
-  } finally {
-    await db.exec(
-      "reset role; reset all; set search_path=public; drop table if exists public.later; drop function if exists public.later_fn()",
-    );
-  }
+  await run(database());
 }
 
 async function fixture(db: PGlite): Promise<Fixture> {
@@ -967,9 +988,12 @@ async function fixture(db: PGlite): Promise<Fixture> {
     admin: crypto.randomUUID(),
     outsider: crypto.randomUUID(),
   };
-  for (const user of [row.owner, row.member, row.admin, row.outsider]) {
-    await db.query("insert into auth.users (id) values ($1)", [user]);
-  }
+  await db.query("insert into auth.users (id) values ($1), ($2), ($3), ($4)", [
+    row.owner,
+    row.member,
+    row.admin,
+    row.outsider,
+  ]);
   await db.query("insert into orgs (id, name) values ($1, 'Example Org')", [row.org]);
   await db.query(
     `insert into members (org_id, user_id, role) values

@@ -1,3 +1,5 @@
+import { SCOPED_REST_BODY_MAX_BYTES } from "@armada/core/contract";
+
 export class InvalidOrchestratorBody extends Error {}
 
 /** Shared bounded UTF-8 stream parser. Never logs authorization, payloads or upstream errors. */
@@ -12,7 +14,7 @@ export async function readOrchestratorBody(request: Request): Promise<string> {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > 128 * 1024) {
+      if (bytes > SCOPED_REST_BODY_MAX_BYTES) {
         await reader.cancel();
         throw new InvalidOrchestratorBody();
       }

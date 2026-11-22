@@ -45,6 +45,13 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: Any, setting path: Str
     #expect(!logs.events.contains { if case .unknown = $0.body { true } else { false } })
 }
 
+@Test func sandboxListUsesGenericProviderIdentifiers() throws {
+    let list = response("sandboxList") as! [String: Any]
+    let originalRows = list["sandboxes"] as! [[String: Any]]
+    let decoded = try decode(SandboxMetadataPage.self, list)
+    #expect(decoded.sandboxes.map(\.providerSandboxId) == originalRows.map { $0["providerSandboxId"] as? String })
+}
+
 @Test func aValueAddedLaterToASandboxKeepsTheListAndItsEvents() throws {
     let list = response("sandboxList")
     for path in ["sandboxes.*.status", "sandboxes.*.provider", "sandboxes.*.harness", "sandboxes.*.machineSize"] {

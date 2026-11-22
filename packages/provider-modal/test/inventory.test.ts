@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
-import type { ModalClient } from "modal";
-import { observeProvider } from "../../mcp-server/src/request-observability.ts";
-import { createModalProvider, type Machine, type ModalProviderOptions, type ModalStore } from "../src/index.ts";
+import { type ModalClient, NotFoundError } from "modal";
+import {
+  createModalMachine,
+  createModalMachineInventory,
+  createModalProvider,
+  type Machine,
+  type ModalProviderOptions,
+  type ModalStore,
+} from "../src/index.ts";
 
 const appId = "ap_bound";
 const deploymentId = "staging_server";
@@ -24,25 +30,35 @@ function listed(id: string, createdAt: number, ownership: Record<string, string>
   } as ListedSandbox;
 }
 
-function fixture(overrides: Partial<ModalProviderOptions> = {}, sdk: Partial<ModalClient> = {}) {
-  return createModalProvider({
-    client: {
-      apps: {
-        async fromName(name: string, options: object) {
-          expect(name).toBe("bound");
-          expect(options).toEqual({ environment: "modal_env", createIfMissing: false });
-          return { appId };
-        },
+const binding = { workspace: "workspace", environment: "modal_env", appId };
+
+function client(sdk: Partial<ModalClient>) {
+  return {
+    apps: {
+      async fromName(name: string, options: object) {
+        expect(name).toBe("bound");
+        expect(options).toEqual({ environment: "modal_env", createIfMissing: false });
+        return { appId };
       },
-      ...sdk,
-    } as ModalClient,
-    deploymentId,
-    scope: {
-      orgId: "org",
-      userId: "user",
-      visibility: "org",
-      binding: { workspace: "workspace", environment: "modal_env", appId },
     },
+    ...sdk,
+  } as ModalClient;
+}
+
+function inventory(sandboxListV2: List) {
+  return createModalMachineInventory(
+    client({ cpClient: { sandboxListV2 } as ModalClient["cpClient"] }),
+    "bound",
+    binding,
+    deploymentId,
+  );
+}
+
+function fixture(overrides: Partial<ModalProviderOptions>, sdk: Partial<ModalClient>) {
+  return createModalProvider({
+    client: client(sdk),
+    deploymentId,
+    scope: { orgId: "org", userId: "user", visibility: "org", binding },
     appName: "bound",
     store: {} as ModalStore,
     distribution: {
@@ -60,7 +76,7 @@ function fixture(overrides: Partial<ModalProviderOptions> = {}, sdk: Partial<Mod
       },
     },
     ...overrides,
-  });
+  }).provider;
 }
 
 async function collect(iterable: AsyncIterable<ProviderInventoryMachine>) {
@@ -80,8 +96,14 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
         listed("sb_other_app", 47, tags, "ap_other"),
       ],
     ],
-    [47, [listed("sb_second", 40.5, { ...tags, armada_sandbox: "modal_second", armada_generation: "1" })]],
-    [40.5, []],
+    [
+      47,
+      [
+        listed("sb_second", 40.5, { ...tags, armada_sandbox: "modal_second", armada_generation: "1" }),
+        listed("sb_without_generation", 40, { armada_deployment: deploymentId, armada_sandbox: "modal_orphan" }),
+      ],
+    ],
+    [40, []],
   ]);
   const sandboxListV2: List = async (request) => {
     expect(request.appId).toBe(appId);
@@ -92,13 +114,43 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
     pages.delete(request.beforeTimestamp);
     return { sandboxes };
   };
-  const provider = observeProvider("modal", fixture({}, { cpClient: { sandboxListV2 } as ModalClient["cpClient"] }));
+  const provider = inventory(sandboxListV2);
 
   expect(await collect(provider.listInventory())).toEqual([
     { machineId: "sb_first", sandboxId: "modal_owned", generation: "3", deploymentId, createdAt: new Date(50_125) },
     { machineId: "sb_second", sandboxId: "modal_second", generation: "1", deploymentId, createdAt: new Date(40_500) },
+    { machineId: "sb_without_generation", sandboxId: "modal_orphan", deploymentId, createdAt: new Date(40_000) },
   ]);
   expect(pages.size).toBe(0);
+});
+
+test("Modal Machine inventory preserves incomplete and raw incarnation evidence", async () => {
+  const sandboxListV2: List = async ({ beforeTimestamp }) => ({
+    sandboxes:
+      beforeTimestamp === undefined
+        ? [
+            listed("sb_missing", 50, { armada_deployment: deploymentId, armada_sandbox: "modal_orphan" }),
+            listed("sb_raw", 49, { ...tags, armada_generation: "03" }),
+          ]
+        : [],
+  });
+  const unexpected = async () => {
+    throw new Error("Inventory must not use the lifecycle journal or dispatch mutations");
+  };
+  const machine = createModalMachine({
+    client: client({ cpClient: { sandboxListV2 } as ModalClient["cpClient"] }),
+    appName: "bound",
+    binding,
+    deploymentId,
+    journal: { read: unexpected, compareAndSet: unexpected },
+    resolveRuntimeTicket: unexpected,
+    prepareCheckpoint: unexpected,
+  });
+
+  expect(await Array.fromAsync(machine.listInventory())).toEqual([
+    { machineId: "sb_missing", sandboxId: "modal_orphan", deploymentId, createdAt: new Date(50_000) },
+    { machineId: "sb_raw", sandboxId: "modal_owned", generation: "03", deploymentId, createdAt: new Date(49_000) },
+  ]);
 });
 
 test("Modal inventory surfaces a later page failure as a retryable provider error", async () => {
@@ -106,7 +158,7 @@ test("Modal inventory surfaces a later page failure as a retryable provider erro
     if (beforeTimestamp === undefined) return { sandboxes: [listed("sb_first", 50, tags)] };
     throw Object.assign(new Error("private SDK diagnostic"), { name: "TimeoutError" });
   };
-  const provider = fixture({}, { cpClient: { sandboxListV2 } as ModalClient["cpClient"] });
+  const provider = inventory(sandboxListV2);
   const pages = provider.listInventory()[Symbol.asyncIterator]();
   expect((await pages.next()).value).toMatchObject({ machineId: "sb_first" });
   try {
@@ -129,18 +181,24 @@ test("Modal attaches deployment ownership to the allocation request for a runtim
   let machine: Machine;
   const store = {
     image: async () => snapshot,
+    get: async () => ({ golden: true }),
     reserve: async (_key: string, reservation: Machine) => {
       machine = reservation;
       return reservation;
     },
-    lease: async (id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
-      work(id === snapshot.sourceId ? ({ golden: true } as Machine) : machine, async () => {}),
+    lease: async (_id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
+      work(machine, async () => {}),
   } as unknown as ModalStore;
   let creationTags: Record<string, string> | undefined;
   const provider = fixture(
     { store, commonRuntime: true },
     {
       images: { fromId: async () => ({ imageId: snapshot.imageId }) } as unknown as ModalClient["images"],
+      volumes: {
+        async fromName() {
+          throw new NotFoundError("No artifact cache volume in this environment");
+        },
+      } as unknown as ModalClient["volumes"],
       sandboxes: {
         async create(_app: unknown, _image: unknown, params: { tags: Record<string, string> }) {
           creationTags = params.tags;

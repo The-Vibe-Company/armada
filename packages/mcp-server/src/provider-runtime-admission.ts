@@ -1,4 +1,4 @@
-import { isSandboxPlacementProvider } from "@armada/core";
+import { isSandboxPlacementProvider, type SandboxProviderId } from "@armada/core";
 
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
@@ -22,3 +22,5 @@ export function runtimeConfigurationFailure(id: unknown) {
   const names: Record<string, string> = { boat: "Boat runtime", docker: "Docker runtime" };
   return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;
 }
+
+export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true, modal: true };

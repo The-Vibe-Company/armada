@@ -1,6 +1,7 @@
-import type { CredentialBinding, GoldenActor, Provider, Sql } from "@armada/core/server";
+import type { CredentialBinding, GoldenActor, Harness, Provider, Sql } from "@armada/core/server";
 import {
   createSqlVaultStore,
+  failureDiagnostic,
   ProviderError,
   redact,
   sshNativeAuthAdmission,
@@ -9,10 +10,31 @@ import {
 } from "@armada/core/server";
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
-import { admitAccountCapacity, admitLaunchAccount } from "./account-capacity.ts";
+import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
+import { NativeOutputPending } from "./event-pagination.ts";
+import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
-import { createNativeStateStore } from "./model-auth-state.ts";
+import { createNativeStateStore, NativeObservationSuperseded } from "./model-auth-state.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
+
+class StoppedBoatAuthProofMissing extends ProviderError {
+  constructor(
+    readonly reason: "broker_delivery_missing" | "legacy_quiescence_missing",
+    message: string,
+  ) {
+    super({ provider: "boat", code: "unavailable", retryable: true, message });
+  }
+}
+
+function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
+  recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
+    causeCode:
+      error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing
+        ? error.reason
+        : undefined,
+  });
+}
 
 /**
  * Private subscription state and redaction. Subscription accounts are shared;
@@ -69,6 +91,9 @@ export function createModelAuthOwnership(
   return {
     state,
     broker,
+    launchAccountDefault: (userId: string, harness: Harness) => readLaunchAccountDefault(sql, userId, harness),
+    chooseLaunchPoolAccount: (userId: string, harness: Harness, preference: LaunchAccountDefault) =>
+      chooseLaunchPoolAccount(sql, userId, harness, preference, now),
     async admitCapacity(accountId: string, sandboxId: string, model?: string) {
       await sql.transaction!((tx) => admitAccountCapacity(tx, accountId, sandboxId, model));
     },
@@ -91,9 +116,7 @@ export function createModelAuthOwnership(
         if (row?.credential_id) await admitAccountCapacity(tx, row.credential_id, sandboxId);
       });
     },
-    async releaseCapacity(sandboxId: string) {
-      await sql.query("delete from public.account_agent_reservations where sandbox_id=$1", [sandboxId]);
-    },
+    releaseCapacity: (sandboxId: string) => releaseAccountCapacity(sql, sandboxId),
     async shared(sandboxId: string): Promise<boolean> {
       return (
         !!broker &&
@@ -164,25 +187,18 @@ export function createModelAuthOwnership(
       if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
         if (provider.id === "boat") {
           const authorize = async (tx: Sql) => {
-            const pinned = await tx.query(
-              `select s.id from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
-               and s.credential_id=$4::uuid and s.credential_version=$5 and s.lifecycle_generation=$6
-               and s.provider='boat' and s.provider_sandbox_id=$7 and s.deleted_at is null
-               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$8::uuid)
+            const pinned = await tx.query<{ lifecycle_generation: number }>(
+              `select s.lifecycle_generation from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
+               and s.credential_id=$4::uuid and s.credential_version=$5
+               and s.provider='boat' and s.provider_sandbox_id=$6 and s.deleted_at is null
+               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$7::uuid)
                and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
-                    or s.owner_id=$8::uuid) for update of s`,
-              [
-                row.id,
-                row.owner_id,
-                row.org_id,
-                row.credential_id,
-                row.credential_version,
-                row.lifecycle_generation,
-                providerId,
-                caller.userId,
-              ],
+                    or s.owner_id=$7::uuid) for update of s`,
+              [row.id, row.owner_id, row.org_id, row.credential_id, row.credential_version, providerId, caller.userId],
             );
-            if (!pinned.rows.length) throw new VaultError("conflict", "Private native observation source changed.");
+            if (!pinned.rows[0]) throw new VaultError("conflict", "Private native observation source changed.");
+            if (pinned.rows[0].lifecycle_generation !== row.lifecycle_generation)
+              throw new NativeObservationSuperseded("sandbox_generation");
           };
           const physical = await provider.get(providerId);
           if (physical.id !== providerId)
@@ -197,12 +213,10 @@ export function createModelAuthOwnership(
           if (physical.state === "stopped") {
             if (await state.hasBrokerDelivery(delivery))
               return broker.secrets(row.credential_id, row.credential_version);
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Stopped native auth has no verified access-only delivery; output is withheld.",
-            });
+            throw new StoppedBoatAuthProofMissing(
+              "broker_delivery_missing",
+              "Stopped native auth has no verified access-only delivery; output is withheld.",
+            );
           }
           if (!["ready", "running"].includes(physical.state) || physical.physicalExitConfirmed === true)
             throw new ProviderError({
@@ -242,13 +256,10 @@ export function createModelAuthOwnership(
       }
       const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
         if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
-          throw new ProviderError({
-            provider: "boat",
-            code: "unavailable",
-            retryable: true,
-            message:
-              "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
-          });
+          throw new StoppedBoatAuthProofMissing(
+            "legacy_quiescence_missing",
+            "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
+          );
         return saved?.secrets ?? [];
       };
       const nativeSource = { actor, accountId: row.credential_id, version: row.credential_version, sandboxId: row.id };
@@ -259,11 +270,10 @@ export function createModelAuthOwnership(
             : "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null and credential_id=$2::uuid and credential_version=$3 for update",
           retired ? [row.id] : [row.id, row.credential_id, row.credential_version],
         );
-        if (
-          (!retired && !current.rows[0]) ||
-          current.rows[0]?.lifecycle_generation !== row.lifecycle_generation ||
-          (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
-        )
+        const pinned = current.rows[0];
+        if (pinned && pinned.lifecycle_generation !== row.lifecycle_generation)
+          throw new NativeObservationSuperseded("sandbox_generation");
+        if (!pinned || (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation))
           throw new VaultError(
             "conflict",
             retired ? "Retired native source changed." : "Native source incarnation changed.",
@@ -306,12 +316,22 @@ export function createModelAuthOwnership(
           await state.publish({ ...observation, expectedRevision: saved?.revision ?? 0 });
           return (await readState())?.secrets ?? [];
         } catch (error) {
+          if (error instanceof NativeObservationSuperseded && error.reason === "sandbox_generation") throw error;
           if (!(error instanceof VaultError) || error.code !== "conflict" || attempt === 2) throw error;
         }
       }
       throw new VaultError("conflict", "Native auth publication is not acknowledged.");
     },
-    async redactEvents(
+    async captureAfterBoatPrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
+      try {
+        await this.capture(provider, providerId, caller);
+      } catch (error) {
+        recordNativeReadFailure("getPrompt", error);
+        if (!(error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing))
+          throw error;
+      }
+    },
+    async redactBoatEvents(
       provider: Provider,
       providerId: string,
       caller: { userId: string; orgId: string },
@@ -322,19 +342,20 @@ export function createModelAuthOwnership(
           `select 1 from public.sandboxes s join public.model_auth_state state
            on state.account_id=s.credential_id and state.account_version=s.credential_version
            where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
+           and s.deleted_at is null
+           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
+           and (coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org' or s.owner_id=$4::uuid)
            and s.activity_lease_id is not null and s.activity_until>now()`,
-          [provider.id, providerId, caller.orgId],
+          [provider.id, providerId, caller.orgId, caller.userId],
         );
-        if (pending.rows.length)
-          throw new ProviderError({
-            provider: provider.id,
-            code: "unavailable",
-            retryable: true,
-            message: "Native output synchronization is pending. Retry after the current operation finishes.",
-          });
+        if (pending.rows.length) throw new NativeOutputPending(provider.id);
       };
       await pendingCommand();
-      const secrets = await this.capture(provider, providerId, caller);
+      const secrets = await this.capture(provider, providerId, caller).catch((error: unknown) => {
+        recordNativeReadFailure("events", error);
+        if (error instanceof NativeObservationSuperseded) throw new NativeOutputPending(provider.id);
+        throw error;
+      });
       // Native renewal state only covers Codex. Match exec's static credential
       // redaction using the stored sandbox owner, never the viewing member.
       const owners = await sql.query<{ owner_id: string; org_id: string }>(
@@ -476,7 +497,7 @@ export function createModelAuthOwnership(
         return { authRevision: revision, committed: false };
       }
     },
-    async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false): Promise<void> {
+    async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false) {
       const result = await sql.query<{
         credential_id: string | null;
         credential_version: number | null;
@@ -557,18 +578,18 @@ export type ModelAuthOwnership = ReturnType<typeof createModelAuthOwnership>;
 /** Honest UI capability: consent runs in the user's native CLI, never this service. */
 export const modelAuthCapabilities = {
   hostedOAuth: false,
-  nativeCLI: { codex_auth: "armada creds login codex" },
+  nativeCLI: { codex_auth: "armada account login codex" },
   nativeSubscriptionParallelSandboxes: true,
   nativeSubscriptionResume: true,
   nativeSubscriptionExec: true,
   claude: {
     login: null,
-    import: "armada creds import claude --name <name> --file <private-token-file>",
+    import: "armada account import claude --name <name> --file <private-token-file>",
     preparation: "Run the official claude setup-token locally. Model-only tokens cannot read profile allowance.",
   },
   codex: {
-    login: "armada creds login codex --name <name>",
-    import: "armada creds import codex --name <name> --file <private-auth-json>",
+    login: "armada account login codex --name <name>",
+    import: "armada account import codex --name <name> --file <private-auth-json>",
     preparation: "Install official Codex locally. Device login requires an eligible ChatGPT account.",
   },
   provisioning:

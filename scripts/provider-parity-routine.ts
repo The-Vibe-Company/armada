@@ -1,7 +1,7 @@
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** Coordinator-only scheduled execution proof; helper for the single --parity entrypoint. */
-export interface RoutineProbeCase {
+interface RoutineProbeCase {
   provider: "boat" | "modal" | "docker";
   harness: string;
   model: string;
@@ -227,7 +227,7 @@ export async function probeRoutine(
       hostId?: string;
       golden: string | null;
       billingAccount?: { id: string };
-    }>("sandbox/detail", { id: run.sandboxId });
+    }>("sandbox/status", { id: run.sandboxId });
     if (
       !state ||
       state.id !== run.sandboxId ||

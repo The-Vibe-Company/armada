@@ -126,12 +126,11 @@ export {
   type DockerSnapshotRecord,
 } from "./docker-api.ts";
 export { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
-export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
-  DOCKER_HOST_SNAPSHOT_BASELINE_HEADER,
-  dockerHostMeetsVersion,
-  dockerHostUpgradeMessage,
-} from "./docker-host-upgrade.ts";
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+} from "./docker-host-protocol.ts";
+export { dockerHostResourceDisplay, validDockerHostResources } from "./docker-host-resources-view.ts";
 export {
   DOCKER_LOCAL_IMAGE_LABELS,
   type DockerSnapshotBinding,
@@ -353,7 +352,6 @@ export {
   type HarnessCapabilities,
   type InterruptRequest,
   isFinalPromptStatus,
-  type ListRequest,
   type Page,
   PROMPT_STATUSES,
   type PrepareNativeHarnessCwdRequest,
@@ -380,15 +378,12 @@ export {
 } from "./provider.ts";
 export { type ProviderRateLimitDetails, providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
 export {
-  goldenCompatibilityIds,
   goldenResponse,
   launchGitHubResponse,
-  sandboxIdentity,
 } from "./provider-response.ts";
 export {
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
-  PUBLIC_CONTROL_ROUTES,
   VAULT_CONTROL_BODY_MAX_BYTES,
   vaultControlRoute,
 } from "./public-control-routes.ts";

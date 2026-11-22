@@ -1,0 +1,250 @@
+import { AuthError } from "@armada/auth";
+import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
+import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "@armada/core/contract";
+import { requireLaunchAgent } from "../agent-validation.ts";
+import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
+import { rememberSandbox } from "../current-sandbox.ts";
+import { prepareLaunch } from "../devx.ts";
+import { launchDocker } from "../docker-launch.ts";
+import { parseTtl } from "../operations.ts";
+import { printOptionalResourceAdvice } from "../resource-advice.ts";
+import { createSdkCommandClient } from "../sdk-session.ts";
+import type { Command } from "./command.ts";
+
+type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
+
+const run: Command["run"] = async (argv, { io, deps, auth }) => {
+  argv = await prepareLaunch(argv, { ...auth, ...io });
+  const args = parseArgs(
+    argv,
+    [
+      "--skill",
+      "--max-active-children",
+      "--host",
+      "--image",
+      "--idempotency-key",
+      "--credential-version",
+      "--variable",
+      "--secret",
+      "--golden",
+    ],
+    ["--armada-access", "--keep-after-merge"],
+  );
+  if (single(args, "--provider") === "docker") {
+    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, deps.sandboxFile);
+  }
+  if (
+    ["--host", "--image", "--idempotency-key", "--credential-version", "--golden", "--variable", "--secret"].some(
+      (key) => single(args, key) !== undefined,
+    )
+  )
+    throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
+  const provider = providerFlag(args);
+  if (provider === undefined) throw new GoldenError("invalid_config", "Pass --provider boat, modal, or docker.");
+  const maxActiveChildren = single(args, "--max-active-children");
+  if (
+    maxActiveChildren !== undefined &&
+    (!flag(args, "--armada-access") || !/^[1-9][0-9]*$/.test(maxActiveChildren) || Number(maxActiveChildren) > 100)
+  )
+    throw new GoldenError(
+      "invalid_config",
+      "--max-active-children requires --armada-access and a limit from 1 to 100.",
+    );
+  if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
+    throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
+  const legacyVisibility = single(args, "--visibility");
+  if (legacyVisibility !== undefined) {
+    if (legacyVisibility !== "private" && legacyVisibility !== "org")
+      throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
+    io.err(
+      "Warning: --visibility is deprecated and ignored. The server enforces sandbox access and resolves omitted connection defaults.\n",
+    );
+  }
+  const connections = single(args, "--connections");
+  if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
+    throw new GoldenError(
+      "invalid_config",
+      "--connections needs a comma-separated list of nonempty IDs; use --no-connections to opt out.",
+    );
+  const [name, prompt, ...extra] = args.positionals;
+  if (name === undefined || extra.length > 0) {
+    throw new GoldenError("invalid_config", "Give a snapshot name and at most one prompt.");
+  }
+  const harness = requireLaunchAgent(single(args, "--agent"));
+  const repo = single(args, "--repo");
+  resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
+  const ttl = single(args, "--ttl");
+  const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
+  const client = await createSdkCommandClient({
+    env: auth.env,
+    fetch: deps.fetch ?? auth.fetch,
+    session: auth.session,
+    ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
+  });
+  const result = await client.sandboxes.launch<LaunchWireResult | ModalLaunchReceipt>(
+    {
+      ...(flag(args, "--no-connections") ? { connections: [] } : {}),
+      ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
+      ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
+      ...(connections === undefined ? {} : { connections: connections.split(",") }),
+      ...(flag(args, "--armada-access")
+        ? {
+            armadaAccessVersion: 1,
+            armadaAccess: {
+              ...(maxActiveChildren === undefined ? {} : { maxActiveChildren: Number(maxActiveChildren) }),
+            },
+          }
+        : {}),
+      credentialId: single(args, "--credential-id"),
+      golden: name,
+      ...(repo === undefined ? {} : { repo }),
+      provider,
+      harness,
+      ...(single(args, "--model") === undefined ? {} : { model: single(args, "--model") }),
+      ...(single(args, "--reasoning-effort") === undefined
+        ? {}
+        : { reasoningEffort: single(args, "--reasoning-effort") }),
+      ...(prompt === undefined ? {} : { prompt }),
+      ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+      ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
+    },
+    { signal: AbortSignal.timeout(10 * 60_000) },
+  );
+  if (!("golden" in result) && !parseLaunchAdmissionReceipt(provider, result))
+    throw new AuthError(
+      "Armada returned an invalid launch receipt. Run armada ls to check before retrying.",
+      "unavailable",
+    );
+  if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
+    await rememberSandbox(result.sandbox.id, deps.sandboxFile, io);
+  if (flag(args, "--json")) {
+    io.out(`${JSON.stringify(result, null, 2)}\n`);
+  } else if ("golden" in result) {
+    io.out(launchText(result, auth.now()));
+    await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
+  } else {
+    io.out(`Sandbox: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`);
+  }
+  return 0;
+};
+
+export default {
+  name: "new",
+  summary: "Launch an agent sandbox",
+  usage: {
+    "docker-launch": `  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
+                                           Docker launch through the normal Armada API using the official Armada environment.`,
+    new: `  armada new <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
+                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
+                --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
+                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
+                Omit connections to request server defaults; --no-connections opts out.
+                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
+                                           without one the sandbox waits, ready, for the first prompt. The model
+                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
+                                           otherwise use your personal or organization default.
+                                           --repo selects the agent's initial working directory, including when idle.
+                                           Defaults:
+                                           ${modelDefaults()}`,
+  },
+  help: `Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
+Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
+Sign in with armada login or set ARMADA_TOKEN for scripts.
+Find snapshots with armada snapshot ls; select an organization with --org or armada login --org NAME|UUID.
+
+Boat/Modal options:
+  --provider boat|modal                  Select the snapshot provider.
+  --model <id> --reasoning-effort <level> Model settings also apply to later turns.
+  --credential-id UUID                   Model account; otherwise personal/org default.
+  --repo <configured-dir|owner/repo>      Initial repository cwd, not confinement.
+  --ttl <duration>                       Sandbox lifetime, for example 4h.
+  --skill org/slug@version|slug@version   Repeat for multiple skills.
+  --connections <id,...>                 Explicit MCP connections.
+  --no-connections                       Opt out; omission uses server defaults.
+  --keep-after-merge                     Disable automatic stopping after merged work.
+  --armada-access                        Enable scoped Armada child access.
+  --max-active-children <1..100>          Requires --armada-access.
+  --org <org> --json                     Organization selector and machine output.
+
+Docker form:
+  armada new [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
+    [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
+    [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
+    [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
+    [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
+    [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
+Uses the official Armada environment or an existing host-local snapshot.
+A snapshot cannot be combined with --repo.
+Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
+OpenCode is also supported on Modal and Docker.
+--golden is the existing Docker snapshot selector, not a new snapshot command.
+Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
+
+In an interactive terminal, bare armada new opens the launcher.
+Pass explicit arguments in scripts.
+A successful launch saves the sandbox ID to .armada/sandbox in the current directory.
+--json emits the launch response on stdout without human launch advice.
+After an uncertain launch, inspect armada ls before retrying.
+Example: armada new starter --provider modal --agent codex "Inspect the repository" --json
+Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
+`,
+  automaticJson: true,
+  useSelectedOrg: true,
+  run,
+} satisfies Command;
+
+function launchText(result: LaunchWireResult, now: Date) {
+  const { sandbox, golden } = result;
+  const lines = [
+    `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
+    "Access: enforced by the server; metadata hints do not grant interior access.",
+    `Sandbox: ${sandbox.id}`,
+    `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
+    `Status: ${sandbox.status}`,
+    ...(sandbox.machineSize
+      ? [
+          `Size: ${sandbox.machineSize.effective ?? "unknown (legacy)"} (requested ${sandbox.machineSize.requested ?? "none"}; source ${sandbox.machineSize.source}).`,
+        ]
+      : []),
+    ...(sandbox.repositoryDir
+      ? [`Repository context: ${sandbox.repositoryDir} (initial agent working directory, not an isolation boundary).`]
+      : []),
+    ...(sandbox.skills?.map((skill) => `Skill: ${skill.reference} (${skill.checksum})`) ?? []),
+    `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
+  ];
+  if (sandbox.credentialId)
+    lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
+  if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
+  else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
+  lines.push(githubLine(result, now));
+  if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
+  lines.push(
+    result.expiresAt
+      ? `Stops by itself at ${new Date(result.expiresAt).toISOString()} (TTL ${result.ttlSeconds}s).`
+      : `Stops by itself after ${result.ttlSeconds}s.`,
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function githubLine(result: Pick<LaunchResult, "sandbox" | "github">, now: Date) {
+  const { github } = result;
+  if (github.status === "connected") {
+    const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
+    const lifetime =
+      expiry && Number.isFinite(expiry.getTime())
+        ? `launch token expires at ${expiry.toISOString()} (~${Math.max(0, Math.floor((expiry.getTime() - now.getTime()) / 60_000))} minutes remaining)`
+        : "launch token remaining lifetime unknown";
+    const repair =
+      result.sandbox.provider === "boat"
+        ? `Use armada api github/refresh '{"id":"${result.sandbox.id}"}' for a running legacy sandbox; automatic next-prompt repair is experimental and off by default.`
+        : "Reconnect GitHub if needed and resume to re-resolve credentials.";
+    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
+  }
+  return `GitHub: not set up. ${github.message ?? ""}`.trim();
+}
+
+function modelDefaults() {
+  return Object.entries(MODEL_CATALOG)
+    .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
+    .join(", ");
+}

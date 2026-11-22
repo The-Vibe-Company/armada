@@ -239,7 +239,10 @@ for (const outcome of ["error", "unconfirmed"] as const)
     });
     try {
       await f.insert();
-      await f.scoped.sandboxes.update(f.id, { status: "failed", statusReason: "Original initialization failure" });
+      await f.server.db.query("update sandboxes set status='failed',status_reason=$2 where id=$1", [
+        f.id,
+        "Original initialization failure",
+      ]);
       expect((await f.control("stop", provider))?.status).toBe(outcome === "error" ? 502 : 200);
       const pending = await f.scoped.sandboxes.get(f.id);
       expect(pending?.status).toBe("failed");
@@ -335,7 +338,7 @@ test("manual stop retires an interrupted registration whose exact provider ident
   });
   try {
     await f.insert();
-    await f.scoped.sandboxes.update(f.id, { status: "starting" });
+    await f.server.db.query("update sandboxes set status='starting' where id=$1", [f.id]);
     expect((await f.control("stop", provider))?.status).toBe(200);
     const pending = await f.scoped.sandboxes.get(f.id);
     expect(pending?.status).toBe("stopping");

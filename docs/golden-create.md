@@ -1,18 +1,23 @@
 # Secure, server-orchestrated snapshots
 
 Snapshots (called golden in older versions) contain repositories, dependencies and non-secret configuration, **never secrets**.
-The CLI is an authenticated Armada API client: create, update, connect and snapshot all go
-through the server's authorization and provider routing. Callers need an Armada session
+The CLI sends create and update requests through the server’s authorization and
+provider routing. The REST maintenance routes below handle connect and manual snapshot saves. Callers need an Armada session
 (`armada login`) or `ARMADA_TOKEN`, and the appropriate `ARMADA_URL`, not provider keys.
 Connect is for non-secret maintenance, not for installing credentials or secret-bearing files.
 
 ## Create or rebuild with the CLI
 
+Replace `ORG_UUID` with the target organization UUID. Save separate idempotency keys
+for the create and update requests and substitute them for `CREATE_KEY` and `UPDATE_KEY`.
+Before updating, save the complete desired repository and initialization
+configuration in the local `snapshot.json` file.
+
 ```sh
-armada snapshot create web --repo https://github.com/acme/web --provider boat --org <org> \
-  --idempotency-key <saved-key> --timeout 60
-armada snapshot update web --replace --config golden.json --provider boat --org <org> \
-  --idempotency-key <new-saved-key> --timeout 60
+armada snapshot new web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
+  --idempotency-key CREATE_KEY --wait --timeout 60
+armada snapshot update web --replace --config snapshot.json --provider boat --org ORG_UUID \
+  --idempotency-key UPDATE_KEY --wait --timeout 60
 ```
 
 - Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`. Repeated
@@ -27,21 +32,17 @@ armada snapshot update web --replace --config golden.json --provider boat --org 
   between providers; Modal's workspace/environment/App binding is immutable. Boat compatibility
   IDs are not Modal IDs.
 - Save an idempotency key **before submission** (16–128 letters, digits, underscores or hyphens).
-  The CLI generates and prints one to stderr if omitted. It prints the admitted job ID, then
-  polls. `--timeout` is a local wait in seconds, 0–600 (default 60), not the build deadline;
-  `0` returns after admission. Acceptance or a successful exit after local waiting is **not
-  publication**. Only `state: succeeded` establishes completion.
-- When the job succeeds during the wait, the CLI prints the completed result (with `--json`,
-  the result object, not just a receipt). If still pending, it can print the current status (`--json` prints the job object),
-  or exit with a polling-stopped error and recovery guidance when its local deadline expires.
-  Very short waits such as `--timeout 1` can expire during the fixed two-second polling interval;
-  use `0` for admission-only output. Disconnecting does not cancel or resubmit the build.
+  The CLI generates and prints one to stderr if omitted. It returns after admission by default.
+  Pass `--wait` to poll for up to `--timeout` seconds (1–600, default 60).
+  A successful exit can still mean the job is pending. Use `snapshot show --build JOB_UUID`
+  to confirm publication (`state: succeeded`). Disconnecting leaves the admitted build running.
 
-Recover without starting another build:
+Recover with the returned build UUID (`JOB_UUID`) or the key saved for that
+request (`SAVED_KEY`).
 
 ```sh
-armada snapshot build-status <job-id> --json
-armada snapshot build-status --idempotency-key <saved-key> --org <org> --json
+armada snapshot show --build JOB_UUID --json
+armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID --json
 ```
 
 If admission's response is lost, recover by the saved key first. The same requester/org/key

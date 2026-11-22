@@ -2,12 +2,14 @@ import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
 
 /** GitHub tokens, whether or not they were explicitly supplied as launch secrets. */
 const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})/g;
+export const ARMADA_API_KEY_PATTERN = "armada_sk_[A-Za-z0-9_-]{43}";
+const ARMADA_API_KEY = new RegExp(ARMADA_API_KEY_PATTERN, "g");
 const SKILLPACK_TOKEN = new RegExp(SKILLPACK_TOKEN_PATTERN, "g");
 
 /** Masks the union of recognized tokens and exact secrets in the original text. */
 export function redactKnownTokens(text: string, secrets: readonly string[] = []): string {
   const spans: [number, number][] = [];
-  for (const pattern of [GITHUB_TOKEN, /\barmada_gw_[A-Za-z0-9_-]{32,}/g, SKILLPACK_TOKEN]) {
+  for (const pattern of [GITHUB_TOKEN, /\barmada_gw_[A-Za-z0-9_-]{32,}/g, SKILLPACK_TOKEN, ARMADA_API_KEY]) {
     for (const match of text.matchAll(pattern)) spans.push([match.index, match.index + match[0].length]);
   }
   for (const secret of secrets) {

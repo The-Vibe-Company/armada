@@ -25,7 +25,6 @@ export function machineLabelFilters(state: Pick<State, "hostId" | "installationI
   ];
 }
 
-/** Read actual allocations, including created and stopped containers, for the bound registration. */
 export function createDockerContainerInventory(
   cli: DockerMachineCli,
   state: Pick<State, "hostId" | "installationId">,

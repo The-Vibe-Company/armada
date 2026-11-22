@@ -10,6 +10,7 @@ import {
   preserveWork,
   scanGoldenSandbox,
 } from "@armada/core/server";
+import { SandboxLastSnapshotStatusEnum, StopOperationStatusEnum } from "@boatdev/sdk";
 import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
 
@@ -233,6 +234,141 @@ describe("native harness cwd preparation", () => {
 });
 
 describe("sandboxes", () => {
+  test.each([
+    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, null, "usable"],
+    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, null, "unconfirmed"],
+    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, null, "unconfirmed"],
+    ["a newer snapshot attempt", "2026-11-21T19:42:24Z", 1795290158322, "2026-11-21T19:42:35Z", "unconfirmed"],
+  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, lastSnapshotAttemptAt, expected) => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: new Date(endedAt).toISOString(),
+      lastAttemptAt: new Date(endedAt).toISOString(),
+      error: null,
+    };
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: new Date(1795290158322).toISOString(),
+            snapshotVerifiedAt: new Date(1795290150656).toISOString(),
+            lastSnapshotAttemptAt,
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop: { ...stop, requestedAt: null },
+          }),
+        },
+      },
+      { body: { ok: true, type: "stop.status", id: ID, stop: { ...stop, requestedAt } } },
+    );
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+  });
+
+  test("get identifies a by-ID stop completion mismatch in the retention diagnostic", async () => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: "2026-11-22T09:03:40Z",
+    };
+    const verifiedAt = "2026-11-22T09:03:35.500Z";
+    const observedEndedAt = "2026-11-22T09:03:41Z";
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: stop.endedAt,
+            snapshotVerifiedAt: verifiedAt,
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop,
+          }),
+        },
+      },
+      {
+        body: {
+          ok: true,
+          type: "stop.status",
+          id: ID,
+          stop: { ...stop, endedAt: observedEndedAt, requestedAt: "2026-11-22T09:03:30Z", error: "PRIVATE_ERROR" },
+        },
+      },
+    );
+    const log = spyOn(console, "info");
+    try {
+      expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: "unconfirmed" });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.find((event) => event.event === "boat_retention_unconfirmed")).toMatchObject({
+        providerSandboxId: ID,
+        retention: "unconfirmed",
+        reason: "stop_end_mismatch",
+        verifiedAt: Date.parse(verifiedAt),
+        stopEndedAt: Date.parse(stop.endedAt),
+        observedStopEndedAt: Date.parse(observedEndedAt),
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_ERROR");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test.each([
+    {
+      name: "a completed stop with a recently verified snapshot",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "usable",
+    },
+    {
+      name: "a superseded prior stop with a recently verified snapshot",
+      stopStatus: StopOperationStatusEnum.Superseded,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "usable",
+    },
+    {
+      name: "an in-flight stop",
+      stopStatus: StopOperationStatusEnum.Failing,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed },
+      expected: "pending",
+    },
+    {
+      name: "a snapshot still in progress",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.InProgress },
+      expected: "pending",
+    },
+    {
+      name: "a failed snapshot attempt despite recent verification",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Failed },
+      expected: "unconfirmed",
+    },
+    {
+      name: "no snapshot",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: null, snapshotAvailable: false, snapshotVerifiedAt: null },
+      expected: "unconfirmed",
+    },
+  ])("get classifies archived retention with $name", async ({ stopStatus, snapshot, expected }) => {
+    const ended = stopStatus === StopOperationStatusEnum.Completed || stopStatus === StopOperationStatusEnum.Superseded;
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "sandbox.info",
+        sandbox: retainedSandbox({
+          ...snapshot,
+          stop: {
+            id: "stop-1",
+            status: stopStatus,
+            requestedAt: ended ? null : "2026-11-09T09:59:00Z",
+            lastAttemptAt: "2026-11-09T10:00:00Z",
+            endedAt: ended ? "2026-11-09T10:00:00Z" : null,
+            error: ended ? null : "archival attempt failed",
+          },
+        }),
+      },
+    });
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+  });
+
   test("get maps boat's states onto the common ones", async () => {
     const states = [
       "init",
@@ -334,41 +470,6 @@ describe("sandboxes", () => {
     expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
   });
 
-  test("list filters by labels and states and pages with boat's cursor", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [sandbox({ state: "idle" })],
-          pageInfo: { nextCursor: "next-1", hasMore: true, limit: 2 },
-        },
-      },
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [],
-          pageInfo: { nextCursor: null, hasMore: false, limit: 2 },
-        },
-      },
-    );
-    const first = await boat.provider.list({
-      labels: { armada: "1", owner: "u1" },
-      states: ["ready", "running"],
-      limit: 2,
-    });
-    expect(first.cursor).toBe("next-1");
-    expect(first.items[0]).toMatchObject({ id: ID, state: "ready" });
-    const last = await boat.provider.list({ cursor: first.cursor as string });
-    expect(last).toEqual({ items: [], cursor: null });
-    const query = boat.requests[0]?.query;
-    expect(query?.getAll("label")).toEqual(["armada=1", "owner=u1"]);
-    expect(query?.get("state")).toBe("ready,idle,running");
-    expect(query?.get("limit")).toBe("2");
-    expect(boat.requests[1]?.query.get("cursor")).toBe("next-1");
-  });
-
   test("stop and delete use their endpoints, and delete confirms with the exact sandbox id", async () => {
     const boat = fakeBoat(
       { status: 202, body: { ok: true, type: "sandbox.stopping", id: ID, status: "stopping" } },
@@ -386,6 +487,33 @@ describe("sandboxes", () => {
     expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/stop` });
     expect(boat.requests[1]).toMatchObject({ method: "DELETE", path: `/api/v1/sandboxes/${ID}` });
     expect(boat.requests[1]?.headers.get("x-ascii-confirm-delete")).toBe(ID);
+  });
+
+  test.each([
+    ["completed", {}, "completed"],
+    ["still processing", { status: "processing" }, "pending"],
+    ["wrong operation", { id: "del_other" }, null],
+    ["wrong kind", { kind: "snapshot" }, null],
+    ["wrong placement", { targetId: "bx_98765432" }, null],
+  ] as const)("observes an exact sandbox deletion: %s", async (_case, changes, status) => {
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "deletion.operation",
+        operation: { id: "del_1", kind: "sandbox", targetId: ID, status: "completed", ...changes },
+      },
+    });
+    const receipt = boat.provider.observeSandboxDeletion({
+      sandboxId: ID,
+      generation: 6,
+      operationId: "del_1",
+      signal: new AbortController().signal,
+    });
+    if (status === null) await expect(receipt).rejects.toMatchObject({ code: "unknown" });
+    else await expect(receipt).resolves.toEqual({ status });
+    expect(boat.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/api/v1/deletion-operations/del_1" },
+    ]);
   });
 });
 
@@ -1056,7 +1184,7 @@ test("starting compute waits for readiness before a command", async () => {
 });
 
 test("idle capture observations show command admission without a wake", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat(
       { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
@@ -1187,7 +1315,7 @@ test("cleared Boat /run receipt restarts SSH hydration instead of trusting a pre
 test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
   "capture observations identify %s without waking or stopping compute",
   async (state) => {
-    const log = spyOn(console, "info").mockImplementation(() => {});
+    const log = spyOn(console, "info");
     try {
       const reads = state === "archived" ? 1 : 5;
       const boat = fakeBoat(
@@ -1247,7 +1375,7 @@ test("runtime activation resumes compute with explicit lifetime and no account e
 });
 
 test("terminal capture refusal identifies its stop caller without forwarding context to Boat", async () => {
-  const log = spyOn(console, "info").mockImplementation(() => {});
+  const log = spyOn(console, "info");
   try {
     const boat = fakeBoat({ body: { sandbox: sandbox({ state: "archived" }) } });
     await expect(
@@ -1258,7 +1386,9 @@ test("terminal capture refusal identifies its stop caller without forwarding con
         preservationContext: { source: "lifecycle_stop", captureId: "capture_fixture" },
       }),
     ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    const lines = log.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .filter((line) => line.event === "boat_preservation_exec");
     expect(lines).toHaveLength(2);
     for (const line of lines) expect(line).toMatchObject({ caller: "lifecycle_stop", captureId: "capture_fixture" });
     expect(lines[1]).toMatchObject({ decision: "refuse_terminal", normalizedState: "stopped" });
@@ -1384,6 +1514,11 @@ test("Boat does not publish an older snapshot without verification for the curre
       sandbox: sandbox({
         state: "archived",
         stoppedAt: "2026-11-18T10:01:00Z",
+        stop: {
+          id: "stop-1",
+          status: StopOperationStatusEnum.Completed,
+          endedAt: "2026-11-18T10:01:00Z",
+        },
         snapshotAvailable: true,
         snapshotCompletedAt: "2026-11-18T10:00:00Z",
         lastSnapshotStatus: "completed",

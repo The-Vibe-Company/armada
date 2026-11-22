@@ -49,39 +49,29 @@ describe("run", () => {
       },
     });
     expect(code).toBe(0);
-    expect(out).toContain("armada snapshot create");
-    expect(out).toContain("armada launch <snapshot> --agent claude|codex");
+    expect(out).toContain("armada snapshot new");
+    expect(out).toContain("armada new <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
-    expect(out).toContain("armada token create");
+    expect(out).toContain("armada api token/create");
     expect(out).toContain("--profile overrides ARMADA_PROFILE");
     expect(out).toContain("ARMADA_TOKEN is not isolated by profiles");
   });
 
   test.each([
-    "launch",
-    "list",
-    "detail",
-    "recovery",
-    "status",
-    "advice",
+    "new",
+    "ls",
+    "info",
     "bind-credential",
     "rm",
-    "extend",
     "report",
-    "send",
-    "steer",
+    "prompt",
     "exec",
     "stop",
-    "wait",
-    "interrupt",
     "mcp",
     "login",
     "logout",
-    "token",
     "org",
     "account",
-    "github",
-    "creds",
   ])("%s help needs no login or server request", async (command) => {
     const { code, out, err } = await capture([command, "--help"]);
     expect(code).toBe(0);
@@ -90,7 +80,7 @@ describe("run", () => {
     expect(out).toContain(command);
   });
 
-  test("unknown root or snapshot commands use the human or JSON usage error contract", async () => {
+  test("unknown commands use the human or JSON usage error contract", async () => {
     const forbidden = () => {
       throw new Error("Unknown command attempted I/O");
     };
@@ -108,9 +98,40 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
+      [["token", "create"], "token", true],
+      [["routine", "create"], "routine", true],
+      [["vars"], "vars", true],
+      [["vars", "set"], "vars", true],
+      [["secrets"], "secrets", true],
+      [["secrets", "set"], "secrets", true],
+      [["org", "create"], "org create", true],
+      [["--profile", "unconfigured", "org", "members", "list"], "org members", true],
+      [["org", "invitations", "accept"], "org invitations", true],
+      [["--profile", "unconfigured", "github", "connect"], "github"],
+      [["--profile", "unconfigured", "creds", "list"], "creds", true],
+      [["list"], "list", true],
+      [["send"], "send", true],
+      [["steer"], "steer", true],
+      ...["status", "detail", "wait", "advice", "recovery", "interrupt", "extend"].map(
+        (verb) => [[verb], verb, true] as const,
+      ),
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
-      [["snapshot", "connect", "web", "--provider", "boat"], "snapshot connect", true],
-      [["golden", "snapshot", "web", "--provider", "docker"], "snapshot snapshot", true],
+      ...[
+        "create",
+        "list",
+        "get",
+        "remove",
+        "visibility",
+        "capabilities",
+        "size-policy",
+        "build-status",
+        "build-find",
+        "build-cancel",
+        "retirement",
+        "connect",
+        "snapshot",
+      ].map((verb) => [["snapshot", verb], `snapshot ${verb}`, true] as const),
+      [["golden", "snapshot", "web", "--provider", "docker"], "golden", true],
     ] as const) {
       for (const json of [false, true]) {
         const diagnostic = `unknown command '${command}'`;
@@ -122,6 +143,7 @@ describe("run", () => {
             error: {
               code: "usage",
               message: `${diagnostic}. Run 'armada --help'.`,
+              hint: expect.stringContaining("--help"),
             },
           });
         } else {
@@ -130,7 +152,10 @@ describe("run", () => {
         }
       }
       if (checkHelp) {
-        const help = await capture([...args.slice(0, 2), "--help"], deps);
+        const help = await capture(
+          [...args.slice(0, args[0] === "--profile" || args[0] === "org" ? args.length : 2), "--help"],
+          deps,
+        );
         expect(help.code).toBe(2);
         expect(help.out).toBe("");
         expect(help.err).toContain(`unknown command '${command}'`);
@@ -143,7 +168,7 @@ test("bare discovery families succeed without profile, account or input I/O", as
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["snapshot", "golden", "host", "template", "routine", "vars", "secrets"]) {
+  for (const command of ["host", "template"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),
@@ -159,26 +184,4 @@ test("bare discovery families succeed without profile, account or input I/O", as
     expect(result.out).toContain(`Example: armada ${family}`);
     expect(result.out).not.toContain("Quick start / common examples:");
   }
-});
-
-test.each(["snapshot", "golden"])("%s help works before login and documents snapshots", async (command) => {
-  let out = "";
-  let err = "";
-  expect(
-    await run(
-      [command, "--help"],
-      {
-        out: (text) => {
-          out += text;
-        },
-        err: (text) => {
-          err += text;
-        },
-      },
-      { env: {} },
-    ),
-  ).toBe(0);
-  expect(out).toContain("armada snapshot create");
-  expect(out).not.toContain("armada golden ");
-  expect(err).toBe("");
 });

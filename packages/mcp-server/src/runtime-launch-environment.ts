@@ -5,7 +5,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 
 type RuntimeClock = Parameters<typeof createRuntimeCommands>[2];
 
-export interface RuntimeEnvironmentSource {
+interface RuntimeEnvironmentSource {
   orgId: string;
   harness: Harness;
   variables: Record<string, string>;
@@ -21,6 +21,7 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
     load(tx: Sql): Promise<RuntimeEnvironmentSource>;
     epoch?: string | undefined;
     signal?: AbortSignal | undefined;
+    assertClaim?: ((tx: Sql) => Promise<void>) | undefined;
   }) => {
     const { id, provider, ownerId, signal } = input;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime environment delivery is unavailable.");
@@ -48,10 +49,11 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
             key,
           );
           const variables = validateReadableVariables({ ...source.variables, ...secrets });
-          return locked.withOwner(id, ownerId, async (_tx, scope) => {
+          return locked.withOwner(id, ownerId, async (lockedTx, scope) => {
             if (scope.provider !== provider || (input.epoch !== undefined && scope.epoch !== input.epoch))
               throw new VaultError("conflict", "Runtime environment admission changed.");
             signal?.throwIfAborted();
+            await input.assertClaim?.(lockedTx);
             const request = {
               version: 1 as const,
               requestId: `${provider}_variables_${id}_${scope.epoch}`,
@@ -62,6 +64,7 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
               ...(provider !== "docker" ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
             };
             await createRuntimeCommands(locked, key, clock).enqueue(ownerId, request, scope.epoch);
+            await input.assertClaim?.(lockedTx);
             return { request, epoch: scope.epoch };
           });
         });

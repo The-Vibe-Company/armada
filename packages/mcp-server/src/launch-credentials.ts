@@ -62,6 +62,16 @@ export function launchCredentials(
   resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
 } {
   async function resolveModel(actor: GoldenActor, harness: Harness, credentialId?: string, credentialVersion?: number) {
+    if (ownership && credentialId === undefined && credentialVersion === undefined) {
+      const preference = await ownership.launchAccountDefault(actor.userId, harness);
+      if (preference?.credentialIds.length) {
+        const selected = await ownership.chooseLaunchPoolAccount(actor.userId, harness, preference);
+        credentialId = selected.credentialId;
+        credentialVersion = selected.credentialVersion;
+      } else {
+        credentialId = preference?.credentialId ?? undefined;
+      }
+    }
     return resolveCredentials(reader, encryptionKey, {
       userId: actor.userId,
       orgId: actor.orgId,
@@ -98,12 +108,12 @@ export function launchCredentials(
               const denied = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
                 );
               const unknown = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} could not be verified as public before launch. Run armada github connect or retry when GitHub is available.`,
+                  `Repository ${repository.dir} could not be verified as public before launch. Run armada account login github or retry when GitHub is available.`,
                 );
               const request = async (suffix = "") => {
                 try {
@@ -254,6 +264,15 @@ export function launchCredentials(
       }
     },
     async defaults(actor, harness) {
+      if (ownership) {
+        const preference = await ownership.launchAccountDefault(actor.userId, harness);
+        if (!preference) return undefined;
+        return {
+          harness,
+          credentialId: preference.credentialIds.length ? null : preference.credentialId,
+          model: preference.model,
+        };
+      }
       return (await reader.agentDefaults?.(actor.userId))?.find((row) => row.harness === harness);
     },
     async resolve(

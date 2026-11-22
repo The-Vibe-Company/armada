@@ -13,19 +13,21 @@ const skillPins = z.array(z.string().max(256).regex(SKILL_PIN_PATTERN)).max(20);
 const idempotencyKey = z.string().min(16).max(128);
 const size = z.enum(MACHINE_SIZES).optional();
 
+export const launchExternalRef = z
+  .string()
+  .min(1)
+  .max(MAX_EXTERNAL_REF_LENGTH)
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are excluded from external references
+  .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
+  .optional();
+
 const common = {
   org: nonBlank.optional().describe("Organization slug or UUID."),
   harness: z.enum(HARNESSES),
   skills: skillPins.optional(),
   skipSkillDefaults: z.boolean().optional(),
   stopWhenWorkMerged: z.boolean().optional(),
-  externalRef: z
-    .string()
-    .min(1)
-    .max(MAX_EXTERNAL_REF_LENGTH)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are excluded from external references
-    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
-    .optional(),
+  externalRef: launchExternalRef,
 };
 
 function ttl(provider: SandboxPlacementProviderId) {
@@ -42,7 +44,7 @@ const selectable = {
 const golden = {
   ...common,
   ...selectable,
-  golden: nonBlank.describe("The name returned by golden discovery."),
+  golden: nonBlank.describe("The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot ls."),
   prompt: nonBlank.optional(),
   size,
   sizePolicyVersion: z.literal(1).optional(),
@@ -74,10 +76,7 @@ const pinnedModal = z.strictObject({
   runtimeTransport: z.literal("dialout"),
   id: uuid,
   revision: z.number().int().positive(),
-  requestKey: z
-    .string()
-    .regex(/^[A-Za-z0-9._:-]+$/)
-    .max(128),
+  idempotencyKey,
   prompt: nonBlank.max(100000).optional(),
   ttlSeconds: ttl("modal"),
   size,
@@ -116,6 +115,9 @@ const host = {
 };
 const snapshot = { snapshotId: uuid, hostId: uuid.optional() };
 
+export const dockerHostLaunchFields = z.strictObject({ ...docker, ...host });
+export const dockerSnapshotLaunchFields = z.strictObject({ ...docker, ...snapshot });
+
 // Each strict variant carries its provider literal. Providers with multiple
 // source and runtime forms use distinct objects so mixed fields are rejected.
 export const launchInput = z.union([
@@ -124,10 +126,18 @@ export const launchInput = z.union([
   z.strictObject({ ...modal, ...defaultRuntime }),
   z.strictObject({ ...modal, ...explicitRuntime, runtimeTransport: z.literal("dialout") }),
   pinnedModal,
-  z.strictObject({ ...docker, ...host, requestId: uuid }),
-  z.strictObject({ ...docker, ...snapshot, requestId: uuid }),
-  z.strictObject({ ...docker, ...host, idempotencyKey }),
-  z.strictObject({ ...docker, ...snapshot, idempotencyKey }),
+  dockerHostLaunchFields.extend({ idempotencyKey }),
+  dockerSnapshotLaunchFields.extend({ idempotencyKey }),
 ]);
 
-export type LaunchInput = z.input<typeof launchInput>;
+export type PinnedModalLaunchInput = z.input<typeof pinnedModal>;
+type LaunchBody = z.input<typeof launchInput>;
+export type LaunchInput = ExclusiveVariant<LaunchBody>;
+
+type VariantKeys<Variant> = Variant extends unknown ? keyof Variant : never;
+type ExclusiveVariant<Variant extends { provider: string }, Union = Variant> = Variant extends unknown
+  ? Variant &
+      Partial<Record<Exclude<VariantKeys<Extract<Union, { provider: Variant["provider"] }>>, keyof Variant>, never>>
+  : never;
+export type DockerLaunchInput = Extract<LaunchInput, { provider: "docker" }>;
+export type GoldenLaunchInput = Extract<LaunchInput, { golden: string }>;

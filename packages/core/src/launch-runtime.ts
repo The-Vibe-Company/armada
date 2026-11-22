@@ -10,7 +10,7 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
     forkEnv: () => ({}),
     recordFields: ({ provider }) =>
       launchInfrastructure(provider.id).nativeCli ? { boatRuntime: true } : { runtimeTransport: "dialout" },
-    async initialize(plan, { actor, record, signal, progress, mark, runtimeStarted, reportGitHub }) {
+    async initialize(plan, { actor, record, signal, progress, mark, runtimeStarted, runtimeEnrolled, reportGitHub }) {
       const { provider, stores, request, options, golden, credentials } = plan;
       progress("initialization_hydrate");
       progress("initialization_github");
@@ -18,11 +18,12 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
       progress("initialization_mcp");
       requireLaunchHeadroom(record);
       const agent = await Promise.resolve().then(() =>
-        runtime.start({ host: provider, actor, sandbox: record, credentials, signal }),
+        runtime.start({ host: provider, actor, sandbox: record, credentials, signal, onEnrolled: runtimeEnrolled }),
       );
       runtimeStarted();
       if (!agent || typeof agent.prompt !== "function" || !/^[1-9][0-9]{0,18}$/.test(agent.epoch))
         throw new LaunchError("start_failed", "The runtime did not acknowledge a valid epoch.");
+      runtimeEnrolled(agent.epoch);
       if (!agent.prepareWorkspace)
         throw new LaunchError(
           "start_failed",
@@ -49,7 +50,13 @@ export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): L
         await stores.sandboxes.recordSkills!(record.id, record.skills);
       }
       await stores.connections?.prepare?.(provider, record, actor, signal);
-      await options.beforeStart?.(provider, record);
+      if (options.privateVisibility && options.beforeStart && !agent.installScopedReference)
+        throw new LaunchError("start_failed", "Scoped access requires an enrolled workspace executor.");
+      await options.beforeStart?.(
+        provider,
+        record,
+        agent.installScopedReference ? { epoch: agent.epoch, exec: agent.installScopedReference, signal } : undefined,
+      );
       reportGitHub(github);
       return { github, prompt: (request) => agent.prompt(request), runtime: { kind: "armada", epoch: agent.epoch } };
     },

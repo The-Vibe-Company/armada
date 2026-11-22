@@ -7,6 +7,7 @@ import {
   ProviderError,
   type Sql,
 } from "@armada/core";
+import { matchesManagementAuthority } from "./authority.ts";
 import { refusal } from "./errors.ts";
 import type { IngestPayload, Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
 
@@ -29,8 +30,6 @@ function revive(row: Machine): Machine {
     if (row.info[key]) row.info[key] = new Date(row.info[key]);
   return row;
 }
-/** Requires a server connection and authenticated caller. Every SQL query includes scope; every
- * controller entry rechecks live org membership (including private owner), not cached authorization. */
 export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
   const key = scopeKey(scope);
   async function authorize(db = sql) {
@@ -63,19 +62,47 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         throw refusal("forbidden", "Stored builder identity does not match its reservation.");
       return revive(row.record);
     },
-    async reserve(requestKey, machine) {
-      await authorize();
-      await sql.query(
-        `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,$4,$5,$6,$7::jsonb) on conflict(scope,request_key) do nothing`,
-        [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
-      );
-      const result = await sql.query<{ record: Machine }>(
-        `select record from public.modal_machines where scope=$1 and request_key=$2 and owner_id=$3`,
-        [key, requestKey, scope.userId],
-      );
-      const row = result.rows[0];
-      if (!row) throw refusal("conflict", "Launch reservation failed.");
-      return revive(row.record);
+    async reserve(requestKey, machine, sourceId) {
+      const reserve = async (db: Sql) => {
+        await authorize(db);
+        const { sourceImage, managementAuthority } = machine;
+        if (sourceImage) {
+          if (!sourceId || !managementAuthority)
+            throw refusal("forbidden", "Snapshot reservation requires a verified source.");
+          const orgKey = scopeKey({ ...scope, visibility: "org" });
+          if (sourceImage.scopeKey !== key && !(scope.visibility === "private" && sourceImage.scopeKey === orgKey))
+            throw refusal("forbidden", "Snapshot source is outside this reservation scope.");
+          const locked = await db.query<{ record: SavedImage }>(
+            `select record from public.modal_images where scope=$1 and name=$2 for share`,
+            [sourceImage.scopeKey, sourceImage.name],
+          );
+          const image = locked.rows[0]?.record;
+          if (
+            !image ||
+            image.deleted ||
+            image.info.status !== "ready" ||
+            image.sourceId !== sourceId ||
+            image.imageId !== sourceImage.imageId
+          )
+            throw refusal("not_found", "Modal snapshot is no longer available.");
+          if (!matchesManagementAuthority(image.managementAuthority, managementAuthority))
+            throw refusal("forbidden", "Stored source management authority does not match this provider connection.");
+        }
+        await db.query(
+          `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,$4,$5,$6,$7::jsonb) on conflict(scope,request_key) do nothing`,
+          [key, scope.orgId, scope.userId, scope.visibility, machine.info.id, requestKey, JSON.stringify(machine)],
+        );
+        const result = await db.query<{ record: Machine }>(
+          `select record from public.modal_machines where scope=$1 and request_key=$2 and owner_id=$3`,
+          [key, requestKey, scope.userId],
+        );
+        const row = result.rows[0];
+        if (!row) throw refusal("conflict", "Launch reservation failed.");
+        return revive(row.record);
+      };
+      if (!machine.sourceImage) return reserve(sql);
+      if (!sql.transaction) throw refusal("unavailable", "Snapshot reservation requires a database transaction.");
+      return sql.transaction(reserve);
     },
     get,
     async watermark(id, generation) {
@@ -98,7 +125,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     async lease(id, work) {
       await get(id);
       const token = randomUUID();
-      // 15 minute bound, renewable on every phase commit. A lost lease cannot commit later results.
       const claim = await sql.query(
         `update public.modal_machines set lease_id=$3,lease_until=now()+interval '15 minutes' where scope=$1 and id=$2 and (lease_until is null or lease_until<now()) returning id`,
         [key, id, token],
@@ -147,15 +173,37 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async removeImage(name) {
       await authorize();
-      await sql.query(
-        `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
-        [key, name],
-      );
+      if (!sql.transaction) throw refusal("unavailable", "Snapshot retirement requires a database transaction.");
+      await sql.transaction(async (tx) => {
+        const current = await tx.query<{ record: SavedImage }>(
+          `select record from public.modal_images where scope=$1 and name=$2 for update`,
+          [key, name],
+        );
+        const image = current.rows[0]?.record;
+        if (!image || image.deleted) return;
+        if (image.imageId) {
+          const references = await tx.query(
+            `select 1 from public.modal_machines
+             where record->>'phase' is distinct from 'deleted' and record->'sourceImage' @> $1::jsonb limit 1`,
+            [JSON.stringify({ scopeKey: key, name, imageId: image.imageId })],
+          );
+          if (references.rows.length)
+            throw new ProviderError({
+              provider: "modal",
+              code: "conflict",
+              providerCode: "snapshot_source_busy",
+              message: "A sandbox references this snapshot. Delete that sandbox before retiring the snapshot.",
+              retryable: true,
+            });
+        }
+        await tx.query(
+          `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
+          [key, name],
+        );
+      });
     },
     async purgeImage(name, sourceId, imageId) {
       await authorize();
-      // Conditional on the exact claimed artifact: a stale collector finishing late never erases
-      // a later tombstone that reused the name for another source or image.
       await sql.query(
         `delete from public.modal_images where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
         [key, name, sourceId, imageId],
@@ -170,7 +218,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async takeImage(name, sourceId, imageId, token) {
       await authorize();
-      // Five minutes bounds one image deletion; a crashed holder's claim is then recoverable.
       const result = await sql.query(
         `update public.modal_images set record=record||jsonb_build_object('collectToken',$5::text,'collectUntil',extract(epoch from now()+interval '5 minutes'))
          where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true' and record->>'collecting'='true'
@@ -205,8 +252,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async imageReferenced(imageId) {
       await authorize();
-      // Authorization limits what this store may delete; references protect the
-      // immutable physical ID across all bindings/tenant scopes, without exposing them.
       const result = await sql.query(
         `select 1 where exists(select 1 from public.modal_images i where i.record->>'imageId'=$1 and (i.record->>'deleted') is distinct from 'true')
         or exists(select 1 from public.modal_machines m where m.record->>'phase' is distinct from 'deleted' and (
@@ -238,8 +283,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
   };
 }
-/** Only called after verifying an expiring, sandbox+generation scoped ingest grant. No caller DB
- * credentials or provider tokens are ever sent to a runner. Ack follows transaction commit. */
 export async function appendModalEvents(
   sql: Sql,
   scope: Scope,
@@ -278,7 +321,7 @@ export async function appendModalEvents(
     for (const item of [...events].sort((a, b) => a.sequence - b.sequence)) {
       if (!Number.isSafeInteger(item.sequence) || item.sequence < 1)
         throw refusal("invalid_request", "Invalid producer sequence.");
-      if (item.sequence > ack + 1) break; // Never publish an event beyond a producer gap.
+      if (item.sequence > ack + 1) break;
       const inserted = await db.query(
         `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event) values($1,$2,$3,$4,$5::jsonb)
          on conflict(scope,sandbox_id,generation,producer_sequence) do update set event=excluded.event

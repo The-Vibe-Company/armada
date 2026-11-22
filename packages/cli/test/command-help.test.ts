@@ -5,38 +5,29 @@ import { run } from "../src/run.ts";
 for (const command of [
   "--help",
   "api",
-  "launch",
-  "logs",
-  "list",
-  "advice",
+  "new",
+  "events",
+  "ls",
   "rm",
-  "extend",
-  "status",
-  "detail",
-  "recovery",
+  "info",
   "stop",
-  "interrupt",
-  "wait",
   "report",
-  "send",
-  "steer",
+  "prompt",
   "exec",
-  "routine",
+  "outputs",
   "template",
   "snapshot",
-  "snapshot create",
-  "snapshot retirement reconcile",
-  "golden retirement dry-run",
-  "creds",
-  "creds import claude",
-  "creds connect",
+  "snapshot new",
+  "account",
+  "account import claude",
+  "account add",
 ]) {
   test(`armada ${command} help preserves its output`, async () => {
     async function help(flag: string) {
       const argv =
         command === "--help"
           ? [flag]
-          : command === "logs"
+          : command === "events"
             ? [command, flag]
             : ["--profile", "new-user", ...command.split(" "), flag];
       const fail = () => {
@@ -75,13 +66,33 @@ for (const command of [
   });
 }
 
-test("logs help rejects an invalid profile from the environment", async () => {
+test("host help shows the five host commands", async () => {
+  let stdout = "";
+  const fail = () => {
+    throw new Error("Help must not perform authenticated or secret I/O");
+  };
+  const code = await run(
+    ["host", "--help"],
+    { out: (text) => (stdout += text), err: fail },
+    { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
+  );
+  expect(code).toBe(0);
+  expect([...stdout.matchAll(/^ {2}(\w+) +\S/gm)].map((match) => match[1])).toEqual([
+    "install",
+    "add",
+    "ls",
+    "limits",
+    "rm",
+  ]);
+});
+
+test("events help rejects an invalid profile from the environment", async () => {
   let stderr = "";
   const fail = () => {
     throw new Error("Invalid profile must not print help or make a request");
   };
   const code = await run(
-    ["logs", "--help"],
+    ["events", "--help"],
     { out: fail, err: (text) => (stderr += text) },
     { env: { ARMADA_PROFILE: "bad.profile" }, fetch: Object.assign(fail, { preconnect: fail }) },
   );
@@ -89,7 +100,7 @@ test("logs help rejects an invalid profile from the environment", async () => {
   expect(stderr).toContain("Profile names must be 1–64");
 });
 
-test.each(["snapshot", "golden", "creds"])("bare %s prints focused family help", async (command) => {
+test.each(["snapshot", "account"])("bare %s prints focused family help", async (command) => {
   let stdout = "";
   const fail = () => {
     throw new Error("Family help must not perform authenticated or secret I/O");
@@ -100,12 +111,12 @@ test.each(["snapshot", "golden", "creds"])("bare %s prints focused family help",
     { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
   );
   expect(code).toBe(0);
-  expect(stdout).toStartWith(`Usage: armada ${command === "golden" ? "snapshot" : command} `);
+  expect(stdout).toStartWith(`Usage: armada ${command} `);
 });
 
 test.each([
-  [["golden", "create", "name", "--help"], "armada --help"],
-  [["creds", "set", "--help", "--unknown"], "armada creds set --help"],
+  [["snapshot", "new", "name", "--help"], "armada snapshot new --help"],
+  [["account", "add", "--help", "--unknown"], "armada account add --help"],
 ] as const)("%j leaves malformed help requests to the operation parser", async (argv, hint) => {
   let stderr = "";
   const fail = () => {

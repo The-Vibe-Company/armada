@@ -17,9 +17,10 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core/server";
-import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
-import type { DataSource } from "./data.ts";
+import { AuthUnavailable, authenticateCaller, type Caller, type CallerResult, type SupabaseProject } from "./caller.ts";
+import type { DataSource, SandboxView } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
+import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
@@ -28,7 +29,8 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import { createArmadaServer } from "./tools.ts";
+import type { SandboxLogReader } from "./runtime-history.ts";
+import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
 export const HEALTH_PATH = "/healthz";
@@ -36,19 +38,31 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
+type ModalConnectionPorts = {
+  provider: Provider;
+  captureRuntimeWork?: import("@armada/provider-modal").ModalRuntimeCapture;
+};
+
 export interface HandlerOptions {
+  readOutputSnapshot?: ToolContext["readOutputSnapshot"];
   sandboxBillingAccount?: (
     caller: import("./caller.ts").Caller,
     id: string,
   ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  configureStopRequest?: (request: Request) => void;
+  stopAdmissionShutdown?: AbortSignal | undefined;
+  runtimeStopCheckpoint?: ToolContext["runtimeStopCheckpoint"];
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   runtimeProviderFor?: (
     apiKey: string | Provider,
     target: ProviderTarget,
     caller: { userId: string },
+    captureRuntimeWork?: ModalConnectionPorts["captureRuntimeWork"],
   ) => Promise<Provider>;
+  logProvider?(target: SandboxView, caller: Caller): Promise<SandboxLogReader>;
+  modalJobReader?: ReturnType<typeof import("./runtime-history.ts").createModalJobReader>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
@@ -90,7 +104,7 @@ export interface HandlerOptions {
       caller: { userId: string };
       credentialScope: "user" | "org";
     },
-  ) => Provider | Promise<Provider>;
+  ) => ModalConnectionPorts | Promise<ModalConnectionPorts>;
   /** Server-owned persisted credential provenance overrides fallback for an existing Modal binding. */
   modalTokensFor?: (
     target: ProviderTarget,
@@ -101,6 +115,7 @@ export interface HandlerOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
+  launchDiscovery?: LaunchDiscoveryOptions;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   connections?: LaunchStores["connections"];
@@ -180,11 +195,18 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.readOutputSnapshot ? { readOutputSnapshot: options.readOutputSnapshot } : {}),
+        outputSignal: request.signal,
+        configureStopRequest: () => options.configureStopRequest?.(request),
+        stopSignal: options.stopAdmissionShutdown
+          ? AbortSignal.any([request.signal, options.stopAdmissionShutdown])
+          : request.signal,
         ...(options.sandboxBillingAccount
           ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(caller, id) }
           : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+        ...(options.runtimeStopCheckpoint ? { runtimeStopCheckpoint: options.runtimeStopCheckpoint } : {}),
         ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.connections ? { connections: options.connections } : {}),
@@ -192,6 +214,8 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
+        ...(options.logProvider ? { logProvider: (target) => options.logProvider!(target, caller) } : {}),
+        ...(options.modalJobReader ? { modalJobReader: (target) => options.modalJobReader!(target, caller) } : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
@@ -203,6 +227,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         ...(options.launch ? { launch: options.launch } : {}),
       },
       VERSION,
+      options.launchDiscovery ?? options,
     );
     const transport = createObservedMcpTransport();
     await server.connect(transport);
@@ -213,7 +238,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     }
   };
   const bodyLimit = options.maxRequestBodyBytes ?? REQUEST_BODY_LIMIT_BYTES;
-  return (request) => observeRequest(() => withRequestBodyCeiling(request, bodyLimit, routeRequest), log);
+  return (request) => observeRequest(() => withRequestBodyCeiling(request, bodyLimit, routeRequest), options.log);
 }
 
 /**
@@ -282,14 +307,18 @@ export function providerRegistry(
                   orgId: target.orgId,
                   visibility: target.sourceGoldenVisibility ?? target.visibility,
                 });
-            const host = await modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
-              target,
-              caller,
-              credentialScope: tokens.scope,
-            });
+            const { provider: host, captureRuntimeWork } = await modal(
+              { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+              target.modal,
+              {
+                target,
+                caller,
+                credentialScope: tokens.scope,
+              },
+            );
             if (target.runtimeTransport === "dialout") {
               if (!options.runtimeProviderFor || !target.id) throw new Error("Runtime routing unavailable.");
-              return options.runtimeProviderFor(host, target, caller);
+              return options.runtimeProviderFor(host, target, caller, captureRuntimeWork);
             }
             return native(host, target);
           },

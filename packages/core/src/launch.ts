@@ -18,23 +18,19 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { nativeLaunch } from "./launch-native.ts";
 import { goldenLaunchPlacements } from "./launch-placement.ts";
-import {
-  applyLaunchAccountDefaults,
-  prepareLaunchPlan,
-  resolveLaunchConnections,
-  resolveLaunchSkills,
-} from "./launch-plan.ts";
+import { applyLaunchAccountDefaults, resolveLaunchConnections, resolveLaunchSkills } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
 import { LaunchSecretRefusal, RuntimeLaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
+import { capabilities } from "./machine-capabilities.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
-import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
+import { CoreLaunchSettlementConflict, isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
@@ -196,12 +192,14 @@ export interface LaunchOptions extends GoldenLimits {
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
   boatRuntime?: {
+    supportsScopedAccess?: true;
     start(input: {
       host: Provider;
       actor: GoldenActor;
       sandbox: SandboxRecord;
       credentials: HarnessCredentials;
       signal: AbortSignal;
+      onEnrolled?: (epoch: string) => void;
       /** Private resume policy: validate configuration before activating compute. */
       activate?: (signal: AbortSignal) => Promise<void>;
       restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string | null };
@@ -213,6 +211,7 @@ export interface LaunchOptions extends GoldenLimits {
         progress: (stage: LaunchInitializationStage) => void,
         sleep?: (ms: number) => Promise<void>,
       ) => Promise<GitHubLaunchInfo>;
+      installScopedReference?: Provider["exec"];
       installSkills?: (
         references: string[],
         key: string | null,
@@ -223,12 +222,21 @@ export interface LaunchOptions extends GoldenLimits {
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
-  /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
+  /** Trusted pre-dispatch check; failure is provably before provider allocation. */
   beforeFork?: (sandboxId: string) => Promise<void>;
+  /** A durable template request supplies the snapshot reference for this launch. */
+  templateSnapshotAdmission?: {
+    admit: () => Promise<void>;
+    confirmAbsence: () => void;
+  };
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted final-start admission/bootstrap, after all repository and init work. */
-  beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
+  beforeStart?: (
+    provider: Provider,
+    sandbox: SandboxRecord,
+    runtime?: { epoch: string; exec: Provider["exec"]; signal: AbortSignal },
+  ) => Promise<void>;
   /** Trusted server-only narrowing for private sandbox parents. Not a public launch field. */
   privateParent?: true;
   /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
@@ -280,7 +288,7 @@ function modalLaunchTiming(startedAt: number) {
     report(sandboxId: string, path: "native" | "enrolled") {
       if (!enabled) return;
       try {
-        console.error(
+        console.info(
           JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
         );
       } catch {
@@ -290,9 +298,8 @@ function modalLaunchTiming(startedAt: number) {
   };
 }
 
-function validateGoldenLaunch(request: LaunchRequest) {
-  // The sandbox row (and so the stage table) exists only after the fork (#2560).
-  const acceptedAt = performance.now();
+/** Validate a golden launch before resolving accounts or placement. */
+export function validateGoldenLaunchRequest(request: LaunchRequest): void {
   validateLaunchSkillPins(request.skills ?? []);
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
@@ -300,6 +307,12 @@ function validateGoldenLaunch(request: LaunchRequest) {
     throw new LaunchError("invalid_request", "stopWhenWorkMerged must be a boolean.");
   if (request.externalRef !== undefined && !isExternalRef(request.externalRef))
     throw new LaunchError("invalid_request", "externalRef must be 1 to 200 characters without control characters.");
+}
+
+function validateGoldenLaunch(request: LaunchRequest) {
+  // The sandbox row (and so the stage table) exists only after the fork (#2560).
+  const acceptedAt = performance.now();
+  validateGoldenLaunchRequest(request);
   return { request, acceptedAt };
 }
 
@@ -332,16 +345,20 @@ async function resolveGoldenLaunch(
     runtime &&
     (!["boat", "modal"].includes(provider.id) ||
       (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
-      options.privateParent ||
-      options.privateVisibility)
+      options.privateParent)
   )
     throw new LaunchError(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  const prompt = checkPrompt(request.prompt);
+  if (runtime && !runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
+    throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
+  const prompt = validateGoldenLaunchPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
-  const choice = checkModel(provider, harness, request, Boolean(runtime));
+  const choice = resolveModelChoice(harness, request);
+  if (!(runtime ? HARNESS_CAPABILITIES[harness] : provider.capabilities[harness])?.reasoningEffort) {
+    throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
+  }
 
   request = {
     ...request,
@@ -354,47 +371,20 @@ async function resolveGoldenLaunch(
   if (request.skills?.length && !stores.sandboxes.recordSkills)
     throw new LaunchError("invalid_request", "Skill receipts are not supported by this store.");
 
-  const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
-  const requestedHelper = request.helperCapabilities;
-  if (
-    requestedHelper !== undefined &&
-    (!Array.isArray(requestedHelper) ||
-      requestedHelper.length > 8 ||
-      requestedHelper.some((cap) => typeof cap !== "string" || cap.length > 64))
-  )
-    throw new LaunchError("invalid_request", "Invalid helper capabilities.");
-  if (requestedHelper?.some((cap) => helper.status !== "supported" || !helper.capabilities.includes(cap as "diagnose")))
-    throw new LaunchError(
-      "unsupported",
-      "Helper capability unsupported. Rebuild the golden with armada golden update; this server supports diagnose only.",
-      {
-        helperRefusal:
-          helper.status === "unsupported"
-            ? helper
-            : { reason: "helper_capability_unsupported", action: "rebuild_golden" },
-      },
-    );
+  validateGoldenLaunchHelpers(golden, request.helperCapabilities);
   // The provider comes from the golden. The one the caller passed must be that backend, never another.
   assertProviderOf(provider, golden.provider);
-  const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
-  const ttlSeconds = options.privateParent
-    ? checkedTtl
-    : Math.min(checkedTtl, PROVIDER_LIMITS[golden.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
-  const extensionHeadroom = options.extensionHeadroomSeconds ?? DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
-  if (
-    !Number.isSafeInteger(extensionHeadroom) ||
-    extensionHeadroom < 0 ||
-    extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
-  )
-    throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
-  const repositoryDir = resolveRepositoryDir(golden, request.repo);
+  const { ttlSeconds, allocationTtlSeconds, repositoryDir, machineSize } = resolveGoldenLaunchResources(
+    golden,
+    request,
+    options,
+  );
   const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
-  const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
   const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
   if (repositoryDir !== null && !prepareNativeCwd && !runtime)
     throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
-  // trusted managed-parent caller may narrow sandbox access; the source stays unchanged.
+  // trusted launch caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
   const connectionIds = await resolveLaunchConnections(
     request.connections,
@@ -409,9 +399,9 @@ async function resolveGoldenLaunch(
   );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  if (golden.provider === "modal") timing.mark("launch_plan");
+  if (launchPlacement.recordLaunchTimings) timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
-  if (golden.provider === "modal") timing.mark("credential_resolution");
+  if (launchPlacement.recordLaunchTimings) timing.mark("credential_resolution");
   if (runtime && !credentials.binding)
     throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
   if (credentials.morphModels) {
@@ -490,12 +480,7 @@ async function resolveGoldenLaunch(
     prompt,
     choice,
     ttlSeconds,
-    // Managed parents own their separate lifecycle policy. Ordinary workers need stop headroom.
-    allocationTtlSeconds: launchPlacement.allocationTtlSeconds(
-      ttlSeconds,
-      extensionHeadroom,
-      options.privateParent === true,
-    ),
+    allocationTtlSeconds,
     repositoryDir,
     resourceProject,
     machineSize,
@@ -509,6 +494,20 @@ async function resolveGoldenLaunch(
     env,
     secrets,
   };
+}
+
+// WARNING: The prepared plan contains credentials and must stay in server memory.
+export async function prepareGoldenLaunch(
+  provider: Provider,
+  stores: LaunchStores,
+  actor: GoldenActor,
+  request: LaunchRequest,
+  options: LaunchOptions = {},
+) {
+  const validated = validateGoldenLaunch(request);
+  const timing = modalLaunchTiming(validated.acceptedAt);
+  const plan = await resolveGoldenLaunch(provider, stores, actor, validated, options, timing);
+  return { plan, timing };
 }
 
 /**
@@ -528,14 +527,13 @@ export async function launchSandbox(
   initialRequest: LaunchRequest,
   initialOptions: LaunchOptions = {},
 ): Promise<LaunchResult> {
-  const validated = validateGoldenLaunch(initialRequest);
-  const timing = modalLaunchTiming(validated.acceptedAt);
-  const launch = await prepareLaunchPlan(
-    () => validated,
-    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions, timing),
-    (plan) => goldenLaunchPlacements[plan.golden.provider],
+  const { plan, timing } = await prepareGoldenLaunch(
+    initialProvider,
+    initialStores,
+    actor,
+    initialRequest,
+    initialOptions,
   );
-  const plan = launch.resolved;
   const {
     acceptedAt,
     provider,
@@ -557,19 +555,19 @@ export async function launchSandbox(
   } = plan;
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
-    kind: "launch",
-    snapshotId: golden.providerSnapshotId,
-    sandboxId: golden.providerSandboxId,
-  });
-  let childRecorded = false;
+  const templateAdmission = options.templateSnapshotAdmission;
+  let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
   try {
-    const forked = await launch.admit({
+    const forked = await goldenLaunchPlacements[golden.provider].admit(plan, {
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
-      beforeAllocation: () => timing.mark("preallocation_admission"),
+      beforeAllocation: async () => {
+        if (templateAdmission) await templateAdmission.admit();
+        else releaseSnapshotIntent = await stores.goldens.beginSnapshotLaunch?.(golden, actor, id);
+        timing.mark("preallocation_admission");
+      },
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
@@ -587,6 +585,7 @@ export async function launchSandbox(
         provider: golden.provider,
         providerSandboxId: forked.id,
         goldenId: golden.id,
+        ...(templateAdmission ? {} : { sourceSnapshotId: plan.snapshot }),
         orgId: golden.orgId,
         ownerId: actor.userId,
         harness,
@@ -622,7 +621,6 @@ export async function launchSandbox(
         ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
         ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
-      childRecorded = true;
     } catch (error) {
       await quietly(async () => {
         if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
@@ -650,6 +648,7 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
+    let enrolledEpoch: string | undefined;
     const start = async (signal: AbortSignal) => {
       if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
@@ -686,13 +685,20 @@ export async function launchSandbox(
           signal,
           progress,
           runtimeStarted: () => timing.mark("runtime_startup"),
+          runtimeEnrolled: (epoch) => {
+            enrolledEpoch = epoch;
+          },
           mark: async (stage) => {
             await mark(stage);
             if (stage === "checkout_done") timing.mark("workspace_preparation");
           },
           reportGitHub: (launchGithub) => {
             try {
-              console.error(
+              const log =
+                launchGithub.status === "revoked" || launchGithub.status === "unavailable"
+                  ? console.warn
+                  : console.info;
+              log(
                 JSON.stringify({
                   event: "launch_github_prepared",
                   sandboxId: record.id,
@@ -719,10 +725,11 @@ export async function launchSandbox(
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
       timing.mark("ready_stage_record");
+      const runtimeFence = provenance ? { expectedRuntimeEpoch: provenance.epoch } : {};
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
-          patch: { status: "ready" as const },
+          patch: { status: "ready" as const, ...runtimeFence },
           result: finish(
             record,
             golden,
@@ -767,6 +774,7 @@ export async function launchSandbox(
           status: "running" as const,
           conversationIds: [receipt.conversationId],
           taskPromptId: receipt.promptId,
+          ...runtimeFence,
         },
         result: finish(
           record,
@@ -788,6 +796,7 @@ export async function launchSandbox(
       timing.report(record.id, strategy.kind);
       return result;
     };
+    const expected = record.lifecycleGeneration === undefined ? {} : { expectedGeneration: record.lifecycleGeneration };
     try {
       await options.onRegistered?.(record);
       if (activityLeaseId)
@@ -804,19 +813,24 @@ export async function launchSandbox(
                   golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
             failurePatch: (error) => ({
               status: "failed",
+              ...(enrolledEpoch ? { expectedRuntimeEpoch: enrolledEpoch } : {}),
               statusReason: withSandbox(error, record.id, secrets).message,
             }),
           }),
         );
-      // Caller-role legacy stores cannot mutate server coordination columns. Keep their
-      // original RLS-only flow; the deployed server always uses the owned scoped store.
       const completed = await start(new AbortController().signal);
-      await stores.sandboxes.update(record.id, completed.patch);
+      await stores.sandboxes.update(record.id, { ...completed.patch, ...expected });
       return reportTiming(completed.result);
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
-      if (!activityLeaseId)
-        await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
+      if (error instanceof CoreLaunchSettlementConflict) throw failure;
+      if (!activityLeaseId) {
+        try {
+          await stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message, ...expected });
+        } catch (settlementError) {
+          if (settlementError instanceof CoreLaunchSettlementConflict) throw failure;
+        }
+      }
       await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
@@ -836,12 +850,12 @@ export async function launchSandbox(
         );
       }
     }
-    // An unrecorded physical outcome remains owned by this durable fence.
-    if (childRecorded || noAllocation) {
+    if (noAllocation) {
+      templateAdmission?.confirmAbsence();
       try {
-        await releaseOperation?.();
+        await releaseSnapshotIntent?.();
       } catch {
-        await quietly(async () => console.warn("Launch operation cleanup failed; fence reconciliation is required."));
+        await quietly(async () => console.warn("Launch snapshot intent cleanup failed; reconciliation is required."));
       }
     }
   }
@@ -946,16 +960,60 @@ function checkHarness(provider: Provider, harness: string, runtime = false): Har
   return harness as Harness;
 }
 
-/** Before anything is allocated: an unknown model or effort is refused, never replaced by another. */
-function checkModel(provider: Provider, harness: Harness, request: LaunchRequest, runtime = false): ModelChoice {
-  const choice = resolveModelChoice(harness, request);
-  if (!(runtime ? HARNESS_CAPABILITIES[harness] : provider.capabilities[harness])?.reasoningEffort) {
-    throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
-  }
-  return choice;
+/** Check optional helper requirements against the golden's current snapshot. */
+export function validateGoldenLaunchHelpers(golden: GoldenRecord, requestedHelper: string[] | undefined): void {
+  const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
+  if (
+    requestedHelper !== undefined &&
+    (!Array.isArray(requestedHelper) ||
+      requestedHelper.length > 8 ||
+      requestedHelper.some((cap) => typeof cap !== "string" || cap.length > 64))
+  )
+    throw new LaunchError("invalid_request", "Invalid helper capabilities.");
+  if (requestedHelper?.some((cap) => helper.status !== "supported" || !helper.capabilities.includes(cap as "diagnose")))
+    throw new LaunchError(
+      "unsupported",
+      "Helper capability unsupported. Rebuild the golden with armada snapshot update; this server supports diagnose only.",
+      {
+        helperRefusal:
+          helper.status === "unsupported"
+            ? helper
+            : { reason: "helper_capability_unsupported", action: "rebuild_golden" },
+      },
+    );
 }
 
-/** Refused when the golden's provider cannot keep a machine that long: never clamped. */
+/** Resolve sandbox TTL and machine resources from request policy without a provider client. */
+export function resolveGoldenLaunchResources(
+  golden: GoldenRecord,
+  request: Pick<LaunchRequest, "ttlSeconds" | "repo" | "size">,
+  options: Pick<LaunchOptions, "privateParent" | "extensionHeadroomSeconds">,
+) {
+  const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
+  const ttlSeconds = options.privateParent
+    ? checkedTtl
+    : Math.min(checkedTtl, capabilities(golden.provider).maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
+  const extensionHeadroom = options.extensionHeadroomSeconds ?? DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
+  if (
+    !Number.isSafeInteger(extensionHeadroom) ||
+    extensionHeadroom < 0 ||
+    extensionHeadroom > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
+  )
+    throw new LaunchError("invalid_request", "Invalid server sandbox extension headroom policy.");
+  const repositoryDir = resolveRepositoryDir(golden, request.repo);
+  const machineSize = resolveMachineSize(golden.provider, request.size, repositoryDir, golden.sizePolicy);
+  return {
+    ttlSeconds,
+    allocationTtlSeconds: goldenLaunchPlacements[golden.provider].allocationTtlSeconds(
+      ttlSeconds,
+      extensionHeadroom,
+      options.privateParent === true,
+    ),
+    repositoryDir,
+    machineSize,
+  };
+}
+
 function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
   const limits = PROVIDER_LIMITS[provider];
   if (!isLaunchTtlSeconds(provider, ttlSeconds)) {
@@ -967,7 +1025,7 @@ function checkTtl(provider: SandboxProviderId, ttlSeconds: number): number {
   return ttlSeconds;
 }
 
-function checkPrompt(prompt: string | undefined): string | undefined {
+export function validateGoldenLaunchPrompt(prompt: string | undefined) {
   if (prompt === undefined) return undefined;
   if (prompt.trim() === "") {
     throw new LaunchError("invalid_request", "The prompt is empty. Leave it out to launch an idle sandbox.");

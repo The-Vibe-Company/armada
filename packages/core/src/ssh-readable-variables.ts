@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import { HARNESSES } from "./contract.ts";
 import type { Provider } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
+import { launchInfrastructure } from "./sandbox-provider.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 /** Fixed stdin-only bootstrap outside checkouts; readable, NOT a secret transport guarantee. */
@@ -12,18 +13,18 @@ export async function sshReadableVariables(
   input: Record<string, string>,
 ): Promise<void> {
   const variables = validateReadableVariables(input);
-  if (provider.id !== "boat" || !(HARNESSES as readonly string[]).includes(harness))
+  if (!launchInfrastructure(provider.id).privateSshBootstrap || !(HARNESSES as readonly string[]).includes(harness))
     throw Error("Readable variable bootstrap unavailable.");
   await sshStdinCheckout(provider, {
     sandboxId,
     token: JSON.stringify({ harness, variables }),
     timeoutMs: 60000,
     script: `set +x
-python3 -I <<'ARMADA_READABLE_BOOTSTRAP'
+/usr/bin/python3 -I <<'ARMADA_READABLE_BOOTSTRAP'
 import os,sys,subprocess
 payload=os.environ.pop('ARMADA_GIT_TOKEN')
-command=['python3','-I','-c',${JSON.stringify(INSTALLER)}]
-if os.getuid()!=0: command=['sudo','-n']+command
+command=['/usr/bin/python3','-I','-c',${JSON.stringify(INSTALLER)}]
+if os.getuid()!=0: command=['/usr/bin/sudo','-n']+command
 try:
  result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env={'PATH':'/usr/local/bin:/usr/bin:/bin'},timeout=45)
  status=0 if result.returncode==0 else 1

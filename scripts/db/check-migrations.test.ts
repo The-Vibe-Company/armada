@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { destructiveStatements, dropSafety } from "./check-migrations";
+import { destructiveStatements, dropSafety, routineSettingErrors, transactionErrors } from "./check-migrations";
 
 test("migration CLI rejects collisions, placeholder versions and non-increasing additions against the current base", () => {
   const script = resolve(import.meta.dir, "check-migrations.ts");
@@ -75,6 +75,99 @@ test("migration CLI rejects collisions, placeholder versions and non-increasing 
       rmSync(cwd, { recursive: true, force: true });
     }
   }
+});
+
+test.each([
+  ["LOCK", "lock table public.jobs"],
+  ["SAVEPOINT", "savepoint migration"],
+  ["RELEASE SAVEPOINT", "release migration"],
+  ["ROLLBACK TO SAVEPOINT", "rollback work to savepoint migration"],
+  ["PREPARE TRANSACTION", "prepare transaction 'migration'"],
+  ["DECLARE CURSOR", "declare migration cursor for select 1"],
+])("requires an explicit transaction for %s", (command, sql) => {
+  expect(transactionErrors(`-- comment\n${sql};`)).toEqual([
+    `Line 2: ${command} requires an explicit BEGIN transaction.`,
+  ]);
+  expect(transactionErrors(`begin; ${sql}; commit;`)).toEqual([]);
+});
+
+test("tracks real transaction boundaries and ignores SQL inside comments and bodies", () => {
+  expect(
+    transactionErrors(`
+      -- begin;
+      do $$ begin lock table public.jobs; end; $$;
+      start transaction;
+      savepoint migration;
+      rollback to migration;
+      prepare transaction as select 1;
+      lock jobs;
+      end and chain;
+      lock jobs;
+      rollback and no chain;
+      lock jobs;
+      declare migration cursor with hold for select 1;
+      declare migration cursor without hold for select 1;
+      create or replace procedure p() language sql begin /* body */ atomic
+        select case when true then 'END;' else 'BEGIN ATOMIC' end;
+      end;
+      lock jobs;
+    `),
+  ).toEqual([
+    "Line 12: LOCK requires an explicit BEGIN transaction.",
+    "Line 14: DECLARE CURSOR requires an explicit BEGIN transaction.",
+    "Line 18: LOCK requires an explicit BEGIN transaction.",
+  ]);
+});
+
+test("a SQL-standard routine body does not close the migration transaction", () => {
+  expect(
+    transactionErrors(`
+    BEGIN;
+    CREATE FUNCTION f() RETURNS integer LANGUAGE SQL BEGIN ATOMIC SELECT 1; END;
+    LOCK TABLE public.jobs;
+    COMMIT;
+  `),
+  ).toEqual([]);
+});
+
+test.each([
+  [
+    "create or replace function public.f(x numeric(10, 2)) returns int language sql set armada /* flag */ . share = 'on' as $$ select 1 $$",
+    "armada.share",
+  ],
+  ['alter function public.f set "armada.share" to default', "armada.share"],
+  [`alter function public.f() set U&"armada!002eshare" UESCAPE '!' from current`, "armada.share"],
+  [String.raw`alter function public.f() set U&"armada!002eshare" UESCAPE E'\x21' to 'on'`, "armada.share"],
+  [
+    `alter function public.f() set U&"armada!002eshare" UESCAPE '' -- continued
+    '!' to 'on'`,
+    "armada.share",
+  ],
+  [`alter function public.f() set U&"armada\b002eshare" UESCAPE E'\\b' to 'on'`, "armada.share"],
+  ["create procedure public.p() language sql set armada.share = 'on' begin atomic select 1; end", "armada.share"],
+  ["alter routine public.f() set armada.share to 'on'", "armada.share"],
+])("rejects a custom routine setting in %s", (sql, parameter) => {
+  expect(routineSettingErrors(`-- comment\n${sql};`)).toEqual([
+    expect.stringMatching(new RegExp(`^Line 2: .*custom parameter.*${parameter}.*pg_catalog[.]set_config`)),
+  ]);
+});
+
+test("allows built-in routine settings, schema changes and SQL inside function bodies", () => {
+  expect(
+    routineSettingErrors(`
+    create function f() returns int set search_path = public language plpgsql as $$
+      begin
+        set armada.share = 'on';
+        return 1;
+      end
+    $$;
+    alter function f() set "work_mem" to '4MB';
+    alter function f() set schema private;
+    create function g() returns text language sql return 'set armada.share to on';
+    create procedure p() language sql begin atomic update public.flags set armada.share = 'on'; end;
+    set armada.share = 'off';
+  `),
+  ).toEqual([]);
 });
 
 test("finds top-level drops and renames, including quoted names and multi-object statements", () => {

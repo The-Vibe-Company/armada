@@ -1,23 +1,48 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { ProviderResourceObservation, ResourceAdviceResponse, ResourceProject } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL, seedDatabase } from "./support.ts";
 
-let fixture: Awaited<ReturnType<typeof harness>> | undefined;
+async function prepareFixture() {
+  const db = await openMigratedDatabase();
+  try {
+    const server = await harness({}, await seedDatabase(db));
+    return { db, server };
+  } catch (error) {
+    try {
+      await db.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Resource advice fixture setup and cleanup failed");
+    }
+    throw error;
+  }
+}
+
+let fixture: ReturnType<typeof prepareFixture> | undefined;
 beforeAll(async () => {
-  fixture = await harness();
+  fixture = prepareFixture();
+  await fixture;
 });
 afterAll(async () => {
-  const server = fixture;
+  const setup = fixture;
   fixture = undefined;
-  await server?.close();
+  const owned = await setup?.catch(() => undefined);
+  if (!owned) return;
+  try {
+    await owned.server.close();
+  } finally {
+    await owned.db.close();
+  }
 });
 
 test("The advice API collects bounded samples, pins project identity and abstains without complete workload evidence", async () => {
-  const server = fixture;
-  if (!server) throw new Error("Missing resource advice harness fixture");
+  const setup = fixture;
+  if (!setup) throw new Error("Missing resource advice harness fixture");
+  const { server } = await setup;
+  if (fixture !== setup) throw new Error("Resource advice fixture teardown has started");
   const token = await server.token(server.people.owner);
   const client = await server.client(token);
   const launched = await call(client, "launch", {

@@ -1,6 +1,5 @@
 import {
   type DockerSnapshotRecord,
-  type Golden,
   isSandboxProvider,
   MODEL_CATALOG,
   machineCapacity,
@@ -24,6 +23,7 @@ import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CatalogBrowser } from "@/components/catalog-browser";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
+import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } from "@/components/docker-snapshot-forms";
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
@@ -581,7 +581,7 @@ function CreatePanel({
   serverReady: boolean;
   githubConnected: boolean;
   /** The Boat environments this viewer may rebuild, offered instead of a new one when Boat is full. */
-  rebuildable: Golden[];
+  rebuildable: GoldenRow[];
   launch: React.ComponentProps<typeof GoldenForm>["launch"];
 }) {
   void boatLive;
@@ -605,7 +605,7 @@ type RowContext = {
   orgs: Map<string, Membership>;
   directory: Map<string, string>;
   viewerId: string;
-  all: Golden[];
+  all: GoldenRow[];
   serverReady: boolean;
   /** The providers the org has connected; a golden launches and rebuilds only on its own. Null: status unavailable. */
   connected: SandboxProviderId[] | null;
@@ -630,7 +630,7 @@ type EnvironmentRow = ResourceRow & {
 };
 
 /** One golden as a row of the list (its state, repositories and one action) and as its panel (everything else). */
-function environmentRow(golden: Golden, context: RowContext, now: number): EnvironmentRow {
+function environmentRow(golden: GoldenRow, context: RowContext, now: number): EnvironmentRow {
   if (!isSandboxProvider(golden.provider)) throw new Error("Unsupported snapshot provider.");
   const membership = context.orgs.get(golden.org_id);
   const isAdmin = membership?.role === "admin";
@@ -918,7 +918,7 @@ function environmentRow(golden: Golden, context: RowContext, now: number): Envir
 }
 
 /** Share with the org or make private, for whoever may; otherwise who can. */
-function VisibilityControl({ golden, viewerId, isAdmin }: { golden: Golden; viewerId: string; isAdmin: boolean }) {
+function VisibilityControl({ golden, viewerId, isAdmin }: { golden: GoldenRow; viewerId: string; isAdmin: boolean }) {
   const next = golden.visibility === "private" ? "org" : "private";
   const now = golden.visibility === "private" ? "Only you see it." : "Every member of the organization sees it.";
   return (
@@ -977,6 +977,7 @@ function dockerSnapshotRow(
       <SnapshotLaunchDialog
         golden={snapshot.name}
         snapshotId={snapshot.id}
+        hostName={snapshot.hostName ?? DOCKER_HOST_LABEL}
         provider="docker"
         orgId={snapshot.orgId}
         catalog={MODEL_CATALOG}
@@ -1151,7 +1152,7 @@ function SnapshotLaunchDialog({ primary = false, ...props }: LaunchProps & { pri
 /** Launch-only Boat harness discovery streams independently of the snapshot inventory. */
 async function SnapshotLaunchStart(props: LaunchProps) {
   const openCodeAvailable = props.provider === "boat" && boatOpenCodeAvailable(await readLaunchOptions());
-  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} />;
+  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} dockerLimits={<DockerLaunchLimitList />} />;
 }
 
 function HostLaunchDialog({ primary = false, ...props }: HostLaunchStart & { primary?: boolean }) {

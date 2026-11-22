@@ -305,11 +305,20 @@ export function machineConformanceCases(options: MachineConformanceOptions) {
         const sameBinding = await fixture.adapter(otherDeployment).create(createRequest(next));
         await fixture.adapter({ ...scope, bindingId: "binding-b" }).create(createRequest({ ...next, generation: 3 }));
         if (!adapter.listInventory) throw new Error("Adapter did not implement inventory");
-        const entries = await Array.fromAsync(adapter.listInventory());
+        const entries = (await Array.fromAsync(adapter.listInventory())).map((entry) => ({
+          ...entry,
+          generation: String(entry.generation),
+        }));
         expect(entries).toHaveLength(2);
-        expect(entries).toContainEqual({ ...own, deploymentId: scope.deploymentId, createdAt: expect.any(Date) });
+        expect(entries).toContainEqual({
+          ...own,
+          generation: String(own.generation),
+          deploymentId: scope.deploymentId,
+          createdAt: expect.any(Date),
+        });
         expect(entries).toContainEqual({
           ...sameBinding,
+          generation: String(sameBinding.generation),
           deploymentId: otherDeployment.deploymentId,
           createdAt: expect.any(Date),
         });

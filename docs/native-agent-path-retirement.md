@@ -4,16 +4,16 @@ This is the Step 1 design note for [#2733](https://github.com/The-Vibe-Company/a
 
 ## What runs today
 
-Code baseline `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. [Server config](../packages/mcp-server/src/config.ts) defaults both `ARMADA_BOAT_AGENT_PATH` and `ARMADA_MODAL_AGENT_PATH` to `native`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
+[Server config](../packages/mcp-server/src/config.ts) defaults `ARMADA_BOAT_AGENT_PATH` to `native` and `ARMADA_MODAL_AGENT_PATH` to `runtime`. [Server assembly](../packages/mcp-server/src/serve.ts) requires installed Boat runtime artifacts for its runtime default. Modal's runtime default requires `ARMADA_MODAL_DIALOUT=1` and a matching manifest. [Placement](../packages/core/src/launch-placement.ts) and [launch admission](../packages/core/src/launch.ts) route before allocation. A refusal or runtime failure never retries on native.
 
 | Provider | Harness | With repository defaults | Enrolled replacement and harness-specific evidence still required |
 | --- | --- | --- | --- |
 | Boat | Claude Code | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key, subscription and supported custom endpoints under enrolled Claude, including in-turn steer, MCP tool provenance, usage across resume and restored session continuity. Apply the Boat/Modal gaps below. |
 | Boat | Codex | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key and imported subscription, refresh, account-capacity settlement, reasoning/model selection, restart-style steer, usage and session continuity across a retained stop. Apply the Boat/Modal gaps below. |
 | Boat | OpenCode | No native support. Ordinary launch selects enrolled runtime with artifacts, otherwise refuses. Explicit versioned runtime is also available when configured. Dashboard discovery has its own readiness checks. | Prove ordinary and explicit launch with supported accounts, ACP follow-up, resume and dashboard discoverability. Preserve it during Boat cutover. |
-| Modal | Claude Code | Native Modal runner and authenticated tunnel. | Prove enrolled dial-out for supported API-key and subscription accounts, in-turn steer, tool provenance, usage and remembered context after wake. Apply the Boat/Modal gaps below. |
-| Modal | Codex | Native Modal runner and authenticated tunnel. | Prove enrolled dial-out for API key, custom endpoint where offered and imported subscription, refresh, capacity settlement, model/reasoning controls, restart-style steer, usage and retained session continuity. Apply the Boat/Modal gaps below. |
-| Modal | OpenCode | Native Modal runner and authenticated tunnel. | Prove ACP launch for supported accounts, model mapping, prompt/follow-up, controls, event/archive shape, usage and resumed context with dial-out. Apply the Boat/Modal gaps below. |
+| Modal | Claude Code | Enrolled runtime over dial-out. | Prove enrolled dial-out for supported API-key and subscription accounts, in-turn steer, tool provenance, usage and remembered context after wake. Apply the Boat/Modal gaps below. |
+| Modal | Codex | Enrolled runtime over dial-out. | Prove enrolled dial-out for API key, custom endpoint where offered and imported subscription, refresh, capacity settlement, model/reasoning controls, restart-style steer, usage and retained session continuity. Apply the Boat/Modal gaps below. |
+| Modal | OpenCode | Enrolled runtime over dial-out. | Prove ACP launch for supported accounts, model mapping, prompt/follow-up, controls, event/archive shape, usage and resumed context with dial-out. Apply the Boat/Modal gaps below. |
 | Docker host | Claude Code | Enrolled runtime | Regression control for launch, steer, retention and resume on the owner-enabled host. |
 | Docker host | Codex | Enrolled runtime | Regression control for reasoning, usage, stop/wake and resumed context on the owner-enabled host. |
 | Docker host | OpenCode | Enrolled runtime | Regression control for ACP launch, send and remembered context on the owner-enabled host. |
@@ -68,15 +68,76 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 [#2742](https://github.com/The-Vibe-Company/armada/issues/2742) owns the implementation design, including the concrete awaits after durable writes and lease ownership. This note covers the rollout and deletion sequence. Config changes, the drain runner, provider operations, schema changes and deployed verification belong to their respective delivery tickets.
 
+### Modal subscription stop cutover
+
+The first release containing the retained Modal subscription stop handoff
+requires a non-overlapping server cutover. Quiesce subscription traffic, stop
+all older API and worker instances, and confirm their in-flight Modal stop
+operations have settled before starting the new revision. The usual
+[180-second deployment overlap](deployment-draining.md) leaves older dispatchers
+able to retry a failed checkpoint as an ordinary stop and terminate without a
+retained snapshot. Arrange the staging cutover before merging, since staging
+follows main, and the production cutover before approving deployment.
+
+For rollback across this cutover, keep new subscription enrollment quiesced
+while the new workers settle all pending retained native Modal subscription
+stops. Stop the new instances before restarting the older revision. An
+unresolved retained stop blocks rollback to that revision.
+
+### Coordinator command
+
+Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with
+`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory
+access. Select `boat` for the Boat cohort.
+
+For a real pass, wait for the selected provider's release and checklist gate,
+disable new native admissions, and drain every replica that could still admit
+or finish a native launch from before the cutover. Apply the strict-stop migration
+and deploy the strict-stop worker before running the real command. Drain all
+older lifecycle workers and wait for their in-flight work to finish, including
+replicas with native launches disabled. Older workers can claim a native stop
+request without enforcing preservation. For Modal, stop older workers and use
+an operator checkout and workers from the revision with the Modal
+physical-generation and retained-checkpoint checks. Before rolling back to a
+worker that lacks those checks, halt the drain and settle pending strict Modal
+stops with the newer workers. Prepare the checkout with
+`bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
+`ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
+`ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
+Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat`).
+
+The real command reports the selected, deleted and failed counts. A nonzero
+failed count leaves the drain incomplete and returns a failing exit status.
+For eligible ready or running Boat and Modal rows, the command requests strict preservation
+through the lifecycle worker and reports the row as incomplete on that pass.
+The worker requires current preservation proof and settled work before requesting
+a retained stop. Modal admission also requires an active native journal without
+a lease. The worker matches the captured physical generation and verifies the
+retained checkpoint before settlement. Rerun after the stop settles to delete
+through the existing recovery handoff. Rows with missing or uncertain proof
+require operator reconciliation before deletion. For a
+scoped Modal parent, the drain records scoped cleanup before provider deletion.
+If the delete response is lost, a later pass can use the pinned Modal journal
+after the activity lease expires. Verify the result with a fresh inventory. A
+complete rerun reports zero candidates.
+
 ### Coordinator ledger
 
 [Railway IaC](../.railway/railway.ts) leaves these settings owner-managed. Record effective selector values (including unset), Modal dial-out enablement, runtime artifact version, deployment SHA and UTC timestamp. Cross-check authenticated `launch/options` while the discovery fields exist. A repository default does not establish a deployed setting.
 
 | Environment | Boat effective default | Modal effective default | Runtime artifact / dial-out | SHA / UTC / evidence |
 | --- | --- | --- | --- | --- |
-| Repository baseline | Native | Native | See server config and assembly above | Code-derived |
+| Repository defaults | Native | Runtime | See server config and assembly above | Code-derived |
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
-| Production | Unverified | Unverified | Unverified | Pending coordinator record |
+| Production | Unverified | Runtime | `/opt/armada/runtime-manifests/x64.json`, dial-out enabled | `dbdd1ec9bac0d040aca762f608913c61eae50e51` · 2026-11-21 08:23 UTC · Railway deployment `19d40232` ([coordinator record](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7059904959)) |
+
+Modal default-on release (#2740):
+
+| Release | UTC date | Production checklist result |
+| --- | --- | --- |
+| [v5.0.0](https://github.com/The-Vibe-Company/armada/releases/tag/v5.0.0) (`dbdd1ec9`) | 2026-11-21 | [PASS](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7060461871): canary `a40baae1` and checklist sandboxes `40605f85`, `86f14e5b` and `e1fe83be`. |
+
+The coordinator recorded `ARMADA_MODAL_AGENT_PATH=runtime`, `ARMADA_MODAL_DIALOUT=1` and `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json`. On the Python-free `native-linear-modal` golden, the first turn ran Git in the repository, a follow-up answered, and a turn after stop and resume ran Git again. The canary sandbox was stopped after the check. The production checklist also confirmed enrolled Modal launches and first turns, same-conversation follow-up and retained context after resume, the Docker server lifecycle and account-counter settlement. The one-release-cycle and recoverable previous release requirements remain part of the drain gate.
 
 For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
@@ -94,12 +155,12 @@ Before #2742, capture a read-only aggregate grouped by provider and status for r
 
 | Provider | Default-on release / UTC | Checklist evidence | Recoverable previous release | Drain report / deletion release |
 | --- | --- | --- | --- | --- |
-| Modal | Pending | Pending | Pending | Pending |
+| Modal | v5.0.0 (`dbdd1ec9`) / 2026-11-21 | [PASS](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7060461871) | Pending | Pending |
 | Boat | Pending | Pending | Pending | Pending |
 
 ## Deletion inventory
 
-Counts are physical lines, including comments and blanks, at the baseline above. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
+Counts are physical lines, including comments and blanks, at baseline commit `4c78a45da09efd9810e1f2a22b817d6ce1bf4a83`. Whole-file counts apply to probable deletion units. Inclusive ranges in mixed files include surrounding code for review. Remove only the native-specific statements after tracing their callers. Historical migrations remain append-only.
 
 ### Whole-file candidates
 
@@ -191,7 +252,7 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`agent-runtime/main.ts:445–461`](../packages/agent-runtime/src/main.ts#L445-L461) | 17 | Legacy Modal HTTP journal upload |
 | [`agent-runtime/main.ts:603–610`](../packages/agent-runtime/src/main.ts#L603-L610) | 8 | Legacy Modal runner HTTP listener |
 | [`agent-runtime/runtime.ts:134–157`](../packages/agent-runtime/src/runtime.ts#L134-L157) | 24 | Dial-out adapts requests to the shared HTTP handler. Remove only the external listener and preserve common command admission |
-| [`dashboard/app/api/sandboxes/[id]/events/route.ts:42–74`](../apps/dashboard/src/app/api/sandboxes/[id]/events/route.ts#L42-L74) | 33 | Native event pagination route and cursor policy |
+| [`dashboard/src/lib/events.ts`](../apps/dashboard/src/lib/events.ts) | 6 | `conversationReadDirection` selects forward reads for native history. The dashboard history and live events adapters share the conversation reader. |
 | [`dashboard/app/actions/sandboxes.ts:169–200`](../apps/dashboard/src/app/actions/sandboxes.ts#L169-L200) | 32 | Provider-specific native turn override policy |
 
 ### Deletion tickets and PR boundaries
@@ -205,7 +266,7 @@ The path references below point to inventory rows above. Counts give baseline ra
 | 1-13 · #2745 | Boat cwd and MCP installation. `native-cwd.ts` (665), `native-claude-mcp.ts` (110), the cwd install in `provider.ts` (30), and setup in the 172-line range. The cwd file alone exceeds the cap. Remove independent cwd routines and callers in bounded parts before deleting the rest of the file. Include the cwd/MCP tests and conformance fixtures in those parts. |
 | 1-14 · #2746 | Boat events, cursor and usage. `native-usage.ts` (396), `event-cursor.ts` (50), `events.ts` (111), the Boat conversations range (18), and usage/event pieces of the 172 / 126 / 120-line `provider.ts` ranges. Split usage from events/cursors and put `subscription-boat.ts` (46) in a separate server part. Keep host exec and work preservation. |
 | 1-15 · #2747 | Shared admission and native lanes. Core part covers `launch-native.ts` (176), the eight `launch.ts` ranges (24 / 33 / 32 / 14 / 46 / 21 / 27 / 34), `launch-secrets.ts` (56), `launch-plan.ts` (48) and `launch-variables.ts` (34). Server parts cover `native-idle.ts` (57), `native-webhook-prompts.ts` (227), native branches in `serve.ts` (11 / 55), `launch-control.ts` (16), `http.ts` (64), remaining native `tools.ts` ranges (56 / 57 / 86 / 80 / 32 / 109), `data.ts` (41), `mcp-lifecycle.ts` (51), `mcp-sandbox-provider.ts` (46), `sandbox-lifecycle.ts` (154), `work-preservation.ts` (69), `launch-credentials.ts` (323), `model-auth.ts` (573), `subscription-migration.ts` (237), `account-turn-queue.ts` (553), `turns.ts` (601), and the native delegated access files (175 / 216 / 119 / 104 / 34). Keep the enrolled handler in `mcp-server/runtime-native-auth.ts` (85 lines), including its publication wiring. Keep enrolled auth publication, account accounting, scoped access and shared work preservation. |
-| 1-16 · #2748 | Selector and provider interface. Core parts cover `launch-placement.ts` (12), `sandbox-provider.ts` (7) and the native agent operations in the 184-line `core/provider.ts` interface range. Server part covers `config.ts` (13), selector wiring in `serve.ts` (38 / 29) and remaining native discovery in `control.ts` (60). Client parts cover the dashboard events route (33), turn override action (32), and affected discovery readers in dashboard, CLI, SDK and iOS. Update the Armada skill and coordinator commands with the breaking surfaces. |
+| 1-16 · #2748 | Selector and provider interface. Core parts cover `launch-placement.ts` (12), `sandbox-provider.ts` (7) and the native agent operations in the 184-line `core/provider.ts` interface range. Server part covers `config.ts` (13), selector wiring in `serve.ts` (38 / 29) and remaining native discovery in `control.ts` (60). Client parts cover the dashboard history cursor policy (6), turn override action (32), and affected discovery readers in dashboard, CLI, SDK and iOS. Update the Armada skill and coordinator commands with the breaking surfaces. |
 | 1-17 · #2749 | Native persistence behind the ingest, selector and worker rows above. Re-inventory schema at execution time, including `modal_events`, `native_webhook_prompts`, `native_steer_cursors` and route columns such as `runtime_transport`. Drop only confirmed native-only objects after the deploy overlap and regenerate database types. |
 
 Trace shared consumers before deleting code. Enrolled Codex and Claude drivers, harness session IDs, native login/import, runtime artifact validation, common auth publication, and shared failure normalization remain runtime contracts.

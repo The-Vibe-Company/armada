@@ -23,7 +23,7 @@ new launches does not remove existing runtime read/cleanup routing.
 
 Launch through `POST /api/v1/sandbox/launch` with
 `runtimeVersion:1`, `boatRuntime:true`, `provider:"boat"`, `harness:"codex"`,
-authorized org/golden/account; the initial prompt is optional. Skip skill defaults; remote
+authorized organization, snapshot and account; the initial prompt is optional. Skip skill defaults; remote
 HTTP/SSE MCP uses the standard `connections` selection or registry
 `defaultForLaunch` defaults as described below. See [explicit runtime launch](launch-idempotency.md#explicit-runtime-launch).
 
@@ -35,7 +35,7 @@ model-auth lifecycle hooks. Bootstrap forks with `noEnv:true` and empty environm
 only ticket/public artifact metadata reaches private SSH stdin. Model configuration
 goes through encrypted enrolment, not fork environment or host arguments.
 
-Use the golden checkout as-is: no pull/init replay or native cwd/CLI probe.
+Use the snapshot checkout as-is: no pull/init replay or native cwd/CLI probe.
 Launch-time skills/helpers, scoped toolbox access and unsupported extras refuse
 before allocation; remote HTTP/SSE MCP uses the normal launch/turn lifecycle.
 Owner-scoped steer, interrupt and synchronous exec use private runtime commands,
@@ -120,7 +120,7 @@ No general repair/rebind service or native fallback is implied.
 
 After runtime readiness, the owner calls `POST /api/v1/github/refresh` with `{"id":"SANDBOX_UUID"}`. The private
 `configureGitHub` command installs runtime-owned Git/gh identity and just-in-time
-helpers, scoped only to golden repositories and the connected owner's GitHub App
+helpers, scoped only to snapshot repositories and the connected owner's GitHub App
 access. No Boat prompt/exec/SSH credential setup is used. Private credential
 delivery rechecks current membership, connection and runtime epochs.
 
@@ -182,14 +182,15 @@ hashes, epoch, command receipts and ACKed event prefixes, and the guest retains 
 SQLite outbox. WSS disconnect falls back to HTTPS with stable IDs. Inspect existing
 allocations after uncertain transport; never retry allocation/activation blindly.
 
-## Staging acceptance
+## Coordinator-only Boat checks
 
-Run only under coordinator authorization, no deployment in flight, with:
+Run on demand with existing authorized Boat resources. Boat is excluded from
+staging acceptance and release gates. Run with no deployment in flight and supply:
 
 - `ARMADA_URL`: **armada-server HTTPS origin**, not dashboard.
 - `ARMADA_TOKEN`: environment-only bearer; never arguments/logs.
 - `ARMADA_RUNTIME_ORG`: organization **UUID**, not name/slug.
-- `ARMADA_RUNTIME_GOLDEN`: snapshotted Boat golden name.
+- `ARMADA_RUNTIME_GOLDEN`: the name of a ready Boat snapshot.
 - `ARMADA_RUNTIME_CREDENTIAL_ID`: authorized account UUID for the selected harness.
 - Optional `ARMADA_RUNTIME_MODEL`.
 - `ARMADA_RUNTIME_HARNESS=claude` selects Claude (default: `codex`). Use an Anthropic key or Claude token account ID for Claude.
@@ -209,9 +210,9 @@ Final `resume:"verified"` is required; metadata/health alone is not a pass.
 `--followup`, `--checkpoint` or no flag run narrower checks, not resume parity.
 
 Prefer a combined check when accepting GitHub/MCP, rather than allocating separate
-test sandboxes. Set `ARMADA_RUNTIME_GITHUB_REPOSITORY` to an owner-accessible golden
+test sandboxes. Set `ARMADA_RUNTIME_GITHUB_REPOSITORY` to an owner-accessible snapshot
 repository (Git and gh required). For MCP choose an existing connected HTTP/SSE
-connection **already marked `defaultForLaunch` on staging**. Set its UUID in
+connection **already marked `defaultForLaunch` in the target environment**. Set its UUID in
 `ARMADA_RUNTIME_MCP_CONNECTION_ID`, exact read-only `ARMADA_RUNTIME_MCP_TOOL`,
 non-secret `ARMADA_RUNTIME_MCP_ARGS_JSON` (default `{}`, prefer a no-argument tool),
 and stable result substring `ARMADA_RUNTIME_MCP_EXPECT` (not sent to the model).
@@ -255,14 +256,14 @@ inspect/stop known compute, never allocate/activate again to guess.
 
 `--mcp --resume` without GitHub is a three-prompt lifecycle; `--mcp` alone is one
 activation/two prompts, not resume parity. Flags select acceptance checks, not
-product behavior switches. Offline SDK/native evidence is not real staging
+product behavior switches. Offline SDK/native evidence is not deployed
 model/MCP acceptance. Current deployed parity remains coordinator-owned.
 
 ## Single skills + MCP acceptance check
 
 Remote HTTP/SSE MCP already uses the normal runtime launch/turn flow (#1407),
 and default skills installation is merged (#1417). To accept these together,
-use the staging inputs above and the same existing read-only MCP tool inputs:
+use the Boat inputs above and the same existing read-only MCP tool inputs:
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
@@ -276,7 +277,7 @@ in epoch+1. No extra MCP-only post-resume prompt is needed. Adding `--github`
 retains its existing fourth prompt, because explicit GitHub refresh must happen
 before that check; the three-prompt mode does not claim GitHub acceptance.
 
-Before allocation, skills are discovered through the shipped golden/org/personal
+Before allocation, skills are discovered through the shipped snapshot/org/personal
 `skills/defaults/get` API using the existing post-deploy-smoke oracle. Empty
 effective defaults stop plainly before allocation. Launch omits explicit skills
 and the skip-defaults flag. Both launch receipts and persisted `status.skills`
@@ -290,19 +291,21 @@ exact-argument/result evidence on all three prompts and stopped readback,
 matching receipts, remembered token and epoch+1. Neither configuration ACK nor
 assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
-This procedure is not evidence of a staging pass or permission to flip defaults.
+This procedure is not evidence of deployed acceptance or permission to flip defaults.
 
 ## Environment-wide Boat default switch (prepared, not flipped)
 
 Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
 ordinary Boat launch path. Unset means `native`; any other value fails startup.
-Set `runtime` on **staging first**, through the normal operator deployment
-process, not in the smoke client's shell. Ordinary API, CLI, dashboard, MCP
+The coordinator controls this setting through the server deployment process. The
+smoke client does not select the default. Ordinary API, CLI, dashboard, MCP
 `sandbox_launch`, template and routine launches share the same Core launch
 selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
-(or the existing trusted manifest override); in runtime-default mode,
-missing/invalid manifest metadata fails startup rather than selecting native. Valid
+(or the existing trusted manifest override). When `ARMADA_BOAT_AGENT_PATH=runtime`,
+startup requires the manifest and its published runtime and harness artifacts
+in `ARMADA_RUNTIME_ARTIFACT_DIR`. Each published artifact must be a regular file
+named by its manifest digest, with the declared byte count. Valid
 image-installed artifacts keep the explicit runtime route/retained sessions
 available during rollback. Missing/corrupt runtime-only metadata does not prevent
 native rollback from booting; explicit runtime bootstrap remains unavailable
@@ -345,37 +348,20 @@ Other follow-on gaps include model changes/arbitrary new conversations and the r
 features above. Public steer/interrupt/exec controls merged separately; use their
 own acceptance gates, not this workspace check. Unsupported operations do not
 use native fallback.
-Do not interpret the switch or a merged PR as a staging pass for any missing row.
+Record deployed evidence separately for each required parity row.
 
-### Standard post-deploy Boat check
+### Ordinary launch path check
 
-Once quota/resources permit, an operator sets the **staging server** setting to
-`runtime` and deploys this revision through the normal process. Keep the existing
-staging `ARMADA_URL`, environment-only `ARMADA_TOKEN`, and configured smoke cases.
-Run **the standard smoke**, selecting one existing Boat case; no runtime-only API:
+For an on-demand check of the runtime default, use the
+[ordinary launch probe](#proving-ordinary-launch-selection-before-cutover)
+below. Record the selected path and the archived runtime source in the owner
+parity table.
 
-```sh
-ARMADA_SMOKE_CASES="$(printf '%s' "$ARMADA_SMOKE_CASES" | jq '[.[] | select(.provider == "boat")][0:1]')" \
-ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts
-```
+## Repository/init runtime check
 
-Confirm `launch/options.boatRuntime.defaultPath:runtime`. A successful future
-case must have persisted `boatRuntime:true` and archived
-`logs/read.source:armada-runtime`, not Boat-native events; standard send/wait,
-git probes and stop must all pass. Repository/init and idle launch/first send are implemented; the merged public
-exec/git controls still need their own accepted evidence. Do not relax the standard smoke to conceal remaining work, and do not
-retry allocation after an ambiguous result. Roll back the server setting to
-`native` for ordinary native launches; no deletion is authorized here.
-
-Owner staging facts (12:38:43Z): Boat quota exhausted (`launch-runtime-v1`429),
-no effective smoke golden/org/user default skills and no named MCP connection.
-No live check or setting flip by this worker. Skills/MCP rows remain orange.
-
-## Repository/init runtime staging check
-
-The operator-only workspace check reuses an existing golden recipe; no new
+The coordinator-only workspace check reuses an existing snapshot recipe; no new
 canary, branch, repository or secret input is required. With the same existing
-staging Armada origin/token/org/golden/Codex account:
+Armada origin, token, organization, snapshot and Codex account:
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
@@ -384,7 +370,7 @@ ARMADA_RUNTIME_SMOKE=one_real_boat_launch \
 
 ONE allocation + ONE same-VM activation (two host starts), three prompts, two
 stops; no allocation/activation retry. Preflight requires workspace-v1 server
-support and reads the selected golden's repository/init counts before allocating.
+support and reads the selected snapshot's repository/init counts before allocating.
 The guest independently proves workspace-v1 health in the current epoch before
 GitHub authority or commands are delivered; old artifacts refuse, never use
 native setup. The server image publishes the updated compiled artifact normally.
@@ -408,7 +394,7 @@ proof of idle, public exec or other features' separate acceptance gates.
 
 Current owner facts remain: quota exhausted today, no smoke default skills or
 named MCP connection. No live attempt or setting flip by this worker; real
-repository/init staging acceptance remains pending. Idle launch/first send now has
+repository/init acceptance remained pending in that check. Idle launch/first send now has
 its own check below; the remaining owned parity gates and Claude/cost/subscription
 work remains with #1419/#1420.
 
@@ -416,15 +402,15 @@ work remains with #1419/#1420.
 
 The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
 is the live gate: converge production-used MCP/tools, skills, usage/cost,
-subscriptions and Claude parity first. The owner flips staging, then production
-only after accepted staging proof. Native Boat deletion is a separate PR after
-one production day, not part of documentation consolidation. Do not add product
+subscriptions and Claude parity first. The coordinator runs Boat checks on demand against authorized resources. See the
+[architecture program](https://github.com/The-Vibe-Company/armada/issues/2835)
+for cutover and native retirement requirements. Do not add product
 modes/compatibility layers or automatically port unused native-only features;
 ask the owner which features are actually used. Modal keeps its existing tunnel.
 
 ## Claude acceptance (#1419)
 
-The coordinator runs this **single** staging check with an existing Boat golden
+The coordinator runs this **single** on-demand check with an existing Boat snapshot
 and an Anthropic key or Claude token account supplied by ID:
 
 ```sh
@@ -441,13 +427,13 @@ epoch+1 remembered-token resume, verified checkpoint receipts and stopped histor
 and per-turn usage projected against the admitted account pricing. Missing usage
 fails; unknown cost stays unknown rather than becoming zero. Require final
 `resume:"verified"` and `usageAfterResume:"verified"`.
-Offline tests do not establish this staging result. No native fallback, new product
+Offline tests do not establish the deployed result. No native fallback, new product
 launch option, default-on switch or native-path deletion is part of this slice.
 
 
 ## Runtime controls acceptance (#1457)
 
-Coordinator only, using the existing staging inputs and matching server/runtime
+Coordinator only, using the existing Boat inputs and matching server/runtime
 artifacts (no new migration or default switch):
 
 ```sh
@@ -459,16 +445,16 @@ It requires controls v1 before allocation, exact exec output, a running-turn
 steer receipt with honest harness delivery, its exact replacement answer, and an
 archived interrupted terminal event. Combine with the existing MCP/skills/usage
 flags if accepting those in the same launch. No allocation retries. The
-coordinator records the staging result in the #1161 parity table; offline tests
+coordinator records the deployed result in the #1161 parity table; offline tests
 and this procedure are not evidence of a deployed pass.
 
 
 ## Automatic Boat resume GitHub acceptance
 
 Coordinator only, after normal matching server/runtime deployment, using your own
-production Boat sandbox resources when staging credit is unavailable. Use the
-existing environment-only server origin, caller token, org, golden, bound model
-account and authorized golden GitHub repository; no new credentials or flags:
+authorized production Boat resources. Use the
+existing environment-only server origin, caller token, org, snapshot, bound model
+account and authorized snapshot GitHub repository; no new credentials or flags:
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --github --resume
@@ -500,8 +486,7 @@ starts another turn nor overwrites a newer task. Arbitrary new conversations
 and model changes remain unsupported. Modal behavior is unchanged.
 
 Coordinator only, with existing environment-only inputs and your own Boat
-resources when staging credit is unavailable, after normal server/runtime
-delivery:
+resources after normal server/runtime delivery:
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --idle --resume
@@ -534,7 +519,7 @@ bootstrap and setup, but **not** first-answer latency. A timing record alone is
 not a lifecycle pass; retain the complete successful checker output as evidence.
 
 Compare with a coordinator-recorded native launch using the same request/response
-boundary, harness, golden recipe, region and idle/prompt mode. Record both server
+boundary, harness, snapshot recipe, region and idle/prompt mode. Record both server
 revisions and cold/warm cache conditions; unlike conditions are not comparable.
 Report `(runtimeMs / nativeMs - 1) * 100` in the parity PR. A regression above
 20% needs an owner decision, not an automatic baseline update or a retry until
@@ -548,7 +533,7 @@ authorized one-allocation lifecycle check. No worker measurement has been run.
 ### Production 2.29.0 forward-log regression (#1161)
 
 The coordinator's Boat parity run on 2.29.0 timed out after send while fresh
-`armada logs --all --json` could show finished turns. The 2.29.0 Boat adapter
+`armada logs SANDBOX_UUID --all --json` could show finished turns. The 2.29.0 Boat adapter
 advances a timestamp/row-ID cursor past a running prompt or partial response;
 Boat can mutate that same row without changing its timestamp/ID. Later forward
 reads therefore miss its terminal state even though a fresh history read sees it.
@@ -607,7 +592,9 @@ also refuse.
 Coordinator-only production acceptance after normal release: use the existing
 Boat runtime-default server deployment and an existing Boat Codex or Claude
 template with a non-secret readable binding (no secret bindings). Launch through
-`armada template launch <template>`; use ordinary send/exec to read the bound key
+`armada template launch TEMPLATE_NAME_OR_ID --request-key probe_run_1 --org ORG_UUID`.
+Substitute the template name or ID, a request key unique to this attempt, and the
+organization UUID. Use ordinary send/exec to read the bound key
 and confirm the exact admitted value. Change the source variable, stop the
 sandbox, and wake it through ordinary send: the admitted value must be preserved.
 Repeat for an existing routine referencing that template. Confirm launch logs
@@ -650,7 +637,7 @@ mistaken for evidence of the ordinary default path. Without this flag the existi
 explicit opt-in launch is unchanged.
 
 Once the coordinator has authorized a normal production server deployment with
-runtime selection, use existing credentials/golden/account, no new test resources:
+runtime selection, use existing credentials/snapshot/account, no new test resources:
 
 ```sh
 ARMADA_RUNTIME_SMOKE=one_real_boat_launch bun scripts/check-boat-runtime.ts --ordinary --idle --workspace --usage --resume
@@ -676,20 +663,15 @@ release migration path and deploy matching server/runtime artifacts first.
 Use `sandbox/launch` with `runtimeVersion:1`, `boatRuntime:true`,
 `provider:"boat"`, `harness:"opencode"` and an authorized OpenCode account/model.
 `launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
-Ordinary launches also work when the operator has already selected the Boat runtime
-default; only then does the Boat provider option advertise OpenCode. This does not
-change the default or invent native support. The dashboard snapshot launch form
-now offers Boat OpenCode only when ordinary Boat provider discovery advertises
-that harness and the installed runtime reports its enabled runtime default and
-OpenCode v1 support. Missing, older, unavailable or native-default discovery keeps
-the choice disabled with an explanation. The launch action rereads trusted server
-options rather than accepting an availability field from the form. It uses the
-existing ordinary/sized route; it does not select or flip the runtime path.
-Default-off deployments can still use the explicit versioned runtime API when
-installed.
+Ordinary launches also select the shared runtime when OpenCode support is
+installed, including deployments with the native Boat default. The dashboard
+offers OpenCode when launch discovery advertises the harness and OpenCode runtime
+support. Missing or older runtime support disables the choice with an
+explanation. The launch action rereads server options before submitting the
+ordinary launch, and the server enforces runtime admission.
 
 Coordinator-only production verification after normal release: use an existing
-OpenCode account and Boat golden, launch one runtime sandbox, send a prompt and a
+OpenCode account and Boat snapshot, launch one runtime sandbox, send a prompt and a
 same-conversation follow-up, then checkpoint/stop and resume it, requiring archived
 runtime answers and remembered context. With the existing runtime-default server
 setting, `post-deploy-smoke.ts --parity --only boat --production-boat --feature opencode`
@@ -712,12 +694,12 @@ Modal's runtime and Docker's runtime already parse those descriptors into harnes
 configuration. Boat now uses that same runtime machinery: empty fork environment,
 encrypted enrolment carrying the key and endpoint descriptor, persisted model and
 immutable runtime selection for subsequent turns. Keys are not put in Boat account
-environment, public arguments or the golden. OpenCode support is described separately
+environment, public arguments or the snapshot. OpenCode support is described separately
 above. Template application-secret delivery follows the same enrolled admission
 and redaction rules described above.
 
 Coordinator-only production acceptance after a normal release: with existing Boat
-golden and Morph accounts, launch Claude and Codex through ordinary launch, verify
+snapshot and Morph accounts, launch Claude and Codex through ordinary launch, verify
 runtime history and a completed answer with the selected Morph model, then send a
 follow-up and stop/delete the owned sandbox. Also verify an existing Azure or
 custom gateway account preserves its base URL/model configuration. Inspect logs
@@ -729,12 +711,13 @@ and Docker keep their existing staging acceptance.
 ### Boat OpenCode dashboard acceptance (#2052)
 
 Coordinator-only production check after normal dashboard/server release, using
-existing authorized resources: on a server already configured with the Boat
-runtime default, open a ready Boat snapshot, choose OpenCode and its usable
+existing authorized resources: on a server with OpenCode runtime support,
+open a ready Boat snapshot, choose OpenCode and its usable
 account/model, then launch. Require persisted `boatRuntime:true`, an archived
 runtime answer and normal follow-up. No default flip is authorized by this check.
-On an existing native-default or older/unavailable server, verify OpenCode is
-disabled with its reason. A stale open form or forged availability field must not
+A native-default deployment with current OpenCode runtime support also offers
+the harness. On an older or unavailable runtime, verify OpenCode is disabled
+with its reason. A stale open form or forged availability field must not
 bypass the action's new discovery read; the server still enforces native refusal
 and never falls back. Boat remains outside staging and the release gate. No real
 launch, provider call or deployment was performed by this worker.
@@ -757,7 +740,7 @@ from staging/release gates. These are acceptance instructions, not live evidence
 
 ### API-key model connection checks on running Boat runtimes (#2052)
 
-The existing `sandbox/test-model-connection` API and `armada creds test ID --model MODEL`
+The existing `sandbox/test-model-connection` API and `armada account test SANDBOX_UUID --model DEPLOYMENT_MODEL`
 now support an already-running, owner-controlled Boat shared-runtime sandbox. No
 start, resume, native Boat model API or SSH/exec fallback is used. Native Modal
 checks retain their existing path. The dashboard now lists matching running Boat

@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import type { ProviderTarget, Sql } from "@armada/core";
 import { GoldenError, isNonMutatingProviderRefusal, LaunchError, ProviderError, VaultError } from "@armada/core/server";
 
+const SHARED_KEY_CONFLICT_SQLSTATE = "A2760";
+
 interface Scope {
   orgId: string;
   userId: string;
 }
-type Failure =
+export type OrdinaryLaunchFailure =
   | { kind: "launch"; code: LaunchError["code"]; sandboxId?: string }
   | { kind: "golden"; code: GoldenError["code"] }
   | { kind: "vault"; code: VaultError["code"]; message: string }
@@ -23,7 +25,7 @@ interface Receipt {
   id: string;
   fingerprint: string;
   response: unknown;
-  failure: Failure | null;
+  failure: OrdinaryLaunchFailure | null;
 }
 
 /** Atomic, fail-closed admission. An unfinished receipt is never dispatched again. */
@@ -36,13 +38,24 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
       dispatch: (id: string) => Promise<T>,
       authority: { target: ProviderTarget; backendId: string; management: { scope: "org" | "user"; ownerId: string } },
     ): Promise<T> {
-      const fingerprint = createHash("sha256").update(canonical(payload)).digest("hex");
+      const fingerprint = ordinaryLaunchFingerprint(payload);
       const id = crypto.randomUUID();
-      const inserted = await sql.query<Receipt>(
-        `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
-        [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
-      );
+      let inserted: { rows: Receipt[] };
+      try {
+        inserted = await sql.query<Receipt>(
+          `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
+          [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (("errno" in error && error.errno === SHARED_KEY_CONFLICT_SQLSTATE) ||
+            ("code" in error && error.code === SHARED_KEY_CONFLICT_SQLSTATE))
+        )
+          throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+        throw error;
+      }
       if (!inserted.rows.length) {
         const { rows } = await sql.query<Receipt>(
           `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts
@@ -54,7 +67,7 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
           throw new LaunchError("outcome_unknown", "Launch receipt unavailable; do not retry with a new key.");
         if (prior.fingerprint !== fingerprint)
           throw new GoldenError("conflict", `Launch key conflicts with receipt ${prior.id}.`);
-        if (prior.failure) throw replayFailure(prior.failure);
+        if (prior.failure) throw replayOrdinaryLaunchFailure(prior.failure);
         if (prior.response !== null) return prior.response as T;
         throw new LaunchError("outcome_unknown", `Launch outcome unknown; receipt ${prior.id}. Do not use a new key.`);
       }
@@ -88,6 +101,10 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
   };
 }
 
+export function ordinaryLaunchFingerprint(payload: unknown) {
+  return createHash("sha256").update(canonical(payload)).digest("hex");
+}
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object")
@@ -100,7 +117,7 @@ function canonical(value: unknown): string {
 }
 
 // Persist only typed public fields, never causes, provider details or raw command output.
-function terminalFailure(error: unknown): Failure | null {
+function terminalFailure(error: unknown): OrdinaryLaunchFailure | null {
   if (error instanceof VaultError) return { kind: "vault", code: error.code, message: error.message };
   if (error instanceof GoldenError) return { kind: "golden", code: error.code };
   if (
@@ -121,7 +138,7 @@ function terminalFailure(error: unknown): Failure | null {
   return null;
 }
 
-function replayFailure(failure: Failure): Error {
+export function replayOrdinaryLaunchFailure(failure: OrdinaryLaunchFailure): Error {
   const message = `Launch refused (${failure.code}). This key records a terminal failure; correct the configuration before submitting a new launch key.`;
   switch (failure.kind) {
     case "vault":

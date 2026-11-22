@@ -1,21 +1,11 @@
-# Organization invitations in the CLI
-
-All commands use the authenticated Armada control API. No provider credentials,
-Supabase configuration, or database access is needed on the terminal.
+# Organization invitations
 
 ## Admin management
 
-```sh
-armada org invitations create recipient@example.invalid --role member --org Team
-armada org invitations list --org Team --json
-armada org invitations resend <invitation-id> --org Team
-armada org invitations revoke <invitation-id> --org Team
-```
-
-`--role` defaults to `member`; `admin` is also supported. `--org` accepts a name
-or UUID and overrides the selection saved with `armada org use`. Without either,
-select an organization explicitly. Management requires an organization admin.
-All five commands support `--json`; public invitation records never include tokens.
+Use **Invite a teammate** on the organization dashboard to create an invitation.
+Admins can list, resend and revoke invitations there. For scripting, see the
+[administration API routes](cli-admin.md#organization-invitations). Public
+invitation records contain IDs and delivery metadata.
 
 The server owns recipient validation, authorization, expiration, duplicate and
 already-member handling, rate limits, resend invalidation, and revocation.
@@ -26,33 +16,18 @@ of inbox delivery. After an uncertain request, list invitations before retrying.
 
 ## Accept an invitation
 
-First use `armada login` to sign in personally with the invitation recipient's
-verified email. A service token is not a substitute for that personal login;
-unset `ARMADA_TOKEN` if it overrides your saved login. The server checks identity.
+Open the invitation email link and sign in to the dashboard with the recipient's
+verified email. Review the organization and select **Accept and join**. Opening
+the link or previewing it leaves membership pending.
 
-Save the token from the invitation link into a private file without putting it in
-shell history, then run:
+For scripts, use a personal `armada login`. Unset `ARMADA_TOKEN` if a service key
+overrides that login. Supply the acceptance JSON through stdin as shown in
+the [administration API reference](cli-admin.md#organization-invitations).
 
-```sh
-armada org invitations accept --file /path/to/private-token-file --json
-# Or supply the token through a secure stdin source:
-armada org invitations accept < /path/to/private-token-file
-```
-
-The file contains only the token, not the full URL. Remove the file when finished.
-Never pass a token as a positional argument, flag value, or environment variable.
-The email link opens `/invitations/accept?token=...` on the dashboard; opening it
-or a link preview never joins an organization. Only explicit acceptance joins.
 A wrong verified email, expired/revoked token, or replay is rejected by the server.
 Resending invalidates the previous token; use the new email's token.
 
-## Existing direct membership commands
+## Direct membership
 
-`armada org members list|add|remove|role` remain direct administration commands.
-`members add` requires an existing account, grants membership immediately, and
-sends no invitation email. Use `org invitations create` for an invitation instead.
-
-Errors use local, recognized reason text rather than echoing server messages.
-They distinguish personal-login requirements, wrong/unverified email, expiration,
-revocation, reuse, existing membership, and an existing pending invitation. A
-rate-limit response may include a numeric retry delay; wait before retrying.
+An organization admin can use `armada api members/add -` for an existing account.
+This grants membership immediately without email.

@@ -58,7 +58,7 @@ import {
   SEND_KEY_FIELD,
   UNCONFIRMED_ACTION,
 } from "@/lib/composer";
-import { type ChatEvent, isActiveStatus, mergeEvents, parseEventPage } from "@/lib/events";
+import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
@@ -176,7 +176,9 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
-  const [events, setEvents] = useState<ChatEvent[]>([]);
+  const [history, setHistory] = useState(initialChatHistory);
+  const currentHistory = useRef(initialChatHistory);
+  const { events, loaded, olderCursor } = history;
   const [status, setStatus] = useState(initialStatus);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
@@ -186,7 +188,6 @@ export function SandboxChat(props: Props) {
     retryAvailable: false,
     accessEnded: false,
   });
-  const [hasMore, setHasMore] = useState(false);
   const [turnModel, setTurnModel] = useState<{
     rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
     state?: string;
@@ -196,9 +197,6 @@ export function SandboxChat(props: Props) {
     modelSelectionReason?: string | null;
     modelSelectionMessage?: string | null;
   } | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const cursor = useRef<string | null>(null);
-  const olderCursor = useRef<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const known = useRef(initialStatus);
   const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
@@ -246,8 +244,9 @@ export function SandboxChat(props: Props) {
 
   const read = useCallback(
     async (session: PollSession): Promise<ReadResult> => {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
-      const cursorBefore = cursor.current;
+      const { cursor: cursorBefore, loaded } = currentHistory.current;
+      const path = loaded ? "events" : "history";
+      const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
       const controller = new AbortController();
       session.controller = controller;
@@ -287,21 +286,13 @@ export function SandboxChat(props: Props) {
         if (!metadata || !isCurrent(session)) return { kind: "aborted" };
 
         const page = parseEventPage(body);
-        // A successful page must make progress before the continuation can run. The
-        // route turns stalled upstream cursors into 502s, but keep the browser safe
-        // if a proxy or an older server ever sends one directly.
-        if (page.hasMore && (!page.cursor || page.cursor === cursorBefore)) {
+        const backward = body.backward === true;
+        const next = applyChatPage(currentHistory.current, page, backward ? "latest" : "forward");
+        if (!next) {
           return { kind: "retryable", message: "The server returned a conversation page without a new cursor." };
         }
-        const backward = body.backward === true;
-        if (backward) {
-          olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
-          setHasMore(olderCursor.current !== null);
-        }
-        if (page.cursor) cursor.current = page.cursor;
-        if (page.events.length > 0) setEvents((shown) => mergeEvents(shown, page.events));
-        if (!backward && olderCursor.current === null) setHasMore(false);
-        setLoaded(true);
+        currentHistory.current = next;
+        setHistory(next);
         return {
           kind: "success",
           more: !backward && page.hasMore,
@@ -318,24 +309,22 @@ export function SandboxChat(props: Props) {
   );
 
   const loadOlder = async () => {
-    const boundary = olderCursor.current;
+    const boundary = currentHistory.current.olderCursor;
     const session = sessionRef.current;
     if (!boundary || loadingOlder || !session || !isCurrent(session)) return;
     setLoadingOlder(true);
     try {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
+      const url = new URL(`/api/sandboxes/${sandboxId}/history`, window.location.origin);
       url.searchParams.set("cursor", boundary);
-      url.searchParams.set("direction", "backward");
       const response = await fetch(url, { cache: "no-store" });
       const body: unknown = await response.json();
       if (!isCurrent(session)) return;
       if (!response.ok || !isSuccessfulPage(body)) throw Error("Older messages could not be read.");
       const page = parseEventPage(body);
-      if (page.hasMore && (!page.olderCursor || page.olderCursor === boundary))
-        throw Error("Older messages did not advance.");
-      setEvents((shown) => mergeEvents(page.events, shown));
-      olderCursor.current = page.hasMore ? (page.olderCursor ?? null) : null;
-      setHasMore(olderCursor.current !== null);
+      const next = applyChatPage(currentHistory.current, page, "older");
+      if (!next) throw Error("Older messages did not advance.");
+      currentHistory.current = next;
+      setHistory(next);
     } catch {
       if (isCurrent(session))
         setPoll((current) => ({ ...current, error: "Older messages could not be read. Try again." }));
@@ -497,7 +486,7 @@ export function SandboxChat(props: Props) {
           running={turnRunning}
           loaded={loaded}
           poll={poll}
-          hasMore={hasMore}
+          hasMore={olderCursor !== null}
           onMore={() => void loadOlder()}
         />
 

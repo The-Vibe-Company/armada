@@ -1,8 +1,9 @@
 import { type HeaderSentinel, managedInspection as inspection, installHeaderSentinel } from "./managed-inspection.ts";
+
 /** Opt-in managed proof using Armada's real API-only CLI client. Never prints transcripts or credentials. */
 
-import { createArmadaApiClient } from "../../packages/cli/src/armada-api.ts";
 import { productionAuthIo } from "../../packages/cli/src/auth-commands.ts";
+import { createSdkCommandClient } from "../../packages/cli/src/sdk-session.ts";
 import type { AgentEvent, Harness, McpConnectionDto, ToolCall } from "../../packages/core/src/index.ts";
 import { parsePinnedMcpStdio } from "../../packages/core/src/index.ts";
 
@@ -102,7 +103,7 @@ async function main() {
   const timeout = (manifest.timeoutSeconds ?? 360) * 1000;
   ensure(timeout >= 30000 && timeout <= 600000, "invalid_timeout");
   const auth = productionAuthIo({ out: () => {}, err: () => {} });
-  const api = await createArmadaApiClient({ env: auth.env, fetch: auth.fetch, session: auth.session });
+  const api = await createSdkCommandClient({ env: auth.env, fetch: auth.fetch, session: auth.session });
   const post = <T>(path: string, body: Record<string, unknown>, ms = 30000) =>
     api.request<T>(`/api/v1/${path}`, {
       method: "POST",

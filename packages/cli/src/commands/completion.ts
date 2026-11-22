@@ -19,7 +19,6 @@ export default {
     "completion zsh": completionHelp("zsh"),
     "completion fish": completionHelp("fish"),
   },
-  useSelectedOrg: false,
   async run(argv, { io }) {
     const { completion } = await import("../command-catalog.ts");
     return completion(argv, io);

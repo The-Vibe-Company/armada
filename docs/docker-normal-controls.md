@@ -16,17 +16,17 @@ SANDBOX_PLACEMENT_LABELS, isSandboxPlacementProvider and SandboxPlacementProvide
 The label catalog is exhaustive over the generated database provider enum. Adding
 a producer value requires updating this shared catalog in the same PR. List DTOs,
 MCP output validation, dashboard parser/filter and CLI formatter use it; there is
-no separate dashboard-widened provider list. Golden-source identity stays narrower
-(Boat/Modal): accepting a Docker row must not manufacture a Docker golden.
+no separate dashboard-widened provider list. The `golden` launch field is
+reserved for Boat and Modal. Docker rows carry their host and image identity.
 A real SQL row is tested through normal list/MCP output validation and the actual
 dashboard parser and CLI formatter. Swift's existing DTO keeps provider strings
-and ignores the golden field in detail; it does not reject this new row value.
+and ignores the `golden` field in detail; it does not reject this new row value.
 
 ## Routes and authority
 
 With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
 
-- POST /api/v1/sandbox/status or /sandbox/detail {id,org?,prompt_id?}; MCP status.
+- POST /api/v1/sandbox/status {id,org?,prompt_id?}; MCP status.
   The normal envelope adds provider=docker, hostId, image and golden=null. Status
   remains the persisted logical machine state; prompt/settled describe acknowledged
   native turn evidence. No live host/model request is made. A newer unknown or
@@ -39,7 +39,8 @@ With ARMADA_DOCKER_HOSTS=1, current owner/admin interior authorization:
   filter private model diagnostics after raw paging, and preserve forward progress
   through empty filtered pages. The shared SQL ordering is qualified numeric
   sequence order, not lexicographic ordering of its text output alias.
-- POST /api/v1/sandbox/stop and /sandbox/delete {id,org?,request_id?}; MCP also exposes stop.
+- `POST /api/v1/sandbox/stop` accepts `{id, org?, request_id?}`. MCP also exposes stop.
+- `DELETE /api/v1/sandboxes/{id}` accepts optional `org` and `requestId` query parameters. Reuse `requestId` after an uncertain Docker deletion.
   DELETE /api/v1/sandboxes/:id?org=... is the same normal delete path. No completed
   result precedes a genuine bound host ACK. Waiting releases SQL locks and has a
   45-second budget; timeout is pending/conflict, never fictional completion.

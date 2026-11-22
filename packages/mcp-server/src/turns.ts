@@ -2,15 +2,15 @@ import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
+  isSandboxProvider,
   type ModelRateLimit,
   modelRateLimit,
+  observedPromptOutcome,
   type PromptOutcome,
   type Provider,
-  promptOutcome,
   readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
-  type SandboxPatch,
   type SandboxPullRequest,
   type SandboxStatus,
   type SandboxUsage,
@@ -22,10 +22,17 @@ import {
 } from "@armada/core";
 import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
-import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
+export const MODAL_LAUNCH_FAILURE = "modal_launch_failed";
+
+export function isFailedModalLaunch(sandbox: Pick<SandboxView, "status" | "statusReason">) {
+  return sandbox.status === "failed" && sandbox.statusReason === MODAL_LAUNCH_FAILURE;
+}
+
 export function isInterruptedLaunch(sandbox: Pick<SandboxView, "status" | "statusReason">): boolean {
   return sandbox.status === "failed" && sandbox.statusReason === INTERRUPTED_LAUNCH_REASON;
 }
@@ -38,6 +45,7 @@ export function isStatusReadFenced(sandbox: SandboxView): boolean {
     sandbox.status === "stopping" ||
     Boolean(sandbox.stopRequestedAt) ||
     isInterruptedLaunch(sandbox) ||
+    isFailedModalLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   );
 }
@@ -102,13 +110,15 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
     (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
   );
 
+type StatusReader = Pick<Provider, "id" | "getPrompt" | "events" | "collectTurnUsage"> & Partial<Pick<Provider, "get">>;
+
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
- * A live machine is `running` while a turn runs, `ready` after one ends, and `failed` only when the machine failed.
+ * Runtime prompt activity is reported separately from the enrolled machine state.
  */
 export async function readStatus(
-  provider: Provider | null,
+  provider: StatusReader | null,
   store: ServerSandboxStore,
   sandbox: SandboxView,
   options: { promptId?: string; now: Date; stored?: boolean },
@@ -119,8 +129,9 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  const info = await provider.get(sandbox.providerSandboxId);
-  if (provider.id === "boat" && info.state === "stopped" && info.retainedSnapshot !== "usable")
+  const info = await provider.get?.(sandbox.providerSandboxId);
+  const stored = options.stored || !info;
+  if (provider.id === "boat" && info?.state === "stopped" && info.retainedSnapshot !== "usable")
     return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
@@ -200,7 +211,7 @@ export async function readStatus(
           /* Missing history cannot prove exact-model execution. */
         }
         rateLimit = modelRateLimit(events, target.promptId, options.now.getTime(), false);
-        outcome = await promptOutcome(provider, request, { state, events });
+        outcome = observedPromptOutcome(state.status, request.promptId, events);
         evidence = turnModelEvidence(events, {
           promptId: target.promptId,
           requestedModel: recorded?.requestedModel ?? null,
@@ -208,7 +219,7 @@ export async function readStatus(
         });
         terminalEvents = events;
         cacheOutcome =
-          !options.stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
+          !stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
       }
     }
     // Retained terminal reports can predate health recording. Keep their outcome and use the original source time.
@@ -244,13 +255,14 @@ export async function readStatus(
       /* Status stays available. The next observation can retry telemetry storage. */
     }
     try {
-      await store.recordAccountRateLimit?.(
-        sandbox.id,
-        target.promptId,
-        outcome.state === "running" && rateLimit?.waiting && rateLimit.message.startsWith("Rate limited by")
-          ? rateLimit.retryAt
-          : null,
-      );
+      if (info)
+        await store.recordAccountRateLimit?.(
+          sandbox.id,
+          target.promptId,
+          outcome.state === "running" && rateLimit?.waiting && rateLimit.message.startsWith("Rate limited by")
+            ? rateLimit.retryAt
+            : null,
+        );
     } catch {
       /* A telemetry write cannot change turn status. Existing retry evidence expires on its own. */
     }
@@ -275,9 +287,18 @@ export async function readStatus(
 
   // Stored Modal history already contains native counters; project it without waking compute.
   if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
-    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: options.stored === true });
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: stored });
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
+  }
+
+  if (!info) return report(sandbox, sandbox.status, null, prompt, null);
+
+  const runtime = runtimeBridgeTarget(sandbox);
+  const liveRuntime = runtime && (sandbox.status === "ready" || sandbox.status === "running");
+  if (runtime && !(liveRuntime && (info.state === "failed" || info.state === "stopped"))) {
+    const status = liveRuntime && info.state === "stopping" ? "stopping" : sandbox.status;
+    return report(sandbox, status, info, prompt, info.expiresAt ?? null);
   }
 
   const next = nextStatus(sandbox.status, info, prompt);
@@ -290,18 +311,46 @@ export async function readStatus(
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.
-  if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
-  if (next !== sandbox.status || reason !== sandbox.statusReason) {
-    const patch: SandboxPatch = {
-      status: next,
+  if (stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
+  const nativeExit =
+    !runtime &&
+    isSandboxProvider(sandbox.provider) &&
+    ((next === "stopped" && info.state === "stopped") || (next === "failed" && info.physicalExitConfirmed === true));
+  if (next !== sandbox.status || reason !== sandbox.statusReason || (nativeExit && sandbox.stoppedAt === null)) {
+    const nativeDiagnostic = !runtime && isSandboxProvider(sandbox.provider) && !nativeExit && next === sandbox.status;
+    const patch: ServerSandboxPatch = {
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
     };
-    if (next === "failed" && info.physicalExitConfirmed) {
-      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    } else if (next === "stopped") {
-      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+    if (nativeDiagnostic) {
+      patch.nativeDiagnostic = {
+        state: sandbox.status,
+        placement: sandbox.providerSandboxId,
+        previousReason: sandbox.statusReason,
+      };
+    } else {
+      patch.status = next;
+      if (next === "stopped" || (next === "failed" && info.physicalExitConfirmed)) {
+        patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+      if (
+        nativeExit ||
+        (!runtime && isSandboxProvider(sandbox.provider) && (next === "starting" || next === "stopping")) ||
+        (!runtime && isSandboxProvider(sandbox.provider) && sandbox.status === "stopped" && next === "failed") ||
+        ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
+        (!runtime &&
+          (sandbox.status === "stopped" ||
+            sandbox.status === "failed" ||
+            sandbox.status === "ready" ||
+            sandbox.status === "running") &&
+          next !== sandbox.status &&
+          (next === "ready" || next === "running"))
+      )
+        patch.providerObservation = {
+          fromState: sandbox.status,
+          ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
+        };
+    }
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
@@ -412,7 +461,7 @@ function report(
 
 /** The newest turn of the sandbox, from its prompt events. */
 export async function latestPrompt(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   complete = false,
   signal?: AbortSignal,
@@ -475,7 +524,7 @@ export async function promptsAfter(
 }
 
 async function allEvents(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   complete = false,
   maxPages?: number,
@@ -517,7 +566,7 @@ export async function waitSettled<T extends StatusReport>(
 /** Best-effort, bounded usage pull shared by terminal observation and controlled stop.
  * Keep persisted rows when provider history or the guest is temporarily unavailable. */
 export async function collectSandboxUsage(
-  provider: Provider,
+  provider: StatusReader,
   store: ServerSandboxStore,
   sandbox: SandboxView,
   targetPromptId?: string,
@@ -542,9 +591,9 @@ export async function collectSandboxUsage(
       // Observe compute once before fan-out. A terminal guest cannot provide native
       // counters; per-prompt exec guards would otherwise repeat the same GET up to
       // twenty times for an archived sandbox. Exec still guards races after this read.
-      const compute = prompts.size ? await provider.get(sandbox.providerSandboxId).catch(() => null) : null;
+      const compute = prompts.size ? await provider.get?.(sandbox.providerSandboxId).catch(() => null) : null;
       const inactive =
-        compute !== null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
+        compute != null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
       // A native read is bounded independently of provider event history.
       for (const [promptId, conversationId] of [...prompts].slice(-20)) {
         try {

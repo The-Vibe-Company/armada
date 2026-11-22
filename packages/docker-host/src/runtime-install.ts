@@ -3,10 +3,6 @@ import type { createDockerMachineExecutor, DockerMachineRequest } from "../../co
 
 type Machine = Pick<ReturnType<typeof createDockerMachineExecutor>, "installRuntime">;
 
-/** Trusted fresh-machine installation only. No host-level agent API or runtime hot-swap.
- * The caller owns admission/serialization; enrolment and harness setup remain runtime-owned.
- * The shared installer verifies the exact public artifact route, digest, size and private cache.
- */
 export function dockerRuntimeInstaller(machine: Machine, request: typeof fetch = fetch) {
   return async (input: {
     machine: DockerMachineRequest;
@@ -21,26 +17,19 @@ export function dockerRuntimeInstaller(machine: Machine, request: typeof fetch =
       );
       await machine.installRuntime(input.machine, new Uint8Array(await Bun.file(path).arrayBuffer()));
     } catch {
-      // Neither artifact transport output nor Docker diagnostics are public receipts.
       throw new Error("Docker runtime installation failed");
     }
   };
 }
 
-/** Fixed non-interactive launcher: input remains data on private stdin, never
- * a shell argument/environment/file. Background output is disconnected before
- * the docker exec shell exits; the runtime thereafter owns its dial-out channel.
- */
 const START_RUNTIME =
   '[ "$(command -v printf)" = printf ] || exit 1; payload=$(cat) || exit 1; (trap "" HUP; command printf "%s" "$payload" | "$1" dialout >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &';
 
-/** Called only after the daemon durably fences a newly admitted bootstrap job. */
 export function dockerRuntimeStarter(
   machine: Machine & Pick<ReturnType<typeof createDockerMachineExecutor>, "bootstrap">,
   options: {
     serverUrl: string;
     cacheDir: string;
-    /** Background shared-cache warm-up keyed by the bootstrapped runtime digest (#2562). */
     warmSharedArtifacts?: (runtime: string) => unknown;
   },
   request: typeof fetch = fetch,
@@ -76,8 +65,6 @@ export function dockerRuntimeStarter(
     } catch {
       throw new Error("Docker runtime bootstrap failed");
     }
-    // Not awaited: the mailbox never waits on the cache, and this bootstrap's runtime
-    // downloads as before. Later launches of the same deployment find the archives locally.
     void options.warmSharedArtifacts?.(bootstrap.artifact.sha256);
   };
 }

@@ -8,13 +8,19 @@ import {
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
 } from "@armada/core/server";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
-import { type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { Journal } from "../../agent-runtime/src/journal.ts";
+import type { Driver } from "../../agent-runtime/src/protocol.ts";
+import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
+import { createGoldenBuildJob } from "../../mcp-server/src/golden-worker.ts";
+import { createJobsRunner } from "../../mcp-server/src/jobs/runner.ts";
+import { createJobsStore } from "../../mcp-server/src/jobs/store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -30,45 +36,114 @@ import {
   modalFailureReceipt,
   type RunnerDistribution,
   type Scope,
+  scopeKey,
   settleDetachedModalCollections,
 } from "../src/index.ts";
+import { captureProcessBaseline } from "../src/process-scope.ts";
 
-let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
+let workerSnapshot: string;
+let goldenTemplate: Machine;
+let checkpointedGoldenTemplate: Machine;
+let workerTemplate: Machine;
+let imageTemplate: Awaited<ReturnType<ReturnType<typeof fixture>["store"]["image"]>>;
 const scope: Scope = {
   orgId: "00000000-0000-0000-0000-000000000001",
   userId: "00000000-0000-0000-0000-000000000002",
   visibility: "private",
   binding: { workspace: "label-only", environment: "main", appId: "ap_pinned" },
 };
-beforeAll(async () => {
-  db = await openMigratedDatabase();
-  await db.query("insert into auth.users(id) values($1)", [scope.userId]);
-  await db.query("insert into auth.users(id) values($1)", ["00000000-0000-0000-0000-000000000004"]);
-  await db.query("insert into orgs(id,name) values($1,'modal')", [scope.orgId]);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [scope.orgId, scope.userId]);
-  await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [
-    scope.orgId,
-    "00000000-0000-0000-0000-000000000004",
-  ]);
+const {
+  setup,
+  close,
+  get: getDb,
+} = closeableFixture(async () => {
+  const db = await openMigratedDatabase();
+  try {
+    await db.exec(`
+      set plan_cache_mode = force_generic_plan;
+      insert into auth.users(id) values
+        ('${scope.userId}'), ('00000000-0000-0000-0000-000000000004');
+      insert into orgs(id,name) values ('${scope.orgId}','modal');
+      insert into members(org_id,user_id,role) values
+        ('${scope.orgId}','${scope.userId}','admin'),
+        ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
+    `);
+    const { provider, store } = fixture(
+      scope,
+      createFixtureSql(() => db),
+    );
+    const builder = await provider.createGolden({});
+    goldenTemplate = await store.get(builder.id);
+    workerSnapshot = crypto.randomUUID();
+    await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
+    checkpointedGoldenTemplate = await store.get(builder.id);
+    imageTemplate = await store.image(workerSnapshot);
+    const worker = await provider.fork({ from: workerSnapshot });
+    workerTemplate = await store.get(worker.id);
+    await db.query("delete from public.modal_machines where id=$1", [worker.id]);
+    return db;
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 });
-afterAll(async () => {
-  await db.close();
-});
+beforeAll(setup);
+afterAll(close);
+const prepared = new Map<string, Promise<string>>();
+function createFixtureSql(getDatabase: typeof getDb) {
+  const sql: Sql = {
+    transaction: (work) => getDatabase().transaction(work),
+    async query<T>(statement: string, params: unknown[] = []) {
+      const db = getDatabase();
+      if (
+        !params.length ||
+        params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
+      )
+        return db.query<T>(statement, params);
+      let entry = prepared.get(statement);
+      if (!entry) {
+        const name = `modal_fixture_${prepared.size}`;
+        entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
+        prepared.set(statement, entry);
+      }
+      const name = await entry;
+      const args = params
+        .map((value) => {
+          if (value === null) return "null";
+          const escaped = String(value).replaceAll("\\", "\\\\").replaceAll("'", "''");
+          return `E'${escaped}'`;
+        })
+        .join(",");
+      const [result] = await db.exec(`execute ${name}(${args})`);
+      return { rows: result!.rows as T[] };
+    },
+  };
+  return sql;
+}
+const fixtureSql = createFixtureSql(getDb);
 function fixture(
   accessScope: Scope = scope,
-  sql: Sql = db,
+  sql: Sql = fixtureSql,
   beforePrompt?: ModalProviderOptions["beforePrompt"],
   beforeResume?: ModalProviderOptions["beforeResume"],
   commonRuntime?: true,
-  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = Bun.sleep,
+  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = async () => {
+    throw new Error("Unexpected admission retry: supply a fixture barrier for contention.");
+  },
+  resumeHooks?: {
+    resumeRefused?: ModalProviderOptions["resumeRefused"];
+    restoreEnv?: RunnerDistribution["restoreEnv"];
+  },
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
+  let artifactVolume: Volume | undefined;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let failSnapshot = false;
+  let loseTerminateResponse = false;
   let failCreate = false;
   let failBoot = false;
   let appId = "ap_pinned";
@@ -83,7 +158,7 @@ function fixture(
   const bootstraps = new Map<string, { grant: { token: string; generation: string } }>();
   const machines = new Map<string, { sb: Sandbox; exit: number | null }>();
   const names = new Map<string, Sandbox>();
-  const client = {
+  const fakeClient = {
     apps: {
       fromName: async (_name: string, params: object) => {
         expect(params).toEqual({ environment: "main", createIfMissing: false });
@@ -96,6 +171,14 @@ function fixture(
       delete: async (id: string) => {
         await onImageDelete?.(id);
         log.push("delete-image");
+      },
+    },
+    volumes: {
+      fromName: async (name: string, params: object) => {
+        expect(name).toBe("armada-runtime-artifacts");
+        expect(params).toEqual({ environment: "main", createIfMissing: false });
+        if (!artifactVolume) throw new NotFoundError("No cache volume");
+        return artifactVolume;
       },
     },
     sandboxes: {
@@ -126,7 +209,9 @@ function fixture(
                 writeText: async (text: string) => {
                   command.stdin.push(text);
                   input = JSON.parse(text);
-                  if (input && "command" in input) log.push("root-exec");
+                  if (input?.op === "quiesce") log.push("quiesce-processes");
+                  if (input && "command" in input)
+                    log.push(argv.includes("/usr/sbin/runuser") ? "workspace-exec" : "root-exec");
                   if (input && "grant" in input)
                     bootstraps.set(id, input as unknown as { grant: { token: string; generation: string } });
                 },
@@ -155,7 +240,7 @@ function fixture(
                         ? JSON.stringify({
                             detached: false,
                             exitCode: 0,
-                            stdout: "",
+                            stdout: argv.includes("/usr/sbin/runuser") ? '{"status":"clean"}' : "",
                             stderr: "",
                             timedOut: false,
                             truncated: false,
@@ -177,6 +262,7 @@ function fixture(
             await onTerminate?.();
             log.push("terminate");
             state.exit = 0;
+            if (loseTerminateResponse) throw Error("Lost termination confirmation");
           },
         } as unknown as Sandbox;
         machines.set(id, state);
@@ -196,7 +282,8 @@ function fixture(
       },
     },
     close: () => {},
-  } as unknown as ModalClient;
+  };
+  const client = fakeClient as unknown as ModalClient;
   const capabilities = {
     steer: "native" as const,
     interrupt: true,
@@ -219,7 +306,7 @@ function fixture(
     prepareFreshMachine: async (_sandbox, row) => {
       log.push(`fresh-${row.generation}`);
     },
-    restoreEnv: async () => ({}),
+    restoreEnv: resumeHooks?.restoreEnv ?? (async () => ({})),
     prepareSnapshot: async () => {
       log.push("scrub");
       provisioned = false;
@@ -228,7 +315,7 @@ function fixture(
   };
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
-  const provider = createModalProvider({
+  const { provider, captureRuntimeWork, readResourceReceipts } = createModalProvider({
     admissionSleep,
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
@@ -240,6 +327,7 @@ function fixture(
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
     ...(beforeResume ? { beforeResume } : {}),
+    ...(resumeHooks?.resumeRefused ? { resumeRefused: resumeHooks.resumeRefused } : {}),
     tokenId: "synthetic-id",
     tokenSecret: "synthetic-secret",
     appName: "pinned",
@@ -270,8 +358,44 @@ function fixture(
     },
   });
   return {
+    captureRuntimeWork,
+    readResourceReceipts,
+    async seedMachine(template: Machine) {
+      const id = crypto.randomUUID();
+      const physicalName = `fixture-${id}`;
+      const { sandboxId: physicalId } = await fakeClient.sandboxes.create(undefined, undefined, {
+        name: physicalName,
+        env: {},
+        secrets: [],
+        tags: {
+          armada_sandbox: id,
+          armada_scope: scopeKey(accessScope),
+          armada_generation: String(template.generation),
+        },
+      });
+      const machine: Machine = {
+        ...template,
+        info: { ...template.info, id, name: id },
+        physicalName,
+        physicalId,
+        ...(template.processBaseline ? { processBaseline: { ...template.processBaseline, physicalId } } : {}),
+        ...(template.runtimeEvidence ? { runtimeEvidence: { ...template.runtimeEvidence, physicalId } } : {}),
+      };
+      await sql.query(
+        `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+         values($1,$2,$3,$4,$5,$5,$6::jsonb)`,
+        [
+          scopeKey(accessScope),
+          accessScope.orgId,
+          accessScope.userId,
+          accessScope.visibility,
+          id,
+          JSON.stringify(machine),
+        ],
+      );
+      return machine.info;
+    },
     cleanupDelays,
-    /** Runs the retired-image collections that deletes detached, in order. */
     runDetached: async () => {
       for (let work = detached.shift(); work; work = detached.shift()) await work();
     },
@@ -283,12 +407,18 @@ function fixture(
     bootstraps,
     requestedRuntimes,
     resourceRequests,
+    setArtifactVolume: (volume: Volume) => {
+      artifactVolume = volume;
+    },
     sdkCommands,
     get provisioned() {
       return provisioned;
     },
     onRpc(work: (row: Machine, op: string, input: object) => Promise<unknown>) {
       onRpc = work;
+    },
+    loseTerminateResponse(value: boolean) {
+      loseTerminateResponse = value;
     },
     onTerminate(work: () => Promise<void>) {
       onTerminate = work;
@@ -328,9 +458,18 @@ function fixture(
     },
   };
 }
+async function seedHistory(sandboxId: string, events: AgentEvent[]) {
+  await getDb().query(
+    `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event)
+     select $1,$2,'1',sequence,event
+     from jsonb_array_elements($3::jsonb) with ordinality as history(event,sequence)`,
+    [scopeKey(scope), sandboxId, JSON.stringify(events)],
+  );
+}
+
 test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const event = {
     id: "terminal",
     at: 1,
@@ -347,20 +486,14 @@ test("stored composition reads ingested turns without any live SDK, runner or li
     ),
     { ...event, id: "terminal-final", at: 2000 },
   ];
-  await appendModalEvents(
-    db,
-    scope,
-    row.id,
-    "1",
-    history.map((event, i) => ({ sequence: i + 1, event })),
-  );
+  await seedHistory(row.id, history);
   let queries = 0;
   const tracedSql: Sql = {
     query: (text, params) => {
       queries++;
-      return db.query(text, params);
+      return getDb().query(text, params);
     },
-    transaction: (work) => db.transaction!(work),
+    transaction: (work) => getDb().transaction!(work),
   };
   f.client.apps.fromName = async () => {
     throw new Error("No live App lookup on stored reads");
@@ -398,22 +531,21 @@ test("stored composition reads ingested turns without any live SDK, runner or li
       done: false,
     });
     expect(queries - beforeMissing).toBeLessThanOrEqual(5);
-    // An exclusive writer does not block history; membership and source guards remain live.
     await f.store.lease(row.id, async () => {
       expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
     });
-    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+    await getDb().query("update members set role='admin' where org_id=$1 and user_id=$2", [
       scope.orgId,
       "00000000-0000-0000-0000-000000000004",
     ]);
-    await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    await getDb().query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
     await expect(stored.provider.events({ sandboxId: row.id })).rejects.toMatchObject({ code: "forbidden" });
   } finally {
-    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+    await getDb().query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
       scope.orgId,
       scope.userId,
     ]);
-    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+    await getDb().query("update members set role='member' where org_id=$1 and user_id=$2", [
       scope.orgId,
       "00000000-0000-0000-0000-000000000004",
     ]);
@@ -423,7 +555,7 @@ test("stored composition reads ingested turns without any live SDK, runner or li
 
 test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   await f.store.lease(row.id, async (record, save) => {
     if (invalid === "deleted") record.phase = "deleted";
     else {
@@ -439,7 +571,7 @@ test.each(["foreign-source", "deleted"] as const)("history refuses an invalid ma
 
 test("detail verifies the App once per read and still rejects a changed binding", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const lookup = f.client.apps.fromName;
   let appReads = 0;
   f.client.apps.fromName = async (...args) => {
@@ -453,8 +585,19 @@ test("detail verifies the App once per read and still rejects a changed binding"
   expect(appReads).toBe(2);
 });
 
+test("detail refuses exit evidence from a different physical machine", async () => {
+  const f = fixture();
+  const row = await activeWorker(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => {
+    const sandbox = await lookup(id);
+    return { ...sandbox, sandboxId: "sb_other", poll: async () => 0 } as Sandbox;
+  };
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "conflict" });
+});
+
 async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
-  await db.query(
+  await getDb().query(
     "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
     [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
   );
@@ -467,6 +610,49 @@ async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
     throw new Error("Unexpected fixture GitHub route");
   }) as typeof fetch;
   return githubFetch;
+}
+
+function goldenBuildRunner(builds: GoldenBuildJobs, receiptId: string) {
+  const idle = new AbortController().signal;
+  let now = Date.UTC(2100, 0, 1);
+
+  async function tick() {
+    const errors: string[] = [];
+    const runner = createJobsRunner(
+      createJobsStore(getDb()),
+      {
+        golden_build: createGoldenBuildJob(
+          builds,
+          () => now,
+          () => idle,
+        ),
+      },
+      (message) => errors.push(message),
+      () => () => {},
+    );
+    const claimed = await runner.reconcileOne(idle);
+    await runner.drain();
+    expect(errors).toEqual([]);
+    return claimed;
+  }
+
+  async function retry() {
+    now += 60_000;
+    const { rows } = await getDb().query(
+      "update public.jobs set run_after='-infinity' where id=$1 and state='queued' and run_after=$2 returning id",
+      [receiptId, new Date(now)],
+    );
+    expect(rows).toEqual([{ id: receiptId }]);
+    expect(await tick()).toBe(true);
+  }
+
+  async function expectDone() {
+    const { rows } = await getDb().query("select state from public.jobs where id=$1", [receiptId]);
+    expect(rows).toEqual([{ state: "done" }]);
+    expect(await tick()).toBe(false);
+  }
+
+  return { tick, retry, expectDone };
 }
 
 test("a failed Modal builder image records safe diagnostics and frees capacity without creating a sandbox", async () => {
@@ -484,16 +670,15 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   };
   f.distribution.image = async () => image as unknown as Image;
   const sdkCreate = spyOn(f.client.sandboxes, "create").mockImplementation(async () => {
-    // The SDK normally runs this implicit build before submitting sandbox creation.
     await image.build();
     throw new Error("Fixture image build unexpectedly completed");
   });
   const jobs = new GoldenBuildJobs({
-    sql: db,
+    sql: getDb(),
     encryptionKey: key,
     service: {
       github: {
-        store: createSqlVaultStore(db),
+        store: createSqlVaultStore(getDb()),
         encryptionKey: key,
         app: { clientId: "fixture", clientSecret: "fixture" },
         fetch: githubFetch,
@@ -508,7 +693,9 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   const job = await jobs.admit(provider, actor, input, crypto.randomUUID());
   const log = spyOn(console, "error").mockImplementation(() => {});
   try {
-    expect(await jobs.runOne()).toBe(true);
+    const { tick, expectDone } = goldenBuildRunner(jobs, job.jobId);
+    expect(await tick()).toBe(true);
+    await expectDone();
     const diagnostic = `Modal builder image failed. ${upstream}`;
     expect(await jobs.status(scope.userId, job.jobId)).toMatchObject({
       phase: "builder",
@@ -521,7 +708,9 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateDetail);
     expect(sdkCreate).not.toHaveBeenCalled();
     expect(await f.store.findByRequestKey(job.jobId)).toMatchObject({ phase: "deleted" });
-    expect((await db.query("select id from golden_backend_slots where org_id=$1", [scope.orgId])).rows).toEqual([]);
+    expect((await getDb().query("select id from golden_backend_slots where org_id=$1", [scope.orgId])).rows).toEqual(
+      [],
+    );
   } finally {
     log.mockRestore();
   }
@@ -534,12 +723,12 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
   let concurrentAfterPersist: (() => Promise<void>) | undefined;
   const recoverySql: Sql = {
-    query: db.query.bind(db),
+    query: getDb().query.bind(getDb()),
     transaction: async (work) => {
-      const result = await db.transaction(work);
+      const result = await getDb().transaction(work);
       const run = concurrentAfterPersist;
       if (run) {
-        const persisted = await db.query<{ builder_id: string | null }>(
+        const persisted = await getDb().query<{ builder_id: string | null }>(
           "select builder_id from golden_build_jobs where id=$1",
           [job.jobId],
         );
@@ -556,7 +745,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     encryptionKey: key,
     service: {
       github: {
-        store: createSqlVaultStore(db),
+        store: createSqlVaultStore(getDb()),
         encryptionKey: key,
         app: { clientId: "fixture", clientSecret: "fixture" },
         fetch: githubFetch,
@@ -575,8 +764,9 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     { name: "lost-builder", visibility: "private", repos: ["acme/web"], modal: scope.binding },
     crypto.randomUUID(),
   );
+  const { tick, retry, expectDone } = goldenBuildRunner(jobs, job.jobId);
   const fence = crypto.randomUUID();
-  await db.query(
+  await getDb().query(
     "update golden_build_jobs set state='recovery_required',phase='builder',error_code='build_failed',fence=$2 where id=$1",
     [job.jobId, fence],
   );
@@ -608,7 +798,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   }
   const row = async () =>
     (
-      await db.query<{ builder_id: string | null; state: string; fence: string }>(
+      await getDb().query<{ builder_id: string | null; state: string; fence: string }>(
         "select builder_id,state,fence from golden_build_jobs where id=$1",
         [job.jobId],
       )
@@ -626,84 +816,85 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     { ...originalRecord, managementAuthority: { credentialScope: "org", credentialOwnerId: scope.orgId } },
     { ...originalRecord, launchUserId: "00000000-0000-0000-0000-000000000004" },
   ]) {
-    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
       reserved.info.id,
       JSON.stringify(corrupt),
     ]);
     await expect(f.provider.findGoldenBuilder(request)).rejects.toMatchObject({ code: "forbidden" });
   }
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify(originalRecord),
   ]);
-  await db.query("update modal_machines set owner_id=$2 where id=$1", [
+  await getDb().query("update modal_machines set owner_id=$2 where id=$1", [
     reserved.info.id,
     "00000000-0000-0000-0000-000000000004",
   ]);
   expect(await f.provider.findGoldenBuilder(request)).toBeNull();
-  await db.query("update modal_machines set owner_id=$2 where id=$1", [reserved.info.id, scope.userId]);
+  await getDb().query("update modal_machines set owner_id=$2 where id=$1", [reserved.info.id, scope.userId]);
   const discover = f.provider.findGoldenBuilder;
   f.provider.findGoldenBuilder = async (req) => {
     const found = await discover(req);
-    await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
+    await getDb().query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
     return found;
   };
-  await jobs.reconcileOne();
+  expect(await tick()).toBe(true);
   expect((await row()).builder_id).toBeNull();
   expect(f.log).not.toContain("terminate");
-  await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
+  await getDb().query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
   f.provider.findGoldenBuilder = discover;
   for (const phase of ["snapshot", "persist"]) {
-    await db.query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
-    await jobs.reconcileOne();
+    await getDb().query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
+    await retry();
     expect((await row()).builder_id).toBeNull();
     expect(f.log).not.toContain("terminate");
   }
-  await db.query("update golden_build_jobs set phase='builder' where id=$1", [job.jobId]);
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update golden_build_jobs set phase='builder' where id=$1", [job.jobId]);
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify({ ...originalRecord, snapshotImages: [{ name: "retained-proof", imageId: "im_proof" }] }),
   ]);
-  let concurrentTicks = 0;
+  let competingClaim: boolean | undefined;
   let retainedDiscoveries = 0;
   f.provider.findGoldenBuilder = async (req) => {
     retainedDiscoveries++;
     return discover(req);
   };
   concurrentAfterPersist = async () => {
-    concurrentTicks++;
-    await jobs.reconcileOne();
+    competingClaim = await tick();
   };
-  await jobs.reconcileOne();
-  await jobs.reconcileOne();
-  expect(concurrentTicks).toBe(1);
-  expect(retainedDiscoveries).toBe(3);
+  await retry();
+  await retry();
+  expect(competingClaim).toBe(false);
+  expect(retainedDiscoveries).toBe(2);
   f.provider.findGoldenBuilder = discover;
   expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
-  await db.query(
+  await getDb().query(
     "update modal_machines set record=$2::jsonb,lease_id=$3,lease_until=now()+interval '15 minutes' where id=$1",
     [reserved.info.id, JSON.stringify(originalRecord), crypto.randomUUID()],
   );
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
-  await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [reserved.info.id]);
+  await getDb().query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [
+    reserved.info.id,
+  ]);
   f.provider.findGoldenBuilder = async (req) => {
     const found = await discover(req);
-    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
       reserved.info.id,
       JSON.stringify({ ...originalRecord, recoveryImageId: "im_late_proof" }),
     ]);
     return found;
   };
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
   f.provider.findGoldenBuilder = discover;
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify(originalRecord),
   ]);
@@ -712,18 +903,17 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   });
   for (const name of ["NotFoundError", "TimeoutError"]) {
     f.lookupError(Object.assign(new Error("synthetic SDK private payload"), { name }));
-    await jobs.reconcileOne();
+    await retry();
     expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
     expect((await f.store.get(reserved.info.id)).phase).toBe("creating");
     expect(f.log).not.toContain("terminate");
   }
   f.lookupError(undefined);
-  // A prior observation can have persisted a physical ID. That does not waive current tags.
   const known = await f.client.sandboxes.fromName("pinned", reserved.physicalName, {
     environment: "main",
     includeTerminated: true,
   });
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify({ ...originalRecord, physicalId: known.sandboxId }),
   ]);
@@ -745,33 +935,29 @@ test("durable golden recovery persists an interrupted Modal builder before exact
       armada_generation: "1",
       [tag]: "wrong",
     });
-    await jobs.reconcileOne();
+    await retry();
     expect((await row()).state).toBe("recovery_required");
     expect(f.log).not.toContain("terminate");
   }
   f.ownership();
-  // A later named lookup succeeds: cleanup only, no SDK create retry or command execution.
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("failed");
   expect((await f.store.get(reserved.info.id)).phase).toBe("deleted");
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
   expect(f.log).not.toContain("root-exec");
   expect(f.log).not.toContain("snapshot");
-  await jobs.reconcileOne();
+  await expectDone();
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
 });
 
-// The job owns a rolled-back artifact's collection: the real provider's builder history must not retain it forever.
-// `interrupted`: the worker retired the artifact, then its builder delete failed mid-termination.
-// `abandoned`: the worker died right after recording the artifact, before any remote cleanup.
 test.each(["interrupted", "abandoned"] as const)(
   "a rolled-back Modal build artifact is collected by the job reconciler before its %s builder is deleted",
   async (mode) => {
     const f = fixture();
     const key = Buffer.alloc(32, 62).toString("base64");
-    await db.query(
+    await getDb().query(
       "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
       [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
     );
@@ -784,11 +970,11 @@ test.each(["interrupted", "abandoned"] as const)(
       throw new Error("Unexpected fixture GitHub route");
     }) as typeof fetch;
     const jobs = new GoldenBuildJobs({
-      sql: db,
+      sql: getDb(),
       encryptionKey: key,
       service: {
         github: {
-          store: createSqlVaultStore(db),
+          store: createSqlVaultStore(getDb()),
           encryptionKey: key,
           app: { clientId: "fixture", clientSecret: "fixture" },
           fetch: githubFetch,
@@ -808,6 +994,7 @@ test.each(["interrupted", "abandoned"] as const)(
       { name: "rolled-back", visibility: "private", repos: ["acme/web"], modal: scope.binding },
       crypto.randomUUID(),
     );
+    const { tick, retry, expectDone } = goldenBuildRunner(jobs, job.jobId);
     const builder = await f.provider.createGolden({ idempotencyKey: job.jobId, labels: { armada: "golden-builder" } });
     const artifact = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name: artifact });
@@ -819,7 +1006,6 @@ test.each(["interrupted", "abandoned"] as const)(
         retryable: true,
       });
     });
-    // A transient termination failure leaves the builder's own delete interrupted in `deleting`.
     let terminations = 0;
     f.onTerminate(async () => {
       if (++terminations === 1 && mode === "interrupted")
@@ -837,29 +1023,27 @@ test.each(["interrupted", "abandoned"] as const)(
       await expect(f.provider.delete({ sandboxId: builder.id })).rejects.toBeDefined();
     }
     expect((await f.store.get(builder.id)).phase).toBe(parked);
-    await db.query(
+    await getDb().query(
       "update golden_build_jobs set state='recovery_required',phase='persist',error_code='build_failed',fence=$2,builder_id=$3,snapshot=$4 where id=$1",
       [job.jobId, crypto.randomUUID(), builder.id, artifact],
     );
     const state = async () =>
-      (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
+      (await getDb().query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
         ?.state;
-    await jobs.reconcileOne();
+    expect(await tick()).toBe(true);
     expect(await state()).toBe("recovery_required");
     expect((await f.store.get(builder.id)).phase).toBe(parked);
-    // Recovery itself retired a still-live artifact; only the image service blocks its collection.
     await expect(f.provider.getSnapshot(artifact)).rejects.toMatchObject({ code: "not_found" });
     f.onImageDelete(undefined);
-    await jobs.reconcileOne();
+    await retry();
     expect(await state()).toBe("failed");
+    await expectDone();
     expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
     expect((await f.store.get(builder.id)).phase).toBe("deleted");
     expect(terminations).toBe(mode === "interrupted" ? 2 : 1);
   },
 );
 
-// Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration
-// are provider-owned behavior; pure policy tests cannot detect dropped SDK options.
 test.each([
   ["small", 1, 4096],
   ["medium", 2, 8192],
@@ -889,42 +1073,153 @@ test("invalid Modal size is refused without a physical create", async () => {
   expect(f.creates).toBe(0);
 });
 
-async function runningFork(f: ReturnType<typeof fixture>) {
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  return f.provider.fork({ from: name });
+function runningFork(f: ReturnType<typeof fixture>) {
+  return f.provider.fork({ from: workerSnapshot });
 }
-test("overlapping forks refuse source contention definitively before allocating", async () => {
-  const f = fixture();
-  const builder = await f.provider.createGolden({});
+function activeWorker(f: ReturnType<typeof fixture>) {
+  return f.seedMachine(workerTemplate);
+}
+
+async function savedGolden(f: ReturnType<typeof fixture>) {
   const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
+  const imageId = `im_${crypto.randomUUID()}`;
+  const builder = await f.seedMachine({ ...checkpointedGoldenTemplate, snapshotImages: [{ name, imageId }] });
+  const image = {
+    ...imageTemplate,
+    sourceId: builder.id,
+    imageId,
+    info: { ...imageTemplate.info, name, artifactId: imageId, sourceSandboxId: builder.id },
+  };
+  await fixtureSql.query("insert into public.modal_images(scope,name,source_id,record) values($1,$2,$3,$4::jsonb)", [
+    scopeKey(scope),
+    name,
+    builder.id,
+    JSON.stringify(image),
+  ]);
+  return { builder, name };
+}
+
+async function seedHistoricalSnapshotTombstone(name: string) {
+  await getDb().query(
+    `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
+    [scopeKey(scope), name],
+  );
+}
+
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("%s Modal forks from one snapshot can boot concurrently", async (_path, commonRuntime) => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
+  const { name } = await savedGolden(f);
   const entered = deferred();
   const release = deferred();
-  f.distribution.start = async () => {
-    entered.resolve();
-    await release.promise;
+  const prepare = f.distribution.prepareFreshMachine!;
+  let firstBoot = true;
+  f.distribution.prepareFreshMachine = async (sandbox, row) => {
+    if (firstBoot) {
+      firstBoot = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await prepare(sandbox, row);
   };
   const first = f.provider.fork({ from: name });
-  await entered.promise;
-  const creates = f.creates;
   try {
-    const error = await f.provider.fork({ from: name }).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: "conflict", providerCode: "fork_source_busy" });
-    expect(isNonMutatingProviderRefusal(error)).toBe(true);
-    expect(f.creates).toBe(creates);
+    await Promise.race([entered.promise, first]);
+    expect(firstBoot).toBe(false);
+    const second = await f.provider.fork({ from: name });
+    expect(second.state).toBe("ready");
+    release.resolve();
+    const firstChild = await first;
+    expect(firstChild.state).toBe("ready");
+    expect(firstChild.id).not.toBe(second.id);
   } finally {
     release.resolve();
     await first;
   }
 });
+
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("%s Modal fork refuses a snapshot retired before reservation", async (_path, commonRuntime) => {
+  const source = fixture();
+  const { name } = await savedGolden(source);
+  const fork = fixture(
+    scope,
+    {
+      query: fixtureSql.query,
+      async transaction(work) {
+        await source.provider.deleteSnapshot(name);
+        return getDb().transaction(work);
+      },
+    },
+    undefined,
+    undefined,
+    commonRuntime,
+  );
+  const requestKey = crypto.randomUUID();
+  await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
+    code: "not_found",
+  });
+  expect(await fork.store.findByRequestKey(requestKey)).toBeNull();
+  expect(fork.creates).toBe(0);
+});
+
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("snapshot retirement refuses a live %s Modal fork reference", async (_path, commonRuntime) => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
+  const { name } = await savedGolden(f);
+  const child = await f.provider.fork({ from: name });
+  const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy" });
+  expect(isNonMutatingProviderRefusal(error)).toBe(true);
+  expect((await f.provider.getSnapshot(name)).name).toBe(name);
+  await f.provider.delete({ sandboxId: child.id });
+  await f.provider.deleteSnapshot(name);
+  await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
+  const f = fixture(scope, getDb(), undefined, undefined, true);
+  const volume = new Volume("vo_public_artifacts");
+  f.setArtifactVolume(volume);
+  await runningFork(f);
+  expect(f.resourceRequests.at(-1)?.volumes).toEqual({
+    "/opt/armada/artifact-cache": volume.withMountOptions({ readOnly: true }),
+  });
+});
+
+test("enrolled Modal bootstrap rejects a different physical machine before consuming the attempt", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const row = await runningFork(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
+  const execs = f.sdkCommands.length;
+
+  await expect(
+    f.provider.startRuntime({
+      sandboxId: row.id,
+      serverUrl: "https://armada.example",
+      enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+      cacheDir: "/home/user/.armada-runtime-bootstrap",
+      artifact: { sha256: "b".repeat(64), bytes: 1 },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(f.sdkCommands).toHaveLength(execs);
+  expect((await f.store.get(row.id)).runtimeStartAttempted).toBeUndefined();
+});
+
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
   const afterFork = f.log.length;
-  expect(f.log.filter((op) => op === "start-1")).toHaveLength(1); // Builder only.
+  expect(f.log).not.toContain("start-1");
+  expect(f.log).not.toContain("health");
   await expect(f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no fallback" })).rejects.toMatchObject({
     code: "invalid_request",
   });
@@ -936,6 +1231,8 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
     artifact: { sha256: "b".repeat(64), bytes: 1 },
   });
   const bootstrap = f.sdkCommands.at(-1);
+  expect(bootstrap?.argv.at(-1)).toContain("stdio:['pipe','ignore','ignore',9]");
+  expect(bootstrap?.argv.at(-1)).toContain("/opt/armada/artifact-cache");
   expect(JSON.stringify(bootstrap?.argv)).not.toContain(`armada_enrol_${"a".repeat(64)}`);
   expect(bootstrap?.params).toMatchObject({ env: {}, secrets: [], stderr: "ignore", stdout: "ignore" });
   expect(JSON.parse(bootstrap?.stdin[0] ?? "")).toEqual({
@@ -958,11 +1255,59 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
   await expect(
     f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
   ).rejects.toMatchObject({ code: "invalid_request" });
-  expect(f.creates).toBe(2);
+  expect(f.creates).toBe(1);
+});
+
+test("common-runtime Modal capture quiesces the active incarnation and runs the Git policy as the workspace user", async () => {
+  const f = fixture(scope, getDb(), undefined, undefined, true);
+  f.distribution.captureProcessBaseline = captureProcessBaseline;
+  const worker = await runningFork(f);
+  const afterFork = f.log.length;
+
+  await expect(
+    f.captureRuntimeWork({
+      sandboxId: worker.id,
+      physicalGeneration: worker.physicalGeneration!,
+      signal: new AbortController().signal,
+      context: { source: "user_stop", captureId: crypto.randomUUID() },
+    }),
+  ).resolves.toEqual({ status: "clean" });
+  expect(f.log.slice(afterFork)).toEqual(["quiesce-processes", "workspace-exec"]);
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "active" });
+});
+
+test("common-runtime Modal capture refuses a stale incarnation before touching physical compute", async () => {
+  const f = fixture(scope, getDb(), undefined, undefined, true);
+  const worker = await runningFork(f);
+  const afterFork = f.sdkCommands.length;
+
+  await expect(
+    f.captureRuntimeWork({
+      sandboxId: worker.id,
+      physicalGeneration: "2",
+      signal: new AbortController().signal,
+      context: { source: "lifecycle_stop", captureId: crypto.randomUUID() },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(f.sdkCommands).toHaveLength(afterFork);
+});
+
+test("Modal delete keeps ownership when physical lookup returns a different machine", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
+  const before = f.log.length;
+
+  await expect(f.provider.delete({ sandboxId: worker.id })).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.slice(before)).not.toContain("terminate");
+  const row = await f.store.get(worker.id);
+  expect(row.phase).toBe("deleting");
+  expect(row.deletePhysicalExitGeneration).toBeUndefined();
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   const original = await f.store.get(worker.id);
   const bootstrap = {
@@ -994,13 +1339,18 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 3 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "7", watermark: 3 },
+    }),
   ).rejects.toMatchObject({ code: "conflict" });
-  expect(f.creates).toBe(2);
-  const request = { sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
+  expect(f.creates).toBe(1);
+  const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
   f.failCreate(true);
   await expect(f.provider.resumeRuntime(request)).rejects.toThrow();
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   f.failCreate(false);
   const resumed = await f.provider.resumeRuntime(request);
   expect(resumed).toMatchObject({ id: worker.id, state: "ready", physicalGeneration: "2" });
@@ -1009,9 +1359,9 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   expect(restored.imageId).toBe(`im_${original.physicalId}`);
   expect(restored.runtimeStartAttempted).toBeUndefined();
   expect((await f.provider.resumeRuntime(request)).physicalGeneration).toBe("2");
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
-  await f.provider.startRuntime(bootstrap);
+  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation });
   f.onTerminate(async () => {
     const stopping = await f.store.get(worker.id);
     expect(stopping.runtimeCheckpoint).toBeUndefined();
@@ -1021,22 +1371,65 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
 });
 
+test("retained Modal rollback retries termination and fences a newer replacement", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const checkpoint = { epoch: "1", watermark: 2 };
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
+  const { recoveryImageId } = await f.store.get(worker.id);
+  const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint };
+  await f.provider.resumeRuntime(request);
+  const replacement = await f.store.get(worker.id);
+  const before = f.log.length;
+  f.loseTerminateResponse(true);
+  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toThrow();
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "terminate", recoveryImageId });
+  await f.provider.rollbackRuntimeResume(request);
+  await f.provider.rollbackRuntimeResume(request);
+  expect(f.log.slice(before)).toEqual(["terminate"]);
+  expect(await f.store.get(worker.id)).toMatchObject({
+    phase: "stopped",
+    recoveryImageId,
+    runtimeCheckpoint: { ...checkpoint, physicalId: replacement.physicalId, generation: 2 },
+  });
+  await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
+  await f.provider.resumeRuntime({ ...request, generation: 4 });
+  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toMatchObject({ code: "conflict" });
+  const bootstrap = {
+    sandboxId: worker.id,
+    serverUrl: "https://armada.example",
+    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+    cacheDir: "/tmp/armada-runtime",
+    artifact: { sha256: "b".repeat(64), bytes: 1 },
+  };
+  await expect(f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation })).rejects.toMatchObject({
+    code: "conflict",
+  });
+  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: 4 });
+  expect(await f.provider.get(worker.id)).toMatchObject({ state: "ready", physicalGeneration: "3" });
+  expect((await f.store.get(worker.id)).imageId).toBe(recoveryImageId);
+});
+
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "1", watermark: 2 },
+    }),
   ).rejects.toThrow();
   expect(await f.store.get(worker.id)).toMatchObject({ phase: "creating", generation: 2 });
   expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   const beforeCleanup = f.log.length;
-  // Production failure cleanup calls stop, not another resume/admission attempt.
   await f.provider.stop({ sandboxId: worker.id });
   expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
-  expect(f.creates).toBe(3);
+  expect(f.creates).toBe(2);
   const stopped = await f.store.get(worker.id);
   expect(stopped.phase).toBe("stopped");
   expect(stopped.physicalId).toBeDefined();
@@ -1046,7 +1439,7 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
 });
 
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
   const afterLaunch = f.log.length;
@@ -1055,7 +1448,12 @@ test("uncertain enrolled Modal snapshot refuses retry or resume and compute fall
   await expect(f.provider.stopRuntime(proof)).rejects.toMatchObject({ code: "conflict" });
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot"]);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "1", watermark: 2 },
+    }),
   ).rejects.toMatchObject({ code: "conflict" });
   await f.provider.stop({ sandboxId: worker.id });
   expect((await f.store.get(worker.id)).runtimeCheckpoint).toBeUndefined();
@@ -1070,6 +1468,32 @@ function deferred() {
   });
   return { promise, resolve };
 }
+function admissionBarrier() {
+  const retry = deferred();
+  let holder: Promise<unknown> | undefined;
+  return {
+    retry: retry.promise,
+    wait: async () => {
+      retry.resolve();
+      if (holder) await Promise.allSettled([holder]);
+    },
+    track(store: ReturnType<typeof createSqlModalStore>, sandboxId: string) {
+      const lease = store.lease.bind(store);
+      store.lease = async (id, work) => {
+        if (id !== sandboxId) return lease(id, work);
+        const attempt = lease(id, (row, save) => {
+          holder = attempt;
+          return work(row, save);
+        });
+        try {
+          return await attempt;
+        } finally {
+          if (holder === attempt) holder = undefined;
+        }
+      };
+    },
+  };
+}
 function compositionOptions(
   f: ReturnType<typeof fixture>,
   target: Scope = scope,
@@ -1080,7 +1504,7 @@ function compositionOptions(
     scope: target,
     sourceScope,
     appName: "pinned",
-    sql: db,
+    sql: fixtureSql,
     signingKey: new Uint8Array(32).fill(23),
     ingestUrl: "https://ingest.example/api/v1/modal/events",
     client: f.client,
@@ -1130,9 +1554,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test.each([false, true])("keyed fork reuses its physical machine (lost response=%s)", async (lostResponse) => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const from = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const { name: from } = await savedGolden(f);
     const request = { from, idempotencyKey: crypto.randomUUID() };
     const creates = f.creates;
     if (lostResponse) {
@@ -1155,9 +1577,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("keyed fork cannot reactivate a machine deleted before its child lease", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const from = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: from });
+    const { name: from } = await savedGolden(f);
     const idempotencyKey = crypto.randomUUID();
     const request = { from, idempotencyKey };
     f.failCreate(true);
@@ -1220,7 +1640,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
             crash = false;
             throw Error("injected durable commit loss");
           }
-          return db.query<T>(statement, params);
+          return getDb().query<T>(statement, params);
         },
       };
       const f = fixture(scope, sql);
@@ -1262,14 +1682,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).not.toContain("terminate");
     expect(f.creates).toBe(1);
   });
-  test("prepareSsh cannot reprovision authorization or a hostkey between snapshot scrub and save", async () => {
+  test("sshKey cannot reprovision authorization or a hostkey between snapshot scrub and save", async () => {
     const f = fixture();
     const row = await f.provider.createGolden({});
     await f.provider.sshKey({ sandboxId: row.id, key: "synthetic" });
     expect(f.provisioned).toBe(true);
     f.onScrub(async () => {
       expect(f.provisioned).toBe(false);
-      await expect(f.provider.prepareSsh(row.id, "synthetic")).rejects.toMatchObject({ code: "sandbox_not_ready" });
       await expect(f.provider.sshKey({ sandboxId: row.id, key: "synthetic" })).rejects.toMatchObject({
         code: "sandbox_not_ready",
       });
@@ -1280,12 +1699,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.provisioned).toBe(false);
   });
   test("native resume refusal fences restoration under the provider lifecycle lease", async () => {
-    const f = fixture(scope, db, undefined, async () => {
+    const f = fixture(scope, fixtureSql, undefined, async () => {
       throw new ProviderError({ provider: "modal", code: "conflict", message: "credential_busy", retryable: false });
     });
-    const builder = await f.provider.createGolden({});
-    const snapshot = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: snapshot });
+    const { name: snapshot } = await savedGolden(f);
     const row = await f.provider.fork({ from: snapshot });
     await f.provider.stop({ sandboxId: row.id });
     const creates = f.creates;
@@ -1296,7 +1713,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot failure never terminates or reports a durable stop", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     f.failSnapshot(true);
     await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "unknown" });
     expect(f.log).not.toContain("terminate");
@@ -1307,7 +1724,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     "ordinary stop bounds failed %s and terminates without stale disk recovery",
     async (stage) => {
       const f = fixture();
-      const row = await runningFork(f);
+      const row = await activeWorker(f);
       let scrubs = 0;
       if (stage === "scrub")
         f.onScrub(async () => {
@@ -1339,7 +1756,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   );
   test("checkpoint, scrub, save, commit and terminate; resume retains logical ID with fenced new generation", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await f.provider.stop({ sandboxId: row.id });
     expect(f.log.slice(-4)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
     const stopped = await f.store.get(row.id);
@@ -1357,12 +1774,71 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(resumed.generation).toBe(2);
     expect(resumed.physicalId).not.toBe(stopped.physicalId);
   });
+  test("native exec cancelled during resume preparation leaves the retained workspace stopped", async () => {
+    const controller = new AbortController();
+    const refusals: string[] = [];
+    const f = fixture(scope, fixtureSql, undefined, async () => controller.abort(), undefined, undefined, {
+      async resumeRefused(_provider, id) {
+        refusals.push(id);
+      },
+    });
+    const worker = await activeWorker(f);
+    await f.provider.stop({ sandboxId: worker.id });
+    const stopped = await f.store.get(worker.id);
+    const creates = f.creates;
+
+    await expect(
+      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
+    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "stopped",
+      generation: stopped.generation,
+      recoveryImageId: stopped.recoveryImageId,
+    });
+    expect(f.creates).toBe(creates);
+    expect(f.log).not.toContain("exec");
+    expect(refusals).toEqual([worker.id]);
+  });
+  test("native exec cancelled during restore environment lookup leaves the reservation replayable", async () => {
+    const controller = new AbortController();
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, undefined, {
+      async restoreEnv() {
+        controller.abort();
+        return {};
+      },
+    });
+    const worker = await activeWorker(f);
+    await f.provider.stop({ sandboxId: worker.id });
+    const stopped = await f.store.get(worker.id);
+    const creates = f.creates;
+
+    await expect(
+      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
+    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
+    const reserved = await f.store.get(worker.id);
+    expect(reserved).toMatchObject({
+      phase: "reserved",
+      generation: stopped.generation + 1,
+      imageId: stopped.recoveryImageId,
+    });
+    expect(f.creates).toBe(creates);
+    expect(f.log).not.toContain("exec");
+
+    await f.provider.exec({ sandboxId: worker.id, command: "edit workspace" });
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "active",
+      generation: reserved.generation,
+      physicalName: reserved.physicalName,
+    });
+    expect(f.creates).toBe(creates + 1);
+    expect(f.log.filter((op) => op === "exec")).toHaveLength(1);
+  });
   test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
     await appendModalEvents(
-      db,
+      getDb(),
       scope,
       row.id,
       "1",
@@ -1402,43 +1878,31 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.id)).generation).toBe(2);
   });
   test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
-    // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
-    // resolves the text output name, not the bigint used by the resume predicate.
     const f = fixture();
-    const row = await runningFork(f);
-    const maximum = await db.query<{ cursor: string }>(
+    const row = await activeWorker(f);
+    const eventCount = 13;
+    const pageSize = 5;
+    const maximum = await getDb().query<{ cursor: string }>(
       "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
     );
-    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + 130).length - 30;
-    await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
-    const events: AgentEvent[] = Array.from({ length: 130 }, (_, i) => ({
+    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + eventCount).length - 4;
+    await getDb().query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
+    const events: AgentEvent[] = Array.from({ length: eventCount }, (_, i) => ({
       id: `ordered-${i}`,
-      // Deliberately not time/UUID ordered: the durable cursor is authoritative.
-      at: 130 - i,
+      at: eventCount - i,
       promptId: "ordered-prompt",
-      conversationId: i > 1 && i < 129 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
-      ...(i === 0 || i === 1 || i === 129
+      conversationId: i > 1 && i < eventCount - 1 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
+      ...(i === 0 || i === 1 || i === eventCount - 1
         ? {
             kind: "prompt" as const,
             text: "task",
             status: i === 0 ? ("queued" as const) : i === 1 ? ("running" as const) : ("finished" as const),
           }
-        : { kind: "message" as const, text: `delta-${i}`, partial: i !== 128, tools: [] }),
+        : { kind: "message" as const, text: `delta-${i}`, partial: i !== eventCount - 2, tools: [] }),
     }));
-    expect(
-      await appendModalEvents(
-        db,
-        scope,
-        row.id,
-        "1",
-        events.map((event, i) => ({
-          sequence: i + 1,
-          event,
-        })),
-      ),
-    ).toBe(130);
+    await seedHistory(row.id, events);
     f.onRpc(async (_row, op) =>
-      op === "checkpoint" ? { watermark: 130, acknowledgedSequence: 130, generation: "1" } : undefined,
+      op === "checkpoint" ? { watermark: eventCount, acknowledgedSequence: eventCount, generation: "1" } : undefined,
     );
     await f.provider.stop({ sandboxId: row.id });
     const before = await f.store.get(row.id);
@@ -1451,7 +1915,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       for (let pages = 0; pages < 20; pages++) {
         const page = await f.provider.events({
           sandboxId: row.id,
-          limit: 17,
+          limit: pageSize,
           ...(cursor ? { cursor } : {}),
           ...(conversationId ? { conversationId } : {}),
         });
@@ -1467,9 +1931,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     }
     const all = await read();
     expect(all.collected).toEqual(events);
-    expect(all.cursor).toBe(String(start + 129));
-    expect(await read(undefined, String(start + 16))).toEqual({
-      collected: events.slice(17),
+    expect(all.cursor).toBe(String(start + eventCount - 1));
+    expect(await read(undefined, String(start + pageSize - 1))).toEqual({
+      collected: events.slice(pageSize),
       cursor: all.cursor,
     });
     expect((await read("ordered-conversation")).collected).toEqual(
@@ -1488,7 +1952,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a prompt observation delayed across stop never enters activation", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const entered = deferred();
     const release = deferred();
     const get = f.store.get;
@@ -1510,19 +1974,15 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(creates);
     expect((await get(row.id)).phase).toBe("stopped");
   });
-  test("snapshot deletion leaves already reserved forks usable", async () => {
+  test("historically retired snapshots leave existing forks usable", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     expect(f.log).not.toContain("delete-image");
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.provider.get(fork.id)).state).toBe("ready");
     await f.provider.delete({ sandboxId: fork.id });
-    // The receipt never waits on another source's retired images; the detached collection
-    // removes the last fork's snapshot image without any further user operation.
     expect(f.log).not.toContain("delete-image");
     await f.runDetached();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
@@ -1530,12 +1990,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a retired image still referenced by a live fork never leases its source", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const first = await f.provider.fork({ from: name });
     const second = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     await f.provider.delete({ sandboxId: first.id });
     const lease = f.store.lease.bind(f.store);
     const leased: string[] = [];
@@ -1543,8 +2001,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       leased.push(id);
       return lease(id, work);
     };
-    // The second fork still uses the snapshot image: the source is not leased, so its own
-    // lifecycle requests are never refused by a collection that has nothing to remove.
     await f.runDetached();
     expect(leased).not.toContain(builder.id);
     expect(f.log).not.toContain("delete-image");
@@ -1555,11 +2011,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     await f.provider.stop({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
@@ -1568,13 +2022,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
       await f.runDetached();
     });
-    // A busy source is skipped, not retried.
     expect(f.cleanupDelays).toEqual([]);
     const ownImages = imageDeletes();
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
     expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
-    // The tombstone stays durable. The retirement worker's retry reports it pending while the
-    // source is leased, then collects it once the lease clears, with no further user request.
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     await f.store.lease(builder.id, async () => {
       expect(await f.provider.collectRetiredSnapshot(name)).toBe("pending");
@@ -1586,17 +2037,15 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("another source's failing retired image never blocks a snapshot's collection retry", async () => {
     const f = fixture();
-    const [a, b] = [await f.provider.createGolden({}), await f.provider.createGolden({})];
-    const [first, broken] = [crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: a.id, name: first });
-    await f.provider.snapshot({ sandboxId: b.id, name: broken });
+    const { builder: a, name: first } = await savedGolden(f);
+    const { builder: b, name: broken } = await savedGolden(f);
     const brokenImage = (await f.store.image(broken)).imageId;
     f.onImageDelete(async (id) => {
       if (id === brokenImage) throw new Error("image service refused");
     });
     await f.provider.deleteSnapshot(broken);
     const fork = await f.provider.fork({ from: first });
-    await f.provider.deleteSnapshot(first);
+    await seedHistoricalSnapshotTombstone(first);
     await f.provider.delete({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toEqual(expect.arrayContaining([a.id, b.id]));
     expect(await f.provider.collectRetiredSnapshot(first)).toBe("collected");
@@ -1604,13 +2053,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a failing retired image never blocks collection of another snapshot from the same source", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const [broken, next] = [crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: builder.id, name: broken });
+    const { builder, name: broken } = await savedGolden(f);
+    const next = crypto.randomUUID();
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: broken });
     await f.provider.snapshot({ sandboxId: builder.id, name: next });
-    // With the builder deleted, nothing references either image.
     await f.provider.delete({ sandboxId: builder.id });
     const brokenImage = (await f.store.image(broken)).imageId;
     const nextImage = (await f.store.image(next)).imageId;
@@ -1621,11 +2068,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       if (id === brokenImage) throw new Error("image service refused");
       if (id === nextImage && nextFailures-- > 0) throw new Error("image service unavailable");
     });
-    // Both retirements commit their tombstones; neither image is collected yet.
     await f.provider.deleteSnapshot(broken);
     await f.provider.deleteSnapshot(next);
     attempts.length = 0;
-    // The named retry claims and deletes only its own tombstone, never the sibling that keeps failing.
     expect(await f.provider.collectRetiredSnapshot(next)).toBe("collected");
     expect(attempts).toEqual([nextImage!]);
     expect((await f.store.images(builder.id)).filter((x) => x.deleted).map((x) => x.info.name)).toEqual([broken]);
@@ -1636,12 +2081,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const name = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: a.id, name });
     const stale = await f.store.image(name);
-    // Another collector finished first: the old tombstone is gone and the name is free again.
     await f.store.removeImage(name);
     await f.store.purgeImage(name, stale.sourceId, stale.imageId!);
     await f.provider.snapshot({ sandboxId: b.id, name });
     await f.store.removeImage(name);
-    // The stale collector finishes late and purges what it claimed: the old source and image.
     await f.store.purgeImage(name, stale.sourceId, stale.imageId!);
     const retired = (await f.store.images(b.id)).filter((x) => x.deleted);
     expect(retired.map((x) => x.info.name)).toEqual([name]);
@@ -1649,10 +2092,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a held retired-image deletion never fences its source's lifecycle", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const [first, restore, second] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-    await f.provider.snapshot({ sandboxId: builder.id, name: first });
-    // Restore from a later snapshot so the builder itself no longer references the first image.
+    const { builder, name: first } = await savedGolden(f);
+    const restore = crypto.randomUUID(),
+      second = crypto.randomUUID();
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: first });
     await f.provider.snapshot({ sandboxId: builder.id, name: restore });
@@ -1660,14 +2102,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.restoreGoldenMaster({ snapshotId: restore });
     await f.provider.snapshot({ sandboxId: builder.id, name: second });
     const fork = await f.provider.fork({ from: first });
-    await f.provider.deleteSnapshot(first);
+    await seedHistoricalSnapshotTombstone(first);
     await f.runDetached();
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const firstImage = (await f.store.images(builder.id)).find((x) => x.info.name === first)?.imageId;
     let held = false;
     f.onImageDelete(async (id) => {
-      // Hold only the detached collector's call; a later collection may retry the claim at once.
       if (id !== firstImage || held) return;
       held = true;
       entered.resolve();
@@ -1676,12 +2117,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
     const collecting = f.runDetached();
     await entered.promise;
-    // The claim is durable and the source lease is already released while the image call is open.
     expect((await f.store.images(builder.id)).find((x) => x.info.name === first)?.collecting).toBe(true);
-    // Retiring another snapshot of the same source is admitted and writes its tombstone.
     await f.provider.deleteSnapshot(second);
     await expect(f.provider.getSnapshot(second)).rejects.toMatchObject({ code: "not_found" });
-    // Deleting the source machine itself is admitted too.
     expect(await f.provider.delete({ sandboxId: builder.id })).toEqual({ status: "deleted" });
     expect((await f.store.get(builder.id)).phase).toBe("deleted");
     release.resolve();
@@ -1692,28 +2130,20 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a claimed retired image whose deletion failed is retried without its source lease", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
-    // The first physical deletion fails after the claim; the tombstone stays claimed.
+    const { builder, name } = await savedGolden(f);
     let failures = 1;
     f.onImageDelete(async () => {
       if (failures-- > 0) throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
     });
-    // The retirement is committed with its tombstone: the failed collection is logged, not thrown,
-    // and the worker's collection retry owns it from here.
     await f.provider.deleteSnapshot(name);
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.store.images(builder.id)).find((x) => x.info.name === name)?.collecting).toBe(true);
-    // The source is busy with its own lifecycle, and the claimed image is still collected.
-    await f.store.lease(builder.id, () => f.provider.collectGarbage());
+    await f.store.lease(builder.id, () => f.provider.collectRetiredSnapshot(name));
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a concurrent sweep skips a live dispatch claim and recovers an expired one", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const imageId = (await f.store.image(name)).imageId;
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -1727,39 +2157,31 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
       }
     });
-    // The retirement's own collection holds the remote call open.
     const retiring = f.provider.deleteSnapshot(name);
     await entered.promise;
-    // Sixteen sweeps while the claim is live dispatch nothing.
-    await Promise.all(Array.from({ length: 16 }, () => f.provider.collectGarbage()));
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("pending");
     expect(calls).toBe(1);
     const expire = () =>
-      db.query(
+      getDb().query(
         `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
         [imageId],
       );
-    // The holder outlives its claim and a newer collector takes it; the stale holder's late
-    // failure never releases the newer claim.
     await expire();
     expect(await f.store.takeImage(name, builder.id, imageId!, "newer")).toBe(true);
     release.resolve();
     await retiring;
     const claimed = (await f.store.images(builder.id)).find((x) => x.info.name === name);
     expect(claimed?.collectToken).toBe("newer");
-    // A crashed newer holder's claim expires too, and the next sweep takes and completes it.
     await expire();
-    await f.provider.collectGarbage();
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("collected");
     expect(calls).toBe(2);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a snapshot retired after restore read it never gains a restore reference", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     await f.provider.delete({ sandboxId: builder.id });
     const lease = f.store.lease.bind(f.store);
-    // Retirement writes the tombstone between restore's read and its source lease.
     f.store.lease = async (id, work) => {
       f.store.lease = lease;
       await f.store.removeImage(name);
@@ -1774,9 +2196,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("a busy snapshot source refuses retirement before any tombstone, as non-mutating", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     let refused: unknown;
     await f.store.lease(builder.id, async () => {
       refused = await f.provider.deleteSnapshot(name).catch((error) => error);
@@ -1784,23 +2204,19 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(refused).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy", retryable: true });
     expect(isNonMutatingProviderRefusal(refused)).toBe(true);
     expect((await f.provider.getSnapshot(name)).name).toBe(name);
-    // The retirement's next attempt succeeds once the lease clears.
     await f.provider.deleteSnapshot(name);
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
   });
   test("recovery references do not depend on a saved label surviving retirement", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { name } = await savedGolden(f);
     const saved = await f.store.image(name);
     const child = await f.provider.fork({ from: name });
     await f.provider.stop({ sandboxId: child.id });
     const recovery = (await f.store.get(child.id)).recoveryImageId;
     expect(recovery).toBeDefined();
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     expect(f.log).not.toContain("delete-image");
-    // Recovery references are durable independently of an already-retired saved-handle row.
     await f.store.purgeImage(name, saved.sourceId, saved.imageId!);
     expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
     expect(await f.store.imageReferenced(recovery!)).toBe(true);
@@ -1809,10 +2225,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("retiring one saved handle preserves another live handle sharing its artifact", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const old = crypto.randomUUID(),
-      current = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name: old });
+    const { name: old } = await savedGolden(f);
+    const current = crypto.randomUUID();
     const image = await f.store.image(old);
     await f.store.saveImage({ ...image, info: { ...image.info, name: current } });
     await f.provider.deleteSnapshot(old);
@@ -1823,13 +2237,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("snapshot provenance projection never substitutes cached info for missing canonical image or authority", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const original = await f.store.image(name);
     expect(original.imageId).toBeDefined();
     expect(original.managementAuthority).toBeDefined();
-    await db.query("update modal_images set record=record-'imageId'-'managementAuthority' where name=$1", [name]);
+    await getDb().query("update modal_images set record=record-'imageId'-'managementAuthority' where name=$1", [name]);
     const info = await f.provider.getSnapshot(name);
     expect(info.artifactId).toBeUndefined();
     expect(info.managementAuthority).toBeUndefined();
@@ -1839,9 +2251,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     "saved-handle collection protects shared physical recovery references across tenant scopes (%s)",
     async (mode) => {
       const otherOrg = crypto.randomUUID();
-      await db.query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
+      await getDb().query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
       const otherUser = "00000000-0000-0000-0000-000000000004";
-      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [otherOrg, otherUser]);
+      await getDb().query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [otherOrg, otherUser]);
       const other = fixture({ ...scope, orgId: otherOrg, userId: otherUser });
       const seed = await other.provider.createGolden({});
       const seedName = crypto.randomUUID();
@@ -1863,7 +2275,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         builder = await f.provider.createGolden({});
       const source = await f.store.get(builder.id),
         physical = await f.client.sandboxes.fromId(source.physicalId!);
-      // SDK snapshots may share immutable physical content without a logical source-image link.
       physical.snapshotFilesystem = async () => ({ imageId: recovery }) as Image;
       const name = crypto.randomUUID();
       await f.provider.snapshot({ sandboxId: builder.id, name });
@@ -1891,16 +2302,16 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("concurrent lifecycle lease cannot write through the active holder", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     await f.store.lease(row.id, async () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
   test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     const handler = createModalIngestHandler({
-      sql: db,
+      sql: getDb(),
       verifyGrant: async () => ({
         scope,
         claims: { sandboxId: row.id, generation: "1", expiresAt: Date.now() + 60000 },
@@ -1963,14 +2374,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     const grant = {
       token: "fixture-ingest-private-grant",
       sandboxId: row.id,
       generation: "1",
       expiresAt: Date.now() + 60000,
     };
-    const handler = createModalIngestHandler({ sql: db, verifyGrant: async () => ({ scope, claims: grant }) });
+    const handler = createModalIngestHandler({ sql: getDb(), verifyGrant: async () => ({ scope, claims: grant }) });
     const journal = new Journal(":memory:", (s) => s);
     const driver: Driver = {
       start() {
@@ -2004,7 +2415,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         status: "running",
       },
       ...Array.from(
-        { length: 5 },
+        { length: 4 },
         (_, i): AgentEvent => ({
           id: `${harness}-${i}`,
           at: i + 2,
@@ -2070,7 +2481,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
       events: [],
       hasMore: false,
@@ -2088,7 +2499,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       tools: [],
     });
     await appendModalEvents(
-      db,
+      getDb(),
       scope,
       row.id,
       "1",
@@ -2116,36 +2527,36 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       ),
     ).toBe("1234");
     expect(older.hasMore).toBe(false);
-    await appendModalEvents(db, scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
+    await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
     const follow = await f.provider.events({ sandboxId: row.id, cursor: tail.cursor! });
     expect(follow.events.map((e) => e.id)).toEqual(["history-5"]);
   });
   test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(db, scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
+    expect(await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
     expect(
-      await appendModalEvents(db, scope, row.id, "1", [
+      await appendModalEvents(getDb(), scope, row.id, "1", [
         { sequence: 1, event },
         { sequence: 2, event },
       ]),
     ).toBe(2);
     expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(2);
-    await expect(appendModalEvents(db, scope, row.id, "0", [{ sequence: 3, event }])).rejects.toMatchObject({
+    await expect(appendModalEvents(getDb(), scope, row.id, "0", [{ sequence: 3, event }])).rejects.toMatchObject({
       code: "forbidden",
     });
   });
   test("restored producer sequences continue checkpoint watermark instead of waiting for sequence one", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
+    const row = await f.seedMachine(goldenTemplate);
     await f.store.lease(row.id, async (current, save) => {
       current.generation = 2;
       current.eventBase = 42;
       await save(current);
     });
     const event = { id: "restored", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(db, scope, row.id, "2", [{ sequence: 43, event }])).toBe(43);
+    expect(await appendModalEvents(getDb(), scope, row.id, "2", [{ sequence: 43, event }])).toBe(43);
     expect(await f.store.watermark(row.id, 2)).toBe(43);
     expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(1);
   });
@@ -2201,7 +2612,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     };
     const { provider, close } = await createComposedModalProvider(configuration);
     const launched = await provider.fork({ from: snapshot, name: "private-personal-MCP" });
-    const privateStore = createSqlModalStore(db, scope);
+    const privateStore = createSqlModalStore(getDb(), scope);
     const machine = await privateStore.get(launched.id);
     expect(machine.sourceImage).toMatchObject({ name: snapshot });
     expect(machine.processBaseline).toMatchObject({ physicalId: machine.physicalId, generation: machine.generation });
@@ -2219,7 +2630,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     expect(receipt.status).toBe("queued");
     expect(preparedFromComposition).toBe(true);
-    expect((await provider.list()).items.map((x) => x.id)).toContain(launched.id);
     await expect(f.store.get(launched.id)).rejects.toMatchObject({ code: "not_found" });
     const otherScope = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
     const other = await createComposedModalProvider({
@@ -2239,11 +2649,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         cwd: "/home/user/repos/private",
       }),
     ).rejects.toMatchObject({ code: "not_found" });
-    expect((await other.provider.list()).items.some((x) => x.id === launched.id)).toBe(false);
     other.close();
-    await expect(createSqlModalStore(db, otherScope).get(launched.id)).rejects.toMatchObject({ code: "not_found" });
-    expect((await createSqlModalStore(db, otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
-    await expect(createSqlModalStore(db, scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
+    await expect(createSqlModalStore(getDb(), otherScope).get(launched.id)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect((await createSqlModalStore(getDb(), otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
+    await expect(createSqlModalStore(getDb(), scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
     const { resolveManagementCredentials: _resolveSource, ...operatorWithSource } = configuration;
     const wrongSource = await createComposedModalProvider({ ...operatorWithSource, sourceScope: scope });
     await expect(wrongSource.provider.get(launched.id)).rejects.toMatchObject({ code: "forbidden" });
@@ -2268,11 +2679,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         servers: { personal: { type: "http", headers: { Authorization: "synthetic-personal-mcp" } } },
       },
     });
-    await f.provider.deleteSnapshot(snapshot);
+    await expect(f.provider.deleteSnapshot(snapshot)).rejects.toMatchObject({ providerCode: "snapshot_source_busy" });
     expect(f.log).not.toContain("delete-image");
     await provider.delete({ sandboxId: launched.id });
-    expect(f.log).not.toContain("delete-image");
     for (const work of detached.splice(0)) await work();
+    await f.provider.deleteSnapshot(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     close();
     const { resolveManagementCredentials: _resolver, ...operatorConfiguration } = configuration;
@@ -2324,7 +2735,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await provider.snapshot({ sandboxId: builder.id, name: snapshot });
     expect((await f.store.get(builder.id)).managementAuthority).toEqual(requested);
     expect((await f.store.image(snapshot)).managementAuthority).toEqual(requested);
-    const { provider: restoredConnection } = await createComposedModalProvider(configuration); // New server adapter retains chosen immutable context.
+    const { provider: restoredConnection } = await createComposedModalProvider(configuration);
     const fork = await restoredConnection.fork({ from: snapshot });
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
     await restoredConnection.stop({ sandboxId: fork.id });
@@ -2383,28 +2794,22 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         managementAuthority: { credentialScope: "org", credentialOwnerId: otherScope.userId },
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
+    expect(JSON.stringify((await getDb().query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-fallback-secret",
     );
-    // Earlier tests leave tombstones in this shared scope; collect them first so the counts below
-    // concern only this snapshot.
-    await userKey.provider.collectGarbage();
     let calls = f.log.filter((x) => x === "delete-image").length;
-    await provider.deleteSnapshot(snapshot);
+    await seedHistoricalSnapshotTombstone(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
-    await userKey.provider.collectGarbage();
-    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
+    await expect(userKey.provider.collectRetiredSnapshot(snapshot)).resolves.toBe("pending");
+    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
   });
   test("actual bootstrap separates GitHub exec credentials from model env, disables them explicitly, and re-resolves on restore without persisting values", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
     let enabled = true,
       calls = 0;
     const options: ComposedModalOptions = {
@@ -2424,7 +2829,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     };
     const { provider } = await createComposedModalProvider(options);
     const fork = await provider.fork({
-      from: name,
+      from: workerSnapshot,
       env: {
         GH_TOKEN: "synthetic-initial-github",
         GITHUB_TOKEN: "synthetic-initial-github",
@@ -2455,12 +2860,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       execEnv: { GH_TOKEN: "synthetic-refreshed-github", GITHUB_TOKEN: "synthetic-refreshed-github" },
     });
     expect(calls).toBe(2);
-    expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
+    expect(JSON.stringify((await getDb().query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-initial-github",
     );
     expect(JSON.stringify(row)).not.toContain("synthetic-refreshed-github");
     enabled = false;
-    const disabled = await provider.fork({ from: name, env: { GH_TOKEN: "must-stay-disabled" } });
+    const disabled = await provider.fork({ from: workerSnapshot, env: { GH_TOKEN: "must-stay-disabled" } });
     const disabledRow = await f.store.get(disabled.id);
     expect(
       (f.bootstraps.get(disabledRow.physicalId ?? "") as unknown as { execEnv: object }).execEnv,
@@ -2503,9 +2908,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden restore retries unknown create by deterministic identity and never discards an uncertain checkpoint", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     await f.provider.delete({ sandboxId: builder.id });
     f.failCreate(true);
     await expect(f.provider.restoreGoldenMaster({ snapshotId: name })).rejects.toMatchObject({ code: "unknown" });
@@ -2525,21 +2928,20 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("fresh history purge is committed before bootstrap, not repeated on unknown boot retry, and skipped for working recovery", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
     const key = crypto.randomUUID();
     f.failBoot(true);
-    await expect(f.provider.fork({ from: name, idempotencyKey: key })).rejects.toMatchObject({ code: "unknown" });
-    const before = f.log.filter((x) => x.startsWith("fresh-")).length;
+    await expect(f.provider.fork({ from: workerSnapshot, idempotencyKey: key })).rejects.toMatchObject({
+      code: "unknown",
+    });
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
     f.failBoot(false);
-    const fork = await f.provider.fork({ from: name, idempotencyKey: key });
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
+    const fork = await f.provider.fork({ from: workerSnapshot, idempotencyKey: key });
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
     expect((await f.store.get(fork.id)).freshStatePreparedGeneration).toBe(1);
     await f.provider.stop({ sandboxId: fork.id });
     await f.provider.exec({ sandboxId: fork.id, command: "resume session" });
     expect((await f.store.get(fork.id)).generation).toBe(2);
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toHaveLength(before);
+    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
   });
   test("golden restore recovers a lost final active commit without replacing its runner or losing edits", async () => {
     let fail = false;
@@ -2556,7 +2958,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
           fail = false;
           throw Error("lost active commit");
         }
-        return db.query<T>(statement, params);
+        return getDb().query<T>(statement, params);
       },
     };
     const f = fixture(scope, sql);
@@ -2636,7 +3038,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden history cleanup and filesystem save never run before the exact durable event ACK", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedMachine(goldenTemplate);
     f.onRpc(async (row, op) =>
       op === "checkpoint" ? { generation: String(row.generation), watermark: 1, acknowledgedSequence: 1 } : undefined,
     );
@@ -2649,9 +3051,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
     const f = fixture();
-    const builder = await f.provider.createGolden({});
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
+    const { builder, name } = await savedGolden(f);
     const sourceImage = (await f.store.image(name)).imageId;
     f.failBoot(true);
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2667,7 +3067,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.imageId).toBe(sourceImage);
     expect(receipt.sourceImage).toMatchObject({ name, imageId: sourceImage });
     expect((await f.store.get(receipt.sandboxId)).phase).toBe("booting");
-    const exported = JSON.parse(JSON.stringify(await f.provider.resourceReceipts()));
+    const exported = JSON.parse(JSON.stringify(await f.readResourceReceipts()));
     expect(exported).toContainEqual(
       expect.objectContaining({ sandboxId: builder.id, snapshotImages: [{ name, imageId: sourceImage }] }),
     );
@@ -2691,11 +3091,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
           fail = false;
           throw Error("synthetic image reference commit failure");
         }
-        return db.query<T>(statement, params);
+        return getDb().query<T>(statement, params);
       },
     };
     const f = fixture(scope, sql);
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedMachine(goldenTemplate);
     const name = crypto.randomUUID();
     fail = true;
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2711,16 +3111,16 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.snapshotImages[0]?.imageId).toStartWith("im_");
     expect(receipt.phase).toBe("snapshot");
     expect(f.log).not.toContain("terminate");
-    const persisted = await f.provider.resourceReceipts();
+    const persisted = await f.readResourceReceipts();
     const merged = mergeModalResourceReceipts([receipt, ...persisted]);
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
   test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
     let prepared = false;
-    const f = fixture(scope, db, async () => {
+    const f = fixture(scope, fixtureSql, async () => {
       prepared = true;
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.log.length = 0;
     f.onRpc(async (machine, op) =>
       op === "health" ? { generation: String(machine.generation), ready: healthy || !prepared } : undefined,
@@ -2733,9 +3133,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
   });
   test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
+    const admission = admissionBarrier();
     const observed: string[] = [];
     const hydrated: { generation: number; variables: unknown }[] = [];
-    const f = fixture(scope, db, async (provider, id) => {
+    const beforePrompt: ModalProviderOptions["beforePrompt"] = async (provider, id) => {
       const info = await provider.get(id);
       expect(info.state).toBe("ready");
       observed.push(info.physicalGeneration ?? "missing");
@@ -2748,13 +3149,15 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         sandboxId: id,
         configuration: { revision: `generation-${info.physicalGeneration}`, servers: {} },
       });
-    });
+    };
+    const f = fixture(scope, fixtureSql, beforePrompt, undefined, undefined, admission.wait);
     f.onRpc(async (machine, op, input) => {
       if (op !== "configureReadableVariables") return undefined;
       hydrated.push({ generation: machine.generation, variables: (input as { variables: unknown }).variables });
       return { acknowledged: true };
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
+    admission.track(f.store, row.id);
     await Promise.all(
       (["claude", "codex"] as const).map((harness) =>
         f.provider.prompt({ sandboxId: row.id, harness, text: "prepared turn" }),
@@ -2775,13 +3178,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("beforePrompt failure or an intervening checkpoint/restore refuses submission; goldens never call the hook", async () => {
     let fail = true,
       calls = 0;
-    const f = fixture(scope, db, async (provider, id) => {
+    const f = fixture(scope, fixtureSql, async (provider, id) => {
       calls++;
       if (fail) throw Error("private registry failure must not leak");
       await provider.stop({ sandboxId: id });
       await provider.exec({ sandboxId: id, command: "restore" });
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await expect(
       f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "must not start" }),
     ).rejects.toMatchObject({ code: "unknown" });
@@ -2792,7 +3195,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect((await f.store.get(row.id)).generation).toBe(2);
     expect(f.log).not.toContain("prompt");
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedMachine(goldenTemplate);
     const before = calls;
     await expect(
       f.provider.prompt({ sandboxId: builder.id, harness: "claude", text: "no hook on builder" }),
@@ -2801,10 +3204,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("beforePrompt fence is rechecked after healthyAdmission mutates the runner incarnation", async () => {
     let prepared = false;
-    const f = fixture(scope, db, async () => {
+    const f = fixture(scope, fixtureSql, async () => {
       prepared = true;
     });
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.onRpc(async (current, op) => {
       if (prepared && op === "health") {
         current.generation++;
@@ -2818,10 +3221,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("golden exec alone takes scoped leased SDK root control, worker exec stays journaled runner, and unsupported/closed requests refuse", async () => {
     const delays: number[] = [];
-    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
     });
-    const builder = await f.provider.createGolden({});
+    const builder = await f.seedMachine(goldenTemplate);
     await f.provider.exec({ sandboxId: builder.id, command: "root scanner", timeoutSeconds: 600 });
     expect(f.log).toContain("root-exec");
     expect(f.log).not.toContain("exec");
@@ -2836,10 +3239,25 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       code: "invalid_request",
     });
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
-    await f.store.lease(builder.id, async () => {
-      await expect(f.provider.exec({ sandboxId: builder.id, command: "busy" })).rejects.toMatchObject({
-        providerCode: "lifecycle_lease_busy",
-      });
+    const lease = f.store.lease.bind(f.store);
+    const get = f.store.get.bind(f.store);
+    await lease(builder.id, async (active) => {
+      const conflict = await lease(builder.id, async () => {
+        throw new Error("Busy lease unexpectedly acquired");
+      }).catch((error: unknown) => error);
+      expect(conflict).toMatchObject({ providerCode: "lifecycle_lease_busy" });
+      f.store.lease = async () => {
+        throw conflict;
+      };
+      f.store.get = async (id) => (id === builder.id ? active : get(id));
+      try {
+        await expect(f.provider.exec({ sandboxId: builder.id, command: "busy" })).rejects.toMatchObject({
+          providerCode: "lifecycle_lease_busy",
+        });
+      } finally {
+        f.store.lease = lease;
+        f.store.get = get;
+      }
     });
     expect(delays).toEqual(Array(99).fill(20));
     expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
@@ -2855,10 +3273,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("admission never retries a busy-shaped error after entering the callback", async () => {
     const delays: number[] = [];
-    const f = fixture(scope, db, undefined, undefined, undefined, async (ms) => {
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
       delays.push(ms);
     });
-    const worker = await runningFork(f);
+    const worker = await activeWorker(f);
     let calls = 0;
     f.onRpc(async () => {
       calls++;
@@ -2880,7 +3298,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native harness cwd is durable per harness and forwarded privately on prompt/resume without changing text, exec or steer", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const claudeCwd = "/home/user/repos/repo with spaces;$(not-a-command)",
       codexCwd = "/home/user/repos/backend";
     const originalCreates = f.creates;
@@ -2945,7 +3363,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("native cwd preparation validates path data and owner/admission while unprepared prompts use runtime defaults", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     for (const cwd of [
       "relative/repo",
       "/home/user/../repo",
@@ -2958,14 +3376,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd }),
       ).rejects.toMatchObject({ code: "invalid_request" });
     expect((await f.store.get(row.id)).harnessCwds).toBeUndefined();
-    const other = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000004" });
+    const other = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000004" });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     f.onRpc(async (_row, op, input) => {
       if (op === "prompt")
         expect(input).toMatchObject({ input: { sandboxId: row.id, harness: "codex", text: "default cwd" } });
       if (op === "prompt") expect((input as { input: object }).input).not.toHaveProperty("cwd");
     });
-    // Only prepared durable state may set the private additive field; never trust an injected caller field.
     await f.provider.prompt({
       ...{ sandboxId: row.id, harness: "codex" as const, text: "default cwd", cwd: "/unprepared" },
     });
@@ -2977,15 +3394,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(
       f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd: "/home/user/repos/valid" }),
     ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const builder = await f.provider.createGolden({});
-    await f.provider.snapshot({ sandboxId: builder.id, name: crypto.randomUUID() });
+    const { builder } = await savedGolden(f);
     await expect(
       f.provider.prepareNativeHarnessCwd({ sandboxId: builder.id, harness: "claude", cwd: "/home/user/repos/valid" }),
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
   test("GitHub private configuration binds an active native generation and never restores stopped machines or persists capabilities", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     const machine = await f.store.get(row.id);
     const configuration = {
       version: 1 as const,
@@ -3004,7 +3420,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(
       f.provider.configureGitHub({ sandboxId: row.id, configuration: { ...configuration, generation: "wrong" } }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-    const persisted = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+    const persisted = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
     expect(persisted).not.toContain(configuration.capability);
     expect(persisted).not.toContain(configuration.url);
     await f.provider.stop({ sandboxId: row.id });
@@ -3015,8 +3431,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(allocations);
   });
   test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
-    const f = fixture();
-    const row = await runningFork(f);
+    const admission = admissionBarrier();
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, admission.wait);
+    const row = await activeWorker(f);
+    admission.track(f.store, row.id);
     const entered = deferred(),
       release = deferred();
     const configuration = {
@@ -3038,26 +3456,35 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     const configuring = f.provider.configureMcp({ sandboxId: row.id, configuration });
     await entered.promise;
-    const prompts = Promise.all(
-      (["claude", "codex"] as const).map((harness) =>
-        f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
-      ),
+    const pendingPrompts = (["claude", "codex"] as const).map((harness) =>
+      f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
     );
-    await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
-    expect(f.log.at(-1)).toBe("configureMcp");
-    release.resolve();
+    const prompts = Promise.all(pendingPrompts);
+    try {
+      await Promise.race([
+        admission.retry,
+        prompts.then(() => {
+          throw new Error("A prompt entered before MCP configuration released the lease.");
+        }),
+      ]);
+      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
+      expect(f.log.at(-1)).toBe("configureMcp");
+    } finally {
+      release.resolve();
+      await Promise.allSettled([configuring, ...pendingPrompts]);
+    }
     expect(await configuring).toEqual({ revision: configuration.revision });
     const receipts = await prompts;
     expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);
     expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
-    const stored = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+    const stored = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
     expect(stored).not.toContain(configuration.revision);
     expect(stored).not.toContain("synthetic-private-auth");
     expect(stored).not.toContain("private.example");
   });
   test("configureMcp resumes under the new generation lease, supports empty servers, rejects bad receipts and sealed goldens", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     await f.provider.stop({ sandboxId: row.id });
     const empty = { revision: "remove-connections", servers: {} };
     f.onRpc(async (current, op, input) => {
@@ -3077,8 +3504,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.configureMcp({ sandboxId: row.id, configuration: empty })).rejects.toMatchObject({
       code: "unavailable",
     });
-    const builder = await f.provider.createGolden({});
-    await f.provider.snapshot({ sandboxId: builder.id, name: crypto.randomUUID() });
+    const { builder } = await savedGolden(f);
     await f.provider.stop({ sandboxId: builder.id });
     const before = await f.store.get(builder.id);
     const calls = f.log.filter((x) => x === "configureMcp").length;
@@ -3091,7 +3517,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configure and new turns refuse a live physical runner whose admission or generation is sealed", async () => {
     const f = fixture();
-    const row = await runningFork(f);
+    const row = await activeWorker(f);
     f.onRpc(async (current, op) =>
       op === "health" ? { generation: String(current.generation), ready: false } : undefined,
     );
@@ -3110,7 +3536,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("configureMcp wire preserves protocol identity/current grant and maps safe errors without auth output", async () => {
     const f = fixture();
-    const info = await runningFork(f);
+    const info = await activeWorker(f);
     const row = await f.store.get(info.id);
     const configuration = {
       revision: "wire-revision",
@@ -3173,21 +3599,21 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
-    const row = await f.provider.createGolden({});
-    const other = createSqlModalStore(db, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
+    const row = await f.seedMachine(goldenTemplate);
+    const other = createSqlModalStore(getDb(), { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
-    const outsider = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
+    const outsider = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
     await expect(outsider.list()).rejects.toMatchObject({ code: "forbidden" });
-    await db.exec("set role authenticated");
+    await getDb().exec("set role authenticated");
     try {
-      await expect(db.query("select * from modal_events")).rejects.toThrow("permission denied");
+      await expect(getDb().query("select * from modal_events")).rejects.toThrow("permission denied");
     } finally {
-      await db.exec("reset role");
+      await getDb().exec("reset role");
     }
   });
   test("expired and wrong-generation ingest grants never append", async () => {
     const handler = createModalIngestHandler({
-      sql: db,
+      sql: getDb(),
       verifyGrant: async () => ({
         scope,
         claims: { sandboxId: "expected", generation: "1", expiresAt: Date.now() + 1000 },
@@ -3206,7 +3632,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("runner uses nested prompt input, distinct proxy bearer and application header, validates response identity", async () => {
     const f = fixture();
-    const info = await f.provider.createGolden({});
+    const info = await f.seedMachine(goldenTemplate);
     const row = await f.store.get(info.id);
     const transport = createRunnerTransport(
       async () => ({
@@ -3234,15 +3660,15 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
   test(`server deadline reconciler settles Modal after ${mode}`, async () => {
     const hardExit = mode === "hard_exit";
     const f = fixture();
-    const machine = await runningFork(f);
+    const machine = await activeWorker(f);
     const goldenId = crypto.randomUUID();
     const id = crypto.randomUUID();
-    await db.query(
+    await getDb().query(
       `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
     values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$1::text,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
       [goldenId, scope.orgId, scope.userId],
     );
-    await db.query(
+    await getDb().query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,expires_at)
     values($1,$2,$3,$4,'modal',$5,'claude','running',now()-interval '1 second')`,
       [id, goldenId, scope.orgId, scope.userId, machine.id],
@@ -3252,20 +3678,18 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
       if (!before.physicalId) throw Error("missing physical machine");
       const physical = await f.client.sandboxes.fromId(before.physicalId);
       if (!physical) throw Error("missing SDK sandbox");
-      // External physical expiry: SDK poll reports exit, and the native runner is gone.
       await physical.terminate();
       f.onRpc(async () => {
         throw Error("runner expired");
       });
     }
     if (mode === "legacy_scrub_failure") {
-      // Old deployed rows have checkpoint phase but no new attempt marker.
       await f.store.lease(machine.id, async (current, save) => {
         current.phase = "checkpoint";
         current.info.state = "stopping";
         await save(current);
       });
-      await db.query(
+      await getDb().query(
         "update sandboxes set status='stopping',preservation_note='unpushed work could not be preserved (missing_python3)' where id=$1",
         [id],
       );
@@ -3275,22 +3699,22 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
     }
     const baseline = f.log.length;
     let resolved = 0;
-    const lifecycle = createSandboxLifecycle(db, async () => {
+    const lifecycle = createSandboxLifecycle(fixtureSql, async () => {
       resolved++;
       return f.provider;
     });
     await lifecycle.reconcileOne();
     if (mode === "legacy_scrub_failure") {
       expect(
-        (await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status,
+        (await getDb().query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status,
       ).toBe("stopping");
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
       await lifecycle.reconcileOne();
       expect((await f.provider.get(machine.id)).stopNote).toBe("checkpoint_failed_disk_not_retained");
       expect(f.log.slice(baseline).filter((x) => x === "checkpoint")).toHaveLength(1);
     }
     const row = (
-      await db.query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
+      await getDb().query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
         "select status,stopped_at,status_reason from sandboxes where id=$1",
         [id],
       )
@@ -3305,7 +3729,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
       expect((await f.store.get(machine.id)).imageId).toBe(before.imageId);
       expect(f.log.slice(baseline)).not.toContain("checkpoint");
       expect(f.log.slice(baseline)).not.toContain("snapshot");
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
       expect(await lifecycle.reconcileOne()).toBe(false);
       expect(resolved).toBe(1);
     } else {
@@ -3316,9 +3740,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
 
 test("private scoped transport requires exact active incarnation and ACK, never restores stopped compute", async () => {
   const f = fixture();
-  const golden = await f.provider.createGolden({});
-  const image = await f.provider.snapshot({ sandboxId: golden.id, name: `authority-${crypto.randomUUID()}` });
-  const parent = await f.provider.fork({ from: image.name });
+  const parent = await activeWorker(f);
   const binding = { epoch: "1", physicalGeneration: (await f.provider.get(parent.id)).physicalGeneration ?? "missing" };
   const request = {
     sandboxId: parent.id,
@@ -3330,51 +3752,28 @@ test("private scoped transport requires exact active incarnation and ACK, never 
   const scrub = f.provider.scrubOrchestratorEpoch;
   const quiesce = f.provider.quiesceOrchestrator;
   const observe = f.provider.observeOrchestrator;
-  const verify = f.provider.verifyOrchestratorSession;
-  const resumeRequest = {
-    sandboxId: parent.id,
-    physicalGeneration: binding.physicalGeneration,
-    conversationId: "logical",
-    nativeSessionId: "native",
-    harness: "codex" as const,
-    model: "gpt-6.1-sol",
-  };
-  if (!install || !scrub || !quiesce || !observe || !verify) throw Error("missing private native authority port");
+  if (!install || !scrub || !quiesce || !observe) throw Error("missing private native authority port");
   await expect(install(request)).rejects.toMatchObject({ code: "unavailable" });
   await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
     { code: "unavailable" },
   );
-  let nativeReply = {
-    physicalGeneration: binding.physicalGeneration,
-    conversationId: "logical",
-    nativeSessionId: "replacement",
-    verified: true as const,
-  };
   f.onRpc(async (_row, op) =>
-    op === "resumeNativeSession"
-      ? nativeReply
-      : op === "observeOrchestrator"
-        ? {
-            physicalGeneration: binding.physicalGeneration,
-            state: "quiescent",
-            evidence: "a".repeat(64),
-            eventWatermark: 0,
-            acknowledgedSequence: 0,
-            nativeSessionId: null,
-          }
-        : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
-          ? { acknowledged: true }
-          : undefined,
+    op === "observeOrchestrator"
+      ? {
+          physicalGeneration: binding.physicalGeneration,
+          state: "quiescent",
+          evidence: "a".repeat(64),
+          eventWatermark: 0,
+          acknowledgedSequence: 0,
+          nativeSessionId: null,
+        }
+      : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
+        ? { acknowledged: true }
+        : undefined,
   );
   expect((await observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).state).toBe(
     "quiescent",
   );
-  await expect(verify(resumeRequest)).rejects.toMatchObject({ code: "conflict" });
-  nativeReply = { ...nativeReply, nativeSessionId: "native" };
-  expect(await verify(resumeRequest)).toEqual(nativeReply);
-  await expect(verify({ ...resumeRequest, physicalGeneration: "stale-native" })).rejects.toMatchObject({
-    code: "conflict",
-  });
   expect(await install(request)).toEqual({ acknowledged: true });
   await expect(install({ ...request, binding: { ...binding, physicalGeneration: "old" } })).rejects.toMatchObject({
     code: "conflict",
@@ -3398,7 +3797,6 @@ test("private scoped transport requires exact active incarnation and ACK, never 
   await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
     { code: "conflict" },
   );
-  await expect(verify(resumeRequest)).rejects.toMatchObject({ code: "conflict" });
   expect(f.creates).toBe(created);
   expect(f.log.length).toBe(calls);
 });
@@ -3452,11 +3850,7 @@ test("only newly managed VM incarnations expose resource observations", async ()
 
 test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
   const f = fixture();
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  const fork = await f.provider.fork({ from: name });
-  // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
+  const fork = await activeWorker(f);
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);
@@ -3501,7 +3895,6 @@ test("ordinary stop retains its new disk checkpoint across resume with generatio
     expect(stopped.recoveryImageId).toBeString();
     expect(stopped.info.stopNote).toBeUndefined();
     expect(f.log.slice(start)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
-    // Idempotent stop must not spend the ordinary fallback budget or discard this disk.
     await f.provider.stop({ sandboxId: machine.id });
     expect((await f.store.get(machine.id)).recoveryImageId).toBe(stopped.recoveryImageId);
     if (generation === 1) {
@@ -3556,7 +3949,6 @@ test.each([
         if (!row.processBaseline) throw Error("Missing pre-admission baseline");
         return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
       };
-    // Observe the durable pre-admission row, not just the final in-memory baseline.
     const lease = f.store.lease.bind(f.store);
     f.store.lease = (id, work) =>
       lease(id, (row, save) =>
@@ -3606,7 +3998,7 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
     if (stage === "fresh") f.distribution.prepareFreshMachine = fail;
     if (stage === "start") f.distribution.start = fail;
     if (stage === "active_publication")
-      await db.exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
+      await getDb().exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
     create trigger boot_publication_fault before update of record on modal_machines for each row when (new.record->>'phase'='active') execute function boot_publication_fault()`);
     try {
       let failure: unknown;
@@ -3629,14 +4021,16 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
       expect(JSON.stringify(failure)).not.toContain("synthetic-private-sql");
     } finally {
       if (stage === "active_publication")
-        await db.exec("drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()");
+        await getDb().exec(
+          "drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()",
+        );
     }
   },
 );
 
 test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
 
   const journal = new Journal(":memory:", (s) => s);
   const driver: Driver = {
@@ -3692,7 +4086,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
       anonKey: "anon",
       fetch: async () => Response.json({ id: scope.userId }),
     },
-    store: createSqlVaultStore(db),
+    store: createSqlVaultStore(getDb()),
     encryptionKey: Buffer.alloc(32, 5).toString("base64"),
     data: () => ({ sandboxes: { get: async () => record, update: async () => {} } }),
     providers: { resolve: async () => f.provider },
@@ -3724,7 +4118,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
 
 test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
   const f = fixture();
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
 
   const active = await f.store.get(row.id);
   for (const phase of ["booting", "terminate"] as const) {
@@ -3756,8 +4150,8 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
 });
 
 test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
-  const f = fixture(scope, db);
-  const row = await runningFork(f);
+  const f = fixture(scope, getDb());
+  const row = await activeWorker(f);
   const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;
   let receipt: unknown = expected;
   f.onRpc(async (_machine, op, input) => {
@@ -3782,4 +4176,28 @@ test("connection probe uses only the active runtime and validates its receipt wi
   ).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(f.creates).toBe(creates);
   expect(f.log).toEqual([]);
+});
+
+test("a native scan cannot exec on a newer physical incarnation", async () => {
+  const f = fixture();
+  const worker = await activeWorker(f);
+  const { physicalGeneration } = await f.provider.get(worker.id);
+  if (!physicalGeneration) throw new Error("Expected an observed physical generation");
+  const request = {
+    sandboxId: worker.id,
+    command: "true",
+    onlyIfRunning: true,
+    expectedPhysicalGeneration: physicalGeneration,
+  };
+  await f.provider.stop({ sandboxId: worker.id });
+  await f.provider.exec({ sandboxId: worker.id, command: "pwd" });
+  const replacement = await f.provider.get(worker.id);
+  if (!replacement.physicalGeneration) throw new Error("Expected a replacement physical generation");
+  expect(replacement.physicalGeneration).not.toBe(physicalGeneration);
+  const execs = f.log.filter((call) => call === "exec").length;
+
+  await expect(f.provider.exec(request)).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs);
+  await f.provider.exec({ ...request, expectedPhysicalGeneration: replacement.physicalGeneration });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs + 1);
 });

@@ -38,7 +38,7 @@ It never calls interior routes and does not infer authority from display IDs.
 ## Sandbox interior (#711)
 
 `sandboxDetail(id:)`, `sandboxEvents(id:cursor:)`, `sendSandboxPrompt(id:text:)`
-and `stopSandbox(id:)` call the routes the CLI already uses (`sandbox/detail`,
+and `stopSandbox(id:)` call the routes the CLI already uses (`sandbox/status`,
 `logs/read`, `sandbox/send`, `sandbox/stop`, all `POST /api/v1/…` with the
 selected `org`). No server route was added. The interior is owner or current
 admin only (#680, `docs/contracts/sandbox-access-v1.md`); list `canOpen` is a
@@ -88,11 +88,15 @@ account; several without a default is `ambiguous` and the person chooses), repos
 and size choices, and TTL presets within the golden's provider limit. Nothing is
 hardcoded: an unknown harness or model is offered with its raw id.
 `SandboxLaunchDraft.request(catalog:)` mirrors the server's checks and builds the body of
-`sandbox/launch` (`sizePolicyVersion: 1`, the route `armada launch --sized` and
+`sandbox/launch` (`sizePolicyVersion: 1`, the route `armada new` and
 the dashboard use); omitted optionals keep the server defaults.
 
 `launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and
-never retried. `SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
+never retried. Use `SandboxLaunchReceipt.sandboxID` with either receipt. An
+`.admitted` Modal receipt carries the sandbox ID and status. Read sandbox metadata
+and follow the first turn separately. An `.allocated` receipt carries the full
+launch envelope, including any prompt and conversation IDs.
+`SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
 form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
 `failedAfterStart` (a failed sandbox may be listed), a provider's non-allocating fork
 refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,
@@ -103,8 +107,8 @@ a 4xx whose code this build does not know but which carries the server's message
 lost answers, `outcome_unknown` (on any status), other 5xx and an unknown code without a
 message to `unconfirmed` (check the list before launching again). Each code selects
 local text adapted from the dashboard's failure help; validation codes and codes without
-local text add the server's own message, on one line of at most 300 characters. Sandbox delete is not
-offered: `/api/v1` has no delete route for a sandbox.
+local text add the server's own message, on one line of at most 300 characters.
+The sandbox deletion API is `DELETE /api/v1/sandboxes/{id}`.
 
 ## Upgrade compatibility
 

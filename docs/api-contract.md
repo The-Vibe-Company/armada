@@ -37,7 +37,8 @@ limits. Streaming outputs describe their media type and event/item schema.
 
 #2775 generates OpenAPI from the table, including the REST surface for
 `agent` entries. Publish administrative schemas separately from the public
-integration description. #2776 exposes the agent set only, from #2716's tool
+integration description in [openapi-admin.json](../packages/mcp-server/openapi-admin.json).
+Regenerate both documents with `bun scripts/generate-openapi.ts`. #2776 exposes the agent set only, from #2716's tool
 inventory. Agent tool names, descriptions and permitted dispatch branches are metadata
 on those entries. The primary projection is `launch`, `launch_options`,
 `list`, `status`, `send`, `stop`, `logs` (events), `report`, `exec`,
@@ -84,19 +85,17 @@ The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 
 #2773 standardizes `{ sandbox, golden, promptId, conversationId, ttlSeconds,
-expiresAt, github, helper, runtime }` across ordinary REST launches, SDK, CLI JSON and the operator MCP
+expiresAt, github, helper, runtime }` across REST sandbox launches, SDK, CLI JSON and the operator MCP
 `launch` tool. The sandbox has an Armada `id`, `provider`,
 `status` and optional `externalRef`; provider identifiers and runtime metadata
 are present only when available and safe to expose. `golden` is null for
 Docker. Null prompt/conversation IDs cover an idle or still-admitting launch;
 nullable expiry, helper and runtime fields represent absent values.
-For a pinned Modal launch on `sandbox/launch`, #2773 maps an admitted pending
-or successful template receipt to the same envelope using the reserved sandbox
-ID and available metadata. A refusal or terminal failure maps to a typed
-error. An ambiguous allocation returns `outcome_unknown` and carries a
-safe reference for replay or inspection. #2760–#2762 own the move to launch
-jobs and their `starting` semantics. Callers check the returned state for
-readiness.
+For a pinned Modal launch on `sandbox/launch`, the persisted success uses the
+same envelope. A refusal or terminal failure maps to a typed error. An
+unresolved request returns `outcome_unknown` and carries the reserved sandbox
+ID for inspection. #2760–#2762 own the move to launch jobs and their `starting`
+semantics.
 
 Accept `idempotencyKey` and `externalRef` for every provider. Scope replay by
 caller, org and operation, bind the key to the admitted input and return the
@@ -171,21 +170,19 @@ and Docker host daemon protocol retain their own rollout rules.
 | POST | `sandbox/bind-credential` | `bindSandboxCredential` (admin) | #2774 |
 | POST | `sandbox/test-model-connection` | `testSandboxModelConnection` (admin) | #2774 |
 | POST | `sandbox/viewer-token` | `createSandboxViewerToken` (public) | #2774 |
-| POST | `sandbox/detail` | Delete alias after callers move to `sandbox/status` | #2774 |
-| POST | `sandbox/delete` | Delete alias after callers move to `deleteSandbox` | #2774 |
+| POST | `sandbox/detail` | Removed; use `sandbox/status` | #2774 |
+| POST | `sandbox/delete` | Removed; use `deleteSandbox` | #2774 |
 | DELETE | `sandboxes/{id}` | `deleteSandbox` (public); accept optional `requestId` query for Docker replay, preserving the former POST request identity | #2774 |
 | GET | `sandboxes/{id}/outputs` | `listSandboxOutputs` (agent) | #2774 |
 | GET | `sandboxes/{id}/outputs/{name}` | `readSandboxOutput` (agent); preserve byte ranges | #2774 |
 | POST | `viewer/{logs,status,send}` | Public entries with viewer-grant authority | #2774 |
-| GET | `viewer/events` | `streamViewerEvents` (public); viewer-grant SSE | #2774 |
 | POST | `sandbox/{checkpoint-runtime-v1,resume-runtime-v1,mcp-preflight-v1,github-preflight-v1}` | Public entries for direct-server runtime proof calls; keep off the dashboard proxy | #2774 |
 | GET | `auth/{methods,authorize}` | Public sign-in entries | #2775 |
 | POST | `auth/{exchange,email/start,email/verify,refresh}` | Public sign-in entries | #2775 |
-| GET, POST | `github/oauth/callback` | Two public callback entries | #2775 |
+| GET, POST | `github/oauth/callback` | Public callback and CLI relay entries in `public-auth.ts` | #2775 |
 | POST | `github/{refresh,runtime-status}` | Public entries | #2775 |
 | POST | `templates/launch` | `launchTemplate` (public) | #2775 |
 | POST | `golden/{list,capabilities,adopt}` | Public entries | #2775 |
-| POST | `launch/resolve` | Delete retired refusal stub | #2775 |
 | POST | `account/{logout,status}` | Admin entries | #2775 |
 | POST | `creds/{accounts/auth-capabilities,accounts/default,accounts/limits,accounts/models,accounts/remove,accounts/rename,accounts/set,accounts/usage,defaults/set,list,rm,set}` | Admin entries | #2775 |
 | POST | `docker/{hosts/limits,hosts/list,hosts/register-token,hosts/retention,hosts/revoke,snapshots/create,snapshots/get,snapshots/list,snapshots/rebuild}` | Admin entries | #2775 |
@@ -218,7 +215,7 @@ and Docker host daemon protocol retain their own rollout rules.
 operations under D5. The bare `orchestrator-tools` path hosts no operation.
 The four versioned launch aliases were already removed by #2714.
 
-The inventory uses `public-control-routes.ts`, the dashboard
+The inventory uses the public sign-in entries in `@armada/core/contract`, the dashboard
 `control-proxy.ts`, `public-rest-routes.ts`, `control.ts`,
 `control-tool-routes.ts` and the direct mounts in `serve.ts` as inputs.
 The MCP transport, OAuth protocol endpoints outside `/api/v1/`, health,

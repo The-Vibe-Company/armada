@@ -6,7 +6,7 @@ import type { SandboxStatus } from "@armada/core";
  */
 export type Tone = "info" | "success" | "warning" | "destructive" | "neutral";
 
-export type StatusLook = {
+type StatusLook = {
   tone: Tone;
   /** Whether the state is still moving on its own: its dot pulses (unless the viewer asked for reduced motion). */
   pulse: boolean;

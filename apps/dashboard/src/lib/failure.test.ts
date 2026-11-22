@@ -1,0 +1,42 @@
+import { expect, test } from "bun:test";
+import { describeFailure } from "./failure.ts";
+
+test("usage_limit and auth_expiry have a clear message and a place to fix them", () => {
+  expect(describeFailure("usage_limit")).toMatchObject({ title: "Usage limit reached", fix: { href: "/harness" } });
+  expect(describeFailure("auth_expiry")).toMatchObject({ title: "Account expired", fix: { href: "/harness" } });
+});
+
+test("provider error codes map to the same messages, and unknown reasons have none", () => {
+  expect(describeFailure("payment_required")?.title).toBe("Usage limit reached");
+  expect(describeFailure("rate_limited")).toMatchObject({
+    title: "Provider limit reached",
+    hint: expect.stringContaining("wait until the provider says"),
+  });
+  expect(describeFailure("unauthorized")?.title).toBe("Account expired");
+  expect(describeFailure("claude failed: auth_expiry (401)")).toBeNull();
+  expect(describeFailure("credential_refused")?.fix?.href).toBe("/harness");
+  expect(describeFailure("provider_unavailable")?.title).toBe("Provider unavailable");
+  expect(describeFailure("dependency_unavailable")?.title).toBe("Server dependency unavailable");
+  expect(describeFailure("outcome_unknown")?.hint).toContain("before retrying");
+
+  expect(describeFailure("sandbox_retention_ended")).toMatchObject({
+    title: "Retention ended",
+    hint: expect.stringContaining("Launch a new sandbox"),
+  });
+  expect(describeFailure("segfault")).toBeNull();
+  expect(describeFailure(null)).toBeNull();
+});
+
+test("recoverable interruption codes offer manual resend advice", () => {
+  expect(describeFailure("interrupted_by_provider_move")?.hint).toContain("Send the prompt again");
+  expect(describeFailure("interrupted_by_harness_exit")?.hint).toContain("fresh agent process");
+});
+
+test("plan limits retain the reset and offer an account action", () => {
+  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")).toMatchObject({
+    title: "Plan limit reached",
+    hint: expect.stringContaining("2026-11-17T00:00:00.000Z"),
+    fix: { href: "/harness" },
+  });
+  expect(describeFailure("Plan limit reached. Resets at 2026-11-17T00:00:00.000Z.")?.hint).not.toContain("switch");
+});

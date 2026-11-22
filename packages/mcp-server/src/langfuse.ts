@@ -13,6 +13,7 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import { readBody } from "./control-body.ts";
 import type { Route } from "./http.ts";
+import type { createJobsRunner } from "./jobs/runner.ts";
 import { redactCredentials } from "./log.ts";
 
 interface Config {
@@ -192,7 +193,9 @@ export function langfuseSpans(
 
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
 /** Claims reserve an attempt; a job aborted this many times settles as failed. */
-const MAX_ATTEMPTS = 5;
+type ExportHandler = Parameters<typeof createJobsRunner>[1][string];
+
+const MAX_ABANDONED_ATTEMPTS = 5;
 /** Native history reads that outlived their deadline and still run detached. */
 const MAX_OUTSTANDING_HISTORY_READS = 4;
 type PromptEvent = Extract<AgentEvent, { kind: "prompt" }>;
@@ -204,7 +207,7 @@ interface ExportJob {
   runtime_ack: string | null;
   terminal_status: PromptEvent["status"];
   observed_ms: number;
-  attempts: number;
+  generation: string;
   waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
@@ -215,18 +218,44 @@ interface ExportJob {
 export function createLangfuse(
   sql: Sql,
   key: string,
-  nativeProviderFor: (id: string) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
+  nativeProviderFor: (
+    id: string,
+    generation: string,
+  ) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
   send: typeof fetch = fetch,
   // Optional history gets its own deadline inside the 30 s worker tick, leaving
   // time for the receipt-only export and durable accounting.
   historyDeadline: () => AbortSignal = () => AbortSignal.timeout(10_000),
+  now: () => number = Date.now,
 ) {
   type Evidence = { events: AgentEvent[]; nativeProvider?: string } | null;
-  async function nativeHistory(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
-    const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id);
+  async function nativeHistory(
+    job: ExportJob,
+    signal: AbortSignal,
+    canDispatch: () => Promise<boolean>,
+  ): Promise<Evidence> {
+    if (!(await canDispatch())) return null;
+    signal.throwIfAborted();
+    const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id, job.generation);
     if (providerSandboxId !== job.provider_sandbox_id) return null;
     const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
-    const read = await readPromptEvents(provider, request);
+    const read = await readPromptEvents(
+      {
+        id: provider.id,
+        async events(page) {
+          if (!(await canDispatch())) throw Error("Native export job lost its claim.");
+          signal.throwIfAborted();
+          const binding = await sql.query(
+            "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3",
+            [job.sandbox_id, job.generation, providerSandboxId],
+          );
+          if (!binding.rows.length) throw Error("Native export history binding changed.");
+          signal.throwIfAborted();
+          return provider.events(page);
+        },
+      },
+      request,
+    );
     signal.throwIfAborted();
     return {
       events: read.events.filter((e) => e.promptId === job.prompt_id),
@@ -240,7 +269,11 @@ export function createLangfuse(
   // MAX_OUTSTANDING_HISTORY_READS overall, so a stalled provider can neither
   // hold the export lane nor pile up reads.
   const outstanding = new Set<string>();
-  function boundedNativeHistory(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
+  function boundedNativeHistory(
+    job: ExportJob,
+    signal: AbortSignal,
+    canDispatch: () => Promise<boolean>,
+  ): Promise<Evidence> {
     const id = `${job.sandbox_id}/${job.prompt_id}`;
     if (signal.aborted) return Promise.reject(signal.reason);
     if (outstanding.has(id) || outstanding.size >= MAX_OUTSTANDING_HISTORY_READS)
@@ -249,7 +282,7 @@ export function createLangfuse(
     return new Promise<Evidence>((resolve, reject) => {
       const onAbort = () => reject(signal.reason);
       signal.addEventListener("abort", onAbort, { once: true });
-      nativeHistory(job, signal)
+      nativeHistory(job, signal, canDispatch)
         .then(resolve, reject)
         .finally(() => {
           outstanding.delete(id);
@@ -258,8 +291,8 @@ export function createLangfuse(
     });
   }
 
-  async function history(job: ExportJob, signal: AbortSignal): Promise<Evidence> {
-    if (job.runtime_ack === null) return boundedNativeHistory(job, signal);
+  async function history(job: ExportJob, signal: AbortSignal, canDispatch: () => Promise<boolean>): Promise<Evidence> {
+    if (job.runtime_ack === null) return boundedNativeHistory(job, signal, canDispatch);
     // Read only this turn's window: from its first archived reference (the sparse
     // counted_prompt_id marker) to the settlement acknowledgement. Earlier turns
     // must not consume the bounds. Bound archive memory before fetching ciphertext.
@@ -302,12 +335,13 @@ export function createLangfuse(
   async function exportTurn(
     job: ExportJob,
     signal: AbortSignal,
+    canDispatch: () => Promise<boolean>,
   ): Promise<"exported" | "failed" | "dropped" | "pending"> {
     if (!job.config_enc) return "dropped";
     let evidence: Awaited<ReturnType<typeof history>>;
     let historyUnavailable = false;
     try {
-      evidence = await history(job, AbortSignal.any([signal, historyDeadline()]));
+      evidence = await history(job, AbortSignal.any([signal, historyDeadline()]), canDispatch);
     } catch (error) {
       signal.throwIfAborted(); // Only the worker tick or shutdown abandons the job to its lease.
       // Native history is optional evidence: the settled receipt already holds
@@ -368,6 +402,8 @@ export function createLangfuse(
     });
     if (Buffer.byteLength(body) > MAX_EXPORT_BYTES) return "dropped";
     const config = JSON.parse(await decryptSecret(job.config_enc, key)) as Config;
+    if (!(await canDispatch())) return "dropped";
+    signal.throwIfAborted();
     const response = await send(`${config.host}/api/public/otel/v1/traces`, {
       method: "POST",
       redirect: "error",
@@ -383,21 +419,15 @@ export function createLangfuse(
     return response.ok ? "exported" : "failed";
   }
 
-  async function reconcileOne(signal: AbortSignal): Promise<boolean> {
-    signal.throwIfAborted();
-    const lease = crypto.randomUUID();
-    const job = (
-      await sql.query<ExportJob>(
-        `with candidate as (
-          select sandbox_id,prompt_id from public.langfuse_turn_exports
-          where completed_at is null and (lease_until is null or lease_until<now())
-          order by observed_at for update skip locked limit 1
-        ), claimed as (
-          update public.langfuse_turn_exports j set lease_id=$1::uuid,lease_until=now()+interval '60 seconds',
-            attempts=j.attempts+1
-          from candidate c where j.sandbox_id=c.sandbox_id and j.prompt_id=c.prompt_id returning j.*
-        )
-        select j.*,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
+  const exportJob: ExportHandler = {
+    concurrency: 1,
+    async run(claim, { signal: leaseSignal, canDispatch }) {
+      const signal = AbortSignal.any([leaseSignal, AbortSignal.timeout(30_000)]);
+      const { promptId, historyRetries = 0 } = claim.outcome as { promptId: string; historyRetries?: number };
+      const job = (
+        await sql.query<ExportJob>(
+          `select j.sandbox_id,j.prompt_id,j.org_id,j.provider_sandbox_id,j.runtime_ack,j.terminal_status,
+          s.lifecycle_generation::text as generation,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
           j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
           c.config_enc,
           -- Use the more restrictive of the mode allowed at settlement and the current one.
@@ -409,35 +439,42 @@ export function createLangfuse(
               and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
           ) as application_secrets,
           (select d.request_enc from public.docker_launch_requests d where d.sandbox_id=j.sandbox_id) as docker_request_enc
-        from claimed j join public.sandboxes s on s.id=j.sandbox_id
-        left join public.org_langfuse c on c.org_id=j.org_id and c.enabled and s.org_id=j.org_id`,
-        [lease],
-      )
-    ).rows[0];
-    if (!job) return false;
-    const outcome = job.attempts > MAX_ATTEMPTS ? "failed" : await exportTurn(job, signal).catch(() => "failed");
-    signal.throwIfAborted(); // On shutdown or tick timeout, let the durable lease expire.
-    if (outcome === "pending") {
-      await sql.query(
-        "update public.langfuse_turn_exports set lease_id=null,lease_until=now()+interval '2 seconds',attempts=attempts-1 where sandbox_id=$1 and prompt_id=$2 and lease_id=$3::uuid",
-        [job.sandbox_id, job.prompt_id, lease],
-      );
-      return true;
-    }
-    await sql.query(
-      `with settled as (
-        update public.langfuse_turn_exports set completed_at=clock_timestamp(),lease_id=null,lease_until=null
-        where sandbox_id=$1 and prompt_id=$2 and lease_id=$3::uuid returning org_id,completed_at
-      ) insert into public.org_langfuse_export_stats as stats(org_id,exported,failed,dropped,last_export_at)
-        select org_id,($4='exported')::int,($4='failed')::int,($4='dropped')::int,
-          case when $4='exported' then completed_at end from settled
-        on conflict(org_id) do update set exported=stats.exported+excluded.exported,
-          failed=stats.failed+excluded.failed,dropped=stats.dropped+excluded.dropped,
-          last_export_at=greatest(stats.last_export_at,excluded.last_export_at)`,
-      [job.sandbox_id, job.prompt_id, lease, outcome],
-    );
-    return true;
-  }
+        from public.langfuse_turn_exports j join public.sandboxes s on s.id=j.sandbox_id
+        left join public.org_langfuse c on c.org_id=j.org_id and c.enabled
+        where j.sandbox_id=$1 and j.prompt_id=$2 and s.org_id=j.org_id`,
+          [claim.sandbox_id, promptId],
+        )
+      ).rows[0];
+      if (!job) return { status: "done" };
+
+      const outcome =
+        claim.attempts - historyRetries > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
+          ? "failed"
+          : await exportTurn(job, signal, canDispatch).catch(() => "failed");
+      signal.throwIfAborted();
+      if (outcome === "pending") {
+        return {
+          status: "retry",
+          after: new Date(now() + 2000),
+          outcome: { promptId, historyRetries: historyRetries + 1 },
+        };
+      }
+      return {
+        ...(outcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
+        async commit(tx) {
+          await tx.query(
+            `insert into public.org_langfuse_export_stats as stats(org_id,exported,failed,dropped,last_export_at)
+              values ($1,($2='exported')::int,($2='failed')::int,($2='dropped')::int,
+                case when $2='exported' then clock_timestamp() end)
+              on conflict(org_id) do update set exported=stats.exported+excluded.exported,
+                failed=stats.failed+excluded.failed,dropped=stats.dropped+excluded.dropped,
+                last_export_at=greatest(stats.last_export_at,excluded.last_export_at)`,
+            [job.org_id, outcome],
+          );
+        },
+      };
+    },
+  };
   async function storedConfig(row?: SettingsRow): Promise<Config | null> {
     return row?.config_enc ? (JSON.parse(await decryptSecret(row.config_enc, key)) as Config) : null;
   }
@@ -573,5 +610,5 @@ export function createLangfuse(
       }
     };
   }
-  return { reconcileOne, async drain() {}, route };
+  return { exportJob, route };
 }

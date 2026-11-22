@@ -22,7 +22,6 @@ import {
   type ModalBinding,
   PROVIDER_LIMITS,
   type ProviderTarget,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
 
@@ -146,7 +145,7 @@ export class GoldenBuildJobs {
       config: input.config ?? null,
       setup: input.setup ?? null,
       goldenId: input.existingGolden?.id ?? null,
-      ...(providerId === "boat" ? {} : { provider: providerId, modal: target.modal }),
+      ...(target.modal ? { provider: providerId, modal: target.modal } : {}),
     };
     const hashRequest = (payload: object) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const hash = additions
@@ -237,10 +236,10 @@ export class GoldenBuildJobs {
           current.owner_id !== input.existingGolden.ownerId ||
           current.visibility !== input.visibility ||
           current.provider !== providerId ||
-          (providerId === "modal" &&
-            (current.modal_workspace !== target.modal?.workspace ||
-              current.modal_environment !== target.modal?.environment ||
-              current.modal_app_id !== target.modal?.appId))
+          (target.modal &&
+            (current.modal_workspace !== target.modal.workspace ||
+              current.modal_environment !== target.modal.environment ||
+              current.modal_app_id !== target.modal.appId))
         )
           throw new GoldenError("conflict", "Golden changed before build admission.");
       }
@@ -381,10 +380,19 @@ export class GoldenBuildJobs {
           : null,
     };
   }
-  private async lock(sql: Sql, job: Job): Promise<void> {
+  private async ownsLease(sql: Sql, id: string, epoch: string, lock = true) {
+    const lease = await sql.query(
+      `select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2
+         and lease_until>clock_timestamp()${lock ? " for update" : ""}`,
+      [id, epoch],
+    );
+    return lease.rows.length > 0;
+  }
+  private async lock(sql: Sql, job: Job, epoch: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const owned = (
       await sql.query<{ id: string }>(
-        "select id from public.golden_build_jobs where id=$1 and state='running' and fence=$2 and lease_until>clock_timestamp() and deadline>clock_timestamp() for update",
+        "select id from public.golden_build_jobs where id=$1 and state='running' and fence=$2 and deadline>clock_timestamp() for update",
         [job.id, job.fence],
       )
     ).rows[0];
@@ -397,6 +405,9 @@ export class GoldenBuildJobs {
       if (!slot) throw new GoldenError("build_failed", "Build reservation is no longer owned.");
     } else if (PROVIDER_LIMITS[job.provider].defaultGoldenCapacity !== undefined)
       throw new GoldenError("build_failed", "Build reservation is missing.");
+    if (!(await this.ownsLease(sql, job.id, epoch, false)))
+      throw new GoldenError("build_failed", "Build lease is no longer owned.");
+    signal?.throwIfAborted();
   }
   private async context(job: Job): Promise<Input> {
     const raw = JSON.parse(await decryptSecret(job.payload_enc, this.options.encryptionKey));
@@ -410,11 +421,14 @@ export class GoldenBuildJobs {
     buildTarget(job.provider, job.org_id, input);
     return input;
   }
-  private async resolve(job: Job, actor: GoldenActor, input: Input): Promise<Provider> {
+  private async resolve(job: Job, actor: GoldenActor, input: Input, signal?: AbortSignal): Promise<Provider> {
+    signal?.throwIfAborted();
     const provider = await this.options.provider(actor, job.visibility, buildTarget(job.provider, job.org_id, input));
+    signal?.throwIfAborted();
     assertProviderOf(provider, job.provider);
     if (job.reservation_id) {
       const identity = await provider.backendIdentity?.();
+      signal?.throwIfAborted();
       const slot = (
         await this.options.sql.query<{ backend_id: string; provider: string }>(
           "select backend_id,provider from public.golden_backend_slots where build_id=$1",
@@ -428,31 +442,17 @@ export class GoldenBuildJobs {
     }
     return provider;
   }
-  /** Reconcile a fenced abandoned attempt, never restart its commands or delete snapshots. */
-  async reconcileOne(): Promise<void> {
-    const row = (
-      await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or snapshot is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
-        [
-          // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
-          "{" +
-            SANDBOX_PROVIDERS.filter(
-              (id) => HOST_CAPABILITIES[id].goldenBuilderRecovery === "dispose-reservation",
-            ).join(",") +
-            "}",
-        ],
-      )
-    ).rows[0];
-    if (!row) return;
+  /** Reconcile only the attempt identified by the shared job. */
+  private async recoverReceipt(row: Job, signal?: AbortSignal) {
     const reservationRecovery = HOST_CAPABILITIES[row.provider].goldenBuilderRecovery === "dispose-reservation";
-    // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
-    // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
-    const attempted = await this.options.sql.query(
-      "update public.golden_build_jobs set updated_at=clock_timestamp() where id=$1 and state='recovery_required' and fence is not distinct from $2::uuid returning id",
-      [row.id, row.fence],
-    );
-    if (!attempted.rows.length || !row.fence) return;
-    if (row.phase === "authorization" && row.builder_id === null && row.snapshot === null) {
+    const authorizationOnly = row.phase === "authorization" && row.builder_id === null && row.snapshot === null;
+    if (
+      !row.fence ||
+      (!authorizationOnly && !row.builder_id && !row.snapshot && !(reservationRecovery && row.phase === "builder"))
+    )
+      return;
+    signal?.throwIfAborted();
+    if (authorizationOnly) {
       // createGolden is called only after the durable builder phase is fenced.
       // A late authorization callback cannot enter that phase after recovery owns
       // the row. No provider resource exists to stop or inspect in this state.
@@ -470,6 +470,7 @@ export class GoldenBuildJobs {
           current.snapshot !== null
         )
           return;
+        signal?.throwIfAborted();
         if (current.reservation_id) await sqlGoldenBackendSlots(sql).release(current.reservation_id);
         await sql.query(
           "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
@@ -482,7 +483,7 @@ export class GoldenBuildJobs {
       return;
     }
     // A recovery row's snapshot is the candidate its worker recorded under the fence before
-    // publication (see runOne's candidate). Publication commits only together with complete(),
+    // publication (see executeReceipt's candidate). Publication commits only together with complete(),
     // which requires this fence in state running under the same row lock; a committed row in
     // recovery_required therefore proves that candidate was never published and never can be.
     const rolledBack = row.snapshot;
@@ -490,6 +491,7 @@ export class GoldenBuildJobs {
     if (reservationRecovery && !rolledBack && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
+      signal?.throwIfAborted();
       const input = await this.context(row);
       if (
         input.name !== row.name ||
@@ -497,7 +499,8 @@ export class GoldenBuildJobs {
         (input.existingGolden?.id ?? null) !== row.golden_id
       )
         return;
-      const provider = await this.resolve(row, actor, input);
+      const provider = await this.resolve(row, actor, input, signal);
+      signal?.throwIfAborted();
       if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
       // The unpublished artifact must be gone before the builder or the capacity is released.
       // Recovery resumes wherever the worker stopped: a still-live artifact is retired first (an
@@ -514,6 +517,7 @@ export class GoldenBuildJobs {
           ).rows.length
         )
           return;
+        signal?.throwIfAborted();
         const live = await provider.getSnapshot(rolledBack).then(
           () => true,
           (error: unknown) => {
@@ -521,9 +525,12 @@ export class GoldenBuildJobs {
             throw error;
           },
         );
+        signal?.throwIfAborted();
         if (live) await provider.deleteSnapshot(rolledBack);
+        signal?.throwIfAborted();
         if ((await provider.collectRetiredSnapshot(rolledBack)) !== "collected") return;
       }
+      signal?.throwIfAborted();
       // Proof for the provider that this builder's own snapshot was this collected rolled-back artifact.
       const collected = rolledBack ? { collected: rolledBack } : {};
       let builderId = row.builder_id;
@@ -539,6 +546,7 @@ export class GoldenBuildJobs {
         builderId = found.sandboxId;
         retained = found.disposition !== "disposable";
       } else if (!builderId) return;
+      signal?.throwIfAborted();
       const owned = await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
@@ -559,6 +567,7 @@ export class GoldenBuildJobs {
         )
           return false;
         await this.actor(sql, current);
+        signal?.throwIfAborted();
         // Commit the logical identity under the existing fence BEFORE any provider action.
         const saved = await sql.query(
           "update public.golden_build_jobs set builder_id=$3,updated_at=now() where id=$1 and fence=$2 and state='recovery_required' returning id",
@@ -568,6 +577,7 @@ export class GoldenBuildJobs {
       });
       if (!owned || retained || (reservationRecovery && provider.findGoldenBuilder && !provider.disposeGoldenBuilder))
         return;
+      signal?.throwIfAborted();
       // Reservation disposal performs exact named ownership reconciliation under its lease.
       if (reservationRecovery) {
         const dispose = provider.disposeGoldenBuilder;
@@ -581,6 +591,7 @@ export class GoldenBuildJobs {
         });
         if (receipt.status !== "deleted") return;
       } else await provider.stop({ sandboxId: builderId });
+      signal?.throwIfAborted();
       await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
@@ -593,6 +604,7 @@ export class GoldenBuildJobs {
         )
           return;
         await this.actor(sql, current);
+        signal?.throwIfAborted();
         if (row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
         await sql.query("update public.golden_build_jobs set state='failed',updated_at=now() where id=$1", [row.id]);
       });
@@ -600,18 +612,38 @@ export class GoldenBuildJobs {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
-  /** One bounded worker tick. Queued admissions expire after one hour; running work stays fenced for recovery. */
-  async runOne(): Promise<boolean> {
-    await this.options.sql.query(
-      "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
-    );
+  async dispatchReceipt(
+    id: string,
+    leaseEpoch: string,
+    signal?: AbortSignal,
+    runRecovery = async (work: (signal?: AbortSignal) => Promise<void>) => {
+      await work(signal);
+      return true;
+    },
+  ) {
+    // Encode the bigint claim epoch in the receipt's existing UUID attempt identity.
+    const epochHex = BigInt(leaseEpoch).toString(16).padStart(16, "0");
+    const fence = `00000000-0000-0000-${epochHex.slice(0, 4)}-${epochHex.slice(4)}`;
     const job = await this.transaction(async (sql) => {
       const row = (
         await sql.query<Job & { expired: boolean }>(
-          "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where state='queued' order by created_at for update skip locked limit 1",
+          "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where id=$1 for update",
+          [id],
         )
       ).rows[0];
-      if (!row) return undefined;
+      if (!row || row.state === "succeeded" || row.state === "failed") return row;
+      if (!(await this.ownsLease(sql, id, leaseEpoch))) return row;
+      signal?.throwIfAborted();
+      if (row.state === "running") {
+        const expired = await sql.query(
+          `update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now()
+            where id=$1 and (deadline<=clock_timestamp() or lease_until<=clock_timestamp()
+              or (lease_until='infinity' and fence<>$2)) returning id`,
+          [id, fence],
+        );
+        return expired.rows.length ? { ...row, state: "recovery_required" as const, recover: true } : row;
+      }
+      if (row.state === "recovery_required") return { ...row, recover: true };
       if (row.expired) {
         // The same row lock fences other workers' claims. Only a never-started
         // admission can release capacity without reconciling provider resources.
@@ -629,41 +661,68 @@ export class GoldenBuildJobs {
               : "detail:Expired queued build has execution evidence. Ask an administrator to reconcile it before retrying.",
           ],
         );
-        return { ...row, state };
+        return { ...row, state, processed: true };
       }
-      return (
-        await sql.query<Job>(
-          "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until=clock_timestamp()+interval '60 seconds',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
-          [row.id, randomUUID()],
-        )
-      ).rows[0]!;
+      await sql.query("select pg_advisory_xact_lock(hashtextextended('armada.jobs:golden_build',0))");
+      // During database overlap, an older replica can still be executing under a finite
+      // receipt lease. Lock those rows before checking time so a concurrent renewal is visible.
+      const occupied = await sql.query(
+        `with previous_attempts as materialized (
+           select lease_until, deadline from public.golden_build_jobs
+            where state='running' and lease_until<'infinity' for update
+         )
+         select 1 from previous_attempts where lease_until>clock_timestamp() and deadline>clock_timestamp()`,
+      );
+      if (occupied.rows.length || !(await this.ownsLease(sql, id, leaseEpoch))) return row;
+      signal?.throwIfAborted();
+      const { rows } = await sql.query<Job>(
+        "update public.golden_build_jobs set state='running',phase='authorization',fence=$2,lease_until='infinity',deadline=clock_timestamp()+interval '60 minutes',updated_at=now() where id=$1 returning *",
+        [row.id, fence],
+      );
+      return { ...rows[0]!, processed: true };
     });
-    if (!job) return false;
-    if (job.state !== "running") return true;
+    if (!job) return { processed: false, pending: false };
+    const processed = "processed" in job;
+    let state = job.state;
+    if ("recover" in job || (processed && state === "running")) {
+      if ("recover" in job) {
+        if (!(await runRecovery((recoverySignal) => this.recoverReceipt(job, recoverySignal))))
+          return { processed, pending: true };
+      } else await this.executeReceipt(job, leaseEpoch, signal);
+      const { rows } = await this.options.sql.query<Pick<Job, "state">>(
+        "select state from public.golden_build_jobs where id=$1",
+        [id],
+      );
+      state = rows[0]?.state ?? "failed";
+    }
+    return { processed, pending: state === "queued" || state === "running" || state === "recovery_required" };
+  }
+
+  private async executeReceipt(job: Job, epoch: string, signal?: AbortSignal) {
     let safeToRelease = true;
     // The candidate this attempt tried to record before publication, kept even when that record
     // failed: an unsafe outcome retries it under the fence in the final write.
     let unpublished: string | null = null;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, job));
       const input = await this.context(job);
-      const provider = await this.resolve(job, actor, input);
-      const phase = async (next: string) =>
-        this.transaction(async (sql) => {
-          await this.lock(sql, job);
-          await sql.query("update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1", [job.id, next]);
+      const provider = await this.resolve(job, actor, input, signal);
+      const phase = async (next: string) => {
+        await this.transaction(async (sql) => {
+          await this.lock(sql, job, epoch, signal);
+          if (!(await this.ownsLease(sql, job.id, epoch)))
+            throw new GoldenError("build_failed", "Build lease is no longer owned.");
+          const changed = await sql.query(
+            "update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1 and deadline>clock_timestamp() returning id",
+            [job.id, next],
+          );
+          if (!changed.rows.length || !(await this.ownsLease(sql, job.id, epoch, false)))
+            throw new GoldenError("build_failed", "Build lease or deadline expired.");
+          signal?.throwIfAborted();
           if (next === "builder") safeToRelease = false;
         });
-      // A live worker renews only its own unexpired fence. A database outage fences publication.
-      heartbeat = setInterval(() => {
-        void this.options.sql
-          .query(
-            "update public.golden_build_jobs set lease_until=clock_timestamp()+interval '60 seconds' where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp()",
-            [job.id, job.fence],
-          )
-          .catch(() => {});
-      }, 10_000);
+        signal?.throwIfAborted();
+      };
       const service = createGoldenCreateService({
         ...this.options.service,
         sql: this.options.sql,
@@ -674,8 +733,7 @@ export class GoldenBuildJobs {
           cleaned: (safe) => {
             safeToRelease = safe;
           },
-          // Under the attempt's fence even after a lease-expiry sweep moved it to recovery: the
-          // sweep keeps the fence, so this record reaches the reconciler that now owns the row.
+          // Recovery retains the attempt fence so it can see a late snapshot.
           candidate: async (snapshot) => {
             unpublished = snapshot;
             const saved = await this.options.sql.query(
@@ -684,27 +742,38 @@ export class GoldenBuildJobs {
             );
             if (!saved.rows.length) throw new GoldenError("build_failed", "Build lease is no longer owned.");
           },
-          builder: async (id) =>
-            this.transaction(async (sql) => {
-              await this.lock(sql, job);
-              await sql.query("update public.golden_build_jobs set builder_id=$2 where id=$1", [job.id, id]);
-            }),
-          lock: (sql) => this.lock(sql, job),
+          builder: async (id) => {
+            const saved = await this.options.sql.query(
+              "update public.golden_build_jobs set builder_id=$3 where id=$1 and fence=$2 and state in ('running','recovery_required') and (builder_id is null or builder_id=$3) returning id",
+              [job.id, job.fence, id],
+            );
+            if (!saved.rows.length) throw new GoldenError("build_failed", "Build attempt is no longer recoverable.");
+            await this.transaction((sql) => this.lock(sql, job, epoch, signal));
+          },
+          lock: (sql) => this.lock(sql, job, epoch, signal),
           complete: async (sql, goldenId, snapshot, warnings) => {
             // Recheck with wall time at the final write: PostgreSQL now() is frozen at
             // transaction start, and the lease may have expired while publication waited.
+            signal?.throwIfAborted();
+            if (!(await this.ownsLease(sql, job.id, epoch)))
+              throw new GoldenError("build_failed", "Build lease expired before publication.");
             const completed = await sql.query(
-              "update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,build_warnings=$5::text[],lease_until=null,updated_at=now() where id=$1 and fence=$2 and state='running' and lease_until>clock_timestamp() and deadline>clock_timestamp() returning id",
-              [job.id, job.fence, goldenId, snapshot, "{" + warnings.join(",") + "}"],
+              `update public.golden_build_jobs set state='succeeded',phase='complete',golden_id=$3,snapshot=$4,
+                 build_warnings=$5::text[],lease_until=null,updated_at=now()
+               where id=$1 and fence=$2 and state='running' and deadline>clock_timestamp()
+                 and exists (select 1 from public.jobs where id=$1 and kind='golden_build' and state='leased'
+                   and lease_epoch=$6 and lease_until>clock_timestamp()) returning id`,
+              [job.id, job.fence, goldenId, snapshot, "{" + warnings.join(",") + "}", epoch],
             );
             if (!completed.rows.length)
               throw new GoldenError("build_failed", "Build lease expired before publication.");
+            signal?.throwIfAborted();
           },
         },
       });
       await service.create(provider, actor, input, {
         sleep: async (ms) => {
-          await this.transaction((sql) => this.lock(sql, job));
+          await this.transaction((sql) => this.lock(sql, job, epoch, signal));
           await new Promise<void>((resolve) => setTimeout(resolve, ms));
         },
       });
@@ -716,8 +785,7 @@ export class GoldenBuildJobs {
         ).rows[0];
         if (!current || current.fence !== job.fence) return;
         if (current.state === "recovery_required") {
-          // A lease-expiry sweep kept this fence and moved the attempt to recovery. If its earlier
-          // record failed, hand the never-published candidate to the reconciler now.
+          // Preserve late evidence for recovery under the original attempt fence.
           if (unpublished && current.snapshot === null)
             await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
               job.id,
@@ -728,10 +796,6 @@ export class GoldenBuildJobs {
         if (current.state !== "running") return;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
-          // The candidate stays as durable cleanup work unless its cleanup was confirmed, and is
-          // written here if its earlier record failed: this write proves it unpublished (state
-          // running under the fence), so reconcileOne retires and collects it, then frees the
-          // builder and capacity.
           "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [
             job.id,
@@ -753,10 +817,7 @@ export class GoldenBuildJobs {
           ],
         );
       });
-    } finally {
-      if (heartbeat) clearInterval(heartbeat);
     }
-    return true;
   }
 }
 
@@ -764,7 +825,7 @@ export class GoldenBuildJobs {
 function buildTarget(provider: SandboxProviderId, orgId: string, input: Input): ProviderTarget {
   const binding = input.existingGolden?.modal ?? input.modal ?? null;
   let modal: ModalBinding | null = null;
-  if (provider === "modal") {
+  if (HOST_CAPABILITIES[provider].requiresPinnedGoldenBinding) {
     if (
       !binding ||
       [binding.workspace, binding.environment, binding.appId].some((v) => typeof v !== "string" || !v.trim())

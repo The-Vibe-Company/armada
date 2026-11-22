@@ -16,7 +16,7 @@ import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/dock
 import { listSelectedAccounts } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
-import { UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import { isDockerLaunchKey, PREVIOUS_DOCKER_LAUNCH, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
 import { snapshotBuildHostBlocker } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { launchFailureMessage, postSandboxLaunch } from "@/lib/launch";
@@ -25,7 +25,8 @@ import { checkAccountChoice } from "@/lib/model-accounts";
 import { chosenConnection, modelChoice } from "@/lib/model-choice";
 import { snapshotActionFailure } from "@/lib/snapshot-action-errors";
 import { ttlChoice } from "@/lib/templates";
-export type SnapshotCreateResult = { ok: true; message: string; snapshotId: string } | { ok: false; error: string };
+
+type SnapshotCreateResult = { ok: true; message: string; snapshotId: string } | { ok: false; error: string };
 const createFail = (error: string): SnapshotCreateResult => ({ ok: false, error });
 export async function buildDockerSnapshot(
   _previous: SnapshotCreateResult | null,
@@ -87,10 +88,12 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
   const selected = await selectedOrganization(),
     org = formString(data, "org"),
     snapshotId = formString(data, "snapshotId"),
-    requestId = formString(data, LAUNCH_KEY_FIELD),
+    idempotencyKey = formString(data, LAUNCH_KEY_FIELD),
     harness = formString(data, "harness") as Harness;
   if (!selected || org !== selected.org.id) return fail("Switch to that organization first.");
-  if (!isUuid(snapshotId) || !isUuid(requestId) || !HARNESSES.includes(harness))
+  if (isUuid(idempotencyKey))
+    return fail(PREVIOUS_DOCKER_LAUNCH, { href: `/sandboxes/${idempotencyKey}`, label: "Inspect previous sandbox" });
+  if (!isUuid(snapshotId) || !isDockerLaunchKey(idempotencyKey) || !HARNESSES.includes(harness))
     return fail("That launch request is not valid.");
   if (formString(data, "armada_access")) return fail("Armada delegation is not supported for host snapshots yet.");
   const ttl = ttlChoice(formString(data, "ttl"), "docker");
@@ -141,7 +144,7 @@ export async function launchFromDockerSnapshot(_previous: ActionResult | null, d
         org,
         provider: "docker",
         snapshotId,
-        requestId,
+        idempotencyKey,
         harness,
         credentialId: account.id,
         model: choice.args.model,

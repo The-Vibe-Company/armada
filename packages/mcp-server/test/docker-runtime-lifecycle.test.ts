@@ -1,24 +1,27 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, Sql } from "@armada/core";
-import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createMemoryAuthStore } from "@armada/auth";
+import { type AgentEvent, DOCKER_HOST_PROTOCOL, type Sql } from "@armada/core";
+import { createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
+import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import type { Job } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -42,14 +45,6 @@ const bootstrap = createDockerBootstrapService(sql, key, {
     harnesses: { codex: { files: [{ path: "bin/codex" }] } },
   },
   credentials: launchCredentials(createSqlVaultStore(sql), key),
-});
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
 });
 async function fixture() {
   const db = database();
@@ -105,6 +100,16 @@ async function complete(session: Awaited<ReturnType<Fixture["enrol"]>>, payload:
   });
   return next.command;
 }
+async function readinessJournal(sandboxId: string) {
+  return (
+    await database().query(
+      `select from_status,to_status,actor,code from public.sandbox_transitions
+       where sandbox_id=$1 and to_status='ready' order by id`,
+      [sandboxId],
+    )
+  ).rows;
+}
+
 async function ready(f: Fixture) {
   const session = await f.enrol(),
     requestId = randomUUID();
@@ -116,6 +121,168 @@ async function ready(f: Fixture) {
 
 // These integration tests own the Docker lifecycle composition: concrete host ACK,
 // credential admission, enrolment, encrypted command replay and archive authorization.
+test.each(["prompt", "readable variables", "MCP health", "MCP configuration", "MCP acknowledgement"] as const)(
+  "a queued Docker send rolls back %s admission when its claim expires before commit",
+  async (operation) => {
+    const f = await fixture();
+    const session = await ready(f);
+    const input = { id: f.sandbox.id, request_id: randomUUID(), prompt: "queued turn" };
+    const commandId =
+      operation === "prompt" ? `docker_prompt_${input.request_id}` : `docker_variables_${input.id}_${session.epoch}`;
+    if (operation === "readable variables") {
+      const manifest = await encryptSecret(JSON.stringify({ request: {}, variables: { TEST_VALUE: "test" } }), key);
+      await database().query(
+        `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc)
+         select $1,e.epoch,$2,$3,$4 from public.mcp_actor_epochs e where e.user_id=$5 and e.org_id=$6`,
+        [input.id, "a".repeat(64), manifest, await encryptSecret("{}", key), f.actor.userId, f.actor.orgId],
+      );
+    }
+    const isMcp = operation.startsWith("MCP");
+    const commandCount = async (tx: Sql) =>
+      (
+        await tx.query<{ count: number }>(
+          "select count(*)::int as count from public.runtime_commands where sandbox_id=$1",
+          [input.id],
+        )
+      ).rows[0]!.count;
+    const initialCount = await commandCount(sql);
+    let now = 0;
+    const promptId = randomUUID();
+    const clock = {
+      now: () => now,
+      wait: async (ms: number) => {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        const command = next.command;
+        if (!command) throw new Error("No command to acknowledge");
+        let result: object = { acknowledged: true };
+        switch (command.op) {
+          case "prompt":
+            result = { promptId, conversationId: randomUUID(), status: "running" };
+            break;
+          case "health":
+            result = { ready: true, generation: session.epoch, mcpVersion: 1 };
+            break;
+          case "configureMcp":
+            result = { revision: command.configuration.revision };
+            break;
+        }
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      },
+    };
+    const mcp = createRuntimeMcp({
+      sql,
+      key,
+      origin: "https://armada.example",
+      commands: createRuntimeCommands(authority, key, clock),
+    });
+    if (isMcp) {
+      const connection = await createSqlMcpRegistry(sql, key).save(f.actor.userId, f.actor.orgId, {
+        name: "Fixture MCP",
+        scope: "personal",
+        transport: "http",
+        url: "https://mcp.example",
+        authType: "bearer",
+        authentication: "fixture",
+      });
+      await database().query("update public.mcp_grants set status='connected' where connection_id=$1", [connection.id]);
+      await mcp.connections.bind(input.id, [connection.id]);
+    }
+    const configured = async (tx: Sql) =>
+      (
+        await tx.query<{ configured: boolean }>("select configured from public.mcp_bootstraps where sandbox_id=$1", [
+          input.id,
+        ])
+      ).rows[0]?.configured;
+    const dispatch = createQueuedSandboxDispatch({
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store: createSqlVaultStore(sql),
+      encryptionKey: key,
+      data: createSqlData(sql),
+      providers: {
+        async resolve() {
+          throw new Error("Docker send must use the runtime.");
+        },
+      },
+      dockerControls: createDockerSandboxControls(sql, key, {
+        send: createDockerNormalSend(sql, key, {
+          enabled: true,
+          dispatchQueued: true,
+          clock,
+          ...(isMcp ? { prepareMcp: mcp.prepare } : {}),
+        }),
+      }),
+    });
+    const caller = {
+      userId: f.actor.userId,
+      via: "service" as const,
+      orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
+    };
+    const handoffGeneration = async () => {
+      throw new Error("Running send must not hand off generation.");
+    };
+    let expired = false;
+    const mcpCommandsBeforeCommit = {
+      "MCP health": 1,
+      "MCP configuration": 2,
+      "MCP acknowledgement": 2,
+    };
+    await expect(
+      dispatch(caller, input, {
+        handoffGeneration,
+        async canDispatch(tx) {
+          if (!tx) return true;
+          if (operation in mcpCommandsBeforeCommit) {
+            expired ||=
+              operation === "MCP acknowledgement"
+                ? (await configured(tx)) === true
+                : (await commandCount(tx)) >=
+                  initialCount + mcpCommandsBeforeCommit[operation as keyof typeof mcpCommandsBeforeCommit];
+            return !expired;
+          }
+          const command = await tx.query(
+            "select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+            [input.id, commandId],
+          );
+          expired = command.rows.length > 0;
+          return !expired;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(expired).toBe(true);
+    if (isMcp) {
+      const committedCommands =
+        mcpCommandsBeforeCommit[operation as keyof typeof mcpCommandsBeforeCommit] -
+        (operation === "MCP acknowledgement" ? 0 : 1);
+      expect(await commandCount(sql)).toBe(initialCount + committedCommands);
+      expect(await configured(sql)).toBe(operation === "MCP acknowledgement" ? false : undefined);
+      expect(
+        (await database().query("select 1 from public.mcp_leases where sandbox_id=$1", [input.id])).rows.length,
+      ).toBe(operation === "MCP acknowledgement" ? 1 : 0);
+    }
+    expect(
+      (
+        await database().query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+          input.id,
+          commandId,
+        ])
+      ).rows,
+    ).toEqual([]);
+
+    await expect(dispatch(caller, input, { handoffGeneration, canDispatch: async () => true })).resolves.toMatchObject({
+      promptId,
+      requestId: input.request_id,
+    });
+    if (isMcp) expect(await configured(sql)).toBe(true);
+  },
+);
+
 test("Docker readiness rejects an ACK read against an older lifecycle generation", async () => {
   const f = await fixture();
   const session = await f.enrol();
@@ -125,11 +292,12 @@ test("Docker readiness rejects an ACK read against an older lifecycle generation
       [f.sandbox.id],
     )
   ).rows[0]!;
-  await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), true, row.older_generation));
+  await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), row.older_generation));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+  expect((await readinessJournal(f.sandbox.id)).length).toBe(1);
 });
 
-test("ACK is not readiness: current epoch health proof alone publishes ready without revoking itself", async () => {
+test("Docker health independently validates the reply from the enrolled epoch", async () => {
   const f = await fixture(),
     id = randomUUID();
   expect(await service.ready(f.actor, f.sandbox.id, id)).toEqual({ state: "pending" });
@@ -154,12 +322,15 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
       },
     });
     await denied(service.ready(f.actor, f.sandbox.id, requestId));
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
   }
   const healthId = randomUUID();
   await service.ready(f.actor, f.sandbox.id, healthId);
   await complete(session, { ready: true, generation: session.epoch });
   expect(await service.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "ready", epoch: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  expect(await readinessJournal(f.sandbox.id)).toEqual([
+    { from_status: "starting", to_status: "ready", actor: "runtime_enrolment", code: "runtime_enrolled" },
+  ]);
   // The concrete authority still accepts the same live epoch after publication.
   expect(await authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
     session.epoch,
@@ -188,15 +359,26 @@ test("normal launch preparation cannot be bypassed by private readiness or an un
   await service.ready(f.actor, f.sandbox.id, healthId);
   await complete(session, { ready: true, generation: session.epoch });
   await service.ready(f.actor, f.sandbox.id, healthId);
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  const controls = createDockerSandboxControls(sql, key);
+  const caller = {
+    userId: f.actor.userId,
+    orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
+    via: "service" as const,
+  };
+  expect(await controls.invoke(caller, "status", { id: f.sandbox.id })).toMatchObject({
+    result: { status: "starting" },
+  });
+  await expect(controls.invoke(caller, "exec", { id: f.sandbox.id, command: "pwd" })).rejects.toThrow(
+    "Docker sandbox must be running.",
+  );
   await denied(service.prompt(f.actor, f.sandbox.id, input));
-  // Even after trusted preparation publishes ready, the reserved first prompt cannot be replaced.
-  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
-  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
-  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  await denied(service.prompt(f.actor, f.sandbox.id, input, String(BigInt(session.epoch) + 1n)));
+  await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }, session.epoch));
+  expect(await service.prompt(f.actor, f.sandbox.id, input, session.epoch)).toEqual({ state: "pending" });
 });
 
-test("a health reply from before stop or an epoch replacement cannot publish readiness", async () => {
+test("health replies from before stop or an epoch replacement are refused", async () => {
   for (const change of ["stop", "epoch"] as const) {
     const f = await fixture(),
       session = await f.enrol(),
@@ -213,7 +395,7 @@ test("a health reply from before stop or an epoch replacement cannot publish rea
       await authority.enrol(next.enrolmentToken);
     }
     await denied(service.ready(f.actor, f.sandbox.id, requestId));
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe(change === "stop" ? "stopping" : "starting");
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe(change === "stop" ? "stopping" : "ready");
   }
 });
 
@@ -237,8 +419,24 @@ test("one durable conversation survives lost responses and admits only exact ret
   };
   await denied(createDockerRuntimeLifecycle(lostSql, key, { enabled: true }).prompt(f.actor, f.sandbox.id, input));
   expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
+  await db.exec(
+    "alter table sandbox_transitions add constraint test_reject_acceptance check (code <> 'docker_prompt_accepted') not valid",
+  );
+  try {
+    await expect(complete(session, receipt)).rejects.toThrow();
+    expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  } finally {
+    await db.exec("alter table sandbox_transitions drop constraint test_reject_acceptance");
+  }
   const command = await complete(session, { ...receipt, privateField: "never expose reply extras" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+  expect(
+    (await db.query("select code from sandbox_transitions where sandbox_id=$1 and to_status='running'", [f.sandbox.id]))
+      .rows,
+  ).toEqual([{ code: "docker_prompt_accepted" }]);
   expect(command).toEqual({
     version: 1,
     requestId: `docker_prompt_${input.requestId}`,
@@ -259,7 +457,6 @@ test("one durable conversation survives lost responses and admits only exact ret
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, text: "Different text" }));
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
   const projection = await db.query<{
     task_prompt_id: string;
     conversation_ids: string[];
@@ -345,6 +542,48 @@ test("one durable conversation survives lost responses and admits only exact ret
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
 });
 
+test("a Docker receipt arriving after its terminal event does not reopen the turn", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const input = { requestId: randomUUID(), text: "Finish before returning the receipt" };
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
+  const response = await createRuntimeEvents(authority, key).route(
+    new Request("https://armada.example/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+      body: JSON.stringify({
+        sandboxId: f.sandbox.id,
+        generation: session.epoch,
+        events: [
+          {
+            sequence: 1,
+            event: {
+              id: "final",
+              at: 1,
+              kind: "prompt",
+              promptId: receipt.promptId,
+              text: input.text,
+              status: "finished",
+            },
+          },
+        ],
+      }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  await complete(session, receipt);
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toMatchObject({ state: "admitted", receipt });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(
+    (
+      await database().query("select id from sandbox_transitions where sandbox_id=$1 and to_status='running'", [
+        f.sandbox.id,
+      ])
+    ).rows,
+  ).toEqual([]);
+});
+
 test("a reported outcome clears with its turn at the next prompt and keeps the report history", async () => {
   const db = database();
   const f = await fixture(),
@@ -390,6 +629,7 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   await complete(session, receipt);
   await service.prompt(f.actor, f.sandbox.id, input);
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
   for (const bad of [
     { ...receipt, conversationId: randomUUID() },
     { ...receipt, conversationId: "not-a-uuid" },
@@ -400,6 +640,7 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
     await service.prompt(f.actor, f.sandbox.id, followup);
     await complete(session, bad);
     await denied(service.prompt(f.actor, f.sandbox.id, followup));
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   }
   expect(
     (
@@ -610,4 +851,123 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
     )
   ).rows[0];
   expect(admitted?.pricing_context.credentialId).toBe(selected);
+});
+
+test("a queued Docker send resumes the exact host job and fences health enqueue and send", async () => {
+  const f = await fixture();
+  await ready(f);
+  const stopId = randomUUID();
+  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
+  await sql.query("update public.sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
+  await sql.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, DOCKER_HOST_PROTOCOL]);
+  const input = { id: f.sandbox.id, request_id: randomUUID(), prompt: "Wake and continue" };
+  const {
+    rows: [stopped],
+  } = await sql.query<{ generation: string }>(
+    "select lifecycle_generation::text as generation from public.sandboxes where id=$1",
+    [input.id],
+  );
+  const store = createJobsStore(sql, key);
+  const payload = { requestId: input.request_id };
+  await store.enqueue("turn_dispatch", input.id, Number(stopped!.generation), input.request_id, payload, {
+    orgId: f.actor.orgId,
+    maxAttempts: 3,
+  });
+  const owner = randomUUID();
+  const {
+    rows: [row],
+  } = await sql.query<Job>(
+    `select id,kind,sandbox_id,generation::text,lease_epoch::text,attempts,max_attempts,outcome
+      from public.claim_job('turn_dispatch',$1,30,32)`,
+    [owner],
+  );
+  if (!row) throw new Error("Missing turn job.");
+  const job = { ...row, payload };
+  const caller = {
+    userId: f.actor.userId,
+    via: "service" as const,
+    orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
+  };
+  let now = 0;
+  let hostAccepted = false;
+  let session: Awaited<ReturnType<Fixture["enrol"]>> | undefined;
+  const promptId = randomUUID();
+  const clock = {
+    now: () => now,
+    async wait(ms: number) {
+      now += ms;
+      if (!hostAccepted) {
+        await hosts.claimResume(f.hostToken, f.installationId, input.request_id, true);
+        hostAccepted = true;
+      } else if (!session) {
+        const resume = await hosts.poll(f.hostToken, f.installationId);
+        if (resume?.operation !== "resume" || resume.requestId !== input.request_id)
+          throw new Error("Missing exact resume job.");
+        session = await authority.enrol(resume.bootstrap.enrolmentToken);
+        await hosts.complete(f.hostToken, f.installationId, { requestId: resume.requestId, outcome: "completed" });
+      } else {
+        const command = (await commands.next(session.runtimeToken, session.epoch)).command;
+        if (!command) throw new Error("Missing wake health or prompt command.");
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: {
+            version: 1,
+            requestId: command.requestId,
+            result:
+              command.op === "health"
+                ? { ready: true, generation: session.epoch }
+                : { promptId, conversationId: randomUUID(), status: "running" },
+          },
+        });
+      }
+    },
+  };
+  const controls = createDockerSandboxControls(sql, key, {
+    clock,
+    resume: bootstrap,
+    send: createDockerNormalSend(sql, key, { enabled: true, dispatchQueued: true, clock }),
+  });
+  const healthId = `docker_ready_${input.request_id}`;
+  const wakeHealth = (tx: Sql) =>
+    tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [input.id, healthId]);
+  let loseAt: "health enqueue" | "dispatch" | undefined = "health enqueue";
+  const claim = {
+    handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+      store.handoffGeneration(job, owner, handoff),
+    async canDispatch(tx?: Sql) {
+      if (tx && session) {
+        if (loseAt === "health enqueue" && (await wakeHealth(tx)).rows.length) return false;
+        if (loseAt === "dispatch") {
+          const { rows } = await tx.query("select id from public.sandboxes where id=$1 and status='ready'", [input.id]);
+          if (rows.length) return false;
+        }
+      }
+      return (await store.inspect(job, owner, tx)) === "dispatch";
+    },
+  };
+  await expect(controls.invoke(caller, "send", input, claim)).rejects.toThrow(
+    "Docker sandbox operation is unavailable",
+  );
+  expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
+  expect((await wakeHealth(sql)).rows).toHaveLength(0);
+  loseAt = "dispatch";
+  await expect(controls.invoke(caller, "send", input, claim)).rejects.toThrow(
+    "Docker sandbox operation is unavailable",
+  );
+  expect((await reservations.get(f.actor, input.id)).status).toBe("ready");
+  expect((await wakeHealth(sql)).rows).toHaveLength(1);
+  loseAt = undefined;
+  await expect(controls.invoke(caller, "send", input, claim)).resolves.toMatchObject({
+    handled: true,
+    result: { requestId: input.request_id, promptId },
+  });
+  const { rows } = await sql.query(
+    `select s.lifecycle_generation=j.generation and j.generation=$2::bigint+1 as advanced_once
+       from public.sandboxes s join public.jobs j on j.sandbox_id=s.id where j.id=$1`,
+    [job.id, stopped!.generation],
+  );
+  expect(rows).toEqual([{ advanced_once: true }]);
 });

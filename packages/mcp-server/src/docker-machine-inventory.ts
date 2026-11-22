@@ -1,7 +1,7 @@
 import type { ProviderInventoryMachine, SandboxStatus } from "@armada/core";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 
-interface DockerInventoryContainer extends ProviderInventoryMachine {
+export interface DockerInventoryContainer extends ProviderInventoryMachine {
   sandboxId: string;
   generation: string;
   containerName: string;
@@ -12,6 +12,10 @@ interface DockerInventoryOwner {
   generation: string;
   provider_sandbox_id: string;
   status: SandboxStatus;
+}
+
+export function dockerInventoryDeploymentId(serverUrl: string, hostId: string, installationId: string) {
+  return `${new URL(serverUrl).origin}/${hostId}/${installationId}`;
 }
 
 export function dockerMachineInventory(
@@ -26,6 +30,7 @@ export function dockerMachineInventory(
 
   return {
     provider: "docker",
+    emitOverdueMachineIds: true,
     sourceId: hostId,
     deploymentId,
     inventory: {

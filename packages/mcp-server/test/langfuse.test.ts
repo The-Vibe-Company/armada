@@ -1,12 +1,29 @@
 import { expect, spyOn, test } from "bun:test";
-import type { AgentEvent, Provider } from "@armada/core";
+import type { AgentEvent, Provider, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { normalizeEvent } from "@armada/provider-boat";
+import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
+async function runExport(
+  db: Sql,
+  exporter: ReturnType<typeof createLangfuse>,
+  signal = new AbortController().signal,
+  store: JobStore = createJobsStore(db),
+) {
+  const errors: string[] = [];
+  const runner = createJobsRunner(store, { langfuse_export: exporter.exportJob }, (line) => errors.push(line));
+  const claimed = await runner.reconcileOne(signal);
+  await runner.drain();
+  runner.stopAdmission();
+  expect(errors).toEqual([]);
+  return claimed;
+}
+
 const noNativeProvider = async () => {
   throw Error("unexpected native provider read");
 };
@@ -292,7 +309,7 @@ test("native settlement exports once and a new server reads only its organizatio
     payload = String(init?.body);
     return new Response(null, { status: responseStatus });
   }) as typeof fetch);
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   expect(payload).toContain("customer_reply");
   expect(payload).toContain("customer_prompt");
   expect(payload).toContain("timing_incomplete");
@@ -301,7 +318,7 @@ test("native settlement exports once and a new server reads only its organizatio
   expect(generation.endTimeUnixNano).toBe(generation.startTimeUnixNano);
   expect(BigInt(generation.endTimeUnixNano)).toBeGreaterThan(1200000000n);
   await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
-  expect(await exporter.reconcileOne(signal)).toBe(false);
+  expect(await runExport(db, exporter, signal)).toBe(false);
 
   const restarted = createLangfuse(db, key, noNativeProvider);
   const read = async (orgId: string) => {
@@ -334,12 +351,13 @@ test("native settlement exports once and a new server reads only its organizatio
   payload = "";
   historyAvailable = false;
   await db.query("select public.enqueue_webhook_turn($1,'unavailable','finished')", [id]);
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   expect(payload).toBe("");
   await db.query(
-    "update langfuse_turn_exports set observed_at=observed_at-interval '2 minutes',lease_until=null where prompt_id='unavailable'",
+    "update langfuse_turn_exports set observed_at=observed_at-interval '2 minutes' where prompt_id='unavailable'",
   );
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  await db.query("update jobs set run_after=now()");
+  expect(await runExport(db, exporter, signal)).toBe(true);
   const marked = JSON.parse(payload).resourceSpans[0].scopeSpans[0].spans;
   expect(marked).toHaveLength(1);
   expect(marked[0].status).toEqual({ code: 1 });
@@ -351,11 +369,11 @@ test("native settlement exports once and a new server reads only its organizatio
   historyAvailable = true;
   responseStatus = 503;
   await db.query("select public.enqueue_webhook_turn($1,'rejected','finished')", [id]);
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   payload = "";
   await db.query("select public.enqueue_webhook_turn($1,'disabled','finished')", [id]);
   await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   expect(payload).toBe("");
   expect(await read(people.org)).toMatchObject({
     enabled: false,
@@ -366,7 +384,7 @@ test("native settlement exports once and a new server reads only its organizatio
   await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
   await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
   await db.query("select public.enqueue_webhook_turn($1,'settled_while_disabled','finished')", [id]);
-  expect(await exporter.reconcileOne(signal)).toBe(false);
+  expect(await runExport(db, exporter, signal)).toBe(false);
   expect(await read(people.otherOrg)).toMatchObject({
     enabled: false,
     counters: { exported: 0, failed: 0, dropped: 0 },
@@ -403,6 +421,154 @@ async function settledBoatTurn(prompt: string, mode: "metadata" | "full" = "full
   return { db, counters, org: people.org };
 }
 
+test("cutover transfers pending receipts and fences a legacy worker that already claimed one", async () => {
+  const { db } = await settledBoatTurn("turn");
+  const migration = await Bun.file(
+    new URL("../../../supabase/migrations/20261119175832_langfuse_export_jobs.sql", import.meta.url),
+  ).text();
+  const lease = crypto.randomUUID();
+  const leaseUntil = new Date("2050-01-01T00:00:00.000Z");
+  await db.transaction(async (tx) => {
+    await tx.exec("drop trigger queue_langfuse_export on langfuse_turn_exports; drop function queue_langfuse_export()");
+    await tx.exec("delete from jobs");
+    await tx.query(`update langfuse_turn_exports set attempts=5,lease_id=$1,lease_until=$2 where prompt_id='turn'`, [
+      lease,
+      leaseUntil,
+    ]);
+    await tx.exec(`
+      select public.enqueue_webhook_turn(sandbox_id,'unclaimed','finished') from langfuse_turn_exports
+      where prompt_id='turn';
+      select public.enqueue_webhook_turn(sandbox_id,'already_sent','finished') from langfuse_turn_exports
+      where prompt_id='turn';
+      update langfuse_turn_exports set completed_at=now() where prompt_id='already_sent';
+    `);
+    await tx.exec(migration);
+  });
+  expect(
+    (
+      await db.query(
+        "select outcome->>'promptId' as prompt,attempts,run_after=$1 as deferred from jobs order by prompt",
+        [leaseUntil],
+      )
+    ).rows,
+  ).toEqual([
+    { prompt: "turn", attempts: 4, deferred: true },
+    { prompt: "unclaimed", attempts: 0, deferred: false },
+  ]);
+  expect(
+    (
+      await db.query(
+        "select prompt_id from langfuse_turn_exports where completed_at is null and (lease_until is null or lease_until<now())",
+      )
+    ).rows,
+  ).toEqual([]);
+  const legacyCompletion = await db.query(
+    "update langfuse_turn_exports set completed_at=now() where prompt_id='turn' and lease_id=$1 returning org_id",
+    [lease],
+  );
+  expect(legacyCompletion.rows).toEqual([]);
+});
+
+test("native history fences every page and exports the receipt after an activity change", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  let reads = 0;
+  const provider = {
+    id: "boat",
+    events: async () => {
+      if (++reads === 1) return { events: [], olderCursor: "previous", cursor: "native", hasMore: true };
+      return { events, cursor: "native", hasMore: false };
+    },
+  } satisfies Pick<Provider, "id" | "events">;
+  const generations: string[] = [];
+  let sends = 0;
+  const clock = Date.UTC(2050, 0, 1);
+  const exporter = createLangfuse(
+    db,
+    key,
+    async (_id, generation) => {
+      generations.push(generation);
+      return { provider, providerSandboxId: "boat_export" };
+    },
+    (async (_input: Parameters<typeof fetch>[0]) => {
+      sends++;
+      return new Response();
+    }) as typeof fetch,
+    undefined,
+    () => clock,
+  );
+  const store = createJobsStore(db);
+  expect(
+    await runExport(db, exporter, undefined, {
+      ...store,
+      async inspect(job, owner) {
+        const state = await store.inspect(job, owner);
+        if (reads === 1)
+          await db.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'",
+          );
+        return state;
+      },
+    }),
+  ).toBe(true);
+  expect(reads).toBe(1);
+  expect(sends).toBe(0);
+  expect((await db.query<{ run_after: Date }>("select run_after from jobs")).rows[0]?.run_after.getTime()).toBe(
+    clock + 2000,
+  );
+  await db.query("update jobs set run_after=now()");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(generations).toHaveLength(2);
+  expect(BigInt(generations[1]!)).toBe(BigInt(generations[0]!) + 1n);
+  expect(reads).toBe(2);
+  expect(sends).toBe(1);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+});
+
+test("an interrupted completion replays the same OTLP identities and accounts once", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  const provider = {
+    id: "boat",
+    events: async () => ({ events, cursor: "native", hasMore: false }),
+  } satisfies Pick<Provider, "id" | "events">;
+  const payloads: string[] = [];
+  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
+    _url,
+    init,
+  ) => {
+    payloads.push(String(init?.body));
+    return new Response();
+  }) as typeof fetch);
+  const store = createJobsStore(db);
+  const errors: string[] = [];
+  const runner = createJobsRunner(
+    {
+      ...store,
+      complete(job, owner, result) {
+        return store.complete(job, owner, {
+          ...result,
+          async commit(tx) {
+            await result.commit?.(tx);
+            throw Error("interrupted before commit");
+          },
+        });
+      },
+    },
+    { langfuse_export: exporter.exportJob },
+    (line) => errors.push(line),
+  );
+  expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+  await runner.drain();
+  runner.stopAdmission();
+  expect(errors).toHaveLength(1);
+  expect(payloads).toHaveLength(1);
+  expect(await counters()).toEqual([]);
+  await db.query("update jobs set lease_until=now()");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(payloads).toHaveLength(2);
+  expect(payloads[1]).toEqual(payloads[0]);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+});
+
 test("full-mode native Boat content is credential-redacted before it is sent", async () => {
   const { db } = await settledBoatTurn("turn");
   // Scanner-positive token bytes exist only at runtime, never as a fixture literal.
@@ -438,7 +604,7 @@ test("full-mode native Boat content is credential-redacted before it is sent", a
     payload = String(init?.body);
     return new Response(null, { status: 200 });
   }) as typeof fetch);
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(payload).toContain("printed ***");
   expect(payload).toContain("denied ***");
   expect(payload).toContain("keyed");
@@ -514,7 +680,7 @@ for (const mode of ["metadata", "full"] as const)
         payload = String(init?.body);
         return new Response(null, { status: 200 });
       }) as typeof fetch);
-      expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+      expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
       expect(payload).toContain("application_secret_bindings");
       expect(payload).toContain('"name":"tool"');
       expect(payload).not.toContain("exec");
@@ -551,7 +717,7 @@ for (const [settled, delivered, content] of [
       payload = String(init?.body);
       return new Response(null, { status: 200 });
     }) as typeof fetch);
-    expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+    expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
     expect(payload).toContain("Armada turn");
     expect(payload.includes(canary)).toBe(content);
     expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
@@ -714,20 +880,21 @@ test("an in-flight native history read that outlives its deadline does not hold 
     () => deadline.signal,
   );
   // A fresh receipt is retried later instead of exported without history.
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(resolutions).toBe(1);
   expect(payloads).toHaveLength(0);
 
   // The stalled read is still outstanding: the next claim does not start another one.
   deadline = new AbortController();
-  await db.query("update langfuse_turn_exports set lease_until=null");
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  await db.query("update jobs set run_after=now()");
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(resolutions).toBe(1);
   expect(payloads).toHaveLength(0);
 
   // Once the receipt has aged, the saved receipt is exported and counted.
-  await db.query("update langfuse_turn_exports set lease_until=null,observed_at=observed_at-interval '2 minutes'");
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  await db.query("update jobs set run_after=now()");
+  await db.query("update langfuse_turn_exports set observed_at=observed_at-interval '2 minutes'");
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(resolutions).toBe(1);
   expect(payloads).toHaveLength(1);
   expect(payloads[0]).toContain("history_unavailable");
@@ -758,7 +925,7 @@ test("a timed-out native history exports the receipt, and an abandoned job settl
     () => AbortSignal.abort(),
   );
   // The worker tick itself is still live: only the history deadline expired.
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(payloads).toHaveLength(1);
   expect(payloads[0]).toContain("history_unavailable");
   expect(unbounded).toBe(false);
@@ -767,11 +934,11 @@ test("a timed-out native history exports the receipt, and an abandoned job settl
   // A job whose previous claims were all abandoned by tick timeouts or shutdown
   // reaches a durable outcome instead of being reclaimed forever.
   await db.query("select public.enqueue_webhook_turn(sandbox_id,'abandoned','finished') from langfuse_turn_exports");
-  await db.query("update langfuse_turn_exports set attempts=5 where prompt_id='abandoned'");
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  await db.query("update jobs set attempts=5 where outcome->>'promptId'='abandoned'");
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(payloads).toHaveLength(1);
   expect(await counters()).toEqual([{ exported: "1", failed: "1" }]);
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(false);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(false);
 });
 
 test("native Modal export waits for the terminal journal event after a live receipt", async () => {
@@ -823,20 +990,20 @@ test("native Modal export waits for the terminal journal event after a live rece
     return new Response(null, { status: 200 });
   }) as typeof fetch);
 
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   expect(payloads).toEqual([]);
-  // Pending keeps the job open behind a short lease; assert the row, not elapsed time.
+  // Pending releases the shared claim and schedules another attempt.
   expect(
     (
-      await db.query<{ open: boolean; leased: boolean }>(
-        "select completed_at is null as open,lease_id is null and lease_until is not null as leased from langfuse_turn_exports where sandbox_id=$1",
+      await db.query<{ state: string; deferred: boolean }>(
+        "select state,run_after > now() as deferred from jobs where sandbox_id=$1",
         [id],
       )
     ).rows,
-  ).toEqual([{ open: true, leased: true }]);
+  ).toEqual([{ state: "queued", deferred: true }]);
   history = events;
-  await db.query("update langfuse_turn_exports set lease_until=now()-interval '1 second' where sandbox_id=$1", [id]);
-  expect(await exporter.reconcileOne(signal)).toBe(true);
+  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
+  expect(await runExport(db, exporter, signal)).toBe(true);
   expect(payloads).toHaveLength(1);
   expect(payloads[0]).toContain("customer_reply");
   expect(payloads[0]).toContain("langfuse.observation.cost_details");
@@ -907,7 +1074,7 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
     requests.push(url instanceof Request ? new Request(url, init) : new Request(String(url), init));
     return new Response(null, { status: 200 });
   }) as typeof fetch);
-  expect(await exporter.reconcileOne(new AbortController().signal)).toBe(true);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(requests[0]?.url).toBe("https://langfuse.test/api/public/otel/v1/traces");
   expect(requests[0]?.headers.get("x-langfuse-ingestion-version")).toBe("4");
   const body = (await requests[0]!.json()) as {

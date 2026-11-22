@@ -1,45 +1,47 @@
+import { sandboxOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
 import { optional, UUID } from "./control-input.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
-import { sandboxListInput } from "./sandbox-tool-schemas.ts";
 import { callSharedTool } from "./tool-api.ts";
 import type { ToolContext } from "./tools.ts";
-
-/** REST routes dispatched through the validated MCP contracts. */
-export const CONTROL_TOOL_ROUTES: Readonly<Record<string, string>> = {
-  "sandbox/list": "list",
-  "sandbox/detail": "status",
-  "sandbox/status": "status",
-  "sandbox/send": "send",
-  "sandbox/report": "report",
-  "sandbox/stop": "stop",
-  "sandbox/wait": "wait",
-  "sandbox/exec": "exec",
-  "sandbox/steer": "steer",
-  "sandbox/interrupt": "interrupt",
-};
 
 export const sandboxToolRoutes = defineRoutes(
   "sandbox tools",
   Object.fromEntries(
-    Object.entries(CONTROL_TOOL_ROUTES).map(([route, toolName]) => [
-      route,
-      async (context: ControlRouteContext) => callSharedTool(await sandboxToolContext(context), toolName, context.body),
-    ]),
+    Object.values(sandboxOperations).map((operation) => {
+      const route = operation.route.path.slice("/api/v1/".length);
+      return [
+        route,
+        {
+          methods: [operation.route.method],
+          handler: async (context: ControlRouteContext) => {
+            const parsed = operation.input.body.safeParse(context.body);
+            if (operation.toolName === "stop" && parsed.success && context.request)
+              context.options.configureStopRequest?.(context.request);
+            return callSharedTool(
+              await sandboxToolContext(context, parsed.success),
+              operation.toolName,
+              context.body,
+              parsed,
+            );
+          },
+        },
+      ];
+    }),
   ),
 );
 
-export async function sandboxToolContext({ route, caller, body, options }: ControlRouteContext) {
+export async function sandboxToolContext(
+  { route, caller, body, options, request }: ControlRouteContext,
+  validInput = false,
+) {
   if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
   const ref = optional(body, "org");
   const listRef =
-    route === "sandbox/list" &&
-    options.scopedSandboxData &&
-    ref !== undefined &&
-    sandboxListInput.safeParse(body).success
+    route === "sandbox/list" && options.scopedSandboxData && ref !== undefined && validInput
       ? scopedOrg(caller, ref)
       : undefined;
   const listOrgId = listRef && UUID.test(listRef.trim()) ? listRef.trim().toLowerCase() : undefined;
@@ -49,17 +51,21 @@ export async function sandboxToolContext({ route, caller, body, options }: Contr
         ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
         : caller
       : await selectedCaller(options, caller, ref);
+  const signals = [request?.signal, options.stopAdmissionShutdown].filter((signal) => signal !== undefined);
   const context: ToolContext = {
+    ...(signals.length ? { stopSignal: AbortSignal.any(signals) } : {}),
     caller: scopedCaller,
     ...(options.sandboxBillingAccount
       ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
       : {}),
     ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
     ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+    ...(options.runtimeStopCheckpoint ? { runtimeStopCheckpoint: options.runtimeStopCheckpoint } : {}),
     ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
     data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
     measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
+    ...(options.modalJobReader ? { modalJobReader: (target) => options.modalJobReader!(target, scopedCaller) } : {}),
     storedProviders: options.storedProviderFor
       ? {
           modal: (target) =>

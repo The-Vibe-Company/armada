@@ -1,3 +1,4 @@
+import { ORG_PROVIDER_CREDENTIAL_MAX_LENGTH, orgProvider } from "@armada/core/contract";
 import {
   ProviderError,
   parseCredentialValue,
@@ -69,19 +70,25 @@ async function authorizedOrg(store: VaultStore, caller: Caller, ref: string | un
   return org;
 }
 
+function parseOrgProvider(value: string) {
+  const parsed = orgProvider.safeParse(value);
+  if (!parsed.success) throw new VaultError("invalid", "Provider is boat or modal.");
+  return parsed.data;
+}
+
 export async function connectOrgProvider(
   store: VaultStore,
   encryptionKey: string | undefined,
   caller: Caller,
   ref: string | undefined,
-  provider: string,
+  requestedProvider: string,
   raw: string,
   validate: ProviderValidator,
 ) {
   const org = await authorizedOrg(store, caller, ref);
   if (org.role !== "admin") throw new VaultError("forbidden", "Only an org admin can do that.");
-  if (provider !== "boat" && provider !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
-  if (raw.length > 16_384) throw new VaultError("invalid", "The credential is too large.");
+  const provider = parseOrgProvider(requestedProvider);
+  if (raw.length > ORG_PROVIDER_CREDENTIAL_MAX_LENGTH) throw new VaultError("invalid", "The credential is too large.");
   const value = parseCredentialValue(provider, raw);
   try {
     await validate(provider, value);
@@ -106,11 +113,11 @@ export async function disconnectOrgProvider(
   store: VaultStore,
   caller: Caller,
   ref: string | undefined,
-  provider: string,
+  requestedProvider: string,
 ) {
   const org = await authorizedOrg(store, caller, ref);
   if (org.role !== "admin") throw new VaultError("forbidden", "Only an org admin can do that.");
-  if (provider !== "boat" && provider !== "modal") throw new VaultError("invalid", "Provider is boat or modal.");
+  const provider = parseOrgProvider(requestedProvider);
   try {
     await removeCredential(store, caller.userId, { scope: "org", org: org.id, kind: provider });
   } catch (error) {

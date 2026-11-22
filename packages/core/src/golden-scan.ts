@@ -2,6 +2,7 @@ import { GoldenError } from "./golden-config.ts";
 import type { Provider } from "./provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 import { SKILLPACK_TOKEN_PATTERN } from "./skillpack-token.ts";
+import { ARMADA_API_KEY_PATTERN } from "./token-redaction.ts";
 
 /**
  * GitHub's real token shapes: a one- or two-letter type prefix, an underscore, then a long run of
@@ -56,7 +57,7 @@ export function goldenScanScript(extraRoots: readonly string[] = [], repositoryD
     '  name=$(cat "$comm" 2>/dev/null) || { [ ! -e "$comm" ] && continue; exit 95; }',
     '  case "$name" in armada-helper|armada-broker|armada-github-b*) exit 97 ;; esac',
     "done",
-    `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}'`,
+    `pattern='${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|${ARMADA_API_KEY_PATTERN}|armada_gh_[a-f0-9]{64}'`,
     `roots='${roots}'`,
     "scan_repository() {",
     "  repository=0",
@@ -254,7 +255,9 @@ function reportScanMatches(stdout: string, buildId?: string): void {
 }
 
 function validateRepositoryDirs(directories: readonly string[]): void {
-  const token = new RegExp(`${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|armada_gh_[a-f0-9]{64}`);
+  const token = new RegExp(
+    `${GITHUB_TOKEN_PATTERN}|${SKILLPACK_TOKEN_PATTERN}|${ARMADA_API_KEY_PATTERN}|armada_gh_[a-f0-9]{64}`,
+  );
   if (
     directories.length > 16 ||
     directories.some((directory) => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$/.test(directory) || token.test(directory))

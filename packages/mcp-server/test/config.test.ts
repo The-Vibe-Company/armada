@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { configFromEnv, dashboardOrigin } from "../src/config.ts";
+import { readStartupConfiguration } from "../src/startup-configuration.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const ENV = {
@@ -9,6 +10,8 @@ const ENV = {
   ARMADA_AUTH_SECRET: "a-test-auth-secret-of-enough-length",
   ARMADA_PUBLIC_URL: "https://armada.example.com",
   ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+  ARMADA_MODAL_DIALOUT: "1",
+  ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
 };
 
 describe("config", () => {
@@ -19,26 +22,35 @@ describe("config", () => {
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
       expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
   });
-  test("Modal default is strict, native unless explicitly selected, and requires enrolled prerequisites", () => {
-    expect(configFromEnv(ENV).modalAgentPath).toBe("native");
-    expect(
-      configFromEnv({ ...ENV, ARMADA_MODAL_DIALOUT: "1", ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" })
-        .modalAgentPath,
-    ).toBe("native");
+  test("Modal defaults to runtime when its prerequisites are configured", () => {
+    expect(configFromEnv(ENV).modalAgentPath).toBe("runtime");
+  });
+  test("Modal accepts an explicit native rollback without runtime prerequisites", () => {
     expect(
       configFromEnv({
         ...ENV,
-        ARMADA_MODAL_AGENT_PATH: "runtime",
-        ARMADA_MODAL_DIALOUT: "1",
-        ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
+        ARMADA_MODAL_AGENT_PATH: "native",
+        ARMADA_MODAL_DIALOUT: undefined,
+        ARMADA_MODAL_RUNTIME_MANIFEST: undefined,
       }).modalAgentPath,
-    ).toBe("runtime");
+    ).toBe("native");
+  });
+  test("Modal rejects invalid selector values", () => {
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
       expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: mode })).toThrow("ARMADA_MODAL_AGENT_PATH");
-    for (const setup of [{}, { ARMADA_MODAL_DIALOUT: "1" }, { ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json" }])
-      expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: "runtime", ...setup })).toThrow(
-        "requires ARMADA_MODAL_DIALOUT",
-      );
+  });
+  test("Modal runtime startup requires dial-out and a manifest", () => {
+    for (const path of [undefined, "runtime"]) {
+      for (const missing of [
+        { ARMADA_MODAL_DIALOUT: undefined },
+        { ARMADA_MODAL_RUNTIME_MANIFEST: undefined },
+        { ARMADA_MODAL_RUNTIME_MANIFEST: " " },
+      ]) {
+        expect(() => configFromEnv({ ...ENV, ARMADA_MODAL_AGENT_PATH: path, ...missing })).toThrow(
+          /ARMADA_MODAL_AGENT_PATH.*ARMADA_MODAL_DIALOUT=1.*ARMADA_MODAL_RUNTIME_MANIFEST/,
+        );
+      }
+    }
   });
   test("database pool budget defaults to three main sessions and accepts only safe integers >= 2", () => {
     expect(configFromEnv(ENV).databasePoolMax).toBe(3);
@@ -138,4 +150,82 @@ describe("config", () => {
     expect(() => configFromEnv({ ...ENV, ARMADA_PUBLIC_URL: "http://armada.example.com/x" })).toThrow(/origin/);
     expect(() => configFromEnv({ ...ENV, PORT: "http" })).toThrow(/PORT/);
   });
+});
+
+test.each([
+  ["SUPABASE_URL", "https://example.com/private-path"],
+  ["ARMADA_DATABASE_URL", "https://example.com"],
+])("rejects an invalid startup URL for %s without including its value", (name, value) => {
+  try {
+    configFromEnv({ ...ENV, [name]: value });
+  } catch (error) {
+    expect(String(error)).toContain(name);
+    expect(String(error)).not.toContain(value);
+    return;
+  }
+  throw new Error(`Expected startup to reject ${name}`);
+});
+
+test.each([
+  ["ARMADA_BOAT_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "runtime" }],
+  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_MODAL_DIALOUT: "1" }],
+  ["ARMADA_DOCKER_RUNTIME_MANIFEST", { ARMADA_DOCKER_HOSTS: "1", ARMADA_DOCKER_PLACEMENT: "1" }],
+] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_MODAL_DIALOUT: undefined,
+      ...settings,
+      [name]: "/nonexistent/manifest.json",
+    }),
+  ).rejects.toThrow(name);
+});
+
+test("startup checks PostgreSQL client URL syntax without connecting", async () => {
+  const databaseUrl = "postgres://user:%zz@example.com/db";
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_DIALOUT: undefined,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_DATABASE_URL: databaseUrl,
+    }),
+  ).rejects.toThrow("ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.");
+});
+
+test("native startup accepts a sealed runtime artifact directory when dial-out is disabled", async () => {
+  const { config, sql } = await readStartupConfiguration({
+    ...ENV,
+    ARMADA_BOAT_AGENT_PATH: "native",
+    ARMADA_MODAL_AGENT_PATH: "native",
+    ARMADA_MODAL_DIALOUT: undefined,
+    get ARMADA_RUNTIME_ARTIFACT_DIR(): never {
+      throw new Error("Cannot validate sealed Railway variable ARMADA_RUNTIME_ARTIFACT_DIR.");
+    },
+  });
+  try {
+    expect(config.boatAgentPath).toBe("native");
+  } finally {
+    await sql.close();
+  }
+});
+
+test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_DIALOUT: undefined,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_INVITATION_MAIL: "supabase",
+    }),
+  ).rejects.toThrow("ARMADA_DASHBOARD_URL");
+});
+
+test("validates the configured login providers before constructing the server", () => {
+  expect(configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: " github, , google " }).loginProviders).toEqual([
+    "github",
+    "google",
+  ]);
+  expect(() => configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: "github,unsupported" })).toThrow("ARMADA_AUTH_PROVIDERS");
 });

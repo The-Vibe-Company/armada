@@ -1,4 +1,4 @@
-import { type Golden, isSandboxProvider } from "@armada/core";
+import { isSandboxProvider } from "@armada/core";
 import { ControlError, createTemplateControl } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
@@ -6,7 +6,7 @@ import type { TemplateItem, TemplateLookups } from "@/lib/templates";
 import { type ConnectionList, listSelectedConnections } from "./connections";
 import { readSelectedDockerHosts } from "./docker-hosts";
 import { readSelectedDockerSnapshots } from "./docker-snapshots";
-import { listGoldens } from "./goldens";
+import { type GoldenRow, listGoldens } from "./goldens";
 import { selectedOrganization } from "./selected-org";
 import { listSelectedVault, type VaultList } from "./variables";
 import { requireViewer } from "./viewer";
@@ -54,7 +54,8 @@ export async function listSelectedTemplates(): Promise<TemplateList> {
     return { state: "ready", userId: viewer.id, items };
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
-    if (error.status === 404 && error.code === undefined) return { state: "unsupported", message: error.message };
+    if (error.status === 404 && (error.code === "unknown_route" || error.code === undefined))
+      return { state: "unsupported", message: error.message };
     return { state: "error", message: error.message };
   }
 }
@@ -79,7 +80,7 @@ export async function templateLookups(): Promise<TemplateLookups> {
 }
 
 export function lookupsFrom(
-  goldens: readonly Golden[],
+  goldens: readonly GoldenRow[],
   connections: ConnectionList,
   vault: VaultList,
 ): TemplateLookups {

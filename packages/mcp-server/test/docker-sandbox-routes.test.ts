@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
@@ -12,26 +12,14 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const key = Buffer.alloc(32, 17).toString("base64");
 const sql: Sql = {
   query: (q, p) => database().query(q, p),
   transaction: (work) => database().transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
 };
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 const manifest = {
   protocol: 1,
   platform: "linux",

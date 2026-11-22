@@ -17,7 +17,7 @@ import {
 } from "./golden-snapshot-retirement.ts";
 import { createSqlGoldenStore, type Sql } from "./golden-store.ts";
 import { type Provider, ProviderError } from "./provider.ts";
-import { isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, isSandboxProvider, PROVIDER_LIMITS } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 import {
   SNAPSHOT_BASELINE_VERSION,
@@ -136,10 +136,13 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
     },
     async verifyBaseline(provider, sandboxId) {
       const command = `export PATH=/usr/local/bin:/usr/bin:/bin; ${snapshotBaselineVerify}`;
+      const verifyAsImageUser =
+        isSandboxProvider(provider.id) &&
+        HOST_CAPABILITIES[provider.id].goldenBuilderBaseline === "preinstalled-as-user";
       const result = await provider.exec({
         sandboxId,
         timeoutSeconds: 30,
-        command: provider.id === "modal" ? `/usr/sbin/runuser -u user -- /bin/sh -c ${shellQuote(command)}` : command,
+        command: verifyAsImageUser ? `/usr/sbin/runuser -u user -- /bin/sh -c ${shellQuote(command)}` : command,
       });
       if (result.detached || result.exitCode !== 0 || result.timedOut || result.truncated) {
         const tool = result.detached ? undefined : snapshotBaselineFailure(result.stderr);
@@ -656,7 +659,7 @@ export async function assertGoldenBackendBinding(
     throw new GoldenError(
       "conflict",
       slot.job_id
-        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada golden build-status ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
+        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada snapshot show --build ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
         : "This golden has a build reservation with no durable job. Ask an administrator to reconcile the reservation before retrying; no new build was started.",
     );
 }

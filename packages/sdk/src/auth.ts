@@ -1,40 +1,34 @@
+import { organizationOperations } from "@armada/core/contract";
+import { publicAuthOperations } from "@armada/core/contract/public-auth";
 import type { Fetch } from "./index.ts";
 import { apiUrl, jsonPost, requestApi } from "./request.ts";
 
-/** Internal sign-in endpoints. The CLI owns the browser, callback and session storage. */
+/** Internal transport for CLI authentication and organization selection. */
 export function authClient(origin: string, fetch: Fetch) {
+  const { authDeviceStart, authDevicePoll } = publicAuthOperations;
+  const { listOrganizations } = organizationOperations;
+  function post(path: string, body: unknown, timeoutMs: number, signal?: AbortSignal, token?: string) {
+    return requestApi(apiUrl(origin, path), jsonPost(body), {
+      fetch,
+      timeoutMs,
+      signal,
+      combineSignal: true,
+      ...(token !== undefined ? { token } : {}),
+    });
+  }
+
   return {
-    methods() {
-      return fetch(new URL("/api/v1/auth/methods", origin), {
-        method: "GET",
-        signal: AbortSignal.timeout(10_000),
-      });
+    startDevice(hostname: string, timeoutMs: number) {
+      return post(authDeviceStart.route.path, { hostname }, timeoutMs);
     },
-    authorize(params: { provider: string; redirect_uri: string; code_challenge: string; state: string }) {
-      const url = new URL("/api/v1/auth/authorize", origin);
-      url.search = new URLSearchParams(params).toString();
-      return url.toString();
+    pollDevice(deviceCode: string, timeoutMs: number) {
+      return post(authDevicePoll.route.path, { device_code: deviceCode }, timeoutMs);
     },
-    exchange(body: { code: string; verifier: string }) {
-      return fetch(new URL("/api/v1/auth/exchange", origin), {
-        ...jsonPost(body),
-        headers: { "content-type": "application/json", accept: "application/json" },
-      });
-    },
-    email(operation: "exchange" | "email/start" | "email/verify", body: unknown, signal: AbortSignal) {
-      return fetch(new URL(`/api/v1/auth/${operation}`, origin), {
-        ...jsonPost(body),
-        signal,
-        redirect: "error",
-      });
+    listOrganizations(accessToken: string, timeoutMs: number) {
+      return post(listOrganizations.route.path, {}, timeoutMs, undefined, accessToken);
     },
     refresh(refreshToken: string, timeoutMs: number, signal?: AbortSignal) {
-      return requestApi(apiUrl(origin, "/api/v1/auth/refresh"), jsonPost({ refreshToken }), {
-        fetch,
-        timeoutMs,
-        signal,
-        combineSignal: true,
-      });
+      return post("/api/v1/auth/refresh", { refreshToken }, timeoutMs, signal);
     },
   };
 }

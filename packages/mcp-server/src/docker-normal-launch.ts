@@ -26,7 +26,7 @@ import {
   validateReadableVariables,
   validateSkillPins,
 } from "@armada/core";
-import { type LaunchInput, launch as launchOperation } from "@armada/core/contract";
+import { dockerHostLaunchFields, dockerSnapshotLaunchFields } from "@armada/core/contract";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -43,6 +43,7 @@ import {
   resolveLaunchVariables,
   validateLaunchSkillPins,
 } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
@@ -188,7 +189,12 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-type DockerAdmissionInput = Extract<LaunchInput, { provider: "docker"; requestId: string }>;
+const reservationId = z.string().regex(UUID);
+const dockerAdmissionInput = z.union([
+  dockerHostLaunchFields.extend({ requestId: reservationId }),
+  dockerSnapshotLaunchFields.extend({ requestId: reservationId }),
+]);
+type DockerAdmissionInput = z.infer<typeof dockerAdmissionInput>;
 
 function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string): Request {
   const ttlSeconds = body.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS;
@@ -272,16 +278,22 @@ function normalize(body: DockerAdmissionInput, org: string, hostId: string, imag
 /** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
 const repositoryAccessMessage = (message: string | null | undefined): message is string =>
   typeof message === "string" &&
-  (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada github connect, grant your account and the Armada GitHub App access, then launch again\.$/.test(
+  (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada account login github, grant your account and the Armada GitHub App access, then launch again\.$/.test(
     message,
   ) ||
-    /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada github connect or retry when GitHub is available\.$/.test(
+    /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada account login github or retry when GitHub is available\.$/.test(
       message,
     ));
+function storedRepositoryAccessMessage(reason: string | null) {
+  const message = reason?.replace("Run armada github connect", "Run armada account login github");
+  return repositoryAccessMessage(message) ? message : undefined;
+}
+
 const notReady = (row: Row) => {
-  if (row.status === "failed" && repositoryAccessMessage(row.status_reason))
-    return new LaunchError("no_credentials", row.status_reason);
-  return failure("sandbox_not_ready", dockerSandboxFailureReason(row.status_reason));
+  const message = row.status === "failed" ? storedRepositoryAccessMessage(row.status_reason) : undefined;
+  return message
+    ? new LaunchError("no_credentials", message)
+    : failure("sandbox_not_ready", dockerSandboxFailureReason(row.status_reason));
 };
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
@@ -404,11 +416,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       deletedAt: row.deleted_at === null ? null : iso(row.deleted_at),
       stopRequestedAt: row.stop_requested_at === null ? null : iso(row.stop_requested_at),
       statusReason:
-        row.status !== "failed"
-          ? null
-          : repositoryAccessMessage(row.status_reason)
-            ? row.status_reason
-            : dockerSandboxFailureReason(row.status_reason),
+        row.status === "failed"
+          ? (storedRepositoryAccessMessage(row.status_reason) ?? dockerSandboxFailureReason(row.status_reason))
+          : null,
       repositoryDir: null,
       model: row.model,
       reasoningEffort: row.reasoning_effort,
@@ -450,8 +460,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
     const validate = () => {
-      const parsed = launchOperation.input.body.safeParse(body);
-      if (!parsed.success || parsed.data.provider !== "docker" || !("requestId" in parsed.data))
+      const parsed = dockerAdmissionInput.safeParse(body);
+      if (!parsed.success)
         throw failure(
           "invalid_request",
           body && Object.hasOwn(body, "image")
@@ -729,7 +739,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         let receipt: Receipt;
         for (;;) {
           await live();
-          const ready = await runtime.ready(actor, request.requestId, manifest.healthId, false);
+          const ready = await runtime.ready(actor, request.requestId, manifest.healthId);
           if (ready.state === "ready") {
             receipt = { epoch: ready.epoch };
             break;
@@ -873,13 +883,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         reason = "mcp_preparation";
         if (options.mcp) await options.mcp.prepare(caller, request.requestId);
         else if (selections?.connections.length) throw failure("unavailable");
-        reason = "readiness_publication";
+        reason = "runtime_epoch_validation";
         await live();
-        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
+        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (_tx, scope) => {
           if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          await tx.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-            request.requestId,
-          ]);
         });
         reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
@@ -896,11 +903,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           for (;;) {
             await live();
             await admission?.beforeStart();
-            const result = await runtime.prompt(actor, request.requestId, {
-              requestId: manifest.promptId,
-              text: manifest.request.prompt,
-              ...(conversationId === undefined ? {} : { conversationId }),
-            });
+            const result = await runtime.prompt(
+              actor,
+              request.requestId,
+              {
+                requestId: manifest.promptId,
+                text: manifest.request.prompt,
+                ...(conversationId === undefined ? {} : { conversationId }),
+              },
+              receipt.epoch,
+            );
             if (result.state === "admitted") {
               if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
               receipt = {

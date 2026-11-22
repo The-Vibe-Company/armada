@@ -2,7 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 import type { PlanLimit } from "./plan-limit.ts";
-import type { ProviderTarget } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, isSandboxProvider, type ProviderTarget } from "./sandbox-provider.ts";
 
 /**
  * The contract between Armada and a placement: the machines agents run on.
@@ -36,8 +36,6 @@ export interface ProviderInventoryMachine {
 }
 
 export interface Provider {
-  /** Physical inventory belonging to this source's bound deployment and provider account. */
-  listInventory?(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine>;
   /** Private GitHub-only configuration, never exec argv or a public command receipt. */
   configureGitHub?(request: {
     sandboxId: string;
@@ -119,18 +117,6 @@ export interface Provider {
     acknowledgedSequence: number;
     nativeSessionId: string | null;
   }>;
-  /** Private no-text native handshake on an ALREADY active incarnation. This does
-   * not restore compute or prove a checkpoint. Unsupported harnesses must refuse. */
-  verifyOrchestratorSession?(request: {
-    sandboxId: string;
-    physicalGeneration: string;
-    conversationId: string;
-    nativeSessionId: string;
-    harness: Harness;
-    model: string;
-    reasoningEffort?: string;
-    cwd?: string;
-  }): Promise<{ physicalGeneration: string; conversationId: string; nativeSessionId: string; verified: true }>;
   /** Private active-incarnation interrupt; never activates stopped compute. */
   quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
   scrubOrchestratorEpoch?(request: {
@@ -184,7 +170,6 @@ export interface Provider {
   fork(request: ForkRequest): Promise<SandboxInfo>;
 
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
-  list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
   /** One runtime-owned API-key connection probe; never starts/resumes a machine or a conversation. */
   testModelConnection?(request: {
@@ -206,6 +191,7 @@ export interface Provider {
   steer(request: SteerRequest): Promise<SteerReceipt>;
   /** Stops the running turn of one conversation, or of every conversation when none is named. */
   interrupt(request: InterruptRequest): Promise<void>;
+  readonly supportsExecPhysicalGeneration?: true;
   exec(request: ExecRequest): Promise<ExecResult>;
   /** Optional one-shot native usage observation. Empty or an all-null diagnostic
    * row means unavailable, never zero tokens.
@@ -337,14 +323,6 @@ export interface ForkRequest {
   idempotencyKey?: string;
 }
 
-export interface ListRequest {
-  /** Only sandboxes carrying every one of these labels. */
-  labels?: Record<string, string>;
-  states?: readonly SandboxState[];
-  limit?: number;
-  cursor?: string;
-}
-
 /** Trusted in-process observation of provider resume boundaries. */
 export type ResumeStageObserver = (
   stage: "accepted" | "provider_claimed" | "machine_started" | "harness_ready",
@@ -436,6 +414,7 @@ export interface ExecRequest {
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;
+  expectedPhysicalGeneration?: string;
   /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
   preservationStage?: "collect_exec" | "chunk_exec";
   /** Fixed private output collection, logged by the server once per reason. */
@@ -605,7 +584,9 @@ export class ProviderError extends Error {
 
 /** The provider's known pre-admission start-limit signal, not an ambiguous transport failure. */
 export function isProviderStartRateLimit(error: ProviderError): boolean {
-  return error.provider === "boat" && error.code === "rate_limited" && error.status === 429;
+  if (!isSandboxProvider(error.provider) || error.code !== "rate_limited") return false;
+  const status = HOST_CAPABILITIES[error.provider].startRateLimit?.status;
+  return status !== undefined && error.status === status;
 }
 
 /** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */
@@ -626,8 +607,9 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "provider_routing_unavailable",
     ].includes(error.code) ||
       isProviderStartRateLimit(error) ||
-      (error.provider === "modal" &&
-        error.code === "conflict" &&
-        (error.providerCode === "fork_source_busy" || error.providerCode === "snapshot_source_busy")))
+      (error.code === "conflict" &&
+        error.providerCode !== undefined &&
+        isSandboxProvider(error.provider) &&
+        error.providerCode === HOST_CAPABILITIES[error.provider].snapshotSourceBusyCode))
   );
 }

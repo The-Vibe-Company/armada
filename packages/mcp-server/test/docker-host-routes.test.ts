@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { type DockerHostListResponse, dockerHostMeetsVersion, type Sql, VERSION } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  type DockerHostListResponse,
+  type Sql,
+  VERSION,
+} from "@armada/core";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -58,7 +64,12 @@ async function fixture() {
     const response = await target(
       new Request(`https://staging.example${path}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...extra },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          ...extra,
+        },
         body: JSON.stringify(body),
       }),
     );
@@ -93,16 +104,39 @@ function inventoryRouteFixture(requestOrigin?: string) {
     async () => ({ ok: false }),
     { publicUrl, log: (line) => records.push(JSON.parse(line)) },
   );
-  const send = (body: string, endpoint = "container-inventory") =>
+  const send = (
+    body: string,
+    endpoint = "container-inventory",
+    headers: Record<string, string> = { [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL) },
+  ) =>
     route(
       new Request(`${requestOrigin ?? publicUrl}/api/docker-host/${endpoint}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${"f".repeat(64)}` },
+        headers: { authorization: `Bearer ${"f".repeat(64)}`, ...headers },
         body,
       }),
     );
   return { hostId, installationId, publicUrl, records, send };
 }
+
+test("poll accepts the previous daemon protocol and refuses unsupported or missing protocols", async () => {
+  const { installationId, send } = inventoryRouteFixture();
+  const body = JSON.stringify({ installationId, version: "0.0.0" });
+  for (const protocol of [DOCKER_HOST_PROTOCOL - 1, DOCKER_HOST_PROTOCOL]) {
+    const response = await send(body, "poll", { [DOCKER_HOST_PROTOCOL_HEADER]: String(protocol) });
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({ job: null });
+  }
+  for (const protocol of [DOCKER_HOST_PROTOCOL - 2, DOCKER_HOST_PROTOCOL + 1, "1.0", null]) {
+    const response = await send(
+      body,
+      "poll",
+      protocol === null ? {} : { [DOCKER_HOST_PROTOCOL_HEADER]: String(protocol) },
+    );
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toMatchObject({ error: { code: "docker_host_upgrade_required" } });
+  }
+});
 
 test("a full Docker inventory with long container names reaches the reaper", async () => {
   const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture();
@@ -116,7 +150,9 @@ test("a full Docker inventory with long container names reaches the reaper", asy
   }));
   const body = JSON.stringify({ installationId, containers });
   expect((await send(body))?.status).toBe(204);
-  expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 4096, complete: true });
+  expect(records).toContainEqual(
+    expect.objectContaining({ metric: "reaper_unknown_machines", count: 4096, complete: true }),
+  );
 });
 
 test("an HTTPS alias poll supplies the deployment identity accepted by the inventory receiver", async () => {
@@ -142,7 +178,9 @@ test("an HTTPS alias poll supplies the deployment identity accepted by the inven
     }),
   );
   expect(response?.status).toBe(204);
-  expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 1, complete: true });
+  expect(records).toContainEqual(
+    expect.objectContaining({ metric: "reaper_unknown_machines", count: 1, complete: true }),
+  );
   expect(deploymentId).toBe(`${publicUrl}/${hostId}/${installationId}`);
 });
 
@@ -219,6 +257,14 @@ test("an authenticated Docker inventory report counts only unknown containers in
   expect(records).toHaveLength(0);
   expect((await send(host.hostToken, report)).status).toBe(204);
   expect(records).toEqual([
+    {
+      event: "reaper_overdue_machines",
+      provider: "docker",
+      source: host.hostId,
+      deploymentId,
+      observedAt: Date.parse("2026-11-18T01:00:00.000Z"),
+      machineIds: [unknown.machineId, "e".repeat(64), "c".repeat(64)],
+    },
     {
       metric: "reaper_unknown_machines",
       provider: "docker",
@@ -466,7 +512,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   };
   const result = await list();
   expect(result.targetVersion).toBe(VERSION);
-  expect(dockerHostMeetsVersion(result.targetVersion, result.minimumVersion ?? "")).toBe(true);
+
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
   const byId = new Map(result.hosts.map((host) => [host.id, host]));
@@ -490,6 +536,8 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     running: 0,
     resources: null,
     version: null,
+    protocol: null,
+    upgradeRequired: true,
   });
   expect(byId.get(online.hostId)?.state).toBe("online");
   expect(byId.get(online.hostId)?.sandboxes).toBe(2);
@@ -509,6 +557,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "limitsSupported",
       "name",
       "nextCleanupAt",
+      "protocol",
       "resources",
       "retentionOverrideSeconds",
       "retentionSeconds",
@@ -517,6 +566,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "sandboxes",
       "state",
       "stoppedSandboxBytes",
+      "upgradeRequired",
       "version",
     ]);
     for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {
@@ -684,6 +734,64 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
   expect(response.status).toBe(200);
 });
 
+test("physical-only mailbox delivery requires the capability on the current poll", async () => {
+  const { db, userId, orgId, store, post } = await fixture();
+  const actor = { userId, orgId };
+  const ticket = await store.issueRegistration(actor);
+  const installationId = randomUUID();
+  const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
+  const sandboxId = randomUUID();
+  const generation = randomUUID();
+  const image = `example/worker@sha256:${"a".repeat(64)}`;
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+      docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds)
+     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,now()+interval '1 hour',3600)`,
+    [
+      sandboxId,
+      orgId,
+      userId,
+      `armada-${installationId}-${host.hostId}-${sandboxId}-${generation}`,
+      host.hostId,
+      installationId,
+      generation,
+      image,
+    ],
+  );
+  const createId = randomUUID();
+  await store.enqueueSandbox(actor, sandboxId, { requestId: createId, operation: "create" });
+  const created = await store.poll(host.hostToken, installationId);
+  if (created?.operation !== "create") throw new Error("Expected bound create");
+  await store.complete(host.hostToken, installationId, { requestId: createId, outcome: "completed" });
+  await db.query("update sandboxes set status='failed' where id=$1", [sandboxId]);
+  const job = {
+    requestId: randomUUID(),
+    operation: "deletePhysical" as const,
+    machineId: "a".repeat(64),
+    request: created.request,
+  };
+  await expect(store.enqueue(actor, host.hostId, job)).rejects.toThrow("Docker host denied");
+  await store.enqueueSandbox(actor, sandboxId, {
+    requestId: job.requestId,
+    operation: job.operation,
+    machineId: job.machineId,
+    lifecycleGeneration: 1,
+  });
+  const poll = async (capability?: string) => {
+    const response = await post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      { installationId, version: "2.51.0" },
+      capability === undefined ? {} : { "x-armada-docker-host-delete-physical": capability },
+    );
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  expect(await poll()).toMatchObject({ job: null });
+  expect(await poll("1")).toMatchObject({ job });
+  expect(await poll("1, 1")).toMatchObject({ job: null });
+});
+
 test("a held host poll returns a locally enqueued job with the clock frozen", async () => {
   const { userId, orgId, store, authenticate, post } = await fixture();
   const actor = { userId, orgId };
@@ -774,7 +882,11 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     const response = await route(
       new Request("https://staging.example/api/docker-host/poll", {
         method: "POST",
-        headers: { authorization: `Bearer ${"a".repeat(64)}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${"a".repeat(64)}`,
+          "content-type": "application/json",
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+        },
         body: JSON.stringify({ installationId: randomUUID(), version: "2.51.0", ...extra }),
       }),
     );
@@ -809,7 +921,6 @@ test("a held host poll answers as soon as work appears and never beyond its hold
       pendingStarts: [],
       resumeClaims: [],
       targetVersion: VERSION,
-      minimumVersion: expect.any(String),
     },
   });
   expect([polls, time]).toEqual([1, 0]);

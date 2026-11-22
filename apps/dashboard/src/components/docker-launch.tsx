@@ -3,27 +3,28 @@
 import { type Harness, MODEL_CATALOG } from "@armada/core";
 import { RocketIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { useFormStatus } from "react-dom";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { launchOnDockerHost } from "@/app/actions/docker-hosts";
-import { ActionForm, SubmitButton } from "@/components/action-form";
-import { type LaunchConnections, LaunchStart, mcpFact, useLaunchAccess } from "@/components/launch-dialog";
+import { ActionForm } from "@/components/action-form";
+import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
+import { type LaunchConnections, LaunchStart } from "@/components/launch-dialog";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
-import {
-  LaunchAdvanced,
-  LaunchDialogContent,
-  LaunchFields,
-  LaunchLocation,
-  LaunchTaskField,
-  useLaunchSurface,
-} from "@/components/launch-surface";
-import { SubmitShortcut } from "@/components/mod-key";
+import { LaunchDialogContent } from "@/components/launch-surface";
+import { LaunchTools, useLaunchAccess } from "@/components/launch-tools";
 import { SkillPicker } from "@/components/skill-picker";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { ActionResult } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
-import { dockerLaunchKeyStorage, preferredHarness, UNKNOWN_DOCKER_LAUNCH } from "@/lib/docker-launch";
+import {
+  createDockerLaunchKey,
+  dockerLaunchKeyStorage,
+  isDockerLaunchKey,
+  PREVIOUS_DOCKER_LAUNCH,
+  preferredHarness,
+  UNKNOWN_DOCKER_LAUNCH,
+} from "@/lib/docker-launch";
+import { launchHoldIds } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
@@ -81,6 +82,7 @@ export function DockerLaunchForm({
   hostName,
   accounts,
   unavailable,
+  dockerLimits,
   harnesses,
   initialHarness,
   starts,
@@ -90,13 +92,16 @@ export function DockerLaunchForm({
   task,
   onTask,
   launchBlockedReason,
+  loadingError,
+  templateChooser,
 }: {
   connections: LaunchConnections;
   orgId: string;
   hostId: string;
   hostName: string;
   accounts: LaunchAccounts;
-  unavailable: { name: string; reason: string }[];
+  unavailable?: readonly { name: string; reason: string }[] | undefined;
+  dockerLimits?: ReactNode;
   harnesses: Harness[];
   initialHarness: Harness;
   starts?: readonly LaunchStartTarget[];
@@ -104,6 +109,8 @@ export function DockerLaunchForm({
   onStart?: (id: string) => void;
   idleDelaySeconds?: number | undefined;
   launchBlockedReason?: string | undefined;
+  loadingError?: string;
+  templateChooser?: ReactNode;
   task?: string;
   onTask?: (value: string) => void;
 }) {
@@ -121,12 +128,17 @@ export function DockerLaunchForm({
     ? chosenHarness
     : preferredHarness(harnesses, initialHarness, hasUsableAccount);
   const root = useRef<HTMLDivElement>(null);
-  useLaunchSurface(root);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [localTask, setLocalTask] = useState("");
   const storage = dockerLaunchKeyStorage(hostId);
   const router = useRouter();
   const [credential, setCredential] = useState(
     () => initialLaunchSelection(accounts, MODEL_CATALOG, harness).credentialId,
   );
+  if (harness !== chosenHarness) {
+    setHarness(harness);
+    setCredential(initialLaunchSelection(accounts, MODEL_CATALOG, harness).credentialId);
+  }
   const [blocked, setBlocked] = useState(false);
   const usable = hasUsableAccount(harness) && !blocked;
 
@@ -138,14 +150,15 @@ export function DockerLaunchForm({
       event.preventDefault();
       event.stopPropagation();
     };
-    // The request key is the server's `requestId`. It is reused only after a launch with no definite answer, only
+    // The request key is the server's `idempotencyKey`. It is reused only after a launch with no definite answer, only
     // with the same choices and within KEY_TTL_MS, even if the dialog was closed in between: the server then
     // reconciles it instead of starting a second sandbox. A refusal makes the next launch a new request.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
-      const key = launchKeyFor(readKey(storage), event.formData.entries());
+      const previous = readKey(storage);
+      const key = launchKeyFor(previous, event.formData.entries(), createDockerLaunchKey);
       // Kept from now until a definite answer: a reload, a lost connection or a closed tab mid-launch keeps it too.
-      writeKey(storage, key);
+      if (key !== previous || isDockerLaunchKey(key.key)) writeKey(storage, key);
       event.formData.set(LAUNCH_KEY_FIELD, key.key);
     };
     node.addEventListener("reset", keep, true);
@@ -161,129 +174,107 @@ export function DockerLaunchForm({
       // A thrown call (connection lost) is no answer: the stored key stays for the retry.
       const result = await launchOnDockerHost(previous, data);
       // A definite answer: the next launch is a new request.
-      if (result.ok || result.error !== UNKNOWN_DOCKER_LAUNCH) writeKey(storage, null);
+      if (result.ok || (result.error !== UNKNOWN_DOCKER_LAUNCH && result.error !== PREVIOUS_DOCKER_LAUNCH))
+        writeKey(storage, null);
       if (result.ok && result.sandboxId) router.push(`/sandboxes/${result.sandboxId}`);
       return result;
     },
     [storage, router],
   );
 
+  const holds = launchHoldIds(id, {
+    source: Boolean(launchBlockedReason),
+    account: !usable || accounts.state === "unavailable",
+    tools: access.held,
+  });
   return (
-    <div ref={root} className="flex min-h-0 flex-1 flex-col">
+    <div ref={root}>
       <ActionForm
         action={launch}
         focusError
-        className="flex min-h-0 flex-1 flex-col"
-        footerClassName="space-y-2 border-t px-6 py-4"
-        footer={
-          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            <LaunchProgress />
-            {access.alerts(() => {}, id)}
-            {launchBlockedReason && (
-              <p id={`${id}-source-blocked`} role="alert" className="mr-auto text-xs text-warning">
-                {launchBlockedReason}
-              </p>
-            )}
-            <LaunchAccountNotice
-              idPrefix={id}
-              harness={harness}
-              account={credential}
-              accounts={accounts}
-              onPick={() => root.current?.querySelector<HTMLButtonElement>("[data-launch-account-picker]")?.click()}
+        renderContent={(result) => (
+          <>
+            <input type="hidden" name="org" value={orgId} />
+            <input type="hidden" name="hostId" value={hostId} />
+            <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
+            <LaunchComposer
+              id={id}
+              headline={`What should we build on ${hostName}?`}
+              subline="Environment: Armada official (fetched by your host the first time)"
+              loadingError={loadingError}
+              docker
+              dockerHost
+              task={task ?? localTask}
+              onTask={onTask ?? setLocalTask}
+              holds={holds}
+              chooser={templateChooser}
+              tools={<LaunchTools access={access} idPrefix={id} />}
+              skills={
+                <LaunchChip title="Skills" label={`Skills · ${skills.length}`}>
+                  <SkillPicker inline orgId={orgId} value={skills} onChange={setSkills} />
+                </LaunchChip>
+              }
+              agent={
+                <LaunchSentence
+                  harness={harness}
+                  onHarness={setHarness}
+                  account={credential}
+                  onAccount={setCredential}
+                  onBlocked={setBlocked}
+                  accounts={accounts}
+                  catalog={MODEL_CATALOG}
+                  boatOpenCodeDisabled={false}
+                  allowedHarnesses={harnesses}
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
+                />
+              }
+              alerts={
+                <>
+                  {launchBlockedReason && (
+                    <p id={`${id}-source-blocked`} role="alert" tabIndex={-1} className="text-sm text-warning">
+                      {launchBlockedReason}
+                    </p>
+                  )}
+                  <LaunchAccountNotice
+                    idPrefix={id}
+                    harness={harness}
+                    account={credential}
+                    accounts={accounts}
+                    requireNamedAccount
+                    onPick={() => setModelOpen(true)}
+                  />
+                  {access.alerts(() => {}, id)}
+                  {result}
+                </>
+              }
+              location={
+                <ComposerLocation
+                  name={hostName}
+                  starts={starts}
+                  selectedStart={selectedStart}
+                  onStart={onStart}
+                  folder={false}
+                  repositories={[]}
+                  project=""
+                  onProject={() => {}}
+                />
+              }
+              options={
+                <>
+                  <ComposerStop provider="docker" idleDelaySeconds={idleDelaySeconds} />
+                  <DockerLimits unavailable={unavailable} details={dockerLimits} />
+                </>
+              }
             />
-            <SubmitButton
-              className="max-sm:ml-auto"
-              {...(!usable || access.held || accounts.state === "unavailable" || launchBlockedReason
-                ? {
-                    disabled: true,
-                    "aria-describedby": launchBlockedReason
-                      ? `${id}-source-blocked`
-                      : access.held
-                        ? `${id}-held`
-                        : `${id}-account-unavailable`,
-                  }
-                : {})}
-            >
-              <RocketIcon /> Launch <SubmitShortcut />
-            </SubmitButton>
-            <p className="basis-full text-right text-xs text-muted-foreground">
-              Opens the sandbox page and its conversation.
-            </p>
-          </div>
-        }
-      >
-        <input type="hidden" name="org" value={orgId} />
-        <input type="hidden" name="hostId" value={hostId} />
-        <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
-        <LaunchFields>
-          <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
-          <LaunchSentence
-            idPrefix={id}
-            harness={harness}
-            onHarness={setHarness}
-            account={credential}
-            onAccount={setCredential}
-            onBlocked={setBlocked}
-            accounts={accounts}
-            catalog={MODEL_CATALOG}
-            boatOpenCodeDisabled={false}
-            allowedHarnesses={harnesses}
-          />
-          <LaunchLocation
-            provider="docker"
-            start={selectedStart ?? `Empty machine · ${hostName}`}
-            starts={starts?.map((item) => ({
-              value: item.id,
-              label: item.label,
-              group: item.group,
-              reason: item.reason,
-            }))}
-            onStart={onStart}
-            idleDelaySeconds={idleDelaySeconds}
-          />
-          <LaunchAdvanced
-            summary={
-              <span className="text-xs text-muted-foreground">Armada official environment · {mcpFact(access)}</span>
-            }
-          >
-            <p className="text-sm">
-              <span className="text-muted-foreground">Environment:</span> Armada official (fetched by your host the
-              first time)
-            </p>
-            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
-            {access.fields(id)}
-            {unavailable.length > 0 && (
-              <div data-docker-unavailable>
-                <p className="font-medium">Not available on Docker hosts yet</p>
-                <ul className="mt-2 space-y-1">
-                  {unavailable.map((item) => (
-                    <li key={item.name}>
-                      <span className="font-medium">{item.name}</span>
-                      <span className="text-muted-foreground">: {item.reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </LaunchAdvanced>
-        </LaunchFields>
-      </ActionForm>
+            {skills.map((exact) => (
+              <input key={exact} type="hidden" name="skills" value={exact} />
+            ))}
+            {access.inputs}
+          </>
+        )}
+      />
     </div>
-  );
-}
-
-/**
- * What a launch is doing while it waits (#1507): the host fetches Armada's image first if it does not have it yet,
- * which can take a few minutes the first time. Always rendered, so a screen reader announces the text when it appears.
- */
-function LaunchProgress() {
-  const { pending } = useFormStatus();
-  return (
-    <p role="status" className="mr-auto text-xs text-muted-foreground" data-docker-launch-progress>
-      {pending
-        ? "Preparing the official Armada environment on your host and starting the sandbox… The first launch can take a few minutes."
-        : null}
-    </p>
   );
 }
 

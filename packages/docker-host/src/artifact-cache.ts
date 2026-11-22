@@ -22,17 +22,10 @@ function pin(value: unknown): RuntimeArtifact {
   return { sha256: v.sha256, bytes: v.bytes as number };
 }
 
-/**
- * The host's shared artifact directory, `<state>/artifact-cache` under the canonical state path
- * (world-readable: it holds only public, digest-named bytes). `ensure` (re)creates it before each
- * container create/start; it never throws. Undefined only when the path cannot be a Docker
- * `--mount` value, in which case the host simply runs without a shared cache.
- */
 export async function sharedArtifactDirectory(
   stateDirectory: string,
 ): Promise<{ dir: string; ensure(): Promise<boolean> } | undefined> {
   const dir = join(await realpath(stateDirectory), "artifact-cache");
-  // A Docker --mount field value: refuse separators rather than quote them.
   if (/[,"=\0\n\r]/.test(dir)) return undefined;
   const ensure = async () => {
     try {
@@ -49,16 +42,6 @@ export async function sharedArtifactDirectory(
   return { dir, ensure };
 }
 
-/**
- * Host-level verified harness cache (#2562). After a bootstrap, fetch the public artifact set deployed
- * with that runtime digest, verify every artifact through the shared installer (fixed HTTPS origin,
- * no credentials or redirects, exact size and SHA256) into a private cache, then publish read-only
- * digest-named copies for sandboxes. Sandboxes re-verify size and digest, so this is an optimization
- * only: every failure leaves them on today's HTTP path. Runs are serialized. The small set is
- * re-read on every bootstrap (a redeploy may change archives without changing the runtime), and
- * each change prunes entries named by neither the current nor the previous set, so alternating
- * deployments do not re-download each other's artifacts.
- */
 export function sharedArtifactWarmer(
   options: { serverUrl: string; privateDir: string; sharedDir: string },
   request: typeof fetch = fetch,
@@ -74,7 +57,6 @@ export function sharedArtifactWarmer(
       credentials: "omit",
       signal: AbortSignal.timeout(10_000),
     });
-    // An older server has no artifact-set route: nothing to warm.
     if (response.status !== 200) return;
     const text = await response.text();
     if (text.length > MAX_SET_BYTES) throw Error("invalid_artifact_set");
@@ -100,8 +82,6 @@ export function sharedArtifactWarmer(
         { serverUrl: origin, cacheDir: options.privateDir, artifact },
         request,
       );
-      // Republish from the verified private copy when the set changes or the entry is missing,
-      // atomically: a reader never sees a partial file and an already open copy stays readable.
       const temporary = join(options.sharedDir, `.${artifact.sha256}.${crypto.randomUUID()}`);
       try {
         await copyFile(verified, temporary);
@@ -120,7 +100,6 @@ export function sharedArtifactWarmer(
           await rm(join(directory, name), { recursive: true, force: true });
   }
 
-  /** Never throws and never delays the caller; the returned promise settles when this run ends. */
   return (runtime: string): Promise<void> => {
     if (!digest.test(runtime)) return queue;
     queue = queue.then(() => warm(runtime)).catch(() => {});

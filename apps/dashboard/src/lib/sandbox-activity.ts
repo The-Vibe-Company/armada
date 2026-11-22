@@ -1,4 +1,4 @@
-import type { SandboxListMetadata } from "@armada/core";
+import type { SandboxListMetadata } from "./sandbox-access.ts";
 import { sandboxAttention } from "./sandbox-attention";
 
 /** Project the same attention as detail, without pretending unread turns have finished. */

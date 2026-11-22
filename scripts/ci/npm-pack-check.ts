@@ -8,8 +8,6 @@ import packFiles from "../release/npm-pack-files.json";
 import bootstrappedPackages from "../release/npm-packages.json";
 import { smokeSdk } from "../release/sdk-smoke.mjs";
 
-export const NPM_PACK_FILES = packFiles;
-
 type Manifest = Parameters<typeof packlist>[0]["package"] & {
   name: string;
   dependencies?: Record<string, string>;
@@ -72,7 +70,7 @@ async function checkNpmPack() {
       }
       const kind = name === SDK_PACKAGE ? "sdk" : name === NPM_PACKAGE ? "cli" : "platform";
       const files = await packlist({ path: dir, package: manifest, isProjectRoot: true });
-      checkPackFiles(name, files, NPM_PACK_FILES[kind]);
+      checkPackFiles(name, files, packFiles[kind]);
       if (kind === "sdk") {
         const dependencies = [manifest.dependencies, manifest.optionalDependencies, manifest.peerDependencies].flatMap(
           (field) => Object.keys(field ?? {}),

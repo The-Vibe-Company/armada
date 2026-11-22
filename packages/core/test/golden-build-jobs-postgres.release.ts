@@ -1,3 +1,5 @@
+import { dispatchGoldenBuild } from "./support/golden-build-dispatch.ts";
+
 // This contract must never silently skip in release validation.
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
@@ -93,17 +95,17 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     expect(one.jobId).toBe(replay.jobId);
     expect((await a.unsafe("select 1 from golden_build_jobs where org_id=$1", [org])).length).toBe(1);
     await expect(jobsB.admit(provider, actor, input, crypto.randomUUID())).rejects.toMatchObject({ code: "conflict" });
-    running = jobsA.runOne();
+    running = dispatchGoldenBuild(sqlA, jobsA);
     await started;
-    expect(await jobsB.runOne()).toBe(false);
+    expect(await dispatchGoldenBuild(sqlB, jobsB)).toBe(false);
     expect(resolutions).toBe(1);
-    await b.unsafe("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [one.jobId]);
-    expect(await jobsB.runOne()).toBe(false);
+    await b.unsafe("update jobs set lease_until='-infinity' where id=$1", [one.jobId]);
+    await dispatchGoldenBuild(sqlB, jobsB);
+    expect((await jobsB.status(owner, one.jobId)).state).toBe("failed");
+    expect((await b.unsafe("select 1 from golden_backend_slots where org_id=$1", [org])).length).toBe(0);
     resume();
     await running;
-    expect((await jobsB.status(owner, one.jobId)).state).toBe("recovery_required");
     expect(resolutions).toBe(1); // No automatic provider/build replay after the lease expired.
-    expect((await a.unsafe("select 1 from golden_backend_slots where org_id=$1", [org])).length).toBe(1);
     expect((await a.unsafe("select 1 from goldens where org_id=$1", [org])).length).toBe(0);
     const grants = await a.unsafe(
       "select has_table_privilege('authenticated','public.golden_build_jobs','select,insert,update,delete') as allowed",
@@ -112,6 +114,7 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
   } finally {
     resume();
     await running;
+    await a.unsafe("delete from jobs where org_id=$1 and kind='golden_build'", [org]);
     await a.unsafe("delete from golden_build_jobs where org_id=$1", [org]);
     await a.unsafe("delete from golden_backend_slots where org_id=$1", [org]);
     // Keep the org/admin fixture until the disposable database is destroyed (last-admin guard).

@@ -1,20 +1,27 @@
-import { expect, spyOn, test } from "bun:test";
-import type { AgentEvent, Sql } from "@armada/core";
+import { expect, mock, spyOn, test } from "bun:test";
+import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
+import type { AgentEvent } from "@armada/core";
+import { streamSandboxEvents } from "@armada/core/contract";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
+import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
+import { createServerRequestDrain } from "../src/server-request-drain.ts";
 import { sqlOver } from "../src/sql.ts";
+import { eventFeedWakeKey, runtimeWakes } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
 async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = {}) {
-  const { db, people } = await sharedDatabase();
+  const { db, people, openaiCredentialId } = await sharedDatabase();
   const id = crypto.randomUUID();
   if (provider === "modal") {
     const golden = (
@@ -38,20 +45,18 @@ async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = 
     );
   }
   const queries: string[] = [];
-  const sql: Sql = {
-    query: (q, v) => db.query(q, v),
-    transaction: (work) =>
+  const sql = sqlOver({
+    unsafe: async (q, v) => (await db.query(q, v)).rows,
+    begin: (work) =>
       db.transaction((tx) =>
-        work(
-          sqlOver({
-            unsafe: async (q, v) => {
-              queries.push(q);
-              return (await tx.query(q, v)).rows;
-            },
-          }),
-        ),
+        work({
+          unsafe: async (q, v) => {
+            queries.push(q);
+            return (await tx.query(q, v)).rows;
+          },
+        }),
       ),
-  };
+  });
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const enrol = async () =>
     authority.enrol(
@@ -110,6 +115,7 @@ async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = 
     sql,
     people,
     id,
+    openaiCredentialId,
     authority,
     enrol,
     route,
@@ -168,15 +174,24 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
       ).status,
     ).toBe(409);
     expect(await f.rows()).toHaveLength(3);
-    // Database failure after insert must roll the archive back too; never ACK lost projection work.
+    await f.db.query("update sandboxes set status='running',task_prompt_id='prompt-a' where id=$1", [f.id]);
+    const completion = [
+      { sequence: 4, event: f.usage("usage-after-fault") },
+      {
+        sequence: 5,
+        event: { id: "terminal", kind: "prompt", status: "finished", promptId: "prompt-a", text: "", at: 3 },
+      },
+    ] satisfies { sequence: number; event: AgentEvent }[];
+    const status = async () => (await f.db.query("select status from sandboxes where id=$1", [f.id])).rows;
+    // Database failure after insert must roll back the archive and lifecycle journal before ACK.
     await f.db.exec(`create function fail_runtime_usage() returns trigger language plpgsql as $$ begin raise exception 'synthetic storage failure'; end $$;
       create trigger fail_runtime_usage before update of usage_turns on sandboxes for each row execute function fail_runtime_usage();`);
-    expect((await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).status).toBe(503);
+    expect((await f.publish(active, completion)).status).toBe(503);
     expect(await f.rows()).toHaveLength(3);
+    expect(await status()).toEqual([{ status: "running" }]);
     await f.db.exec("drop trigger fail_runtime_usage on sandboxes; drop function fail_runtime_usage()");
-    expect(await (await f.publish(active, [{ sequence: 4, event: f.usage("usage-after-fault") }])).json()).toEqual({
-      acknowledgedSequence: 4,
-    });
+    expect(await (await f.publish(active, completion)).json()).toEqual({ acknowledgedSequence: 5 });
+    expect(await status()).toEqual([{ status: "ready" }]);
     const unknown: AgentEvent = {
       id: "unknown-usage",
       at: 3,
@@ -192,8 +207,8 @@ test("ACK follows contiguous encrypted persistence and shared usage projection; 
         reasoningTokens: null,
       },
     };
-    expect(await (await f.publish(active, [{ sequence: 5, event: unknown }])).json()).toEqual({
-      acknowledgedSequence: 5,
+    expect(await (await f.publish(active, [{ sequence: 6, event: unknown }])).json()).toEqual({
+      acknowledgedSequence: 6,
     });
     expect(await f.aggregate()).toMatchObject({
       turns: expect.arrayContaining([
@@ -720,6 +735,154 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
+test("the runtime sweep settles a completed turn published by an overlapping server", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const promptId = crypto.randomUUID();
+  const event: AgentEvent = {
+    id: crypto.randomUUID(),
+    kind: "prompt",
+    promptId,
+    status: "failed",
+    at: 1,
+    text: "",
+  };
+  expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+  await f.db.query(
+    "update sandboxes set status='running',task_prompt_id=$2,expires_at=now()+interval '1 hour' where id=$1",
+    [f.id, promptId],
+  );
+  const checkpoint = mock(async () => {
+    throw Error("A recently settled turn is not ready for idle checkpointing.");
+  });
+  const idle = createRuntimeIdle(f.sql, ENCRYPTION_KEY, checkpoint, { now: () => 2 });
+  await idle.reconcileOne(new AbortController().signal);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
+  expect(checkpoint).not.toHaveBeenCalled();
+});
+
+test.each(["current", "superseded", "revoked", "rolled back"] as const)(
+  "idle stop handoff with a %s checkpoint publication",
+  async (scenario) => {
+    const f = await fixture();
+    const active = await f.enrol();
+    const promptId = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set task_prompt_id=$2,expires_at=now()+interval '1 hour',
+       reconcile_after=now()+interval '1 hour' where id=$1`,
+      [f.id, promptId],
+    );
+    const event: AgentEvent = { id: promptId, kind: "prompt", promptId, status: "finished", at: 1, text: "" };
+    expect((await f.publish(active, [{ sequence: 1, event }])).status).toBe(200);
+    const read = async () =>
+      (
+        await f.db.query<{
+          status: string;
+          status_reason: string | null;
+          lifecycle_generation: string;
+          stop_generation: string;
+          expires_at: string;
+          stop_requested: boolean;
+          due: boolean;
+        }>(
+          `select status,status_reason,lifecycle_generation::text,stop_generation::text,expires_at::text,
+                stop_requested_at is not null as stop_requested,reconcile_after<=now() as due
+         from sandboxes where id=$1`,
+          [f.id],
+        )
+      ).rows[0]!;
+    const before = await read();
+    const checkpointRequests: string[] = [];
+    let now = 100;
+    const idle = createRuntimeIdle(
+      f.sql,
+      ENCRYPTION_KEY,
+      async (_actor, input, guard) => {
+        await guard!(f.sql);
+        await f.db.query(
+          `insert into runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+         values($1,$2,$3,1,now()) on conflict (sandbox_id,epoch) do nothing`,
+          [f.id, active.epoch, input.request_id],
+        );
+        if (scenario === "superseded")
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        if (scenario === "revoked")
+          await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
+        checkpointRequests.push(input.request_id);
+        return {
+          id: input.id,
+          requestId: input.request_id,
+          runtime: { kind: "armada", epoch: active.epoch },
+          checkpoint: { state: "complete", watermark: 1, acknowledgedSequence: 1 },
+        };
+      },
+      { delayMs: 10, now: () => now },
+    );
+    const sweep = () => idle.reconcileOne(new AbortController().signal);
+    const readJournal = async () =>
+      (
+        await f.db.query(
+          `select from_status,to_status,actor,code,generation::text
+         from sandbox_transitions where sandbox_id=$1 and to_status='stopping'`,
+          [f.id],
+        )
+      ).rows;
+    if (scenario === "rolled back") {
+      await f.db.exec(`
+        create function fail_idle_stop_publication() returns trigger language plpgsql as $$
+        begin
+          raise exception 'idle stop publication failed';
+        end $$;
+        create trigger fail_idle_stop_publication after update of status on sandboxes
+        for each row when (new.status = 'stopping') execute function fail_idle_stop_publication();
+      `);
+      try {
+        await sweep();
+        expect(await read()).toEqual(before);
+        expect(await readJournal()).toEqual([]);
+        expect(checkpointRequests).toHaveLength(1);
+      } finally {
+        await f.db.exec(
+          "drop trigger fail_idle_stop_publication on sandboxes; drop function fail_idle_stop_publication()",
+        );
+      }
+      now += 60_000;
+    }
+    await sweep();
+    expect(checkpointRequests).toHaveLength(scenario === "rolled back" ? 2 : 1);
+    if (scenario === "rolled back") expect(checkpointRequests[1]).toBe(checkpointRequests[0]);
+    const journal = await readJournal();
+    if (scenario === "superseded") {
+      expect(journal).toEqual([]);
+      expect(await read()).toEqual({
+        ...before,
+        lifecycle_generation: String(Number(before.lifecycle_generation) + 1),
+      });
+    } else if (scenario === "revoked") {
+      expect(journal).toEqual([]);
+      expect(await read()).toEqual(before);
+    } else {
+      expect(journal).toEqual([
+        {
+          from_status: "ready",
+          to_status: "stopping",
+          actor: "idle",
+          code: "runtime_checkpoint_idle_paused",
+          generation: before.lifecycle_generation,
+        },
+      ]);
+      expect(await read()).toEqual({
+        ...before,
+        status: "stopping",
+        status_reason: "idle_paused",
+        stop_requested: true,
+        stop_generation: String(Number(before.stop_generation) + 1),
+        due: true,
+      });
+    }
+  },
+);
+
 test("idle evidence upgrades long archives, survives enrolment renewal, and blocks unresolved turns and commands", async () => {
   const f = await fixture();
   let active = await f.enrol();
@@ -884,7 +1047,7 @@ test("terminal runtime prompts admit one webhook and one Langfuse export across 
   }
 });
 
-test("delivery failures release the lease, back off durably, and stop at five attempts", async () => {
+test("failed webhook jobs persist the original backoff and stop after five sends", async () => {
   const f = await fixture();
   try {
     const endpoint = (
@@ -894,23 +1057,197 @@ test("delivery failures release the lease, back off durably, and stop at five at
       )
     ).rows[0]!;
     await f.db.query("insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}')", [endpoint.id]);
-    // An unavailable encryption key fails before network I/O; the same durable
-    // failure settlement handles transport errors and unsuccessful responses.
-    const worker = createOutboundWebhooks(f.sql, "invalid_key", "https://armada.example");
+    const store = createJobsStore(f.sql);
+    const owner = crypto.randomUUID();
+    const now = Date.UTC(2030, 0, 1);
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example", {
+      now: () => now,
+      send: async () => 503,
+    });
     for (let attempt = 1; attempt <= 5; attempt++) {
-      expect(await worker.reconcileOne(new AbortController().signal)).toBe(true);
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      expect(await store.complete(job, owner, result)).toBe(true);
       const row = (
-        await f.db.query<{ attempts: number; lease_until: unknown; seconds: number }>(
-          "select attempts,lease_until,extract(epoch from next_attempt_at-now())::float as seconds from outbound_webhook_deliveries",
+        await f.db.query<{ attempts: number; last_status: number; next_attempt_at: Date }>(
+          "select attempts,last_status,next_attempt_at from outbound_webhook_deliveries where id=$1",
+          [job.id],
         )
       ).rows[0]!;
       expect(row.attempts).toBe(attempt);
-      expect(row.lease_until).toBeNull();
-      expect(row.seconds).toBeGreaterThan(30 * 2 ** (attempt - 1) - 1);
-      expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
-      await f.db.query("update outbound_webhook_deliveries set next_attempt_at=now()-interval '1 second'");
+      expect(row.last_status).toBe(503);
+      expect(new Date(row.next_attempt_at).getTime()).toBe(now + 30_000 * 2 ** (attempt - 1));
+      expect(await store.claim("webhook", owner, 30, 1)).toBeUndefined();
+      await f.db.query("update jobs set run_after=now()-interval '1 second' where id=$1", [job.id]);
+      await f.db.query("update outbound_webhook_deliveries set next_attempt_at=now()-interval '1 second' where id=$1", [
+        job.id,
+      ]);
     }
-    expect(await worker.reconcileOne(new AbortController().signal)).toBe(false);
+    expect(await store.claim("webhook", owner, 30, 1)).toBeUndefined();
+  } finally {
+    await f.close();
+  }
+});
+
+test("a lost webhook settlement replays the same signed delivery ID under a new epoch", async () => {
+  const f = await fixture();
+  try {
+    const endpoint = (
+      await f.db.query<{ id: string }>(
+        "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2) returning id",
+        [f.people.org, await encryptSecret("webhook_secret", ENCRYPTION_KEY)],
+      )
+    ).rows[0]!;
+    const { rows: deliveries } = await f.db.query<{ id: string }>(
+      "insert into outbound_webhook_deliveries(endpoint_id,payload) values($1,'{}') returning id",
+      [endpoint.id],
+    );
+    const id = deliveries[0]!.id;
+    const oldClaim = await f.db.query(
+      "update outbound_webhook_deliveries set attempts=attempts+1,lease_until=now()+interval '60 seconds' where id=$1 returning id",
+      [id],
+    );
+    expect(oldClaim.rows).toEqual([]);
+    const store = createJobsStore(f.sql);
+    const owner = crypto.randomUUID();
+    const sent: (string | undefined)[] = [];
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example", {
+      now: () => Date.UTC(2030, 0, 1),
+      send: async (_url, _body, headers) => {
+        sent.push(headers["Armada-Webhook-Id"]);
+        return 204;
+      },
+    });
+    const run = async () => {
+      const job = (await store.claim("webhook", owner, 30, 1))!;
+      const result = await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => (await store.inspect(job, owner)) === "dispatch",
+      });
+      return { job, result };
+    };
+    const first = await run();
+    await f.db.query("update jobs set lease_until=now()-interval '1 second' where id=$1", [id]);
+    const replacement = await run();
+    expect(await store.complete(first.job, owner, first.result)).toBe(false);
+    expect(await store.complete(replacement.job, owner, replacement.result)).toBe(true);
+    expect(sent).toEqual([id, id]);
+    expect(
+      (
+        await f.db.query(
+          "select attempts,delivered_at is not null as delivered from outbound_webhook_deliveries where id=$1",
+          [id],
+        )
+      ).rows,
+    ).toEqual([{ attempts: 2, delivered: true }]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("journaled lifecycle webhooks enqueue once per endpoint and transition during overlap", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query(
+      `insert into outbound_webhook_endpoints(org_id,url,secret_enc)
+       values ($1,'https://first.example/events',$2), ($1,'https://second.example/events',$2)`,
+      [f.people.org, new Uint8Array([1])],
+    );
+    await f.db.transaction(async (tx) => {
+      for (const legacyPublisherEnabled of [true, false]) {
+        if (!legacyPublisherEnabled) {
+          await tx.exec("alter table sandboxes disable trigger sandbox_outbound_webhooks");
+        }
+        await tx.query("update sandboxes set status='stopping' where id=$1", [f.id]);
+        const transition = await tx.query(
+          `select result.applied from sandboxes s
+           cross join lateral sandbox_transition(
+             s.id,s.lifecycle_generation,array['stopping']::sandbox_status[],'stopped','lifecycle_runner','stopped','[]'
+           ) result where s.id=$1`,
+          [f.id],
+        );
+        expect(transition.rows).toEqual([{ applied: true }]);
+      }
+      const { rows } = await tx.query(
+        `select count(distinct d.endpoint_id)::int as endpoints, count(*)::int as deliveries,
+                count(j.id)::int as jobs, bool_and(d.payload->>'id' = d.id::text) as signed_identity
+         from sandbox_transitions t
+         left join outbound_webhook_deliveries d on d.sandbox_transition_id=t.id
+         left join jobs j on j.id=d.id and j.kind='webhook'
+         where t.sandbox_id=$1 and t.to_status='stopped'
+         group by t.id order by t.id`,
+        [f.id],
+      );
+      expect(rows).toEqual([
+        { endpoints: 2, deliveries: 2, jobs: 2, signed_identity: true },
+        { endpoints: 2, deliveries: 2, jobs: 2, signed_identity: true },
+      ]);
+      const allJobs = await tx.query("select count(*)::int as count from jobs where kind='webhook'");
+      expect(allJobs.rows).toEqual([{ count: 4 }]);
+      await tx.exec("alter table sandboxes enable trigger sandbox_outbound_webhooks");
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("webhook cutover backfills pending deliveries and honors a live legacy receipt", async () => {
+  const f = await fixture();
+  try {
+    const migration = await Bun.file(
+      new URL("../../../supabase/migrations/20261119170137_outbound_webhook_jobs.sql", import.meta.url),
+    ).text();
+    const { rows } = await f.db.transaction(async (tx) => {
+      await tx.exec(`
+        drop trigger outbound_webhook_job_on_delivery on outbound_webhook_deliveries;
+        drop trigger outbound_webhook_legacy_claim_fence on outbound_webhook_deliveries;
+        drop function enqueue_outbound_webhook_job();
+        drop function fence_outbound_webhook_legacy_claim();
+      `);
+      const { rows: endpoints } = await tx.query<{ id: string }>(
+        "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2) returning id",
+        [f.people.org, new Uint8Array([1])],
+      );
+      const deliveries = await tx.query<{ id: string; lease_until: Date | null; next_attempt_at: Date }>(
+        `insert into outbound_webhook_deliveries(endpoint_id,payload,attempts,lease_until,next_attempt_at)
+         values ($1,'{}',0,null,now()+interval '30 seconds'), ($1,'{}',1,now()+interval '60 seconds',now())
+         returning id,lease_until,next_attempt_at`,
+        [endpoints[0]!.id],
+      );
+      await tx.exec(migration);
+      return deliveries;
+    });
+    const [pending, inFlight] = rows;
+    const jobs = await f.db.query<{ id: string; run_after: Date }>(
+      "select id,run_after from jobs where kind='webhook' order by run_after",
+    );
+    expect(jobs.rows).toEqual([
+      { id: pending!.id, run_after: pending!.next_attempt_at },
+      { id: inFlight!.id, run_after: inFlight!.lease_until! },
+    ]);
+    const receipt = await f.db.query(
+      `update outbound_webhook_deliveries set last_status=204,delivered_at=now(),lease_until=null
+       where id=$1 and attempts=1 returning id`,
+      [inFlight!.id],
+    );
+    expect(receipt.rows).toEqual([{ id: inFlight!.id }]);
+    await f.db.query("update jobs set run_after=now() where id=$1", [inFlight!.id]);
+    const owner = crypto.randomUUID();
+    const store = createJobsStore(f.sql);
+    const job = (await store.claim("webhook", owner, 30, 1))!;
+    expect(job.id).toBe(inFlight!.id);
+    const worker = createOutboundWebhooks(f.sql, ENCRYPTION_KEY, "https://armada.example");
+    expect(
+      await worker.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async () => {
+          throw new Error("Already delivered");
+        },
+      }),
+    ).toEqual({ status: "done" });
   } finally {
     await f.close();
   }
@@ -977,4 +1314,251 @@ test("completed API turns publish exact monthly spend once and count unknown tur
     { period_start: "2026-10-01", usd: "0.00078", unpriced_turns: 0 },
     { period_start: "2026-11-01", usd: "0", unpriced_turns: 1 },
   ]);
+});
+
+test("runtime ingest wakes the authorized event feed after commit and suppresses replay wakes", async () => {
+  const f = await fixture();
+  const feed = createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {}));
+  const actor = {
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+    via: "service" as const,
+  };
+  const { promise, resolve, reject } = Promise.withResolvers<Awaited<ReturnType<ReturnType<typeof feed.owner>>>>();
+  let notifications = 0;
+  const close = runtimeWakes.subscribe(eventFeedWakeKey(f.id), () => {
+    notifications++;
+    void feed.owner(actor, f.id)("0").then(resolve, reject);
+  });
+  try {
+    const active = await f.enrol();
+    const item = { sequence: 1, event: f.other("live") };
+    expect((await f.publish(active, [item])).ok).toBe(true);
+    expect(notifications).toBe(1);
+    expect(await promise).toEqual([expect.objectContaining({ kind: "runtime_event", sequence: "1", ref: "1" })]);
+    expect(await feed.owner({ ...actor, userId: f.people.member }, f.id)("0")).toBeNull();
+    expect((await f.publish(active, [item])).ok).toBe(true);
+    expect(notifications).toBe(1);
+  } finally {
+    close();
+    await f.close();
+  }
+});
+
+test("runtime batches survive a deploy handover exactly once in event_log and the resumed SSE stream", async () => {
+  const f = await fixture();
+  const authStore = createMemoryAuthStore();
+  const owner = generateToken("service");
+  authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Example", role: "member" });
+  await authStore.insertToken("service", {
+    userId: f.people.owner,
+    orgId: f.people.org,
+    hash: await sha256Hex(owner),
+    label: "test",
+    createdAt: new Date().toISOString(),
+  });
+  const active = await f.enrol();
+  const promptId = crypto.randomUUID();
+  await f.db.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [f.id, promptId]);
+
+  const admitted = Promise.withResolvers<void>();
+  const releaseBatch = Promise.withResolvers<void>();
+  function replica() {
+    let holdBatch = false;
+    const shutdown = new AbortController();
+    const ingest = createRuntimeEvents(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY).route;
+    const control: ControlOptions = {
+      authStore,
+      supabase: { supabaseUrl: "https://example.test", anonKey: "placeholder" },
+      encryptionKey: undefined,
+      store: {} as ControlOptions["store"],
+      eventFeed: createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {})),
+      eventStreamShutdown: shutdown.signal,
+    };
+    const requests = createServerRequestDrain(async (request) => {
+      if (holdBatch && request.method === "POST") {
+        admitted.resolve();
+        await releaseBatch.promise;
+      }
+      const response = (await ingest(request)) ?? (await handleControlRequest(request, control));
+      if (!response) throw new Error("Unexpected handover request");
+      return response;
+    });
+    return {
+      fetch: requests.fetch,
+      activeRequests: requests.requests,
+      holdNextBatch() {
+        holdBatch = true;
+      },
+      drain() {
+        requests.beginDrain();
+        shutdown.abort();
+      },
+    };
+  }
+
+  const post = (...sequences: number[]) =>
+    new Request("https://example.test/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+      body: JSON.stringify({
+        sandboxId: f.id,
+        generation: active.epoch,
+        events: sequences.map((sequence) => ({
+          sequence,
+          event: { ...f.other(`event-${sequence}`), promptId },
+        })),
+      }),
+    });
+  const subscribe = (cursor?: string) =>
+    new Request(`https://example.test/api/v1/events?sandbox=${f.id}`, {
+      headers: { authorization: `Bearer ${owner}`, ...(cursor ? { "Last-Event-ID": cursor } : {}) },
+    });
+  function readFrames(chunk: Uint8Array | undefined) {
+    return new TextDecoder()
+      .decode(chunk)
+      .trimEnd()
+      .split("\n\n")
+      .map((frame) => {
+        const [id, data] = frame.split("\n");
+        const event = streamSandboxEvents.output.parse(JSON.parse(data!.slice(6)));
+        expect(id).toBe(`id: ${event.id}`);
+        return event;
+      });
+  }
+
+  const eventLog = async () =>
+    (
+      await f.db.query<{ id: string; sequence: string }>(
+        "select id::text,sequence::text from event_log where sandbox_id=$1 and kind='runtime_event' order by id::bigint",
+        [f.id],
+      )
+    ).rows;
+
+  const original = replica();
+  const replacement = replica();
+  try {
+    expect(await (await original.fetch(post(1, 2))).json()).toEqual({ acknowledgedSequence: 2 });
+    const before = (await original.fetch(subscribe())).body!.getReader();
+    const firstPage = readFrames((await before.read()).value);
+
+    original.holdNextBatch();
+    const inFlight = Promise.resolve(original.fetch(post(3, 4)));
+    try {
+      await Promise.race([
+        admitted.promise,
+        inFlight.then((response) => {
+          throw new Error(`Batch did not reach the admission barrier (HTTP ${response.status})`);
+        }),
+      ]);
+      original.drain();
+      expect((await before.read()).done).toBe(true);
+      const refused = await original.fetch(post(3, 4, 5, 6));
+      expect(refused.status).toBe(503);
+      await refused.body?.cancel();
+      expect(original.activeRequests.size).toBe(1);
+      releaseBatch.resolve();
+      await (await inFlight).body?.cancel();
+      expect((await eventLog()).map(({ sequence }) => sequence)).toEqual(["1", "2", "3", "4"]);
+      expect(await (await replacement.fetch(post(3, 4, 5, 6))).json()).toEqual({ acknowledgedSequence: 6 });
+
+      const resumed = (await replacement.fetch(subscribe(firstPage.at(-1)!.id))).body!.getReader();
+      try {
+        const received = [...firstPage, ...readFrames((await resumed.read()).value)];
+        const rows = await eventLog();
+        expect(rows.map(({ sequence }) => sequence)).toEqual(["1", "2", "3", "4", "5", "6"]);
+        expect(received.map(({ id, sequence }) => ({ id, sequence }))).toEqual(rows);
+      } finally {
+        await resumed.cancel();
+      }
+    } finally {
+      releaseBatch.resolve();
+      const response = await inFlight;
+      if (!response.bodyUsed) await response.body?.cancel();
+    }
+  } finally {
+    original.drain();
+    replacement.drain();
+    await f.close();
+  }
+});
+
+async function accountEventFixture() {
+  const f = await fixture();
+  const account = { id: f.openaiCredentialId, version: 1 };
+  await f.db.query("update sandboxes set credential_id=$2, credential_version=$3 where id=$1", [
+    f.id,
+    account.id,
+    account.version,
+  ]);
+  const active = await f.enrol();
+  const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
+  const send = (events: { sequence: number; event: AgentEvent }[]) =>
+    append(active.runtimeToken, active.epoch, { sandboxId: f.id, generation: active.epoch, events });
+  return { ...f, account, send };
+}
+
+function exhaustion(sequence: number, at: number, data: Record<string, unknown>) {
+  return {
+    sequence,
+    event: { id: String(sequence), at, kind: "other" as const, type: "usage_limit", promptId: "p", data },
+  };
+}
+
+test("runtime ACK persists provider exhaustion for the pinned revision and ignores a late older fact", async () => {
+  const f = await accountEventFixture();
+  const resetsAt = "2027-01-01T14:00:00.000Z";
+  const code = "usage_limit_exceeded";
+  await expect(f.send([exhaustion(1, 200, { code, resetsAt })])).resolves.toEqual({ acknowledgedSequence: 1 });
+  await expect(f.send([exhaustion(2, 100, { code })])).resolves.toEqual({ acknowledgedSequence: 2 });
+  expect((await f.db.query("select account_id,account_version,code,resets_at from account_exhaustion")).rows).toEqual([
+    { account_id: f.account.id, account_version: f.account.version, code, resets_at: new Date(resetsAt) },
+  ]);
+});
+
+test("a mid-turn provider retry leaves the account binding and health intact", async () => {
+  const f = await accountEventFixture();
+  const code = "usage_limit_exceeded";
+  await expect(f.send([exhaustion(1, 200, { code, resetsAt: "2027-01-01T14:00:00.000Z" })])).resolves.toEqual({
+    acknowledgedSequence: 1,
+  });
+  const readHealth = async () => (await f.db.query("select * from account_exhaustion")).rows;
+  const before = await readHealth();
+  expect(before).toHaveLength(1);
+  const at = Date.now();
+  await expect(
+    f.send([
+      {
+        sequence: 2,
+        event: {
+          id: "retry",
+          at,
+          kind: "other",
+          type: "armada/modelRateLimit",
+          promptId: "p",
+          data: {
+            retryCount: 1,
+            delayMs: 60000,
+            totalWaitMs: 60000,
+            message: "Rate limited by the model provider, retrying in 60 s",
+          },
+        },
+      },
+      exhaustion(3, at + 1, { code: "rate_limited" }),
+    ]),
+  ).resolves.toEqual({ acknowledgedSequence: 3 });
+  expect(await readHealth()).toEqual(before);
+  expect((await f.db.query("select credential_id,credential_version from sandboxes where id=$1", [f.id])).rows).toEqual(
+    [{ credential_id: f.account.id, credential_version: f.account.version }],
+  );
+});
+
+test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the journal", async () => {
+  const f = await accountEventFixture();
+  await expect(
+    f.send([exhaustion(1, 300, { code: "usage_limit_exceeded", resetsAt: "0000-01-01T00:00:00.000Z" })]),
+  ).resolves.toEqual({ acknowledgedSequence: 1 });
+  expect(
+    (await f.db.query("select resets_at from account_exhaustion where account_id=$1", [f.account.id])).rows,
+  ).toEqual([{ resets_at: null }]);
 });

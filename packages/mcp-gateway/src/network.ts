@@ -1,18 +1,13 @@
 import { lookup } from "node:dns/promises";
 import { request } from "node:https";
 import { isIP } from "node:net";
-import { Readable } from "node:stream";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-export class GatewayError extends Error {
-  constructor(
-    public readonly code: "denied" | "unsafe_endpoint" | "unsupported" | "needs_reconnect" | "busy" | "upstream",
-    public readonly action: string,
-  ) {
-    super(code);
-  }
-}
-export function endpoint(value: string | URL): URL {
+import { GatewayError, receivePublicResponse } from "./network-response.ts";
+
+export { GatewayError } from "./network-response.ts";
+
+export function endpoint(value: string | URL) {
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -26,7 +21,7 @@ export function endpoint(value: string | URL): URL {
     throw new GatewayError("unsafe_endpoint", "Use a public HTTPS endpoint without credentials or fragments.");
   return url;
 }
-function publicAddress(address: string): boolean {
+function publicAddress(address: string) {
   if (isIP(address) === 4) {
     const [a = 0, b = 0] = address.split(".").map(Number);
     return !(
@@ -44,7 +39,6 @@ function publicAddress(address: string): boolean {
       (a === 203 && b === 0)
     );
   }
-  // Only globally routed unicast; mapped IPv4, local, multicast, documentation excluded.
   return (
     isIP(address) === 6 &&
     /^[23]/.test(address) &&
@@ -52,7 +46,6 @@ function publicAddress(address: string): boolean {
     !address.toLowerCase().startsWith("2002:")
   );
 }
-/** HTTPS with DNS resolved once and the vetted address pinned to the socket. No redirects. */
 export const publicFetch: FetchLike = async (input, init) => {
   const req = new Request(input instanceof URL ? input.href : input, init);
   const url = endpoint(req.url);
@@ -74,44 +67,14 @@ export const publicFetch: FetchLike = async (input, init) => {
         lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
         signal: req.signal,
       },
-      (incoming) => {
-        try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(incoming.headers))
-            if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
-          const status = incoming.statusCode;
-          if (status === undefined || !Number.isInteger(status) || status < 200 || status > 599)
-            throw new GatewayError("upstream", "Upstream returned an invalid HTTP status.");
-          if (status >= 300 && status < 400) {
-            incoming.destroy();
-            reject(new GatewayError("unsafe_endpoint", "Redirects are not permitted. Configure the final endpoint."));
-            return;
-          }
-          resolve(
-            new Response(
-              [204, 205, 304].includes(status) ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>),
-              { status, headers },
-            ),
-          );
-        } catch (error) {
-          // Node's parser accepts statuses which Fetch Response rejects. Nothing
-          // from this asynchronous callback may escape into the control process.
-          incoming.destroy();
-          reject(
-            error instanceof GatewayError
-              ? error
-              : new GatewayError("upstream", "Upstream returned an invalid HTTP response."),
-          );
-        }
-      },
+      (incoming) => receivePublicResponse(incoming, resolve, reject),
     );
     outgoing.on("error", () => reject(new GatewayError("upstream", "Upstream connection failed.")));
     outgoing.end(body);
   });
 };
-/** All injected fetch implementations must preserve DNS pinning in production. */
-export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean): FetchLike {
-  return async (input, init) => {
+export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean) {
+  const fetchRestricted: FetchLike = async (input, init) => {
     const req = new Request(input instanceof URL ? input.href : input, init);
     const url = endpoint(req.url);
     if (!allowed(url))
@@ -127,4 +90,5 @@ export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boole
       throw new GatewayError("unsafe_endpoint", "Redirects are not permitted.");
     return response;
   };
+  return fetchRestricted;
 }

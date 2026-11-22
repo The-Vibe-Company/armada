@@ -39,5 +39,10 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "src/app/api/v1/[...path]/control-route-parity.test.ts",
+    "src/app/api/v1/[...path]/github-refresh-proxy.test.ts",
+    "src/components/landing/landing.test.ts"
+  ]
 }

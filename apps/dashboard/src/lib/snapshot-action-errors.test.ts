@@ -1,0 +1,63 @@
+import { expect, test } from "bun:test";
+import { ControlError, controlPost } from "./control";
+import { snapshotActionFailure } from "./snapshot-action-errors";
+
+const diagnostic = "HTTP 503: provider_snapshot_id digest sha256:example";
+
+test("snapshot action errors suppress diagnostics and give permission or observation recovery", () => {
+  for (const status of [undefined, 400, 401, 403, 404, 409, 503])
+    expect(snapshotActionFailure(new ControlError(diagnostic, status, "unavailable"), "remove")).not.toContain(
+      diagnostic,
+    );
+  expect(snapshotActionFailure(new ControlError(diagnostic, 403), "cancel")).toContain("build owner");
+  expect(snapshotActionFailure(new ControlError(diagnostic, 401), "find")).toContain("Sign in again");
+});
+
+test("only definite missing routes imply unsupported snapshot features", async () => {
+  const error = await controlPost(
+    {
+      serverUrl: "https://armada.test",
+      token: "session",
+      fetch: Object.assign(
+        async () => Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
+        { preconnect: fetch.preconnect },
+      ),
+    },
+    "/api/v1/docker/snapshots/create",
+    {},
+    "building a host snapshot",
+  ).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(ControlError);
+  if (!(error instanceof ControlError)) throw error;
+  expect(snapshotActionFailure(error, "build")).toContain("does not offer secure snapshot builds");
+  expect(snapshotActionFailure(new ControlError(diagnostic, 404), "size")).not.toContain("does not offer");
+  expect(snapshotActionFailure(new ControlError(diagnostic, 504), "build")).toContain("may still finish");
+  expect(
+    snapshotActionFailure(new ControlError(diagnostic, 400, undefined, { outcomeUnknown: true }), "build"),
+  ).toContain("may still finish");
+});
+
+test("a draining host refusal keeps the uninstall reason instead of a generic conflict", () => {
+  const result = snapshotActionFailure(
+    new ControlError("This host is draining for uninstall.", 409, "host_draining"),
+    "build",
+  );
+  expect(result).toContain("draining for uninstall");
+  expect(result).not.toContain("This snapshot or build changed");
+});
+
+test("a snapshot build on an incompatible host directs the user to update the daemon", () => {
+  const message = "Upgrade the Docker host daemon.";
+  expect(snapshotActionFailure(new ControlError(message, 409, "docker_host_upgrade_required"), "build")).toBe(message);
+});
+
+test("reported capacity is actionable without inventing a provider limit or echoing its payload", () => {
+  const result = snapshotActionFailure(
+    new ControlError(`${diagnostic} golden capacity`, 409, "conflict"),
+    "build",
+    "boat",
+  );
+  expect(result).toContain("Rebuild an existing snapshot");
+  expect(result).not.toContain(diagnostic);
+  expect(result).not.toContain("one snapshot");
+});

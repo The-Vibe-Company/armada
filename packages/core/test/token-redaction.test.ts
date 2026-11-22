@@ -13,6 +13,11 @@ test.each(recognized)("masks recognized token %s wherever it appears", (token) =
   expect(redactKnownTokens(`failed: ${token}, retry ${token}`)).toBe("failed: ***, retry ***");
 });
 
+test("masks a recognized Armada API key wherever it appears", () => {
+  const token = `armada_sk_${"aB0_-".repeat(8)}abc`;
+  expect(redactKnownTokens(`failed: ${token}, retry ${token}`)).toBe("failed: ***, retry ***");
+});
+
 test.each([
   "GitHub request failed: repository not found",
   "ghu_short github_pat_short armada_gw_short cmp_pat_short",

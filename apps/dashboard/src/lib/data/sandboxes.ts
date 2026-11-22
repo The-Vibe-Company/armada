@@ -1,24 +1,25 @@
 import {
   type CredentialKind,
+  type Harness,
+  isHarness,
   LAUNCH_STAGES,
   type LaunchTiming,
   type Sandbox,
   type SandboxCost,
-  type SandboxListMetadata,
   summarizeLaunch,
 } from "@armada/core";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
 import type { DockerHostList } from "@/lib/docker-hosts";
-import { parseSandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
+import { parseSandboxListMetadata, type SandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import type { Supabase } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
 
 // Explicit JWT projection: schema additions must be reviewed before becoming dashboard data.
 const SANDBOXES_COLUMNS =
-  "id,boat_id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,status_reason,model,reasoning_effort,provider,provider_sandbox_id,visibility,source_golden_visibility,access_owner_id,mcp_generation,repository_dir,requested_ttl_seconds,effective_ttl_seconds,expires_at,lifecycle_generation,last_observed_at,lifecycle_error,reconcile_after,stop_requested_at,activity_lease_id,activity_until,reconcile_lease,reconcile_lease_until,credential_id,credential_version,machine_size,resource_project,resource_sampling_claim_id,resource_sampling_after,resource_sampling_generation,orchestrator_native_generation,task_outcome,pull_requests,task_prompt_id,preservation_note,usage_runtime_seconds,usage_running_since,usage_turns,skills,stop_generation,preservation_stop_generation,application_secret_tainted,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,runtime_transport,docker_snapshot_id";
+  "id,golden_id,org_id,owner_id,harness,status,conversation_ids,created_at,stopped_at,deleted_at,status_reason,model,reasoning_effort,provider,provider_sandbox_id,visibility,source_golden_visibility,access_owner_id,mcp_generation,repository_dir,requested_ttl_seconds,effective_ttl_seconds,expires_at,lifecycle_generation,last_observed_at,lifecycle_error,reconcile_after,stop_requested_at,activity_lease_id,activity_until,reconcile_lease,reconcile_lease_until,credential_id,credential_version,machine_size,resource_project,resource_sampling_claim_id,resource_sampling_after,resource_sampling_generation,orchestrator_native_generation,task_outcome,pull_requests,task_prompt_id,preservation_note,usage_runtime_seconds,usage_running_since,usage_turns,skills,stop_generation,preservation_stop_generation,application_secret_tainted,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,runtime_transport,docker_snapshot_id";
 
 /** The listed metadata of one sandbox of the selected organization, or null when the server lists no such sandbox. */
 export async function getSandboxMetadata(supabase: Supabase, id: string): Promise<SandboxListMetadata | null> {
@@ -44,6 +45,9 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 
 export type SandboxDetail = Omit<
   Sandbox,
+  | "boat_id"
+  | "harness"
+  | "native_drain_pending"
   | "docker_retention_deadline"
   | "external_ref"
   | "outputs_attempt_count"
@@ -60,7 +64,7 @@ export type SandboxDetail = Omit<
   | "pull_request_merge_proof"
   | "stop_when_work_merged"
   | "transition_context"
->;
+> & { harness: Harness };
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
 export async function getSandbox(supabase: Supabase, id: string): Promise<SandboxDetail | null> {
@@ -73,14 +77,15 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
     .eq("org_id", selected.org.id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return data;
+  if (!data || !isHarness(data.harness)) return null;
+  return { ...data, harness: data.harness };
 }
 
 /**
  * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
  * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "API-equivalent".
  */
-export async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
+async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
   const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
   const kinds = new Map<string, CredentialKind>();
   if (wanted.length === 0) return kinds;
@@ -121,7 +126,7 @@ export function listSandboxCosts(
 }
 
 /** The cost of each sandbox among `ids` whose row row level security returns to the viewer (owner or org admin), by id. */
-export async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise<Map<string, SandboxCost>> {
+async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise<Map<string, SandboxCost>> {
   const costs = new Map<string, SandboxCost>();
   // A malformed sandbox id is never queried.
   const wanted = [...new Set(ids)].filter(isUuid);
@@ -136,7 +141,10 @@ export async function sandboxCosts(supabase: Supabase, ids: readonly string[]): 
     supabase,
     (data ?? []).map((row) => row.credential_id),
   );
-  for (const row of data ?? []) costs.set(row.id, costOfRow(row, kinds.get(row.credential_id ?? "") ?? null));
+  for (const row of data ?? []) {
+    if (!isHarness(row.harness)) continue;
+    costs.set(row.id, costOfRow({ ...row, harness: row.harness }, kinds.get(row.credential_id ?? "") ?? null));
+  }
   return costs;
 }
 

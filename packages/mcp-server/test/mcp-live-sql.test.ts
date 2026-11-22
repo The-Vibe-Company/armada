@@ -10,7 +10,7 @@ import {
   encryptSecret,
   setCredential,
 } from "@armada/core/server";
-import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -289,7 +289,14 @@ test("SQL gateway delivers MCP objects and provider configuration is reused acro
             [sandbox],
           )
         ).rows[0];
-        expect(row).toMatchObject({ status: "ready", stopped_at: null });
+        expect(row).toMatchObject({ status: "starting", stopped_at: null });
+        expect(
+          (
+            await db.query("select id from sandbox_transitions where sandbox_id=$1 and actor='mcp_bootstrap'", [
+              sandbox,
+            ])
+          ).rows,
+        ).toEqual([]);
         const readiness = () =>
           db.query(
             "select at from sandbox_launch_stages where sandbox_id=$1 and activation=2 and stage='harness_ready'",
@@ -466,6 +473,7 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
   const physicals = spyOn(SandboxService.prototype, "fromId").mockImplementation(async (id) => {
     expect(id).toBe("sb-renew-physical");
     return {
+      sandboxId: id,
       poll: async () => {
         polls++;
         return null;
@@ -537,7 +545,10 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
       managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
       sourceImage: { scopeKey: scopeKey({ ...scope, visibility: "org" }), name: "source", imageId: "im-source" },
     };
-    await createSqlModalStore(db, scope).reserve("private-fork", machine);
+    await db.query(
+      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'private',$4,$5,$6::jsonb)",
+      [scopeKey(scope), scope.orgId, scope.userId, machine.info.id, "private-fork", JSON.stringify(machine)],
+    );
     const connection = crypto.randomUUID(),
       grant = crypto.randomUUID(),
       lease = crypto.randomUUID();

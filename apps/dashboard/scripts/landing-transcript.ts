@@ -2,7 +2,7 @@
 // `run()` from packages/cli, against a recorded Armada API. Only the server's
 // answers below are written by hand; every line the terminal shows is what the
 // CLI prints for them. `bun apps/dashboard/scripts/landing-transcript.ts` writes
-// src/components/landing/transcript.ts; test/landing.test.ts holds the two equal.
+// src/components/landing/transcript.ts; src/components/landing/landing.test.ts holds the two equal.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "../../../packages/cli/src/run.ts";
@@ -75,19 +75,9 @@ const API: Record<string, unknown> = {
 };
 
 const SESSION = [
-  ["snapshot", "list"],
-  [
-    "launch",
-    "widgets",
-    "--provider",
-    "boat",
-    "--agent",
-    "codex",
-    "Fix the flaky checkout test in widgets",
-    "--ttl",
-    "4h",
-  ],
-  ["logs", SANDBOX],
+  ["snapshot", "ls"],
+  ["new", "widgets", "--provider", "boat", "--agent", "codex", "Fix the flaky checkout test in widgets", "--ttl", "4h"],
+  ["events", SANDBOX],
 ];
 
 const quote = (word: string) => (/\s/.test(word) ? `"${word}"` : word);

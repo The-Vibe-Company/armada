@@ -6,6 +6,8 @@ type SandboxOperationName = Exclude<Parameters<typeof operation>[0], "mcp">;
 export function sandboxOperation(metadata: Omit<Command, "run" | "name"> & { name: SandboxOperationName }): Command {
   return {
     ...metadata,
-    run: (argv, { auth }) => operation(metadata.name, argv, auth, async () => ""),
+    automaticJson: true,
+    useSelectedOrg: true,
+    run: (argv, { auth, deps }) => operation(metadata.name, argv, auth, async () => "", undefined, deps.sandboxFile),
   };
 }

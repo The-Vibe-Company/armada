@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ProviderError, type ProviderErrorCode } from "@armada/core";
+import { type ExecRequest, ProviderError, type ProviderErrorCode } from "@armada/core";
 import { refusal } from "./errors.ts";
 import type { Machine, RunnerTransport } from "./ports.ts";
 export interface RunnerAccess {
@@ -48,24 +48,26 @@ const errors: Record<string, ProviderErrorCode> = {
   unsupported_fast_model: "invalid_request",
   invalid_effort: "invalid_request",
 };
-/** Real protocol1 supports string errors on 409 without an envelope; successful responses must match
- * request identity. Error details are allowlisted, never copied into public diagnostics. */
 export function createRunnerTransport(
   access: (row: Machine) => Promise<RunnerAccess>,
   fetcher: typeof fetch = fetch,
 ): RunnerTransport {
   return {
     async call<T>(row: Machine, op: string, input: object): Promise<T> {
+      const exec = op === "exec" ? (input as { input?: ExecRequest }).input : undefined;
+      const { signal, ...command } = exec ?? {};
+      signal?.throwIfAborted();
       const connection = await access(row);
+      signal?.throwIfAborted();
       if (connection.expiresAt <= Date.now()) throw refusal("unauthorized", "Runner grant expired.");
       const requestId = randomUUID();
-      const exec = input as { input?: { timeoutSeconds?: number; detached?: boolean } };
       const budget =
-        op === "exec" && !exec.input?.detached
-          ? ((exec.input?.timeoutSeconds ?? 3600) + 30) * 1000
+        op === "exec" && !exec?.detached
+          ? ((exec?.timeoutSeconds ?? 3600) + 30) * 1000
           : op === "health" || op === "resourceObservation"
             ? 5000
             : 120_000;
+      const deadline = AbortSignal.timeout(Math.min(budget, Math.max(1, connection.expiresAt - Date.now())));
       const response = await fetcher(connection.url, {
         method: "POST",
         headers: {
@@ -73,8 +75,15 @@ export function createRunnerTransport(
           Authorization: `Bearer ${connection.connectToken}`,
           "x-armada-runner-grant": connection.grant,
         },
-        body: JSON.stringify({ ...input, version: 1, requestId, sandboxId: row.info.id, op }),
-        signal: AbortSignal.timeout(Math.min(budget, Math.max(1, connection.expiresAt - Date.now()))),
+        body: JSON.stringify({
+          ...input,
+          ...(exec ? { input: command } : {}),
+          version: 1,
+          requestId,
+          sandboxId: row.info.id,
+          op,
+        }),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       });
       if (response.status !== 409 && !response.ok)
         throw refusal(response.status === 401 ? "unauthorized" : "unavailable", "Runner transport refused request.");
@@ -88,8 +97,6 @@ export function createRunnerTransport(
       if (identified && (envelope.version !== 1 || envelope.requestId !== requestId))
         throw refusal("unavailable", "Runner response identity mismatch.");
       if (envelope.error) {
-        // Existing protocol1 handlers use a bare safe error on HTTP409; successful/enveloped
-        // responses (including enveloped errors) must identify this exact request/version.
         if (!identified && response.status !== 409) throw refusal("unavailable", "Runner response identity mismatch.");
         const name = typeof envelope.error === "string" ? envelope.error : envelope.error.code;
         throw new ProviderError({

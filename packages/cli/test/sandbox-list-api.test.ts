@@ -2,14 +2,12 @@ import { expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Exact published #680 DTO: terminal presentation must need no interior enrichment.
 const row = {
   id: "11111111-1111-4111-8111-111111111111",
   orgId: "org",
   ownerId: "teammate",
   provider: "modal",
   providerSandboxId: null,
-  boatId: null,
   harness: "codex",
   model: null,
   reasoningEffort: null,
@@ -34,7 +32,6 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     expiresAt: "2026-11-09T15:00:00.000Z",
     provider: "boat",
     providerSandboxId: "bx_display",
-    boatId: "bx_display",
     taskOutcome: { state: "ready", prNumber: 42 },
     canOpen: true,
     canManage: true,
@@ -42,9 +39,10 @@ test("safe sandbox list renders metadata-only access without interior lookups an
   const unknown = { ...row, canOpen: undefined, canManage: undefined };
   for (const mode of ["text", "json", "page-info"]) {
     let out = "";
-    const paths: string[] = [];
+    const requests: { path: string; body: unknown }[] = [];
+    const filters = mode === "json" ? ["--status", "running", "--ref", "job/42"] : [];
     const code = await run(
-      ["list", ...(mode === "json" ? ["--json"] : mode === "page-info" ? ["--page-info"] : [])],
+      ["ls", ...filters, ...(mode === "json" ? ["--json"] : mode === "page-info" ? ["--page-info"] : [])],
       {
         out: (text) => {
           out += text;
@@ -58,8 +56,8 @@ test("safe sandbox list renders metadata-only access without interior lookups an
           },
           err: () => undefined,
           env: { ARMADA_TOKEN: "fixture-session" },
-          fetch: async (input) => {
-            paths.push(new URL(String(input)).pathname);
+          fetch: async (input, init) => {
+            requests.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
             return Response.json({
               sandboxes: [row, boat, unknown],
               total: 1,
@@ -76,7 +74,9 @@ test("safe sandbox list renders metadata-only access without interior lookups an
       },
     );
     expect(code).toBe(0);
-    expect(paths).toEqual(["/api/v1/sandbox/list"]);
+    expect(requests).toEqual([
+      { path: "/api/v1/sandbox/list", body: mode === "json" ? { status: ["running"], externalRef: "job/42" } : {} },
+    ]);
     if (mode === "json")
       expect(JSON.parse(out)).toEqual({ sandboxes: [row, boat, JSON.parse(JSON.stringify(unknown))] });
     else if (mode === "page-info")

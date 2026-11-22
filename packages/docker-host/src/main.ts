@@ -2,6 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { requireDockerDiskSpace } from "../../core/src/docker-disk-policy.ts";
 import { createDockerMachineExecutor } from "../../core/src/docker-machine.ts";
 import {
   type DockerSandboxLimits,
@@ -21,7 +22,7 @@ import {
 } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
-import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native.ts";
+import { dockerCli, fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
@@ -147,9 +148,6 @@ async function main(args: string[]) {
     await validateInstallation(state, undefined, instance);
     const deadline = Date.now() + 10 * 60_000;
     const api = httpApi();
-    // Keep the service alive to execute ordinary bound stop/delete jobs. The
-    // server fences new allocations as soon as draining begins; retries retain
-    // the original cleanup requests. No local resource deletion bypasses ACKs.
     while (!(await api.unregister(state))) {
       if (Date.now() >= deadline)
         throw new Error(
@@ -204,7 +202,6 @@ async function main(args: string[]) {
       const token = (await Bun.stdin.text()).trim();
       await register(store, api, options.get("--server") ?? "", token);
       if (command === "install") {
-        // Registration is durable before systemd starts the separate lock owner.
         await release();
         await installService(await store.load(), instance);
       }
@@ -213,18 +210,23 @@ async function main(args: string[]) {
     const state = await store.load();
     let limits = dockerResourceLimits(dockerHostResources());
     const sharedArtifacts = await sharedArtifactDirectory(directory);
-    const executor = createDockerMachineExecutor({
+    const machineOptions = {
       installationId: state.installationId,
       hostId: state.hostId,
       cli: dockerCli,
       readArchive: readDockerOutputArchive,
       now: Date.now,
       limits: () => limits,
+      async beforeRestoreAllocation() {
+        requireDockerDiskSpace(await sampleDisk());
+      },
       ...(sharedArtifacts ? { sharedArtifacts } : {}),
-    });
+    };
+    const executor = createDockerMachineExecutor(machineOptions);
     const runtime = withDiskFloor(
       {
         ...executor,
+        isRetainedStop: (request) => observeRetainedStop(machineOptions, request),
         diskFreeBytes: sampleDisk,
         cleanupImages: () => cleanupOfficialImages(dockerCli),
         configureLimits(next: DockerSandboxLimits | undefined) {
@@ -263,7 +265,6 @@ async function main(args: string[]) {
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
-    // No batch-wide admission fence: only the same generation must not overlap.
     const expiry = createPhysicalExpirySweep(store, runtime);
     const outputs = createExpiryOutputSweep(store, api.retainedOutputs, executor.readExpiredOutputs);
     const scans = new Set<Promise<void>>();
@@ -289,9 +290,7 @@ async function main(args: string[]) {
           nextImageCleanup = Date.now() + 60 * 60_000;
           try {
             await cleanupOfficialImages(dockerCli);
-          } catch {
-            /* Fail closed; retry next hour. */
-          }
+          } catch {}
         },
         failed(what) {
           console.error(
@@ -312,7 +311,6 @@ async function main(args: string[]) {
 }
 if (import.meta.main)
   main(process.argv.slice(2)).catch((error: unknown) => {
-    // Parser and transport diagnostics may include private response/state bytes.
     const safe =
       error instanceof Error && !(error instanceof SyntaxError) && !(error instanceof TypeError) && !("code" in error);
     console.error(

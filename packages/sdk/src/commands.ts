@@ -20,7 +20,7 @@ export function commandClient(
   policy: CommandPolicy,
   decode: (result: RequestResult, path: string, url: URL) => unknown,
 ) {
-  async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  async function request<T>(path: string, init: RequestInit = {}) {
     let url: URL;
     try {
       url = apiUrl(origin, path);
@@ -39,19 +39,19 @@ export function commandClient(
     return decode(result, path, url) as T;
   }
 
-  function control<T>(route: string, body: unknown, signal?: AbortSignal): Promise<T> {
-    return request(`/api/v1/${route}`, { ...jsonPost(body), ...(signal ? { signal } : {}) });
+  function control<T>(route: string, body: unknown, signal?: AbortSignal) {
+    return request<T>(`/api/v1/${route}`, { ...jsonPost(body), ...(signal ? { signal } : {}) });
   }
 
   return {
     request,
     control,
     sandboxes: sandboxClient((route, body, _readOnly, options) => control(route, body, options?.signal)),
-    launchFromTemplate<T>(body: unknown, signal: AbortSignal): Promise<T> {
-      return control(TEMPLATE_LAUNCH_ROUTE, body, signal);
+    launchFromTemplate<T>(body: unknown, signal: AbortSignal) {
+      return control<T>(TEMPLATE_LAUNCH_ROUTE, body, signal);
     },
-    deleteSandbox<T>(id: string, org?: string): Promise<T> {
-      return request(`/api/v1/sandboxes/${id}${org ? `?org=${encodeURIComponent(org)}` : ""}`, { method: "DELETE" });
+    deleteSandbox<T>(id: string, org?: string) {
+      return request<T>(`/api/v1/sandboxes/${id}${org ? `?org=${encodeURIComponent(org)}` : ""}`, { method: "DELETE" });
     },
     golden<T>(
       operation:
@@ -72,19 +72,18 @@ export function commandClient(
         | "size-policy",
       body: unknown,
       signal?: AbortSignal,
-    ): Promise<T> {
-      return control(`golden/${operation}`, body, signal);
+    ) {
+      return control<T>(`golden/${operation}`, body, signal);
     },
-    dockerSnapshot<T>(operation: "create" | "get" | "list" | "rebuild", body: unknown): Promise<T> {
-      return control(`docker/snapshots/${operation}`, body);
+    dockerSnapshot<T>(operation: "create" | "get" | "list" | "rebuild", body: unknown) {
+      return control<T>(`docker/snapshots/${operation}`, body);
     },
-    dockerHost<T>(operation: "list" | "limits" | "register-token" | "retention" | "revoke", body: unknown): Promise<T> {
-      // Preserve the host API’s existing request headers.
-      return request(`/api/v1/docker/hosts/${operation}`, { method: "POST", body: JSON.stringify(body) });
+    dockerHost<T>(operation: "list" | "limits" | "register-token" | "retention" | "revoke", body: unknown) {
+      return request<T>(`/api/v1/docker/hosts/${operation}`, { method: "POST", body: JSON.stringify(body) });
     },
-    token<T>(operation: "create" | "list" | "revoke", body?: unknown): Promise<T> {
-      if (body === undefined) return request(`/api/v1/token/${operation}`, { method: "POST" });
-      return control(`token/${operation}`, body);
+    token<T>(operation: "create" | "list" | "revoke", body?: unknown) {
+      if (body === undefined) return request<T>(`/api/v1/token/${operation}`, { method: "POST" });
+      return control<T>(`token/${operation}`, body);
     },
   };
 }

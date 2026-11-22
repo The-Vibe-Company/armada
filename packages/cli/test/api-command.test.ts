@@ -59,7 +59,7 @@ test.each([
 test("api maps HTTP failures without echoing response text, codes or request secrets", async () => {
   const secret = "private-value";
   const output = await invoke(
-    ["secrets/create", "-"],
+    ["secrets/set", "-"],
     () => Response.json({ error: { code: "private_value", message: `${accessToken} ${secret}` } }, { status: 403 }),
     async () => JSON.stringify({ value: secret }),
   );
@@ -67,6 +67,26 @@ test("api maps HTTP failures without echoing response text, codes or request sec
   expect(output.stdout).toBe("");
   expect(output.stderr).toContain("Armada API request failed (HTTP 403).");
   for (const value of [accessToken, secret, "private_value"]) expect(output.stderr).not.toContain(value);
+});
+
+test("api rejects malformed UTF-8 from stdin before sending a JSON body", async () => {
+  const originalInput = Bun.stdin;
+  const tty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  const input = new Blob(['{"value":"', new Uint8Array([0xff]), '"}']);
+  Object.defineProperty(Bun, "stdin", { value: input });
+  Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+  try {
+    const output = await invoke(["secrets/set", "-"], () => {
+      throw new Error("Malformed input must not reach the API");
+    });
+    expect(output.code).toBe(2);
+    expect(output.stdout).toBe("");
+    expect(output.stderr).toContain("Could not read a valid UTF-8 JSON body from stdin.");
+  } finally {
+    Object.defineProperty(Bun, "stdin", { value: originalInput });
+    if (tty) Object.defineProperty(process.stdin, "isTTY", tty);
+    else Reflect.deleteProperty(process.stdin, "isTTY");
+  }
 });
 
 test("api hides input echoed by a failed login refresh", async () => {

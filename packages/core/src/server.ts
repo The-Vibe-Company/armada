@@ -6,10 +6,12 @@
  */
 
 export {
+  ACCOUNT_ACTIVE_WORK_PREDICATE,
   ACCOUNT_WORKING_PREDICATE,
   accountModelCountsSql,
   accountWaitingCountSql,
   accountWorkingCountSql,
+  modalLaunchSetupKeySql,
 } from "./account-work-sql.ts";
 export { type ApplicationVault, type ApplicationVaultActor, createApplicationVault } from "./application-vault.ts";
 export { boatSnapshotName } from "./boat-snapshot-name.ts";
@@ -50,9 +52,9 @@ export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-g
 export { snapshotGolden } from "./golden-runtime.ts";
 export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
-export { assertSqlGoldenMutation } from "./golden-store.ts";
+export { assertSqlGoldenMutation, beginSnapshotLaunch } from "./golden-store.ts";
 export * from "./index.ts";
-export { prepareLaunchWorkspace } from "./launch.ts";
+export { prepareGoldenLaunch, prepareLaunchWorkspace } from "./launch.ts";
 export {
   admitLaunchPlan,
   applyLaunchAccountDefaults,
@@ -87,6 +89,7 @@ export {
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { runtimeBootstrapScript } from "./runtime-bootstrap.ts";
+export { CoreLaunchSettlementConflict } from "./sandbox.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export { readOutputArchive } from "./sandbox-output-archive.ts";
 export {
@@ -121,6 +124,7 @@ export {
   resolvePrice,
   type TokenRates,
 } from "./server-pricing.ts";
+export { SHARED_ARTIFACT_CACHE_PATH } from "./shared-artifact-cache.ts";
 export { createSkillCatalog } from "./skill-catalog.ts";
 export * from "./skill-defaults.ts";
 export { mergeSkillPins } from "./skill-merge.ts";

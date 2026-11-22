@@ -1,0 +1,229 @@
+import { describe, expect, test } from "bun:test";
+import { ControlError, createMcpControl } from "./control.ts";
+
+const ORG = "00000000-0000-4000-8000-000000000010";
+const OTHER_ORG = "00000000-0000-4000-8000-000000000011";
+const ID = "00000000-0000-4000-8000-000000000050";
+
+const dto = (overrides: Record<string, unknown> = {}) => ({
+  id: ID,
+  name: "Linear",
+  orgId: ORG,
+  scope: "personal",
+  transport: "http",
+  url: "https://mcp.linear.app/mcp",
+  authType: "oauth",
+  status: "not_connected",
+  defaultForLaunch: false,
+  ...overrides,
+});
+
+type Call = { url: string; headers: Record<string, string>; body: unknown };
+
+function server(reply: (operation: string, body: Record<string, unknown>) => Response) {
+  const calls: Call[] = [];
+  const fakeFetch = (async (url: URL | string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push({ url: String(url), headers: init?.headers as Record<string, string>, body });
+    return reply(String(url).split("/").pop() ?? "", body);
+  }) as typeof fetch;
+  const control = createMcpControl({ serverUrl: "https://armada.example/mcp", token: "user-jwt", fetch: fakeFetch });
+  return { calls, control };
+}
+
+describe("MCP control client", () => {
+  test("create posts the org-scoped request with the user's bearer and returns only contract fields", async () => {
+    const { calls, control } = server(() =>
+      Response.json({ connection: dto({ authType: "bearer", authentication: "leaked", bearerToken: "leaked" }) }),
+    );
+    const request = {
+      org: ORG,
+      scope: "personal" as const,
+      name: "Linear",
+      transport: "http" as const,
+      url: "https://mcp.linear.app/mcp",
+      args: [],
+      authType: "bearer" as const,
+      authentication: "sk-test",
+    };
+    const created = await control.create(request);
+    expect(calls).toEqual([
+      {
+        url: "https://armada.example/api/v1/mcp/create",
+        headers: { "content-type": "application/json", authorization: "Bearer user-jwt" },
+        body: request,
+      },
+    ]);
+    expect(created).toEqual(dto({ authType: "bearer" }) as never);
+    expect(JSON.stringify(created)).not.toContain("leaked");
+  });
+
+  test("list keeps valid rows of the requested org only", async () => {
+    const { control } = server(() =>
+      Response.json({
+        connections: [
+          dto(),
+          dto({ id: "00000000-0000-4000-8000-000000000051", orgId: OTHER_ORG }),
+          dto({ id: "not-a-uuid" }),
+          dto({ id: "00000000-0000-4000-8000-000000000052", status: "mystery" }),
+        ],
+      }),
+    );
+    expect((await control.list(ORG)).map((row) => row.id)).toEqual([ID]);
+  });
+
+  test("connect returns a safe authorization URL and refuses an unsafe one", async () => {
+    let authorizationUrl: unknown = "https://auth.linear.app/authorize?state=s";
+    const { control } = server(() => Response.json({ connection: dto(), authorizationUrl }));
+    expect(await control.connect({ org: ORG, id: ID })).toMatchObject({ authorizationUrl });
+    for (authorizationUrl of ["javascript:alert(1)", "http://auth.example/authorize", "https://u:p@auth.example/"]) {
+      await expect(control.connect({ org: ORG, id: ID })).rejects.toThrow("refused as unsafe");
+    }
+    authorizationUrl = undefined;
+    expect(await control.connect({ org: ORG, id: ID })).toMatchObject({ authorizationUrl: null });
+  });
+
+  test("sandbox-connections keeps the sandbox org's valid rows", async () => {
+    const { calls, control } = server(() =>
+      Response.json({ connections: [dto(), dto({ id: "00000000-0000-4000-8000-000000000051", orgId: OTHER_ORG })] }),
+    );
+    const sandbox = "00000000-0000-4000-8000-000000000030";
+    expect(await control.sandboxConnections({ org: ORG, id: sandbox })).toEqual([dto() as never]);
+    expect(calls[0]).toMatchObject({
+      url: "https://armada.example/api/v1/mcp/sandbox-connections",
+      body: { org: ORG, id: sandbox },
+    });
+  });
+
+  test("set-enabled and the OAuth callback post their agreed bodies and return the stored connection", async () => {
+    const { calls, control } = server((operation) =>
+      Response.json({ connection: dto({ status: operation === "set-enabled" ? "disabled" : "connected" }) }),
+    );
+    expect((await control.setEnabled({ org: ORG, id: ID, enabled: false })).status).toBe("disabled");
+    const back = await control.oauthCallback({ state: "state-1234", code: "c", issuer: "https://auth.example" });
+    expect(back.status).toBe("connected");
+    expect(calls.map(({ url, body }) => ({ url, body }))).toEqual([
+      { url: "https://armada.example/api/v1/mcp/set-enabled", body: { org: ORG, id: ID, enabled: false } },
+      {
+        url: "https://armada.example/api/v1/mcp/oauth/callback",
+        body: { state: "state-1234", code: "c", issuer: "https://auth.example" },
+      },
+    ]);
+  });
+
+  test("a catalog service connects by id only, and metadata sends only what changes", async () => {
+    const { calls, control } = server((operation) =>
+      Response.json({
+        connection: dto({ catalogId: "linear", defaultForLaunch: operation === "metadata", status: "connected" }),
+      }),
+    );
+    const created = await control.createFromCatalog({ org: ORG, scope: "personal", name: "Work", serviceId: "linear" });
+    const updated = await control.metadata({ org: ORG, id: ID, defaultForLaunch: true });
+    expect(calls.map(({ url, body }) => ({ url, body }))).toEqual([
+      {
+        url: "https://armada.example/api/v1/mcp/create",
+        body: { org: ORG, scope: "personal", name: "Work", serviceId: "linear" },
+      },
+      { url: "https://armada.example/api/v1/mcp/metadata", body: { org: ORG, id: ID, defaultForLaunch: true } },
+    ]);
+    expect([created.catalogId, created.defaultForLaunch, updated.defaultForLaunch]).toEqual(["linear", false, true]);
+  });
+
+  test("the catalog only offers Connect for a service the server reports available", async () => {
+    const service = { id: "notion", label: "Notion", url: "https://mcp.notion.com/mcp", availability: "available" };
+    const { calls, control } = server(() =>
+      Response.json({
+        services: [
+          service,
+          { ...service, id: "slack", label: "Slack", availability: "setup_required", setupMessage: "Register an app." },
+          { ...service, id: "future", label: "Future", availability: "maybe" },
+          { ...service, id: "bad", url: "javascript:alert(1)" },
+          { ...service, id: "Not An Id" },
+        ],
+      }),
+    );
+    const services = await control.catalog(ORG);
+    expect(calls[0]?.body).toEqual({ org: ORG });
+    expect(services.map((item) => [item.id, item.availability])).toEqual([
+      ["notion", "available"],
+      ["slack", "setup_required"],
+      ["future", "setup_required"],
+    ]);
+    expect(services[1]?.setupMessage).toBe("Register an app.");
+  });
+
+  test("a server without the catalog says so instead of offering nothing", async () => {
+    const { control } = server(() =>
+      Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
+    );
+    await expect(control.catalog(ORG)).rejects.toThrow("does not offer the service catalog yet");
+  });
+
+  test("revoke and delete need the server's explicit confirmation", async () => {
+    let answer: unknown = { ok: true };
+    const { control } = server(() => Response.json(answer));
+    await control.revoke({ org: ORG, id: ID });
+    answer = {};
+    await expect(control.delete({ org: ORG, id: ID })).rejects.toThrow("did not confirm");
+  });
+
+  test.each([
+    [401, { error: { code: "unauthorized", message: "token expired" } }, "Sign in again."],
+    [403, { error: { code: "forbidden", message: "Only an org admin changes org connections." } }, "Only an org admin"],
+    [405, { error: { code: "invalid", message: "Use POST." } }, "Use POST."],
+    [409, { error: { code: "conflict", message: "A connection with that name exists." } }, "name exists"],
+    [
+      500,
+      "<html>",
+      "The request could not be confirmed because the Armada server returned an unreadable error. Reload to check the current state before retrying.",
+    ],
+  ])("a %i answer becomes a ControlError the person can read", async (status, body, expected) => {
+    const { control } = server(() =>
+      typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
+    );
+    const error = await control.list(ORG).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ControlError);
+    expect((error as ControlError).message).toContain(expected);
+    expect((error as ControlError).status).toBe(status);
+    expect((error as ControlError).message).not.toContain("<html>");
+  });
+
+  test("an unreachable server is reported without detail", async () => {
+    const control = createMcpControl({
+      serverUrl: "https://armada.example/mcp",
+      token: "user-jwt",
+      fetch: (async () => {
+        throw new TypeError("connect ECONNREFUSED");
+      }) as unknown as typeof fetch,
+    });
+    await expect(control.status({ org: ORG, id: ID })).rejects.toThrow("The Armada server is unreachable.");
+  });
+});
+
+test("controlPost retains object validation and structured domain failure details", async () => {
+  const { controlPost } = await import("./control.ts");
+  let reply: Response;
+  const options = {
+    serverUrl: "https://armada.test",
+    token: "user-jwt",
+    fetch: Object.assign(async () => reply, { preconnect: fetch.preconnect }),
+  };
+  for (const value of [null, [], 42, "text"]) {
+    reply = Response.json(value);
+    await expect(controlPost(options, "/api/v1/test", {})).rejects.toThrow("unreadable");
+  }
+  reply = new Response("not JSON");
+  await expect(controlPost(options, "/api/v1/test", {})).rejects.toThrow("unreadable");
+  reply = Response.json(
+    { error: { code: "not_found", message: "The invitation expired.", reason: "expired", retryAfterSeconds: 30 } },
+    { status: 404 },
+  );
+  const error = await controlPost(options, "/api/v1/test", {}, "invitations").catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    status: 404,
+    code: "not_found",
+    message: "The invitation expired.",
+    reason: "expired",
+    retryAfterSeconds: 30,
+  });
+});

@@ -1,63 +1,6 @@
-import {
-  API_FAILURE_HELP,
-  type ApiFailureCode,
-  type GoldenErrorCode,
-  type LaunchErrorCode,
-  type ProviderErrorCode,
-  type VaultErrorCode,
-} from "@armada/core";
+import { isServerFailureCode } from "@armada/core/contract/failures";
 import type { FailureCode, Fetch } from "./index.ts";
 
-const commonCodes = {
-  build_failed: true,
-  busy: true,
-  conflict: true,
-  credential_binding_required: true,
-  credential_binding_unsafe: true,
-  credential_binding_unsupported: true,
-  credential_busy: true,
-  credential_refused: true,
-  denied: true,
-  forbidden: true,
-  host_draining: true,
-  host_full: true,
-  init_failed: true,
-  internal: true,
-  invalid: true,
-  invalid_config: true,
-  invalid_request: true,
-  missing_credential: true,
-  no_credentials: true,
-  no_running_turn: true,
-  not_found: true,
-  payment_required: true,
-  prompt_failed: true,
-  provider_not_configured: true,
-  provider_routing_unavailable: true,
-  rate_limited: true,
-  sandbox_not_ready: true,
-  sandbox_retention_ended: true,
-  sandbox_terminal: true,
-  setup_failed: true,
-  snapshot_failed: true,
-  start_failed: true,
-  unauthorized: true,
-  unavailable: true,
-  unknown: true,
-  unknown_route: true,
-  unsupported: true,
-  upstream: true,
-} satisfies Record<
-  | Exclude<LaunchErrorCode | ProviderErrorCode | VaultErrorCode | GoldenErrorCode, ApiFailureCode>
-  | "internal"
-  | "unknown_route"
-  | "sandbox_terminal"
-  | "busy"
-  | "denied"
-  | "upstream",
-  boolean
-> &
-  Partial<Record<ApiFailureCode, boolean>>;
 export const TEMPLATE_LAUNCH_ROUTE = "templates/launch";
 
 const retryStatuses = new Set([429, 502, 503, 504]);
@@ -72,6 +15,8 @@ export interface RequestPolicy {
   renewToken?: () => Promise<string>;
   readOnly?: boolean;
   readRetries?: number;
+  /** Return matching download responses without reading their bodies. */
+  streamResponse?: (response: Response) => boolean;
 }
 
 interface Failure {
@@ -88,32 +33,34 @@ export type RequestResult =
       response: Response;
       payload: unknown;
       bodyReadFailed: boolean;
+      /** Code from a structured error object. CLI route detection uses its presence. */
       rawCode?: string;
       failure?: Failure;
     };
 
-export function apiUrl(origin: string, path: string): URL {
+export function apiUrl(origin: string, path: string) {
   if (!path.startsWith("/")) throw new TypeError("API paths must start with '/'.");
   const url = new URL(path, origin);
   if (url.origin !== origin) throw new TypeError("API paths must stay on the Armada origin.");
   return url;
 }
 
-export function jsonPost(body: unknown): RequestInit {
+export function jsonPost(body: unknown) {
   const bodyText = JSON.stringify(body);
-  return {
+  const init: RequestInit = {
     method: "POST",
     headers: { "content-type": "application/json" },
     ...(bodyText !== undefined ? { body: bodyText } : {}),
   };
+  return init;
 }
 
 /** Shared JSON transport. Callers validate their own success receipts and choose how to present errors. */
-export async function requestApi(
+export const requestApi: (
   url: URL,
   requestInit: RequestInit | (() => RequestInit),
   policy: RequestPolicy,
-): Promise<RequestResult> {
+) => Promise<RequestResult> = async (url, requestInit, policy) => {
   const { fetch, signal: callerSignal, combineSignal, timeoutMs, renewToken, readOnly, readRetries = 0 } = policy;
   const deadline = combineSignal ? AbortSignal.timeout(timeoutMs) : undefined;
   const signal = deadline
@@ -128,7 +75,7 @@ export async function requestApi(
     try {
       const init = typeof requestInit === "function" ? requestInit() : requestInit;
       const headers = Object.fromEntries(new Headers(init.headers).entries());
-      headers.accept = "application/json";
+      headers.accept ??= "application/json";
       if (token !== undefined) headers.authorization = `Bearer ${token}`;
       response = await fetch(url, { ...init, headers, redirect: "error", signal });
     } catch (error) {
@@ -143,6 +90,7 @@ export async function requestApi(
       renewed = true;
       continue;
     }
+    if (policy.streamResponse?.(response)) return { kind: "response", response, payload: null, bodyReadFailed: false };
     let payload: unknown = null;
     let bodyReadFailed = false;
     let text: string | undefined;
@@ -154,9 +102,7 @@ export async function requestApi(
     if (text !== undefined) {
       try {
         payload = JSON.parse(text);
-      } catch {
-        // The caller decides whether an empty or malformed success body is valid.
-      }
+      } catch {}
     }
     if (response.ok) return { kind: "response", response, payload, bodyReadFailed };
 
@@ -172,7 +118,6 @@ export async function requestApi(
         failure: { code: "unavailable", serverCode: error, outcomeUnknown: false, retryAfterSeconds },
       };
     }
-    // A server-requested delay belongs to the caller's scheduler.
     if (
       readOnly &&
       retryStatuses.has(status) &&
@@ -184,10 +129,8 @@ export async function requestApi(
       continue;
     const rawCode =
       error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
-    const code: FailureCode =
-      rawCode && (Object.hasOwn(API_FAILURE_HELP, rawCode) || Object.hasOwn(commonCodes, rawCode))
-        ? (rawCode as FailureCode)
-        : "unknown_response";
+    const serverCode = typeof error === "string" ? error : rawCode;
+    const code: FailureCode = serverCode && isServerFailureCode(serverCode) ? serverCode : "unknown_response";
     return {
       kind: "response",
       response,
@@ -196,16 +139,15 @@ export async function requestApi(
       ...(rawCode !== undefined ? { rawCode } : {}),
       failure: {
         code,
-        serverCode: rawCode && /^[a-z][a-z0-9_]{0,99}$/.test(rawCode) ? rawCode : undefined,
+        serverCode: serverCode && /^[a-z][a-z0-9_]{0,99}$/.test(serverCode) ? serverCode : undefined,
         outcomeUnknown: !readOnly && (status >= 500 || code === "outcome_unknown"),
         retryAfterSeconds,
       },
     };
   }
-}
+};
 
-/** Accept only a delay in seconds or an HTTP date (header), or a whole number of seconds (failure body). */
-function retryAfter(header: string | null, error: unknown): number | undefined {
+function retryAfter(header: string | null, error: unknown) {
   const seconds = (value: number) => (Number.isFinite(value) && value >= 0 ? Math.ceil(value) : undefined);
   if (header !== null) {
     const text = header.trim();

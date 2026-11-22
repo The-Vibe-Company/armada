@@ -15,7 +15,14 @@ export function createGoldenRuntimeEnvironment(
       const { bindings } = await readRuntimeTemplateEnvironment(sql, actor, id, provider);
       await assertLaunchSecretBindings(sql, actor, bindings);
     },
-    async deliver(provider: "boat" | "modal", actor: Actor, id: string, epoch?: string, signal?: AbortSignal) {
+    async deliver(
+      provider: "boat" | "modal",
+      actor: Actor,
+      id: string,
+      epoch?: string,
+      signal?: AbortSignal,
+      assertClaim?: (tx: Sql) => Promise<void>,
+    ) {
       const { bindings } = await readRuntimeTemplateEnvironment(sql, actor, id, provider);
       if (!bindings.length) return;
       return deliver({
@@ -24,6 +31,7 @@ export function createGoldenRuntimeEnvironment(
         ownerId: actor.userId,
         epoch,
         signal,
+        assertClaim,
         load: async (tx) => {
           const source = await readRuntimeTemplateEnvironment(tx, actor, id, provider);
           if (!source.bindings.length) throw new VaultError("conflict", "Runtime environment admission changed.");

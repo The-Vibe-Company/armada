@@ -16,7 +16,6 @@ test("list batches public usage identities across a full page without per-sandbo
       provider: "modal",
       harness: "codex",
       providerSandboxId: null,
-      boatId: null,
       model: null,
       reasoningEffort: null,
       status: "ready",

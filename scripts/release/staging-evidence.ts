@@ -7,7 +7,7 @@ export function authenticStagingEvidence(
   repository: string,
   sha: string,
   deployedAfter?: string,
-): boolean {
+) {
   const head = run.head_repository as { full_name?: string } | undefined;
   if (
     !/^[a-f0-9]{40}$/.test(sha) ||
@@ -61,7 +61,7 @@ export function authenticWakeupEvidence(
   health: unknown,
   version: string,
   deployedAfter: string,
-): boolean {
+) {
   return (
     authenticStagingEvidence(run, jobs, repository, sha, deployedAfter) && matchesDeploymentHealth(health, version, sha)
   );
@@ -74,7 +74,7 @@ if (import.meta.main) {
   let reused = false;
   try {
     if (!repository || !sha || !token) throw new Error("Missing evidence lookup context");
-    const api = async <T>(path: string): Promise<T> => {
+    const api = async <T>(path: string) => {
       const response = await fetch(`https://api.github.com/repos/${repository}/${path}`, {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
         signal: AbortSignal.timeout(15_000),

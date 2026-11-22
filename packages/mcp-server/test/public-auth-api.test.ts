@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import published from "../openapi.json";
 import { type ControlOptions, createHandler, handleControlRequest } from "../src/index.ts";
+import { publishedResponse } from "./published-response.ts";
 
 const challenge = "a".repeat(43);
 const state = "state123";
@@ -50,6 +52,9 @@ test("public browser authorize validates strict loopback PKCE and preserves rand
       `auth/authorize?provider=github&redirect_uri=${encodeURIComponent("http://127.0.0.1:43123/callback")}&code_challenge=${challenge}&state=${state}`,
     ),
   );
+  const authorize = published.paths["/api/v1/auth/authorize"].get;
+  expect(authorize.security).toEqual([]);
+  expect(authorize.responses["302"].headers.Location.schema).toMatchObject({ format: "uri" });
   expect(response.status).toBe(302);
   expect(response.headers.get("cache-control")).toBe("no-store");
   const location = new URL(response.headers.get("location") ?? "");
@@ -97,7 +102,9 @@ test("public exchange forwards the verifier and exposes only the session DTO", a
   expect(response.status).toBe(200);
   expect(providerRequest?.url).toBe("https://supabase.test/auth/v1/token?grant_type=pkce");
   expect(await providerRequest?.json()).toEqual({ auth_code: "authorization-code", code_verifier: verifier });
-  expect(await response.json()).toEqual({
+  const output = await response.json();
+  publishedResponse("auth/exchange").parse(output);
+  expect(output).toEqual({
     accessToken: "access-token",
     refreshToken: "refresh-token",
     expiresAt: expect.any(String),
@@ -119,7 +126,9 @@ test("public refresh succeeds and refusal never exposes provider configuration o
   );
   expect(success.status).toBe(200);
   expect(body).toEqual({ refresh_token: "refresh-secret" });
-  expect(await success.json()).toEqual({
+  const output = await success.json();
+  publishedResponse("auth/refresh").parse(output);
+  expect(output).toEqual({
     accessToken: "access-token",
     refreshToken: "refresh-token",
     expiresAt: expect.any(String),
@@ -169,6 +178,7 @@ test("public email start validates input and valid start and verify use the prov
     }),
   );
   expect(start.status).toBe(200);
+  publishedResponse("auth/email/start").parse(await start.json());
   expect(calls[0]?.url).toBe(
     "https://supabase.test/auth/v1/otp?redirect_to=https%3A%2F%2Farmada.test%2Flogin%3Fflow%3Dcode",
   );
@@ -187,67 +197,9 @@ test("public email start validates input and valid start and verify use the prov
     }),
   );
   expect(verify.status).toBe(200);
+  publishedResponse("auth/email/verify").parse(await verify.json());
   expect(calls[1]?.url).toBe("https://supabase.test/auth/v1/verify");
   expect(await calls[1]?.json()).toEqual({ type: "email", email: "person@example.test", token: "123456" });
-});
-
-test("public method discovery filters upstream settings and exposes no configuration", async () => {
-  const handler = publicHandler((request) => {
-    expect(request.url).toBe("https://supabase.test/auth/v1/settings");
-    expect(request.headers.get("apikey")).toBe("anon-secret");
-    return Response.json({
-      external: { email: true, github: false, google: true, discord: true },
-      secret: "provider-secret",
-    });
-  });
-  const response = await handler(request("auth/methods"));
-  expect(response.status).toBe(200);
-  expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(await response.json()).toEqual({ methods: ["email", "google"] });
-});
-
-test("public method discovery fails closed when upstream settings cannot be read", async () => {
-  const handler = publicHandler(() => Response.json({ secret: "provider-secret" }, { status: 500 }));
-  const response = await handler(request("auth/methods"));
-  expect(response.status).toBe(503);
-  expect(await response.text()).not.toContain("provider-secret");
-  expect((await handler(request("auth/methods", { method: "POST" }))).status).toBe(405);
-});
-
-test("CLI email-link opt-in binds the loopback callback to state without changing code-only clients", async () => {
-  const calls: Request[] = [];
-  const handler = publicHandler((request) => {
-    calls.push(request);
-    return Response.json({});
-  });
-  const body = {
-    email: "person@example.test",
-    redirect_uri: "http://127.0.0.1:43123/callback",
-    code_challenge: challenge,
-    state,
-    cli_email_link: true,
-  };
-  const start = (value: unknown) =>
-    handler(
-      request("auth/email/start", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(value),
-      }),
-    );
-  expect((await start(body)).status).toBe(200);
-  const redirect = new URL(new URL(calls[0]?.url ?? "").searchParams.get("redirect_to") ?? "");
-  expect(redirect.toString()).toBe(`http://127.0.0.1:43123/callback?state=${state}`);
-  expect(await calls[0]?.json()).toMatchObject({ code_challenge: challenge, code_challenge_method: "s256" });
-  for (const invalid of [
-    { ...body, cli_email_link: "true" },
-    { ...body, redirect_uri: "https://example.test/callback" },
-    { ...body, redirect_uri: "http://127.0.0.1:43123/other" },
-    { ...body, redirect_uri: "http://127.0.0.1:43123/callback?state=attacker" },
-    { ...body, redirect_uri: "http://127.0.0.1:43123/callback#access_token=not-supported" },
-  ])
-    expect((await start(invalid)).status).toBe(400);
-  expect(calls).toHaveLength(1);
 });
 
 test("public login preserves safe auth failures and their status instead of masking them as refusals", async () => {

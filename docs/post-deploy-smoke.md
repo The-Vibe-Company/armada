@@ -3,7 +3,7 @@
 **Owner decision 2026-11-13: Boat is not part of the release gate.**
 Boat remains a first-class provider, not disabled or retired. Post-deploy, pinned and
 release-gate entry points ignore Boat cases before validating their unused
-credentials/model/golden fields. They print exactly once per invocation:
+credentials, model and snapshot fields. They print exactly once per invocation:
 `boat: not part of the release gate`. This supersedes Boat
 acceptance procedures below for automated staging/release use, not Boat product
 support. Modal full smoke and existing owner Docker-host parity probes remain.
@@ -132,7 +132,7 @@ the server's normal actor/org authorization.
 Coordinator procedure (never executed by workers):
 1. Select one existing production Boat snapshot and the coordinator's own model
    account/org. Supply one valid selected Boat case via ARMADA_SMOKE_CASES.
-   These are identifiers, not credentials; no golden/host registration or
+   These are identifiers, not credentials; no snapshot or host registration or
    production deployment settings are changed.
 2. Set ARMADA_URL to the exact production Armada **API origin** (no path, query,
    userinfo or fragment). Read the production bearer securely from stdin/env,
@@ -153,7 +153,7 @@ unset ARMADA_TOKEN
 Case shape (identifiers/placeholders only):
 
 ```json
-[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-golden>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
+[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-snapshot>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
 ```
 
 Only the sandbox ID returned by this invocation's own launch may be prompted,
@@ -187,8 +187,8 @@ the sandbox and checks provider state.
 
 Default-pin reads and the vault family (no compute) run first, in case order.
 After that every independent sandbox runs concurrently in its own lane, one per
-case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
-the dirty preservation worker of the same case, in that order). The expiry TTL
+case and family: `templates`, `expiry`, `scoped`, and `lifecycle` (the clean
+worker, then the dirty preservation worker of the same case, in that order). The expiry TTL
 wait therefore overlaps the lifecycle work instead of adding to it (work on one
 model account takes turns, see below).
 Every step receipt from a lane carries its `case` index and `lane`, so
@@ -202,11 +202,12 @@ fails the probe. Verified children are stopped first. Only a row nothing else
 explains waits for launches still in flight to return its handle, until none
 is in flight or for at most the longest launch request timeout (10 minutes).
 When nothing is unexplained there is no wait, so an unrelated launch does not
-delay scoped cleanup or the next preservation worker. A scoped child is registered under its parent's owner and
-golden without an owner API launch, so the run cannot attribute another case's
-child: scoped Codex lifecycle runs that share an org and golden run one after
+delay scoped cleanup or the next scoped parent. A scoped child is registered under its parent's owner and
+snapshot without an owner API launch, so the run cannot attribute another case's
+child: scoped Codex probes that share an org and snapshot run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
-and scoped runs on other goldens are not held by that queue.
+and scoped runs on other snapshots are not held by that queue. Scoped parent
+launch, ready, and stop receipts have distinct step names in the journal.
 
 A model account admits a bounded number of working agents, possibly one, and
 every launch reserves a slot before its fork. Work that occupies the same
@@ -275,6 +276,13 @@ First run the default smoke above with the staging gate off for the stock baseli
 then retire those workers and turn staging on before running the new mode. A zero
 exit from this partial check does not authorize production enablement.
 
+For the Modal runtime launch smoke, use a staging golden with Git, gh, and the
+normal runtime bootstrap tools installed, but without Python 3 on the image.
+Verify the absence of `/usr/bin/python3` and `python3` on PATH, launch with a
+disposable private repository, and confirm the initial checkout succeeds.
+From the checkout, run `git ls-remote origin` and `gh repo view --json nameWithOwner`
+to exercise the installed Git credential helper and gh shim against that repository.
+
 ### Work preservation
 
 Both staging workflow entrypoints now pass `--work-preservation`. This mode
@@ -283,7 +291,7 @@ making requests. The existing case format is unchanged: every selected pair runs
 twice, using separate disposable sandboxes. The first must start clean with no
 local-only refs and stop without a preservation note or recovery archive. The
 second creates a single empty, unpushed commit (no remote push), stops, retrieves
-the same recovery endpoint used by `armada recovery`, and checks the in-memory
+the same recovery endpoint used by `armada api sandbox/recovery`, and checks the in-memory
 tar manifest for that exact commit. The selected bundle pack is indexed with Git
 in a private temporary object store, then Git must read the expected commit
 object. Incremental bundle prerequisite parents/trees need not be present; this
@@ -399,9 +407,9 @@ A named `time_to_ready` pass records milliseconds from immediately before
 launch through its ready observation, tagged with provider/harness and case.
 Each ordinary worker also emits `lifecycle_cleanup_summary`, with total elapsed
 time, known leftover IDs and an explicit unknown-launch flag. An ambiguous
-launch cannot be retried or declared clean: use the reported org/golden/start
-time to reconcile staging resources before rerunning. No new correlation API is
-introduced. Interrupted runners still require operator reconciliation.
+launch cannot be retried or declared clean: use the reported `org`, `golden` (snapshot name),
+and `startedAt` fields to reconcile staging resources before rerunning. No new
+correlation API is introduced. Interrupted runners still require operator reconciliation.
 
 This mode adds one tiny model turn and one retained stop/resume physical incarnation
 per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
@@ -470,7 +478,8 @@ checkout/restore is claimed beyond the existing Git pack/object proof.
 The earlier stop receipt is invalidated before these verification reads, so any
 failure still runs idempotent cleanup rather than trusting potentially stale
 state. `preservation_cleanup_summary` reports known leftover IDs or an unknown
-launch with org/golden/start time, plus a validated recovery ID when available.
+launch with `org`, `golden` (snapshot name), and `startedAt`, plus a validated
+recovery ID when available.
 Archive bytes, commit IDs and note/provider text are never logged.
 
 No new allocation, model turn, case field, secret or migration. The dirty worker
@@ -485,7 +494,7 @@ and finally cleanup are unchanged. Offline tests are not live acceptance receipt
 `--default-skills` deliberately requires `--work-preservation`: it reuses that
 clean/dirty worker pair and its cleanup inventory, adding no allocation or model
 turn. Both staging entrypoints include the flag. Every case requires its existing
-org/golden UUIDs; canonical casing is used.
+org and snapshot UUIDs; canonical casing is used.
 
 Before any compute, named `default_skills_golden`, `default_skills_org` and
 `default_skills_personal` reads fetch the shipped defaults API. The client derives
@@ -494,12 +503,16 @@ merge helper. No defaults are changed: concurrent settings edits can intentional
 fail the probe rather than overwrite someone else's configuration.
 
 The clean launch omits both explicit skills and opt-out, then
-`default_skills_receipts` requires exactly the effective pins in both the launch
-and persisted status receipts, including matching versions, IDs, checksums and
-registry origin. Its returned snapshot ID must match the queried environment.
-The dirty worker supplies `skipSkillDefaults: true` and no explicit pins;
-`default_skills_opt_out_receipts` requires empty receipt arrays. This still runs
-normal work preservation/recovery checks.
+`default_skills_receipts` checks the exact effective pins, including versions,
+IDs, checksums and registry origin. For a full launch response it compares the
+launch and persisted status receipts and checks the returned snapshot ID. For a
+Modal admission receipt it verifies the sandbox in owner inventory filtered to
+the expected snapshot, then waits for setup to settle successfully and checks
+persisted receipts on a fresh status read. Lost acknowledgements recover by
+request key and also require successful setup before accepting the receipts.
+The dirty worker supplies `skipSkillDefaults: true` and no explicit pins. Its
+`default_skills_opt_out_receipts` check expects zero pins. Both workers still
+run their normal work preservation and recovery checks.
 
 If all defaults are empty, empty receipt evidence is still checked, but delivery
 steps emit explicit `no_default_pins_configured` SKIPs instead of claiming a
@@ -509,38 +522,43 @@ Nonempty defaults must be installable, including a working key for private pins:
 broken configured defaults fail rather than skip. Explicit template-pin probes
 opt out of defaults so their separate receipt checks remain isolated.
 
-Cost: three read-only policy calls per pair and two status reads, plus only the
-installs already implied by normal defaults. No policy rows, writes, new secrets,
-migrations or extra workers. Model/registry latency stays inside the shared
-35-minute work +5-minute cleanup deadline; slow or changing policies fail closed.
+Each pair adds three read-only policy calls. Full acknowledgements add two
+status reads. Admission receipts add owner inventory and bounded status
+observation for each worker. Installs follow normal defaults. Model and registry
+latency stays within the shared work and cleanup deadlines.
 
 ### Scoped Armada access
 
-`--scoped-access` requires `--work-preservation` and reuses its two workers:
-the clean Codex parent uses `sandbox/launch` with version1 and
-maxActiveChildren1; the dirty no-option control omits access entirely and opts
-out of skill defaults. Both staging entrypoints enable it. Current ordinary
-access supports Codex only: Claude emits explicit `codex_only` SKIP, not a false
-authorization-denial proof. Supported Codex pairs must be enabled on staging
-using the existing access configuration; unavailable/misconfigured access fails.
+`--scoped-access` requires `--work-preservation`. Each Modal Codex case runs
+two dedicated parents on the scripted account. The enabled parent requests
+`armadaAccessVersion: 1` and `maxActiveChildren: 1`. The no-option control
+omits the grant and opts out of skill defaults. Each probe emits a
+`scoped_access` journal entry with `model: scripted`. GitHub, lifecycle, and
+work-preservation turns still use the case's ordinary model and account.
+Claude cases emit a `codex_only` skip. Codex cases require staging scoped
+access to be configured.
 
-The native parent uses only configured scoped MCP launch/message/read/stop.
-No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
-or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no separate managed parent is created. The nonsecret armada-tools reference
-may be read with the supplied exact read-only cat command.
+For a prompt-free Modal admission receipt, the runner follows the parent ID.
+Owner inventory confirms the provider and harness under the requested snapshot
+filter. After setup settles, a fresh ready status confirms the parent's model,
+account version and visibility before the scoped turn. Readiness and
+configuration share the scoped launch budget from acknowledgement, capped by
+the run deadline.
+
+The parent drives the configured scoped MCP launch, message, read, and stop
+tools. The runner uses the owner API to verify receipts and clean up compute.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
 message, nonpartial child assistant answer (not prompt/tool echo), stop and
 operation ordering. Launch is idle; message supplies a fresh answer challenge.
-Input selection must match the parent's golden/account/version/model. Read
+Input selection must match the parent's snapshot/account/version/model. Read
 evidence must match the child identity/binding. A no-option control must show no
 successful delegated effect and either no tools with a fresh no-access reply,
 or the exact authority denial for the valid launch request—not generic failure.
 This is a live native control, not a claim that separately supplied user tokens
 are banned; backend scope/epoch denial remains covered by its owning tests.
 
-Before parent allocation, snapshot a complete ordinary owner-me/golden inventory.
+Before parent allocation, record a complete ordinary inventory for the owner and snapshot.
 After the parent is quiesced/stopped, cleanup re-reads bounded logs and inventory.
 Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
 owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
@@ -554,8 +572,8 @@ If the parent's stop cannot be confirmed, cleanup still attempts safe known
 children but must report an unquiesced producer/future-child uncertainty. A
 snapshot taken while a parent remains active is never declared final/clean.
 
-Budget: one additional native parent task per worker and one idle child plus one
-tiny child message per supported pair; no extra parent allocations. Parent
+Budget: two dedicated parent allocations and one idle child with one short
+message per supported pair. Parent
 polling is capped at300 observations (~5minutes plus bounded request latency),
 native child reads at20, logs/inventory at20pages; shared35+5-minute deadline still
 wins. Normal cleanup stops all known compute. The shipped delegated launch has
@@ -566,7 +584,7 @@ Use dedicated/exclusive staging smoke actors/cases, clean secretless snapshots,
 named account UUIDs, and a staging public MCP URL; no production origins/sessions.
 No migrations/new credentials/case fields. Offline tests are not live receipts.
 
-### Legacy GitHub repair
+### Runtime GitHub refresh
 
 Both staging entrypoints add `--github-refresh`, requiring `--lifecycle`
 and excluding managed-runtime test modes. It reuses the
@@ -575,11 +593,10 @@ recorded immediately before the new `github_launch_access` read-only git
 probe. This proves origin access before the first model turn or explicit
 repair, so a later repair cannot mask broken launch access.
 
-The Boat-only successful refresh/idempotency phase is deleted. Modal retains
-its existing unsupported-refusal check; its positive legacy-refresh proof is
-explicitly skipped with not_part_of_release_gate. Do not add a Boat worker to
-satisfy this phase. A new positive Modal refresh capability would require its
-own implementation/proof, not renaming the old Boat probe.
+The `github_refresh` step requires a successful Armada runtime configuration
+receipt for the same sandbox, with a GitHub login, runtime epoch and configuration
+revision. The smoke journal records only whether validation passed. Token
+renewal after expiry is covered separately from this receipt check.
 
 ### Ordinary expiry-as-stop
 
@@ -612,16 +629,19 @@ verdict to success. Failed workers retain logical failed status after cleanup;
 their finite durable stoppedAt receipt confirms physical exit because the
 terminal-failure status projection intentionally hides provider state. A failed
 row without that receipt remains unconfirmed. `expiry_cleanup_summary` reports leftover IDs or ambiguous
-launches with org/golden/start time. Lost create responses are never retried.
+launches with `org`, `golden` (snapshot name), and `startedAt`. Lost create
+responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
 
 Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
-and five-minute cleanup reserve. Readiness and natural stop proof use the
-measured `expiry_ready` and `expiry_as_stop` budgets. Natural stop proof
-includes the final inventory read. Without a measured entry, readiness allows
+and five-minute cleanup reserve. Readiness, TTL metadata and natural stop proof
+use the measured `expiry_ready`, `expiry_deadline` and `expiry_as_stop` budgets.
+The TTL check shares one deadline across all inventory pages, and natural stop
+proof includes its final inventory read. Without a measured entry, the TTL check
+retains its existing per-request timeout and pagination limit, readiness allows
 120 observations and natural expiry allows 360. Cleanup still allows 120
 observations. Staging operators must budget this extra compute time.
 No production, new capabilities or migrations.
@@ -1043,7 +1063,7 @@ providers/harnesses. Morph defaults to 2; other account kinds to unlimited.
 Stopped/idle-paused sandboxes do not count. Busy-account admission refuses; it
 does not silently switch billing. Lowering a cap does not stop existing agents.
 For deliberate owner-authorized configuration, use
-`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
+`armada account limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
 caps or reset bindings just to force a smoke pass. Account caps are distinct from
 provider snapshot-build and Docker-host capacity.
 
@@ -1141,18 +1161,18 @@ export AZURE_V1_URL='https://YOUR-RESOURCE.openai.azure.com/openai/v1'
 export AZURE_DEPLOYMENT='YOUR-ACTUAL-DEPLOYMENT-NAME'
 export AZURE_KEY_FILE='/private/azure-key'
 
-bun run armada creds connect azure-foundry --name 'Azure Codex' \
+bun run armada account add --preset azure-foundry --name 'Azure Codex' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   --file "$AZURE_KEY_FILE"
 
-bun run armada creds connect opencode-azure --name 'Azure OpenCode' \
+bun run armada account add --preset opencode-azure --name 'Azure OpenCode' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   < "$AZURE_KEY_FILE"
 ```
 
 These create separate personal accounts, not a mutation of a retained sandbox's
 billing account. Neither command accepts a secret in argv; omit `--file` to read
-stdin. Use a CLI containing `creds connect` (the source command avoids an old
+stdin. Use a CLI containing `account add --preset` (the source command avoids an old
 installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
 that preset. Both commands use the same mandatory server admission as the
@@ -1161,7 +1181,7 @@ native Responses receipt, **not** that answer/follow-up/resume with a harness is
 proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 
 The older **OpenAI API key → Use a custom endpoint** route now also requires an
-explicit deployment/model list. CLI `creds set openai --base-url` requires
+explicit deployment/model list. CLI `account add openai --base-url` requires
 `--models`; direct named/legacy API writes cannot omit the list or bypass the
 Azure check. Existing sealed accounts remain readable; they are not rewritten,
 automatically verified or rebound. For an old undeclared Azure account, choose
@@ -1182,7 +1202,7 @@ they do not fabricate sandbox usage/cost receipts. An account name alone does no
 establish its sealed endpoint or authentication.
 
 For Codex, dashboard **Test connection** (or
-`bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
+`bun run armada account test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
 billable request through an already idle Modal sandbox pinned to that account
 and revision; it does not launch/resume a machine or prove the full harness
 lifecycle. Custom OpenCode connections with declared models also support this
@@ -1250,17 +1270,16 @@ a guess or compares unsynchronized local/server clocks. Failure cells include
 these measurements; successful receipts let the coordinator measure actual
 first/follow-up latency on the target server without printing prompts.
 
-Cleanup rechecks an ID-matched terminal stop state even after a stop probe
-passed. Stored logical stop state does not alone prove that provider termination
-has settled: delete therefore reconciles `sandbox_not_ready` (including HTTP
-409), pending/conflict and unavailable responses using the same delete request
-ID, never another launch or a replay of stop. Cleanup has its own 600-second
-observation deadline independent of the exhausted probe deadline. Confirmation
-requires the matching deleted receipt; an already-deleted status is also valid.
-No script can guarantee remote deletion during a permanent outage/refusal:
-unconfirmed cleanup remains an explicit failure with diagnostics and the known
-sandbox ID, never a success. Production Boat execution and reconciliation remain
-coordinator-only; fixture tests are not production evidence.
+Staging parity submits one DELETE per known Modal or Docker sandbox. If the
+probe has yet to request a stop, cleanup requests it once before deletion.
+A matching `deleted` receipt or HTTP 404 with the sandbox `not_found` code
+satisfies the delete check. Pending, conflict, and missing acknowledgements
+fail cleanup with the known sandbox ID. Cleanup does not poll status or
+retry deletion. The release gate checks the Modal and Docker reaper evidence
+before launching probes and reports overdue machine IDs from prior runs.
+
+The coordinator-only production Boat probe still observes terminal stop and
+reconciles deletion within its 600-second cleanup deadline.
 
 #### GitHub clone and push authorization
 
@@ -1844,30 +1863,22 @@ Run against the staging **dashboard origin**, separately from the server-origin
 compute probes above. Record the tested SHA, origin and each result; this journey
 has not passed merely because the server-origin smoke passed.
 
-1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`. Run
-   `armada login --url https://<staging-dashboard>` in a terminal. Discovery must
-   offer the enabled methods, with no discovery error. Anonymous
-   `GET /api/v1/auth/methods` on that same origin must return 200 JSON and no-store.
-2. With the staging test account, complete each enabled GitHub/Google provider
-   using `armada login --provider github --url https://<staging-dashboard>` (then
-   google). Confirm the loopback callback exchanges the code and saves a session.
-3. Log out and complete email login, including code verification. Confirm a
-   subsequent `armada org list --url https://<staging-dashboard>` succeeds. Log
-   out and remove the disposable configuration directory. Never record codes,
-   tokens or callback query strings in evidence.
-
-The discovery regression began in **v2.28.0**, which first shipped #1505
-(`fb2fc624`): the CLI began requesting auth/methods while the dashboard retained
-its POST-only public allowlist. The route audit also found the server's public
-GitHub account OAuth callback missing from the catch-all proxy; it now shares
-method admission and redirect forwarding with the other public routes. The
-separate dashboard `/github/callback` web flow remains intact.
+1. Unset `ARMADA_TOKEN`. In the shell where you run this journey, export
+   `XDG_CONFIG_HOME` pointing to a new disposable directory and `ARMADA_URL`
+   set to the staging dashboard origin.
+2. From a shell without a browser, run `armada login` and open its printed
+   link in a browser on another machine. Sign in with an enabled dashboard
+   method. Verify the host and short code shown at consent, authorize, and
+   confirm that the CLI reports the signed-in account.
+3. Verify that `armada org list` uses the saved session. Run `armada logout`,
+   start again with an existing dashboard session, deny the request, and
+   confirm that the CLI reports denial. Remove the disposable configuration
+   directory. Keep codes, tokens and approval links out of the evidence.
 
 The authenticated control audit also repaired missing `creds/accounts/models`,
 `creds/defaults/set` and `skillpack/connection` forwarding, plus `golden/adopt`,
-`github/runtime-status`, `sandbox/resume` and the authenticated `sandbox/delete`
-control alias. Retired
-`launch/resolve` stays blocked. Experimental preflight routes (`sandbox/mcp-preflight-v1` and
+`github/runtime-status`, `sandbox/resume` and the authenticated `DELETE /api/v1/sandboxes/{id}`
+control alias. Experimental preflight routes (`sandbox/mcp-preflight-v1` and
 `sandbox/github-preflight-v1`) remain server-only;
 `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1` also remain
 experimental server-only routes; normal launch uses `sandbox/launch`. Runner secret callbacks remain excluded.
@@ -1883,8 +1894,20 @@ sorts last. Generate the configuration with this command.
 bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
 ```
 
-The generator uses successful `elapsedMs` receipts and rounds up 1.5 times the
-nearest-rank p99. A step with fewer than 20 receipts keeps its existing default. The expiry lane uses `expiry_launch` for the initial response timeout
+The generator uses successful receipts with a positive `elapsedMs` and
+explicit `provider`, `lane`, and `step` fields. A run can contribute multiple
+receipts. Each provider, lane, and step needs 20 of its own receipts from the
+20-run window. Missing entries use the lane's generic request or observation
+limit. After a launch timing contract changes, collect samples under the new
+contract before reusing measured launch or readiness budgets.
+
+The deadline is `max(3 × p99, 10 s)` using nearest-rank p99 and rounding up to
+milliseconds. At 20 samples the p99 is the largest observation. The multiplier
+and floor leave room for staging network latency spikes across runs.
+Usage polling sends another read only when its remaining budget can
+cover at least two seconds. Each read still fits within the enclosing deadline.
+
+The expiry lane uses `expiry_launch` for the initial response timeout
 and for a separate observation window capped by the overall smoke deadline.
 After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An
@@ -1897,13 +1920,25 @@ ten-minute default when there are too few samples. Inventory can identify
 allocations for cleanup after an ambiguous response. Snapshot, default-skill,
 scoped-parent and template-install checks still require their launch-specific
 proof before they can pass. Scoped child evidence comes from the parent's
-keyed tool receipt when its delivery is delayed, and scheduled routine
-evidence comes from occurrence history. Lifecycle readiness, prompt admission,
+keyed tool receipt when its delivery is delayed. `scoped_snapshot` budgets all
+initial inventory pages together. `scoped_native_turn` budgets prompt admission
+and turn completion together. Both keep their previous bounds when no measured
+entry exists. The `scoped_tool_evidence`
+budget covers the initial log read and subsequent observation. Without a
+measured entry, the initial read keeps its existing request timeout and
+subsequent observation keeps its ten-second window. Scheduled routine evidence
+comes from occurrence history. Lifecycle readiness, prompt admission,
 turn completion and token usage use their respective `ready`, `send`,
 `resume_send`, `wait`, `resume_wait`, `usage`, and `resume_usage` entries. Each
 request is capped at the time remaining for the step. Template prompt completion
 uses the corresponding public or private wait entry. A step without a measured
-entry keeps its existing poll limit. Cleanup has a separate budget.
+entry keeps its existing poll limit. Template account lookup, configuration and
+skill receipt checks, resource creation, answer reads, and exec isolation use
+their named budgets when available. All answer pages share one deadline, and a
+late successful response fails the step. Vault functional checks use their named
+step budgets for request timeouts and reject late successful checks. Vault
+checks without a measured entry keep the generic timeout. Cleanup has a
+separate budget.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and
 `parity_docker_launch`. It uses the corresponding entry for its response and
@@ -1919,9 +1954,8 @@ snapshot provenance.
 The server's scripted Responses endpoint is for the Modal Codex scoped-child
 probe. Its script covers launch, message, observing the child's answer, and stop,
 plus the no-access control. The probe must still check actual gateway receipts
-and sandbox events. The server endpoint can ship independently. The smoke
-runner still needs the scripted account selection and marker wiring before the
-coordinator starts the 50-run measurement.
+and sandbox events. After provisioning, the coordinator counts non-defect
+`scoped_*_unproven` failures across 50 ordinary staging runs.
 
 The coordinator provisions the endpoint on the pinned Railway staging server
 only. Use a dedicated random base64url bearer with at least 32 bytes of entropy.
@@ -1932,11 +1966,15 @@ Startup requires the Railway environment name `staging` and the pinned staging
 public origin. Leave the flag unset in production.
 
 Provision a staging named OpenAI API-key account using
-`armada creds set openai --name scripted --base-url
+`armada account add openai --name scripted --base-url
 https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
 same bearer privately on stdin. Keep the bearer out of the smoke configuration,
-logs and command arguments. The smoke case needs only the account identifier and
-its model selector.
+logs and command arguments. Before the smoke wiring is deployed, set
+`scriptedModelAccountId` to the scripted account UUID in each Modal Codex
+entry in staging's `ARMADA_SMOKE_CASES`. Keep the ordinary `modelAccountId`
+and `model` on that entry for its baseline workers. The scoped probe always
+selects the `scripted` model, and validates that its account UUID differs from
+the baseline account.
 
 The marker is a user message beginning with `ARMADA_SCOPED_SMOKE_V1 ` followed
 by a JSON object. For the parent, send `lane: "parent"`, `launch` with the
@@ -1944,5 +1982,74 @@ original `idempotencyKey` and `selection`, `messageKey`, `stopKey`, `answer`,
 and `noAccess`. Use one fresh nonce per key or answer, retaining the existing
 `smoke-scoped-`, `SCOPED_CHILD_`, and `NO_ACCESS_` prefixes. The endpoint emits
 the child prompt with the same prefix and a `lane: "child"` marker containing
-`answer`. The smoke runner should compare that exact child prompt in the
-message receipt before checking the child's answer.
+`answer`. The smoke runner verifies that exact child prompt in the message evidence
+before checking the child's answer.
+
+### Provider inventory gate
+
+Ordinary and pinned staging smoke check the configured Railway staging service
+before and after deployment. The outgoing deployment can contribute overdue
+evidence even if it was replaced before its first successful sweep. Fresh
+coverage comes from the candidate's exact Railway deployment ID.
+
+The reaper starts eligible and schedules its next sweep 60 seconds after the
+previous sweep completes. The gate gives the candidate up to three minutes to
+report a complete observation within the last five minutes for both Modal and
+Docker and every observed candidate source. Missing or incomplete coverage at
+the deadline blocks smoke before any probe launches. Truncated logs or overdue
+machines block smoke immediately.
+
+Each check looks back 15 minutes across the two deployments it queries and
+reports observed overdue physical machine IDs, even if the Modal reaper
+subsequently deleted the machine. Docker's inventory path reports overdue
+containers. Frequent replacement can move older deployments out of the query
+scope before their observations reach 15 minutes.
+
+The ordinary journal cleanup submits a bounded delete request per receipt and
+retains IDs with unresolved outcomes for the next run or manual sweep.
+A matching `stopped` or `deleted` stop receipt is enough for cleanup-only
+stops in the ordinary and pinned lanes. Nonterminal receipts and ambiguous
+responses that the lane can reconcile still use bounded status observation.
+Docker DELETE requires a stopped or failed row. A Docker STOP conflict still
+fails the stop step, and an unacknowledged DELETE keeps its journal entry. Explicit
+stop/resume, preservation, natural expiry, and scoped parent quiescence still
+use their own observations as functional evidence.
+
+### Real Codex authentication
+
+Pinned staging runs `--real-model` alongside the existing smoke. The flag can
+also run by itself against the pinned staging origin. It requires exactly one
+Modal Codex case and one Docker Codex case in `ARMADA_SMOKE_CASES`. Keep the
+existing Modal Codex case and add a Docker entry with `provider: "docker"`,
+`harness: "codex"`, the staging organization UUID in `org`, the registered
+staging host UUID in `hostId`, and an authorized real Codex
+`modelAccountId` and `model`. The host must have a working default runtime
+image. Use the named scripted account only in `scriptedModelAccountId` on
+the Modal case.
+
+| Lane | Model | Coverage |
+| --- | --- | --- |
+| Modal Codex authentication | real | Launch, one plain prompt, completed turn with non-empty completed assistant message, stop |
+| Docker Codex authentication | real | Same check on the registered host |
+| Modal scoped child, enabled and no-option control | scripted | Scoped gateway and child receipts |
+| Modal baseline lifecycle and preservation, including default-skill and GitHub refresh checks | real | Existing usage, resume and retained-work evidence |
+| Public/private template-skill probes when enabled | real | A turn using the installed skill |
+| Manual GitHub runtime and manual provider/account parity when invoked | real | Harness/tool execution, continuity and account evidence |
+
+Expiry, vault and dashboard reads send no model turns. The authentication
+lanes print `model: "real"` and report `model_authentication_refused` for a
+credential refusal or `model_timeout` when the turn fails to finish before the
+wait deadline. A terminal turn without a completed assistant message fails separately. Smoke
+does not print the answer or raw model diagnostics.
+
+After provisioning, compare the median total smoke step duration of 20
+ordinary green staging runs with the median of 20 ordinary green runs from
+before the change. Record the sample runs and both medians in #2844.
+
+Template-backed parity launches emit `parity_<provider>_<feature>_launch`
+receipts that include time spent observing the launch after a timeout. The same
+step names select the generated deadlines, capped by the lane budget. Parity
+uses the original template request key to read the stored launch receipt
+through the template API. If observation expires, parity reports that key and
+the most recent diagnostic carrying a server request ID, or the last HTTP
+diagnostic if no response carried an ID.

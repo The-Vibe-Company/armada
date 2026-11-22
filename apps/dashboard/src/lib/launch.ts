@@ -1,5 +1,5 @@
 import { launchFailureHelp } from "@armada/core";
-import { launchEnvelope } from "@armada/core/contract";
+import { launchEnvelope, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import { launchedDockerSandbox } from "./docker-launch.ts";
@@ -38,6 +38,8 @@ export async function postSandboxLaunch(
       throw invalidReceipt();
     throw error;
   });
+  const admitted = parseLaunchAdmissionReceipt(body.provider, payload);
+  if (admitted) return admitted;
   const receipt = launchEnvelope.safeParse(payload);
   if (!receipt.success || !receipt.data.sandbox.id) throw invalidReceipt();
   if (body.provider === "docker" && !launchedDockerSandbox(receipt.data)) throw invalidReceipt();
@@ -88,7 +90,7 @@ export async function launchSandbox(
 }
 
 /** One launch submission the dashboard already sent: its request key and when the server action first sent it. */
-export type LaunchAttempt = { key: string; since: number };
+type LaunchAttempt = { key: string; since: number };
 
 export type FollowedLaunch = { state: "started"; id: string } | { state: "unknown"; since: number };
 
@@ -176,7 +178,10 @@ export function launchFailureMessage(
     ["missing_credential", "credential_refused", "credential_busy"].includes(error.code ?? "")
   )
     return launchReason(error.code);
-  if ((error.status === 404 || error.status === 405) && error.code === undefined) {
+  if (
+    (error.status === 404 && error.code === "unknown_route") ||
+    ((error.status === 404 || error.status === 405) && error.code === undefined)
+  ) {
     for (const feature of [
       "launching with Armada access",
       "launching with machine sizes",

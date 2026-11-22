@@ -1,15 +1,17 @@
 import {
   accountBindingAvailability,
+  DOCKER_HOST_PROTOCOL,
   type Harness,
   harnessesForCredential,
   harnessForCredential,
   type MachineSizePolicy,
   MODEL_CREDENTIAL_KINDS,
   parseDockerSnapshotRecord,
+  parseSnapshotConfig,
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
-import { createInboundTrigger } from "@armada/core/contract";
+import { createInboundTrigger, type LaunchEnvelope, streamSandboxEvents } from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -58,6 +60,7 @@ type State = {
   langfuse: Map<string, Row>;
   members: Row[];
   goldens: Row[];
+  hiddenSnapshot: string;
   sandboxes: Row[];
   credentials: Row[];
   github_connections: Row[];
@@ -65,6 +68,7 @@ type State = {
   events: Map<string, Row[]>;
   /** Every launch body that reached allocation, as the dashboard sent it. */
   launches: Row[];
+  dockerSnapshotBuilds: Map<string, ReturnType<typeof parseDockerSnapshotRecord>>;
   /** Per-provider snapshot capacity returned by the mock. */
   capabilities: Record<
     "boat" | "modal",
@@ -104,6 +108,7 @@ function seed(): State {
       { org_id: ACME, user_id: ALICE, role: "admin", created_at: now },
       { org_id: ACME, user_id: BOB, role: "member", created_at: now },
     ],
+    hiddenSnapshot: "",
     goldens: [
       {
         ...golden(id(20), "shared-golden", "org", ALICE, "snap-shared"),
@@ -315,6 +320,7 @@ function seed(): State {
     ],
     events: new Map(),
     launches: [],
+    dockerSnapshotBuilds: new Map(),
     agentDefaults: {},
     // A Boat account holds one golden; Modal is unbounded.
     capabilities: { boat: { maxGoldens: 1 }, modal: { maxGoldens: null } },
@@ -509,6 +515,15 @@ function seedLarge(target: State): void {
       },
     ]);
     if (variant === 2) target.events.set(sid, []);
+    if (i === 1) {
+      target.events.get(sid)?.unshift({
+        id: "earlier-fixture-message",
+        at: Date.parse(now) - 1,
+        kind: "message",
+        text: "Earlier fixture response",
+        conversationId: "large_conversation_1",
+      });
+    }
   }
   for (let i = 0; i < 12; i++)
     target.credentials.push({
@@ -663,6 +678,8 @@ function largeHosts(): Row[] {
     lastSeenAt: "2026-11-16T10:00:00.000Z",
     revokedAt: null,
     sandboxes: i === 0 ? 200 : 0,
+    protocol: DOCKER_HOST_PROTOCOL,
+    upgradeRequired: false,
     version: null,
   }));
 }
@@ -689,7 +706,13 @@ function largeHostSnapshots(): Row[] {
       image: status === "ready" ? `sha256:${"b".repeat(64)}` : null,
       builtOnVersion: "2.46.4",
       failureReason: status === "failed" ? "Fixture build failed: repository checkout unavailable." : null,
-      config: largeGoldenConfig(),
+      config:
+        status === "failed"
+          ? {
+              ...largeGoldenConfig(),
+              repos: [{ url: "https://github.com/example/failed-fixture.git", dir: "fixture" }],
+            }
+          : largeGoldenConfig(),
       createdAt: "2026-11-16T10:00:00.000Z",
     }))
     .map((row) => ({ ...parseDockerSnapshotRecord(row) }));
@@ -774,7 +797,7 @@ function visibleRows(table: string, userId: string): Row[] {
     case "goldens":
       // As in the #566 migration, a removed golden stays readable (a tombstone its sandboxes still join to); a list
       // that should not show it filters `removed_at=is.null` itself.
-      return state.goldens.filter((row) => canReadGolden(row, userId));
+      return state.goldens.filter((row) => row.name !== state.hiddenSnapshot && canReadGolden(row, userId));
     case "sandboxes":
       // As in the #680 contract: the raw row is the interior, read only by its owner or a current admin. Legacy
       // visibility and the source golden take no part.
@@ -1186,7 +1209,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  const driving = name === "send" || name === "steer" || name === "interrupt";
+  const interruptTurn = name === "stop" && args.turn === true;
+  const driving = name === "send" || interruptTurn;
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
@@ -1209,7 +1233,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   state.events.set(String(target.id), events);
   const conversations = (target.conversation_ids ?? []) as string[];
 
-  switch (message.params?.name) {
+  switch (name) {
     case "status":
       return text({
         status: target.status,
@@ -1221,10 +1245,33 @@ function mcp(message: RpcMessage, userId: string | null): Response {
         },
       });
     case "logs": {
-      const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
-      return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
+      const since = typeof args.since_cursor === "string" ? String(args.since_cursor) : undefined;
+      if (args.direction === "backward" && target.id === id(11001)) {
+        const end = since ? Number(since.slice("older-".length)) : events.length;
+        const start = Math.max(0, end - 1);
+        return text({
+          events: events.slice(start, end),
+          cursor: String(end),
+          hasMore: start > 0,
+          ...(start > 0 ? { olderCursor: `older-${start}` } : {}),
+        });
+      }
+      if (since?.startsWith("older-")) return text({ error: "Backward cursor used for a forward read." }, true);
+      return text({ events: events.slice(Number(since ?? 0)), cursor: String(events.length), hasMore: false });
     }
     case "send": {
+      if (args.steer === true) {
+        const conversationId = conversations.at(-1);
+        events.push({
+          id: `steer-${events.length}`,
+          at: Date.now(),
+          kind: "steer",
+          text: String(args.prompt),
+          conversationId,
+        });
+        const delivery = target.harness === "codex" ? "restart" : "native";
+        return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
+      }
       const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
@@ -1242,33 +1289,22 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       });
       return text({ id: target.id, promptId, conversationId, status: "running" });
     }
-    case "steer": {
-      const conversationId = conversations.at(-1);
-      events.push({
-        id: `steer-${events.length}`,
-        at: Date.now(),
-        kind: "steer",
-        text: String(args.text),
-        conversationId,
-      });
-      const delivery = target.harness === "codex" ? "restart" : "native";
-      return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
-    }
-    case "interrupt": {
-      const conversationId = conversations.at(-1);
-      const running = [...events]
-        .reverse()
-        .find(
-          (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
-        );
-      if (running)
-        events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
-      return text({ id: target.id, interrupted: !!running });
-    }
-    case "stop":
+    case "stop": {
+      if (interruptTurn) {
+        const conversationId = conversations.at(-1);
+        const running = [...events]
+          .reverse()
+          .find(
+            (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
+          );
+        if (running)
+          events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
+        return text({ id: target.id, interrupted: !!running });
+      }
       target.status = "stopped";
       target.stopped_at = new Date().toISOString();
       return text({ ok: true });
+    }
     default:
       return text("unknown tool", true);
   }
@@ -1389,7 +1425,11 @@ function launchRoute(body: Row, userId: string | null): Response {
   }
   if (body.provider === "docker") {
     if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Only organization members can launch.");
-    const host = (body.org === LARGE ? largeHosts() : []).find((row) => row.id === body.hostId);
+    const snapshot = body.snapshotId ? state.dockerSnapshotBuilds.get(String(body.snapshotId)) : undefined;
+    if (body.snapshotId && (!snapshot || snapshot.orgId !== body.org || snapshot.ownerId !== userId))
+      return controlFail(404, "not_found", "No such snapshot.");
+    const hostId = snapshot?.hostId ?? body.hostId;
+    const host = (body.org === LARGE ? largeHosts() : []).find((row) => row.id === hostId);
     if (!host) return controlFail(404, "not_found", "No such host.");
     if (host.state !== "online") return controlFail(409, "conflict", "The host is not online.");
     const account = state.credentials.find(
@@ -1413,7 +1453,8 @@ function launchRoute(body: Row, userId: string | null): Response {
       provider: "docker",
       golden_id: null,
       boat_id: null,
-      docker_host_id: body.hostId,
+      docker_host_id: hostId,
+      docker_snapshot_id: snapshot?.id ?? null,
       connections: ids,
       credential_id: body.credentialId,
       credential_version: account.version,
@@ -1422,7 +1463,7 @@ function launchRoute(body: Row, userId: string | null): Response {
       visibility: "private",
     });
     state.sandboxes.unshift(row);
-    return json({ sandbox: { id: row.id, provider: "docker" } });
+    return fixtureLaunchResponse(body, row, null);
   }
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
@@ -1475,15 +1516,33 @@ function launchRoute(body: Row, userId: string | null): Response {
   row.provider = source.provider;
   if ("size_policy" in source) row.machine_size = machineSize;
   state.sandboxes.unshift(row);
+  return fixtureLaunchResponse(
+    body,
+    row,
+    { id: String(source.id), name: String(source.name) },
+    sized ? machineSize : undefined,
+  );
+}
+
+function fixtureLaunchResponse(body: Row, row: Row, golden: LaunchEnvelope["golden"], machineSize?: unknown) {
   return json({
     sandbox: {
-      id: row.id,
-      boatId: row.boat_id,
-      repositoryDir: row.repository_dir,
-      // An older server answers no `machineSize` key at all.
-      ...(sized ? { machineSize } : {}),
+      id: String(row.id),
+      provider: String(row.provider),
+      providerSandboxId: String(row.provider_sandbox_id),
+      status: String(row.status),
+      repositoryDir: row.repository_dir ?? null,
+      ...(machineSize === undefined ? {} : { machineSize }),
     },
-  });
+    golden,
+    promptId: null,
+    conversationId: null,
+    ttlSeconds: Number(body.ttlSeconds ?? 14_400),
+    expiresAt: null,
+    github: { status: "unavailable" },
+    helper: null,
+    runtime: null,
+  } satisfies LaunchEnvelope);
 }
 
 function vaultItem(
@@ -2066,7 +2125,7 @@ function invitations(route: string, body: Row, request: Request): Response {
     row.status = "revoked";
     return json({ invitation: invitationDto(row) });
   }
-  return controlFail(404, "not_found", "Unknown route.");
+  return controlFail(404, "unknown_route", "Unknown route.");
 }
 
 function controlFail(status: number, code: string, message: string): Response {
@@ -2269,7 +2328,7 @@ function mcpControl(operation: string, body: Row, userId: string | null): Respon
       state.connections = state.connections.filter((item) => item !== row);
       return json({ ok: true });
     default:
-      return controlFail(404, "not_found", "Unknown route.");
+      return controlFail(404, "unknown_route", "Unknown route.");
   }
 }
 
@@ -2788,10 +2847,10 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ ok: true });
   }
   if (route === "creds/accounts/auth-capabilities") {
-    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } });
+    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada account login codex" } });
   }
   if (route === "creds/accounts/models") return json({ connections: [] });
-  if (route === "creds/accounts/usage") return json({ error: { message: "Unknown route." } }, 404);
+  if (route === "creds/accounts/usage") return controlFail(404, "unknown_route", "Unknown route.");
   const scope = body.scope === "org" ? "org" : body.scope === "user" ? "user" : null;
   if (!scope) return controlFail(400, "invalid", "Scope is user or org.");
   if (scope === "org" && !isAdmin(body.org, userId))
@@ -2866,6 +2925,10 @@ function control(url: URL, body: Row): Response {
     pendingOAuth.clear();
     sessions.clear();
     goldenJobs.clear();
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/snapshot-visibility") {
+    state.hiddenSnapshot = String(body.hidden ?? "");
     return json({ ok: true });
   }
   if (url.pathname === "/__test/capabilities") {
@@ -3063,19 +3126,59 @@ const server = Bun.serve({
     if (langfuse) return langfuseControl(request, langfuse, body);
     const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
     if (triggerPath) return inboundTriggers(request, url, triggerPath, body);
+    if (url.pathname === streamSandboxEvents.route.path && request.method === streamSandboxEvents.route.method) {
+      const caller = viewer(request);
+      const sandbox = state.sandboxes.find((row) => row.id === url.searchParams.get("sandbox"));
+      if (!caller || !sandbox || !canOpenSandbox(sandbox, caller))
+        return controlFail(403, "forbidden", "Sandbox events are not available to this caller.");
+      return new Response(": connected\n\n", {
+        headers: { "content-type": streamSandboxEvents.outputMediaType, "cache-control": "no-store" },
+      });
+    }
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
+      if (route === "auth/device/inspect" || route === "auth/device/decide") {
+        if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
+        if (body.id !== "91550000-0000-4000-8000-000000000001")
+          return controlFail(404, "not_found", "CLI login request unavailable.");
+        if (route === "auth/device/inspect") return json({ user_code: "12AB34CD", hostname: "ssh-workstation" });
+        if (body.user_code === "12AB34CD" && body.approve === true) return json({ ok: true });
+        return controlFail(400, "invalid", "Invalid CLI login decision.");
+      }
       if (route === "docker/hosts/list" && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
           return controlFail(403, "forbidden", "Only organization members can list hosts.");
         return json({ placement: true, hosts: largeHosts() });
       }
-      if (route === "docker/snapshots/list" && body.org === LARGE) {
+      if ((route === "docker/snapshots/list" || route === "docker/snapshots/create") && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))
-          return controlFail(403, "forbidden", "Only organization members can list snapshots.");
-        return json({ snapshots: largeHostSnapshots() });
+          return controlFail(403, "forbidden", "Only organization members can access host snapshots.");
+        if (route === "docker/snapshots/list") {
+          const builds = [...state.dockerSnapshotBuilds.values()].filter(
+            (snapshot) => snapshot.ownerId === caller || snapshot.visibility === "org",
+          );
+          return json({ snapshots: [...largeHostSnapshots(), ...builds] });
+        }
+        const existing = state.dockerSnapshotBuilds.get(String(body.requestId));
+        if (existing?.ownerId === caller) return json({ snapshot: existing });
+        if (existing || body.hostId !== LARGE_HOST)
+          return controlFail(409, "conflict", "Snapshot placement unavailable.");
+        if (body.visibility === "org" && !isAdmin(LARGE, caller))
+          return controlFail(403, "forbidden", "Only an admin publishes shared snapshots.");
+        const baseline = largeHostSnapshots()[0];
+        const snapshot = parseDockerSnapshotRecord({
+          ...baseline,
+          id: body.requestId,
+          ownerId: caller,
+          name: body.name,
+          visibility: body.visibility,
+          config: parseSnapshotConfig(body.config),
+          createdAt: new Date().toISOString(),
+        });
+        state.dockerSnapshotBuilds.set(snapshot.id, snapshot);
+        return json({ snapshot: { ...snapshot, status: "building", image: null } });
       }
       if (route === "launch/options" && isMember(LARGE, viewer(request) ?? "")) {
         if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");

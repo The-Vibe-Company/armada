@@ -12,7 +12,6 @@ const sandbox = {
   ownerId: "00000000-0000-4000-8000-000000000003",
   provider: "modal",
   providerSandboxId: "sb-test",
-  boatId: null,
   harness: "codex",
   model: null,
   reasoningEffort: null,

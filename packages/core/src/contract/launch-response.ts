@@ -1,5 +1,22 @@
 import { z } from "zod";
 import type { GoldenErrorCode } from "../golden-config.ts";
+import { SANDBOX_STATUSES } from "./sandbox.ts";
+
+export const modalLaunchReceipt = z.strictObject({
+  sandbox: z.strictObject({
+    id: z.uuid().describe("Armada sandbox ID."),
+    status: z.enum(SANDBOX_STATUSES),
+  }),
+});
+
+export type ModalLaunchReceipt = z.infer<typeof modalLaunchReceipt>;
+
+const admissionReceipts = new Map([["modal", modalLaunchReceipt]]);
+
+export function parseLaunchAdmissionReceipt(provider: string, value: unknown) {
+  const parsed = admissionReceipts.get(provider)?.safeParse(value);
+  return parsed?.success ? parsed.data : undefined;
+}
 
 export const launchEnvelope = z.strictObject({
   sandbox: z
@@ -15,7 +32,7 @@ export const launchEnvelope = z.strictObject({
     .object({ id: z.string(), name: z.string() })
     .passthrough()
     .nullable()
-    .describe("Null for Docker launches, which have no golden."),
+    .describe("The selected Boat or Modal launch snapshot. Null for Docker launches."),
   promptId: z.string().nullable(),
   conversationId: z.string().nullable(),
   ttlSeconds: z.number(),
@@ -66,10 +83,8 @@ const TEMPLATE_LAUNCH_REFUSAL = z
     reason: z.enum(GOLDEN_ERROR_CODES),
     message: z.string(),
   })
-  .describe("Golden admission refused the launch before a request was recorded. Nothing was launched.");
+  .describe("Snapshot admission refused the launch before a request was recorded. Nothing was launched.");
 
 export const templateLaunchResponse = z
   .union([TEMPLATE_LAUNCH_RECEIPT, TEMPLATE_LAUNCH_REFUSAL])
   .describe("A receipt has requestId; a pre-admission refusal has none.");
-
-export const launchOutput = z.union([launchEnvelope, templateLaunchResponse]);

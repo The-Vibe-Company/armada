@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -39,13 +39,10 @@ import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { ToolError } from "../src/tool-error.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
+import { publishedResponse } from "./published-response.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -70,14 +67,6 @@ const bootstrap = createDockerBootstrapService(sql, key, {
     harnesses: { codex: { files: [{ path: "bin/codex" }] } },
   },
   credentials: launchCredentials(createSqlVaultStore(sql), key),
-});
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
 });
 async function fixture() {
   const db = database();
@@ -210,6 +199,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     harness: "codex",
     visibility: "private",
     conversationIds: [conversationId],
+    status: "running",
     prompt: { promptId, conversationId, state: "running" },
     settled: false,
   });
@@ -234,7 +224,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
   ]);
   const settled = await invoke<DockerSandboxStatus>(admin, "status", { id: f.sandbox.id, prompt_id: promptId });
   expect(settled).toMatchObject({
-    status: "running",
+    status: "ready",
     settled: true,
     prompt: { promptId, conversationId, state: "finished", reason: null },
     usage: {
@@ -594,14 +584,17 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     },
   ]);
   let now = 0;
+  let acknowledgeCleanup = true;
   const cleanup = createDockerSandboxControls(sql, key, {
+    timeoutMs: 1,
     clock: {
       now: () => now,
       async wait(ms) {
+        now += ms;
+        if (!acknowledgeCleanup) return;
         const job = await hosts.poll(f.hostToken, f.installationId);
         if (!job || !["stop", "delete"].includes(job.operation)) throw Error("Expected bound cleanup job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
-        now += ms;
       },
     },
   });
@@ -627,7 +620,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   const listed = (await callSharedTool(context, "list", {})) as { sandboxes: SandboxListMetadata[] };
   expect(listed.sandboxes).toHaveLength(1);
   expect(isSandboxPlacementProvider(listed.sandboxes[0]?.provider)).toBe(true);
-  expect(listed.sandboxes[0]).toMatchObject({ id: f.sandbox.id, provider: "docker", boatId: null });
+  expect(listed.sandboxes[0]).toMatchObject({ id: f.sandbox.id, provider: "docker" });
   const parsed = parseSandboxListMetadata(listed.sandboxes);
   expect(parsed.skipped).toEqual([]);
   expect(parsed.rows[0]?.provider).toBe("docker");
@@ -669,7 +662,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   const apiList = (await post("sandbox/list", {})) as { sandboxes: SandboxListMetadata[] };
   expect(parseSandboxListMetadata(apiList.sandboxes).skipped).toEqual([]);
   expect(apiList.sandboxes[0]?.provider).toBe("docker");
-  const status = (await post("sandbox/detail", { id: f.sandbox.id })) as DockerSandboxStatus;
+  const status = (await post("sandbox/status", { id: f.sandbox.id })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     provider: "docker",
     golden: null,
@@ -698,19 +691,37 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
     resume: false,
   });
   expect(await post("sandbox/stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  expect(await post("sandbox/delete", { id: f.sandbox.id })).toEqual({
+  const requestId = `a${randomUUID().slice(1)}`;
+  const remove = () =>
+    handleControlRequest(
+      new Request(
+        `https://armada.example/api/v1/sandboxes/${f.sandbox.id.toUpperCase()}?org=${f.actor.orgId}&requestId=${requestId.toUpperCase()}`,
+        {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${bearer}` },
+        },
+      ),
+      options,
+    );
+  acknowledgeCleanup = false;
+  const pending = await remove();
+  expect(pending?.status).toBe(409);
+  expect(await pending?.json()).toMatchObject({ error: { code: "conflict" } });
+  acknowledgeCleanup = true;
+  const response = await remove();
+  expect(response?.status).toBe(200);
+  expect(publishedResponse("sandboxes/{id}", "delete").parse(await response?.json())).toEqual({
     id: f.sandbox.id,
     status: "deleted",
   });
-  const repeated = await handleControlRequest(
-    new Request(`https://armada.example/api/v1/sandboxes/${f.sandbox.id}?org=${f.actor.orgId}`, {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${bearer}` },
-    }),
-    options,
-  );
-  expect(repeated?.status).toBe(200);
-  expect(await repeated?.json()).toEqual({ id: f.sandbox.id, status: "deleted" });
+  expect(
+    (
+      await sql.query(
+        "select request_id from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='delete'",
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ request_id: requestId }]);
   expect(((await callSharedTool(context, "logs", { id: f.sandbox.id })) as { events: unknown[] }).events).toHaveLength(
     3,
   );
@@ -824,7 +835,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await service.prompt(f.actor, f.sandbox.id, first);
   await complete(session, { promptId: randomUUID(), conversationId, status: "finished" });
   await service.prompt(f.actor, f.sandbox.id, first);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stop = async () => {
     const requestId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, requestId);
@@ -900,7 +911,7 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
@@ -1102,7 +1113,7 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const requestId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
@@ -1162,7 +1173,7 @@ test("reclaimed workspace status and resume report the durable disk cause", asyn
 test("a resume refused by the host disk floor returns the actionable disk cause", async () => {
   const f = await fixture();
   await ready(f);
-  await database().query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await database().query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });

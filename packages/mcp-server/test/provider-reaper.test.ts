@@ -67,6 +67,7 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
   const records: unknown[] = [];
   const source: ProviderReaperSource = {
     provider: "modal",
+    emitOverdueMachineIds: true,
     sourceId: "account_a",
     deploymentId,
     inventory: {
@@ -108,6 +109,16 @@ test("retries provider errors on the next sweep and counts confirmed deletes onc
 
   expect(reads).toBe(3);
   expect(attempts).toBe(3);
+  expect(records.filter((record) => (record as { event?: string }).event === "reaper_overdue_machines")).toEqual(
+    [now, now + 60_000, now + 120_000].map((observedAt) => ({
+      event: "reaper_overdue_machines",
+      provider: "modal",
+      source: "account_a",
+      deploymentId,
+      observedAt,
+      machineIds: [oldMachine.machineId],
+    })),
+  );
   expect(records).toContainEqual({
     metric: "reaper_unknown_machines",
     provider: "modal",
@@ -252,4 +263,40 @@ test("report-only sources emit distinguishable inventory counts", async () => {
     reportOnly: true,
     complete: true,
   });
+});
+
+test("an overdue evidence log failure does not prevent live deletion", async () => {
+  let deleted = false;
+  let failLog = true;
+  const lane = createProviderReaper(
+    {
+      provider: "modal",
+      emitOverdueMachineIds: true,
+      sourceId: "account_a",
+      deploymentId,
+      inventory: {
+        async *listInventory() {
+          yield oldMachine;
+        },
+      },
+      async lookupOwnership() {
+        return { kind: "absent" };
+      },
+      async deleteMachine() {
+        deleted = true;
+        return true;
+      },
+    },
+    (line) => {
+      if (failLog && JSON.parse(line).event === "reaper_overdue_machines") {
+        failLog = false;
+        throw new Error("log sink unavailable");
+      }
+    },
+    () => now,
+  );
+
+  await lane.reconcileOne(new AbortController().signal);
+
+  expect(deleted).toBe(true);
 });

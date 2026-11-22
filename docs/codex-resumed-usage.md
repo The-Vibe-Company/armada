@@ -18,14 +18,17 @@ prompt's counters unknown, so process loss cannot seed a false next-turn delta.
 
 ## Coordinator staging check: Codex resumed baseline (#1163)
 
-After normal runtime rollout on a Modal golden, launch and send again:
+After normal runtime rollout on a Modal snapshot, launch and send again:
+
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
 
 ```sh
-armada launch <modal-golden> --provider modal --agent codex "Reply OK"
-armada wait <id>
-armada send <id> "Reply OK again"
-armada wait <id>
-armada status <id> --json
+armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
+armada info --wait SANDBOX_UUID
+armada prompt SANDBOX_UUID "Reply OK again"
+armada info --wait SANDBOX_UUID
+armada info SANDBOX_UUID --json
 ```
 
 Stop/resume the sandbox and send another prompt. If the native peer reports a

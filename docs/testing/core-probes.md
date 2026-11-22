@@ -18,9 +18,9 @@ Generated-type parity no longer runs on every PR: authors must run its explicit
 probe locally, and publishing blocks mismatched generated output. These procedures
 do not establish that a publishing release or deployed smoke passed.
 
-`golden-os.probe.ts` is a separate opt-in OS/SSH diagnostic. It needs the existing
-`ARMADA_GOLDEN_OS_IMAGE` fixture image and Docker, and performs real package/browser
-installs in a disposable container. It is not automatically run by these release
+`golden-os.probe.ts` is a separate opt-in OS/SSH diagnostic. Run it with
+`ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/core/test/golden-os.probe.ts`.
+It needs Docker and performs real package/browser installs in a disposable container. It is not automatically run by these release
 commands; no exact deployed equivalent for its user/root-NNP matrix is claimed.
 Do not run it without the owner's resource/network authorization.
 

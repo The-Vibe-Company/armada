@@ -10,7 +10,6 @@ export function assertProvider(value: string): Provider {
   throw new AuthError("The provider is github or google.", "usage");
 }
 
-/** Supabase project origin. Local http is allowed for `supabase start`. */
 export function assertSupabaseUrl(url: string): string {
   let parsed: URL;
   try {
@@ -66,18 +65,12 @@ export function assertEmail(value: string): string {
   return email;
 }
 
-/** The digits of the code in the sign-in email, without the spaces some clients add. */
 export function assertEmailCode(value: string): string {
   const code = value.replace(/\s+/g, "");
   if (!EMAIL_CODE.test(code)) throw new AuthError("The code is the 6 to 10 digits in the email.", "usage");
   return code;
 }
 
-/**
- * Asks Supabase to email a sign-in link (and a one-time code, when the template carries one). The link
- * comes back to `redirectTo` with a PKCE code. An address that has not signed in yet gets an account,
- * as on the dashboard.
- */
 export async function sendEmailLink(options: {
   fetch: AuthFetch;
   supabaseUrl: string;
@@ -115,7 +108,6 @@ export async function sendEmailLink(options: {
   }
 }
 
-/** Trades the one-time code of a sign-in email for a session. */
 export async function verifyEmailCode(options: {
   fetch: AuthFetch;
   supabaseUrl: string;
@@ -159,6 +151,8 @@ async function requestSession(
       method: "POST",
       headers: { apikey: options.anonKey, "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     throw new AuthError(
@@ -191,7 +185,7 @@ async function requestSession(
   return sessionFrom(payload, options.supabaseUrl, options.now);
 }
 
-function sessionFrom(payload: unknown, supabaseUrl: string, now: Date): Session {
+function sessionFrom(payload: unknown, supabaseUrl: string, now: Date) {
   if (!isRecord(payload) || !isRecord(payload.user)) throw new AuthError(INVALID_SESSION, "unavailable");
   const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = payload;
   const userId = payload.user.id;

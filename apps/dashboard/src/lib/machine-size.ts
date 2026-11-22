@@ -50,7 +50,7 @@ export function sizeSpec(provider: SandboxProviderId, size: MachineSize): string
 }
 
 /** An option of the size select, short enough for a phone: CPU in the provider's unit and memory. The hint has the rest. */
-export function sizeOptionLabel(provider: SandboxProviderId, size: MachineSize): string {
+function sizeOptionLabel(provider: SandboxProviderId, size: MachineSize): string {
   const capacity = machineCapacity(provider, size);
   return `${MACHINE_SIZE_LABELS[size]} · ${cpuLabel(capacity)} · ${gib(capacity.memoryMiB)}`;
 }

@@ -11,9 +11,11 @@ import {
   VaultError,
 } from "@armada/core";
 import { isProviderStartRateLimit } from "@armada/core/server";
+import { DockerHostUpgradeRequired } from "./docker-host-version.ts";
 
 /** Only typed causes determine categories. Never infer an error code from human diagnostics. */
 export function apiFailureCode(error: unknown): ApiFailureCode | undefined {
+  if (error instanceof DockerHostUpgradeRequired) return error.code;
   if (error instanceof GitHubHydrationError) return "github_hydration_failed";
   if (error instanceof LaunchError) {
     if (Object.hasOwn(API_FAILURE_STATUS, error.code)) return error.code as ApiFailureCode;

@@ -1,9 +1,9 @@
 import {
+  API_FAILURE_HELP,
   DOCKER_HOST_DRAINING_MESSAGE,
   type DockerHostListResponse,
   type DockerHostRegistrationResponse,
   dockerHostResourceDisplay,
-  dockerHostUpgradeMessage,
   GoldenError,
   type OrgSummary,
   parseDockerMemory,
@@ -11,12 +11,11 @@ import {
   validDockerHostResources,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-const HELP =
-  "Usage: armada host add [--name NAME] [--org UUID] | list [--json] [--org UUID] | show HOST [--json] [--org UUID] | limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID] | retention HOST --retention 24h [--org UUID] | revoke UUID [--org UUID]\n";
+const HELP = "Usage: armada host add|ls|limits|rm. Run armada host --help for options.\n";
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
@@ -38,7 +37,8 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
         host.lastSeenAt === null ||
         (typeof host.lastSeenAt === "string" && Number.isFinite(Date.parse(host.lastSeenAt)))
       ) ||
-      (host.snapshotBuildSupported !== undefined && typeof host.snapshotBuildSupported !== "boolean") ||
+      (host.protocol !== null && (!Number.isSafeInteger(host.protocol) || Number(host.protocol) < 0)) ||
+      typeof host.upgradeRequired !== "boolean" ||
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
@@ -57,7 +57,6 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
   return value as unknown as DockerHostListResponse;
 }
 
-/** Host names are resolved through the existing host API, which takes an organization UUID. */
 export async function resolveHostOrganization(client: ArmadaCommandClient, ref: string | undefined): Promise<string> {
   const wanted = ref?.trim().toLowerCase();
   if (wanted && UUID.test(wanted)) return wanted;
@@ -74,9 +73,9 @@ export async function resolveHost(client: ArmadaCommandClient, org: string, sele
   const matches = (await listHosts(client, org)).hosts.filter(
     (host) => host.name === selector && host.state !== "revoked",
   );
-  if (matches.length === 0) return invalid(`No non-revoked Docker host named '${selector}'. Run armada host list.`);
+  if (matches.length === 0) return invalid(`No non-revoked Docker host named '${selector}'. Run armada host ls.`);
   if (matches.length > 1)
-    return invalid(`Docker host name '${selector}' is ambiguous. Use a UUID from armada host list.`);
+    return invalid(`Docker host name '${selector}' is ambiguous. Use a UUID from armada host ls.`);
   return matches[0]?.id ?? invalid("Docker host resolution failed.");
 }
 
@@ -86,23 +85,19 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     auth.out(HELP);
     return operation ? 0 : 2;
   }
-  const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes", "--retention"], ["--auto"]);
-  const allowed =
-    operation === "add"
-      ? ["--org", "--name"]
-      : operation === "list" || operation === "show"
-        ? ["--org", "--json"]
-        : operation === "retention"
-          ? ["--org", "--retention"]
-          : operation === "limits"
-            ? ["--org", "--cpus", "--memory", "--max-sandboxes", "--auto"]
-            : operation === "revoke"
-              ? ["--org"]
-              : [];
+  const options: Record<string, readonly string[]> = {
+    add: ["--name"],
+    ls: [],
+    limits: ["--cpus", "--memory", "--max-sandboxes", "--auto"],
+    rm: [],
+  };
+  if (!Object.hasOwn(options, operation)) return invalid("Unknown host command. Run armada host --help.");
+  const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes"], ["--auto"]);
+  const allowed = ["--org", "--json", ...options[operation]!];
+  const count = args.positionals.length;
   if (
-    !allowed.length ||
-    [...args.options.keys()].some((key) => !["--json", ...allowed].includes(key)) ||
-    args.positionals.length !== (["revoke", "show", "limits", "retention"].includes(operation) ? 1 : 0)
+    [...args.options.keys()].some((key) => !allowed.includes(key)) ||
+    (operation === "ls" ? count > 1 : count !== (operation === "add" ? 0 : 1))
   )
     return invalid(HELP.trim());
   const org = single(args, "--org");
@@ -111,22 +106,20 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   if (name !== undefined && (!name || name.length > 64 || /[\p{C}]/u.test(name)))
     return invalid("--name requires 1..64 visible characters.");
   const hostId = args.positionals[0];
-  if (operation === "revoke" && (!hostId || !UUID.test(hostId))) return invalid("host revoke requires a host UUID.");
-  const client = await createArmadaApiClient(auth);
-  if (operation === "list" || operation === "show") {
+  if (operation === "rm" && (!hostId || !UUID.test(hostId))) return invalid("host rm requires a host UUID.");
+  const client = await createSdkCommandClient(auth);
+  if (operation === "ls") {
     const result = await listHosts(client, org);
-    if (operation === "show") {
+    if (hostId !== undefined) {
       const matches = result.hosts.filter((host) =>
-        UUID.test(hostId ?? "") ? host.id === hostId?.toLowerCase() : host.name === hostId && host.state !== "revoked",
+        UUID.test(hostId) ? host.id === hostId.toLowerCase() : host.name === hostId && host.state !== "revoked",
       );
-      if (matches.length !== 1)
-        return invalid("Host not found or name is ambiguous. Use a UUID from armada host list.");
+      if (matches.length !== 1) return invalid("Host not found or name is ambiguous. Use a UUID from armada host ls.");
       result.hosts = matches;
     }
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
     else {
-      if (result.targetVersion && result.minimumVersion)
-        auth.out(`Target daemon version: ${result.targetVersion}; minimum supported: ${result.minimumVersion}\n`);
+      if (result.targetVersion) auth.out(`Target daemon version: ${result.targetVersion}\n`);
       auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
       for (const host of result.hosts) {
         const resources = dockerHostResourceDisplay(host);
@@ -134,18 +127,13 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
           `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
         if (host.state === "draining") auth.out(`Draining: ${DOCKER_HOST_DRAINING_MESSAGE}\n`);
-        if (operation === "list")
+        if (hostId === undefined)
           auth.out(
             `Docker disk free: ${host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}; stopped sandbox space: ${host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}\n`,
           );
-        const upgrade = dockerHostUpgradeMessage(
-          host.version,
-          result.targetVersion ?? result.serverVersion,
-          result.minimumVersion,
-          host.snapshotBuildSupported,
-        );
-        if (upgrade && host.state !== "pending" && host.state !== "revoked") auth.out(`${upgrade}\n`);
-        if (operation === "show")
+        if (host.state !== "pending" && host.state !== "revoked" && host.upgradeRequired)
+          auth.out(`${API_FAILURE_HELP.docker_host_upgrade_required}\n`);
+        if (hostId !== undefined)
           auth.out(`Retention: ${host.retentionSeconds == null ? "unknown (upgrade host)" : `${host.retentionSeconds}s`}
 Requested retention: ${host.retentionOverrideSeconds == null ? "host default" : `${host.retentionOverrideSeconds}s`}
 Docker disk free: ${host.diskFreeBytes == null ? "unknown (upgrade/check host)" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}; launch floor: 10 GB
@@ -156,25 +144,10 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     }
     return 0;
   }
-  if (operation === "retention") {
-    const raw = single(args, "--retention") ?? "";
-    const match = /^(0|[0-9]+)(s|m|h|d)?$/.exec(raw);
-    const seconds = match ? Number(match[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 }[match[2] ?? "s"] ?? 1) : NaN;
-    if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 31536000)
-      return invalid("--retention requires 0 or a duration such as 24h (maximum 365d).");
-    const resolved = await resolveHost(client, org, hostId!);
-    await client.dockerHost("retention", { org, hostId: resolved, retentionSeconds: seconds });
-    auth.out(
-      flag(args, "--json")
-        ? `${JSON.stringify({ hostId: resolved, retentionSeconds: seconds })}\n`
-        : "Retention saved. The host applies it on its next check-in; inspect with armada host show.\n",
-    );
-    return 0;
-  }
   if (operation === "limits") {
     const patch: { cpus?: number; memoryBytes?: number; maxSandboxes?: number; auto?: true } = {};
     if (args.options.has("--auto")) {
-      if (["--cpus", "--memory", "--max-sandboxes", "--retention"].some((key) => args.options.has(key)))
+      if (["--cpus", "--memory", "--max-sandboxes"].some((key) => args.options.has(key)))
         return invalid("--auto resets all limits and cannot be combined with overrides.");
       patch.auto = true;
     } else {
@@ -204,11 +177,11 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     auth.out(
       flag(args, "--json")
         ? `${JSON.stringify({ hostId: resolved, ...patch })}\n`
-        : "Host limits updated. Use armada host show to inspect the policy. Container changes apply on the next start or resume.\n",
+        : "Host limits updated. Use armada host ls HOST to inspect the policy. Container changes apply on the next start or resume.\n",
     );
     return 0;
   }
-  if (operation === "revoke") {
+  if (operation === "rm") {
     const result = await client.dockerHost<{ revoked: boolean }>("revoke", { org, hostId });
     if (result?.revoked !== true) return invalid("The server did not confirm host revocation.");
     auth.out(
@@ -251,7 +224,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       const host = (await listHosts(client, org)).hosts.find((candidate) => candidate.id === ticket.hostId);
       if (!host) {
         auth.out(
-          "The new registration is no longer pending (canceled or expired). If the installer reused an existing machine, it keeps its existing name and registration. Run armada host list to confirm.\n",
+          "The new registration is no longer pending (canceled or expired). If the installer reused an existing machine, it keeps its existing name and registration. Run armada host ls to confirm.\n",
         );
         return 0;
       }
@@ -270,12 +243,12 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     }
   } catch (error) {
     auth.err(
-      `Host ${ticket.hostId} check-in is unknown. Run armada host list; do not issue another registration blindly.\n`,
+      `Host ${ticket.hostId} check-in is unknown. Run armada host ls; do not issue another registration blindly.\n`,
     );
     throw error;
   }
   auth.err(
-    `Host ${ticket.hostId} is still pending or offline; the check-in wait expired. Run armada host list to reconcile; no registration was reissued.\n`,
+    `Host ${ticket.hostId} is still pending or offline; the check-in wait expired. Run armada host ls to reconcile; no registration was reissued.\n`,
   );
   return 1;
 }

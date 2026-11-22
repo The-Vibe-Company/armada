@@ -12,7 +12,7 @@ import * as z from "zod";
 import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
-import { goldenLaunchResponse } from "./launch-response-schemas.ts";
+import { goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { observeGoldenLaunch } from "./request-timing.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolContext } from "./tools.ts";
@@ -32,13 +32,7 @@ const mcpLaunchArguments = z.looseObject({}).meta({
 
 export const mcpLaunchContract = {
   title: "Launch an agent",
-  description:
-    "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
-    "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
-    "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
-    "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +
-    "the sandbox act as that person (8 hour token): see `github` in the answer. Setup can take a few minutes. " +
-    "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
+  description: launch.mcpDescription,
   input: mcpLaunchArguments,
   output: launchEnvelope.shape,
 };
@@ -143,7 +137,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
         "outcome_unknown",
         "The saved launch receipt cannot be returned. Inspect the original sandbox through list. Do not use a new key.",
       );
-    return envelope.data;
+    return publicLaunchReceipt(envelope.data);
   });
 }
 

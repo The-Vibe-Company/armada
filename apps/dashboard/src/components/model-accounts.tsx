@@ -92,6 +92,7 @@ import {
   kindNote,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
+  monthlyApiSpendLabel,
   orderAccounts,
   PASTE_SIGN_IN,
   relativeTime,
@@ -280,7 +281,7 @@ function ReadAt({ at, report, now, lead }: { at: string | null; report: string; 
  * An account's allowance windows. Each window says what share is left, what was used, and when it resets. A
  * stale report keeps its numbers but says how old they are; nothing reported is said in words, never as zero.
  */
-export function UsagePanel({
+function UsagePanel({
   usage,
   account,
   now,
@@ -456,6 +457,8 @@ export function AccountRow({
   /** Which control opened the dialog, so closing it gives focus back there. */
   const opener = useRef<"menu" | "row">("menu");
   const info = KIND_INFO[account.kind];
+  const spendLabel = monthlyApiSpendLabel(account);
+  const spokenSpendLabel = spendLabel?.replace("—", "unknown");
   const state = modelsPageStatus(account, now);
   const exhaustion = modelsPageExhaustion(account, now);
   const StateIcon = STATE_ICON[state.tone];
@@ -500,6 +503,18 @@ export function AccountRow({
           <span className="block text-xs text-muted-foreground">
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
+          {spendLabel && (
+            <span className="mt-1 block text-xs break-words text-muted-foreground tabular-nums">
+              {spokenSpendLabel === spendLabel ? (
+                spendLabel
+              ) : (
+                <>
+                  <span aria-hidden="true">{spendLabel}</span>
+                  <span className="sr-only">{spokenSpendLabel}</span>
+                </>
+              )}
+            </span>
+          )}
           {exhaustion && <span className="block text-xs text-foreground">{exhaustion}</span>}
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
@@ -1242,7 +1257,7 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             Choose a destination
           </option>
           <option value="anthropic">Anthropic default endpoint</option>
-          <option value="custom">Custom gateway (Modal)</option>
+          <option value="custom">Custom gateway</option>
         </NativeSelect>
       </div>
       {mode === "custom" && (
@@ -1377,7 +1392,7 @@ function CustomEndpointFields({
               Choose a destination
             </option>
             <option value="openai">OpenAI default endpoint</option>
-            <option value="custom">Custom endpoint (Modal)</option>
+            <option value="custom">Custom endpoint</option>
             {replacementPresets(kind).map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
@@ -1396,7 +1411,7 @@ function CustomEndpointFields({
             checked={custom}
             onCheckedChange={(value) => setCustom(value === true)}
           />
-          Use a custom endpoint (Modal)
+          Use a custom endpoint
         </Label>
       )}
       {custom && (
@@ -1419,7 +1434,7 @@ function CustomEndpointFields({
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
             {codex
-              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Custom endpoints use the Armada runtime on Boat. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              ? "Available on Modal, Docker hosts and runtime-backed Boat. Use Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Codex cannot use chat-completions-only endpoints such as DeepSeek."
               : "Available on Modal, Docker hosts and runtime-backed Boat. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (
@@ -1589,7 +1604,7 @@ export function AddAccountDialog({
   const subscription = info.billing === "subscription";
   const pasteSignIn = PASTE_SIGN_IN[kind];
   const command = subscription
-    ? `${kind === "claude_oauth" ? "claude setup-token && armada creds import claude" : "armada creds login codex"} --name ${shellQuote(name.trim() || info.label)}${scope === "org" ? ` --org ${shellQuote(orgId)}` : ""}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`
+    ? `${kind === "claude_oauth" ? "claude setup-token && armada account import claude" : "armada account login codex"} --name ${shellQuote(name.trim() || info.label)}${scope === "org" ? ` --org ${shellQuote(orgId)}` : ""}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`
     : null;
 
   useEffect(() => {

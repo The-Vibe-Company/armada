@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
@@ -14,7 +13,7 @@ import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedN
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
 import { codexTurnFailureCode } from "./codex-turn-error.ts";
-import { codexTurnUsage } from "./codex-turn-usage.ts";
+import { codexTurnUsage, settleCodexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
@@ -135,9 +134,14 @@ export class CodexDriver implements Driver {
     const terminalTurns = new Set<string>();
     let terminalResolve: ((value: TurnCompletedNotification) => void) | undefined;
     let terminalReject: ((error: Error) => void) | undefined;
-    const lines = createInterface({ input: child.stdout });
+    let failure: Error | undefined;
+    let lineFailure: Error | undefined;
     const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true): Promise<T> =>
       new Promise((resolve, reject) => {
+        if (failure) {
+          reject(failure);
+          return;
+        }
         const id = ++next;
         const timer = setTimeout(() => {
           pending.delete(id);
@@ -148,22 +152,40 @@ export class CodexDriver implements Driver {
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
       });
     let retryWait: AbortController | undefined;
-    const fail = () => {
+    const fail = (error: Error) => {
+      if (closed) return;
+      failure = error;
       closed = true;
       retryWait?.abort();
       for (const p of pending.values()) {
         clearTimeout(p.timer);
-        p.reject(new HarnessError("harness_process_lost"));
+        p.reject(error);
       }
       pending.clear();
-      terminalReject?.(new HarnessError("harness_process_lost"));
+      terminalReject?.(error);
     };
-    child.once("error", fail);
-    child.once("exit", fail);
-    child.stderr.resume();
-    lines.on("line", (line) => {
+    child.once("error", (error) => fail(new HarnessError("harness_process_lost", undefined, { cause: error })));
+    child.once("exit", () => fail(new HarnessError("harness_process_lost")));
+    let stderrTail = "";
+    let stderrTruncated = false;
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      if (stderrTruncated) return;
+      stderrTail += chunk;
+      if (stderrTail.length > 2048) {
+        stderrTruncated = true;
+        stderrTail = "";
+      }
+    });
+    const handleLine = (line: string) => {
+      if (closed) return;
       try {
-        const m = JSON.parse(line);
+        let m: ReturnType<typeof JSON.parse>;
+        try {
+          m = JSON.parse(line);
+        } catch (cause) {
+          throw new HarnessError("invalid_harness_protocol", undefined, { cause });
+        }
         this.options.refreshSecrets?.();
         if (m.id !== undefined && !m.method) {
           const p = pending.get(m.id);
@@ -351,10 +373,26 @@ export class CodexDriver implements Driver {
             });
           else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
         } else c.emit({ kind: "other", type: m.method, data: m.params, rawDiagnostic: true });
-      } catch {
-        fail();
+      } catch (error) {
+        lineFailure = error instanceof Error ? error : new Error("codex_line_handler_failed", { cause: error });
+        fail(lineFailure);
         child.kill("SIGKILL");
       }
+    };
+    let remainder = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (closed) return;
+      const lines = (remainder + chunk).split("\n");
+      remainder = lines.pop()!;
+      for (const line of lines) handleLine(line);
+    });
+    child.stdout.once("end", () => {
+      if (remainder) handleLine(remainder);
+    });
+    child.stdout.once("error", (error) => {
+      fail(new HarnessError("harness_process_lost", undefined, { cause: error }));
+      child.kill("SIGKILL");
     });
     const begin = async (text: string) => {
       c.signal.throwIfAborted();
@@ -454,9 +492,12 @@ export class CodexDriver implements Driver {
       if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
         // Existing native ChatGPT session only: this documented RPC never starts inference.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
-        try {
-          const requestedAtRevision = rateLimitsRevision;
-          const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false);
+        const requestedAtRevision = rateLimitsRevision;
+        const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false).catch(() => {
+          if (failure) throw failure;
+          return undefined;
+        });
+        if (limits !== undefined) {
           const snapshot =
             limits && typeof limits === "object" && !Array.isArray(limits)
               ? (limits as { rateLimits?: unknown }).rateLimits
@@ -471,8 +512,9 @@ export class CodexDriver implements Driver {
           )
             rateLimits = snapshot;
           c.emit({ kind: "other", type: "account/rateLimits/read", data: limits });
-        } catch {}
+        }
       }
+      if (failure) throw failure;
     })();
     if (!resumeOnly) current = initialized.then(() => begin(c.request.text));
     const interrupt = async () => {
@@ -499,7 +541,28 @@ export class CodexDriver implements Driver {
     let steerFinished: Promise<void> = Promise.resolve();
     let retryCount = 0;
     let totalWaitMs = 0;
+    const emitDiagnostics = (turnFailed: boolean, snapshot: ReturnType<typeof settleCodexTurnUsage>) => {
+      try {
+        if (snapshot) c.emit({ kind: "other", type: "armada/turnUsage", data: snapshot });
+        if (turnFailed || child.exitCode || child.signalCode || stderrTail || stderrTruncated) {
+          if (stderrTail) this.options.refreshSecrets?.();
+          c.emit({
+            kind: "other",
+            type: "harness_stderr",
+            data: {
+              exitCode: child.exitCode,
+              signal: child.signalCode,
+              ...(stderrTruncated ? {} : { text: stderrTail }),
+              truncated: stderrTruncated,
+            },
+          });
+        }
+      } catch (error) {
+        if (!turnFailed) throw error;
+      }
+    };
     const done = (async () => {
+      let turnFailed = false;
       try {
         if (resumeOnly) {
           await initialized;
@@ -509,6 +572,7 @@ export class CodexDriver implements Driver {
           const active: Promise<{ terminal: Promise<TurnCompletedNotification> }> = current;
           const { terminal } = await active;
           const result = await terminal;
+          if (lineFailure) throw lineFailure;
           if (steering) {
             await steerFinished;
             continue;
@@ -541,7 +605,7 @@ export class CodexDriver implements Driver {
               retryWait = undefined;
             }
             if (stopping || c.signal.aborted) return "interrupted" as const;
-            if (closed) throw new HarnessError("harness_process_lost");
+            if (failure) throw failure;
             if (active !== current) continue;
             current = begin(
               "Continue from where the model provider request was rate limited. Do not repeat completed work.",
@@ -564,34 +628,23 @@ export class CodexDriver implements Driver {
           // instead of collapsing it into a configuration failure.
           throw new HarnessError(codexTurnFailureCode(code, result.turn.error?.message));
         }
+      } catch (error) {
+        turnFailed = true;
+        throw error;
       } finally {
         closed = true;
-        const terminalObserved = terminalTurns.has(turnId);
-        if (resumeUsage.started && !terminalObserved) this.tokenTotals.delete(threadId);
-        lines.close();
+        const snapshot = settleCodexTurnUsage({
+          tokenTotals: this.tokenTotals,
+          threadId,
+          dispatched: resumeUsage.started,
+          terminalObserved: terminalTurns.has(turnId),
+          latest: usage.latest,
+          model: modelRerouted ? null : reportedModel,
+        });
         await this.children.release(child);
         this.nativeWriter = false;
         c.signal.removeEventListener("abort", abort);
-        // One final snapshot prevents stale model shares surviving a late reroute in persisted history.
-        // Also retain observed usage on failed/interrupted prompts; no snapshot is invented when absent.
-        if (usage.latest)
-          c.emit({
-            kind: "other",
-            type: "armada/turnUsage",
-            data: {
-              ...usage.latest,
-              ...(!terminalObserved
-                ? {
-                    inputTokens: null,
-                    outputTokens: null,
-                    cachedTokens: null,
-                    cacheWriteTokens: null,
-                    reasoningTokens: null,
-                  }
-                : {}),
-              model: modelRerouted ? null : reportedModel,
-            },
-          });
+        emitDiagnostics(turnFailed, snapshot);
       }
     })();
     return {

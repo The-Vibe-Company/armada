@@ -40,24 +40,19 @@ async function capture(argv: string[], failure?: number) {
   return { code, out, err };
 }
 
-test("JSON clearing and logout emit only their stable success objects", async () => {
-  for (const [argv, expected] of [
-    [["org", "use", "none", "--json"], { org: null }],
-    [["logout", "--json"], { authenticated: false }],
-  ] as const) {
-    const result = await capture([...argv]);
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.out)).toEqual(expected);
-  }
+test("JSON logout emits only its stable success object", async () => {
+  const result = await capture(["logout", "--json"]);
+  expect(result.code).toBe(0);
+  expect(JSON.parse(result.out)).toEqual({ authenticated: false });
 });
 
 test("human and JSON diagnostics distinguish authentication, server and usage exits", async () => {
   for (const json of [false, true]) {
     for (const [argv, failure, code] of [
-      [["list"], undefined, 3],
-      [["list"], 401, 3],
+      [["ls"], undefined, 3],
+      [["ls"], 401, 3],
       [["template", "list", "--org", "11111111-1111-4111-8111-111111111111"], 401, 3],
-      [["list"], 503, 1],
+      [["ls"], 503, 1],
       [["stop", "sandbox", "--ttl", "4h"], undefined, 2],
     ] as const) {
       const result = await capture([...argv, ...(json ? ["--json"] : [])], failure);

@@ -23,11 +23,11 @@ function at<T>(values: T[], index = 0): T {
   return value;
 }
 type WireTool = { id: string; name: string; input: Obj; result: { output: unknown; isError: boolean } };
-function fixture(enabled = true) {
+function fixture(enabled = true, stepTimeouts: ScopedProbeIo["stepTimeouts"] = {}) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
-  const requests: { path: string; body: Obj }[] = [];
+  const requests: { path: string; body: Obj; timeoutMs: number | undefined }[] = [];
   const state = {
     before: [] as string[],
     after: [parent, child],
@@ -37,6 +37,7 @@ function fixture(enabled = true) {
     lists: 0,
     logReads: 0,
     lateLogs: false,
+    lateStop: false,
     noTools: false,
     denied: false,
     content: false,
@@ -46,6 +47,12 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    firstLogReadMs: 0,
+    listReadMs: 0,
+    sendMs: 0,
+    waitReadMs: 0,
+    logsTimeout: false,
+    logsExhaustBudget: false,
     waitRunning: false,
     waitReplies: [] as Obj[],
     logsIncomplete: false,
@@ -76,11 +83,13 @@ function fixture(enabled = true) {
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
-    async request<T>(path: string, input: object): Promise<T> {
+    stepTimeouts,
+    async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
-      requests.push({ path, body });
+      requests.push({ path, body, timeoutMs });
       expect(body.org).toBe(item.org);
       if (path === "sandbox/list") {
+        clock += state.listReadMs;
         expect(body.owner).toBe("me");
         expect(body.golden).toBe(item.goldenId);
         expect(body.limit).toBe(200);
@@ -95,21 +104,19 @@ function fixture(enabled = true) {
         } as T;
       }
       if (path === "sandbox/send") {
+        clock += state.sendMs;
         state.sends++;
         if (state.notReady && state.sends === 1) throw new Error("not_ready");
         expect(body.id).toBe(parent);
-        const goal = body.prompt as string;
-        const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null") as Obj;
-        const message = JSON.parse(
-          goal.match(/message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/)?.[1] ??
-            "null",
-        ) as Obj;
-        // The instructions must supply the required target, not rely on the model
-        // repairing a payload the smoke calls exact. Substitute only the returned ID.
-        expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
-        const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
-        const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
-        const marker = goal.match(/NO_ACCESS_[\w-]+/)?.[0];
+        const prefix = "ARMADA_SCOPED_SMOKE_V1 ";
+        const goal = String(body.prompt);
+        expect(goal.startsWith(prefix)).toBe(true);
+        const { lane, launch, messageKey, stopKey, answer, noAccess: marker } = JSON.parse(goal.slice(prefix.length));
+        expect(lane).toBe("parent");
+        const message = {
+          idempotencyKey: messageKey,
+          text: prefix + JSON.stringify({ lane: "child", answer }),
+        };
         // Independent schema assertions: no owner token/REST shortcut, no launch prompt/TTL.
         expect(Object.keys(launch).sort()).toEqual(["idempotencyKey", "selection"]);
         expect(launch.selection).toEqual({
@@ -182,29 +189,47 @@ function fixture(enabled = true) {
         return { promptId: "turn" } as T;
       }
       if (path === "sandbox/wait") {
+        clock += state.waitReadMs;
         expect(body).toEqual({ org: item.org, id: parent, prompt_id: "turn", timeout_seconds: 0 });
         if (state.waitReplies.length) return state.waitReplies.shift() as T;
         return { prompt: { promptId: "turn", state: state.waitRunning ? "running" : "finished" } } as T;
       }
       if (path === "logs/read") {
         state.logReads++;
+        if (state.logReads === 1) clock += state.firstLogReadMs;
         expect(body.id).toBe(parent);
         expect(body.coalesce).toBe(true);
         expect(body.maxBytes).toBe(1_048_576);
         expect(body.limit).toBe(500);
         if (state.logsFail) throw Object.assign(new Error("secret-error-do-not-print"), { status: 400 });
+        if (timeoutMs !== undefined) {
+          if (state.logsExhaustBudget && state.logReads === 2) clock += 8_925;
+          if (state.logsTimeout || (state.logsExhaustBudget && state.logReads === 3)) {
+            if (state.logsExhaustBudget) clock += timeoutMs;
+            throw Object.assign(new Error("request_failed"), { transportTimeoutMs: timeoutMs });
+          }
+        }
+        const events =
+          state.lateStop && state.logReads === 1
+            ? state.events.map((event) => ({
+                ...event,
+                tools: state.tools.map((tool) => (tool.name === "stop" ? { ...tool, result: undefined } : tool)),
+              }))
+            : state.events;
         return {
-          events: state.lateLogs && state.logReads === 1 ? [] : state.events,
+          events:
+            state.lateLogs && (state.logReads === 1 || (state.logsExhaustBudget && state.logReads === 2)) ? [] : events,
           hasMore: state.logsIncomplete,
           cursor: state.logsIncomplete ? `cursor-${state.logReads}` : null,
         } as T;
       }
       throw new Error(`Unexpected route ${path}`);
     },
-    async poll<T>(read: () => Promise<T>, done: (result: T) => boolean) {
+    async poll<T>(read: (remainingMs?: number) => Promise<T>, done: (result: T) => boolean, until?: number) {
       for (let n = 0; n < 3; n++) {
-        const result = await read();
-        if (done(result)) return result;
+        if (until !== undefined && clock >= until) break;
+        const result = await read(until === undefined ? undefined : until - clock);
+        if ((until === undefined || clock <= until) && done(result)) return result;
       }
       throw new Error("poll exhausted");
     },
@@ -262,6 +287,111 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(2);
     expect(await f.probe.cleanup(parent, true)).toBe(true);
     expect(f.stopped).toEqual([child]);
+  });
+
+  test("reports a scoped launch MCP failure when Codex omits the MCP error flag", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      tools.splice(1);
+      at(tools).result.output = {
+        content: [{ type: "text", text: "scoped_operation_unavailable" }],
+        structuredContent: null,
+        _meta: { requestId: other, privateField: "private-metadata" },
+      };
+    };
+    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+    expect(f.state.logReads).toBe(1);
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_launch_diagnostic",
+        toolError: true,
+        toolFailureCode: "scoped_operation_unavailable",
+        toolRequestId: other,
+        authorityDenied: false,
+      }),
+    );
+    expect(JSON.stringify(f.output)).not.toContain("private-metadata");
+  });
+
+  test("correlates a failed launch with operator logs without printing receipt text", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      tools.splice(
+        0,
+        tools.length,
+        f.wire("launch", at(tools).input, {
+          id: operation,
+          sandboxId: child,
+          state: "failed",
+          error: { code: "unexpected-code", message: "private-provider-detail" },
+        }),
+      );
+    };
+    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_launch_diagnostic",
+        operationId: operation,
+        sandboxId: child,
+        receiptState: "failed",
+      }),
+    );
+    expect(JSON.stringify(f.output)).not.toMatch(/unexpected-code|private-provider-detail/);
+  });
+
+  test("waits for a late stop result in the finished parent turn without replaying it", async () => {
+    const f = fixture();
+    f.state.lateStop = true;
+    f.state.mutate = (tools) => {
+      const read = f.wire("read", { sandboxId: child }, {}, "earlier-read");
+      read.result.isError = true;
+      tools.splice(2, 0, read);
+    };
+    await run(f);
+    expect(f.state.sends).toBe(1);
+    expect(f.state.logReads).toBe(2);
+  });
+
+  test("rejects complete initial tool evidence that arrives after the measured budget", async () => {
+    const f = fixture(true, { scoped_tool_evidence: 1_500 });
+    f.state.firstLogReadMs = 1_501;
+    await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
+  });
+
+  test.each([
+    { mode: "fallback", budget: undefined, firstReadMs: 0, lastReadBudget: 75 },
+    { mode: "measured", budget: 10_500, firstReadMs: 200, lastReadBudget: 375 },
+  ])(
+    "reports the missing receipt when a log read exhausts the $mode window",
+    async ({ budget, firstReadMs, lastReadBudget }) => {
+      const f = fixture(true, budget === undefined ? {} : { scoped_tool_evidence: budget });
+      f.state.firstLogReadMs = firstReadMs;
+      f.state.lateLogs = true;
+      f.state.logsExhaustBudget = true;
+      await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+      expect(f.state.sends).toBe(1);
+      expect(f.requests.find((request) => request.path === "logs/read")?.timeoutMs).toBe(budget);
+      expect(f.output).toContainEqual(
+        expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: lastReadBudget }),
+      );
+    },
+  );
+
+  test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
+    const f = fixture();
+    f.state.lateLogs = true;
+    f.state.logsTimeout = true;
+    await expect(run(f)).rejects.toThrow("request_failed");
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_logs_diagnostic",
+        phase: "tool_evidence",
+        status: null,
+        transportTimeoutMs: 10_000,
+      }),
+    );
   });
 
   test.each(["noTools", "denied"] as const)(
@@ -398,6 +528,8 @@ describe("ordinary scoped Armada smoke", () => {
           targetMatches: mode !== "missing" && mode !== "wrong-target",
           receiptTargetMatches: mode !== "missing",
           receiptIdValid: mode !== "missing",
+          receiptSandboxIdValid: mode !== "missing",
+          ...(mode === "uncertain" && { operationId: operation, sandboxId: child }),
           receiptState: mode === "uncertain" ? "uncertain" : mode === "wrong-target" ? "succeeded" : "unrecognized",
           toolError: mode === "missing" ? null : false,
           authorityDenied: mode === "missing" ? null : false,
@@ -407,6 +539,35 @@ describe("ordinary scoped Armada smoke", () => {
       expect(f.state.sends).toBe(1);
     },
   );
+
+  test("failed stop proof reports receipt mismatches and only recognized extra tool names", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      const stop = at(tools, 3);
+      stop.input.idempotencyKey = "private-key";
+      stop.result.output = { structuredContent: { result: { state: "uncertain", sandboxId: other } } };
+      tools.push(f.wire("exec_command", {}, {}), f.wire("private-tool-name", {}, {}));
+    };
+    await expect(run(f)).rejects.toThrow("scoped_stop_unproven");
+    expect(f.output).toEqual([
+      {
+        step: "scoped_stop_diagnostic",
+        provider: "boat",
+        stopCount: 1,
+        readCount: 1,
+        keyMatches: false,
+        receiptIdValid: false,
+        receiptSandboxIdValid: true,
+        receiptState: "uncertain",
+        toolError: false,
+        authorityDenied: false,
+        targetMatches: true,
+        receiptTargetMatches: false,
+        extraToolNames: ["exec_command"],
+        unknownExtraToolCount: 1,
+      },
+    ]);
+  });
 
   test.each([true, false])("rejects non-MCP native actions in either control (enabled=%s)", async (enabled) => {
     const f = fixture(enabled);
@@ -497,7 +658,17 @@ describe("ordinary scoped Armada smoke", () => {
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child]);
     expect(f.state.sends).toBe(1);
-    expect(f.output[0]).toMatchObject({ unknownLaunch: true, operationIds: [operation], claimedSandboxIds: [child] });
+    expect(f.output[0]).toMatchObject({
+      step: "scoped_launch_diagnostic",
+      launchCount: 1,
+      keyMatches: true,
+      receiptState: "uncertain",
+    });
+    expect(f.output.at(-1)).toMatchObject({
+      unknownLaunch: true,
+      operationIds: [operation],
+      claimedSandboxIds: [child],
+    });
     expect(f.output.at(-1)?.launchRequestKey).toMatch(/^smoke-scoped-/);
   });
 
@@ -517,7 +688,7 @@ describe("ordinary scoped Armada smoke", () => {
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([]);
     if (mode === "preexisting" || mode === "parent" || mode === "unclaimed") expect(f.journaled).toEqual([]);
-    expect(f.output[0]?.pass).toBe(false);
+    expect(f.output.at(-1)?.pass).toBe(false);
   });
 
   test("known launch claims are journaled even when final fleet snapshot is unreadable", async () => {
@@ -582,7 +753,7 @@ describe("ordinary scoped Armada smoke", () => {
     f.state.tools.push(late);
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child, other]);
-    expect(f.output[0]).toMatchObject({ leftoverSandboxIds: [child], claimedSandboxIds: [child, other] });
+    expect(f.output.at(-1)).toMatchObject({ leftoverSandboxIds: [child], claimedSandboxIds: [child, other] });
   });
 
   test("malformed local-key selection still preserves known cleanup receipts, without accepting it as proof", async () => {
@@ -593,7 +764,7 @@ describe("ordinary scoped Armada smoke", () => {
     await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
     expect(await f.probe.cleanup(parent, true)).toBe(true);
     expect(f.stopped).toEqual([child]);
-    expect(f.output[0]).toMatchObject({ operationIds: [operation], claimedSandboxIds: [child] });
+    expect(f.output.at(-1)).toMatchObject({ operationIds: [operation], claimedSandboxIds: [child] });
   });
 
   test("excessively nested MCP output cannot bypass the bounded evidence parser", async () => {
@@ -622,8 +793,8 @@ describe("ordinary scoped Armada smoke", () => {
       await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
       expect(await f.probe.cleanup(parent, true)).toBe(false);
       expect(f.stopped).toEqual([]);
-      expect(f.output[0]).toMatchObject({ unattributedSandboxIds: [child], claimedSandboxIds: [] });
-      if (mode === "missing-receipt") expect(f.output[0]?.unknownLaunch).toBe(true);
+      expect(f.output.at(-1)).toMatchObject({ unattributedSandboxIds: [child], claimedSandboxIds: [] });
+      if (mode === "missing-receipt") expect(f.output.at(-1)?.unknownLaunch).toBe(true);
     },
   );
 
@@ -636,6 +807,30 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(40);
     expect(f.stopped).toEqual([child]); // Complete individual receipt remains safe despite incomplete overall evidence.
     expect(f.output[0]).toMatchObject({ unknownEvidence: true });
+  });
+
+  test("rejects a complete inventory received after the shared snapshot deadline", async () => {
+    const f = fixture(true, { scoped_snapshot: 100 });
+    f.state.listPages = 2;
+    f.state.listReadMs = 60;
+    await expect(f.probe.prepare()).rejects.toThrow("scoped_incomplete_snapshot");
+    expect(f.requests.map(({ timeoutMs }) => timeoutMs)).toEqual([100, 40]);
+    expect(f.state.sends).toBe(0);
+  });
+
+  test("charges prompt admission against the native turn deadline and rejects late completion", async () => {
+    const f = fixture(true, { scoped_native_turn: 100 });
+    f.state.sendMs = 60;
+    f.state.waitReadMs = 41;
+    await expect(run(f)).rejects.toThrow("poll exhausted");
+    expect(
+      f.requests
+        .filter(({ path }) => path === "sandbox/send" || path === "sandbox/wait")
+        .map(({ timeoutMs }) => timeoutMs),
+    ).toEqual([100, 40]);
+    expect(f.state.sends).toBe(1);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
   });
 
   test("a fenced parent wait is polled until the accepted turn finishes", async () => {
@@ -720,12 +915,14 @@ describe("ordinary scoped Armada smoke", () => {
       step: "scoped_logs_diagnostic",
       provider: "boat",
       route: "logs/read",
+      phase: "initial_evidence",
       page: 0,
       cursorPresent: false,
       coalesce: true,
       limit: 500,
       maxBytes: 1_048_576,
       status: 400,
+      transportTimeoutMs: null,
     });
     expect(g.output.at(-1)).toMatchObject({ unknownEvidence: true, unattributedSandboxIds: [child] });
     expect(JSON.stringify(g.output)).not.toContain("secret-error");

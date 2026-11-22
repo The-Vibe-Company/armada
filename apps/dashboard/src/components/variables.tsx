@@ -61,24 +61,6 @@ import {
 
 type Action = (previous: ActionResult | null, data: FormData) => Promise<ActionResult>;
 
-/** A variable's or a secret's mark on its row: braces for readable configuration, a lock for a write-only value. */
-export function VaultMark({ kind }: { kind: VaultKind }) {
-  const Icon = kind === "secret" ? LockKeyholeIcon : BracesIcon;
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-md border [&_svg]:size-4",
-        kind === "secret"
-          ? "border-primary/25 bg-primary/10 text-[var(--accent-text)]"
-          : "bg-muted text-muted-foreground",
-      )}
-    >
-      <Icon />
-    </span>
-  );
-}
-
 /** A name field that writes environment-style names (APP_REGION) as the person types, and says what is wrong. */
 function NameField({
   id,

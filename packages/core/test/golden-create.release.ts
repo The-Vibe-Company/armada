@@ -5,9 +5,6 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 
 // Release-only PostgreSQL contracts; retained unit cases stay in the sibling test file.
 import { expect, test } from "bun:test";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { migrationsDir } from "../../../scripts/db/apply.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import helperManifest from "../helper/manifest.json";
 import {
@@ -21,6 +18,8 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/server.ts";
+import { applyPostgresFixtureMigrations } from "./support/postgres-migrations.ts";
+import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const APP = { clientId: "Iv1.test", clientSecret: "github-client-secret" };
@@ -108,7 +107,6 @@ function readyProvider(): Provider {
     deleteSnapshot: async () => {},
     fork: async () => sandbox(),
     get: async () => sandbox(),
-    list: async () => ({ items: [], cursor: null }),
     prompt: async () => ({ promptId: "p", conversationId: "c", status: "queued" }),
     getPrompt: async () => ({ promptId: "p", status: "finished", done: true }),
     steer: async () => ({ conversationId: "c", promptId: "p" }),
@@ -161,13 +159,11 @@ test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifa
   let pendingCommit: Promise<unknown> | undefined;
   let attempt: Promise<void> | undefined;
   try {
-    const prereq = (await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text()).replace(
+    const prereq = (await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text()).replace(
       /^create role [^;]+;/gm,
       (command) => `do $$ begin ${command} exception when duplicate_object then null; end $$;`,
     );
-    await client.unsafe(prereq);
-    for (const file of (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort())
-      await client.unsafe(await Bun.file(join(migrationsDir, file)).text());
+    await applyPostgresFixtureMigrations(client, prereq);
     const { actor, userId } = await fixture(sql);
     await connectGitHub(sql, userId);
     const artifacts = new Set<string>();
@@ -365,7 +361,7 @@ test("PostgreSQL concurrent rebuild publications commit exactly one replacement/
     refuse = first.snapshot;
     const { GoldenSnapshotRetirements } = await import("../src/golden-snapshot-retirement.ts");
     const worker = new GoldenSnapshotRetirements({ sql: sqlA, encryptionKey: KEY, provider: async () => provider });
-    await worker.runOne();
+    await runRetirementJob(sqlA, worker);
     expect((await createSqlGoldenStore(sqlA).findByName(actor.orgId, "web"))[0]?.providerSnapshotId).toBe(
       current.providerSnapshotId,
     );
@@ -373,10 +369,10 @@ test("PostgreSQL concurrent rebuild publications commit exactly one replacement/
     expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
     refuse = undefined;
     await sqlA.query(
-      "update golden_snapshot_retirements set next_attempt_at=now()-interval '1 second' where golden_id=$1",
+      "update jobs set run_after=now()-interval '1 second' where id in (select id from golden_snapshot_retirements where golden_id=$1)",
       [current.id],
     );
-    await worker.runOne();
+    await runRetirementJob(sqlA, worker);
     expect(snapshots.has(first.snapshot)).toBe(false);
     expect(snapshots.has(current.providerSnapshotId!)).toBe(true);
   } finally {

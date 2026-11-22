@@ -49,7 +49,7 @@ without a repo selector retain their existing behavior.
   selected thread cwd") was removed from unit CI in #2622. It started pinned Codex
   twice inside a five-second test and failed the release check intermittently.
   The real executable now runs only in the publishing contract
-  `packages/mcp-server/test/mcp-codex-bridge.release.ts`, which runs the pinned
+  `packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`, which runs the pinned
   executable behind the managed wrapper and checks its exclusive writer lock.
 - Automated post-deploy smoke excludes Boat (see
   [Deployed checks](post-deploy-smoke.md)), so a green smoke run gives no Boat

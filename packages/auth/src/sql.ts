@@ -1,12 +1,19 @@
 import { assertHash } from "./codec.ts";
 import { AuthError } from "./errors.ts";
-import type { AuthStore, MemberRole, Membership, OAuthCodeRecord, TokenRecord, TokenTable } from "./types.ts";
+import {
+  type AuthStore,
+  type MemberRole,
+  type Membership,
+  type OAuthCodeRecord,
+  SERVICE_TOKEN_USAGE_INTERVAL_MS,
+  type TokenRecord,
+  type TokenTable,
+} from "./types.ts";
 
 export interface SqlQuery {
   query<T extends Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<{ rows: T[] }>;
 }
 
-/** Service-role SQL. The API-only CLI calls the server, never the database directly. */
 export function createSqlAuthStore(db: SqlQuery): AuthStore {
   return {
     async sessionMemberships(userId, sessionId, now) {
@@ -37,6 +44,28 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
       const token = mapToken(row);
       return token && row ? { token, role: row.role } : null;
     },
+    async useServiceToken(hash, now) {
+      assertHash(hash);
+      const result = await db.query<TokenRow & { role: MemberRole }>(
+        `with valid as materialized (
+           select t.id, t.user_id, t.org_id, t.label, t.revoked_at, t.created_at, t.expires_at, m.role
+           from public.service_tokens t
+           join public.members m on m.user_id = t.user_id and m.org_id = t.org_id
+           where t.hash = $1 and t.revoked_at is null and (t.expires_at is null or t.expires_at > $2::timestamptz)
+         ), touch as (
+           update public.service_tokens t
+           set last_used_at = $2::timestamptz
+           from valid v
+           where t.id = v.id and t.revoked_at is null
+             and (t.last_used_at is null or t.last_used_at <= $2::timestamptz - $3::integer * interval '1 millisecond')
+         )
+         select id, user_id, org_id, label, revoked_at, created_at, expires_at, role from valid`,
+        [hash, now, SERVICE_TOKEN_USAGE_INTERVAL_MS],
+      );
+      const row = result.rows[0];
+      const token = mapToken(row);
+      return token && row ? { token, role: row.role } : null;
+    },
     async findTokenByHash(kind, hash) {
       assertHash(hash);
       const result = await db.query<TokenRow>(
@@ -48,11 +77,19 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
     },
     async insertToken(kind, input) {
       assertHash(input.hash);
+      const service = kind === "service";
       const result = await db.query<TokenRow>(
-        `insert into ${table(kind)} (user_id, org_id, hash, label, created_at)
-         values ($1, $2, $3, $4, $5::timestamptz)
-         returning id, user_id, org_id, label, revoked_at, created_at`,
-        [input.userId, input.orgId, input.hash, input.label, input.createdAt],
+        `insert into ${table(kind)} (user_id, org_id, hash, label, created_at${service ? ", expires_at" : ""})
+         values ($1, $2, $3, $4, $5::timestamptz${service ? ", $6::timestamptz" : ""})
+         returning id, user_id, org_id, label, revoked_at, created_at${service ? ", expires_at" : ""}`,
+        [
+          input.userId,
+          input.orgId,
+          input.hash,
+          input.label,
+          input.createdAt,
+          ...(service ? [input.expiresAt ?? null] : []),
+        ],
       );
       const row = mapToken(result.rows[0]);
       if (!row) throw new AuthError("Armada could not store the token.", "unavailable");
@@ -79,7 +116,7 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
     },
     async listServiceTokens(userId) {
       const result = await db.query<ListRow>(
-        `select t.id, t.label, t.created_at, t.revoked_at, o.name as org_name
+        `select t.id, t.label, t.created_at, t.revoked_at, t.expires_at, t.last_used_at, o.name as org_name
          from public.service_tokens t
          join public.orgs o on o.id = t.org_id
          join public.members m on m.user_id = t.user_id and m.org_id = t.org_id
@@ -92,7 +129,9 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
         label: text(row.label),
         orgName: text(row.org_name),
         createdAt: instant(row.created_at),
-        revokedAt: row.revoked_at === null ? null : instant(row.revoked_at),
+        revokedAt: nullableInstant(row.revoked_at),
+        expiresAt: nullableInstant(row.expires_at),
+        lastUsedAt: nullableInstant(row.last_used_at),
       }));
     },
     async membership(userId, orgId) {
@@ -187,6 +226,7 @@ interface TokenRow extends Record<string, unknown> {
   label: unknown;
   revoked_at: unknown;
   created_at: unknown;
+  expires_at?: unknown;
 }
 
 interface ListRow extends Record<string, unknown> {
@@ -195,6 +235,8 @@ interface ListRow extends Record<string, unknown> {
   created_at: unknown;
   revoked_at: unknown;
   org_name: unknown;
+  expires_at: unknown;
+  last_used_at: unknown;
 }
 
 interface MemberRow extends Record<string, unknown> {
@@ -220,7 +262,8 @@ function mapToken(row: TokenRow | undefined): TokenRecord | null {
     userId: text(row.user_id),
     orgId: text(row.org_id),
     label: text(row.label),
-    revokedAt: row.revoked_at === null || row.revoked_at === undefined ? null : instant(row.revoked_at),
+    revokedAt: nullableInstant(row.revoked_at),
+    expiresAt: nullableInstant(row.expires_at),
     createdAt: instant(row.created_at),
   };
 }
@@ -248,6 +291,10 @@ function mapCode(row: CodeRow | undefined): OAuthCodeRecord | null {
 function text(value: unknown): string {
   if (typeof value === "string") return value;
   throw new AuthError("Armada could not read the database.", "unavailable");
+}
+
+function nullableInstant(value: unknown) {
+  return value == null ? null : instant(value);
 }
 
 function instant(value: unknown): string {

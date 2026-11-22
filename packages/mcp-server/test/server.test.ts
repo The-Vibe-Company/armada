@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createSqlSandboxStore,
@@ -12,10 +12,11 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import {
   bunLikeSql,
   call,
@@ -25,26 +26,84 @@ import {
   launchSandboxId,
   PUBLIC_URL,
   SECRETS,
+  seedDatabase,
   type TestServer,
 } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
-let server: TestServer | undefined;
+let sharedDatabase: ReturnType<typeof migratedDatabase> | undefined;
+let pendingServer: Promise<TestServer> | undefined;
 
-afterEach(async () => {
-  await server?.close();
-  server = undefined;
+beforeAll(async () => {
+  sharedDatabase = migratedDatabase();
+  await sharedDatabase;
 });
 
-async function start(options: Parameters<typeof harness>[0] = {}) {
-  server = await harness(options, await sharedDatabase());
-  return server;
+afterAll(async () => {
+  const pending = sharedDatabase;
+  sharedDatabase = undefined;
+  const db = await pending?.catch(() => undefined);
+  await db?.close();
+});
+
+afterEach(async () => {
+  const pending = pendingServer;
+  pendingServer = undefined;
+  const server = await pending?.catch(() => undefined);
+  await server?.close();
+});
+
+function start(options: Parameters<typeof harness>[0] = {}) {
+  if (!sharedDatabase) throw new Error("Server database is not open");
+  const pending = sharedDatabase.then(async (db) => {
+    await db.exec(`
+    reset role;
+    reset all;
+    set search_path=public;
+    truncate members cascade;
+    delete from provider_launch_requests;
+    delete from ordinary_launch_receipts;
+    delete from sandboxes;
+    delete from account_exhaustion;
+    delete from account_spend;
+    delete from credentials;
+    delete from orgs;
+    delete from auth.users;
+    delete from mcp_invalidations;
+  `);
+    return harness(options, await seedDatabase(db));
+  });
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
 }
 
 const allSecrets = Object.values(SECRETS);
 
 function expectNoSecret(text: string) {
   for (const secret of allSecrets) expect(text).not.toContain(secret);
+}
+
+async function seedRunningSandbox({ db, boat, people }: TestServer) {
+  const machine = await boat.provider.fork({ from: "shared" });
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+     select $1,id,org_id,$2,'boat',$3,'claude','running'
+     from goldens where org_id=$4 and name='shared'`,
+    [id, people.member, machine.id, people.org],
+  );
+  return { id, machine };
+}
+
+async function logsFixture() {
+  const server = await start();
+  const { boat, people, client, token } = server;
+  const { id, machine } = await seedRunningSandbox(server);
+  await boat.provider.prompt({ sandboxId: machine.id, harness: "claude", text: "go" });
+  const mcp = await client(await token(people.member));
+  return { id, mcp, events: boat.sandbox(machine.id).events };
 }
 
 /** The dashboard's way in: plain JSON-RPC posts, one tool call each, with the person's bearer. */
@@ -417,7 +476,7 @@ describe("tools", () => {
     });
     const mcp = await call(await s.client(bearer), "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(mcp.isError).toBe(true);
-    expect(mcp.text).toContain("armada github connect");
+    expect(mcp.text).toContain("armada account login github");
     expect(s.boat.forks).toHaveLength(0);
     expect((await s.db.query("select id from sandboxes order by id")).rows).toEqual(before);
   });
@@ -489,6 +548,145 @@ describe("tools", () => {
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.ownerClaude });
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
+
+  test.each(["accepted", "superseded", "journal failure", "receipt failure"] as const)(
+    "prompted native launch settlement (%s)",
+    async (scenario) => {
+      const { boat, client, db, people, token } = await start({
+        modelAuth: (db) => createModelAuthOwnership(db, ENCRYPTION_KEY),
+      });
+      const mcp = await client(await token(people.member));
+      await db.exec("update credentials set max_agents=1 where kind='claude_oauth'");
+      const prompt = boat.provider.prompt.bind(boat.provider);
+      let reservedAtDispatch = false;
+      boat.provider.prompt = async (request) => {
+        reservedAtDispatch = (await db.query("select sandbox_id from account_agent_reservations")).rows.length === 1;
+        const receipt = await prompt(request);
+        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
+        return receipt;
+      };
+      if (scenario === "journal failure")
+        await db.exec(`alter table sandbox_transitions add constraint reject_native_launch_journal
+          check (code <> 'native_send_accepted')`);
+      if (scenario === "receipt failure")
+        await db.exec(`alter table sandboxes add constraint reject_native_launch_receipt
+          check (task_prompt_id is null)`);
+
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "hello",
+      }).finally(async () => {
+        if (scenario === "journal failure")
+          await db.exec("alter table sandbox_transitions drop constraint reject_native_launch_journal");
+        if (scenario === "receipt failure")
+          await db.exec("alter table sandboxes drop constraint reject_native_launch_receipt");
+      });
+
+      const accepted = scenario === "accepted";
+      const superseded = scenario === "superseded";
+      expect(reservedAtDispatch).toBe(true);
+      expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+      expect(launched.isError).toBe(!accepted);
+      if (accepted) expect(launched.data).toMatchObject({ sandbox: { status: "running" }, promptId: "prompt_1" });
+      expect(
+        (
+          await db.query(`select status, lifecycle_generation::int as generation, activity_lease_id,
+          task_prompt_id, conversation_ids from sandboxes`)
+        ).rows,
+      ).toEqual([
+        {
+          status: accepted ? "running" : superseded ? "stopping" : "failed",
+          generation: superseded ? 1 : 2,
+          activity_lease_id: superseded ? expect.any(String) : null,
+          task_prompt_id: accepted ? "prompt_1" : null,
+          conversation_ids: accepted ? [expect.any(String)] : [],
+        },
+      ]);
+      expect(
+        (
+          await db.query(`select from_status, actor, code, generation::int from sandbox_transitions
+          where to_status='running'`)
+        ).rows,
+      ).toEqual(
+        accepted
+          ? [{ from_status: "starting", actor: "native_turn", code: "native_send_accepted", generation: 2 }]
+          : [],
+      );
+    },
+  );
+
+  test.each(["applied", "superseded", "reported", "rollback"] as const)(
+    "launch failure settlement (%s)",
+    async (scenario) => {
+      const { boat, client, db, people, token } = await start();
+      const mcp = await client(await token(people.member));
+      if (scenario === "rollback")
+        await db.exec(`alter table sandboxes add constraint reject_launch_diagnostic
+        check (status_reason is null or status_reason='launch_failed')`);
+      boat.provider.prompt = async () => {
+        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
+        if (scenario === "reported") {
+          await bunLikeSql(db).transaction!(async (tx) => {
+            const {
+              rows: [launch],
+            } = await tx.query<{ id: string; generation: string }>(
+              "select id, lifecycle_generation::text as generation from sandboxes where status='starting'",
+            );
+            if (!launch) throw new Error("Missing starting launch");
+            await recordRuntimeStartupFailure(
+              tx,
+              launch.id,
+              launch.generation,
+              "bootstrap_failed",
+              "Startup already reported a failure",
+            );
+          });
+        }
+        throw new Error("Initial prompt submission failed.");
+      };
+
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "hello",
+      }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_launch_diagnostic");
+      });
+      expect(launched.isError).toBe(true);
+      const { rows } = await db.query(
+        "select status, status_reason, lifecycle_generation::int, activity_lease_id from sandboxes",
+      );
+      const settled = scenario === "applied" || scenario === "reported";
+      const reason =
+        scenario === "applied"
+          ? expect.stringContaining("Initial prompt submission failed.")
+          : scenario === "reported"
+            ? "Startup already reported a failure"
+            : null;
+      const state = settled ? "failed" : scenario === "superseded" ? "stopping" : "starting";
+      expect(rows).toEqual([
+        {
+          status: state,
+          status_reason: reason,
+          lifecycle_generation: settled ? 2 : 1,
+          activity_lease_id: settled ? null : expect.any(String),
+        },
+      ]);
+      const journal = await db.query(
+        "select from_status, actor, code, generation::int from sandbox_transitions where to_status='failed'",
+      );
+      expect(journal.rows).toEqual(
+        scenario === "applied"
+          ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
+          : scenario === "reported"
+            ? [{ from_status: "starting", actor: "lifecycle_runner", code: "bootstrap_failed", generation: 1 }]
+            : [],
+      );
+    },
+  );
 
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();
@@ -843,15 +1041,21 @@ describe("tools", () => {
       orgs: [{ orgId: people.org, role: "member" }],
       via: "service",
     }).sandboxes;
-    const saved = await store.get(String(launchSandboxId(launched.data)));
-    if (!saved) throw new Error("Missing launched sandbox");
-    for (const provider of ["boat", "modal"] as const) {
-      const read = await readStatus(
+    const sandboxId = String(launchSandboxId(launched.data));
+    const readSandbox = async () => {
+      const sandbox = await store.get(sandboxId);
+      if (!sandbox) throw new Error("Missing launched sandbox");
+      return sandbox;
+    };
+    const readLive = async (provider: "boat" | "modal") =>
+      readStatus(
         { ...boat.provider, id: provider },
         store,
-        { ...saved, provider },
+        { ...(await readSandbox()), provider },
         { now: new Date() },
       );
+    for (const provider of ["boat", "modal"] as const) {
+      const read = await readLive(provider);
       expect(read.prompt).toMatchObject({
         state: "finished",
         reason: null,
@@ -859,6 +1063,7 @@ describe("tools", () => {
         modelSelectionReason: "model_selection_unverified",
       });
     }
+    const saved = await readSandbox();
     // Stored status must not collect native usage or publish a stale lifecycle observation.
     const writes: string[] = [];
     const observedStore = {
@@ -926,12 +1131,7 @@ describe("tools", () => {
       },
       { id: "terminal", at: 206, kind: "prompt", promptId: "prompt_1", status: "finished", text: "work" },
     );
-    const mixed = await readStatus(
-      { ...boat.provider, id: "modal" },
-      store,
-      { ...saved, provider: "modal" },
-      { now: new Date() },
-    );
+    const mixed = await readLive("modal");
     expect(mixed.prompt).toMatchObject({
       state: "finished",
       reason: null,
@@ -1019,26 +1219,28 @@ describe("tools", () => {
   });
 
   test("failed model record inserts do not fail an accepted launch or send", async () => {
-    // This case creates a trigger: keep it off the row-only shared connection.
-    server = await harness();
-    const { token, client, people, boat, db } = server;
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
     );
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "work",
-    });
-    expect(launched.isError).toBe(false);
-    expect(boat.stops).toHaveLength(0);
-    const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
-    expect(sent.isError).toBe(false);
-    expect(boat.prompts).toHaveLength(2);
-    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
-    expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    try {
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "work",
+      });
+      expect(launched.isError).toBe(false);
+      expect(boat.stops).toHaveLength(0);
+      const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
+      expect(sent.isError).toBe(false);
+      expect(boat.prompts).toHaveLength(2);
+      const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
+      expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    } finally {
+      await db.exec("drop trigger reject_model_record on sandbox_turn_models; drop function reject_model_record()");
+    }
   });
 
   test("turn model provenance survives send overrides and provider history retention", async () => {
@@ -1141,33 +1343,24 @@ describe("tools", () => {
   });
 
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {
-    const { token, client, people, boat } = await start();
-    const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
-    const events = boat.sandbox("bx_1").events;
+    const { id, mcp, events } = await logsFixture();
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Wor", partial: true, tools: [] });
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Working", partial: false, tools: [] });
-    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
+    const first = await call(mcp, "logs", { id });
     expect((first.data.events as { id: string; text: string }[]).map((event) => [event.id, event.text])).toEqual([
-      [
-        "ev_prompt_1",
-        "go\n\nSave any deliverable files directly in /home/user/outputs. Create that directory if needed.",
-      ],
+      ["ev_prompt_1", "go"],
       ["ev_msg", "Working"],
     ]);
     expect(first.data).toMatchObject({ cursor: "3", hasMore: false });
     const next = await call(mcp, "logs", {
-      id: launchSandboxId(launched.data),
+      id,
       since_cursor: first.data.cursor,
     });
     expect(next.data).toMatchObject({ events: [], cursor: "3" });
   });
 
   test("logs reads every page only when all is requested and advances the cursor", async () => {
-    const { token, client, people, boat } = await start();
-    const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
-    const events = boat.sandbox("bx_1").events;
+    const { id, mcp, events } = await logsFixture();
     for (let index = 0; index < 205; index += 1) {
       events.push({
         id: `ev_${index}`,
@@ -1178,10 +1371,10 @@ describe("tools", () => {
         tools: [],
       });
     }
-    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
+    const first = await call(mcp, "logs", { id });
     expect(first.data.events).toHaveLength(100);
     expect(first.data).toMatchObject({ cursor: "100", hasMore: true });
-    const all = await call(mcp, "logs", { id: launchSandboxId(launched.data), all: true });
+    const all = await call(mcp, "logs", { id, all: true });
     expect(all.data.events).toHaveLength(206);
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
   });
@@ -1276,7 +1469,7 @@ describe("tools", () => {
   });
 
   test("a stop without a retained recovery disk remains terminal on later sends", async () => {
-    const { token, client, people, boat } = await start();
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex" });
     const get = boat.provider.get.bind(boat.provider);
@@ -1286,6 +1479,11 @@ describe("tools", () => {
     };
     const stopped = await call(mcp, "stop", { id: launchSandboxId(launched.data) });
     expect(stopped.data).toMatchObject({ status: "failed" });
+    const journal = await db.query(
+      "select actor, code from sandbox_transitions where sandbox_id=$1 and from_status='stopping' and to_status='failed'",
+      [launchSandboxId(launched.data)],
+    );
+    expect(journal.rows).toEqual([{ actor: "lifecycle_runner", code: "owner_stop_settled" }]);
     const sent = await call(mcp, "send", {
       id: launchSandboxId(launched.data),
       prompt: "must not resume",
@@ -1416,6 +1614,51 @@ describe("tools", () => {
     expect(boat.steers).toHaveLength(3);
   });
 
+  test("accepted native steer retains its receipt when SQL publication rolls back", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id, machine } = await seedRunningSandbox(server);
+    const { promptId } = await boat.provider.prompt({ sandboxId: machine.id, harness: "claude", text: "go" });
+    await db.query("update sandboxes set status='ready' where id=$1", [id]);
+    const mcp = await client(await token(people.member));
+    await db.exec("alter table sandboxes add constraint reject_steer_prompt check (task_prompt_id is null)");
+    try {
+      const result = await call(mcp, "send", { id, steer: true, prompt: "Use bun" });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("error code: outcome_unknown");
+      expect((await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1", [id])).rows).toEqual([
+        { prompt_id: promptId },
+      ]);
+      expect(
+        (await db.query("select status, task_prompt_id, activity_lease_id from sandboxes where id=$1", [id])).rows,
+      ).toEqual([{ status: "ready", task_prompt_id: null, activity_lease_id: expect.any(String) }]);
+      expect((await db.query("select code from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    } finally {
+      await db.exec("alter table sandboxes drop constraint reject_steer_prompt");
+    }
+  });
+
+  test("native send refuses a same-generation state change before dispatch", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id } = await seedRunningSandbox(server);
+    await db.query("update sandboxes set status='ready' where id=$1", [id]);
+    const mcp = await client(await token(people.member));
+    const get = boat.provider.get;
+    boat.provider.get = async (placement) => {
+      await db.query("update sandboxes set status='failed' where id=$1", [id]);
+      return get(placement);
+    };
+    const prompt = spyOn(boat.provider, "prompt");
+    const result = await call(mcp, "send", { id, prompt: "continue" });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("error code: sandbox_not_ready");
+    expect(prompt).not.toHaveBeenCalled();
+    expect((await db.query("select status, activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+      { status: "failed", activity_lease_id: null },
+    ]);
+  });
+
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
@@ -1426,8 +1669,8 @@ describe("tools", () => {
     expectNoSecret(ran.text);
   });
 
-  test("stop with turn interrupts the current conversation and leaves compute up", async () => {
-    const { token, client, people, boat, db } = await start();
+  test("stop with turn interrupts the agent and leaves compute up", async () => {
+    const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", {
       provider: "boat",
@@ -1437,13 +1680,12 @@ describe("tools", () => {
     });
     const interrupt = spyOn(boat.provider, "interrupt");
     const id = launchSandboxId(launched.data);
-    await db.query("update sandboxes set conversation_ids=array['older','conv_1'] where id=$1", [id]);
     const selected = await call(mcp, "stop", { id, turn: true, conversation_id: "selected-conversation" });
     expect(selected.isError).toBe(true);
     expect(interrupt).not.toHaveBeenCalled();
     const stopped = await call(mcp, "stop", { id, turn: true });
     expect(stopped.data).toEqual({ id, interrupted: true });
-    expect(interrupt).toHaveBeenCalledWith({ sandboxId: "bx_1", conversationId: "conv_1" });
+    expect(interrupt).toHaveBeenCalledTimes(1);
     expect(boat.stops).toEqual([]);
   });
 
@@ -1551,7 +1793,7 @@ describe("tools", () => {
     },
   );
 
-  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+  test("ordinary native exec fences competing commands and invalidates earlier preservation proof", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
@@ -1586,8 +1828,8 @@ describe("tools", () => {
       release?.();
     }
     const completed = await first;
-    expect(second.isError).not.toBe(true);
-    expect(second.data.exitCode).toBe(0);
+    expect(second.isError).toBe(true);
+    expect(boat.execs.some((request) => request.command === "parallel command")).toBe(false);
     expect(completed.isError).not.toBe(true);
     const after = (
       await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
@@ -1595,7 +1837,7 @@ describe("tools", () => {
         [id],
       )
     ).rows[0];
-    expect(after?.lifecycle_generation).toEqual(before);
+    expect(Number(after?.lifecycle_generation)).toBe(Number(before) + 2);
     expect(after?.activity_lease_id).toBeNull();
   });
 
@@ -1650,10 +1892,10 @@ describe("tools", () => {
   });
 
   test("explicit new work cancels a pending stop receipt before the next stop", async () => {
-    const { token, client, people, boat, db } = await start();
+    const server = await start();
+    const { token, client, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    const id = launchSandboxId(launched.data);
+    const { id, machine } = await seedRunningSandbox(server);
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const stop = boat.provider.stop;
     boat.provider.stop = async () => {
@@ -1670,45 +1912,285 @@ describe("tools", () => {
     expect(sent.isError).not.toBe(true);
     const promptId = sent.data.promptId;
     if (typeof promptId !== "string") throw new Error("Missing accepted prompt id");
-    boat.finish("bx_1", promptId, "finished");
+    boat.finish(machine.id, promptId, "finished");
     boat.provider.stop = stop;
     const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
     expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
   });
 
-  test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
-    const { token, client, people, boat, db } = await start();
-    const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopped");
-    boat.provider.prompt = async () => {
-      boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
-      throw new BoatRetentionUnconfirmed();
-    };
-    const refused = await call(mcp, "send", { id: launchSandboxId(data), prompt: "continue" });
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("Boat retained data has not been verified");
-    const row = (
-      await db.query("select status, activity_lease_id, stop_requested_at from sandboxes where id=$1", [
-        launchSandboxId(data),
-      ])
-    ).rows[0];
-    expect(row).toMatchObject({ status: "stopping", activity_lease_id: null, stop_requested_at: expect.any(Date) });
-    boat.sandbox("bx_1").info.retainedSnapshot = "usable";
-    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
-    expect(await lifecycle.reconcileOne()).toBe(true);
-    expect((await call(mcp, "status", { id: launchSandboxId(data) })).data.status).toBe("stopped");
-    expect(boat.stops).toHaveLength(1);
-  });
+  test.each(["running", "starting", "stopping"] as const)(
+    "native send journals observed provider exit from %s before opening a new activation",
+    async (from) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id, machine } = await seedRunningSandbox(server);
+      await db.query("update sandboxes set status=$2 where id=$1", [id, from]);
+      await boat.provider.stop({ sandboxId: machine.id });
+      const mcp = await client(await token(people.member));
+
+      const sent = await call(mcp, "send", { id, prompt: "continue" });
+
+      expect(sent.isError).not.toBe(true);
+      const { rows } = await db.query(
+        `select from_status, to_status, actor, code, generation::int from sandbox_transitions
+       where sandbox_id=$1 and from_status=$2 and to_status='stopped'`,
+        [id, from],
+      );
+      expect(rows).toEqual([
+        {
+          from_status: from,
+          to_status: "stopped",
+          actor: "runtime_observation",
+          code: "native_provider_stopped",
+          generation: 1,
+        },
+      ]);
+    },
+  );
+
+  test.each(["stopped", "callback", "stale cb", "rollback", "stale ack", "bad ack", "live"] as const)(
+    "native resume journals the current activity only (%s)",
+    async (scenario) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id, machine } = await seedRunningSandbox(server);
+      const stopped = scenario === "stopped" || scenario === "rollback";
+      if (stopped) await boat.provider.stop({ sandboxId: machine.id });
+      const liveProvider = scenario === "live";
+      if (liveProvider) await db.query("update sandboxes set status='stopped', stopped_at=now() where id=$1", [id]);
+      if (scenario === "rollback")
+        await db.exec("alter table sandboxes add constraint reject_native_start check (status <> 'starting')");
+      const mcp = await client(await token(people.member));
+      const prompt = boat.provider.prompt;
+      let dispatched = false;
+      boat.provider.prompt = async (request) => {
+        if (scenario === "stale cb")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (!stopped && !liveProvider) await request.onResumeStage?.("accepted");
+        dispatched = true;
+        const receipt = await prompt(request);
+        if (scenario === "stale ack")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (scenario === "bad ack")
+          await db.exec(
+            "alter table sandboxes add constraint reject_native_prompt check (task_prompt_id is null) not valid",
+          );
+        return receipt;
+      };
+      const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
+        if (scenario === "bad ack") await db.exec("alter table sandboxes drop constraint reject_native_prompt");
+      });
+
+      const refused = scenario === "stale cb" || scenario === "rollback";
+      const receiptRefused = scenario === "stale ack" || scenario === "bad ack";
+      expect(Boolean(sent.isError)).toBe(refused || receiptRefused);
+      expect(dispatched).toBe(!refused);
+      if (scenario === "rollback") {
+        const { rows } = await db.query(
+          "select status, lifecycle_generation::int, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
+        expect(rows).toEqual([{ status: "stopped", lifecycle_generation: 1, activity_lease_id: null }]);
+      }
+      const { rows } = await db.query(
+        `select from_status,actor,code,generation::int from sandbox_transitions
+         where sandbox_id=$1 and to_status='starting'`,
+        [id],
+      );
+      const admission = {
+        from_status: stopped ? "stopped" : "running",
+        actor: "native_turn",
+        code: "native_resume_admitted",
+        generation: 2,
+      };
+      expect(rows).toEqual(refused || liveProvider ? [] : [admission]);
+      if (scenario === "stale cb") expect(sent.text).toContain("error code: sandbox_not_ready");
+      if (dispatched) {
+        const { rows: receipts } = await db.query(
+          `select actor,code,generation::int from sandbox_transitions
+           where sandbox_id=$1 and from_status=$2 and to_status='running'`,
+          [id, liveProvider ? "stopped" : "starting"],
+        );
+        expect(receipts).toEqual(
+          receiptRefused ? [] : [{ actor: "native_turn", code: "native_send_accepted", generation: 2 }],
+        );
+        const {
+          rows: [settled],
+        } = await db.query<{ status: string; task_prompt_id: string | null; activity_lease_id: string | null }>(
+          "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
+        if (!settled) throw new Error("Missing sandbox receipt state.");
+        if (receiptRefused) {
+          expect(sent.text).toContain("error code: outcome_unknown");
+          expect(settled.status).toBe("starting");
+          expect(settled.task_prompt_id).toBeNull();
+          expect(settled.activity_lease_id).not.toBeNull();
+        } else {
+          expect(settled.status).toBe("running");
+          expect(sent.data.promptId).toBe(settled.task_prompt_id);
+          expect(settled.activity_lease_id).toBeNull();
+        }
+      }
+    },
+  );
+
+  test.each(["current", "stale", "rollback"] as const)(
+    "native send binds only its current acknowledgement (%s)",
+    async (phase) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id } = await seedRunningSandbox(server);
+      const mcp = await client(await token(people.member));
+      const requestId = crypto.randomUUID();
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+         actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+       select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input',$3,'conversation','dispatching',s.lifecycle_generation
+       from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+       where s.id=$1 limit 1`,
+        [id, requestId, new Uint8Array([1])],
+      );
+      await db.query("update sandboxes set task_prompt_id='unrelated-steer' where id=$1", [id]);
+      expect(
+        (await db.query("select native_prompt_id from account_turn_queue where request_id=$1", [requestId])).rows,
+      ).toEqual([{ native_prompt_id: "unrelated-steer" }]);
+
+      const prompt = boat.provider.prompt;
+      boat.provider.prompt = async (input) => {
+        const receipt = await prompt(input);
+        if (phase === "stale")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (phase === "rollback")
+          await db.exec(
+            "alter table sandboxes add constraint refuse_native_binding_test check (task_prompt_id is null) not valid",
+          );
+        return receipt;
+      };
+      const sent = await call(mcp, "send", { id, prompt: "continue", request_id: requestId }).finally(async () => {
+        if (phase === "rollback")
+          await db.exec("alter table sandboxes drop constraint if exists refuse_native_binding_test");
+      });
+      expect(Boolean(sent.isError)).toBe(phase !== "current");
+
+      const { rows } = await db.query<{ prompt_id: string; acknowledged_request_id: string | null }>(
+        "select prompt_id,acknowledged_request_id from native_webhook_prompts where sandbox_id=$1",
+        [id],
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.find(({ prompt_id }) => prompt_id === "unrelated-steer")?.acknowledged_request_id).toBeNull();
+      const acknowledged = rows.find(({ prompt_id }) => prompt_id !== "unrelated-steer");
+      expect(acknowledged?.acknowledged_request_id).toBe(phase === "current" ? requestId : null);
+      if (phase === "current") {
+        const promptId = sent.data.promptId;
+        if (typeof promptId !== "string") throw new Error("Native send response is missing its prompt ID.");
+        expect(acknowledged?.prompt_id).toBe(promptId);
+      }
+    },
+  );
+
+  test.each(["handoff", "stale", "queue_failure"] as const)(
+    "native send retention refusal settles atomically (%s)",
+    async (scenario) => {
+      const { token, client, people, boat, db } = await start();
+      const mcp = await client(await token(people.member));
+      const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+      const id = launchSandboxId(data);
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");
+      const {
+        rows: [stopped],
+      } = await db.query<{ generation: number }>(
+        "select lifecycle_generation::int as generation from sandboxes where id=$1",
+        [id],
+      );
+      const requestId = crypto.randomUUID();
+      const successor = crypto.randomUUID();
+      boat.provider.prompt = async () => {
+        await db.query(
+          `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+          input_hash,input_enc,conversation_id,state,dispatch_generation)
+         select s.id,$2,c.id,s.owner_id,s.org_id,1,1,'hash','data','conversation','dispatching',s.lifecycle_generation
+         from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai' where s.id=$1`,
+          [id, requestId],
+        );
+        if (scenario === "stale")
+          await db.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1,activity_lease_id=$2 where id=$1",
+            [id, successor],
+          );
+        boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
+        throw new BoatRetentionUnconfirmed();
+      };
+      if (scenario === "queue_failure")
+        await db.exec(
+          "alter table account_turn_queue add constraint reject_retention_refusal check (state <> 'failed')",
+        );
+      try {
+        const refused = await call(mcp, "send", { id, prompt: "continue" });
+        expect(refused.isError).toBe(true);
+        const {
+          rows: [row],
+        } = await db.query(
+          `select s.status,s.activity_lease_id,s.stop_requested_at,s.lifecycle_generation::int,q.state as queue_state
+         from sandboxes s join account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2 where s.id=$1`,
+          [id, requestId],
+        );
+        const { rows: handoff } = await db.query(
+          `select from_status,to_status,actor,code,generation::int from sandbox_transitions
+         where sandbox_id=$1 and from_status='starting' and to_status='stopping'`,
+          [id],
+        );
+        if (scenario !== "handoff") {
+          if (scenario === "stale") expect(refused.text).toContain("Retention refusal is stale.");
+          expect(row).toEqual({
+            status: "starting",
+            activity_lease_id: scenario === "stale" ? successor : expect.any(String),
+            stop_requested_at: null,
+            lifecycle_generation: stopped!.generation + (scenario === "stale" ? 2 : 1),
+            queue_state: "dispatching",
+          });
+          expect(handoff).toEqual([]);
+          return;
+        }
+        expect(refused.text).toContain("Boat retained data has not been verified");
+        expect(row).toEqual({
+          status: "stopping",
+          activity_lease_id: null,
+          stop_requested_at: expect.any(Date),
+          lifecycle_generation: stopped!.generation + 2,
+          queue_state: "failed",
+        });
+        expect(handoff).toEqual([
+          {
+            from_status: "starting",
+            to_status: "stopping",
+            actor: "lifecycle_runner",
+            code: "native_retention_unconfirmed",
+            generation: stopped!.generation + 2,
+          },
+        ]);
+        boat.sandbox("bx_1").info.retainedSnapshot = "usable";
+        const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+        expect(await lifecycle.reconcileOne()).toBe(true);
+        expect((await call(mcp, "status", { id })).data.status).toBe("stopped");
+        expect(boat.stops).toHaveLength(1);
+      } finally {
+        if (scenario === "queue_failure")
+          await db.exec("alter table account_turn_queue drop constraint reject_retention_refusal");
+      }
+    },
+  );
 
   test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
-    const { token, client, people, boat } = await start();
+    const server = await start();
+    const { token, client, people, boat } = server;
     const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    const machine = boat.sandbox("bx_1");
+    const { id, machine: physical } = await seedRunningSandbox(server);
+    const machine = boat.sandbox(physical.id);
     machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
-    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopping");
+    expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
     expect(boat.stops).toHaveLength(0);
   });
 
@@ -1716,18 +2198,18 @@ describe("tools", () => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {
-      const { token, client, people, boat, db, auth, clock } = await start();
+      const server = await start();
+      const { token, client, people, boat, db, auth, clock } = server;
       const bearer = await token(people.member);
       const mcp = await client(bearer);
-      const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-      const id = launchSandboxId(launched.data);
+      const { id, machine } = await seedRunningSandbox(server);
       const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
       boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
       const capture = encryptedRecoveryExec(() => archive, boat.provider.exec);
       let captures = 0;
       boat.provider.exec = async (request) => {
         if (request.preservationStage === "collect_exec") captures++;
-        if (boat.sandbox("bx_1").info.state !== "ready")
+        if (boat.sandbox(machine.id).info.state !== "ready")
           throw new ProviderError({
             provider: "boat",
             code: "sandbox_not_ready",
@@ -1764,8 +2246,8 @@ describe("tools", () => {
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toHaveLength(1);
-      boat.sandbox("bx_1").info = {
-        ...boat.sandbox("bx_1").info,
+      boat.sandbox(machine.id).info = {
+        ...boat.sandbox(machine.id).info,
         state: "stopped",
         providerState: "archived",
         retainedSnapshot: "usable",
@@ -1885,30 +2367,4 @@ test("MCP launch preserves the closed busy account code and safe action", async 
   expect(result.text).toContain("error code: credential_busy");
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
-});
-
-test("public MCP inventory and schemas expose operation contracts", async () => {
-  const { token, client, people } = await start();
-  const mcp = await client(await token(people.member));
-  const { tools } = await mcp.listTools();
-  expect(tools.map((tool) => tool.name).sort()).toEqual([
-    "exec",
-    "launch",
-    "list",
-    "logs",
-    "report",
-    "send",
-    "status",
-    "stop",
-  ]);
-  for (const tool of tools) expect(tool.outputSchema).toBeDefined();
-  const launch = tools.find((tool) => tool.name === "launch");
-  expect(launch?.inputSchema.anyOf).toEqual(
-    ["boat", "modal"].map((provider) =>
-      expect.objectContaining({
-        properties: expect.objectContaining({ provider: expect.objectContaining({ const: provider }) }),
-        required: expect.arrayContaining(["provider", "harness", "golden"]),
-      }),
-    ),
-  );
 });

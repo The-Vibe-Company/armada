@@ -454,6 +454,7 @@ nativeTest("Boat guests share native-requested renewal across epoch replacement"
 test("Modal subscription launch enrols only access-broker selection and replaces prior authority", async () => {
   const f = await fixture(false, native(0), "modal");
   try {
+    await f.db.query("update sandboxes set lifecycle_generation=2 where id=$1", [f.id]);
     const active = await f.enrol();
     await f.publish(active, native(0), 0);
     await f.db.query("update model_auth_state set source_generation='server:ready'");
@@ -464,11 +465,21 @@ test("Modal subscription launch enrols only access-broker selection and replaces
     };
     const sandbox = (await createSqlData(f.sql)(caller).sandboxes.get(f.id))!;
     let enrolled: Awaited<ReturnType<typeof f.enrol>> | undefined;
+    let bootstrapCalls = 0;
+    const physicalDeadline = new Date(Date.parse(sandbox.expiresAt!) + 900_000);
     const host = {
       id: "modal",
+      async get() {
+        return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
+      },
       async startRuntime(request: { enrolmentToken: string }) {
+        bootstrapCalls++;
         enrolled = await f.authority.enrol(request.enrolmentToken);
-        expect(enrolled.configuration).toMatchObject({ selectedHarness: "codex", runtimeSubscription: true });
+        expect(enrolled.configuration).toMatchObject({
+          selectedHarness: "codex",
+          runtimeSubscription: true,
+          grant: { expiresAt: physicalDeadline.getTime() },
+        });
         const wire = JSON.stringify(enrolled.configuration);
         expect(wire).not.toContain("offline-refresh-");
         expect(wire).not.toContain("offline-access-");
@@ -498,11 +509,11 @@ test("Modal subscription launch enrols only access-broker selection and replaces
         },
       },
     });
-    await expect(
+    const start = (target: typeof sandbox) =>
       policy.start({
         host,
         actor: f.actor,
-        sandbox,
+        sandbox: target,
         credentials: {
           env: { ARMADA_SERVER_CODEX: "1" },
           codexAuthJson: true,
@@ -510,8 +521,17 @@ test("Modal subscription launch enrols only access-broker selection and replaces
           binding: { credentialId: f.account.id, credentialVersion: 1 },
         },
         signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow();
+      });
+    const staleGeneration = sandbox.lifecycleGeneration! - 1;
+    await expect(start({ ...sandbox, lifecycleGeneration: staleGeneration })).rejects.toMatchObject({
+      code: "sandbox_not_ready",
+    });
+    expect(bootstrapCalls).toBe(0);
+    expect(await f.authority.withSession(active.runtimeToken, active.epoch, async (_tx, scope) => scope.epoch)).toBe(
+      active.epoch,
+    );
+
+    await expect(start(sandbox)).rejects.toThrow();
     expect(enrolled).toBeDefined();
     await expect(f.authority.withSession(active.runtimeToken, active.epoch, async () => true)).rejects.toThrow();
   } finally {

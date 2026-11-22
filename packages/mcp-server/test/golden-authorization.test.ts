@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
+const database = rowOnlyDatabase();
+
 test("HTTP and MCP reject golden mutations before resolving a provider or invoking the builder", async () => {
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { db, people, boat } = server;
     await db.query("update goldens set provider_sandbox_id = 'master-' || id::text");
@@ -81,7 +84,7 @@ test("HTTP and MCP reject golden mutations before resolving a provider or invoki
 });
 
 test("authorized HTTP connect and snapshot reject unbound, wrong-account and busy slots without provider work", async () => {
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { db, people } = server;
     const token = await server.token(people.admin);

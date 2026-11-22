@@ -1,11 +1,20 @@
-import { MAX_SANDBOX_EXTENSION_TTL_SECONDS, providerRateLimitDetails } from "@armada/core";
-import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
+import { providerRateLimitDetails } from "@armada/core";
+import { sandboxExtensionLifetime, sandboxRestOperations } from "@armada/core/contract";
+import {
+  GoldenError,
+  isNonMutatingProviderRefusal,
+  type Provider,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
+import type { BoatProvider } from "@armada/provider-boat";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { selectedCaller } from "./control-caller.ts";
 import { optional } from "./control-input.ts";
+import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -15,82 +24,14 @@ import { extendSandbox } from "./sandbox-extend.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 import { describeToolFailure } from "./tool-failure.ts";
+import { isFailedModalLaunch } from "./turns.ts";
 
-const id = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
-const runtimeRequest = z.object({ id, request_id: z.string().uuid(), runtimeVersion: z.literal(1) });
-const runtime = z.object({ kind: z.literal("armada"), epoch: z.string() });
+const contracts = sandboxRestOperations;
+type SandboxRestOperation = keyof typeof contracts;
 
-export const SANDBOX_REST_CONTRACTS = {
-  "sandbox/resume": {
-    description:
-      "Owner-only. Restarts the same Docker allocation with fresh runtime enrolment, keeping history and the original TTL. Reuse request_id after uncertainty.",
-    input: z.object({ id, request_id: z.string().uuid() }),
-    output: z.object({ id: z.string(), status: z.literal("ready") }),
-  },
-  "sandbox/extend": {
-    description:
-      "Set a later expiry, measured from now. Owner/admin only. Modal extensions must fit inside the current physical machine lifetime; stop and resume for a new physical lifetime.",
-    input: z.object({ id, ttlSeconds: z.number().int().positive().max(MAX_SANDBOX_EXTENSION_TTL_SECONDS) }),
-    output: z.object({ id: z.string(), expiresAt: z.string(), ttlSeconds: z.number().int() }),
-  },
-  "sandbox/delete": {
-    description:
-      "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
-    input: z.object({ id, request_id: z.string().uuid().optional() }),
-    output: z.object({ id: z.string(), status: z.literal("deleted") }),
-  },
-  "sandbox/advice": {
-    description:
-      "Collects one bounded read-only VM observation and reports the last ten comparable repository sessions. Missing evidence causes abstention; never resizes or changes defaults.",
-    input: z.object({ id }),
-    output: z.object({ advice: z.unknown() }),
-  },
-  "sandbox/recovery": {
-    description: "Owner/admin only. Returns sensitive base64 recovery archive; never log it.",
-    input: z.object({ id, recovery_id: z.string().uuid().optional() }),
-    output: z.object({ archive: z.string().nullable() }),
-  },
-  "sandbox/checkpoint-runtime-v1": {
-    input: runtimeRequest,
-    output: z.object({
-      id: z.string(),
-      requestId: z.string(),
-      runtime,
-      checkpoint: z.object({
-        state: z.literal("complete"),
-        watermark: z.number().int().nonnegative(),
-        acknowledgedSequence: z.number().int().nonnegative(),
-      }),
-    }),
-  },
-  "sandbox/resume-runtime-v1": {
-    input: runtimeRequest.extend({
-      prompt: z.string().min(1),
-    }),
-    output: z.object({
-      id: z.string(),
-      requestId: z.string(),
-      promptId: z.string(),
-      conversationId: z.string(),
-      status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-      resumed: z.literal(true),
-      runtime,
-      sourceCheckpoint: z.object({
-        epoch: z.string(),
-        watermark: z.number().int().nonnegative(),
-        empty: z.literal(true).optional(),
-      }),
-    }),
-  },
-};
-
-type SandboxRestRoute = keyof typeof SANDBOX_REST_CONTRACTS;
-export function isSandboxRestControl(route: string): route is SandboxRestRoute {
-  return Object.hasOwn(SANDBOX_REST_CONTRACTS, route);
-}
-
-export async function dispatchSandboxRestControl(
-  route: SandboxRestRoute,
+async function dispatchSandboxRestControl(
+  name: SandboxRestOperation,
+  route: string,
   caller: Caller,
   body: Record<string, unknown>,
   options: ControlOptions & Required<Pick<ControlOptions, "data" | "providers">>,
@@ -98,7 +39,7 @@ export async function dispatchSandboxRestControl(
   const data = options.data(caller);
   try {
     const result = await run();
-    if (!SANDBOX_REST_CONTRACTS[route].output.safeParse(result).success)
+    if (!contracts[name].output.safeParse(result).success)
       throw new ToolApiError("internal", `Output validation error for ${route}.`);
     return result;
   } catch (error) {
@@ -127,15 +68,15 @@ export async function dispatchSandboxRestControl(
   }
 
   async function run() {
-    switch (route) {
-      case "sandbox/resume": {
-        const args = parseControl("resume", SANDBOX_REST_CONTRACTS[route].input);
+    switch (name) {
+      case "resumeSandbox": {
+        const { org: _org, ...args } = parseControl("resume", contracts[name].input.body);
         const routed = await options.dockerControls?.invoke(caller, "resume", args);
         if (routed?.handled) return routed.result;
         throw new ToolError("unsupported", "Normal resume is currently available only for Docker sandboxes.");
       }
-      case "sandbox/extend": {
-        const args = parseControl("extend", SANDBOX_REST_CONTRACTS[route].input);
+      case "extendSandbox": {
+        const args = parseControl("extend", contracts[name].input.body);
         await data.sandboxes.assertExtensionAllowed?.(args.id).catch((error) => {
           if (error instanceof GoldenError && ["not_found", "forbidden"].includes(error.code))
             throw new ToolError(
@@ -155,77 +96,37 @@ export async function dispatchSandboxRestControl(
           data.sandboxes,
           sandbox,
           provider,
-          args.ttlSeconds,
+          args.ttlSeconds ?? args.ttl_seconds,
           () => options.connections?.renewLifetime?.(provider, sandbox.id) ?? Promise.resolve(),
         );
       }
-      case "sandbox/delete": {
-        const args = parseControl("delete", SANDBOX_REST_CONTRACTS[route].input);
+      case "deleteSandbox": {
+        const { input } = contracts[name];
+        const { id, requestId } = parseControl("delete", input.query.extend(input.path));
+        const args = { id, request_id: requestId?.toLowerCase() };
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
-        if (!data.sandboxes.assertDeletionAllowed)
-          throw new ToolError("unavailable", "Sandbox deletion is not configured.");
-        await data.sandboxes.assertDeletionAllowed(args.id);
-        const found = await data.sandboxes.get(args.id);
-        if (!found) throw new ToolError("not_found", `No sandbox with id '${args.id}' that you can see.`);
-        if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
-        const provider = found.providerSandboxId
-          ? await options.providers.resolve(found, { userId: found.ownerId })
-          : null;
-        const now = options.now ?? (() => new Date());
-        const failurePatch = (error: unknown) => {
-          if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
-          throw error;
-        };
-        return sandboxActivity(
-          data.sandboxes,
-          found,
-          { deleteRequested: true },
-          async (signal) => {
-            signal.throwIfAborted();
-            if (provider) {
-              try {
-                const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
-                if (!["deleted", "completed"].includes(receipt.status))
-                  throw new ToolError(
-                    "conflict",
-                    "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-                  );
-              } catch (error) {
-                if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-              }
-            }
-            return {
-              result: { id: found.id, status: "deleted" as const },
-              patch: {
-                status: "deleted",
-                deletedAt: now().toISOString(),
-                ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-              },
-            };
-          },
-          { failurePatch },
-        );
+        return deleteSandboxWithActivity(data.sandboxes, options.providers, args.id);
       }
-      case "sandbox/checkpoint-runtime-v1": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "postSandboxCheckpointRuntimeV1": {
+        const { org: _org, ...args } = parse(contracts[name].input.body);
         if (!options.runtimeCheckpoint) throw new ToolApiError("unsupported", "Runtime checkpoint is unavailable.");
         return options.runtimeCheckpoint(caller, args);
       }
-      case "sandbox/resume-runtime-v1": {
+      case "postSandboxResumeRuntimeV1": {
         refuseConversationSelector(body);
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+        const { org: _org, ...args } = parse(contracts[name].input.body);
         if (!options.runtimeResume) throw new ToolApiError("unsupported", "Runtime resume is unavailable.");
         return options.runtimeResume(caller, args);
       }
-      case "sandbox/recovery": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "recoverSandbox": {
+        const args = parse(contracts[name].input.body);
         const found = await data.sandboxes.get(args.id);
         if (!found) throw new ToolApiError("not_found", "No such sandbox.");
         return { archive: (await data.sandboxes.readWorkRecovery?.(found.id, args.recovery_id)) ?? null };
       }
-      case "sandbox/advice": {
-        const args = parse(SANDBOX_REST_CONTRACTS[route].input);
+      case "sandboxAdvice": {
+        const args = parse(contracts[name].input.body);
         const found = await data.sandboxes.get(args.id);
         if (!found) throw new ToolApiError("not_found", `No sandbox with id '${args.id}' that you can see.`);
         const store = data.resourceObservations;
@@ -263,31 +164,195 @@ export async function dispatchSandboxRestControl(
   }
 }
 
-export const sandboxRestRoutes = defineRoutes(
-  "sandbox REST",
-  Object.fromEntries(
-    Object.keys(SANDBOX_REST_CONTRACTS)
-      .filter(isSandboxRestControl)
-      .map((route) => [route, (context: ControlRouteContext) => sandboxRestRoute(route, context)]),
-  ),
-);
+async function observeBoatDrainDeletion(
+  boat: Partial<BoatProvider>,
+  sandboxId: string,
+  generation: number | undefined,
+  operationId: string,
+  signal: AbortSignal,
+) {
+  if (!boat.observeSandboxDeletion || generation === undefined)
+    throw new ToolError("unavailable", "Native Boat deletion observation is unavailable.");
+  return boat.observeSandboxDeletion({ sandboxId, generation, operationId, signal });
+}
 
-async function sandboxRestRoute(route: SandboxRestRoute, { caller, body, options }: ControlRouteContext) {
-  if (route === "sandbox/extend") {
+export async function deleteSandboxWithActivity(
+  sandboxes: ServerSandboxStore,
+  providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve"> & {
+    beforeNativeDrainDelete?(
+      provider: Provider,
+      sandboxId: string,
+      placement: string,
+      generation: number,
+    ): Promise<void>;
+  },
+  id: string,
+  mode?: "native-drain",
+  allowHistoricalModal = false,
+) {
+  const nativeDrain = mode === "native-drain";
+  if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
+  await sandboxes.assertDeletionAllowed(id);
+  const found = await sandboxes.get(id);
+  if (!found) throw new ToolError("not_found", `No sandbox with id '${id}' that you can see.`);
+  if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+  if (nativeDrain && !found.providerSandboxId)
+    throw new ToolError("conflict", "Native drain requires an exact provider placement.");
+  const historicalModal =
+    nativeDrain && allowHistoricalModal && (await sandboxes.historicalModalDrainCandidate?.(id)) === true;
+  if (nativeDrain && found.stopRequestedAt && !historicalModal)
+    throw new ToolError("sandbox_not_ready", "Native drain is waiting for the stop to settle.");
+  const admission: ServerSandboxPatch = {
+    deleteRequested: true,
+    ...(nativeDrain
+      ? {
+          nativeDrainAdmission: {
+            provider: found.provider,
+            placement: found.providerSandboxId,
+            allowHistoricalModal: historicalModal,
+          },
+        }
+      : {}),
+  };
+  const exitConfirmed = !nativeDrain && isFailedModalLaunch(found) && found.stoppedAt !== null;
+  const resolveProvider = async () =>
+    found.providerSandboxId && !exitConfirmed ? providers.resolve(found, { userId: found.ownerId }) : null;
+  const resolved = historicalModal ? null : await resolveProvider();
+  const failurePatch = (error: unknown) => {
+    if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
+    throw error;
+  };
+  return sandboxActivity(
+    sandboxes,
+    found,
+    admission,
+    async (signal, activityToken) => {
+      signal.throwIfAborted();
+      const target = {
+        sandboxId: found.providerSandboxId,
+        ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
+      };
+      const dispatch = sandboxes.nativeDrainDispatch?.bind(sandboxes);
+      const generation = target.generation;
+      const inspect = async (action: "inspect" | "claim") => {
+        if (!dispatch || generation === undefined)
+          throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
+        return dispatch(id, target.sandboxId, generation, activityToken, action, historicalModal);
+      };
+      const prepare = providers.beforeNativeDrainDelete;
+      const evidence = nativeDrain && (prepare || historicalModal) ? await inspect("inspect") : undefined;
+      signal.throwIfAborted();
+      const historical = !!evidence?.historical_phase;
+      const patch: ServerSandboxPatch = {
+        deleteCompleted: true,
+        ...(nativeDrain ? { nativeDrain: true } : {}),
+        ...(historical ? { historicalModalDrainPlacement: target.sandboxId } : {}),
+      };
+      const settled = {
+        result: {
+          id: found.id,
+          status: "deleted" as const,
+          ...(nativeDrain ? { drainProof: historical ? ("without-proof" as const) : ("with-proof" as const) } : {}),
+        },
+        patch,
+      };
+      if (evidence?.historical_phase === "deleted") return settled;
+      const provider = historicalModal ? await resolveProvider() : resolved;
+      signal.throwIfAborted();
+      if (provider) {
+        try {
+          let operationId = evidence?.operation_id ?? null;
+          if (nativeDrain) {
+            if (operationId === null) {
+              if (prepare && generation !== undefined) {
+                await prepare(provider, id, target.sandboxId, generation);
+                signal.throwIfAborted();
+              }
+              const claimed = await inspect("claim");
+              if (claimed.historical_phase !== (evidence?.historical_phase ?? null))
+                throw new ToolError("conflict", "Native drain evidence changed before provider deletion.");
+              operationId = claimed.operation_id;
+            }
+            signal.throwIfAborted();
+          }
+          const boat = provider as Partial<BoatProvider>;
+          const receipt =
+            operationId !== null
+              ? await observeBoatDrainDeletion(boat, target.sandboxId, target.generation, operationId, signal)
+              : await provider.delete(target);
+          if (nativeDrain && operationId === null && receipt.operationId?.trim()) {
+            signal.throwIfAborted();
+            await sandboxes.update(id, {
+              nativeDrainDeleteOperation: {
+                provider: found.provider,
+                placement: target.sandboxId,
+                id: receipt.operationId,
+              },
+              ...(target.generation === undefined ? {} : { expectedGeneration: target.generation }),
+              activityToken,
+            });
+          }
+          if (!["deleted", "completed"].includes(receipt.status))
+            throw new ToolError(
+              "conflict",
+              "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+            );
+        } catch (error) {
+          if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
+        }
+      }
+      return settled;
+    },
+    nativeDrain ? undefined : { failurePatch },
+  );
+}
+
+const { deleteSandbox, ...postOperations } = sandboxRestOperations;
+
+export const sandboxRestRoutes = defineRoutes("sandbox REST", {
+  ...Object.fromEntries(
+    Object.values(postOperations).map(
+      ({ name, route }) =>
+        [
+          route.path.slice("/api/v1/".length),
+          { methods: [route.method], handler: (context: ControlRouteContext) => sandboxRestRoute(name, context) },
+        ] as const,
+    ),
+  ),
+  [deleteSandbox.route.path.slice("/api/v1/".length)]: {
+    methods: [deleteSandbox.route.method],
+    pattern: /^sandboxes\/[0-9a-f-]+$/i,
+    readBody(request) {
+      const url = new URL(request.url);
+      return {
+        id: url.pathname.split("/").at(-1),
+        ...Object.fromEntries(
+          Object.keys(deleteSandbox.input.query.shape).map((key) => [key, url.searchParams.get(key) ?? undefined]),
+        ),
+      };
+    },
+    handler: (context) => sandboxRestRoute(deleteSandbox.name, context),
+  },
+});
+
+async function sandboxRestRoute(name: SandboxRestOperation, { route, caller, body, options }: ControlRouteContext) {
+  if (name === "extendSandbox") {
     if (Object.hasOwn(body, "ttlSeconds") && Object.hasOwn(body, "ttl_seconds"))
       throw new VaultError("invalid", "Send one lifetime field: ttlSeconds.");
     const ttl = Object.hasOwn(body, "ttlSeconds") ? body.ttlSeconds : body.ttl_seconds;
-    if (Number.isSafeInteger(ttl) && Number(ttl) > MAX_SANDBOX_EXTENSION_TTL_SECONDS)
-      throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
-    if (!Number.isSafeInteger(ttl) || Number(ttl) < 1)
+    const parsed = sandboxExtensionLifetime.safeParse(ttl);
+    if (!parsed.success) {
+      if (Number.isSafeInteger(ttl) && parsed.error.issues.some((issue) => issue.code === "too_big"))
+        throw new ToolApiError("extension_maximum", "Requested lifetime exceeds the server maximum.");
       throw new VaultError(
         "invalid",
         "ttlSeconds must be a positive whole number of seconds within the server maximum.",
       );
-    body = { ...body, ttlSeconds: ttl };
+    }
   }
   const { data, providers } = options;
   if (!data || !providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
-  const scopedCaller = await selectedCaller(options, caller, optional(body, "org"));
-  return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
+  const org = optional(body, "org");
+  const scopedCaller = await selectedCaller(options, caller, org);
+  return dispatchSandboxRestControl(name, route, scopedCaller, body, { ...options, data, providers });
 }

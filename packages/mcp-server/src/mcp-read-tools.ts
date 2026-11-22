@@ -1,26 +1,33 @@
 import { idlePauseMessage } from "@armada/core";
+import {
+  DEFAULT_WAIT_SECONDS,
+  sandboxIdInput as id,
+  LOGS_OUTPUT,
+  MAX_LOG_PAGES,
+  SANDBOX_STATUSES,
+  sandboxOperations,
+} from "@armada/core/contract";
 import { type Provider, ProviderError, type SandboxStatus } from "@armada/core/server";
 import * as z from "zod";
 import type { SandboxView } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
+import { readEventPages } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
-import {
-  sandboxIdInput as id,
-  LOGS_OUTPUT,
-  SANDBOX_STATUSES,
-  sandboxListInput,
-  sandboxListMetadata,
-  statusOutput,
-} from "./sandbox-tool-schemas.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolRegistrar } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 import { isStatusReadFenced, readStatus, recordedStatus, type StatusReport, waitSettled } from "./turns.ts";
 
-export const DEFAULT_WAIT_SECONDS = 60;
-export const MAX_WAIT_SECONDS = 600;
+export { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "@armada/core/contract";
 
 type VisibleSandbox = (sandboxId: string) => Promise<SandboxView>;
+
+function hasConfirmedStop(sandbox: SandboxView) {
+  return (
+    (sandbox.status === "stopped" || sandbox.status === "failed") &&
+    !sandbox.stopRequestedAt &&
+    Boolean(sandbox.stoppedAt)
+  );
+}
 
 export function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
   const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
@@ -34,52 +41,33 @@ export function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
 
 export function registerListTool(context: ToolContext, tool: ToolRegistrar) {
   const { caller, data } = context;
-  tool(
-    "list",
-    {
-      title: "List sandboxes",
-      description:
-        "Allowlisted metadata of sandboxes in your current organizations, newest first. Interior is owner/admin only. " +
-        "Deleted ones are left out unless asked for. Statuses are as recorded; call status for a fresh read.",
-      input: sandboxListInput.shape,
-      output: {
-        sandboxes: z.array(sandboxListMetadata),
-        total: z.number().int(),
-        page: z.number().int(),
-        limit: z.number().int(),
-        hasMore: z.boolean(),
-        nextPage: z.number().int().nullable(),
-      },
-      readOnly: true,
-    },
-    async (args) => {
-      const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
-      const limit = args.limit ?? 25;
-      const page = args.page ?? 1;
-      const { rows, total } = await data.sandboxes.list({
-        statuses,
-        limit,
-        page,
-        ...(args.harness === undefined ? {} : { harness: args.harness }),
-        ...(args.golden === undefined ? {} : { goldenId: args.golden }),
-        ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
-        ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
-      });
-      const hasMore = page * limit < total;
-      return {
-        total,
-        page,
-        limit,
-        hasMore,
-        nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
-        sandboxes: rows.map((row) => ({
-          ...row,
-          ...logicalExpiry(row.expiresAt, context.now()),
-          statusMessage: idlePauseMessage(row, context.now()),
-        })),
-      };
-    },
-  );
+  tool("list", sandboxOperations.listSandboxes.tool, async (args) => {
+    const statuses: readonly SandboxStatus[] = args.status ?? SANDBOX_STATUSES.filter((name) => name !== "deleted");
+    const limit = args.limit ?? 25;
+    const page = args.page ?? 1;
+    const { rows, total } = await data.sandboxes.list({
+      statuses,
+      limit,
+      page,
+      ...(args.harness === undefined ? {} : { harness: args.harness }),
+      ...(args.golden === undefined ? {} : { goldenId: args.golden }),
+      ...(args.owner === undefined ? {} : { ownerId: args.owner === "me" ? caller.userId : args.owner }),
+      ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
+    });
+    const hasMore = page * limit < total;
+    return {
+      total,
+      page,
+      limit,
+      hasMore,
+      nextPage: hasMore && page < 1_000_000 ? page + 1 : null,
+      sandboxes: rows.map((row) => ({
+        ...row,
+        ...logicalExpiry(row.expiresAt, context.now()),
+        statusMessage: idlePauseMessage(row, context.now()),
+      })),
+    };
+  });
 }
 
 export function registerStatusTools(
@@ -96,6 +84,7 @@ export function registerStatusTools(
     allowRecordedFallback = false,
     recorded = false,
   ) => {
+    const currentTurn = promptId === undefined;
     const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
     const publicPromptId = queued && "nativePromptId" in queued ? (promptId ?? queued.publicPromptId) : undefined;
     const publicReport = (report: StatusReport) =>
@@ -139,21 +128,41 @@ export function registerStatusTools(
       return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
     }
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
+    const confirmedStop = hasConfirmedStop(found);
+    const fenced = found.status === "deleted" || isStatusReadFenced(found);
+    const jobReader =
+      !recorded && (confirmedStop || (!waiting && !fenced)) ? await context.modalJobReader?.(found) : null;
+    const stopEvidence = async (status: SandboxStatus) => {
+      const latest = await jobReader?.verify();
+      return latest && latest.status === status && hasConfirmedStop(latest) ? { providerState: "stopped" } : {};
+    };
+    if (waiting)
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        ...queuePatch,
+        ...(await stopEvidence(found.status)),
+      };
     if (recorded)
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
+        statusMessage: `Recorded state only; use armada info ${sandboxId} --live for provider and prompt details.`,
       };
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const provider =
-        found.status === "deleted" || isStatusReadFenced(found)
-          ? null
-          : storedProvider
-            ? await storedProvider(found)
-            : await context.provider(found);
+      const setupState = fenced || confirmedStop ? undefined : jobReader?.setupState;
+      const setupPending = setupState === "queued" || setupState === "leased";
+      if (setupPending || setupState === "failed")
+        return {
+          ...recordedStatus(found),
+          ...logicalExpiry(found.expiresAt, context.now()),
+          settled: !setupPending,
+          statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
+        };
+      const provider = fenced
+        ? null
+        : (jobReader ?? (storedProvider ? await storedProvider(found) : await context.provider(found)));
       const result = await measure("state", () =>
         readStatus(provider, data.sandboxes, found, {
           stored: storedProvider !== undefined,
@@ -161,13 +170,16 @@ export function registerStatusTools(
           now: context.now(),
         }),
       );
+      const settled = result.settled && (!jobReader || !currentTurn || (await jobReader.followSettled()));
       return {
         ...publicReport(result),
+        settled,
         ...logicalExpiry(result.expiresAt, context.now()),
         statusMessage: idlePauseMessage(result, context.now()),
+        ...(await stopEvidence(result.status)),
       };
     } catch (error) {
-      if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
+      if (jobReader || !allowRecordedFallback || !(error instanceof ProviderError)) throw error;
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
@@ -178,25 +190,7 @@ export function registerStatusTools(
 
   const readStatusTool = tool(
     "status",
-    {
-      title: "Sandbox status",
-      description:
-        "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-        "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-        "the reason. settled is true when the agent is not working.",
-      input: {
-        id,
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-        recorded: z
-          .boolean()
-          .optional()
-          .describe(
-            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-          ),
-      },
-      output: statusOutput,
-      readOnly: true,
-    },
+    sandboxOperations.sandboxStatus.tool,
     async (args) => {
       const report = await statusOf(args.id, args.prompt_id, args.recorded === undefined, true, args.recorded === true);
       const launch = data.sandboxes.launchTiming ? await data.sandboxes.launchTiming(report.id) : undefined;
@@ -207,20 +201,7 @@ export function registerStatusTools(
 
   const waitTool = tool(
     "wait",
-    {
-      title: "Wait for the agent",
-      description:
-        `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
-        `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +
-        `at most ${MAX_WAIT_SECONDS}s: call again to keep waiting.`,
-      input: {
-        id,
-        timeout_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-      },
-      output: { ...statusOutput, timedOut: z.boolean() },
-      readOnly: true,
-    },
+    sandboxOperations.waitSandbox.tool,
     (args) =>
       waitSettled(() => statusOf(args.id, args.prompt_id), {
         timeoutMs: (args.timeout_seconds ?? DEFAULT_WAIT_SECONDS) * 1000,
@@ -269,8 +250,8 @@ export function registerLogsTool(
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const storedProvider = context.storedProviders?.[found.provider];
-      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
+      const resolveProvider = context.logProvider ?? context.storedProviders?.[found.provider] ?? context.provider;
+      const provider = await resolveProvider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
@@ -285,7 +266,7 @@ export function registerLogsTool(
 }
 
 async function readLogs(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   args: {
     since_cursor?: string;
@@ -308,6 +289,7 @@ async function readLogs(
       }),
     args.since_cursor,
     args.all === true,
+    { pauseOnNativeLease: args.direction !== "backward" },
   );
   return {
     ...(olderCursor ? { olderCursor } : {}),

@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-test.each(["status", "logs"])("%s explains provider backoff in plain text", async (command) => {
+test.each(["info", "events"])("%s explains provider backoff in plain text", async (command) => {
   let output = "";
   const wait = { message: "Rate limited by the model provider, retrying in 20 s", retryCount: 2, totalWaitMs: 21_000 };
   const result =
-    command === "status"
+    command === "info"
       ? {
           id: "11111111-1111-4111-8111-111111111111",
           status: "running",

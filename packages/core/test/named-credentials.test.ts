@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import { resolveCredentials } from "../src/credentials.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
@@ -31,26 +32,26 @@ test("ambiguous personal accounts never select an arbitrary row or fall back to 
 
 describe("named-account upgrade", () => {
   const migration = "20261110120200_named_model_credentials.sql";
-  let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
-  beforeAll(async () => {
+  const fixture = closeableFixture(async () => {
     const db = await openDatabase();
-    connection = db;
-    await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
-    for (const file of (await readdir(migrationsDir))
-      .filter((file) => file.endsWith(".sql") && file < migration)
-      .sort()) {
-      await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+    try {
+      await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
+      for (const file of (await readdir(migrationsDir))
+        .filter((file) => file.endsWith(".sql") && file < migration)
+        .sort()) {
+        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+      }
+      return db;
+    } catch (error) {
+      await db.close();
+      throw error;
     }
   });
-  afterAll(async () => {
-    const db = connection;
-    connection = undefined;
-    await db?.close();
-  });
+  beforeAll(fixture.setup);
+  afterAll(fixture.close);
 
   test("migration preserves historical harness kind preference and account identity", async () => {
-    const db = connection;
-    if (!db) throw new Error("Missing named-account schema fixture");
+    const db = fixture.get();
     const user = crypto.randomUUID();
     await db.query("insert into auth.users(id) values($1)", [user]);
     const ids = new Map<string, string>();

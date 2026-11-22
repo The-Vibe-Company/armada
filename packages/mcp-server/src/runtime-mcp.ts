@@ -2,19 +2,22 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { type McpConfiguration, validateMcpConfiguration } from "@armada/agent-runtime";
 import type { Harness } from "@armada/core";
 import { MAX_MCP_CONNECTIONS, parsePinnedMcpStdio } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   decryptSecret,
+  resolveLaunchConnections,
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeOwnerScope, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -22,6 +25,17 @@ const deny = (): never => {
   throw new VaultError("forbidden", "Runtime MCP access is unavailable.");
 };
 const serverName = (id: string) => `armada_${id.replaceAll("-", "_")}`;
+const launchConnectionIds = z.array(z.guid()).max(MAX_MCP_CONNECTIONS);
+export const pinnedMcpConnections = z
+  .array(
+    z.object({
+      id: z.guid(),
+      version: z.number().int().positive(),
+      generation: z.number().int().positive(),
+    }),
+  )
+  .max(MAX_MCP_CONNECTIONS);
+
 type ConnectionDefinition = { command: string | null; args: string[] };
 function pinnedServer(definition: ConnectionDefinition) {
   try {
@@ -76,32 +90,31 @@ export function createRuntimeMcp(options: {
   const gatewayServer = (id: string, token: string) => httpServer(`/mcp/gateway/${id}`, token);
   const selfServer = (binding: Parameters<typeof selfFinishToken>[1]) =>
     httpServer("/api/v1/orchestrator-tools/mcp", selfFinishToken(key, binding));
-  const ids = (values: string[]) => {
-    if (
-      !Array.isArray(values) ||
-      !values.length ||
-      values.length > MAX_MCP_CONNECTIONS ||
-      values.some((v) => typeof v !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(v))
-    )
-      throw new VaultError("invalid", `Select 1–${MAX_MCP_CONNECTIONS} MCP connection UUIDs.`);
-    return [...new Set(values.map((v) => v.toLowerCase()))].sort();
-  };
-  async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
+  async function connections(
+    db: Sql,
+    caller: Pick<Caller, "userId">,
+    org: string,
+    selected: string[],
+    lockForAdmission = false,
+  ) {
     const { rows: result } = await db.query<
       ConnectionDefinition & {
         id: string;
         transport: "http" | "sse" | "stdio";
         value_enc: Uint8Array<ArrayBuffer> | null;
         connected: boolean;
+        scope: string;
+        version: number;
+        generation: number;
       }
     >(
-      `select c.id,c.transport,c.command,c.args,
+      `select c.id,c.transport,c.command,c.args,c.scope,g.version,g.generation,
         case when c.transport='stdio' then g.value_enc end as value_enc,
         not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected' as connected
       from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
       join public.members m on m.org_id=c.org_id and m.user_id=$1
       where c.org_id=$2 and c.id=any($3::uuid[]) and (c.scope='org' or c.owner_id=$1)
-      order by c.id`,
+      order by c.id${lockForAdmission ? " for share of c,g nowait" : ""}`,
       [caller.userId, org, selected],
     );
     if (result.length !== selected.length) throw new VaultError("not_found", "No such MCP connection.");
@@ -122,11 +135,20 @@ export function createRuntimeMcp(options: {
       });
       validateConfiguration({ revision: "0".repeat(64), servers });
     }
-    return result.map(({ id, transport }) => ({ id, transport }));
+    return result.map(({ id, transport, scope, version, generation }) => ({
+      id,
+      transport,
+      scope,
+      version,
+      generation,
+    }));
   }
-  async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
+  async function preflight(caller: Caller, input: { org: string; connections: unknown; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
-    const selected = ids(input.connections);
+    const { connections: selection } = sandboxCheckOperations.postSandboxMcpPreflightV1.input.body.shape;
+    const parsed = selection.safeParse(input.connections);
+    if (!parsed.success) throw new VaultError("invalid", `Select 1–${MAX_MCP_CONNECTIONS} MCP connection UUIDs.`);
+    const selected = [...new Set(parsed.data.map((id) => id.toLowerCase()))].sort();
     const definitions = await connections(sql, caller, input.org, selected);
     const inventory: { connectionId: string; tools: string[] }[] = [];
     for (const { id, transport } of definitions) {
@@ -266,10 +288,12 @@ export function createRuntimeMcp(options: {
     signal: AbortSignal | undefined,
     failure: string,
     accept: (reply: Awaited<ReturnType<typeof options.commands.call>>) => boolean,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ) => {
     const reply = await options.commands.call(s.ownerId, request, {
       expectedEpoch,
       accept,
+      ...(assertClaim ? { assertClaim } : {}),
       ...(signal ? { signal } : {}),
     });
     if (
@@ -281,10 +305,17 @@ export function createRuntimeMcp(options: {
       throw new VaultError("unavailable", failure);
     return reply;
   };
-  async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
+  async function prepare(
+    caller: Caller,
+    id: string,
+    signal?: AbortSignal,
+    assertClaim?: (tx: Sql) => Promise<void>,
+    healthRequestId?: string,
+  ) {
     signal?.throwIfAborted();
     const s = await owner(caller, id);
     const initial = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+      await assertClaim?.(tx);
       await scope(tx, s.id, live.epoch);
       const selection = await selected(tx, s.id);
       const previous = (
@@ -304,7 +335,12 @@ export function createRuntimeMcp(options: {
     });
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
-    const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
+    const healthCommand = {
+      version: 1 as const,
+      sandboxId: s.id,
+      requestId: healthRequestId ?? randomUUID(),
+      op: "health" as const,
+    };
     const health = await call(
       s,
       healthCommand,
@@ -322,11 +358,13 @@ export function createRuntimeMcp(options: {
           evidence.mcpVersion === 1
         );
       },
+      assertClaim,
     );
     const features = health.body.result as { stdioMcpEnv?: unknown };
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
-    async function configure(tx: Sql, live: { epoch: string }) {
+    async function configure(tx: Sql, live: RuntimeOwnerScope) {
       if (live.epoch !== initial.epoch) return deny();
+      await assertClaim?.(tx);
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (
         features.stdioMcpEnv !== true &&
@@ -342,7 +380,7 @@ export function createRuntimeMcp(options: {
             connectionId,
             tokenHash,
             operations: ["tools", "resources", "prompts"],
-            expiresAt: p.expiresAt,
+            expiresAt: live.commandGrantExpiresAt ?? p.expiresAt,
           });
         const stored = (
           await tx.query<{ generation: number; runtime_epoch: string }>(
@@ -375,6 +413,7 @@ export function createRuntimeMcp(options: {
       const local = scopedRuntimeSql(tx);
       signal?.throwIfAborted();
       await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
+      await assertClaim?.(tx);
       return { ...p, epoch: live.epoch, wire };
     }
     let prepared!: Awaited<ReturnType<typeof prepareConfiguration>>;
@@ -387,6 +426,7 @@ export function createRuntimeMcp(options: {
           request: prepared.wire,
           options: {
             expectedEpoch: prepared.epoch,
+            ...(assertClaim ? { assertClaim } : {}),
             ...(signal ? { signal } : {}),
             accept: acknowledgesRevision,
           },
@@ -406,6 +446,7 @@ export function createRuntimeMcp(options: {
     )
       throw new VaultError("unavailable", "Runtime MCP configuration was not acknowledged.");
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+      await assertClaim?.(tx);
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
         return deny();
@@ -416,6 +457,7 @@ export function createRuntimeMcp(options: {
         [s.id, `runtime:${live.epoch}`, p.configuration.revision],
       );
       if (!written.rows.length) return deny();
+      await assertClaim?.(tx);
     });
     return receipt(s, prepared.epoch, prepared, initial.selection);
   }
@@ -441,5 +483,47 @@ export function createRuntimeMcp(options: {
       );
     },
   };
-  return { prepare, preflight, connections: connectionLifecycle };
+  async function bindLaunch(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    sandboxId: string,
+    visibility: "private" | "org",
+    selection:
+      | { requested: string[] | undefined }
+      | { pins: z.infer<typeof pinnedMcpConnections>; orgTemplate: boolean },
+  ) {
+    const launch = createSqlMcpLaunchPort(tx, createSqlMcpRegistry(tx, key));
+    const requested = "pins" in selection ? selection.pins.map(({ id }) => id) : selection.requested;
+    const parsed = launchConnectionIds.optional().safeParse(requested);
+    if (!parsed.success) throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
+    const ids = await resolveLaunchConnections(
+      parsed.data?.map((id) => id.toLowerCase()),
+      () => launch.defaults(actor, visibility),
+      async (ids) => {
+        if (ids.length > MAX_MCP_CONNECTIONS)
+          throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
+        if (!ids.length) return;
+        const live = await connections(tx, actor, actor.orgId, ids, true).catch((error: unknown) => {
+          const fields = error as { errno?: string; code?: string } | null;
+          if ((fields?.errno ?? fields?.code) === "55P03")
+            throw new VaultError("conflict", "A selected MCP connection is being updated. Retry the launch.");
+          throw error;
+        });
+        if ("pins" in selection) {
+          const byId = new Map(live.map((row) => [row.id, row]));
+          for (const pin of selection.pins) {
+            const row = byId.get(pin.id.toLowerCase());
+            if (
+              row?.version !== pin.version ||
+              row.generation !== pin.generation ||
+              (selection.orgTemplate && row.scope !== "org")
+            )
+              throw new VaultError("conflict", "A pinned MCP connection changed.");
+          }
+        }
+      },
+    );
+    await launch.bind(sandboxId, ids);
+  }
+  return { prepare, preflight, connections: connectionLifecycle, bindLaunch };
 }

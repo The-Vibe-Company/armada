@@ -7,8 +7,8 @@ One Morph API-key account is shared by Claude Code, Codex and OpenCode. No addit
 After Armada login, store the key from a private file or stdin, never argv:
 
 ```sh
-armada creds connect morph --name shared --file /private/morph-key
-armada creds list
+armada account add --preset morph --name shared --file /private/morph-key
+armada account ls
 ```
 
 Alternatively, dashboard **What agents have → Models → Add account → Morph**: name the
@@ -20,12 +20,12 @@ Use the ordinary launch flow for the target snapshot or Docker host, with
 For example (replace uppercase IDs; `MODAL_SNAPSHOT` is a Modal snapshot):
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --provider modal --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent claude --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent codex --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent opencode --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent claude --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent codex --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent opencode --credential-id ACCOUNT_UUID --model morph-kimik31
 ```
 
 Modal, Docker hosts and runtime-backed Boat use the same credential envelopes.
@@ -44,11 +44,11 @@ model list; its account selection uses the same Morph account UUID.
 Morph accounts default to **2 simultaneous agents**, shared across harnesses
 and sandbox providers. Other account kinds default to unlimited. Set an explicit
 positive cap with `--max-agents N` or opt out with `--unlimited` when connecting.
-For an existing account, use its ID from `creds list`:
+For an existing account, use its ID from `account ls`:
 
 ```sh
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 Stopped and idle-paused sandboxes do not count. Admission over the cap refuses
@@ -63,7 +63,7 @@ model prices are not inferred from Claude/OpenAI prices: cost is unknown when
 no saved price is known, never zero or a fabricated estimate. A flat plan's
 subscription payment is not a token-based invoice.
 
-`armada creds test SANDBOX_UUID --model morph-kimik31` checks the bound account
+`armada account test SANDBOX_UUID --model morph-kimik31` checks the bound account
 with a tiny billable request. HTTP 401 means the account was rejected: replace
 its saved key or check its access. HTTP 429 means rate limited; connection-test
 CLI/dashboard diagnostics include a bounded numeric `Retry-After` delay when

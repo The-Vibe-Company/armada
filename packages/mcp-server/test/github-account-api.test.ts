@@ -1,10 +1,13 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
+import { githubCallbackOperations } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
+
+const { githubOAuthCallback, githubOAuthRelay } = githubCallbackOperations;
 
 const auditEvents = captureGitHubAuditLogs();
 
@@ -13,23 +16,13 @@ const other = "22222222-2222-4222-8222-222222222222";
 const key = Buffer.alloc(32, 7).toString("base64");
 const bearer = (user: string) => `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`;
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+const database = useMigratedDatabase();
 
 test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay and disconnect cancels in-flight callback", async () => {
-  const db = connection;
-  if (!db) throw new Error("Missing GitHub handoff schema fixture");
+  const db = database();
   try {
     await db.query("insert into auth.users(id) values ($1),($2)", [owner, other]);
     const authStore = createMemoryAuthStore();
-    let logoutCalls = 0;
     let tokenExchanges = 0;
     let rejectExchange = false;
     let duringExchange: (() => Promise<void>) | undefined;
@@ -69,11 +62,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
       supabase: {
         supabaseUrl: "https://supabase.test",
         anonKey: "anon",
-        fetch: async (input, init) => {
-          if (String(input).includes("/auth/v1/logout")) {
-            logoutCalls++;
-            return new Response(null, { status: 204 });
-          }
+        fetch: async (_input, init) => {
           const token = new Headers(init?.headers).get("authorization")?.replace("Bearer ", "") ?? "";
           return Response.json({ id: token === bearer(other) ? other : owner });
         },
@@ -166,7 +155,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     for (const raw of invalid) {
       const response = await relay(raw);
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ ok: false, status: "failed" });
+      expect(githubOAuthRelay.errorOutput.parse(await response.json())).toEqual({ ok: false, status: "failed" });
       expect(await pending()).toBe("pending");
     }
     expect((await relay(JSON.stringify({ state, code: "test" }), "text/plain")).status).toBe(400);
@@ -178,6 +167,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
       options,
     );
     expect(duplicateGet?.status).toBe(400);
+    githubOAuthCallback.errorOutput.parse(await duplicateGet?.json());
     for (const length of ["999999", "1", "bad"])
       expect(
         (await relay(JSON.stringify({ state, code: "test" }), "application/json", "", { "content-length": length }))
@@ -216,7 +206,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
         observedRemainingLifetimeMs: expect.any(Number),
       },
     ]);
-    expect(await completed.json()).toEqual({ ok: true, status: "connected" });
+    expect(githubOAuthRelay.output.parse(await completed.json())).toEqual({ ok: true, status: "connected" });
     expect(completed.headers.get("location")).toBeNull();
     expect(completed.headers.get("referrer-policy")).toBe("no-referrer");
     const status = await (await command("status", { flowId: started.flowId })).json();
@@ -246,7 +236,9 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
         owner,
       ])
     ).rows[0]?.connection_epoch;
-    expect((await callback(replacement.authorizationUrl, "GET")).status).toBe(200);
+    const browserCallback = await callback(replacement.authorizationUrl, "GET");
+    expect(browserCallback.status).toBe(200);
+    githubOAuthCallback.output.parse(await browserCallback.json());
     const nextEpoch = (
       await db.query<{ connection_epoch: string }>("select connection_epoch from github_connections where user_id=$1", [
         owner,
@@ -289,16 +281,6 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     expect(new URL(defaultFlow.authorizationUrl).searchParams.get("redirect_uri")).toBe(
       "https://armada.thevibecompany.co/github/callback",
     );
-    const signedOut = await handleControlRequest(
-      new Request("https://armada.test/api/v1/account/logout", {
-        method: "POST",
-        headers: { authorization: `Bearer ${bearer(owner)}` },
-        body: "{}",
-      }),
-      options,
-    );
-    expect(signedOut?.status).toBe(200);
-    expect(logoutCalls).toBe(1);
     await db.exec("set role authenticated");
     await expect(db.query("select state_hash from github_authorizations")).rejects.toThrow();
   } finally {

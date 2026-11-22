@@ -30,11 +30,41 @@ export type ToolRegistrar = <In extends ToolInput, Out extends z.ZodRawShape>(
   restOnly?: boolean,
 ) => ToolContract<In, Out> & { invoke: (args: ToolArgs<In>) => Promise<CallToolResult> };
 
-export function createToolRegistration(
+export type ToolBinding = <In extends ToolInput, Out extends z.ZodRawShape>(
+  name: string,
+  config: ToolContract<In, Out>,
+  invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
+) => void;
+
+export function registerTool<In extends ToolInput, Out extends z.ZodRawShape>(
   server: McpServer,
+  name: string,
+  config: ToolContract<In, Out>,
+  invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
+) {
+  server.registerTool(
+    name,
+    {
+      title: config.title,
+      description: config.description,
+      inputSchema: config.input,
+      outputSchema: config.output,
+      annotations: {
+        readOnlyHint: config.readOnly ?? false,
+        destructiveHint: config.destructive ?? false,
+        openWorldHint: true,
+      },
+    },
+    invoke as never,
+  );
+}
+
+export function createToolRegistration(
+  server: McpServer | undefined,
   context: ToolContext,
   surface: "mcp" | "rest",
   visible: (sandboxId: string) => Promise<SandboxView>,
+  bind?: ToolBinding,
 ) {
   const { caller, data } = context;
   const register = <In extends ToolInput, Out extends z.ZodRawShape>(
@@ -42,21 +72,8 @@ export function createToolRegistration(
     config: ToolContract<In, Out>,
     invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
   ) => {
-    server.registerTool(
-      name,
-      {
-        title: config.title,
-        description: config.description,
-        inputSchema: config.input,
-        outputSchema: config.output,
-        annotations: {
-          readOnlyHint: config.readOnly ?? false,
-          destructiveHint: config.destructive ?? false,
-          openWorldHint: true,
-        },
-      },
-      invoke as never,
-    );
+    bind?.(name, config, invoke);
+    if (server) registerTool(server, name, config, invoke);
   };
 
   const tool = <In extends ToolInput, Out extends z.ZodRawShape>(
@@ -83,8 +100,11 @@ export function createToolRegistration(
           name === "stop" &&
           !(args as Record<string, unknown>).only_if_idle &&
           typeof (args as Record<string, unknown>).id === "string"
-        )
+        ) {
+          if (context.stopSignal?.aborted)
+            throw new ToolError("dependency_unavailable", "Sandbox stop admission ended before compute stop.");
           await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
+        }
         if (name === "report") {
           const input = args as Record<string, unknown>;
           const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);
@@ -146,6 +166,7 @@ export function createToolRegistration(
           content: [{ type: "text", text: JSON.stringify(result) }],
         };
       } catch (error) {
+        context.onLocalToolError?.(error);
         return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
       }
     };
