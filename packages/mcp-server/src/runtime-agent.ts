@@ -24,7 +24,12 @@ import {
 } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
-import { type createRuntimeCommands, RuntimeCommandRefused, readRuntimeCommandSuccess } from "./runtime-commands.ts";
+import {
+  authorityExtensionRequestId,
+  type createRuntimeCommands,
+  RuntimeCommandRefused,
+  readRuntimeCommandSuccess,
+} from "./runtime-commands.ts";
 import { type RuntimeRestore, runtimeHealthMatches } from "./runtime-health.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
@@ -101,7 +106,8 @@ export function workspaceCommandId(
  * Launch admission must select this bridge explicitly and supply trusted persisted binding.
  */
 export function createRuntimeAgent(
-  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call">,
+  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call"> &
+    Partial<Pick<ReturnType<typeof createRuntimeCommands>, "callAuthorityExtension">>,
   binding: {
     provider?: "boat" | "modal" | "docker";
     harness: Harness;
@@ -227,13 +233,16 @@ export function createRuntimeAgent(
       return { runtime: "armada", epoch: reply.epoch };
     },
     async extendCommandAuthority(input: {
-      requestId: string;
+      jobId: string;
+      leaseEpoch: string;
       expectedEpoch: string;
       expiresAt: number;
       signal: AbortSignal;
       assertClaim: (tx: Sql) => Promise<void>;
     }) {
-      const { requestId, expectedEpoch, expiresAt, signal } = input;
+      const { jobId, expectedEpoch, expiresAt, signal } = input;
+      const requestId = authorityExtensionRequestId(jobId);
+      if (!commands.callAuthorityExtension) throw refusal("unavailable");
       if (!Number.isSafeInteger(expiresAt)) throw refusal("invalid_request");
       const assertClaim = async (tx: Sql) => {
         signal.throwIfAborted();
@@ -268,12 +277,13 @@ export function createRuntimeAgent(
         )
           return { epoch: expectedEpoch, expiresAt: deadline } satisfies ExtendCommandAuthorityResult;
       };
-      const reply = await commands.call(
+      const reply = await commands.callAuthorityExtension(
         ownerId,
         { ...identity(requestId), op: "extendCommandAuthority", epoch: expectedEpoch, expiresAt },
         {
           signal,
           expectedEpoch,
+          leaseEpoch: input.leaseEpoch,
           timeoutMs: 5_000,
           strictDeadline: true,
           assertClaim,

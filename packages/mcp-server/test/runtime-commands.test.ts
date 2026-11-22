@@ -8,7 +8,7 @@ import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
-import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
+import { authorityExtensionRequestId, createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -133,10 +133,36 @@ test.each([
   "replacement epoch",
   "late ACK",
   "lost claim",
+  "expired dispatch",
+  "successor rebinds",
 ] as const)("extension authority receipt handles %s", async (kind) => {
   const f = await fixture(kind === "late ACK" ? 2_500 : 250, true);
   const bridge = f.bridge();
   let active = await f.enrol();
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const {
+    rows: [sandbox],
+  } = await f.db.query<{ generation: number; deadline: Date }>(
+    "select lifecycle_generation::int as generation, now()+interval '1 day' as deadline from sandboxes where id=$1",
+    [f.id],
+  );
+  if (!sandbox) throw Error("Missing fixture sandbox");
+  const jobId = await jobs.enqueue("boat_runtime_extend", f.id, sandbox.generation, f.id, null, {
+    orgId: f.people.org,
+    maxAttempts: 2,
+    deadline: sandbox.deadline,
+  });
+  if (!jobId) throw Error("Missing fixture job");
+  await f.db.query("insert into boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [
+    f.id,
+    jobId,
+  ]);
+  const claim = async () => {
+    const lease = await jobs.claim("boat_runtime_extend", crypto.randomUUID(), 300, 1);
+    if (!lease) throw Error("Missing fixture lease");
+    return lease.lease_epoch;
+  };
+  let leaseEpoch = await claim();
   let ownsClaim = true;
   const agent = createRuntimeAgent(bridge, {
     provider: "boat",
@@ -148,10 +174,11 @@ test.each([
     defaults: { model: "gpt-5.4", reasoningEffort: "high" },
   });
   const target = 60_000;
-  const requestId = "extension-intent";
+  const requestId = authorityExtensionRequestId(jobId);
   const extend = () =>
     agent.extendCommandAuthority({
-      requestId,
+      jobId,
+      leaseEpoch,
       expectedEpoch: active.epoch,
       expiresAt: target,
       signal: new AbortController().signal,
@@ -181,18 +208,34 @@ test.each([
   };
   f.onWait(async () => {
     await answerHealth();
-    f.onWait(() => {
+    f.onWait(async () => {
+      if (kind === "expired dispatch") {
+        await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+        const later = f.command("later-health");
+        await bridge.enqueue(f.people.owner, later, active.epoch);
+        expect((await bridge.next(active.runtimeToken, active.epoch)).command).toEqual(later);
+        return;
+      }
+      if (kind === "successor rebinds") return;
       if (kind !== "late ACK") return answerAck();
       f.onWait(answerAck);
-      return Promise.resolve();
     });
   });
   if (kind === "short deadline" || kind === "wrong ACK epoch") {
     await expect(extend()).rejects.toMatchObject({ code: "unavailable" });
-  } else if (kind === "late ACK") {
+  } else if (kind === "late ACK" || kind === "expired dispatch") {
     await expect(extend()).rejects.toThrow("runtime_command_pending");
   } else if (kind === "lost claim") {
     await expect(extend()).rejects.toThrow("extension claim lost");
+  } else if (kind === "successor rebinds") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+    await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+    leaseEpoch = await claim();
+    f.onWait(async () => {
+      await answerHealth();
+      f.onWait(answerAck);
+    });
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
   } else {
     expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
     if (kind === "replacement epoch") {
@@ -202,6 +245,22 @@ test.each([
       expect((await bridge.next(active.runtimeToken, active.epoch)).command).toBeNull();
     }
   }
+});
+
+test("generic mailbox admission refuses a command-authority extension", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const command = {
+    version: 1,
+    requestId: authorityExtensionRequestId(crypto.randomUUID()),
+    sandboxId: f.id,
+    op: "extendCommandAuthority",
+    epoch: active.epoch,
+    expiresAt: 60_000,
+  } as const;
+  await expect(bridge.enqueue(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
+  await expect(bridge.call(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
 });
 
 test("an exact command replay checks the claim again before returning a stored reply", async () => {

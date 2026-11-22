@@ -103,20 +103,47 @@ async function body(request: Request): Promise<unknown> {
   }
 }
 
+// Keep the operation identity stable across claims. The pending reference names
+// the only job that may dispatch this command to the current runtime session.
+const authorityExtensionPrefix = "boat_authority_";
+export const authorityExtensionRequestId = (jobId: string) => `${authorityExtensionPrefix}${jobId}`;
+function liveAuthorityExtension(sandboxId: string, epoch: string, id: string, leaseEpoch?: string) {
+  return `exists (
+    select 1
+    from public.boat_runtime_extension_state ext
+    join public.jobs j on j.id=ext.pending_job_id
+    join public.sandboxes s on s.id=ext.sandbox_id
+    where s.id=${sandboxId} and s.boat_runtime and s.status in ('ready','running')
+      and s.stop_requested_at is null and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+      and j.kind='boat_runtime_extend' and j.state='leased'
+      and j.lease_until>clock_timestamp() and j.deadline_at>clock_timestamp()
+      and '${authorityExtensionPrefix}' || j.id::text=${id}
+      ${leaseEpoch ? `and j.lease_epoch=${leaseEpoch}` : ""}
+      and not exists (select 1 from public.runtime_checkpoints c where c.sandbox_id=s.id and c.epoch=${epoch})
+  )`;
+}
+
 /** All payload I/O is under the existing member -> sandbox -> epoch transaction fence. */
 export function createRuntimeCommands(
   authority: ReturnType<typeof createRuntimeEnrolments>,
   key: string,
   time: Clock = clock,
 ) {
-  async function enqueue(
+  async function enqueueCommand(
     ownerId: string,
     request: RunnerRequest,
     expectedEpoch?: string,
     assertClaim?: (tx: Sql) => Promise<void>,
     resolveSkillpackKey?: (tx: Sql) => Promise<string>,
+    extensionLeaseEpoch?: string,
   ) {
     if (request.version !== 1 || !requestId(request.requestId) || typeof request.op !== "string")
+      throw new RuntimeCommandRefused();
+    if (
+      request.op === "extendCommandAuthority"
+        ? extensionLeaseEpoch === undefined
+        : request.requestId.startsWith(authorityExtensionPrefix)
+    )
       throw new RuntimeCommandRefused();
     if (resolveSkillpackKey && (request.op !== "installSkills" || request.input.key !== undefined))
       throw new RuntimeCommandRefused();
@@ -127,8 +154,10 @@ export function createRuntimeCommands(
           : request,
       );
     const original = serialize();
+    const encode = (command: string) =>
+      extensionLeaseEpoch === undefined ? command : JSON.stringify({ command, extensionLeaseEpoch });
     if (Buffer.byteLength(original) > MAX_COMMAND) throw new RuntimeCommandRefused();
-    const sealed = resolveSkillpackKey ? undefined : await encryptSecret(original, key);
+    const sealed = resolveSkillpackKey ? undefined : await encryptSecret(encode(original), key);
     const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
     let deferred = false;
     const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
@@ -152,14 +181,27 @@ export function createRuntimeCommands(
       if (previous) {
         if (previous.epoch !== scope.epoch || (expectedEpoch !== undefined && scope.epoch !== expectedEpoch))
           throw new RuntimeCommandConflict();
-        const stored = await decryptSecret(previous.request_enc, key);
+        const encoded = await decryptSecret(previous.request_enc, key);
+        const extension = extensionLeaseEpoch === undefined ? undefined : JSON.parse(encoded);
+        const stored = extension ? extension.command : encoded;
         const storedKey = resolveSkillpackKey ? JSON.parse(stored).input?.key : undefined;
         if (resolveSkillpackKey && typeof storedKey !== "string") throw new RuntimeCommandConflict();
         if (stored !== serialize(storedKey)) throw new RuntimeCommandConflict();
         // An identical replay in the current epoch reconciles with the stored command: it adds no
         // work, so the checkpoint fence does not apply and the caller reads the stored reply.
+        const rebound = extension && extension.extensionLeaseEpoch !== extensionLeaseEpoch;
+        if (rebound) {
+          const updated = await tx.query(
+            `update public.runtime_commands set request_enc=$3
+             where sandbox_id=$1 and request_id=$2 and result_enc is null returning request_id`,
+            [scope.sandboxId, request.requestId, sealed],
+          );
+          if (updated.rows.length) {
+            for (const wakeKey of wakeKeys) deferred = deferTransactionWake(tx, wakeKey);
+          }
+        }
         await assertClaim?.(tx);
-        return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: false };
+        return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: Boolean(rebound) };
       }
       // Every fence below refuses new work before any row is written: a definite refusal.
       if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandRefused();
@@ -210,6 +252,15 @@ export function createRuntimeCommands(
     if (admitted.fresh && !deferred) for (const wakeKey of wakeKeys) runtimeWakes.notify(wakeKey);
     return admitted;
   }
+  function enqueue(
+    ownerId: string,
+    request: RunnerRequest,
+    expectedEpoch?: string,
+    assertClaim?: (tx: Sql) => Promise<void>,
+    resolveSkillpackKey?: (tx: Sql) => Promise<string>,
+  ) {
+    return enqueueCommand(ownerId, request, expectedEpoch, assertClaim, resolveSkillpackKey);
+  }
   /** Keep admission fenced through synchronous socket enqueue; never await network I/O here. */
   async function withNext<T>(
     token: string,
@@ -219,23 +270,33 @@ export function createRuntimeCommands(
   ) {
     return authority.withSession(token, epoch, async (tx, scope) => {
       onScope?.(scope.sandboxId);
-      const row = (
-        await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-          `select request_enc from public.runtime_commands c where sandbox_id=$1 and epoch=$2 and result_enc is null
+      const rows = (
+        await tx.query<{ request_id: string; request_enc: Uint8Array<ArrayBuffer> }>(
+          `select request_id,request_enc from public.runtime_commands c where sandbox_id=$1 and epoch=$2 and result_enc is null
            and not ${expiredOutputRead("request_id", "$3")}
            and not (starts_with(request_id,'outputs_') and exists(select 1 from public.sandboxes s
              where s.id=c.sandbox_id and s.application_secret_tainted))
            and not (starts_with(request_id,'outputs_') and exists(select 1 from public.runtime_commands later
              where later.sandbox_id=c.sandbox_id and later.epoch=c.epoch and later.sequence>c.sequence
              and later.result_enc is not null))
-           order by sequence limit 1`,
+           and (not starts_with(c.request_id,'${authorityExtensionPrefix}')
+                or ${liveAuthorityExtension("c.sandbox_id", "c.epoch", "c.request_id")})
+           order by sequence limit 2`,
           [scope.sandboxId, scope.epoch, String(time.now())],
         )
-      ).rows[0];
-      return use({
-        epoch: scope.epoch,
-        command: row ? (JSON.parse(await decryptSecret(row.request_enc, key)) as RunnerRequest) : null,
-      });
+      ).rows;
+      // At most one row can match the pending job. A predecessor's command
+      // yields to the successor's fresh health probe until re-admitted.
+      for (const row of rows) {
+        const encoded = JSON.parse(await decryptSecret(row.request_enc, key));
+        if (!row.request_id.startsWith(authorityExtensionPrefix)) return use({ epoch: scope.epoch, command: encoded });
+        const current = await tx.query(
+          `select 1 where ${liveAuthorityExtension("$1::uuid", "$2::bigint", "$3::text", "$4::bigint")}`,
+          [scope.sandboxId, scope.epoch, row.request_id, encoded.extensionLeaseEpoch],
+        );
+        if (current.rows.length) return use({ epoch: scope.epoch, command: JSON.parse(encoded.command) });
+      }
+      return use({ epoch: scope.epoch, command: null });
     });
   }
   async function next(token: string, epoch: string) {
@@ -400,13 +461,51 @@ export function createRuntimeCommands(
     return callPrepared(ownerId, request.op, async () => ({ request, options }), undefined, request.sandboxId);
   }
 
-  /** Admit under the caller's authority transaction, then wait after it commits. */
-  async function callPrepared(
+  function callAuthorityExtension(
+    ownerId: string,
+    request: Extract<RunnerRequest, { op: "extendCommandAuthority" }>,
+    options: CallOptions & {
+      expectedEpoch: string;
+      leaseEpoch: string;
+      assertClaim: NonNullable<CallOptions["assertClaim"]>;
+    },
+  ) {
+    const assertClaim = async (tx: Sql) => {
+      await options.assertClaim(tx);
+      const live = await tx.query(
+        `select 1 where ${liveAuthorityExtension("$1::uuid", "$2::bigint", "$3::text", "$4::bigint")}`,
+        [request.sandboxId, options.expectedEpoch, request.requestId, options.leaseEpoch],
+      );
+      if (!live.rows.length) throw new RuntimeCommandRefused();
+    };
+    return callCommand(
+      ownerId,
+      request.op,
+      async () => ({ request, options: { ...options, assertClaim } }),
+      undefined,
+      request.sandboxId,
+      options.leaseEpoch,
+    );
+  }
+
+  function callPrepared(
     ownerId: string,
     operation: RunnerRequest["op"],
     prepare: () => Promise<{ request: RunnerRequest; options: CallOptions }>,
     knownProvider?: RuntimeOwnerScope["provider"],
     knownSandboxId?: string,
+  ) {
+    return callCommand(ownerId, operation, prepare, knownProvider, knownSandboxId);
+  }
+
+  /** Admit under the caller's authority transaction, then wait after it commits. */
+  async function callCommand(
+    ownerId: string,
+    operation: RunnerRequest["op"],
+    prepare: () => Promise<{ request: RunnerRequest; options: CallOptions }>,
+    knownProvider?: RuntimeOwnerScope["provider"],
+    knownSandboxId?: string,
+    extensionLeaseEpoch?: string,
   ): Promise<RuntimeCommandReply> {
     let provider = knownProvider;
     let sandboxId = knownSandboxId;
@@ -433,18 +532,18 @@ export function createRuntimeCommands(
         const signal = options.signal ?? new AbortController().signal;
         signal.throwIfAborted();
         const deadline = time.now() + timeout;
-        const admitted = await enqueue(
+        const admitted = await enqueueCommand(
           ownerId,
           request,
           options.expectedEpoch,
           options.assertClaim,
           options.resolveSkillpackKey,
+          extensionLeaseEpoch,
         );
         provider = admitted.provider;
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {
           signal.throwIfAborted();
-          // A result may commit while the read still has a pending snapshot.
           let woken = false;
           const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
             woken = true;
@@ -462,11 +561,9 @@ export function createRuntimeCommands(
             return response.reply;
           }
           if (response.state !== "pending") throw new RuntimeCommandConflict();
-          // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
           noteAdmission();
           const remaining = deadline - time.now();
           if (remaining <= 0) throw new RuntimeCommandPending();
-          // A final large output needs many sequential reads within the stop budget.
           const interval = request.op === "readOutputs" && request.part ? 100 : 250;
           if (!woken) await runtimeWakes.wait(wakeKey, signal, Math.min(interval, remaining), time.wait.bind(time));
         }
@@ -484,7 +581,6 @@ export function createRuntimeCommands(
         );
         return false;
       },
-      // A retried request ID whose reply is already stored is answered from the database.
       { replayable: true, sandboxId: () => sandboxId },
     );
   }
@@ -526,5 +622,5 @@ export function createRuntimeCommands(
       return runtimeHttpFailure(status, status === 409 ? "runtime_command_conflict" : undefined);
     }
   };
-  return { enqueue, next, withNext, complete, result, call, callPrepared, route };
+  return { enqueue, next, withNext, complete, result, call, callPrepared, callAuthorityExtension, route };
 }
