@@ -505,6 +505,7 @@ async function main(dialout = false) {
       configureGitHub,
       ...(channel
         ? {
+            enrolled: true,
             reportHarnessFailure: (stage, error, requestId, reason) => {
               void channel
                 .progress(stage, undefined, runtimeOperatorDiagnostic(error, reason), requestId)
