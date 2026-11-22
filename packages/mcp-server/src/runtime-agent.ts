@@ -232,7 +232,7 @@ export function createRuntimeAgent(
       expiresAt: number;
       signal: AbortSignal;
       assertClaim: (tx: Sql) => Promise<void>;
-    }): Promise<ExtendCommandAuthorityResult> {
+    }) {
       const { requestId, expectedEpoch, expiresAt, signal } = input;
       if (!Number.isSafeInteger(expiresAt)) throw refusal("invalid_request");
       const assertClaim = async (tx: Sql) => {
@@ -266,7 +266,7 @@ export function createRuntimeAgent(
           Number.isSafeInteger(deadline) &&
           deadline >= expiresAt
         )
-          return { epoch: expectedEpoch, expiresAt: deadline };
+          return { epoch: expectedEpoch, expiresAt: deadline } satisfies ExtendCommandAuthorityResult;
       };
       const reply = await commands.call(
         ownerId,
