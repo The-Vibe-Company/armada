@@ -2181,8 +2181,7 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
   });
   let time = 100;
   const clock = spyOn(performance, "now").mockImplementation(() => time);
-  const logs: unknown[] = [];
-  const logger = spyOn(console, "error").mockImplementation((line) => logs.push(JSON.parse(line)));
+  const logger = spyOn(console, "info");
   const resolve = world.stores.credentials.resolve;
   world.stores.credentials.resolve = async (...args) => {
     time += 11;
@@ -2227,6 +2226,14 @@ test("Modal launch attributes readiness intervals in order and excludes the prom
           },
         },
       },
+    );
+    const logs = logger.mock.calls.map(([line]) => JSON.parse(line));
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: "launch_github_prepared",
+        sandboxId: result.sandbox.id,
+        status: "not_connected",
+      }),
     );
     expect(logs).toContainEqual({
       event: "modal_launch_timing",

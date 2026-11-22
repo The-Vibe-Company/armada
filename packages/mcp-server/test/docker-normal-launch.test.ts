@@ -3277,11 +3277,10 @@ test.each(["auth", "auth-deferred", "network"] as const)(
           );
           expect(records.map((record) => record.event)).toEqual(["http_request"]);
           expect(await jobs()).toBe(queuedJobs);
-          const background = spyOn(console, "error").mockImplementation(() => {});
-          const warnings = spyOn(console, "warn").mockImplementation(() => {});
+          const warnings = spyOn(console, "warn");
           try {
             await service.drain();
-            const worker = background.mock.calls
+            const worker = warnings.mock.calls
               .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
               .filter((record) => record?.event === "provider_call" && record.operation === "launch");
             expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
@@ -3290,7 +3289,6 @@ test.each(["auth", "auth-deferred", "network"] as const)(
               expect.objectContaining({ requestId }),
             ]);
           } finally {
-            background.mockRestore();
             warnings.mockRestore();
           }
           expect(
