@@ -19,7 +19,16 @@ export function createRuntimeProvider(
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
   captureRuntimeWork?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
-  if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
+  let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
+  switch (host.id) {
+    case "boat":
+      setRuntimeTtl = host.setRuntimeTtl;
+      break;
+    case "modal":
+      break;
+    default:
+      throw Error("boat_runtime_host_required");
+  }
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
@@ -44,7 +53,6 @@ export function createRuntimeProvider(
     resume: false,
     parallelConversations: false,
   }));
-  const setRuntimeTtl = host.id === "boat" ? host.setRuntimeTtl : undefined;
   return {
     id: host.id,
     harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
