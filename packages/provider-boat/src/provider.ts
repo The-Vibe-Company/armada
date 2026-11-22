@@ -727,8 +727,18 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         ),
       );
       signal.throwIfAborted();
-      if ("processId" in result || result.exitCode !== 0 || result.timedOut || result.stdoutTruncated) return null;
-      const boot = result.stdout?.trim();
+      if (
+        !("exitCode" in result) ||
+        result.type !== "command.finished" ||
+        result.ok !== true ||
+        result.success !== true ||
+        result.exitCode !== 0 ||
+        result.timedOut !== false ||
+        result.stdoutTruncated === true ||
+        typeof result.stdout !== "string"
+      )
+        return null;
+      const boot = result.stdout.trim();
       return boot && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(boot) ? boot.toLowerCase() : null;
     },
 

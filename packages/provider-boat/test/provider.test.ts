@@ -1239,7 +1239,7 @@ test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat 
   expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
 });
 
-test.each(["live", "starting", "refused", "invalid", "truncated"] as const)(
+test.each(["live", "starting", "refused", "invalid", "truncated", "unsuccessful"] as const)(
   "capture boot observation uses a single guarded command: %s",
   async (scenario) => {
     const boot = "e76cc889-0359-4544-9320-dd938debba67";
@@ -1251,7 +1251,7 @@ test.each(["live", "starting", "refused", "invalid", "truncated"] as const)(
             body: {
               ok: true,
               type: "command.finished",
-              success: true,
+              success: scenario !== "unsuccessful",
               exitCode: 0,
               stdout: scenario === "invalid" ? "-".repeat(36) : boot + "\n",
               stderr: "",
