@@ -483,6 +483,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "unenrolled claim loss",
     "restore admission loss",
     "before ticket loss",
+    "before ticket loss with covering Boat deadline",
     "ticket commit loss",
     "heartbeat loss",
     "ambiguous deferral claim loss",
@@ -504,7 +505,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       : !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
-    const boatTicketRecovery = provider === "boat" && scenario === "before ticket loss";
+    const coveringBoatDeadline = scenario === "before ticket loss with covering Boat deadline";
+    const boatTicketRecovery = provider === "boat" && (scenario === "before ticket loss" || coveringBoatDeadline);
     const scoped = scenario === "scoped grant loss";
     const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
     const ambiguous = scenario === "ambiguous deferral claim loss";
@@ -638,6 +640,15 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
             async start(value) {
               if (!value.ticketGuard) throw Error("Expected recovered bootstrap");
               await value.activate?.(value.signal);
+              await f.authority.issue({
+                sandboxId: value.sandbox.id,
+                ownerId: f.caller.userId,
+                configuration: {},
+                expectedProviderSandboxId: value.sandbox.providerSandboxId,
+                expectedGeneration: value.sandbox.lifecycleGeneration!,
+                ticketGuard: value.ticketGuard,
+                ...(value.assertDispatch ? { assertClaim: value.assertDispatch } : {}),
+              });
               bootstraps++;
               throw Error("Fixture ends at ticket issuance");
             },
@@ -804,7 +815,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(preparations).toBe(1);
       expect(restores).toBe(0);
       expect(await read()).toMatchObject({ status: "starting", intent: true });
-    } else if (scenario === "before ticket loss") {
+    } else if (scenario === "before ticket loss" || coveringBoatDeadline) {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(await hasTicket()).toBe(false);
       expect(restores).toBe(1);
@@ -820,17 +831,32 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       };
       expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
       if (boatTicketRecovery) {
+        const deadline = new Date("2099-01-01T00:00:00Z");
         const { requests, restore } = interceptBoatResume(() =>
           Response.json({
             ok: true,
-            sandbox: sdkSandbox({ id: "physical", state: "running", archiveAfter: undefined }),
+            sandbox: sdkSandbox({
+              id: "physical",
+              state: "running",
+              archiveAfter: coveringBoatDeadline ? deadline.toISOString() : undefined,
+            }),
           }),
         );
         try {
           await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
           expect(preparations).toBe(2);
-          expect(bootstraps).toBe(0);
-          expect(await hasTicket()).toBe(false);
+          expect(bootstraps).toBe(coveringBoatDeadline ? 1 : 0);
+          if (!coveringBoatDeadline) expect(await hasTicket()).toBe(false);
+          const observation = await f.db.query(
+            `select observed_provider_id, observed_generation::int, observed_expires_at
+             from public.boat_runtime_extension_state where sandbox_id=$1`,
+            [f.row.id],
+          );
+          expect(observation.rows).toEqual(
+            coveringBoatDeadline
+              ? [{ observed_provider_id: "physical", observed_generation: before + 1, observed_expires_at: deadline }]
+              : [],
+          );
           expect(requests).toHaveLength(1);
           expect(await read()).toMatchObject({ status: "stopping" });
         } finally {
