@@ -296,6 +296,8 @@ runtimeCase("Boat runtime launch binds every repository in a multi-repository go
     await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
     expect(log).toHaveBeenCalledWith(
       JSON.stringify({
+        level: "warn",
+        message: "runtime_github_credentials_denied",
         event: "runtime_github_credentials_denied",
         sandboxId: f.row.id,
         reason: "repository_outside_binding",

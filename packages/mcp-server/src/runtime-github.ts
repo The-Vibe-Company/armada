@@ -440,7 +440,8 @@ export function createRuntimeGitHub(options: {
       const response = new Response(null, { status: 403, headers });
       if (!sandboxId) return response;
       try {
-        console.warn(JSON.stringify({ event: "runtime_github_credentials_denied", sandboxId, reason }));
+        const event = "runtime_github_credentials_denied";
+        console.warn(JSON.stringify({ level: "warn", message: event, event, sandboxId, reason }));
       } catch {
         return response;
       }
