@@ -198,6 +198,7 @@ interface Io {
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
+  recordSandboxDelete?: (org: string, id: string, accepted: boolean) => void;
 }
 
 /** Observational parity; production Boat verification requires explicit coordinator opt-in. */
@@ -649,6 +650,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let keyedLaunchUnconfirmed = false;
     let stopped = false;
     let deleted = false;
+    const stagingDeletes = new Map<string, Promise<{ id: string; status: "deleted" }>>();
     let stopRequested = false;
     const memory = `PARITY_${crypto.randomUUID().replaceAll("-", "")}`;
     let afterResume = false;
@@ -657,7 +659,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     let blocked: string | undefined;
     let blockedDiagnostic: Diagnostic | undefined;
     let clientStopEligible = false;
-    const api = <T>(path: string, body: object = {}) => request<T>(path, { org: c.org, ...body });
+    const api = <T>(path: string, body: object = {}, timeoutMs?: number) =>
+      request<T>(path, { org: c.org, ...body }, timeoutMs);
     function dockerLaunchInput() {
       return {
         hostId: c.hostId,
@@ -1511,8 +1514,35 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         requestDeadline = previous;
       }
     }
+    async function submitStagingDelete(sandboxId: string) {
+      if (!stopped && !stopRequested) {
+        stopRequested = true;
+        await api("sandbox/stop", { id: sandboxId, request_id: crypto.randomUUID() }, 120_000).catch(() => {});
+      }
+      const query = new URLSearchParams({ org: c.org, requestId: crypto.randomUUID() });
+      const path = `sandboxes/${encodeURIComponent(sandboxId)}?${query}`;
+      try {
+        const receipt = await request<{ id?: string; status?: string } | null>(path, undefined, 120_000);
+        if (receipt?.id !== sandboxId || receipt.status !== "deleted") throw new Error("delete_unconfirmed");
+      } catch (error) {
+        const detail = diagnostic(error);
+        if (detail.httpStatus !== 404 || detail.code !== "not_found") throw error;
+      }
+      return { id: sandboxId, status: "deleted" as const };
+    }
+
     async function deleteKnown() {
       if (!id) throw new Error("launch_not_available");
+      if (!productionBoat) {
+        let submission = stagingDeletes.get(id);
+        if (!submission) {
+          submission = submitStagingDelete(id);
+          stagingDeletes.set(id, submission);
+        }
+        const receipt = await submission;
+        deleted = true;
+        return receipt;
+      }
       const cleanupDeadline = io.now() + OBSERVATION_MS;
       {
         let stopError: unknown;
@@ -1877,6 +1907,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       blocked = "discovery_failed";
       blockedDiagnostic = diagnostic(error);
     }
+    const resumePrerequisites = [
+      "resume",
+      "resume-recall",
+      "usage",
+      "exact-cost",
+      "subscription-account",
+      "skills-resume",
+      "mcp-resume",
+    ].includes(feature ?? "");
     for (const [step, capability] of Object.entries(steps) as [
       keyof typeof steps,
       (typeof steps)[keyof typeof steps],
@@ -1886,7 +1925,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !feature ||
         step === feature ||
         step === "launch" ||
-        (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
+        (step === "stop" && (resumePrerequisites || feature === "client-stop")) ||
+        (step === "stop" && productionBoat && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
         ((feature === "client-send" ||
           feature === "client-stop" ||
@@ -1903,16 +1943,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           requestedHarness) &&
           step === "send") ||
         (feature === "wake-on-send" && step === "idle-pause") ||
-        ([
-          "resume",
-          "resume-recall",
-          "usage",
-          "exact-cost",
-          "subscription-account",
-          "skills-resume",
-          "mcp-resume",
-        ].includes(feature ?? "") &&
-          ["send", "resume"].includes(step));
+        (resumePrerequisites && ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
       if (idleUnavailable && (step === "idle-pause" || step === "wake-on-send")) continue;
@@ -1939,7 +1970,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         blockedDiagnostic = { code: "poll_limit_exceeded", message: "Template resume proof budget exhausted." };
       }
       // Cleanup operations still run after an earlier probe failed.
-      if (blocked && !((step === "stop" || step === "delete") && id)) {
+      if (blocked && !(id && (step === "delete" || (step === "stop" && productionBoat)))) {
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,
@@ -2575,6 +2606,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         // Known resources remain unconfirmed even when the refusal is quota.
         record("cleanup", c.provider, "fail", "cleanup_unconfirmed", detail);
       }
+      if (!productionBoat) io.recordSandboxDelete?.(c.org, cleanupId, deleted);
       io.out(JSON.stringify({ step: "parity_cleanup", provider: c.provider, id, deleted }));
     }
     if (templateIntentUnknown || keyedLaunchUnconfirmed)

@@ -157,7 +157,7 @@ for (const mode of [
   "modal_launch_malformed",
   "modal_launch_missing_provider",
   "modal_launch_top_level_id",
-  "delete_retry",
+  "delete_conflict",
   "journal_failure",
   "stop_response_lost",
   "terminal_failed",
@@ -1385,11 +1385,12 @@ for (const mode of [
               break;
             case sandboxDeletePath:
               deletes.set(p, (deletes.get(p) ?? 0) + 1);
-              if (mode === "delete_retry" && p === "modal" && deletes.get(p) === 1)
+              if (mode === "delete_conflict" && p === "modal" && deletes.get(p) === 1)
                 return Response.json(
                   { error: { code: "conflict", message: "Provider deletion is pending." } },
                   { status: 409 },
                 );
+              if (mode === "already_deleted") return Response.json({ error: { code: "not_found" } }, { status: 404 });
               expect(["stopped", "failed"]).toContain(states.get(p) ?? "missing");
               result = {
                 id:
@@ -1512,6 +1513,7 @@ for (const mode of [
       if (mode !== "docker_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features.cleanup.docker.status).toBe("pass");
+        expect(deletes.get("docker")).toBe(1);
         const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
         expect(receipts.some((receipt) => receipt.step === "smoke_sandbox_receipt")).toBe(false);
         expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
@@ -1650,7 +1652,11 @@ for (const mode of [
         expect(report.features.exec.boat).toEqual(boatNotRun);
         expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
         expect(calls).not.toContain("docker:sandbox/send");
-        expect(calls).toContain(`docker:${sandboxDeletePath}`);
+        const stop = calls.indexOf("docker:sandbox/stop");
+        const deletion = calls.indexOf(`docker:${sandboxDeletePath}`);
+        expect(stop).toBeGreaterThan(-1);
+        expect(deletion).toBeGreaterThan(stop);
+        expect(calls.slice(stop + 1, deletion)).not.toContain("docker:sandbox/status");
       }
       return;
     }
@@ -1664,8 +1670,7 @@ for (const mode of [
       expect(passed).toBe(false);
       for (const provider of providers) {
         expect(report.features.cleanup[provider].status).toBe("pass");
-        if (mode === "already_deleted") expect(calls).not.toContain(`${provider}:${sandboxDeletePath}`);
-        else expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
+        expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
       }
       if (mode === "stop_response_lost") {
         // Unknown stop outcome is reconciled with status, not replayed.
@@ -1778,7 +1783,9 @@ for (const mode of [
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(calls).not.toContain(`${provider}:sandbox/resume`);
         const firstDetail = calls.indexOf(`${provider}:sandbox/status`);
-        expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
+        const stop = calls.indexOf(`${provider}:sandbox/stop`);
+        if (mode === "idle_pause") expect(stop).toBe(-1);
+        else expect(stop).toBeGreaterThan(firstDetail);
       }
       return;
     }
@@ -2203,10 +2210,19 @@ for (const mode of [
       expect(report.features["exact-cost"].docker.status).toBe("not-run");
       return;
     }
-    if (mode === "delete_retry") expect(deletes.get("modal")).toBe(2);
+    if (mode === "delete_conflict") {
+      expect(deletes.get("modal")).toBe(1);
+      expect(report.features.delete.modal.status).toBe("fail");
+      expect(report.features.cleanup.modal).toMatchObject({
+        status: "fail",
+        diagnostic: { code: "conflict", httpStatus: 409 },
+      });
+      expect(passed).toBe(false);
+      return;
+    }
     expect(report.features.launch.modal.status).toBe("pass");
     expect(report.features.delete.modal.status).toBe("pass");
-    expect(passed).toBe(mode === "online" || mode === "unsupported" || mode === "delete_retry");
+    expect(passed).toBe(mode === "online" || mode === "unsupported");
     expect(lines.at(-1)).toContain("| Feature | Boat | Modal | Docker |");
     if (mode === "offline") {
       expect(report.features.launch.docker).toEqual({ status: "fail", reason: "host_offline" });

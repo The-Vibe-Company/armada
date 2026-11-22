@@ -1270,17 +1270,16 @@ a guess or compares unsynchronized local/server clocks. Failure cells include
 these measurements; successful receipts let the coordinator measure actual
 first/follow-up latency on the target server without printing prompts.
 
-Cleanup rechecks an ID-matched terminal stop state even after a stop probe
-passed. Stored logical stop state does not alone prove that provider termination
-has settled: delete therefore reconciles `sandbox_not_ready` (including HTTP
-409), pending/conflict and unavailable responses using the same delete request
-ID, never another launch or a replay of stop. Cleanup has its own 600-second
-observation deadline independent of the exhausted probe deadline. Confirmation
-requires the matching deleted receipt; an already-deleted status is also valid.
-No script can guarantee remote deletion during a permanent outage/refusal:
-unconfirmed cleanup remains an explicit failure with diagnostics and the known
-sandbox ID, never a success. Production Boat execution and reconciliation remain
-coordinator-only; fixture tests are not production evidence.
+Staging parity submits one DELETE per known Modal or Docker sandbox. If the
+probe has yet to request a stop, cleanup requests it once before deletion.
+A matching `deleted` receipt or HTTP 404 with the sandbox `not_found` code
+satisfies the delete check. Pending, conflict, and missing acknowledgements
+fail cleanup with the known sandbox ID. Cleanup does not poll status or
+retry deletion. The release gate checks the Modal and Docker reaper evidence
+before launching probes and reports overdue machine IDs from prior runs.
+
+The coordinator-only production Boat probe still observes terminal stop and
+reconciles deletion within its 600-second cleanup deadline.
 
 #### GitHub clone and push authorization
 
