@@ -10,8 +10,7 @@ export interface SmokeSandboxReceipt {
 }
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
-/** A failed Modal stop can still have a pending stop intent. */
-export function confirmsCleanupStop(receipt: { id?: string; status?: string } | null, id: string): boolean {
+export function confirmsCleanupStop(receipt: { id?: string; status?: string } | null, id: string) {
   return receipt?.id === id && (receipt.status === "stopped" || receipt.status === "deleted");
 }
 
