@@ -99,10 +99,11 @@ test.each(["ready", "publication failure", "activity lease", "stop intent"] as c
       expect(await read()).toEqual(claimed);
     } else {
       expect(await run).toBe(true);
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
       const row = await read();
       expect(row.status).toBe(scenario === "ready" ? "ready" : "running");
       expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_generation).toBe(claimed?.lifecycle_generation);
+      expect(row.lifecycle_generation).toBe(claimed.lifecycle_generation);
       if (scenario === "activity lease") expect(row.activity_lease_id).toBe(activity);
       if (scenario === "stop intent") expect(row.stop_requested_at).toBeTruthy();
     }
