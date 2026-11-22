@@ -1466,7 +1466,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          { recover: recoverLaunch, receipt: acceptsAdmission ? "admission" : undefined },
+          {
+            ...(recoverLaunch ? { recover: recoverLaunch } : {}),
+            ...(acceptsAdmission ? { receipt: "admission" } : {}),
+          },
         );
         const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
@@ -1571,7 +1574,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               return;
             }
 
-            // Enrolment publishes readiness before the job finishes installing skills.
             const status = await poll(
               (timeoutMs) =>
                 sandbox<{
@@ -1583,7 +1585,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   skills?: unknown;
                 }>("status", { id: sandboxId }, timeoutMs),
               (status) => status?.settled === true,
-              { until },
+              until === undefined ? {} : { until },
             );
             if (
               status.id !== sandboxId ||
