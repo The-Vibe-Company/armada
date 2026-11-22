@@ -5,7 +5,7 @@ import type { StopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 type Log = (line: string) => void;
-const current = new AsyncLocalStorage<{ id: string; log: Log }>();
+const current = new AsyncLocalStorage<{ id: string; log: Log | undefined }>();
 const stderr: Log = (line) => console.error(line);
 
 export function currentRequestId(): string | undefined {
@@ -18,7 +18,7 @@ const serverId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
  * Resume a request's correlation inside durable background work it handed off, so provider records there carry the ID returned to the caller. Without a well-formed ID
  * the work runs uncorrelated, like other background provider work.
  */
-export function continueRequest<T>(id: string | undefined, work: () => Promise<T>, log: Log = stderr): Promise<T> {
+export function continueRequest<T>(id: string | undefined, work: () => Promise<T>, log?: Log): Promise<T> {
   return id && serverId.test(id) ? current.run({ id, log }, work) : current.exit(work);
 }
 
@@ -31,7 +31,7 @@ function requestLogForStatus(status: number) {
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
 export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log?: Log) {
   const id = crypto.randomUUID();
-  return current.run({ id, log: log ?? stderr }, async () => {
+  return current.run({ id, log }, async () => {
     const started = performance.now();
     let response: T | Response;
     let errorClass: string | undefined;
@@ -159,7 +159,8 @@ export async function observeProviderCall<T>(
   } finally {
     if (outcome !== null) {
       const name = typeof provider === "function" ? provider() : provider;
-      request.log(
+      const log = request.log ?? (outcome === "ok" ? console.info : console.warn);
+      log(
         JSON.stringify({
           event: "provider_call",
           requestId: request.id,
