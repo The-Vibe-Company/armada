@@ -577,6 +577,59 @@ for (const outcome of [
   });
 }
 
+test.each(["short", "unknown", "native", "superseded"] as const)(
+  "ordinary Boat reconciliation handles %s physical deadline evidence",
+  async (evidence) => {
+    const { db, people } = await sharedDatabase();
+    const id = crypto.randomUUID();
+    const {
+      rows: [binding],
+    } = await db.query<{ expires_at: Date }>(
+      `insert into public.sandboxes
+        (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, expires_at, boat_runtime)
+       select $1, 'boat', 'bx_23456789', id, $2, $3, 'codex', 'running', now()+interval '1 hour', $4
+       from public.goldens where name='shared' returning expires_at`,
+      [id, people.org, people.owner, evidence !== "native"],
+    );
+    if (!binding) throw Error("Missing Boat sandbox.");
+    let stops = 0;
+    const provider = createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
+          stops++;
+          return Response.json({ ok: true });
+        }
+        if (evidence === "superseded")
+          await db.query("update sandboxes set expires_at=expires_at-interval '30 minutes' where id=$1", [id]);
+        return Response.json({
+          ok: true,
+          sandbox: stops
+            ? retainedSandbox()
+            : sandbox({
+                state: "running",
+                archiveAfter: evidence === "unknown" ? undefined : binding.expires_at.toISOString(),
+              }),
+        });
+      }) as typeof fetch,
+    });
+    const worker = createSandboxLifecycle(bunLikeSql(db), async () => provider);
+    expect(await worker.reconcileOne()).toBe(true);
+    await worker.drain();
+
+    const {
+      rows: [row],
+    } = await db.query("select status, status_reason, expires_at from public.sandboxes where id=$1", [id]);
+    expect(stops).toBe(evidence === "short" ? 1 : 0);
+    expect(row).toMatchObject(
+      evidence === "short"
+        ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
+        : { status: "running", status_reason: null },
+    );
+  },
+);
+
 for (const observation of ["stopped", "expired", "unavailable"] as const) {
   test(`failed launch reason survives terminal reconciliation (${observation})`, async () => {
     const { db, people } = await sharedDatabase();
