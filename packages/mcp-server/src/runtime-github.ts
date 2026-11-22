@@ -438,14 +438,13 @@ export function createRuntimeGitHub(options: {
       });
       try {
         const event = "runtime_github_credentials_issued";
-        // Correlate delivery of the same token across sandboxes without exposing the token or repository.
         const tokenFingerprint = createHmac("sha256", Buffer.from(key, "base64"))
           .update(JSON.stringify(["armada/runtime/github/token-log/v1", grant.binding.ownerId, access.token]))
           .digest("hex")
           .slice(0, 32);
         console.info(JSON.stringify({ level: "info", message: event, event, sandboxId, tokenFingerprint }));
       } catch {
-        // Logging must not turn a committed credential issuance into a refusal.
+        return response;
       }
       return response;
     } catch {

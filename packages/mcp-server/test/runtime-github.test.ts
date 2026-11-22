@@ -18,7 +18,7 @@ async function fixture(
     commandGrantExpiresAt?: number;
     idle?: boolean;
     githubFetch?: typeof fetch;
-    sibling?: Awaited<ReturnType<typeof sharedDatabase>> & { access: string; goldenId: string };
+    sibling?: NonNullable<Parameters<typeof runtimeFixture>[0]> & { access: string; goldenId: string };
   } = {},
 ) {
   const f = await runtimeFixture(
@@ -343,10 +343,7 @@ describe("Boat GitHub access token rollover during launch", () => {
         expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
       }
 
-      // The first launch has received the old token but Git can still be using it
-      // when a second launch refreshes the shared account at the five-minute margin.
       const inFlightToken = await x.broker.acquire("example/repo-7", "git");
-      // GitHub documents that rotation immediately invalidates the previous access token.
       const gitStatus = (token: string) => (token === (githubRotated ? renewedAccess : x.access) ? 200 : 401);
       expect(gitStatus(inFlightToken)).toBe(200);
       clock += 37_000;
