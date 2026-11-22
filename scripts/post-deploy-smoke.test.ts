@@ -729,6 +729,7 @@ describe("preservation checks", () => {
       "scoped_pair",
       "scoped_admission",
       "scoped_admission_wrong_account",
+      "scoped_admission_late_status",
       "scoped_parent_timeout",
       "scoped_unsupported",
       "missing",
@@ -748,7 +749,9 @@ describe("preservation checks", () => {
         const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
         const defaultAdmission = fault.startsWith("default_admission");
         const scopedAdmission = fault.startsWith("scoped_admission");
-        const scopes = scopedAdmission || fault === "scoped_pair" || fault === "scoped_parent_timeout";
+        const scopedTimeout = fault === "scoped_parent_timeout";
+        const scopes = scopedAdmission || scopedTimeout || fault === "scoped_pair";
+        const scopedSetupDelayed = scopedAdmission || scopedTimeout;
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -860,8 +863,8 @@ describe("preservation checks", () => {
             expect(scriptedParents.has(parent)).toBe(true);
             if (scopedAdmission) {
               expect(scopedGoldenChecks.has(parent)).toBe(true);
-              expect(scopedSetupReads.get(parent)).toBeGreaterThan(3);
             }
+            if (scopedSetupDelayed) expect(scopedSetupReads.get(parent)).toBeGreaterThan(3);
             expect(launches).toBeGreaterThan(0);
             if (parent === scriptedParents.keys().next().value) {
               const message = { idempotencyKey: messageKey, text: prefix + JSON.stringify({ lane: "child", answer }) };
@@ -951,15 +954,17 @@ describe("preservation checks", () => {
                 scopedReadyTimeouts.set(requestedId, timeout?.mock.lastCall?.[0]);
               const stopped = scriptedParents.get(requestedId);
               const reads = scopedSetupReads.get(requestedId) ?? 0;
-              if (scopedAdmission) scopedSetupReads.set(requestedId, reads + 1);
+              if (scopedSetupDelayed) scopedSetupReads.set(requestedId, reads + 1);
+              if (fault === "scoped_admission_late_status" && reads === 4)
+                fake.advance((deadlineTable["modal/scoped"].scoped_parent_launch ?? 600_000) + 1);
               return json({
                 id: requestedId,
                 externalRef: [...scopedKeys].find(([, id]) => id === requestedId)?.[0],
                 status: stopped ? "stopped" : "ready",
                 providerState: stopped ? "stopped" : "active",
                 prompt: null,
-                settled: !scopedAdmission || reads >= 3,
-                statusMessage: scopedAdmission && reads < 3 ? "Modal launch setup is still in progress." : null,
+                settled: !scopedSetupDelayed || reads >= 3,
+                statusMessage: scopedSetupDelayed && reads < 3 ? "Modal launch setup is still in progress." : null,
                 expiresAt: null,
                 harness: "codex",
                 model: "scripted",
@@ -1285,14 +1290,22 @@ describe("preservation checks", () => {
             false,
           );
         }
-        if (fault === "scoped_admission_wrong_account") {
+        const scopedConfigurationFailure =
+          fault === "scoped_admission_wrong_account" || fault === "scoped_admission_late_status";
+        if (scopedConfigurationFailure) {
           expect(scriptedParents.size).toBe(2);
           expect([...scriptedParents.values()]).toEqual([true, true]);
           expect(
             fake.calls.some((call) => call.path === "sandbox/send" && scriptedParents.has(String(call.body.id))),
           ).toBe(false);
           expect(
-            fake.receipts().filter((line) => line.step === "scoped_parent_configuration" && !line.pass),
+            fake
+              .receipts()
+              .filter(
+                (line) =>
+                  line.step === "scoped_parent_configuration" &&
+                  line.code === (fault === "scoped_admission_late_status" ? "poll_limit_exceeded" : "invalid_response"),
+              ),
           ).toHaveLength(2);
         } else if (scopes) {
           const scriptedSteps = fake.lines
@@ -1343,7 +1356,7 @@ describe("preservation checks", () => {
         }
         expect(fake.lines.join("")).not.toContain(commit);
         expect(fake.lines.join("")).not.toContain("secret");
-        if (!success && !attemptedRecoveries.size && fault !== "scoped_admission_wrong_account")
+        if (!success && !attemptedRecoveries.size && !scopedConfigurationFailure)
           expect(fake.receipts()).toContainEqual(
             expect.objectContaining({
               pass: false,

@@ -1456,7 +1456,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status.prompt !== null
               )
                 return;
-              if (scope && !matchesParentConfiguration(status)) return;
+              if (
+                scope &&
+                (!matchesParentConfiguration(status) || status.settled !== true || status.statusMessage !== null)
+              )
+                return;
               if (defaultSkills && !scope) {
                 if (status.settled !== true || status.statusMessage !== null) return;
                 verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
@@ -1500,7 +1504,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         launchSkills = parent.skills;
       });
       const readinessStep = scoped ? "scoped_parent_ready" : "ready";
-      // The synchronous readiness budget starts after allocation. Admission also has to wait for allocation.
       const scopedAdmissionUntil =
         scoped && hasAdmissionReceipt ? Math.min(deadline, io.now() + launchBudget) : undefined;
       await step(readinessStep, async () => {
@@ -1564,6 +1567,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             const settled = await poll(read, (status) => status?.settled === true, { until: scopedAdmissionUntil });
             if (settled.statusMessage !== null) fail("invalid_response");
             const parent = await read(remaining());
+            if (remaining() < 0) fail("poll_limit_exceeded");
             if (
               parent?.id !== sandboxId ||
               parent.status !== "ready" ||
