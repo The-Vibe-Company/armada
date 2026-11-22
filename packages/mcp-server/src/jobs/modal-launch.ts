@@ -30,6 +30,7 @@ import {
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { z } from "zod";
+import { lockAndCheckStartingLaunchAccount } from "../account-capacity.ts";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
@@ -302,6 +303,9 @@ export async function admitModalLaunch(
           throw new VaultError("invalid", "Scoped Armada access requires a child limit between 1 and 100.");
       }
       const actor = { userId: ownerId, orgId };
+      const { credentialId, credentialVersion } = sandbox;
+      if (credentialId != null && credentialVersion != null)
+        await lockAndCheckStartingLaunchAccount(tx, { credentialId, credentialVersion }, sandboxId, sandbox.model);
       await insertStartingModalSandbox(
         tx,
         {

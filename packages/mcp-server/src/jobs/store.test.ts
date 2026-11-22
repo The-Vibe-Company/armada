@@ -566,6 +566,40 @@ function admitModalLaunch(sql: Sql, key: string, input: ModalLaunchAdmission) {
   return admitModalLaunchWithMcp(sql, key, input, mcp);
 }
 
+test.each([
+  { limits: { "gpt-5": 1 }, max: null, message: "Model gpt-5" },
+  { limits: {}, max: 1, message: "1/1 agents working" },
+])("Modal starting admissions count against the account cap ($message)", async ({ limits, max, message }) => {
+  const { db, sql, input, openaiCredentialId } = await modalAdmissionFixture();
+  await db.query("update credentials set max_agents=$2,model_limits=$3 where id=$1", [openaiCredentialId, max, limits]);
+  const bound = { ...input, sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 } };
+  const admitted = await admitModalLaunch(sql, launchEncryptionKey, bound);
+  await expect(
+    admitModalLaunch(sql, launchEncryptionKey, { ...bound, request: { key: "another-launch", payload: "another" } }),
+  ).rejects.toThrow(message);
+  expect(await admitModalLaunch(sql, launchEncryptionKey, bound)).toEqual(admitted);
+  expect((await db.query("select sandbox_id from jobs where kind='launch'")).rows).toEqual([
+    { sandbox_id: admitted.sandbox.id },
+  ]);
+  expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test("Modal admission refuses a fresh launch on an exhausted bound account", async () => {
+  const { db, sql, input, openaiCredentialId } = await modalAdmissionFixture();
+  await db.query(
+    `insert into account_exhaustion(account_id,account_version,code,resets_at,event_at)
+     values($1,1,'usage_limit_exceeded','2100-01-01T00:00:00Z',0)`,
+    [openaiCredentialId],
+  );
+  await expect(
+    admitModalLaunch(sql, launchEncryptionKey, {
+      ...input,
+      sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
+    }),
+  ).rejects.toThrow("is exhausted until");
+  expect((await db.query("select sandbox_id from jobs where kind='launch'")).rows).toEqual([]);
+});
+
 test("Modal scoped admission atomically reserves one private parent across receipt replay", async () => {
   const { db, sql, input, openaiCredentialId, people } = await modalAdmissionFixture("org");
   const scoped = {
