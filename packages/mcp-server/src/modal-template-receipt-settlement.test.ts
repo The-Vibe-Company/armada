@@ -7,7 +7,7 @@ import { sqlOver } from "./sql.ts";
 
 const database = rowOnlyDatabase();
 
-async function fixture() {
+async function fixture(retainFence = false) {
   const { db, people } = await database();
   const sql = sqlOver({
     unsafe: async (query, params) => (await db.query(query, params)).rows,
@@ -19,6 +19,18 @@ async function fixture() {
   const goldenId = crypto.randomUUID();
   const binding = { workspace: "workspace", environment: "main", appId: "ap-fixture" };
   const manifest = { golden: { id: goldenId, provider: "modal", modal: binding, visibility: "org" } };
+  await db.query(
+    `insert into goldens (id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id)
+       values ($1,$2,$3,'historical-modal','org','modal',$4,$5,$6)`,
+    [goldenId, people.org, people.owner, binding.workspace, binding.environment, binding.appId],
+  );
+  const fenceId = retainFence ? crypto.randomUUID() : null;
+  if (fenceId) {
+    await db.query("insert into golden_operation_fences (id,golden_id,operation_kind) values ($1,$2,'launch')", [
+      fenceId,
+      goldenId,
+    ]);
+  }
   const { rows } = await db.query<{ version: string }>(
     `with template as (
        insert into launch_templates(org_id,owner_id,scope,name) values($1,$2,'org','fixture') returning id
@@ -27,10 +39,10 @@ async function fixture() {
        select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
      )
      insert into template_launch_requests
-       (id,org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id,state,created_at)
-     select $3,$1,$2,'fixture-key',repeat('b',64),template_id,id,$4,$5,'reconciling','2026-11-17T11:30:06Z' from revision
+       (id,org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id,state,created_at,golden_operation_fence_id)
+     select $3,$1,$2,'fixture-key',repeat('b',64),template_id,id,$4,$5,'reconciling','2026-11-17T11:30:06Z',$6 from revision
      returning xmin::text as version`,
-    [people.org, people.owner, requestId, manifest, sandboxId],
+    [people.org, people.owner, requestId, manifest, sandboxId, fenceId],
   );
   const row = {
     requestId,
@@ -64,7 +76,7 @@ async function fixture() {
         [people.org, people.owner],
       )
     ).rows[0];
-  return { db, sql, row, journal, read, manifest };
+  return { db, sql, row, journal, read, manifest, fenceId };
 }
 
 test("historical labels correlate a full deletion tombstone and settlement preserves the scoped receipt", async () => {
@@ -112,11 +124,6 @@ test("verified original success preserves the historical public receipt", async 
   const { db, sql, row, journal, read, manifest } = await fixture();
   const golden = manifest.golden;
   const providerSandboxId = "modal-logical-fixture";
-  await db.query(
-    `insert into goldens (id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id)
-       values ($1,$2,$3,'historical-modal','org','modal',$4,$5,$6)`,
-    [golden.id, row.orgId, row.actorId, row.binding.workspace, row.binding.environment, row.binding.appId],
-  );
   const { rows } = await db.query<{ version: string }>(
     `insert into sandboxes (id,golden_id,org_id,owner_id,harness,provider,status,provider_sandbox_id)
        values ($1,$2,$3,$4,'codex','modal','ready',$5) returning xmin::text as version`,
@@ -142,4 +149,48 @@ test("verified original success preserves the historical public receipt", async 
   ];
   expect(await settleModalTemplateReceipts(sql, input, false)).toEqual([{ row: 1, decision: "original-receipt" }]);
   expect(await read()).toEqual({ state: "succeeded", result: receipt });
+});
+
+test("settlement replaces the exact nonterminal skillpack result left by the old producer", async () => {
+  const { db, sql, row, read } = await fixture();
+  const { rows } = await db.query<{ version: string }>(
+    "update template_launch_requests set result=$2 where id=$1 returning xmin::text as version",
+    [
+      row.requestId,
+      { requestId: row.requestId, id: row.sandboxId, state: "reconciling", reason: "skillpack_unavailable" },
+    ],
+  );
+  const input = [
+    {
+      ...row,
+      receiptVersion: rows[0]!.version,
+      evidence: { kind: "confirmed-absence", reference: "reviewed exact inventory" },
+    },
+  ];
+  expect(await settleModalTemplateReceipts(sql, input, false)).toEqual([{ row: 1, decision: "confirmed-absence" }]);
+  expect(await read()).toMatchObject({ state: "failed", result: { id: row.sandboxId, state: "failed" } });
+});
+
+test("a retained snapshot fence is preserved while a drained receipt with a tombstone settles", async () => {
+  const { db, sql, row, journal, read, fenceId } = await fixture(true);
+  const journalVersion = await journal({ phase: "deleted", generation: 1, deletePhysicalExitGeneration: 1 });
+  const input = [{ ...row, evidence: { kind: "delete-tombstone", journalVersion } }];
+  expect(await settleModalTemplateReceipts(sql, input, false)).toEqual([{ row: 1, decision: "delete-tombstone" }]);
+  expect(await read()).toMatchObject({ state: "failed" });
+  expect((await db.query("select id from golden_operation_fences where id=$1", [fenceId])).rows).toEqual([
+    { id: fenceId },
+  ]);
+});
+
+test("verified final absence with a surviving journal requires its reviewed idle version", async () => {
+  const { sql, row, journal, read } = await fixture();
+  const journalVersion = await journal({ phase: "creating", generation: 1 });
+  const evidence = { kind: "confirmed-absence", reference: "reviewed exact inventory" };
+  expect(await settleModalTemplateReceipts(sql, [{ ...row, evidence }], false)).toEqual([
+    { row: 1, decision: "deferred" },
+  ]);
+  expect(
+    await settleModalTemplateReceipts(sql, [{ ...row, evidence: { ...evidence, journalVersion } }], false),
+  ).toEqual([{ row: 1, decision: "confirmed-absence" }]);
+  expect(await read()).toMatchObject({ state: "failed" });
 });

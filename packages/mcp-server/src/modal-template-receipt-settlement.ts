@@ -12,7 +12,11 @@ const binding = z.strictObject({
 });
 const evidence = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("delete-tombstone"), journalVersion: version }),
-  z.strictObject({ kind: z.literal("confirmed-absence"), reference: z.string().trim().min(1) }),
+  z.strictObject({
+    kind: z.literal("confirmed-absence"),
+    reference: z.string().trim().min(1),
+    journalVersion: version.optional(),
+  }),
   z.strictObject({
     kind: z.literal("original-receipt"),
     reference: z.string().trim().min(1),
@@ -45,7 +49,11 @@ type Decision = ReviewedRow["evidence"]["kind"] | "deferred" | "already-terminal
 // WARNING: Keep NOWAIT on authority locks because ingest and lifecycle transactions may acquire them in a different order.
 const lockAuthority = `lock table public.sandboxes, public.modal_machines,
   public.jobs, public.provider_launch_requests, public.runtime_resumes,
-  public.ordinary_launch_snapshot_intents, public.golden_operation_fences in share mode nowait`;
+  public.ordinary_launch_snapshot_intents in share mode nowait`;
+
+const nonterminalResult = `(r.result is null or (
+  r.result->>'state'='reconciling' and r.result->>'requestId'=r.id::text and r.result->>'id'=r.sandbox_id::text
+))`;
 
 async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   const {
@@ -53,7 +61,7 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   } = await tx.query<{
     state: string;
     current: boolean;
-    has_result: boolean;
+    result_can_settle: boolean;
     sandbox_matches: boolean;
     has_sandbox: boolean;
     sandbox_deleted: boolean;
@@ -61,7 +69,7 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
     active: boolean;
     original_manifest_matches: boolean;
   }>(
-    `select r.state, r.xmin::text=$5 as current, r.result is not null as has_result,
+    `select r.state, r.xmin::text=$5 as current, ${nonterminalResult} as result_can_settle,
        case when s.id is null then $6::text is null else
          coalesce(s.xmin::text=$6 and s.provider='modal' and s.org_id=r.org_id and s.owner_id=r.actor_id
            and s.golden_id::text=r.manifest#>>'{golden,id}',false) end as sandbox_matches,
@@ -78,7 +86,6 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
           and (j.kind='launch' or j.state in ('queued','leased')))
         or exists(select 1 from public.runtime_resumes a where a.sandbox_id=r.sandbox_id and a.phase='dispatched')
         or exists(select 1 from public.ordinary_launch_snapshot_intents i where i.sandbox_id=r.sandbox_id)
-        or exists(select 1 from public.golden_operation_fences f where f.id=r.golden_operation_fence_id)
        ) as active
      from public.template_launch_requests r left join public.sandboxes s on s.id=r.sandbox_id
      where r.id=$1 and r.sandbox_id=$2 and r.org_id=$3 and r.actor_id=$4
@@ -107,7 +114,7 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   if (
     !receipt?.current ||
     receipt.state !== "reconciling" ||
-    receipt.has_result ||
+    !receipt.result_can_settle ||
     !receipt.sandbox_matches ||
     receipt.active
   )
@@ -139,6 +146,12 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   );
   const journal = journals[0];
   const proof = row.evidence;
+  const reviewedIdleJournal =
+    journals.length === 1 &&
+    journal?.matches &&
+    journal.idle &&
+    journal.version === proof.journalVersion &&
+    (receipt.provider_id === null || journal.id === receipt.provider_id);
   let result: Record<string, unknown>;
   if (proof.kind === "original-receipt") {
     const original = proof.receipt;
@@ -149,29 +162,15 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
       !receipt.has_sandbox ||
       !receipt.provider_id ||
       original.providerSandboxId !== receipt.provider_id ||
-      journals.length !== 1 ||
-      !journal?.matches ||
-      !journal.idle ||
-      journal.version !== proof.journalVersion ||
-      journal.id !== receipt.provider_id
+      !reviewedIdleJournal
     )
       return "deferred";
     result = original;
   } else {
     if (receipt.has_sandbox && !receipt.sandbox_deleted) return "deferred";
-    if (proof.kind === "delete-tombstone") {
-      if (
-        journals.length !== 1 ||
-        !journal?.matches ||
-        !journal.idle ||
-        !journal.closed ||
-        journal.version !== proof.journalVersion ||
-        (receipt.provider_id !== null && journal.id !== receipt.provider_id)
-      )
-        return "deferred";
-    } else if (journals.length !== 0 || receipt.has_sandbox) {
+    if (proof.kind === "delete-tombstone" && (!reviewedIdleJournal || !journal?.closed)) return "deferred";
+    if (proof.kind === "confirmed-absence" && (proof.journalVersion ? !reviewedIdleJournal : journals.length !== 0))
       return "deferred";
-    }
     result = {
       requestId: row.requestId,
       id: row.sandboxId,
@@ -182,9 +181,9 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   }
   if (dryRun) return proof.kind;
   const changed = await tx.query(
-    `update public.template_launch_requests
+    `update public.template_launch_requests as r
      set state=$3, reason=$4, result=jsonb_build_object('manifest',manifest) || $5::jsonb, updated_at=clock_timestamp()
-     where id=$1 and xmin::text=$2 and state='reconciling' and result is null returning id`,
+     where r.id=$1 and r.xmin::text=$2 and r.state='reconciling' and ${nonterminalResult} returning r.id`,
     [row.requestId, row.receiptVersion, result.state, result.reason ?? null, JSON.stringify(result)],
   );
   return changed.rows.length === 1 ? proof.kind : "deferred";

@@ -50,8 +50,10 @@ sandbox has a null `sandboxVersion`. Choose one evidence class per row.
 - `{"kind":"confirmed-absence","reference":"private review reference"}` is
   the coordinator's attestation that an authoritative inventory scoped to the
   frozen Modal binding and exact sandbox identity established final absence.
-  The script checks that neither an Armada sandbox nor any correlated journal
-  exists. Leave the row out if provider-side evidence cannot be established.
+  An Armada sandbox must be absent or deleted. Add `journalVersion` to the
+  evidence if a correlated journal exists. It must be unique, idle and match
+  the reviewed version. Omit it only if no correlated journal exists. Leave
+  the row out if provider-side evidence cannot be established.
   Zero native sandboxes, a missing App and an unscoped inventory miss are
   insufficient. The reference provides an audit pointer for the coordinator.
 - `original-receipt` requires `reference`, `journalVersion`, and `receipt`.
@@ -63,3 +65,8 @@ sandbox has a null `sandboxVersion`. Choose one evidence class per row.
 After apply, rerun the six-count verification from #2760. The producer cutover
 requires zero pending Modal template reservations and snapshot intents and
 matching ordinary receipt counts.
+
+Historical golden operation fences protect snapshots. They can outlive the
+drained producer and remain in place through settlement. A retained fence
+does not supply allocation or termination evidence. Active sandbox, job and
+provider claims still defer settlement.
