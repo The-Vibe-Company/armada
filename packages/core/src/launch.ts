@@ -272,7 +272,7 @@ export interface LaunchPlan {
   secrets: HarnessCredentials["secrets"];
 }
 
-function writeLaunchDiagnostic(level: "info" | "warn", event: string, fields: Record<string, unknown>): void {
+function writeLaunchDiagnostic(level: "info" | "warn", event: string, fields: Record<string, unknown>) {
   process.stderr.write(`${JSON.stringify({ ...fields, event, level, message: event })}\n`);
 }
 
