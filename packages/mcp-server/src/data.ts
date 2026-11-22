@@ -63,6 +63,7 @@ import {
   fencePreservedModalDrainIncarnation,
   finishLaunchFailure,
   finishLaunchSuccess,
+  lockHistoricalManagedModalParent,
   markNativeDrainDispatchUnclaimed,
   nativeDrainDispatch,
   publishNativeResumeAdmission,
@@ -75,7 +76,7 @@ import {
   STRICT_NATIVE_DRAIN_STOP,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
-import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
+import { MANAGED_MODAL_DRAIN_VISIBLE, SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { MODAL_LAUNCH_FAILURE } from "./turns.ts";
@@ -318,10 +319,21 @@ export function createSqlData(
   sql: Sql,
   listOrgId?: string,
   namedList?: { ref: string; store: VaultStore },
+  managedModalDrain?: {
+    id: string;
+    org_id: string;
+    revoke(tx: Sql, parentId: string): Promise<void>;
+  },
 ): DataSource {
   return (caller) => {
     const orgIds = caller.orgs.map((org) => org.orgId);
     const scope: [string[], string] = [orgIds, caller.userId];
+    const managed = managedModalDrain !== undefined;
+    const deleteVisibility = managed ? MANAGED_MODAL_DRAIN_VISIBLE : SANDBOX_VISIBLE;
+    const assertDrainTarget = (id: string) => {
+      if (managedModalDrain && (id !== managedModalDrain.id || !orgIds.includes(managedModalDrain.org_id)))
+        throw new DataError("Managed drain target changed.");
+    };
     const ownOrg = (orgId: string) => {
       if (!orgIds.includes(orgId)) throw new GoldenError("not_found", "No such golden.");
     };
@@ -438,6 +450,7 @@ export function createSqlData(
     };
 
     async function readSandbox(id: string, forStop: boolean) {
+      assertDrainTarget(id);
       if (!UUID.test(id)) return null;
       const result = await sql.query<SandboxViewRow & { stop_busy: boolean }>(
         `select ${SANDBOX_COLUMNS}${
@@ -452,7 +465,7 @@ export function createSqlData(
             : ""
         }
         from public.sandboxes s join public.goldens g on g.id = s.golden_id
-        where ${SANDBOX_VISIBLE} and s.id = $3`,
+        where ${forStop ? SANDBOX_VISIBLE : deleteVisibility} and s.id = $3`,
         [...scope, id],
       );
       const row = result.rows[0];
@@ -624,6 +637,7 @@ export function createSqlData(
       },
       requestStartingModalStop: (sandbox, signal) => requestStartingModalStop(sql, scope, sandbox, signal),
       async assertDeletionAllowed(id) {
+        assertDrainTarget(id);
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
         const row = (
           await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
@@ -639,7 +653,7 @@ export function createSqlData(
         ).rows[0];
         if (!row) throw new GoldenError("not_found", "No such sandbox or deletion access denied.");
         if (row.modal_cleanup_owns_exit) throw new GoldenError("conflict", "Sandbox exit is unconfirmed.");
-        if (row.managed)
+        if (row.managed && !managed)
           throw new GoldenError(
             "conflict",
             "Managed orchestrators have their own lifecycle; delete an ordinary delegated parent before its child.",
@@ -648,14 +662,17 @@ export function createSqlData(
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
       async historicalModalDrainCandidate(id) {
+        assertDrainTarget(id);
         const candidate = await sql.query(
-          `select 1 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-           and ${historicalModalDrainCandidate}`,
+          `select 1 from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}
+           and ${historicalModalDrainCandidate(managed)}`,
           [...scope, id],
         );
+        if (managed && !candidate.rows.length) throw new DataError("Managed historical Modal journal changed.");
         return candidate.rows.length === 1;
       },
       async nativeDrainDispatch(id, placement, generation, activityToken, action, allowHistoricalModal) {
+        assertDrainTarget(id);
         const owned = await nativeDrainDispatch(
           sql,
           scope,
@@ -665,6 +682,7 @@ export function createSqlData(
           activityToken,
           action,
           allowHistoricalModal,
+          managed,
         );
         if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
         return owned;
@@ -903,6 +921,16 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        assertDrainTarget(id);
+        if (
+          managed &&
+          !(
+            patch.nativeDrainAdmission?.allowHistoricalModal ||
+            patch.renewActivity ||
+            (patch.deleteCompleted && patch.nativeDrain && patch.historicalModalDrainPlacement)
+          )
+        )
+          throw new DataError("Managed Modal drain only permits historical deletion activity.");
         const { nativeRetentionRefusal } = patch;
         if (nativeRetentionRefusal !== undefined) {
           const { expectedGeneration, activityToken } = patch;
@@ -952,6 +980,7 @@ export function createSqlData(
               activityToken,
               patch.nativeDrain === true,
               patch.historicalModalDrainPlacement,
+              managed,
             ),
           );
           if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
@@ -1208,7 +1237,7 @@ export function createSqlData(
           fence += ` and s.status in ('stopped','failed')
             and not (s.status='failed' and s.provider='modal' and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
-            and not ${SANDBOX_DELETION_MANAGED}`;
+            and ${managed ? "s.stop_requested_at is null" : `not ${SANDBOX_DELETION_MANAGED}`}`;
         }
         if (patch.nativeExecAdmission) {
           params.push(patch.nativeExecAdmission.provider, patch.nativeExecAdmission.placement);
@@ -1279,7 +1308,7 @@ export function createSqlData(
         const publishTransition = stopStatus !== undefined || childSend !== undefined || nativeResume !== undefined;
         const returning = publishTransition ? "id, status, generation" : "id";
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g${patch.renewActivity ? ", renewal_target" : ""}
-           where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
+           where s.id = $3 and g.id = s.golden_id and ${deleteVisibility}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${publishTransition ? "s.id, s.status, s.lifecycle_generation::text as generation" : "s.id"}`;
         const effects = `${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""}`;
         const applyUpdate = (connection: Sql) =>
@@ -1293,7 +1322,7 @@ export function createSqlData(
             patch.renewActivity
               ? `with renewal_target as materialized (
                    select s.id, s.native_drain_pending, s.activity_until from public.sandboxes s
-                   where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s
+                   where s.id=$3::uuid and ${deleteVisibility} for update of s
                  ) ${update}`
               : observeRefusal
                 ? `with observed as (select s.status::text as status,
@@ -1303,7 +1332,7 @@ export function createSqlData(
                   s.stop_requested_at is not null as "stopRequested",
                   ${generationParam ? `s.lifecycle_generation<>$${generationParam}::bigint` : "false"} as "generationChanged",
                   ${SANDBOX_DELETION_MANAGED} as managed
-                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
+                from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
                 : stopStatus !== undefined
@@ -1313,7 +1342,7 @@ export function createSqlData(
                        (select ${stopRefusalEvidence}, ${currentNativeExec} as "nativeExecPending", $${generationParam}::bigint::text as "requestGeneration",
                          ${retainedProof ?? "null"} as "retainedCheckpointCurrent"
                          from public.sandboxes s
-                         where s.id=$3::uuid and ${SANDBOX_VISIBLE}) e) end as stop_evidence
+                         where s.id=$3::uuid and ${deleteVisibility}) e) end as stop_evidence
                    from (values (1)) seed left join updated u on true`
                   : wrapped
                     ? `with updated as (${update})${effects} select ${returning} from updated`
@@ -1333,6 +1362,11 @@ export function createSqlData(
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");
           result = await sql.transaction(async (tx) => {
+            const parent = managedModalDrain
+              ? await lockHistoricalManagedModalParent(tx, managedModalDrain, caller.userId)
+              : undefined;
+            if (managed && (!parent || !("parentId" in parent) || (!parent.idle && !parent.native_drain_pending)))
+              throw new DataError("Managed Modal drain lost its parent admission.", "sandbox_not_ready");
             const {
               rows: [locked],
             } = await tx.query<{
@@ -1340,7 +1374,7 @@ export function createSqlData(
               requires_incarnation_proof: boolean;
             }>(
               `select s.native_drain_pending, s.provider='modal' as requires_incarnation_proof
-               from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+               from public.sandboxes s where s.id=$3::uuid and ${deleteVisibility}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
                  and s.stopped_at is not null and (s.stop_requested_at is null or $6::boolean)
@@ -1353,7 +1387,7 @@ export function createSqlData(
             const historical =
               allowHistoricalModal === true &&
               locked.requires_incarnation_proof &&
-              (await admitHistoricalModalDrain(tx, id, locked.native_drain_pending));
+              (await admitHistoricalModalDrain(tx, id, locked.native_drain_pending, managed));
             if (allowHistoricalModal && !historical)
               throw new DataError("Historical Modal drain eligibility changed before admission.", "sandbox_not_ready");
             if (
@@ -1388,6 +1422,8 @@ export function createSqlData(
               if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
                 throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
             }
+            if (managedModalDrain && parent && "parentId" in parent && !locked.native_drain_pending)
+              await managedModalDrain.revoke(tx, parent.parentId);
             const updated = await applyUpdate(tx);
             if (!updated.rows[0]?.id)
               throw new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready");
