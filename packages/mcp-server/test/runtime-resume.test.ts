@@ -302,80 +302,137 @@ describe.each([
   });
 });
 
+async function seedStoppedBoatExtension(f: Awaited<ReturnType<typeof stopped>>) {
+  const job = await f.db.query<{ id: string }>(
+    `insert into public.jobs (kind,sandbox_id,generation,org_id,idem_key,deadline_at,max_attempts)
+     select 'boat_runtime_extend',id,lifecycle_generation,org_id,id::text,expires_at,1
+       from public.sandboxes where id=$1 returning id`,
+    [f.row.id],
+  );
+  const jobId = job.rows[0]!.id;
+  await f.db.query(
+    `insert into public.boat_runtime_extension_state (sandbox_id,pending_job_id)
+     values ($1,$2)`,
+    [f.row.id, jobId],
+  );
+  return jobId;
+}
+
+describe("retained Boat extension supersession", () => {
+  const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
+
+  test("detaches the prior activation's extension intent before restoring compute", async () => {
+    const f = await fixture();
+    const jobId = await seedStoppedBoatExtension(f);
+    let atRestore: unknown;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        const { rows } = await f.db.query(
+          `select e.pending_job_id, j.state, s.lifecycle_generation>j.generation as advanced
+           from public.boat_runtime_extension_state e
+           join public.sandboxes s on s.id=e.sandbox_id
+           join public.jobs j on j.sandbox_id=s.id and j.id=$2 where s.id=$1`,
+          [f.row.id, jobId],
+        );
+        atRestore = rows;
+        return f.reboot(restore);
+      },
+      async stop() {},
+    }));
+    await expect(resume(f.caller, input(f.row.id))).resolves.toMatchObject({ resumed: true });
+    expect(atRestore).toEqual([{ pending_job_id: null, state: "queued", advanced: true }]);
+  });
+});
+
 describe("runtime resume admission rollback", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each(["generation conflict", "elapsed expiry", "transition", "launch stage", "reread", "pre-commit"])(
-    "leaves the retained stop intact after %s",
-    async (fault) => {
-      const f = await fixture();
-      const request = input(f.row.id);
-      const rollback = Error("Injected admission rollback");
-      const read = async () =>
-        (
-          await f.db.query(
-            `select status, lifecycle_generation::text, activity_lease_id, stopped_at::text, expires_at::text,
+  const faults = [
+    "generation conflict",
+    "elapsed expiry",
+    "transition",
+    "launch stage",
+    "reread",
+    "pre-commit",
+    "extension cleanup response",
+  ] as const;
+
+  test.each(faults)("leaves the retained stop intact after %s", async (fault) => {
+    const f = await fixture();
+    const request = input(f.row.id);
+    const rollback = Error("Injected admission rollback");
+    if (fault === "extension cleanup response") await seedStoppedBoatExtension(f);
+    const read = async () =>
+      (
+        await f.db.query(
+          `select status, lifecycle_generation::text, activity_lease_id, stopped_at::text, expires_at::text,
+            (select pending_job_id from public.boat_runtime_extension_state where sandbox_id=s.id) as pending_job_id,
             (select count(*)::int from public.runtime_resumes where sandbox_id=s.id) as intents,
             (select count(*)::int from public.sandbox_transitions where sandbox_id=s.id and to_status='starting') as edges
            from public.sandboxes s where id=$1`,
-            [f.row.id],
-          )
-        ).rows;
-      const before = await read();
-      let prepared = false;
-      const admissionSql: typeof f.sql = {
-        ...f.sql,
-        transaction: (work) =>
-          f.sql.transaction!(async (tx) => {
-            let stageUpdated = false;
-            const result = await work({
-              ...tx,
-              async query(statement, params) {
-                if (stageUpdated && fault === "reread") throw rollback;
-                if (statement.includes("from public.sandbox_transition(")) {
-                  if (fault === "transition") throw rollback;
-                  if (fault === "generation conflict") {
-                    return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
-                  }
-                  if (fault === "elapsed expiry" && params?.[5] === "runtime_resume_admitted") {
-                    const expiry = await tx.query<{ expires_ms: number }>(
-                      `update public.sandboxes set expires_at=now()+interval '1 second' where id=$1
+          [f.row.id],
+        )
+      ).rows;
+    const before = await read();
+    let prepared = false;
+    const admissionSql: typeof f.sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx) => {
+          let stageUpdated = false;
+          const result = await work({
+            ...tx,
+            async query(statement, params) {
+              if (stageUpdated && fault === "reread") throw rollback;
+              if (statement.includes("from public.sandbox_transition(")) {
+                if (fault === "transition") throw rollback;
+                if (fault === "generation conflict") {
+                  return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
+                }
+                if (fault === "elapsed expiry" && params?.[5] === "runtime_resume_admitted") {
+                  const expiry = await tx.query<{ expires_ms: number }>(
+                    `update public.sandboxes set expires_at=now()+interval '1 second' where id=$1
                         returning ceil(extract(epoch from expires_at)*1000)::float8 as expires_ms`,
-                      [f.row.id],
-                    );
-                    setSystemTime(new Date(expiry.rows[0]!.expires_ms + 1));
-                    try {
-                      return await tx.query(statement, params);
-                    } finally {
-                      setSystemTime();
-                    }
+                    [f.row.id],
+                  );
+                  setSystemTime(new Date(expiry.rows[0]!.expires_ms + 1));
+                  try {
+                    return await tx.query(statement, params);
+                  } finally {
+                    setSystemTime();
                   }
                 }
-                if (statement.startsWith("update public.sandbox_launch_stages")) {
-                  if (fault === "launch stage") throw rollback;
-                  stageUpdated = true;
-                }
-                return tx.query(statement, params);
-              },
-            });
-            if (fault === "pre-commit") throw rollback;
-            return result;
-          }),
-      };
-      const resume = createRuntimeResume(admissionSql, ENCRYPTION_KEY, f.bridge, async () => {
-        prepared = true;
-        throw Error("Unexpected placement preparation");
-      });
-      const attempt = resume(f.caller, request);
-      if (fault === "generation conflict" || fault === "elapsed expiry") {
-        await expect(attempt).rejects.toMatchObject({ code: "conflict" });
-      } else {
-        await expect(attempt).rejects.toThrow(rollback.message);
-      }
-      expect(prepared).toBe(false);
-      expect(await read()).toEqual(before);
-    },
-  );
+              }
+              if (statement.startsWith("update public.sandbox_launch_stages")) {
+                if (fault === "launch stage") throw rollback;
+                stageUpdated = true;
+              }
+              const result = await tx.query(statement, params);
+              if (
+                fault === "extension cleanup response" &&
+                statement.startsWith("update public.boat_runtime_extension_state")
+              )
+                throw rollback;
+              return result;
+            },
+          });
+          if (fault === "pre-commit") throw rollback;
+          return result;
+        }),
+    };
+    const resume = createRuntimeResume(admissionSql, ENCRYPTION_KEY, f.bridge, async () => {
+      prepared = true;
+      throw Error("Unexpected placement preparation");
+    });
+    const attempt = resume(f.caller, request);
+    if (fault === "generation conflict" || fault === "elapsed expiry") {
+      await expect(attempt).rejects.toMatchObject({ code: "conflict" });
+    } else {
+      await expect(attempt).rejects.toThrow(rollback.message);
+    }
+    expect(prepared).toBe(false);
+    expect(await read()).toEqual(before);
+  });
 });
 
 describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", (provider) => {
