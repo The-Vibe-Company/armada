@@ -355,7 +355,7 @@ describe("runtime resume admission rollback", () => {
     "reread",
     "pre-commit",
     "extension cleanup response",
-  ] as const;
+  ];
 
   test.each(faults)("leaves the retained stop intact after %s", async (fault) => {
     const f = await fixture();
@@ -382,12 +382,12 @@ describe("runtime resume admission rollback", () => {
           let stageUpdated = false;
           const result = await work({
             ...tx,
-            async query(statement, params) {
+            async query<T>(statement: string, params?: unknown[]) {
               if (stageUpdated && fault === "reread") throw rollback;
               if (statement.includes("from public.sandbox_transition(")) {
                 if (fault === "transition") throw rollback;
                 if (fault === "generation conflict") {
-                  return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
+                  return tx.query<T>(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
                 }
                 if (fault === "elapsed expiry" && params?.[5] === "runtime_resume_admitted") {
                   const expiry = await tx.query<{ expires_ms: number }>(
@@ -397,7 +397,7 @@ describe("runtime resume admission rollback", () => {
                   );
                   setSystemTime(new Date(expiry.rows[0]!.expires_ms + 1));
                   try {
-                    return await tx.query(statement, params);
+                    return await tx.query<T>(statement, params);
                   } finally {
                     setSystemTime();
                   }
@@ -407,7 +407,7 @@ describe("runtime resume admission rollback", () => {
                 if (fault === "launch stage") throw rollback;
                 stageUpdated = true;
               }
-              const result = await tx.query(statement, params);
+              const result = await tx.query<T>(statement, params);
               if (
                 fault === "extension cleanup response" &&
                 statement.startsWith("update public.boat_runtime_extension_state")
