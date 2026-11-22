@@ -1072,6 +1072,7 @@ test.each([
   "stopped journal",
   "stopped journal with stop intent",
   "lost provider reply",
+  "interrupted provider resolution",
   "provider reply without exit proof",
   "interrupted stopped admission",
   "interrupted stopped settlement",
@@ -1095,6 +1096,7 @@ test.each([
     "stopped journal",
     "stopped journal with stop intent",
     "lost provider reply",
+    "interrupted provider resolution",
     "provider reply without exit proof",
     "interrupted stopped admission",
     "interrupted stopped settlement",
@@ -1223,9 +1225,17 @@ test.each([
     return;
   }
   if (stopped && scenario !== "stopped journal with stop intent") {
+    const resolutionInterrupted = scenario === "interrupted provider resolution";
+    const dispatchGeneration = resolutionInterrupted ? 6 : 5;
+    let failResolution = resolutionInterrupted;
     const deleteMachine = mock(async (target: Parameters<Provider["delete"]>[0]) => {
-      expect<Record<string, unknown>>(target).toEqual({ sandboxId: placement, generation: 5 });
-      expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
+      expect<Record<string, unknown>>(target).toEqual({ sandboxId: placement, generation: dispatchGeneration });
+      expect(await state()).toEqual({
+        status: "stopped",
+        generation: String(dispatchGeneration),
+        epoch: "2",
+        legacy_epoch: "2",
+      });
       await db.query(
         `update modal_machines set record=record||jsonb_build_object('phase','deleted',
           'deletePhysicalExitGeneration',$2::int) where id=$1`,
@@ -1241,7 +1251,13 @@ test.each([
       actorId,
       scopedAccess,
       {
-        resolve: async () => ({ ...fakeBoat().provider, id: "modal", delete: deleteMachine }),
+        async resolve() {
+          if (failResolution) {
+            failResolution = false;
+            throw new Error("Interrupted provider resolution");
+          }
+          return { ...fakeBoat().provider, id: "modal", delete: deleteMachine };
+        },
       },
       true,
     );
@@ -1266,6 +1282,15 @@ test.each([
       await expect(remove(candidate)).rejects.toThrow(/Interrupted/);
       expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
       await expect(remove(candidate)).rejects.toThrow();
+      if (resolutionInterrupted) {
+        expect(deleteMachine).not.toHaveBeenCalled();
+        const { rows } = await db.query(
+          `select record->>'phase' as phase, record->'historicalDrainAdmission' as stamp
+           from modal_machines where id=$1`,
+          [placement],
+        );
+        expect(rows).toEqual([{ phase: "stopped", stamp: { sandboxId: id, physicalGeneration: 1 } }]);
+      }
       injectSettlementFailure = false;
       await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [id]);
     }
