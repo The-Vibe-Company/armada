@@ -90,6 +90,7 @@ interface Reply {
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   cursor?: string | null;
+  hasMore?: boolean;
   events?: AgentEvent[];
   runtimeFailure?: unknown;
   sandboxes?: {
@@ -433,9 +434,10 @@ const verifyPrompt = async (
     while (Date.now() < deadline) {
       const turn = await api("sandbox/status", { id, prompt_id: expectedPromptId }, Math.max(1, deadline - Date.now()));
       if (turn.id !== id || turn.prompt?.promptId !== expectedPromptId)
-        throw Error("Queued Modal follow-up does not match its status.");
+        throw Error("Queued Modal turn does not match its status.");
       if (turn.settled === true) {
-        if (turn.prompt.state !== "finished") throw Error("Queued Modal follow-up did not finish successfully.");
+        if (turn.prompt.state !== "finished" || !["ready", "running"].includes(turn.status ?? ""))
+          throw Error("Queued Modal turn did not finish on an active sandbox.");
         break;
       }
       await Bun.sleep(1000);
@@ -608,7 +610,10 @@ function validateCheckpoint(
   expectedEpoch: string | undefined,
   requestId: string,
   watermark?: number,
-): asserts receipt is Reply & { checkpoint: { state: "complete"; watermark: number; acknowledgedSequence: number } } {
+): asserts receipt is Reply & {
+  runtime: { kind: "armada"; epoch: string };
+  checkpoint: { state: "complete"; watermark: number; acknowledgedSequence: number };
+} {
   const proof = receipt.checkpoint;
   if (
     receipt.requestId !== requestId ||
@@ -639,7 +644,7 @@ function acceptsFollowup(receipt: Reply, requestId: string, expectedEpoch: strin
     (expectedEpoch === undefined || receipt.runtime.epoch === expectedEpoch)
   );
 }
-async function observeAdmittedTurn(sandboxId: string, externalRef: string) {
+async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
   const deadline = Date.now() + launchBudgetMs;
   const remaining = () => Math.max(1, deadline - Date.now());
   const terminal = ["failed", "stopped", "stopping", "deleted"];
@@ -663,8 +668,13 @@ async function observeAdmittedTurn(sandboxId: string, externalRef: string) {
     if (current.id !== sandboxId) throw Error("Admitted Modal status does not match the sandbox.");
     if (terminal.includes(current.status ?? "") || (current.settled === true && current.statusMessage))
       throw Error("Admitted Modal launch or initial turn failed.");
+    if (idleMode && current.settled === true && current.status === "ready" && current.statusMessage === null) {
+      if (current.prompt !== null || !Array.isArray(current.conversationIds) || current.conversationIds.length)
+        throw Error("Admitted promptless Modal sandbox is not empty.");
+      return { skills: current.skills };
+    }
     const turn = current.prompt;
-    if (current.settled === true && turn) {
+    if (!idleMode && current.settled === true && turn) {
       const conversation = current.conversationIds?.[0];
       if (
         !["ready", "running"].includes(current.status ?? "") ||
@@ -680,7 +690,7 @@ async function observeAdmittedTurn(sandboxId: string, externalRef: string) {
     }
     if (Date.now() < deadline) await Bun.sleep(1000);
   }
-  throw Error("Timed out waiting for the admitted Modal initial turn.");
+  throw Error("Timed out waiting for the admitted Modal launch setup or initial turn.");
 }
 try {
   const templateRequestKey = templateSource ? crypto.randomUUID() : undefined;
@@ -699,8 +709,8 @@ try {
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
   const route = ordinaryTemplate ? "templates/launch" : "sandbox/launch";
-  const directPromptRef = !templateSource && !idleMode ? crypto.randomUUID() : undefined;
-  if (directPromptRef) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: directPromptRef }));
+  const directLaunchRef = !templateSource ? crypto.randomUUID() : undefined;
+  if (directLaunchRef) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: directLaunchRef }));
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: launchProvider, harness }
@@ -720,7 +730,7 @@ try {
           org,
           golden,
           credentialId,
-          ...(directPromptRef ? { externalRef: directPromptRef } : {}),
+          ...(directLaunchRef ? { externalRef: directLaunchRef } : {}),
           ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
           connections: mcpMode ? [mcpConnection] : [],
         }),
@@ -742,12 +752,13 @@ try {
           },
         }
       : raw;
-  const admission = directPromptRef ? parseLaunchAdmissionReceipt(launchProvider, raw) : undefined;
-  if (admission && directPromptRef) {
+  const admission = directLaunchRef ? parseLaunchAdmissionReceipt(launchProvider, raw) : undefined;
+  let queuedFirstTurn = false;
+  if (admission && directLaunchRef) {
     id = admission.sandbox.id;
     shouldStop = true;
     jobAdmission = true;
-    const turn = await observeAdmittedTurn(id, directPromptRef);
+    const turn = await observeAdmittedLaunch(id, directLaunchRef);
     ({ promptId, conversationId, skills: launchSkills } = turn);
   } else {
     if (launched.sandbox?.provider !== "modal")
@@ -818,102 +829,112 @@ try {
       launched.sandbox.status = current.status;
       launched.sandbox.conversationIds = current.conversationIds;
     }
-    if (idleMode) {
-      if (
-        launched.sandbox.status !== "ready" ||
+  }
+  if (idleMode) {
+    if (
+      !admission &&
+      (launched.sandbox?.status !== "ready" ||
         !Array.isArray(launched.sandbox.conversationIds) ||
         launched.sandbox.conversationIds.length ||
         promptId !== undefined ||
-        conversationId !== undefined
-      )
-        throw Error("Idle Modal launch did not publish an empty ready sandbox.");
+        conversationId !== undefined)
+    )
+      throw Error("Idle Modal launch did not publish an empty ready sandbox.");
+    const history = await api("logs/read", { id, limit: 1000 });
+    if (
+      history.source !== "armada-runtime" ||
+      history.hasMore !== false ||
+      history.runtimeFailure ||
+      !Array.isArray(history.events) ||
+      history.events.some((event) => event.kind === "prompt" || event.kind === "message")
+    )
+      throw Error("Idle archive already contains inference or lacks complete common-runtime provenance.");
+    let emptySource: { epoch: string; watermark: number; file: string; nonce: string } | undefined;
+    if (emptyResumeMode) {
+      const file = `/home/user/.retained-${crypto.randomUUID()}`,
+        nonce = `EMPTY_${crypto.randomUUID().replaceAll("-", "")}`;
+      const written = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
+        "sandbox/exec",
+        { id, command: `printf %s ${shellQuote(nonce)} > ${shellQuote(file)}` },
+      );
+      if (written.exitCode !== 0 || written.stdout !== "" || written.timedOut !== false || written.truncated !== false)
+        throw Error("Empty checkpoint file witness could not be written.");
+      const sealed = await checkpoint(epoch);
+      const sourceEpoch = sealed.receipt.runtime.epoch;
+      await stopKnown(true);
+      const stopped = await api("sandbox/checkpoint-runtime-v1", {
+        id,
+        runtimeVersion: 1,
+        request_id: sealed.requestId,
+      });
+      validateCheckpoint(stopped, sourceEpoch, sealed.requestId, sealed.receipt.checkpoint?.watermark);
       const history = await api("logs/read", { id, limit: 1000 });
       if (
         history.source !== "armada-runtime" ||
+        history.hasMore !== false ||
         history.runtimeFailure ||
         !Array.isArray(history.events) ||
         history.events.some((event) => event.kind === "prompt" || event.kind === "message")
       )
-        throw Error("Idle archive already contains inference or lacks common-runtime provenance.");
-      let emptySource: { epoch: string; watermark: number; file: string; nonce: string } | undefined;
-      if (emptyResumeMode) {
-        if (!epoch) throw Error("Missing empty source epoch.");
-        const file = `/home/user/.retained-${crypto.randomUUID()}`,
-          nonce = `EMPTY_${crypto.randomUUID().replaceAll("-", "")}`;
-        const written = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
-          "sandbox/exec",
-          { id, command: `printf %s ${shellQuote(nonce)} > ${shellQuote(file)}` },
-        );
-        if (
-          written.exitCode !== 0 ||
-          written.stdout !== "" ||
-          written.timedOut !== false ||
-          written.truncated !== false
-        )
-          throw Error("Empty checkpoint file witness could not be written.");
-        const sealed = await checkpoint(epoch);
-        await stopKnown(true);
-        const stopped = await api("sandbox/checkpoint-runtime-v1", {
-          id,
-          runtimeVersion: 1,
-          request_id: sealed.requestId,
-        });
-        validateCheckpoint(stopped, epoch, sealed.requestId, sealed.receipt.checkpoint?.watermark);
-        const history = await api("logs/read", { id, limit: 1000 });
-        if (
-          history.source !== "armada-runtime" ||
-          history.runtimeFailure ||
-          !Array.isArray(history.events) ||
-          history.events.some((event) => event.kind === "prompt" || event.kind === "message")
-        )
-          throw Error("Stopped empty checkpoint contains inference or lost archive provenance.");
-        emptySource = { epoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
-        shouldStop = true; // The known sandbox may activate even if its first-send response is lost.
-      }
-      const firstRequestId = crypto.randomUUID();
-      console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId: firstRequestId }));
-      const first = await api("sandbox/send", { id, request_id: firstRequestId, prompt: initialPrompt });
-      if (
-        first.requestId !== firstRequestId ||
-        first.runtime?.kind !== "armada" ||
-        first.runtime.epoch !== (emptySource ? String(BigInt(emptySource.epoch) + 1n) : epoch) ||
-        typeof first.promptId !== "string" ||
-        !first.promptId ||
-        typeof first.conversationId !== "string" ||
-        !first.conversationId
-      )
-        throw Error(
-          "Missing current-epoch first-send acknowledgement; reconcile the same request identity, never resend.",
-        );
-      if (emptySource) {
-        if (
-          first.resumed !== true ||
-          first.sourceCheckpoint?.empty !== true ||
-          first.sourceCheckpoint.epoch !== emptySource.epoch ||
-          first.sourceCheckpoint.watermark !== emptySource.watermark
-        )
-          throw Error("Missing verified empty-checkpoint resume receipt; never retry activation.");
-        epoch = first.runtime.epoch;
-        const read = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
-          "sandbox/exec",
-          { id, command: `cat ${shellQuote(emptySource.file)} && rm ${shellQuote(emptySource.file)}` },
-        );
-        if (
-          read.exitCode !== 0 ||
-          read.stdout !== emptySource.nonce ||
-          read.timedOut !== false ||
-          read.truncated !== false
-        )
-          throw Error("Empty checkpoint did not preserve the file witness.");
-      }
-      epoch = first.runtime.epoch;
-      launched.promptId = promptId = first.promptId;
-      launched.conversationId = conversationId = first.conversationId;
+        throw Error("Stopped empty checkpoint contains inference or lost complete archive provenance.");
+      emptySource = { epoch: sourceEpoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
+      shouldStop = true; // The known sandbox may activate even if its first-send response is lost.
     }
+    const firstRequestId = crypto.randomUUID();
+    console.log(JSON.stringify({ operation: "runtime_first_send", sandboxId: id, requestId: firstRequestId }));
+    const first = await api(admission && emptySource ? "sandbox/resume-runtime-v1" : "sandbox/send", {
+      id,
+      request_id: firstRequestId,
+      prompt: initialPrompt,
+      ...(admission && emptySource ? { runtimeVersion: 1 } : {}),
+    });
+    queuedFirstTurn = jobAdmission && !emptySource && first.status === "queued";
+    const firstEpoch = first.runtime?.epoch;
+    const expectedEpoch = emptySource ? String(BigInt(emptySource.epoch) + 1n) : epoch;
+    const validDispatch = queuedFirstTurn
+      ? first.id === id && first.promptId === firstRequestId
+      : first.runtime?.kind === "armada" &&
+        /^[1-9][0-9]{0,18}$/.test(firstEpoch ?? "") &&
+        (expectedEpoch === undefined || firstEpoch === expectedEpoch);
+    if (
+      first.requestId !== firstRequestId ||
+      !validDispatch ||
+      (jobAdmission && (first.id !== id || first.conversationId !== `first_${firstRequestId}`)) ||
+      typeof first.promptId !== "string" ||
+      !first.promptId ||
+      typeof first.conversationId !== "string" ||
+      !first.conversationId
+    )
+      throw Error(
+        "Missing current-epoch first-send acknowledgement; reconcile the same request identity, never resend.",
+      );
+    if (emptySource) {
+      if (
+        first.resumed !== true ||
+        first.sourceCheckpoint?.empty !== true ||
+        first.sourceCheckpoint.epoch !== emptySource.epoch ||
+        first.sourceCheckpoint.watermark !== emptySource.watermark
+      )
+        throw Error("Missing verified empty-checkpoint resume receipt; never retry activation.");
+      const read = await api<{ exitCode?: number; stdout?: string; timedOut?: boolean; truncated?: boolean }>(
+        "sandbox/exec",
+        { id, command: `cat ${shellQuote(emptySource.file)} && rm ${shellQuote(emptySource.file)}` },
+      );
+      if (
+        read.exitCode !== 0 ||
+        read.stdout !== emptySource.nonce ||
+        read.timedOut !== false ||
+        read.truncated !== false
+      )
+        throw Error("Empty checkpoint did not preserve the file witness.");
+    }
+    epoch = firstEpoch;
+    promptId = first.promptId;
+    conversationId = first.conversationId;
   }
   if (!promptId || !conversationId) throw Error("Missing admitted initial Modal conversation.");
   await verifySkillStatus();
-  await verifyPrompt(promptId, answer, admission ? conversationId : undefined);
+  await verifyPrompt(promptId, answer, admission ? conversationId : undefined, queuedFirstTurn);
   if (admission && githubMode) {
     const current = await api("github/runtime-status", { id });
     if (
