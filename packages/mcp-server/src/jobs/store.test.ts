@@ -497,8 +497,14 @@ test("Modal backfill rolls back when a destination key belongs to a different re
   });
   await db.query(
     `insert into ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint)
-     values ($1,$3,$4,'another-historical-key','old-digest'), ($2,$3,$4,'colliding-launch-key','new-digest')`,
-    [crypto.randomUUID(), crypto.randomUUID(), input.orgId, input.ownerId],
+     values ($1,$3,$4,'another-historical-key','old-digest'), ($2,$3,$4,'colliding-launch-key',$5)`,
+    [
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      input.orgId,
+      input.ownerId,
+      new Bun.CryptoHasher("sha256").update(JSON.stringify("new-digest")).digest("hex"),
+    ],
   );
   await expect(db.query("select backfill_modal_launch_receipts()")).rejects.toThrow(
     "Modal launch receipt backfill conflicts",
