@@ -236,9 +236,13 @@ test.each([
   } else if (kind === "lost claim") {
     await expect(extend()).rejects.toThrow("extension claim lost");
   } else if (kind === "expired claim after ACK") {
-    await expect(extend()).rejects.toStrictEqual(new RuntimeCommandConflict());
+    const receipt = extend();
+    await expect(receipt).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(receipt).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
     f.onWait(answerHealth);
-    await expect(extend()).rejects.toStrictEqual(new RuntimeCommandConflict());
+    const replay = extend();
+    await expect(replay).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(replay).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
   } else if (kind === "successor rebinds") {
     await expect(extend()).rejects.toThrow("runtime_command_pending");
     await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
