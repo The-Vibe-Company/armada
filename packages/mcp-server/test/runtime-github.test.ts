@@ -291,7 +291,7 @@ runtimeCase("Boat runtime launch binds every repository in a multi-repository go
   for (const repo of repositories) {
     expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
   }
-  const log = spyOn(console, "warn").mockImplementation(() => {});
+  const log = spyOn(console, "warn");
   try {
     await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
     expect(log).toHaveBeenCalledWith(

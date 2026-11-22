@@ -437,14 +437,14 @@ export function createRuntimeGitHub(options: {
         return Response.json({ token: access.token }, { headers });
       });
     } catch {
-      if (sandboxId) {
-        try {
-          console.warn(JSON.stringify({ event: "runtime_github_credentials_denied", sandboxId, reason }));
-        } catch {
-          // A diagnostic must not change the credential response.
-        }
+      const response = new Response(null, { status: 403, headers });
+      if (!sandboxId) return response;
+      try {
+        console.warn(JSON.stringify({ event: "runtime_github_credentials_denied", sandboxId, reason }));
+      } catch {
+        return response;
       }
-      return new Response(null, { status: 403, headers });
+      return response;
     }
   };
   async function prepareLaunch(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
