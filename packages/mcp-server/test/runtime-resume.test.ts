@@ -729,20 +729,21 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       };
       expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
       if (boatTicketRecovery) {
-        const network = spyOn(globalThis, "fetch").mockImplementation((async () =>
+        const { requests, restore } = interceptBoatResume(() =>
           Response.json({
             ok: true,
             sandbox: sdkSandbox({ id: "physical", state: "running", archiveAfter: undefined }),
-          })) as typeof fetch);
+          }),
+        );
         try {
           await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
           expect(preparations).toBe(2);
           expect(bootstraps).toBe(0);
           expect(await hasTicket()).toBe(false);
-          expect(network).toHaveBeenCalledTimes(1);
+          expect(requests).toHaveLength(1);
           expect(await read()).toMatchObject({ status: "stopping" });
         } finally {
-          network.mockRestore();
+          restore();
         }
       } else {
         await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
@@ -1547,6 +1548,16 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
+function interceptBoatResume(reply: (url: string) => Response | Promise<Response>) {
+  const requests: string[] = [];
+  const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
+    const url = String(value instanceof Request ? value.url : value);
+    requests.push(url);
+    return reply(url);
+  }) as typeof fetch);
+  return { requests, restore: () => network.mockRestore() };
+}
+
 const boatResumeRecoveryCases = [
   "confirmed",
   "tainted",
@@ -1578,14 +1589,11 @@ test.each(boatResumeRecoveryCases)(
     const unsafeCoverage = shortCoverage || missingCoverage;
     const logicalDeadline = new Date("2099-01-01T00:00:00Z");
     const physicalDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
-    const requests: string[] = [];
     let activated = false;
     let activeReads = 0;
     let canIssueTicket = false;
     let beforeFailure: { generation: number; stop_generation: number } | undefined;
-    const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
-      const url = String(value instanceof Request ? value.url : value);
-      requests.push(url);
+    const { requests, restore } = interceptBoatResume(async (url) => {
       if (url.endsWith("/resume")) {
         activated = true;
         if (responseLost) return new Response(null, { status: 504 });
@@ -1613,7 +1621,7 @@ test.each(boatResumeRecoveryCases)(
             })
           : retainedSandbox({ id: "physical", snapshotAvailable: !unverified }),
       });
-    }) as typeof fetch);
+    });
     try {
       await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, logicalDeadline.toISOString()]);
       const prepare = boatRuntimeResume({
@@ -1799,7 +1807,7 @@ test.each(boatResumeRecoveryCases)(
         });
       }
     } finally {
-      network.mockRestore();
+      restore();
       await f.close();
     }
   },
