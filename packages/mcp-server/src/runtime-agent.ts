@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RunnerRequest } from "@armada/agent-runtime";
+import { PROTOCOL_VERSION, type RunnerRequest } from "@armada/agent-runtime";
 import {
   type EventPage,
   type EventsRequest,
@@ -175,16 +175,41 @@ export function createRuntimeAgent(
     async health(
       signal?: AbortSignal,
       expectedRestore?: RuntimeRestore,
-      admission?: { expectedEpoch: string; assertClaim: (tx: Sql) => Promise<void> },
+      admission?: {
+        expectedEpoch: string;
+        assertClaim: (tx: Sql) => Promise<void>;
+        requireCommandAuthorityExtension?: true;
+      },
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
+      const requiresExtension = admission?.requireCommandAuthorityExtension === true;
+      const matches = (value: unknown, epoch: string) =>
+        runtimeHealthMatches(value, epoch, expectedRestore) &&
+        (!requiresExtension ||
+          (epoch === admission.expectedEpoch &&
+            (value as { commandAuthorityExtension?: unknown }).commandAuthorityExtension === 1));
       // Retain epoch alongside the result for provenance validation.
       let reply: Awaited<ReturnType<typeof commands.call>>;
       try {
         reply = await commands.call(ownerId, command, {
           ...(signal ? { signal } : {}),
-          ...admission,
-          accept: (candidate) => runtimeHealthMatches(candidate.body.result, candidate.epoch, expectedRestore),
+          ...(admission ? { expectedEpoch: admission.expectedEpoch, assertClaim: admission.assertClaim } : {}),
+          ...(requiresExtension
+            ? {
+                timeoutMs: 5_000,
+                assertClaim: async (tx: Sql) => {
+                  signal?.throwIfAborted();
+                  await admission.assertClaim(tx);
+                  const live = await tx.query(
+                    `select 1 from public.runtime_enrolments
+                     where sandbox_id=$1 and epoch=$2 and runtime_protocol_version=$3`,
+                    [sandboxId, admission.expectedEpoch, PROTOCOL_VERSION],
+                  );
+                  if (!live.rows.length) throw new RuntimeCommandRefused();
+                },
+              }
+            : {}),
+          accept: (candidate) => matches(candidate.body.result, candidate.epoch),
         });
       } catch {
         throw refusal("sandbox_not_ready");
@@ -195,7 +220,7 @@ export function createRuntimeAgent(
         body.version !== 1 ||
         body.requestId !== command.requestId ||
         body.error !== undefined ||
-        !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
+        !matches(body.result, reply.epoch)
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };

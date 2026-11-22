@@ -73,6 +73,54 @@ async function fixture() {
   };
 }
 
+test.each([
+  ["advertised", 1, true],
+  ["absent", undefined, false],
+  ["unknown version", 2, false],
+  ["stale generation", 1, false],
+] as const)("extension capability health handles %s", async (kind, capability, supported) => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  f.onWait(async () => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== "health") throw Error("Expected a fresh health probe");
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: {
+        version: 1,
+        requestId: command.requestId,
+        result: {
+          ready: true,
+          generation: kind === "stale generation" ? "0" : active.epoch,
+          commandAuthorityExtension: capability,
+        },
+      },
+    });
+  });
+  const health = agent.health(undefined, undefined, {
+    expectedEpoch: active.epoch,
+    async assertClaim() {},
+    requireCommandAuthorityExtension: true,
+  });
+  if (supported) {
+    expect(await health).toEqual({ runtime: "armada", epoch: active.epoch });
+  } else {
+    await expect(health).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  }
+});
+
 test("an exact command replay checks the claim again before returning a stored reply", async () => {
   const f = await fixture();
   const active = await f.enrol();
