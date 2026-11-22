@@ -276,6 +276,20 @@ const templateReceipt = (body: RequestBody, idle: boolean) => ({
     skillReceipts: receipts,
   },
 });
+const admittedLaunch = (body: RequestBody) => {
+  launchRef = body.externalRef;
+  const envelope = { sandbox: { id: sandboxId, status: "starting" } };
+  if (!variables) return envelope;
+  return {
+    requestId: "99999999-9999-4999-8999-999999999999",
+    state: "succeeded",
+    id: sandboxId,
+    provider: "modal",
+    status: "starting",
+    envelope,
+    manifest: templateReceipt(body, idle).manifest,
+  };
+};
 const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
   const receipt = templateReceipt(body, idle);
   const { requestKey: _requestKey, golden, skillReceipts, ...templateManifest } = receipt.manifest;
@@ -498,7 +512,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         body.id !== templateId ||
         body.revision !== 2 ||
         (ordinary
-          ? !body.requestKey || Object.hasOwn(body, "idempotencyKey")
+          ? !body.requestKey || body.externalRef !== body.requestKey || Object.hasOwn(body, "idempotencyKey")
           : Object.hasOwn(body, "requestKey") || !body.idempotencyKey || body.externalRef !== body.idempotencyKey) ||
         body.org !== orgId ||
         ["golden", "credentialId", "model", "connections"].some((key) => Object.hasOwn(body, key))
@@ -508,11 +522,8 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("unsafe direct connections");
     if (idle) {
       if (Object.hasOwn(body, "prompt")) throw Error("Idle launch must omit prompt");
+      if (admission) return Response.json(admittedLaunch(body));
       if (variables) return Response.json(ordinary ? templateReceipt(body, true) : pinnedLaunchEnvelope(body, true));
-      if (admission) {
-        launchRef = body.externalRef;
-        return Response.json({ sandbox: { id: sandboxId, status: "starting" } });
-      }
       return Response.json({
         sandbox: {
           id: sandboxId,
@@ -529,10 +540,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       });
     }
     readPrompt(body.prompt);
-    if (admission) {
-      launchRef = body.externalRef;
-      return Response.json({ sandbox: { id: sandboxId, status: "starting" } });
-    }
+    if (admission) return Response.json(admittedLaunch(body));
     if (defects.includes("lost-launch")) throw Error("private transport diagnostics must not surface");
     if (variables) return Response.json(ordinary ? templateReceipt(body, false) : pinnedLaunchEnvelope(body, false));
     return Response.json({
@@ -990,12 +998,21 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     return Response.json({});
   }
   if (path.endsWith("/sandbox/list") && admission && !stops) {
-    if (body.externalRef !== launchRef || !launchRef || body.owner !== "me") throw Error("unsafe inventory lookup");
+    if (
+      body.externalRef !== launchRef ||
+      !launchRef ||
+      body.owner !== "me" ||
+      (variables && (body.org !== orgId || body.golden !== "golden-id"))
+    )
+      throw Error("unsafe inventory lookup");
     return Response.json({
       sandboxes: [{ id: sandboxId, provider: "modal", harness: "codex", status: "starting", externalRef: launchRef }],
     });
   }
-  if (path.endsWith("/sandbox/list")) return Response.json({ sandboxes: [{ id: sandboxId, status: "stopped" }] });
+  if (path.endsWith("/sandbox/list")) {
+    if (variables && stops && body.org !== orgId) throw Error("wrong template cleanup organization");
+    return Response.json({ sandboxes: [{ id: sandboxId, status: "stopped" }] });
+  }
   throw Error("unexpected operation");
 };
 
