@@ -196,6 +196,67 @@ test("a Boat extension lease is capped and an elapsed deadline permits recovery 
   expect(rows).toEqual([{ state: "failed", lease_owner: null, lease_until: null, pending_job_id: jobId }]);
 });
 
+test.each([false, true])(
+  "an attempt-exhausted Boat extension respects the completion fence (takeover: %s)",
+  async (takeover) => {
+    const f = await fixture();
+    const id = await sandbox(f, true);
+    const kind = "boat_runtime_extend";
+    const successor = crypto.randomUUID();
+    const evidence = { phase: "observed" };
+    const jobId = await f.store.enqueue(kind, id, 2, id, null, {
+      orgId: f.people.org,
+      maxAttempts: 1,
+      deadline: new Date("2100-01-01T00:00:00Z"),
+    });
+    await f.db.query("update public.jobs set attempts=1, outcome=$2 where id=$1", [jobId, evidence]);
+    let handlerEntered = false;
+    const runner = createJobsRunner(
+      {
+        ...f.store,
+        async inspect(job, owner, tx) {
+          const state = await f.store.inspect(job, owner, tx);
+          if (takeover && state === "reconcile") {
+            await f.db.query("update public.jobs set lease_until='-infinity' where id=$1", [jobId]);
+            await f.store.claim(kind, successor, 30, 1);
+          }
+          return state;
+        },
+      },
+      {
+        [kind]: {
+          concurrency: 1,
+          async run() {
+            handlerEntered = true;
+            return { status: "done" };
+          },
+        },
+      },
+      undefined,
+      () => () => {},
+    );
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(handlerEntered).toBe(false);
+    const { rows } = await f.db.query(
+      "select state, lease_owner, lease_epoch::int as lease_epoch, outcome from public.jobs where id=$1",
+      [jobId],
+    );
+    expect(rows).toEqual(
+      takeover
+        ? [{ state: "leased", lease_owner: successor, lease_epoch: 2, outcome: evidence }]
+        : [
+            {
+              state: "failed",
+              lease_owner: null,
+              lease_epoch: 1,
+              outcome: { reason: "extension_budget_exhausted", evidence },
+            },
+          ],
+    );
+  },
+);
+
 test("Boat extension and stop jobs serialize claims on the same sandbox", async () => {
   const f = await fixture();
   const id = await sandbox(f, true);
