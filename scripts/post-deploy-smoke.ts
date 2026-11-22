@@ -1127,7 +1127,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (handle) => {
             id = handle;
           },
-          item.provider === "modal" ? { receipt: "admission" } : undefined,
+          { receipt: "admission" },
         ).catch(refuseModelCredentials);
         id = result.sandbox.id;
       });
@@ -1418,13 +1418,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const acceptsAdmission =
-          item.provider === "modal" &&
-          lifecycle &&
-          !dirty &&
-          !requiresLaunchReceipt &&
-          !goldenRuntime &&
-          !githubRefresh;
+        const acceptsAdmission = lifecycle && !dirty && !requiresLaunchReceipt && !goldenRuntime && !githubRefresh;
         const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
