@@ -20,6 +20,7 @@ import {
   AUTH_HEADER,
   type ConfigureMcpResult,
   type Driver,
+  type ExtendCommandAuthorityResult,
   type Grant,
   type IngestClient,
   type McpConfiguration,
@@ -299,6 +300,26 @@ export class Runner {
         this.readableConfigurations.configure(r.harness, r.variables, r.secretKeys);
         return Response.json({ version: 1, requestId: r.requestId, result: { acknowledged: true } });
       }
+      if (r.op === "extendCommandAuthority") {
+        const now = Date.now();
+        if (now >= this.grant.expiresAt) throw Error("unauthorized");
+        if (!this.execution.enrolled || this.credentialFreeBuilder || r.epoch !== this.grant.generation)
+          throw Error("command_authority_extension_denied");
+        if (this.barrier || this.journal.checkpointPending(this.grant)) throw Error("checkpoint_in_progress");
+        if (
+          !Number.isSafeInteger(r.expiresAt) ||
+          r.expiresAt <= now ||
+          Object.keys(r).some((key) => !["version", "requestId", "sandboxId", "op", "epoch", "expiresAt"].includes(key))
+        )
+          throw Error("invalid_request");
+
+        this.grant.expiresAt = Math.max(this.grant.expiresAt, r.expiresAt);
+        const result: ExtendCommandAuthorityResult = {
+          epoch: this.grant.generation,
+          expiresAt: this.grant.expiresAt,
+        };
+        return Response.json({ version: 1, requestId: r.requestId, result });
+      }
       if (r.op === "configureGitHub") {
         // Private configuration is never persisted in request receipts or returned to callers.
         if (
@@ -381,6 +402,7 @@ export class Runner {
         op:
           | "configureMcp"
           | "configureGitHub"
+          | "extendCommandAuthority"
           | "configureReadableVariables"
           | "testModelConnection"
           | "resourceObservation"
@@ -478,6 +500,7 @@ export class Runner {
         stdioMcpEnv: true,
         skillsVersion: 1,
         workspaceVersion: 1,
+        ...(this.execution.enrolled && !this.credentialFreeBuilder ? { commandAuthorityExtension: 1 as const } : {}),
         ready: !this.barrier,
         pid: process.pid,
       };

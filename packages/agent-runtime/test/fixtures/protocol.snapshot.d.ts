@@ -25,6 +25,10 @@ export interface ConfigureMcpRequest {
 export interface ConfigureMcpResult {
     revision: string;
 }
+export interface ExtendCommandAuthorityResult {
+    epoch: string;
+    expiresAt: number;
+}
 export interface OrchestratorEpochBinding {
     epoch: string;
     physicalGeneration: string;
@@ -66,6 +70,7 @@ export interface ExecEnvironment {
     GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+    enrolled?: boolean;
     workspaceHost?: import("./workspace-exec.ts").WorkspaceExecutionHost;
     prepareWorkspace?: () => Promise<void>;
     reportHarnessFailure?: (stage: import("../../core/src/runtime-startup-failure.ts").RuntimeHarnessFailureStage, error: unknown, requestId: string, reason?: string) => void;
@@ -154,6 +159,10 @@ export type RunnerRequest = {
 } | {
     op: "configureGitHub";
     configuration: GitHubBrokerConfiguration | null;
+} | {
+    op: "extendCommandAuthority";
+    epoch: string;
+    expiresAt: number;
 } | {
     op: "resourceObservation";
 } | {
