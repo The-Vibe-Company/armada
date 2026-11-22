@@ -437,6 +437,32 @@ test("reconciliation refuses fresh sends before dispatch and preserves prior com
   }
 });
 
+const extensionFixture = scopedRuntimeFixture(async () => fixture(await sharedDatabase()), { timeout: 20_000 });
+
+test("Boat follow-up defers only while an extension holds the sandbox lease", async () => {
+  const f = await extensionFixture();
+  const prior = f.input("accepted before extension");
+  const receipt = await f.send(f.caller, prior);
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const kind = "boat_runtime_extend";
+  const sandbox = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
+  const job = await jobs.enqueue(kind, sandbox.id, sandbox.lifecycleGeneration!, sandbox.id, null, {
+    orgId: sandbox.orgId,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01"),
+  });
+  expect((await jobs.claim(kind, crypto.randomUUID(), 3600, 1))?.id).toBe(job);
+
+  const next = f.input("deferred by extension");
+  await expect(f.send(f.caller, next)).rejects.toMatchObject({ reason: "runtime_activity_busy" });
+  expect(await f.send(f.caller, prior)).toEqual(receipt);
+  expect(f.starts).toHaveLength(2);
+
+  await f.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job]);
+  await expect(f.send(f.caller, next)).resolves.toMatchObject({ id: sandbox.id });
+  expect(f.starts).toHaveLength(3);
+});
+
 test("a newly enrolled generation after the prompt probe refuses admission even if the task matches", async () => {
   const f = await fixture(await sharedDatabase());
   try {

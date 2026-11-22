@@ -173,8 +173,13 @@ export function createRuntimeFollowup(
         await assertClaim(locked);
         const current = await createSqlData(locked)(caller).sandboxes.get(found.id);
         const lease = (
-          await locked.query<{ activity_lease_id: string | null; reconciling: boolean }>(
-            "select activity_lease_id,(reconcile_lease_until>now()) as reconciling from public.sandboxes where id=$1",
+          await locked.query<{ activity_lease_id: string | null; reconciling: boolean; extending: boolean }>(
+            `select s.activity_lease_id,(s.reconcile_lease_until>now()) as reconciling,
+               (s.provider='boat' and s.boat_runtime and exists (
+                 select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='boat_runtime_extend'
+                   and j.state='leased' and j.lease_until>clock_timestamp()
+               )) as extending
+             from public.sandboxes s where s.id=$1`,
             [found.id],
           )
         ).rows[0];
@@ -241,6 +246,11 @@ export function createRuntimeFollowup(
           throw new VaultError("conflict", "Runtime environment epoch changed; retry the same request.");
         if (saved?.finished && lease.activity_lease_id !== requestId)
           return { current, epoch: scope.epoch, replay: true };
+        if (lease.extending || (lease.activity_lease_id !== requestId && (lease.activity_lease_id || saved)))
+          throw new RuntimeFollowupConflict(
+            "runtime_activity_busy",
+            "Runtime admission is busy or uncertain; reuse the original request_id.",
+          );
         if (lease.activity_lease_id === requestId) {
           await createSqlData(locked)(caller).sandboxes.update(found.id, {
             renewActivity: true,
@@ -250,11 +260,6 @@ export function createRuntimeFollowup(
           await assertClaim(locked);
           return { current, epoch: scope.epoch, replay: false };
         }
-        if (lease.activity_lease_id || saved)
-          throw new RuntimeFollowupConflict(
-            "runtime_activity_busy",
-            "Runtime admission is busy or uncertain; reuse the original request_id.",
-          );
         await createSqlData(locked)(caller).sandboxes.update(found.id, {
           turnActivity: "claim",
           clearTaskOutcome: true,
