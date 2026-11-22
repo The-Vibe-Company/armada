@@ -1239,6 +1239,66 @@ test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat 
   expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
 });
 
+test.each(["live", "starting", "refused", "invalid", "truncated"] as const)(
+  "capture boot observation uses a single guarded command: %s",
+  async (scenario) => {
+    const boot = "e76cc889-0359-4544-9320-dd938debba67";
+    const boat = fakeBoat(
+      { body: { ok: true, sandbox: sandbox({ state: scenario === "starting" ? "starting" : "ready" }) } },
+      scenario === "refused"
+        ? errorBody(409, "sandbox_not_ready", "Not ready")
+        : {
+            body: {
+              ok: true,
+              type: "command.finished",
+              success: true,
+              exitCode: 0,
+              stdout: scenario === "invalid" ? "-".repeat(36) : boot + "\n",
+              stderr: "",
+              timedOut: false,
+              stdoutTruncated: scenario === "truncated",
+            },
+          },
+    );
+    const signal = new AbortController().signal;
+    const observed = boat.provider.observeCaptureBoot(ID, signal);
+    if (scenario === "refused") await expect(observed).rejects.toMatchObject({ status: 409 });
+    else expect(await observed).toBe(scenario === "live" ? boot : null);
+    expect(boat.requests).toMatchObject([
+      { method: "GET", path: `/api/v1/sandboxes/${ID}` },
+      ...(scenario === "starting"
+        ? []
+        : [
+            {
+              method: "POST",
+              path: `/api/v1/sandboxes/${ID}/commands`,
+              body: {
+                command: "cat /proc/sys/kernel/random/boot_id",
+                timeoutSeconds: 5,
+              },
+            },
+          ]),
+    ]);
+    expect(boat.sleeps).toHaveLength(0);
+  },
+);
+
+test("capture boot cancellation after the live read prevents command dispatch", async () => {
+  const controller = new AbortController();
+  const requests: string[] = [];
+  const provider = createBoatProvider({
+    apiKey: KEY,
+    fetch: (async (_input, init) => {
+      requests.push(init?.method ?? "");
+      controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      return Response.json({ ok: true, sandbox: sandbox({ state: "ready" }) });
+    }) as typeof fetch,
+  });
+  await expect(provider.observeCaptureBoot(ID, controller.signal)).rejects.toBeDefined();
+  expect(requests).toEqual(["GET"]);
+});
+
 test("capture cancellation during a readiness wait cannot admit a later command", async () => {
   const controller = new AbortController();
   const paths: string[] = [];
