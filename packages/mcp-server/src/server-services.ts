@@ -395,15 +395,12 @@ export async function createServerServices(env: Record<string, string | undefine
       ),
   };
   const admitModal = createModalLaunchAdmission(
+    sql,
     {
       ...launch.modalRuntimeDefault,
       async provider(actor, golden) {
         if (!golden.modal) throw Error("Modal binding required.");
-        const caller = {
-          userId: actor.userId,
-          orgs: [{ orgId: actor.orgId, role: actor.role }],
-          via: "service" as const,
-        };
+        const caller = { userId: actor.userId };
         const tokens = await modal.modalTokensFor(golden, caller);
         return (
           await modal.modalProviderFor(

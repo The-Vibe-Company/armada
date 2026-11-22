@@ -43,9 +43,8 @@ configured Codex account:
 }
 ```
 
-Boat, Modal and Docker launch success responses use the `launchEnvelope`
-schema in `@armada/core/contract`. The CLI emits the same shape with `--json`,
-for example `armada new review --provider modal --agent codex --json`.
+The CLI emits the API receipt with `--json`, for example
+`armada new review --provider modal --agent codex --json`.
 Read the Armada ID from `sandbox.id`. Public Modal golden launches through REST
 and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
@@ -68,7 +67,7 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   returns HTTP 409 `conflict`.
 - Set `externalRef` to an opaque product identifier (1–200 characters, no
   control characters). The reference can be shared by several sandboxes.
-  It is returned by authorized status and list reads and webhooks.
+  Authorized status and list reads and webhooks return it.
 - After a dropped response or HTTP 503 `outcome_unknown`, keep the original
   key and body. A replay returns the recorded result only if the request
   still passes launch preflight: the same snapshot must still be visible to

@@ -1,6 +1,6 @@
-import type { GoldenActor, GoldenRecord, LaunchOptions } from "@armada/core";
+import type { GoldenActor, GoldenRecord, LaunchOptions, Sql } from "@armada/core";
 import { type LaunchRequest, type LaunchStores, prepareGoldenLaunch, VaultError } from "@armada/core/server";
-import type { ModalLaunchAdmission } from "./jobs/modal-launch.ts";
+import { type ModalLaunchAdmission, replayModalLaunch } from "./jobs/modal-launch.ts";
 import { requireLaunchAccountBinding } from "./launch-account-admission.ts";
 
 export type AdmitModalLaunch = (
@@ -20,11 +20,16 @@ export type AdmitModalLaunch = (
 ) => Promise<import("@armada/core/contract").ModalLaunchReceipt>;
 
 export function createModalLaunchAdmission(
+  sql: Sql,
   placement: NonNullable<LaunchOptions["modalRuntimeDefault"]>,
   options: Pick<LaunchOptions, "extensionHeadroomSeconds">,
   admit: (input: ModalLaunchAdmission) => ReturnType<AdmitModalLaunch>,
 ) {
   const launch: AdmitModalLaunch = async (actor, golden, stores, request, admission) => {
+    if (admission?.request) {
+      const receipt = await replayModalLaunch(sql, actor, golden.id, admission.request);
+      if (receipt) return receipt;
+    }
     const provider = await placement.provider(actor, golden);
     const { pin, armadaAccess } = admission ?? {};
     const { plan } = await prepareGoldenLaunch(

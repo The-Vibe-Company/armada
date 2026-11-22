@@ -664,7 +664,7 @@ test("Boat launch withholds the first prompt when the runtime rejects secret con
   }
 });
 
-test.each(["boat"] as ("boat" | "modal")[])(
+test.each(["modal", "boat"] as const)(
   "%s uses the vault conflict refusal for a pinned secret that is no longer available to its launcher",
   async (provider) => {
     const f = await fixture("codex", provider);
@@ -686,70 +686,44 @@ test.each(["boat"] as ("boat" | "modal")[])(
   },
 );
 
-test.each([["boat", "secret_version_changed"]] as ["boat" | "explicit" | "default", string][])(
-  "%s launch returns the vault conflict after allocation and on replay",
-  async (path, reason) => {
-    const f = await fixture("codex", path === "boat" ? "boat" : "modal", path === "boat" ? "default" : path, true);
-    const secret = (
-      await f.db.query<{ id: string }>(
-        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const template = await f.create({
-      ...f.definition,
-      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+test("Boat launch returns the vault conflict after allocation and on replay", async () => {
+  const f = await fixture("codex", "boat", "default", true);
+  const secret = (
+    await f.db.query<{ id: string }>(
+      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
+      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const template = await f.create({
+    ...f.definition,
+    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
+  });
+  const changeVersionAfterFork = (host: ReturnType<typeof fakeBoat>["provider"]) => ({
+    ...host,
+    async fork(request: Parameters<typeof host.fork>[0]) {
+      const child = await host.fork(request);
+      await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
+      return child;
+    },
+  });
+  const runtime = f.options.launch!.boatRuntimeDefault!;
+  const resolveHost = runtime.provider;
+  runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
+  const request = f.request(template.id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await f.api(request);
+    expect(response.status).toBe(409);
+    expect(publishedFailure().parse(await response.json())).toMatchObject({
+      error: { code: "conflict", message: "Template launch refused: secret_version_changed." },
     });
-    const changeVersionAfterFork = (host: ReturnType<typeof fakeBoat>["provider"]) => ({
-      ...host,
-      async fork(request: Parameters<typeof host.fork>[0]) {
-        const child = await host.fork(request);
-        await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
-        return child;
-      },
-    });
-    if (path === "boat") {
-      const runtime = f.options.launch!.boatRuntimeDefault!;
-      const resolveHost = runtime.provider;
-      runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
-    } else if (path === "explicit") {
-      const resolveHost = f.options.modalRuntimeHostFor!;
-      f.options.modalRuntimeHostFor = async (golden, caller) =>
-        changeVersionAfterFork(await resolveHost(golden, caller));
-    } else {
-      const policy = f.options.modalRuntimeLaunch!;
-      f.options.modalRuntimeLaunch = {
-        async start(input) {
-          const agent = await policy.start(input);
-          return {
-            ...agent,
-            async prepareWorkspace() {
-              await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [
-                secret.id,
-              ]);
-              return { status: "not_connected" };
-            },
-          };
-        },
-      };
-      f.enableDefault();
-    }
-    const request = f.request(template.id);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await f.api(request);
-      expect(response.status).toBe(409);
-      expect(publishedFailure().parse(await response.json())).toMatchObject({
-        error: { code: "conflict", message: `Template launch refused: ${reason}.` },
-      });
-    }
-    expect(f.physical.forks).toHaveLength(1);
-    expect(f.physical.stops).toHaveLength(1);
-    expect(f.deliveries).toHaveLength(path === "default" ? 1 : 0);
-    expect(f.prompts()).toBe(0);
-  },
-);
+  }
+  expect(f.physical.forks).toHaveLength(1);
+  expect(f.physical.stops).toHaveLength(1);
+  expect(f.deliveries).toHaveLength(0);
+  expect(f.prompts()).toBe(0);
+});
 
-test.each(["boat"] as ("boat" | "modal")[])(
+test.each(["modal", "boat"] as const)(
   "frozen %s environment rejects reserved keys and invalid secret bindings even if internal storage is corrupted",
   async (provider) => {
     // Bypass the immutable-row trigger only while corrupting the fixture;

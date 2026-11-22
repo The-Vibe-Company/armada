@@ -3243,6 +3243,7 @@ test.each(["rest", "explicit", "mcp"] as const)("public %s Modal launch admits b
     if (surface === "rest") options.sandboxArmadaAccess = {} as NonNullable<ControlOptions["sandboxArmadaAccess"]>;
     const result = modalLaunchReceipt.parse(await run());
     expect(result.sandbox.status).toBe("starting");
+    await db.query("update credentials set status='revoked' where owner_id=$1 and kind='openai'", [STAN]);
     expect(await run()).toEqual(result);
     expect(host.forks).toHaveLength(0);
     expect(

@@ -45,6 +45,7 @@ export interface TemplateRuntime {
   /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   explicitModal?: true;
+  scheduled?: true;
   admitModal?(
     actor: GoldenActor,
     golden: GoldenRecord,
@@ -60,7 +61,7 @@ export interface TemplateRuntime {
     },
   ): Promise<DockerLaunchResult>;
   beforeDockerStart?(): Promise<void>;
-  beforeReserve?(tx: Sql, sandboxId: string): Promise<void>;
+  beforeDockerReserve?(tx: Sql, sandboxId: string): Promise<void>;
 }
 type Header = {
   id: string;
@@ -675,11 +676,26 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
+    function launchRequest(m: Manifest) {
+      return {
+        credentialId: m.account.id,
+        harness: m.definition.harness,
+        model: m.definition.model,
+        reasoningEffort: m.definition.reasoningEffort,
+        connections: m.definition.connections,
+        skills: m.resolvedSkills ?? m.definition.skills,
+        skipSkillDefaults: true as const,
+        ...(input.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
+        ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
+      };
+    }
     async function resume(row: RequestRow, admittedActor?: GoldenActor): Promise<Record<string, unknown>> {
       const active = runtime!;
       const previous = await replay(row, bodyDigest, active);
       const m = row.manifest;
-      if (m.golden?.provider !== "modal" || row.state !== "claimed" || row.result) return previous;
+      if (active.scheduled || m.golden?.provider !== "modal" || row.state !== "claimed" || row.result) return previous;
+      if (key.startsWith("routine:")) invalid();
       if (!active.admitModal) unavailable("environment_admission_unavailable");
       const a = admittedActor ?? (await transaction((tx) => member(tx, actor, org)));
       const receipt = await active.admitModal(
@@ -688,18 +704,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         {
           golden: m.golden.name,
           provider: m.golden.provider,
-          credentialId: m.account.id,
-          harness: m.definition.harness,
-          model: m.definition.model,
-          reasoningEffort: m.definition.reasoningEffort,
-          connections: m.definition.connections,
-          skills: m.resolvedSkills ?? m.definition.skills,
-          skipSkillDefaults: true,
+          ...launchRequest(m),
           ...(size === undefined ? {} : { size }),
           ...(input.repo === undefined ? {} : { repo: input.repo as string }),
-          ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
-          ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
-          ...(input.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
           ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
         },
         {
@@ -707,52 +714,40 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           credentialVersion: m.account.version,
           revalidate: async (tx) => {
             await revalidateInTransaction(tx, actor, org, m);
-            await active.beforeReserve?.(tx, row.sandbox_id);
           },
         },
       );
       return {
         requestId: row.id,
-        envelope: receipt,
+        envelope: { sandbox: { id: receipt.sandbox.id, status: "starting" } },
         state: "succeeded",
         id: receipt.sandbox.id,
         provider: "modal",
-        status: receipt.sandbox.status,
+        status: "starting",
         manifest: m,
       };
     }
-    if (!claimed || request.manifest.golden?.provider === "modal") return resume(request, selection.a);
+    if (!claimed || (!runtime.scheduled && request.manifest.golden?.provider === "modal"))
+      return resume(request, selection.a);
     const m = request.manifest;
     let allocating = false;
     try {
       const beforeReserve = async (tx: Sql) => {
         await revalidateInTransaction(tx, actor, org, m);
-        if (runtime.beforeReserve) await runtime.beforeReserve(tx, request.sandbox_id);
+        if (runtime.beforeDockerReserve) await runtime.beforeDockerReserve(tx, request.sandbox_id);
         else await runtime.options?.beforeFork?.(request.sandbox_id);
         await tx.query("update public.template_launch_requests set state='allocating',updated_at=now() where id=$1", [
           request.id,
         ]);
         allocating = true;
       };
-      const launchRequest = () => ({
-        credentialId: m.account.id,
-        harness: def.harness,
-        model: def.model,
-        reasoningEffort: def.reasoningEffort,
-        connections: def.connections,
-        skills: m.resolvedSkills ?? def.skills,
-        skipSkillDefaults: true as const,
-        ...(input.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
-        ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
-        ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
-      });
       const result = usesHostPlacement(def)
         ? await (async () => {
             if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
               unavailable("environment_admission_unavailable");
             return runtime.launchDocker(
               {
-                ...launchRequest(),
+                ...launchRequest(m),
                 org,
                 provider: "docker",
                 hostId: def.hostId,
@@ -788,7 +783,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
               },
               selection.a,
               {
-                ...launchRequest(),
+                ...launchRequest(m),
                 golden: g.name,
                 provider: g.provider,
                 ...(size === undefined ? {} : { size }),

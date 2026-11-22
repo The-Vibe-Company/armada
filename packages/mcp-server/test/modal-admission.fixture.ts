@@ -22,6 +22,7 @@ export async function modalAdmissionFixture(sql: Sql, key: string, vault: VaultS
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const mcp = createRuntimeMcp({ sql, key, commands, origin: "https://armada.test" });
   return createModalLaunchAdmission(
+    sql,
     {
       policy: {
         async start() {

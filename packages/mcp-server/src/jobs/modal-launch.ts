@@ -1,6 +1,7 @@
 import { sha256Hex } from "@armada/auth";
 import {
   EncryptionKeyError,
+  type GoldenActor,
   type GoldenRecord,
   HARNESS_KINDS,
   type Harness,
@@ -106,6 +107,54 @@ type ArchivedLaunchReceipt =
   | { receipt: "accepted" | "unknown" }
   | { receipt: "refused"; failure: OrdinaryLaunchFailure };
 
+type LaunchReceiptRow = {
+  sandbox_id: string;
+  status: SandboxStatus | null;
+  golden_id: string | null;
+  outcome: ArchivedLaunchReceipt | null;
+};
+
+function ordinaryModalKey(key: string) {
+  return JSON.stringify(["ordinary", Buffer.from(key, "utf8").toString("utf8")]);
+}
+
+function replayLaunchReceipt(receipt: LaunchReceiptRow, goldenId: string) {
+  if (receipt.golden_id && receipt.golden_id !== goldenId)
+    throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+  if (receipt.outcome?.receipt === "refused") throw replayOrdinaryLaunchFailure(receipt.outcome.failure);
+  if (receipt.outcome?.receipt === "unknown")
+    throw new LaunchError(
+      "outcome_unknown",
+      `Launch outcome unknown; receipt ${receipt.sandbox_id}. Do not use a new key.`,
+    );
+  return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } } satisfies ModalLaunchReceipt;
+}
+
+export async function replayModalLaunch(
+  sql: Sql,
+  actor: GoldenActor,
+  goldenId: string,
+  request: NonNullable<ModalLaunchAdmission["request"]>,
+) {
+  const { orgId, userId } = actor;
+  const {
+    rows: [receipt],
+  } = await sql.query<LaunchReceiptRow & { request_digest: string }>(
+    `select j.sandbox_id,s.status,s.golden_id,j.outcome,j.request_digest
+     from public.jobs j
+     join public.members m on m.org_id=j.org_id and m.user_id=j.request_owner_id
+     join public.goldens g on g.id=$4 and g.org_id=j.org_id and g.provider='modal' and g.removed_at is null
+       and (g.visibility='org' or g.owner_id=j.request_owner_id)
+     left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
+     where j.idem_key=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
+    [jobRequestKey(orgId, "launch", userId, ordinaryModalKey(request.key)), orgId, userId, goldenId],
+  );
+  if (!receipt) return;
+  if (receipt.request_digest !== ordinaryLaunchFingerprint(request.payload))
+    throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+  return replayLaunchReceipt(receipt, goldenId);
+}
+
 export const MODAL_INITIAL_TURN = "launch_initial_turn";
 
 async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: string, receiptId: string) {
@@ -160,7 +209,7 @@ export async function admitModalLaunch(
       const key = reservation
         ? JSON.stringify(["template", reservation.id])
         : request
-          ? JSON.stringify(["ordinary", Buffer.from(request.key, "utf8").toString("utf8")])
+          ? ordinaryModalKey(request.key)
           : JSON.stringify(["unkeyed", sandboxId]);
       const digest = reservation?.digest ?? fingerprint ?? sandboxId;
       if (reservation) {
@@ -257,29 +306,14 @@ export async function admitModalLaunch(
       );
       const {
         rows: [receipt],
-      } = await tx.query<{
-        sandbox_id: string;
-        status: SandboxStatus | null;
-        golden_id: string | null;
-        outcome: ArchivedLaunchReceipt | null;
-      }>(
+      } = await tx.query<LaunchReceiptRow>(
         `select j.sandbox_id, s.status, s.golden_id, j.outcome from public.jobs j
          left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
          where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
         [jobId, orgId, ownerId],
       );
       if (!receipt) throw new Error("Modal launch receipt is missing.");
-      if (receipt.sandbox_id !== sandboxId) {
-        if (receipt.golden_id && receipt.golden_id !== sandbox.goldenId)
-          throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
-        if (receipt.outcome?.receipt === "refused") throw replayOrdinaryLaunchFailure(receipt.outcome.failure);
-        if (receipt.outcome?.receipt === "unknown")
-          throw new LaunchError(
-            "outcome_unknown",
-            `Launch outcome unknown; receipt ${receipt.sandbox_id}. Do not use a new key.`,
-          );
-        return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
-      }
+      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, sandbox.goldenId);
 
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
