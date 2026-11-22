@@ -272,6 +272,10 @@ export interface LaunchPlan {
   secrets: HarnessCredentials["secrets"];
 }
 
+function writeLaunchDiagnostic(level: "info" | "warn", event: string, fields: Record<string, unknown>) {
+  process.stderr.write(`${JSON.stringify({ ...fields, event, level, message: event })}\n`);
+}
+
 /** The shared golden launcher owns these sequential intervals from admission to harness readiness. */
 function modalLaunchTiming(startedAt: number) {
   const stages: { stage: string; ms: number }[] = [];
@@ -288,9 +292,12 @@ function modalLaunchTiming(startedAt: number) {
     report(sandboxId: string, path: "native" | "enrolled") {
       if (!enabled) return;
       try {
-        console.info(
-          JSON.stringify({ event: "modal_launch_timing", sandboxId, path, totalMs: previous - startedAt, stages }),
-        );
+        writeLaunchDiagnostic("info", "modal_launch_timing", {
+          sandboxId,
+          path,
+          totalMs: previous - startedAt,
+          stages,
+        });
       } catch {
         // Timing must not change the launch outcome.
       }
@@ -694,22 +701,17 @@ export async function launchSandbox(
           },
           reportGitHub: (launchGithub) => {
             try {
-              const log =
-                launchGithub.status === "revoked" || launchGithub.status === "unavailable"
-                  ? console.warn
-                  : console.info;
-              log(
-                JSON.stringify({
-                  event: "launch_github_prepared",
-                  sandboxId: record.id,
-                  goldenId: golden.id,
-                  provider: provider.id,
-                  path: strategy.kind,
-                  status: launchGithub.status,
-                  repositorySelected: repositoryDir !== null,
-                  configuredRepositories: golden.config.repos.length,
-                }),
-              );
+              const level =
+                launchGithub.status === "revoked" || launchGithub.status === "unavailable" ? "warn" : "info";
+              writeLaunchDiagnostic(level, "launch_github_prepared", {
+                sandboxId: record.id,
+                goldenId: golden.id,
+                provider: provider.id,
+                path: strategy.kind,
+                status: launchGithub.status,
+                repositorySelected: repositoryDir !== null,
+                configuredRepositories: golden.config.repos.length,
+              });
             } catch {
               // Safe diagnostics must not change launch outcomes. Never include tokens or helper contents.
             }
