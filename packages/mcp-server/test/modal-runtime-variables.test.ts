@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
+import { isRecord } from "@armada/core";
 import {
   createApplicationVault,
   createSqlVaultStore,
@@ -445,7 +446,10 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only external Boat SSH bootstrap to exercise the real launch adapter without a provider or process.
   const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
     const active = await f.authority.enrol(request.enrolmentToken);
-    bootstrapDeadline = (active.configuration.grant as { expiresAt: number }).expiresAt;
+    const configuration = active.configuration;
+    const grant = isRecord(configuration) ? configuration.grant : undefined;
+    if (!isRecord(grant) || typeof grant.expiresAt !== "number") throw Error("Missing bootstrap command deadline.");
+    bootstrapDeadline = grant.expiresAt;
     expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
     unsubscribe = runtimeWakes.subscribe(`socket:${active.sandboxId}`, () => {
       work = work.then(async () => {
