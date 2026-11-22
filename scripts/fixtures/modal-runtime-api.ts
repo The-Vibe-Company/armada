@@ -282,6 +282,11 @@ const admittedLaunch = (body: RequestBody) => {
   launchRef = body.externalRef;
   const envelope = { sandbox: { id: sandboxId, status: "starting" } };
   if (!variables) return envelope;
+  const manifest = templateReceipt(body, idle).manifest;
+  if (!ordinary) {
+    const { requestKey: _requestKey, skillReceipts: _skillReceipts, ...templateManifest } = manifest;
+    return { sandbox: { ...envelope.sandbox, templateManifest: { ...templateManifest, resolvedSkills: [] } } };
+  }
   return {
     requestId: "99999999-9999-4999-8999-999999999999",
     state: "succeeded",
@@ -289,7 +294,7 @@ const admittedLaunch = (body: RequestBody) => {
     provider: "modal",
     status: defects.includes("idle-bad-receipt") ? "running" : "starting",
     envelope,
-    manifest: templateReceipt(body, idle).manifest,
+    manifest,
   };
 };
 const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
@@ -303,7 +308,7 @@ const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
       status: receipt.status,
       goldenId: golden.id,
       runtimeTransport: receipt.runtimeTransport,
-      externalRef: defects.includes("variables-unrelated-launch") ? "another-launch" : body.externalRef,
+      externalRef: body.externalRef,
       skills: skillReceipts,
       templateManifest,
     },
@@ -1010,7 +1015,15 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       throw Error("unsafe inventory lookup");
     admissionInventoryRead = true;
     return Response.json({
-      sandboxes: [{ id: sandboxId, provider: "modal", harness: "codex", status: "starting", externalRef: launchRef }],
+      sandboxes: [
+        {
+          id: defects.includes("variables-unrelated-launch") ? "foreign" : sandboxId,
+          provider: "modal",
+          harness: "codex",
+          status: "starting",
+          externalRef: launchRef,
+        },
+      ],
     });
   }
   if (path.endsWith("/sandbox/list")) {
