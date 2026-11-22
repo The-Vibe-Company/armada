@@ -101,8 +101,7 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
   };
 }
 
-/** Preserve the original request encoding for replay across launch producers. */
-export function ordinaryLaunchFingerprint(payload: unknown): string {
+export function ordinaryLaunchFingerprint(payload: unknown) {
   return createHash("sha256").update(canonical(payload)).digest("hex");
 }
 
