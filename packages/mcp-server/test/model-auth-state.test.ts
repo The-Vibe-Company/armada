@@ -509,10 +509,10 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   );
   expect(page).toMatchObject({ events: [], cursor: "verified", settled: false });
   expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
-  const promptStatus = { promptId: "finished-turn", status: "finished", done: true };
+  const promptStatus = { promptId: "finished-turn", status: "finished", done: true } as const;
   const promptProvider = createBoatProvider({
     apiKey: "fixture",
-    fetch: (async () => Response.json({ ok: true, promptRun: promptStatus })) as typeof fetch,
+    fetch: (async () => Response.json({ ok: true, promptRun: promptStatus })) as unknown as typeof fetch,
     afterPrompt: (_provider, target) => shared.captureAfterBoatPrompt(boat.provider, target, actor),
   });
   const readPrompt = () => promptProvider.getPrompt({ sandboxId: physical.id, promptId: promptStatus.promptId });
