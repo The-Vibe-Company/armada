@@ -391,7 +391,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     }
 
     const verification = archivedSnapshotVerification(sandbox);
-    if ("reason" in verification) return defer(verification.retention, verification.reason);
+    if (verification.reason !== undefined) return defer(verification.retention, verification.reason);
     const { stoppedAt, verifiedAt } = verification;
     if (verifiedAt >= stoppedAt) return "usable";
 
@@ -603,7 +603,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
       if (current.state !== "archived") return "pending";
       const verification = archivedSnapshotVerification(current);
-      if ("reason" in verification) return verification.retention === "pending" ? "pending" : "gone";
+      if (verification.reason !== undefined) return verification.retention === "pending" ? "pending" : "gone";
       if (verification.verifiedAt < verification.stoppedAt) return "gone";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
         missingRetainedResource,
