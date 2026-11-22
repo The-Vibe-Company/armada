@@ -3,6 +3,7 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration, type Sql } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -343,7 +344,8 @@ describe("Boat GitHub access token rollover during launch", () => {
         expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
       }
 
-      const inFlightToken = await x.broker.acquire("example/repo-7", "git");
+      const requestId = crypto.randomUUID();
+      const inFlightToken = await continueRequest(requestId, () => x.broker.acquire("example/repo-7", "git"));
       const gitStatus = (token: string) => (token === (githubRotated ? renewedAccess : x.access) ? 200 : 401);
       expect(gitStatus(inFlightToken)).toBe(200);
       clock += 37_000;
@@ -359,7 +361,11 @@ describe("Boat GitHub access token rollover during launch", () => {
         .filter(({ event }) => event === "runtime_github_credentials_issued");
       expect(events).toHaveLength(9);
       const [before, rotated, after] = events.slice(-3);
-      expect(before).toMatchObject({ sandboxId: f.row.id, tokenFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/) });
+      expect(before).toMatchObject({
+        requestId,
+        sandboxId: f.row.id,
+        tokenFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/),
+      });
       expect(rotated).toMatchObject({
         sandboxId: sibling.f.row.id,
         tokenFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/),

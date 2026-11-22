@@ -19,6 +19,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { currentRequestId } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
@@ -442,7 +443,16 @@ export function createRuntimeGitHub(options: {
           .update(JSON.stringify(["armada/runtime/github/token-log/v1", grant.binding.ownerId, access.token]))
           .digest("hex")
           .slice(0, 32);
-        console.info(JSON.stringify({ level: "info", message: event, event, sandboxId, tokenFingerprint }));
+        console.info(
+          JSON.stringify({
+            level: "info",
+            message: event,
+            event,
+            requestId: currentRequestId(),
+            sandboxId,
+            tokenFingerprint,
+          }),
+        );
       } catch {
         return response;
       }
