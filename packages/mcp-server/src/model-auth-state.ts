@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
 
+export class NativeObservationSuperseded extends VaultError {
+  constructor(readonly reason: "sandbox_generation" | "auth_revision") {
+    super(
+      "conflict",
+      reason === "sandbox_generation" ? "Native source incarnation changed." : "Native auth revision changed.",
+    );
+  }
+}
+
 export interface NativeState {
   authJson: string;
   secrets: string[];
@@ -338,7 +347,7 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
           }
         }
         const revision = row?.auth_revision ?? 0;
-        if (revision !== input.expectedRevision) throw new VaultError("conflict", "Native auth revision changed.");
+        if (revision !== input.expectedRevision) throw new NativeObservationSuperseded("auth_revision");
         const state: NativeState = {
           authJson: next.authJson,
           secrets: [...new Set([...originalAuth.secrets, ...(previous?.secrets ?? []), ...next.secrets])],

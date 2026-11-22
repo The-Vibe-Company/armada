@@ -1,6 +1,7 @@
 import type { CredentialBinding, GoldenActor, Harness, Provider, Sql } from "@armada/core/server";
 import {
   createSqlVaultStore,
+  failureDiagnostic,
   ProviderError,
   redact,
   sshNativeAuthAdmission,
@@ -13,8 +14,15 @@ import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from
 import { NativeOutputPending } from "./event-pagination.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
-import { createNativeStateStore } from "./model-auth-state.ts";
+import { createNativeStateStore, NativeObservationSuperseded } from "./model-auth-state.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
+
+export function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
+  recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
+    causeCode: error instanceof NativeObservationSuperseded ? error.reason : undefined,
+  });
+}
 
 /**
  * Private subscription state and redaction. Subscription accounts are shared;
@@ -167,25 +175,18 @@ export function createModelAuthOwnership(
       if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
         if (provider.id === "boat") {
           const authorize = async (tx: Sql) => {
-            const pinned = await tx.query(
-              `select s.id from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
-               and s.credential_id=$4::uuid and s.credential_version=$5 and s.lifecycle_generation=$6
-               and s.provider='boat' and s.provider_sandbox_id=$7 and s.deleted_at is null
-               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$8::uuid)
+            const pinned = await tx.query<{ lifecycle_generation: number }>(
+              `select s.lifecycle_generation from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
+               and s.credential_id=$4::uuid and s.credential_version=$5
+               and s.provider='boat' and s.provider_sandbox_id=$6 and s.deleted_at is null
+               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$7::uuid)
                and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
-                    or s.owner_id=$8::uuid) for update of s`,
-              [
-                row.id,
-                row.owner_id,
-                row.org_id,
-                row.credential_id,
-                row.credential_version,
-                row.lifecycle_generation,
-                providerId,
-                caller.userId,
-              ],
+                    or s.owner_id=$7::uuid) for update of s`,
+              [row.id, row.owner_id, row.org_id, row.credential_id, row.credential_version, providerId, caller.userId],
             );
-            if (!pinned.rows.length) throw new VaultError("conflict", "Private native observation source changed.");
+            if (!pinned.rows[0]) throw new VaultError("conflict", "Private native observation source changed.");
+            if (pinned.rows[0].lifecycle_generation !== row.lifecycle_generation)
+              throw new NativeObservationSuperseded("sandbox_generation");
           };
           const physical = await provider.get(providerId);
           if (physical.id !== providerId)
@@ -263,6 +264,12 @@ export function createModelAuthOwnership(
           retired ? [row.id] : [row.id, row.credential_id, row.credential_version],
         );
         if (
+          provider.id === "boat" &&
+          current.rows[0] &&
+          current.rows[0].lifecycle_generation !== row.lifecycle_generation
+        )
+          throw new NativeObservationSuperseded("sandbox_generation");
+        if (
           (!retired && !current.rows[0]) ||
           current.rows[0]?.lifecycle_generation !== row.lifecycle_generation ||
           (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation)
@@ -334,7 +341,12 @@ export function createModelAuthOwnership(
         if (pending.rows.length) throw new NativeOutputPending(provider.id);
       };
       await pendingCommand();
-      const secrets = await this.capture(provider, providerId, caller);
+      const secrets = await this.capture(provider, providerId, caller).catch((error: unknown) => {
+        if (provider.id !== "boat") throw error;
+        recordNativeReadFailure("events", error);
+        if (error instanceof NativeObservationSuperseded) throw new NativeOutputPending(provider.id);
+        throw error;
+      });
       // Native renewal state only covers Codex. Match exec's static credential
       // redaction using the stored sandbox owner, never the viewing member.
       const owners = await sql.query<{ owner_id: string; org_id: string }>(

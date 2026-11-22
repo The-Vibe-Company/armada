@@ -495,7 +495,19 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   duringSample = async () => {
     await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
   };
-  await expect(events("synthetic-refresh-4")).rejects.toMatchObject({ code: "conflict" });
+  const logProvider = {
+    ...boat.provider,
+    async events() {
+      return { events: await events("synthetic-refresh-4"), cursor: "unverified", hasMore: true };
+    },
+  };
+  const page = await readLogs(
+    { logs: async () => ({ provider: logProvider, providerSandboxId: physical.id }) },
+    { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: "admin" }], via: "service" },
+    id,
+    { follow: true, cursor: "verified" },
+  );
+  expect(page).toMatchObject({ events: [], cursor: "verified", settled: false });
   expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
   duringSample = undefined;
   const runningInfo = boat.sandbox(physical.id).info;
