@@ -135,6 +135,26 @@ test("Boat extension and stop jobs serialize claims on the same sandbox", async 
   expect(await f.store.claim("boat_runtime_extend", owner, 30, 1)).toBeUndefined();
 });
 
+test.each(["activity", "reconcile"] as const)("a live %s lease defers a Boat extension claim", async (legacy) => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const kind = "boat_runtime_extend";
+  const owner = crypto.randomUUID();
+  const extend = await f.store.enqueue(kind, id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+  });
+  const [lease, deadline] =
+    legacy === "activity" ? ["activity_lease_id", "activity_until"] : ["reconcile_lease", "reconcile_lease_until"];
+  await f.db.query(`update sandboxes set ${lease}=$2, ${deadline}='infinity' where id=$1`, [id, owner]);
+
+  expect(await f.store.claim(kind, owner, 30, 1)).toBeUndefined();
+
+  await f.db.query(`update sandboxes set ${deadline}='-infinity' where id=$1`, [id]);
+  expect((await f.store.claim(kind, owner, 30, 1))?.id).toBe(extend);
+});
+
 test("a replacement launch claimant reads Modal create intent and fences the previous writer", async () => {
   const f = await fixture();
   const id = await sandbox(f);
