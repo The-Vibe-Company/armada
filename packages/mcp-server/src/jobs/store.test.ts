@@ -83,6 +83,58 @@ async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: strin
   );
 }
 
+test("a Boat extension lease is capped and an elapsed deadline permits recovery only", async () => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const kind = "boat_runtime_extend";
+  const owner = crypto.randomUUID();
+  const {
+    rows: [clock],
+  } = await f.db.query<{ deadline: Date }>("select now()+interval '1 day' as deadline");
+  const jobId = await f.store.enqueue(kind, id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: clock!.deadline,
+  });
+  const readCap = async () =>
+    (await f.db.query<{ capped: boolean }>("select lease_until=deadline_at as capped from jobs where id=$1", [jobId]))
+      .rows[0]?.capped;
+
+  const first = (await f.store.claim(kind, owner, 172800, 1))!;
+  expect(first.id).toBe(jobId);
+  expect(await readCap()).toBe(true);
+  await f.db.query("update jobs set lease_until=deadline_at-interval '1 hour' where id=$1", [jobId]);
+  expect(await f.store.renew(first, owner, 172800)).toBe(true);
+  expect(await readCap()).toBe(true);
+
+  await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+  expect(await f.store.renew(first, owner, 172800)).toBe(false);
+  const successor = crypto.randomUUID();
+  const recovered = (await f.store.claim(kind, successor, 30, 1))!;
+  expect(recovered.id).toBe(jobId);
+  expect(await f.store.inspect(first, owner)).toBe("lost");
+  expect(await f.store.inspect(recovered, successor)).toBe("reconcile");
+  expect(await f.store.complete(recovered, successor, { status: "fail", reason: "deadline elapsed" })).toBe(true);
+});
+
+test("Boat extension and stop jobs serialize claims on the same sandbox", async () => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const owner = crypto.randomUUID();
+  const options = { orgId: f.people.org, maxAttempts: 3, deadline: new Date("2100-01-01T00:00:00Z") };
+  const extend = await f.store.enqueue("boat_runtime_extend", id, 2, `${id}:extend`, null, options);
+  const stop = await f.store.enqueue("stop", id, 2, `${id}:stop`, null, options);
+
+  const extensionLease = (await f.store.claim("boat_runtime_extend", owner, 30, 1))!;
+  expect(extensionLease.id).toBe(extend);
+  expect(await f.store.claim("stop", owner, 30, 1)).toBeUndefined();
+  expect(await f.store.complete(extensionLease, owner, { status: "retry", after: new Date(0) })).toBe(true);
+
+  const stopLease = await f.store.claim("stop", owner, 30, 1);
+  expect(stopLease?.id).toBe(stop);
+  expect(await f.store.claim("boat_runtime_extend", owner, 30, 1)).toBeUndefined();
+});
+
 test("a replacement launch claimant reads Modal create intent and fences the previous writer", async () => {
   const f = await fixture();
   const id = await sandbox(f);
