@@ -1264,6 +1264,7 @@ export async function settleHistoricalManagedModalDeletion(
       `select p.id from public.orchestrators o join public.armada_access_parents p
        on p.id=o.id and p.kind='orchestrator' and p.sandbox_id=o.sandbox_id
          and p.org_id=o.org_id and p.owner_id=o.owner_id
+         and p.state=o.state and p.authority_epoch=o.authority_epoch
        where o.sandbox_id=$1 and o.org_id=$2 and o.owner_id=$3
        for no key update of o,p nowait`,
       [id, orgId, member.owner_id],

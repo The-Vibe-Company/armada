@@ -1072,10 +1072,13 @@ test.each([
   "stopped journal",
   "no opt-in",
   "nonowner member",
+  "mismatched authority mirror",
   "existing recovery",
   "unresolved child operation",
+  "interrupted generation update",
   "interrupted transition",
   "interrupted terminal cleanup",
+  "interrupted capacity release",
 ] as const)("managed historical Modal drain handles %s", async (scenario) => {
   const { db, people, modalGoldenId } = sharedDatabase();
   const id = crypto.randomUUID();
@@ -1110,6 +1113,8 @@ test.each([
       }),
     ],
   );
+  if (scenario === "mismatched authority mirror")
+    await db.query("update armada_access_parents set state='ready' where id=$1", [parentId]);
   if (scenario === "existing recovery")
     await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
       id,
@@ -1122,11 +1127,24 @@ test.each([
        values($1,$2,$3,4,1,'launch',$4,$1,'pending-launch',repeat('a',64),'uncertain')`,
       [parentId, people.org, people.owner, crypto.randomUUID()],
     );
+  const expiredLease = scenario === "interrupted generation update" ? crypto.randomUUID() : null;
+  if (expiredLease)
+    await db.query("update modal_machines set lease_id=$1,lease_until='2000-01-01' where id=$2", [
+      expiredLease,
+      placement,
+    ]);
   const sql = bunLikeSql(db, (statement) => {
+    if (expiredLease && statement.includes("set lifecycle_generation=lifecycle_generation+1"))
+      throw new Error("Interrupted generation update");
     if (scenario === "interrupted transition" && statement.includes("from public.sandbox_transition("))
       throw new Error("Interrupted transition");
     if (scenario === "interrupted terminal cleanup" && statement.includes("delete from public.sandbox_work_recovery"))
       throw new Error("Interrupted terminal cleanup");
+    if (
+      scenario === "interrupted capacity release" &&
+      statement.includes("delete from public.account_agent_reservations")
+    )
+      throw new Error("Interrupted capacity release");
   });
   const actorId = scenario === "nonowner member" ? people.member : people.owner;
   const drain = configureNativeDrain(
@@ -1157,6 +1175,10 @@ test.each([
     scenario.startsWith("interrupted") ? /Interrupted/ : /managed|deletion access denied/i,
   );
   expect(await state()).toEqual({ status: "stopped", generation: "4", epoch: "1", legacy_epoch: "1" });
+  if (expiredLease)
+    expect((await db.query("select lease_id from modal_machines where id=$1", [placement])).rows).toEqual([
+      { lease_id: expiredLease },
+    ]);
   if (scenario === "existing recovery")
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(1);
 });
