@@ -260,17 +260,30 @@ test("an expired observation lease cannot publish a delayed terminal result", as
   }
 });
 
-for (const step of ["transition", "metadata", "lease expiry"] as const) {
+for (const step of ["transition", "metadata", "lease expiry", "extension cleanup"] as const) {
   test(`terminal settlement rolls back on ${step}`, async () => {
     const { db, people } = await sharedDatabase();
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
     const id = crypto.randomUUID();
     await db.query(
-      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
-       values($1,'boat','bx_23456789',$2,$3,$4,'claude','running')`,
-      [id, golden.id, people.org, people.owner],
+      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
+       values($1,'boat','bx_23456789',$2,$3,$4,'claude','running',$5)`,
+      [id, golden.id, people.org, people.owner, step === "extension cleanup"],
     );
     const base = bunLikeSql(db);
+    const jobId =
+      step === "extension cleanup"
+        ? await createJobsStore(base, ENCRYPTION_KEY).enqueue("boat_runtime_extend", id, 1, id, null, {
+            orgId: people.org,
+            maxAttempts: 3,
+            deadline: new Date("2099-01-01"),
+          })
+        : null;
+    if (jobId)
+      await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
+        id,
+        jobId,
+      ]);
     const sql: Sql = {
       ...base,
       transaction: (work) =>
@@ -286,7 +299,10 @@ for (const step of ["transition", "metadata", "lease expiry"] as const) {
                   await tx.query("update public.sandboxes set reconcile_lease_until='-infinity' where id=$1", [id]);
                 }
               }
-              return tx.query<T>(query, params);
+              const result = await tx.query<T>(query, params);
+              if (step === "extension cleanup" && query.startsWith("update public.boat_runtime_extension_state"))
+                throw new Error("injected extension cleanup failure");
+              return result;
             },
           }),
         ),
@@ -310,6 +326,11 @@ for (const step of ["transition", "metadata", "lease expiry"] as const) {
       ).rows,
     ).toEqual([{ status: "running", stopped_at: null, last_observed_at: null, claimed: true }]);
     expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    if (jobId)
+      expect(
+        (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id]))
+          .rows,
+      ).toEqual([{ pending_job_id: jobId }]);
   });
 }
 
@@ -654,7 +675,7 @@ for (const evidence of [
     const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
     const shouldClear = evidence === "terminal-covered" || evidence === "lost-observation-response";
     const terminalJob = shouldClear || evidence === "terminal-short";
-    const hasPendingJob = evidence === "covered" || terminalJob;
+    const hasPendingJob = evidence === "covered" || evidence === "lost-stop-response" || terminalJob;
     let physicalDeadline = evidence === "covered" || shouldClear ? coveredDeadline : binding.expires_at;
     const pendingJobId = hasPendingJob
       ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
@@ -765,6 +786,7 @@ for (const evidence of [
         stop_requested_at: expect.any(Date),
         expires_at: binding.expires_at,
       });
+      expect(await readObservation()).toMatchObject([{ pending_job_id: pendingJobId }]);
       await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
       const successor = createSandboxLifecycle(bunLikeSql(db), async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
@@ -787,7 +809,7 @@ for (const evidence of [
       shouldStop || hasPendingJob
         ? [
             {
-              pending_job_id: shouldClear ? null : pendingJobId,
+              pending_job_id: shouldClear || shouldStop ? null : pendingJobId,
               observed_provider_id: "bx_23456789",
               observed_generation: binding.lifecycle_generation,
               observed_at: expect.any(Date),
