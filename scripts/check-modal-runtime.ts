@@ -7,6 +7,7 @@ import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { shellQuote } from "../packages/core/src/shell-quote.ts";
 import type { TemplateDefinition } from "../packages/core/src/templates.ts";
 import { readDefaultPins, verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { parseExplicitPinnedAdmission } from "./modal-pinned-smoke-receipt.ts";
 import { createRuntimeUsageCheck } from "./runtime-usage-smoke.ts";
 
 if (process.env.ARMADA_RUNTIME_SMOKE !== "one_real_modal_launch")
@@ -30,6 +31,7 @@ interface TemplateManifest {
   definition?: TemplateDefinition;
   variables?: unknown;
   skillReceipts?: unknown;
+  resolvedSkills?: unknown;
 }
 
 interface Reply {
@@ -645,10 +647,9 @@ function acceptsFollowup(receipt: Reply, requestId: string, expectedEpoch: strin
     (expectedEpoch === undefined || receipt.runtime.epoch === expectedEpoch)
   );
 }
-async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
-  const deadline = Date.now() + launchBudgetMs;
-  const remaining = () => Math.max(1, deadline - Date.now());
-  const terminal = ["failed", "stopped", "stopping", "deleted"];
+const terminalLaunchStates = ["failed", "stopped", "stopping", "deleted"];
+
+async function correlateAdmittedLaunch(sandboxId: string, externalRef: string, timeoutMs: number) {
   const listed = await api(
     "sandbox/list",
     {
@@ -657,7 +658,7 @@ async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
       externalRef,
       golden: templateSource?.goldenId ?? defaultGoldenId,
     },
-    remaining(),
+    timeoutMs,
   );
   const row = listed.sandboxes?.[0];
   if (
@@ -668,11 +669,15 @@ async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
     row.externalRef !== externalRef
   )
     throw Error("Admitted Modal sandbox does not match the owner inventory.");
-  if (terminal.includes(row.status)) throw Error("Admitted Modal sandbox entered a terminal lifecycle state.");
+  return row;
+}
+
+async function observeAdmittedLaunch(sandboxId: string, deadline: number) {
+  const remaining = () => Math.max(1, deadline - Date.now());
   while (Date.now() < deadline) {
     const current = await api("sandbox/status", { id: sandboxId }, remaining());
     if (current.id !== sandboxId) throw Error("Admitted Modal status does not match the sandbox.");
-    if (terminal.includes(current.status ?? "") || (current.settled === true && current.statusMessage))
+    if (terminalLaunchStates.includes(current.status ?? "") || (current.settled === true && current.statusMessage))
       throw Error("Admitted Modal launch or initial turn failed.");
     if (idleMode && current.settled === true && current.status === "ready" && current.statusMessage === null) {
       if (current.prompt !== null || !Array.isArray(current.conversationIds) || current.conversationIds.length)
@@ -757,10 +762,10 @@ try {
           },
         }
       : raw;
-  const admission = parseLaunchAdmissionReceipt(
-    launchProvider,
-    ordinaryTemplate ? raw.envelope : templateSource ? undefined : raw,
-  );
+  const explicitPinnedAdmission = templateSource && !ordinaryTemplate ? parseExplicitPinnedAdmission(raw) : undefined;
+  const admission =
+    explicitPinnedAdmission ??
+    parseLaunchAdmissionReceipt(launchProvider, ordinaryTemplate ? raw.envelope : templateSource ? undefined : raw);
   let queuedFirstTurn = false;
   if (
     ordinaryTemplate &&
@@ -772,11 +777,19 @@ try {
       raw.id !== admission.sandbox.id)
   )
     throw Error("Modal template admission does not match its recorded request.");
+  const observationDeadline = Date.now() + launchBudgetMs;
+  const correlate = async (sandboxId: string) => {
+    const row = await correlateAdmittedLaunch(sandboxId, launchRef, Math.max(1, observationDeadline - Date.now()));
+    shouldStop = true;
+    if (terminalLaunchStates.includes(row.status))
+      throw Error("Admitted Modal sandbox entered a terminal lifecycle state.");
+  };
   if (admission) {
     id = admission.sandbox.id;
-    shouldStop = true;
+    shouldStop = !explicitPinnedAdmission;
     if (ordinaryTemplate && (raw.status !== admission.sandbox.status || admission.sandbox.status !== "starting"))
       throw Error("Modal template admission has inconsistent starting status.");
+    if (explicitPinnedAdmission) await correlate(id);
   } else {
     if (launched.sandbox?.provider !== "modal")
       throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
@@ -786,8 +799,12 @@ try {
     shouldStop = Boolean(id);
   }
   if (templateSource) {
-    const m = ordinaryTemplate ? raw.manifest : raw.sandbox?.templateManifest;
-    const selectedGolden = ordinaryTemplate ? m?.golden : raw.golden;
+    const m = ordinaryTemplate
+      ? raw.manifest
+      : explicitPinnedAdmission
+        ? explicitPinnedAdmission.templateManifest
+        : raw.sandbox?.templateManifest;
+    const selectedGolden = ordinaryTemplate || explicitPinnedAdmission ? m?.golden : raw.golden;
     if (
       !id ||
       (ordinaryTemplate && (raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== launchRef)) ||
@@ -805,6 +822,8 @@ try {
       throw Error(
         "Modal template launch manifest identity is unavailable; cleanup the known allocation, never launch again.",
       );
+    if (explicitPinnedAdmission && canonical(m.resolvedSkills) !== canonical(defaultPins))
+      throw Error("Modal frozen skill pins differ from the selected launch policy; no allocation retry.");
     let values: Record<string, string>;
     try {
       values = validateReadableVariables(m.variables);
@@ -818,8 +837,9 @@ try {
       .digest("hex");
   }
   if (admission) {
+    if (!explicitPinnedAdmission) await correlate(admission.sandbox.id);
     jobAdmission = true;
-    const turn = await observeAdmittedLaunch(admission.sandbox.id, launchRef);
+    const turn = await observeAdmittedLaunch(admission.sandbox.id, observationDeadline);
     ({ promptId, conversationId, skills: launchSkills } = turn);
   } else {
     if (!launched.sandbox) throw Error("Missing Modal launch sandbox.");
