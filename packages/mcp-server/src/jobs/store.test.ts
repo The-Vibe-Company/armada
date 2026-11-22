@@ -164,13 +164,36 @@ test("a Boat extension lease is capped and an elapsed deadline permits recovery 
 
   await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
   expect(await f.store.renew(first, owner, 172800)).toBe(false);
-  const successor = crypto.randomUUID();
-  const recovered = (await f.store.claim(kind, successor, 30, 1))!;
-  expect(recovered.id).toBe(jobId);
-  expect(recovered.dispatchBudgetMs).toBeUndefined();
   expect(await f.store.inspect(first, owner)).toBe("lost");
-  expect(await f.store.inspect(recovered, successor)).toBe("reconcile");
-  expect(await f.store.complete(recovered, successor, { status: "fail", reason: "deadline elapsed" })).toBe(true);
+  await f.db.query("insert into public.boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [
+    id,
+    jobId,
+  ]);
+  let handlerEntered = false;
+  const runner = createJobsRunner(
+    f.store,
+    {
+      [kind]: {
+        concurrency: 1,
+        async run() {
+          handlerEntered = true;
+          return { status: "done" };
+        },
+      },
+    },
+    undefined,
+    () => () => {},
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(handlerEntered).toBe(false);
+  const { rows } = await f.db.query(
+    `select j.state, j.lease_owner, j.lease_until, e.pending_job_id
+     from public.jobs j join public.boat_runtime_extension_state e on e.sandbox_id=j.sandbox_id
+     where j.id=$1`,
+    [jobId],
+  );
+  expect(rows).toEqual([{ state: "failed", lease_owner: null, lease_until: null, pending_job_id: jobId }]);
 });
 
 test("Boat extension and stop jobs serialize claims on the same sandbox", async () => {
