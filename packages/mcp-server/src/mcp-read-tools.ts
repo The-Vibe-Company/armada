@@ -21,6 +21,14 @@ export { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "@armada/core/contract";
 
 type VisibleSandbox = (sandboxId: string) => Promise<SandboxView>;
 
+function hasConfirmedStop(sandbox: SandboxView) {
+  return (
+    (sandbox.status === "stopped" || sandbox.status === "failed") &&
+    !sandbox.stopRequestedAt &&
+    Boolean(sandbox.stoppedAt)
+  );
+}
+
 export function logicalExpiry(expiresAt: string | null | undefined, now: Date) {
   const deadline = expiresAt ? Date.parse(expiresAt) : Number.NaN;
   const timeLeftSeconds = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now.getTime()) / 1000)) : null;
@@ -120,19 +128,32 @@ export function registerStatusTools(
       return { ...report, ...logicalExpiry(report.expiresAt, context.now()), providerExpiresAt: null, ...queuePatch };
     }
     const found = await measure("sandbox_read", () => visible(sandboxId));
-    if (waiting) return { ...recordedStatus(found), ...logicalExpiry(found.expiresAt, context.now()), ...queuePatch };
+    const confirmedStop = hasConfirmedStop(found);
+    const fenced = found.status === "deleted" || isStatusReadFenced(found);
+    const jobReader =
+      !recorded && (confirmedStop || (!waiting && !fenced)) ? await context.modalJobReader?.(found) : null;
+    const stopEvidence = async (status: SandboxStatus) => {
+      const latest = await jobReader?.verify();
+      return latest && latest.status === status && hasConfirmedStop(latest) ? { providerState: "stopped" } : {};
+    };
+    if (waiting)
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        ...queuePatch,
+        ...(await stopEvidence(found.status)),
+      };
     if (recorded)
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
         statusMessage: `Recorded state only; use armada info ${sandboxId} --live for provider and prompt details.`,
       };
-    const fenced = found.status === "deleted" || isStatusReadFenced(found);
-    const jobReader = fenced ? null : await context.modalJobReader?.(found);
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const setupPending = jobReader?.setupState === "queued" || jobReader?.setupState === "leased";
-      if (setupPending || jobReader?.setupState === "failed")
+      const setupState = fenced || confirmedStop ? undefined : jobReader?.setupState;
+      const setupPending = setupState === "queued" || setupState === "leased";
+      if (setupPending || setupState === "failed")
         return {
           ...recordedStatus(found),
           ...logicalExpiry(found.expiresAt, context.now()),
@@ -149,13 +170,13 @@ export function registerStatusTools(
           now: context.now(),
         }),
       );
-      await jobReader?.verify();
       const settled = result.settled && (!jobReader || !currentTurn || (await jobReader.followSettled()));
       return {
         ...publicReport(result),
         settled,
         ...logicalExpiry(result.expiresAt, context.now()),
         statusMessage: idlePauseMessage(result, context.now()),
+        ...(await stopEvidence(result.status)),
       };
     } catch (error) {
       if (jobReader || !allowRecordedFallback || !(error instanceof ProviderError)) throw error;

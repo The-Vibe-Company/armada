@@ -1952,6 +1952,7 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
   const host = retentionHost();
   const stop = (target: Parameters<typeof serving>[1]) =>
     serving(host.provider, target, caller, host.captureRuntimeWork);
+  const jobReader = createModalJobReader(f.sql, launchEncryptionKey);
   expect(
     await callSharedTool(
       {
@@ -1970,6 +1971,26 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
       { id },
     ),
   ).toMatchObject({ id, status: "stopped" });
+  const statusContext = {
+    caller,
+    data,
+    launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+    exposedSecrets: async () => [],
+    modalJobReader: (sandbox) => jobReader(sandbox, caller),
+    async provider() {
+      throw new Error("Status must use the durable stop evidence without a provider client");
+    },
+    now: () => new Date(),
+    async sleep() {
+      throw new Error("Confirmed stop must settle without waiting");
+    },
+  } satisfies Parameters<typeof callSharedTool>[0];
+  expect(await callSharedTool(statusContext, "status", { id })).toMatchObject({
+    id,
+    status: "stopped",
+    providerState: "stopped",
+    settled: true,
+  });
   expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
   expect(retentionEffects()).toEqual({ checkpoints: 1, baselineCaptures: 1 });
   expect(cleanupEffects().terminations).toBe(1);
@@ -2086,6 +2107,7 @@ test("status and wait return a failed Modal launch receipt before provider ident
     exposedSecrets: async () => [],
     provider: unexpectedProvider,
     storedProviders: { modal: unexpectedProvider },
+    modalJobReader: (sandbox) => createModalJobReader(f.sql, launchEncryptionKey)(sandbox, caller),
     now: () => new Date("2026-11-21T00:00:00Z"),
     sleep: async () => {
       throw new Error("A failed launch must settle immediately");
@@ -2102,6 +2124,14 @@ test("status and wait return a failed Modal launch receipt before provider ident
       settled: true,
     });
   }
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(await callSharedTool(context, "wait", { id })).toMatchObject({
+    id,
+    status: "failed",
+    providerState: "stopped",
+    settled: true,
+  });
   await expect(
     callSharedTool(context, "report", { id, prompt_id: "missing", outcome: { state: "ready" } }),
   ).rejects.toMatchObject({ code: "conflict" });
