@@ -1103,7 +1103,12 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
            j.record->>'phase'='stopped'
            or ((j.record->>'phase'='deleted' or ($2 and j.record->>'phase'='deleting'))
              and jsonb_typeof(j.record->'generation')='number'
-             and j.record->'deletePhysicalExitGeneration'=j.record->'generation')
+             and j.record->'deletePhysicalExitGeneration'=j.record->'generation'
+             and ($2 or not exists (
+               select 1 from public.armada_access_parents p
+               where p.sandbox_id=s.id and p.kind='sandbox'
+                 and p.modal_drain_cleaned_placement is distinct from s.provider_sandbox_id
+             )))
            )
            and (
              (j.lease_id is null and j.lease_until is null)
