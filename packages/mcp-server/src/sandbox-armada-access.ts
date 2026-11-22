@@ -362,6 +362,7 @@ export function createSandboxArmadaAccess(input: {
     }
   }
   return {
+    revokeNativeDrainParent: (tx: Sql, parentId: string) => authorityFor(tx).revoke(parentId),
     beforePrompt: install,
     beforeSnapshot: scrub,
     beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>

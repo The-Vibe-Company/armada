@@ -6,7 +6,7 @@ import { providerRegistry } from "./http.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
-import { requestNativeDrainStop } from "./sandbox-lifecycle.ts";
+import { requestNativeDrainStop, settleHistoricalManagedModalDeletion } from "./sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "./sandbox-rest-controls.ts";
 
 export function configureNativeDrain(
@@ -39,9 +39,14 @@ export function configureNativeDrain(
     boat: { beforeNativeDrainDelete: scopedAccess.beforeNativeDrainDelete },
     modal: { beforeNativeDrainDelete: scopedAccess.beforeNativeModalDrainDelete },
   }[provider];
+  const managedSettlement = { boat: undefined, modal: settleHistoricalManagedModalDeletion }[provider];
   const data = createSqlData(sql);
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
     if (!row.role) throw new Error("The operator has no organization membership.");
+    if (allowHistoricalModal && managedSettlement) {
+      const settled = await managedSettlement(sql, row, actorId, scopedAccess.revokeNativeDrainParent);
+      if (settled) return settled === "without-proof" ? settled : undefined;
+    }
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     const target = await sandboxes.get(row.id);
     if (target && (target.status === "ready" || target.status === "running")) {
