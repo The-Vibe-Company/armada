@@ -108,6 +108,21 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
 
 const tick = new AbortController().signal;
 
+test("an exhausted stop job still reaches its handler for recovery", async () => {
+  const f = fixture();
+  const attempts: number[] = [];
+  const runner = f.runner(async (job) => {
+    attempts.push(job.attempts);
+    return job.attempts <= job.max_attempts ? { status: "retry", after: new Date(0) } : { status: "done" };
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    expect(await runner.reconcileOne(tick)).toBe(true);
+    await runner.drain();
+  }
+  expect(attempts).toEqual([1, 2, 3]);
+});
+
 test("a renewed Boat extension attempt aborts at its original dispatch deadline", async () => {
   const f = fixture("boat_runtime_extend", 12_000);
   const entered = Promise.withResolvers<AbortSignal>();

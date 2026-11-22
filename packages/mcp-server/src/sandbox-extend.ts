@@ -30,6 +30,8 @@ export async function extendSandbox(
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
     throw new ToolError("extension_state", "The requested deadline must extend the existing lifetime.");
+  if (sandbox.boatRuntime)
+    throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
   if (sandbox.runtimeTransport === "dialout") {
     // Modal's compute deadline is fixed. Observe it, then publish only the logical
     // deadline, since advancing the lifecycle generation would revoke the enrolled epoch.

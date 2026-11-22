@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RunnerRequest } from "@armada/agent-runtime";
+import { type ExtendCommandAuthorityResult, PROTOCOL_VERSION, type RunnerRequest } from "@armada/agent-runtime";
 import {
   type EventPage,
   type EventsRequest,
@@ -24,7 +24,8 @@ import {
 } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
-import { type createRuntimeCommands, RuntimeCommandRefused } from "./runtime-commands.ts";
+import { authorityExtensionRequestId } from "./runtime-authority-extension.ts";
+import { type createRuntimeCommands, RuntimeCommandRefused, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { type RuntimeRestore, runtimeHealthMatches } from "./runtime-health.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
@@ -101,7 +102,8 @@ export function workspaceCommandId(
  * Launch admission must select this bridge explicitly and supply trusted persisted binding.
  */
 export function createRuntimeAgent(
-  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call">,
+  commands: Pick<ReturnType<typeof createRuntimeCommands>, "call"> &
+    Partial<Pick<ReturnType<typeof createRuntimeCommands>, "callAuthorityExtension">>,
   binding: {
     provider?: "boat" | "modal" | "docker";
     harness: Harness;
@@ -175,16 +177,42 @@ export function createRuntimeAgent(
     async health(
       signal?: AbortSignal,
       expectedRestore?: RuntimeRestore,
-      admission?: { expectedEpoch: string; assertClaim: (tx: Sql) => Promise<void> },
+      admission?: {
+        expectedEpoch: string;
+        assertClaim: (tx: Sql) => Promise<void>;
+        requireCommandAuthorityExtension?: true;
+      },
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
+      const requiresExtension = admission?.requireCommandAuthorityExtension === true;
+      const matches = (value: unknown, epoch: string) =>
+        runtimeHealthMatches(value, epoch, expectedRestore) &&
+        (!requiresExtension ||
+          (epoch === admission.expectedEpoch &&
+            (value as { commandAuthorityExtension?: unknown }).commandAuthorityExtension === 1));
       // Retain epoch alongside the result for provenance validation.
       let reply: Awaited<ReturnType<typeof commands.call>>;
       try {
         reply = await commands.call(ownerId, command, {
           ...(signal ? { signal } : {}),
-          ...admission,
-          accept: (candidate) => runtimeHealthMatches(candidate.body.result, candidate.epoch, expectedRestore),
+          ...(admission ? { expectedEpoch: admission.expectedEpoch, assertClaim: admission.assertClaim } : {}),
+          ...(requiresExtension
+            ? {
+                timeoutMs: 5_000,
+                strictDeadline: true,
+                assertClaim: async (tx: Sql) => {
+                  signal?.throwIfAborted();
+                  await admission.assertClaim(tx);
+                  const live = await tx.query(
+                    `select 1 from public.runtime_enrolments
+                     where sandbox_id=$1 and epoch=$2 and runtime_protocol_version=$3`,
+                    [sandboxId, admission.expectedEpoch, PROTOCOL_VERSION],
+                  );
+                  if (!live.rows.length) throw new RuntimeCommandRefused();
+                },
+              }
+            : {}),
+          accept: (candidate) => matches(candidate.body.result, candidate.epoch),
         });
       } catch {
         throw refusal("sandbox_not_ready");
@@ -195,10 +223,72 @@ export function createRuntimeAgent(
         body.version !== 1 ||
         body.requestId !== command.requestId ||
         body.error !== undefined ||
-        !runtimeHealthMatches(body.result, reply.epoch, expectedRestore)
+        !matches(body.result, reply.epoch)
       )
         throw refusal("sandbox_not_ready");
       return { runtime: "armada", epoch: reply.epoch };
+    },
+    async extendCommandAuthority(input: {
+      jobId: string;
+      leaseEpoch: string;
+      expectedEpoch: string;
+      expiresAt: number;
+      signal: AbortSignal;
+      assertClaim: (tx: Sql) => Promise<void>;
+    }) {
+      const { jobId, expectedEpoch, expiresAt, signal } = input;
+      const requestId = authorityExtensionRequestId(jobId);
+      if (!commands.callAuthorityExtension) throw refusal("unavailable");
+      if (!Number.isSafeInteger(expiresAt)) throw refusal("invalid_request");
+      const assertClaim = async (tx: Sql) => {
+        signal.throwIfAborted();
+        await input.assertClaim(tx);
+        const active = await tx.query(
+          `select 1 from public.sandboxes s join public.runtime_enrolments e on e.sandbox_id=s.id
+           where s.id=$1 and s.boat_runtime and s.status in ('ready','running')
+           and e.epoch=$2 and e.runtime_protocol_version=$3
+           and not exists (
+             select 1 from public.runtime_checkpoints c where c.sandbox_id=s.id and c.epoch=e.epoch
+           )`,
+          [sandboxId, expectedEpoch, PROTOCOL_VERSION],
+        );
+        signal.throwIfAborted();
+        if (!active.rows.length) throw new RuntimeCommandRefused();
+      };
+
+      await this.health(signal, undefined, {
+        expectedEpoch,
+        assertClaim,
+        requireCommandAuthorityExtension: true,
+      });
+
+      const readAck = (reply: Awaited<ReturnType<typeof commands.call>>) => {
+        const result = readRuntimeCommandSuccess(reply, expectedEpoch, requestId);
+        const deadline = result?.expiresAt;
+        if (
+          result?.epoch === expectedEpoch &&
+          typeof deadline === "number" &&
+          Number.isSafeInteger(deadline) &&
+          deadline >= expiresAt
+        )
+          return { epoch: expectedEpoch, expiresAt: deadline } satisfies ExtendCommandAuthorityResult;
+      };
+      const reply = await commands.callAuthorityExtension(
+        ownerId,
+        { ...identity(requestId), op: "extendCommandAuthority", epoch: expectedEpoch, expiresAt },
+        {
+          signal,
+          expectedEpoch,
+          leaseEpoch: input.leaseEpoch,
+          timeoutMs: 5_000,
+          strictDeadline: true,
+          assertClaim,
+          accept: (value) => !!readAck(value),
+        },
+      );
+      const ack = readAck(reply);
+      if (!ack) throw refusal("unavailable", requestId);
+      return ack;
     },
     async testModelConnection(
       request: Parameters<NonNullable<import("@armada/core").Provider["testModelConnection"]>>[0],

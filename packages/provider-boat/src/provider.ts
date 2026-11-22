@@ -133,32 +133,32 @@ function stopInFlight(status: StopOperationStatusEnum | undefined) {
 }
 
 function archivedSnapshotVerification(sandbox: Sandbox) {
-  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed" as const;
+  if (sandbox.dataExpiredAt) return { retention: "unconfirmed", reason: "data_expired" } as const;
+  if (sandbox.snapshots === false) return { retention: "unconfirmed", reason: "snapshots_disabled" } as const;
   const stopStatus = sandbox.stop?.status;
   const snapshotStatus = sandbox.lastSnapshotStatus;
+  if (stopInFlight(stopStatus)) return { retention: "pending", reason: "stop_in_flight" } as const;
   if (
-    stopInFlight(stopStatus) ||
     snapshotStatus === SandboxLastSnapshotStatusEnum.Queued ||
     snapshotStatus === SandboxLastSnapshotStatusEnum.InProgress
   )
-    return "pending" as const;
+    return { retention: "pending", reason: "snapshot_in_flight" } as const;
   if (
-    (sandbox.stop &&
-      stopStatus !== StopOperationStatusEnum.Completed &&
-      stopStatus !== StopOperationStatusEnum.Superseded) ||
-    sandbox.snapshotAvailable !== true ||
-    (snapshotStatus && snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
+    sandbox.stop &&
+    stopStatus !== StopOperationStatusEnum.Completed &&
+    stopStatus !== StopOperationStatusEnum.Superseded
   )
-    return "unconfirmed" as const;
+    return { retention: "unconfirmed", reason: "stop_status_unconfirmed" } as const;
+  if (sandbox.snapshotAvailable !== true) return { retention: "unconfirmed", reason: "snapshot_unavailable" } as const;
+  if (snapshotStatus && snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
+    return { retention: "unconfirmed", reason: "snapshot_status_unconfirmed" } as const;
+
   const stoppedAt = sandbox.stoppedAt?.getTime();
   const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
-  if (
-    stoppedAt === undefined ||
-    verifiedAt === undefined ||
-    !Number.isFinite(stoppedAt) ||
-    !Number.isFinite(verifiedAt)
-  )
-    return "unconfirmed" as const;
+  if (stoppedAt === undefined || !Number.isFinite(stoppedAt))
+    return { retention: "unconfirmed", reason: "stop_time_unconfirmed" } as const;
+  if (verifiedAt === undefined || !Number.isFinite(verifiedAt))
+    return { retention: "unconfirmed", reason: "verification_time_unconfirmed" } as const;
   return { stoppedAt, verifiedAt };
 }
 
@@ -358,29 +358,53 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
   }
 
   async function observeArchivedRetention(sandbox: Sandbox, signal: AbortSignal) {
+    const stop = sandbox.stop;
+    const endedAt = stop?.endedAt?.getTime();
+    const lastSnapshotAttemptAt = sandbox.lastSnapshotAttemptAt?.getTime();
+    const finite = (time: number | undefined) => (Number.isFinite(time) ? time : null);
+    function defer(
+      retention: "unconfirmed" | "pending",
+      reason: string,
+      observedStop?: { requestedAt: number | undefined; endedAt: number | undefined },
+    ) {
+      const stopStatus = stop?.status;
+      const snapshotStatus = sandbox.lastSnapshotStatus;
+      trace({
+        event: "boat_retention_unconfirmed",
+        providerSandboxId: sandbox.id,
+        retention,
+        reason,
+        stopStatus: stopStatus == null || STOP_STATUSES.has(stopStatus) ? (stopStatus ?? null) : "unknown",
+        snapshotStatus:
+          snapshotStatus == null || SNAPSHOT_STATUSES.has(snapshotStatus) ? (snapshotStatus ?? null) : "unknown",
+        snapshotAvailable: sandbox.snapshotAvailable === true,
+        snapshotsDisabled: sandbox.snapshots === false,
+        dataExpired: Boolean(sandbox.dataExpiredAt),
+        stoppedAt: finite(sandbox.stoppedAt?.getTime()),
+        verifiedAt: finite((sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime()),
+        lastSnapshotAttemptAt: finite(lastSnapshotAttemptAt),
+        stopEndedAt: finite(endedAt),
+        observedStopRequestedAt: finite(observedStop?.requestedAt),
+        observedStopEndedAt: finite(observedStop?.endedAt),
+      });
+      return retention;
+    }
+
     const verification = archivedSnapshotVerification(sandbox);
-    if (typeof verification === "string") return verification;
+    if (verification.reason !== undefined) return defer(verification.retention, verification.reason);
     const { stoppedAt, verifiedAt } = verification;
     if (verifiedAt >= stoppedAt) return "usable";
 
-    const lastSnapshotAttemptAt = sandbox.lastSnapshotAttemptAt?.getTime();
-    if (
-      sandbox.lastSnapshotStatus !== SandboxLastSnapshotStatusEnum.Completed ||
-      (lastSnapshotAttemptAt !== undefined &&
-        (!Number.isFinite(lastSnapshotAttemptAt) || lastSnapshotAttemptAt > verifiedAt))
-    )
-      return "unconfirmed";
-
-    const stop = sandbox.stop;
-    const endedAt = stop?.endedAt?.getTime();
-    if (
-      !stop?.id ||
-      stop.status !== StopOperationStatusEnum.Completed ||
-      endedAt === undefined ||
-      !Number.isFinite(endedAt) ||
-      endedAt < stoppedAt
-    )
-      return "unconfirmed";
+    if (sandbox.lastSnapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
+      return defer("unconfirmed", "snapshot_completion_required");
+    if (lastSnapshotAttemptAt !== undefined && !Number.isFinite(lastSnapshotAttemptAt))
+      return defer("unconfirmed", "snapshot_attempt_time_invalid");
+    if (lastSnapshotAttemptAt !== undefined && lastSnapshotAttemptAt > verifiedAt)
+      return defer("unconfirmed", "snapshot_attempt_after_verification");
+    if (!stop?.id) return defer("unconfirmed", "stop_operation_id_missing");
+    if (stop.status !== StopOperationStatusEnum.Completed) return defer("unconfirmed", "completed_stop_required");
+    if (endedAt === undefined || !Number.isFinite(endedAt)) return defer("unconfirmed", "stop_end_time_unconfirmed");
+    if (endedAt < stoppedAt) return defer("unconfirmed", "stop_ended_before_archive");
 
     const observed = await call(() => api.getStop({ sandboxId: sandbox.id, stopId: stop.id }, { signal })).catch(
       (error: unknown) => {
@@ -388,19 +412,20 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         throw error;
       },
     );
-    if (!observed) return "pending";
+    if (!observed) return defer("pending", "stop_lookup_not_found");
+    if (observed.ok !== true) return defer("unconfirmed", "stop_lookup_not_ok");
+    if (observed.id !== sandbox.id) return defer("unconfirmed", "stop_lookup_sandbox_mismatch");
     const operation = observed.stop;
-    const requestedAt = operation?.requestedAt?.getTime();
-    return observed.ok === true &&
-      observed.id === sandbox.id &&
-      operation?.id === stop.id &&
-      operation.status === StopOperationStatusEnum.Completed &&
-      operation.endedAt?.getTime() === endedAt &&
-      requestedAt !== undefined &&
-      Number.isFinite(requestedAt) &&
-      requestedAt <= verifiedAt
-      ? "usable"
-      : "unconfirmed";
+    if (operation?.id !== stop.id) return defer("unconfirmed", "stop_lookup_operation_mismatch");
+    if (operation.status !== StopOperationStatusEnum.Completed)
+      return defer("unconfirmed", "stop_lookup_not_completed");
+    const requestedAt = operation.requestedAt?.getTime();
+    const observedStop = { requestedAt, endedAt: operation.endedAt?.getTime() };
+    if (observedStop.endedAt !== endedAt) return defer("unconfirmed", "stop_end_mismatch", observedStop);
+    if (requestedAt === undefined || !Number.isFinite(requestedAt))
+      return defer("unconfirmed", "stop_request_time_unconfirmed", observedStop);
+    if (requestedAt > verifiedAt) return defer("unconfirmed", "verification_before_stop_request", observedStop);
+    return "usable";
   }
 
   async function archive(sandboxId: string): Promise<void> {
@@ -578,8 +603,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
       if (current.state !== "archived") return "pending";
       const verification = archivedSnapshotVerification(current);
-      if (verification === "pending") return "pending";
-      if (verification === "unconfirmed" || verification.verifiedAt < verification.stoppedAt) return "gone";
+      if (verification.reason !== undefined) return verification.retention === "pending" ? "pending" : "gone";
+      if (verification.verifiedAt < verification.stoppedAt) return "gone";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
         missingRetainedResource,
       );
@@ -682,25 +707,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       const current = response.sandbox;
       const info = sandboxInfo(current);
       if (current.state === "archived") info.retainedSnapshot = await observeArchivedRetention(current, signal);
-      if (info.retainedSnapshot && info.retainedSnapshot !== "usable") {
-        const stopStatus = current.stop?.status;
-        const snapshotStatus = current.lastSnapshotStatus;
-        const stoppedAt = current.stoppedAt?.getTime();
-        const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
-        trace({
-          event: "boat_retention_unconfirmed",
-          providerSandboxId: sandboxId,
-          retention: info.retainedSnapshot,
-          stopStatus: stopStatus == null || STOP_STATUSES.has(stopStatus) ? (stopStatus ?? null) : "unknown",
-          snapshotStatus:
-            snapshotStatus == null || SNAPSHOT_STATUSES.has(snapshotStatus) ? (snapshotStatus ?? null) : "unknown",
-          snapshotAvailable: current.snapshotAvailable === true,
-          snapshotsDisabled: current.snapshots === false,
-          dataExpired: Boolean(current.dataExpiredAt),
-          stoppedAt: Number.isFinite(stoppedAt) ? stoppedAt : null,
-          verifiedAt: Number.isFinite(verifiedAt) ? verifiedAt : null,
-        });
-      }
       return info;
     },
 

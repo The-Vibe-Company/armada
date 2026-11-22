@@ -16,6 +16,7 @@ import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { RuntimeFollowupConflict } from "./runtime-followup.ts";
 import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
+import { ToolError } from "./tool-error.ts";
 import { trackedOperations } from "./tracked-operations.ts";
 import { SANDBOX_ADMISSION_TIMEOUT_MS, waitForSandboxAdmission } from "./wake-bus.ts";
 
@@ -278,14 +279,17 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             if (input.action !== "launch") {
               const {
                 rows: [lease],
-              } = await tx.query<{ busy: boolean }>(
+              } = await tx.query<{ busy: boolean; extension_refused: boolean }>(
                 `select (coalesce(reconcile_lease_until>clock_timestamp(),false)
                       or ($2='stop' and (boat_runtime or runtime_transport is not distinct from 'dialout')
-                        and activity_lease_id is not null)) as busy
+                        and activity_lease_id is not null)) as busy,
+                      ($2='extend' and boat_runtime) as extension_refused
                   from public.sandboxes where id=$1`,
                 [receipt.sandboxId, input.action],
               );
               if (!lease) throw new Error("Child sandbox disappeared during admission.");
+              if (lease.extension_refused)
+                throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
               if (lease.busy) return { busy: true as const };
             }
             admissionSignal.throwIfAborted();
@@ -322,7 +326,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             sandboxId: receipt.sandboxId,
             operationId: receipt.id,
             code,
-            refusalCode: denied ? "authority_denied" : "dispatch_admission_error",
+            refusalCode: denied
+              ? "authority_denied"
+              : error instanceof ToolError
+                ? error.code
+                : "dispatch_admission_error",
           },
         );
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,

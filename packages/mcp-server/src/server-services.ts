@@ -186,13 +186,13 @@ export async function createServerServices(env: Record<string, string | undefine
         ...boatInventory,
         sanitizeEvents: async (provider, id, events) => {
           if (!caller) throw Error("Native events require trusted Armada caller scope.");
-          return modelAuth.redactEvents(provider, id, caller, events);
+          return modelAuth.redactBoatEvents(provider, id, caller, events);
         },
         beforeStop: async (provider, id) => {
           if (caller) await modelAuth.beforeStop(provider, id, caller);
         },
         afterPrompt: async (provider, id) => {
-          if (caller) await modelAuth.capture(provider, id, caller);
+          if (caller) await modelAuth.captureAfterBoatPrompt(provider, id, caller);
         },
         resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
         beforeResume: async (provider, id) => {

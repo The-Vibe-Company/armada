@@ -8,21 +8,23 @@ import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
-import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
+import { authorityExtensionRequestId } from "../src/runtime-authority-extension.ts";
+import { createRuntimeCommands, RuntimeCommandConflict, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { unsettledRuntimeCommands } from "../src/runtime-idle-evidence.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture() {
+async function fixture(waitAdvanceMs = 20_000, boatRuntime = false) {
   const { db, people } = await sharedDatabase();
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status)
-    select $1,id,org_id,owner_id,'command-native','codex','ready' from goldens where owner_id=$2 and visibility='private' limit 1`,
-    [id, people.owner],
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime)
+    select $1,id,org_id,owner_id,'command-native','codex','ready',$3 from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, people.owner, boatRuntime],
   );
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
@@ -37,7 +39,7 @@ async function fixture() {
       const callback = waiting;
       waiting = undefined;
       await callback?.();
-      now += 20000;
+      now += waitAdvanceMs;
     },
   };
   const bridge = (time = clock) => createRuntimeCommands(authority, ENCRYPTION_KEY, time);
@@ -72,6 +74,210 @@ async function fixture() {
     },
   };
 }
+
+test.each([
+  ["advertised", 1, true],
+  ["absent", undefined, false],
+  ["unknown version", 2, false],
+  ["stale generation", 1, false],
+  ["stale expected epoch", 1, false],
+  ["late reply", 1, false],
+] as const)("extension capability health handles %s", async (kind, capability, supported) => {
+  const f = await fixture(kind === "late reply" ? 5_000 : 250);
+  const initial = await f.enrol();
+  const active = kind === "stale expected epoch" ? await f.enrol() : initial;
+  const bridge = f.bridge();
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  f.onWait(async () => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== "health") throw Error("Expected a fresh health probe");
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: {
+        version: 1,
+        requestId: command.requestId,
+        result: {
+          ready: true,
+          generation: kind === "stale generation" ? "0" : active.epoch,
+          commandAuthorityExtension: capability,
+        },
+      },
+    });
+  });
+  const health = agent.health(undefined, undefined, {
+    expectedEpoch: initial.epoch,
+    async assertClaim() {},
+    requireCommandAuthorityExtension: true,
+  });
+  if (supported) {
+    expect(await health).toEqual({ runtime: "armada", epoch: active.epoch });
+  } else {
+    await expect(health).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  }
+  if (kind === "stale expected epoch")
+    expect((await f.db.query("select request_id from runtime_commands where sandbox_id=$1", [f.id])).rows).toEqual([]);
+});
+
+test.each([
+  "covers target",
+  "short deadline",
+  "wrong ACK epoch",
+  "replacement epoch",
+  "late ACK",
+  "lost claim",
+  "expired dispatch",
+  "expired claim after ACK",
+  "successor rebinds",
+] as const)("extension authority receipt handles %s", async (kind) => {
+  const f = await fixture(kind === "late ACK" ? 2_500 : 250, true);
+  const bridge = f.bridge();
+  let active = await f.enrol();
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const {
+    rows: [sandbox],
+  } = await f.db.query<{ generation: number; deadline: Date }>(
+    "select lifecycle_generation::int as generation, now()+interval '1 day' as deadline from sandboxes where id=$1",
+    [f.id],
+  );
+  if (!sandbox) throw Error("Missing fixture sandbox");
+  const jobId = await jobs.enqueue("boat_runtime_extend", f.id, sandbox.generation, f.id, null, {
+    orgId: f.people.org,
+    maxAttempts: 2,
+    deadline: sandbox.deadline,
+  });
+  if (!jobId) throw Error("Missing fixture job");
+  await f.db.query("insert into boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [
+    f.id,
+    jobId,
+  ]);
+  const claim = async () => {
+    const lease = await jobs.claim("boat_runtime_extend", crypto.randomUUID(), 300, 1);
+    if (!lease) throw Error("Missing fixture lease");
+    return lease.lease_epoch;
+  };
+  let leaseEpoch = await claim();
+  let ownsClaim = true;
+  const agent = createRuntimeAgent(bridge, {
+    provider: "boat",
+    harness: "codex",
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    cwd: "/home/user",
+    defaults: { model: "gpt-5.4", reasoningEffort: "high" },
+  });
+  const target = 60_000;
+  const requestId = authorityExtensionRequestId(jobId);
+  const busy = async () =>
+    (await f.db.query(unsettledRuntimeCommands("$1", "$2"), [f.id, sandbox.generation])).rows.length > 0;
+  const extend = () =>
+    agent.extendCommandAuthority({
+      jobId,
+      leaseEpoch,
+      expectedEpoch: active.epoch,
+      expiresAt: target,
+      signal: new AbortController().signal,
+      async assertClaim() {
+        if (!ownsClaim) throw Error("extension claim lost");
+      },
+    });
+  const answer = async (op: "health" | "extendCommandAuthority", result: Record<string, unknown>) => {
+    const { command } = await bridge.next(active.runtimeToken, active.epoch);
+    if (command?.op !== op) throw Error(`Expected ${op} command`);
+    if (op === "extendCommandAuthority")
+      expect(command).toMatchObject({ requestId, epoch: active.epoch, expiresAt: target });
+    await bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: command.requestId,
+      status: 200,
+      body: { version: 1, requestId: command.requestId, result },
+    });
+  };
+  const answerHealth = () => answer("health", { ready: true, generation: active.epoch, commandAuthorityExtension: 1 });
+  const answerAck = async () => {
+    await answer("extendCommandAuthority", {
+      epoch: kind === "wrong ACK epoch" ? "0" : active.epoch,
+      expiresAt: kind === "short deadline" ? target - 1 : target + 1,
+    });
+    if (kind === "lost claim") ownsClaim = false;
+    if (kind === "expired claim after ACK") await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+  };
+  f.onWait(async () => {
+    await answerHealth();
+    f.onWait(async () => {
+      if (kind === "expired dispatch") {
+        expect(await busy()).toBe(true);
+        await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+        expect(await busy()).toBe(false);
+        const later = f.command("later-health");
+        await bridge.enqueue(f.people.owner, later, active.epoch);
+        expect((await bridge.next(active.runtimeToken, active.epoch)).command).toEqual(later);
+        return;
+      }
+      if (kind === "successor rebinds") return;
+      if (kind !== "late ACK") return answerAck();
+      f.onWait(answerAck);
+    });
+  });
+  if (kind === "short deadline" || kind === "wrong ACK epoch") {
+    await expect(extend()).rejects.toMatchObject({ code: "unavailable" });
+  } else if (kind === "late ACK" || kind === "expired dispatch") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+  } else if (kind === "lost claim") {
+    await expect(extend()).rejects.toThrow("extension claim lost");
+  } else if (kind === "expired claim after ACK") {
+    const receipt = extend();
+    await expect(receipt).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(receipt).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
+    f.onWait(answerHealth);
+    const replay = extend();
+    await expect(replay).rejects.toBeInstanceOf(RuntimeCommandConflict);
+    await expect(replay).rejects.not.toBeInstanceOf(RuntimeCommandRefused);
+  } else if (kind === "successor rebinds") {
+    await expect(extend()).rejects.toThrow("runtime_command_pending");
+    await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+    leaseEpoch = await claim();
+    f.onWait(async () => {
+      await answerHealth();
+      f.onWait(answerAck);
+    });
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
+  } else {
+    expect(await extend()).toEqual({ epoch: active.epoch, expiresAt: target + 1 });
+    if (kind === "replacement epoch") {
+      active = await f.enrol();
+      f.onWait(answerHealth);
+      await expect(extend()).rejects.toThrow("runtime_command_conflict");
+      expect((await bridge.next(active.runtimeToken, active.epoch)).command).toBeNull();
+    }
+  }
+});
+
+test("generic mailbox admission refuses a command-authority extension", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const command = {
+    version: 1,
+    requestId: authorityExtensionRequestId(crypto.randomUUID()),
+    sandboxId: f.id,
+    op: "extendCommandAuthority",
+    epoch: active.epoch,
+    expiresAt: 60_000,
+  } as const;
+  await expect(bridge.enqueue(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
+  await expect(bridge.call(f.people.owner, command)).rejects.toBeInstanceOf(RuntimeCommandRefused);
+});
 
 test("an exact command replay checks the claim again before returning a stored reply", async () => {
   const f = await fixture();

@@ -8,7 +8,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { NativeOutputPending, persistedNativePages } from "./event-pagination.ts";
+import { NativeOutputPending, pausedNativePages } from "./event-pagination.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 const authorizedSandbox = `
@@ -84,7 +84,7 @@ export function withNativeLogJournal(
             const bytes = coalesce ? budget.maxBytes : Buffer.byteLength(JSON.stringify(page.events));
             if (rawCount > limit || (bytes > maxBytes && (coalesce || rawCount !== 1))) continue;
           }
-          persistedNativePages.add(page);
+          pausedNativePages.add(page);
           return page;
         }
         return undefined;
@@ -99,9 +99,20 @@ export function withNativeLogJournal(
       try {
         page = await provider.events(request);
       } catch (error) {
-        if (error instanceof NativeOutputPending && !target.pending) {
-          const saved = await persisted();
+        if (error instanceof NativeOutputPending) {
+          const saved = target.pending ? undefined : await persisted();
           if (saved) return saved;
+          if (backward && request.cursor) {
+            request.signal?.throwIfAborted();
+            const pausedPage: EventPage = {
+              events: [],
+              cursor: request.cursor,
+              olderCursor: request.cursor,
+              hasMore: true,
+            };
+            pausedNativePages.add(pausedPage);
+            return pausedPage;
+          }
         }
         throw error;
       }
