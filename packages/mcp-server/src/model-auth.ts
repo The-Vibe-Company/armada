@@ -18,9 +18,21 @@ import { createNativeStateStore, NativeObservationSuperseded } from "./model-aut
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
 
+class StoppedBoatAuthProofMissing extends ProviderError {
+  constructor(
+    readonly reason: "broker_delivery_missing" | "legacy_quiescence_missing",
+    message: string,
+  ) {
+    super({ provider: "boat", code: "unavailable", retryable: true, message });
+  }
+}
+
 function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
   recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
-    causeCode: error instanceof NativeObservationSuperseded ? error.reason : undefined,
+    causeCode:
+      error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing
+        ? error.reason
+        : undefined,
   });
 }
 
@@ -201,12 +213,10 @@ export function createModelAuthOwnership(
           if (physical.state === "stopped") {
             if (await state.hasBrokerDelivery(delivery))
               return broker.secrets(row.credential_id, row.credential_version);
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Stopped native auth has no verified access-only delivery; output is withheld.",
-            });
+            throw new StoppedBoatAuthProofMissing(
+              "broker_delivery_missing",
+              "Stopped native auth has no verified access-only delivery; output is withheld.",
+            );
           }
           if (!["ready", "running"].includes(physical.state) || physical.physicalExitConfirmed === true)
             throw new ProviderError({
@@ -246,13 +256,10 @@ export function createModelAuthOwnership(
       }
       const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
         if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
-          throw new ProviderError({
-            provider: "boat",
-            code: "unavailable",
-            retryable: true,
-            message:
-              "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
-          });
+          throw new StoppedBoatAuthProofMissing(
+            "legacy_quiescence_missing",
+            "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
+          );
         return saved?.secrets ?? [];
       };
       const nativeSource = { actor, accountId: row.credential_id, version: row.credential_version, sandboxId: row.id };
@@ -320,7 +327,8 @@ export function createModelAuthOwnership(
         await this.capture(provider, providerId, caller);
       } catch (error) {
         recordNativeReadFailure("getPrompt", error);
-        if (!(error instanceof NativeObservationSuperseded)) throw error;
+        if (!(error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing))
+          throw error;
       }
     },
     async redactBoatEvents(
