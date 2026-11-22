@@ -216,6 +216,9 @@ test("real native state publication seals rotation without replacing binding, fe
   eventRevision = 3;
   provider.get = async (id) => ({ id, name: id, state: "stopped", providerState: "archived", labels: {} });
   await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
+  expect(await promptProvider.getPrompt({ sandboxId: "native", promptId: promptStatus.promptId })).toEqual(
+    promptStatus,
+  );
   eventRevision = 2;
   provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
   // Storage policy accepts only the server's quiesced-capture purpose. The
@@ -549,6 +552,7 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   boat.sandbox(physical.id).info = { ...runningInfo, state: "stopping" };
   const beforeStoppingRead = samples;
   await expect(events("stopping-output")).rejects.toMatchObject({ code: "unavailable" });
+  await expect(readPrompt()).rejects.toMatchObject({ code: "unavailable" });
   expect(samples).toBe(beforeStoppingRead);
   boat.sandbox(physical.id).info = runningInfo;
   unavailable = true;
@@ -559,7 +563,7 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   await boat.provider.stop({ sandboxId: physical.id });
   const beforeUnknownStop = samples;
   await expect(events("unknown-stopped-output")).rejects.toMatchObject({ code: "unavailable" });
-  await expect(readPrompt()).rejects.toMatchObject({ code: "unavailable" });
+  expect(await readPrompt()).toEqual(promptStatus);
   expect(samples).toBe(beforeUnknownStop);
   const ready = () => {
     boat.sandbox(physical.id).info = { ...boat.sandbox(physical.id).info, state: "ready", providerState: "ready" };
