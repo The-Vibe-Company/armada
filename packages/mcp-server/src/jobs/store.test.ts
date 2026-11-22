@@ -83,6 +83,55 @@ async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: strin
   );
 }
 
+test("Boat extension storage persists job intent and complete, service-only physical evidence", async () => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const jobId = await f.store.enqueue("boat_runtime_extend", id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    deadline: new Date("2030-01-01T00:00:00Z"),
+  });
+  await expect(
+    f.db.query("insert into boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [
+      id,
+      crypto.randomUUID(),
+    ]),
+  ).rejects.toMatchObject({ code: "23503" });
+  await f.db.query("insert into boat_runtime_extension_state (sandbox_id,pending_job_id) values ($1,$2)", [id, jobId]);
+  await expect(
+    f.db.query("update boat_runtime_extension_state set observed_expires_at=now() where sandbox_id=$1", [id]),
+  ).rejects.toMatchObject({ code: "23514" });
+  await f.db.query(
+    `update boat_runtime_extension_state
+       set observed_provider_id=s.provider_sandbox_id,
+           observed_generation=s.lifecycle_generation,
+           observed_at='2026-11-22T00:00:00Z',
+           observed_expires_at='2026-11-23T00:00:00Z'
+       from sandboxes s where s.id=$1 and sandbox_id=s.id`,
+    [id],
+  );
+  await expect(
+    f.db.query("update boat_runtime_extension_state set observed_expires_at='infinity' where sandbox_id=$1", [id]),
+  ).rejects.toMatchObject({ code: "23514" });
+  await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
+  const { rows } = await f.db.query(
+    `select pending_job_id as job_id, observed_generation::int as generation, observed_provider_id as provider_id,
+            observed_expires_at='2026-11-23T00:00:00Z' as deadline_matches
+       from boat_runtime_extension_state where sandbox_id=$1`,
+    [id],
+  );
+  expect(rows).toEqual([{ job_id: jobId, generation: 2, provider_id: id, deadline_matches: true }]);
+  const { rows: grants } = await f.db.query(
+    `select role, has_table_privilege(role, 'public.boat_runtime_extension_state', 'select,insert,update,delete') as access
+       from unnest(array['anon','authenticated','service_role']) as role order by role`,
+  );
+  expect(grants).toEqual([
+    { role: "anon", access: false },
+    { role: "authenticated", access: false },
+    { role: "service_role", access: true },
+  ]);
+});
+
 test("a Boat extension lease is capped and an elapsed deadline permits recovery only", async () => {
   const f = await fixture();
   const id = await sandbox(f, true);
