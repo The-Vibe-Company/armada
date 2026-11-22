@@ -1,5 +1,68 @@
 # Changelog
 
+## [8.0.0](https://github.com/The-Vibe-Company/armada/compare/v7.0.0...v8.0.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#3933](https://github.com/The-Vibe-Company/armada/issues/3933))
+* **core:** capability reads instead of provider-id branches in core ([#3930](https://github.com/The-Vibe-Company/armada/issues/3930))
+
+### Features
+
+* **agent-runtime:** extend command authority within the live epoch ([#3942](https://github.com/The-Vibe-Company/armada/issues/3942)) ([32e9e8b](https://github.com/The-Vibe-Company/armada/commit/32e9e8b07be39b6aacabb47ea2428274516eec61))
+* **db:** support Antigravity model accounts ([#3730](https://github.com/The-Vibe-Company/armada/issues/3730)) ([b87e7ca](https://github.com/The-Vibe-Company/armada/commit/b87e7ca324ac53a1f4dedd18c9850548c5ef58be))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3929](https://github.com/The-Vibe-Company/armada/issues/3929)) ([f267a0e](https://github.com/The-Vibe-Company/armada/commit/f267a0ef7ab3f1345e45c9324d7f26d2a43a70b9))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3933](https://github.com/The-Vibe-Company/armada/issues/3933)) ([bf83f0c](https://github.com/The-Vibe-Company/armada/commit/bf83f0c711e9e297e3433d81ca835627923cc20d))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3935](https://github.com/The-Vibe-Company/armada/issues/3935)) ([26993b7](https://github.com/The-Vibe-Company/armada/commit/26993b704980611d34ed52dd392332284187e8a6))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3937](https://github.com/The-Vibe-Company/armada/issues/3937)) ([89bef1d](https://github.com/The-Vibe-Company/armada/commit/89bef1d286b6c2dab70fff2f79fc3a766a9119f6))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3939](https://github.com/The-Vibe-Company/armada/issues/3939)) ([1064efa](https://github.com/The-Vibe-Company/armada/commit/1064efaf4f64a409ad1a6625979b9813cd86d474))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3940](https://github.com/The-Vibe-Company/armada/issues/3940)) ([4e47669](https://github.com/The-Vibe-Company/armada/commit/4e476691480b16c9cd86ffaa1fd7b6192756e14f))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3941](https://github.com/The-Vibe-Company/armada/issues/3941)) ([efe090a](https://github.com/The-Vibe-Company/armada/commit/efe090a23525f2ef314ee617d700408aaa9f2663))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3943](https://github.com/The-Vibe-Company/armada/issues/3943)) ([3eb95ea](https://github.com/The-Vibe-Company/armada/commit/3eb95ea206ee242a10e4feafbfbfa08503d59059))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3945](https://github.com/The-Vibe-Company/armada/issues/3945)) ([33ad662](https://github.com/The-Vibe-Company/armada/commit/33ad662707d4d2b9e95070d3153470a6e22cecc7))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3948](https://github.com/The-Vibe-Company/armada/issues/3948)) ([0bdd23b](https://github.com/The-Vibe-Company/armada/commit/0bdd23b78e8ac73786c66d0a5ed74893a975803c))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3950](https://github.com/The-Vibe-Company/armada/issues/3950)) ([06ace95](https://github.com/The-Vibe-Company/armada/commit/06ace9574fd3bb44087c4efd6b834117fef90f01))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3953](https://github.com/The-Vibe-Company/armada/issues/3953)) ([97d1d9a](https://github.com/The-Vibe-Company/armada/commit/97d1d9a2aeaf6c862b23a8a47843fb6ad3d654cf))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3957](https://github.com/The-Vibe-Company/armada/issues/3957)) ([56fa1b4](https://github.com/The-Vibe-Company/armada/commit/56fa1b488ffb717c6f75a1680ba7265a419c87a2))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3961](https://github.com/The-Vibe-Company/armada/issues/3961)) ([859cf63](https://github.com/The-Vibe-Company/armada/commit/859cf63e09d4ad4f02a1e21abaf36b36e2b6b719))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3963](https://github.com/The-Vibe-Company/armada/issues/3963)) ([810fa67](https://github.com/The-Vibe-Company/armada/commit/810fa672b7d5de019f8a402cc24e10f00e1a0d75))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3965](https://github.com/The-Vibe-Company/armada/issues/3965)) ([fd612c3](https://github.com/The-Vibe-Company/armada/commit/fd612c309d58133cc6baeea04f09a626ffc7bb04))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3967](https://github.com/The-Vibe-Company/armada/issues/3967)) ([fa79cae](https://github.com/The-Vibe-Company/armada/commit/fa79cae22ac42f52b7b5ce08d69030c93c1edee3))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3970](https://github.com/The-Vibe-Company/armada/issues/3970)) ([acf252d](https://github.com/The-Vibe-Company/armada/commit/acf252d139bf9145b3b28bea983245800382cbad))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3972](https://github.com/The-Vibe-Company/armada/issues/3972)) ([358d1c7](https://github.com/The-Vibe-Company/armada/commit/358d1c7e5cf1b53f12ec9d3ac9e0ed8cd5ced240))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3973](https://github.com/The-Vibe-Company/armada/issues/3973)) ([7647d5a](https://github.com/The-Vibe-Company/armada/commit/7647d5a71784803ccd369ebd6ef19ff93edca9e0))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3975](https://github.com/The-Vibe-Company/armada/issues/3975)) ([7d5afd6](https://github.com/The-Vibe-Company/armada/commit/7d5afd6a50458494816459c0e6aeb39b677bb004))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3977](https://github.com/The-Vibe-Company/armada/issues/3977)) ([0dd2b8e](https://github.com/The-Vibe-Company/armada/commit/0dd2b8e82641aafb4cb9652e01ef300f6feff0bd))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3980](https://github.com/The-Vibe-Company/armada/issues/3980)) ([4e23ca4](https://github.com/The-Vibe-Company/armada/commit/4e23ca4db328837c7f263f0a619e7dfc00b6ca42))
+* **server:** Boat launches use the runtime by default ([#3944](https://github.com/The-Vibe-Company/armada/issues/3944)) ([e5216be](https://github.com/The-Vibe-Company/armada/commit/e5216bed4885be692d4dfb8ec067ed768224ac2c))
+* **server:** Boat launches use the runtime by default ([#3946](https://github.com/The-Vibe-Company/armada/issues/3946)) ([b439c79](https://github.com/The-Vibe-Company/armada/commit/b439c799a70311516b44f0b963bc586785762e9c))
+* **server:** Boat launches use the runtime by default ([#3947](https://github.com/The-Vibe-Company/armada/issues/3947)) ([6f76c90](https://github.com/The-Vibe-Company/armada/commit/6f76c90a968876fa74e2f585119aaf2c8989cd0a))
+* **server:** Boat launches use the runtime by default ([#3952](https://github.com/The-Vibe-Company/armada/issues/3952)) ([0fe5fb6](https://github.com/The-Vibe-Company/armada/commit/0fe5fb6d91ff20d31e4decde12cfa815c52a32be))
+* **server:** Boat launches use the runtime by default ([#3955](https://github.com/The-Vibe-Company/armada/issues/3955)) ([9c8c644](https://github.com/The-Vibe-Company/armada/commit/9c8c644215ca416ecbc7d11b1ebfa4794ffb3433))
+* **server:** Boat launches use the runtime by default ([#3958](https://github.com/The-Vibe-Company/armada/issues/3958)) ([64327a6](https://github.com/The-Vibe-Company/armada/commit/64327a60174c38d075dd16c1d4c0edab35a4c86d))
+* **server:** Boat launches use the runtime by default ([#3960](https://github.com/The-Vibe-Company/armada/issues/3960)) ([6347ddd](https://github.com/The-Vibe-Company/armada/commit/6347ddd3e67863dcf7df76d118a7b0e838458cc4))
+* **server:** Boat launches use the runtime by default ([#3962](https://github.com/The-Vibe-Company/armada/issues/3962)) ([b65fc14](https://github.com/The-Vibe-Company/armada/commit/b65fc14d272941967b10fc7e11d0514e19376b82))
+* **server:** Boat launches use the runtime by default ([#3964](https://github.com/The-Vibe-Company/armada/issues/3964)) ([09f1780](https://github.com/The-Vibe-Company/armada/commit/09f1780cc3bdff6d7b5fc77ca3bcca2a9010c60d))
+* **server:** Boat launches use the runtime by default ([#3966](https://github.com/The-Vibe-Company/armada/issues/3966)) ([572f3ef](https://github.com/The-Vibe-Company/armada/commit/572f3eff555c49d48c3f9025de9ff648abbb6711))
+* **server:** Boat launches use the runtime by default ([#3968](https://github.com/The-Vibe-Company/armada/issues/3968)) ([0b9263b](https://github.com/The-Vibe-Company/armada/commit/0b9263bcd5ddc1043bb43f73f2adb6446db9378d))
+* **server:** Boat launches use the runtime by default ([#3971](https://github.com/The-Vibe-Company/armada/issues/3971)) ([5f35994](https://github.com/The-Vibe-Company/armada/commit/5f359944d5e362b36e5f1f6d5ca6320f249330e2))
+* **server:** Boat launches use the runtime by default ([#3974](https://github.com/The-Vibe-Company/armada/issues/3974)) ([ef8345f](https://github.com/The-Vibe-Company/armada/commit/ef8345fdc5f38d978986bafafc749871778c2d9b))
+* **server:** Boat launches use the runtime by default ([#3976](https://github.com/The-Vibe-Company/armada/issues/3976)) ([dffb6f7](https://github.com/The-Vibe-Company/armada/commit/dffb6f714af8f7a7f59f96eba64ff1eddac7dec2))
+* **server:** Boat launches use the runtime by default ([#3978](https://github.com/The-Vibe-Company/armada/issues/3978)) ([7fe012a](https://github.com/The-Vibe-Company/armada/commit/7fe012ac140f32c4ee404190d08cf6da1ab4cf36))
+* **server:** Boat launches use the runtime by default ([#3981](https://github.com/The-Vibe-Company/armada/issues/3981)) ([16ee35f](https://github.com/The-Vibe-Company/armada/commit/16ee35f61d27931466e0d808bcdc2b75fcd611fe))
+* **server:** Boat launches use the runtime by default ([#3984](https://github.com/The-Vibe-Company/armada/issues/3984)) ([be718a9](https://github.com/The-Vibe-Company/armada/commit/be718a9eee394273af1836cf21d4ac567b38da77))
+
+
+### Bug Fixes
+
+* **smoke:** derived step deadlines need max(3 x p99, 10 s), the 2 x p99 rule keeps failing releases ([#3921](https://github.com/The-Vibe-Company/armada/issues/3921)) ([e93d3f9](https://github.com/The-Vibe-Company/armada/commit/e93d3f9c72aa12f0a0571865a929718512a7417c))
+
+
+### Code Refactoring
+
+* **core:** capability reads instead of provider-id branches in core ([#3930](https://github.com/The-Vibe-Company/armada/issues/3930)) ([2981324](https://github.com/The-Vibe-Company/armada/commit/298132421e1e17796c299f139f3e49c8d2657711))
+
 ## [7.0.0](https://github.com/The-Vibe-Company/armada/compare/v6.0.0...v7.0.0) (2026-11-21)
 
 
