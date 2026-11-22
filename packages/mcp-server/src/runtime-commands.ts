@@ -9,6 +9,11 @@ import {
   observeProviderCall,
   recordOperatorDiagnostic,
 } from "./request-observability.ts";
+import {
+  authorityExtensionPrefix,
+  dispatchableRuntimeCommand,
+  liveAuthorityExtension,
+} from "./runtime-authority-extension.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { recordDockerPromptAccepted, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
@@ -101,26 +106,6 @@ async function body(request: Request): Promise<unknown> {
   } catch {
     throw new RuntimeCommandConflict();
   }
-}
-
-// Keep the operation identity stable across claims. The pending reference names
-// the only job that may dispatch this command to the current runtime session.
-const authorityExtensionPrefix = "boat_authority_";
-export const authorityExtensionRequestId = (jobId: string) => `${authorityExtensionPrefix}${jobId}`;
-function liveAuthorityExtension(sandboxId: string, epoch: string, id: string, leaseEpoch?: string) {
-  return `exists (
-    select 1
-    from public.boat_runtime_extension_state ext
-    join public.jobs j on j.id=ext.pending_job_id
-    join public.sandboxes s on s.id=ext.sandbox_id
-    where s.id=${sandboxId} and s.boat_runtime and s.status in ('ready','running')
-      and s.stop_requested_at is null and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-      and j.kind='boat_runtime_extend' and j.state='leased'
-      and j.lease_until>clock_timestamp() and j.deadline_at>clock_timestamp()
-      and '${authorityExtensionPrefix}' || j.id::text=${id}
-      ${leaseEpoch ? `and j.lease_epoch=${leaseEpoch}` : ""}
-      and not exists (select 1 from public.runtime_checkpoints c where c.sandbox_id=s.id and c.epoch=${epoch})
-  )`;
 }
 
 /** All payload I/O is under the existing member -> sandbox -> epoch transaction fence. */
@@ -279,8 +264,7 @@ export function createRuntimeCommands(
            and not (starts_with(request_id,'outputs_') and exists(select 1 from public.runtime_commands later
              where later.sandbox_id=c.sandbox_id and later.epoch=c.epoch and later.sequence>c.sequence
              and later.result_enc is not null))
-           and (not starts_with(c.request_id,'${authorityExtensionPrefix}')
-                or ${liveAuthorityExtension("c.sandbox_id", "c.epoch", "c.request_id")})
+           and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")}
            order by sequence limit 2`,
           [scope.sandboxId, scope.epoch, String(time.now())],
         )
@@ -544,6 +528,7 @@ export function createRuntimeCommands(
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {
           signal.throwIfAborted();
+          // A result may commit while the read still has a pending snapshot.
           let woken = false;
           const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
             woken = true;
@@ -561,6 +546,7 @@ export function createRuntimeCommands(
             return response.reply;
           }
           if (response.state !== "pending") throw new RuntimeCommandConflict();
+          // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
           noteAdmission();
           const remaining = deadline - time.now();
           if (remaining <= 0) throw new RuntimeCommandPending();

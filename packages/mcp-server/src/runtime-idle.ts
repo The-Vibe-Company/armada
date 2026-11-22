@@ -3,6 +3,7 @@ import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { dispatchableRuntimeCommand } from "./runtime-authority-extension.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
@@ -60,7 +61,8 @@ export function createRuntimeIdle(
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
-       where c.sandbox_id=$1 and c.result_enc is null and not ${expiredOutputRead("c.request_id", "$2")} limit 1`,
+       where c.sandbox_id=$1 and c.result_enc is null and not ${expiredOutputRead("c.request_id", "$2")}
+         and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")} limit 1`,
       [id, String(now())],
     );
     if (busy.rows.length) throw Error("Runtime command pending.");

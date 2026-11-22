@@ -24,12 +24,8 @@ import {
 } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
-import {
-  authorityExtensionRequestId,
-  type createRuntimeCommands,
-  RuntimeCommandRefused,
-  readRuntimeCommandSuccess,
-} from "./runtime-commands.ts";
+import { authorityExtensionRequestId } from "./runtime-authority-extension.ts";
+import { type createRuntimeCommands, RuntimeCommandRefused, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { type RuntimeRestore, runtimeHealthMatches } from "./runtime-health.ts";
 
 const errors: Record<string, ProviderErrorCode> = {

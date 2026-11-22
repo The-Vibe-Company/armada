@@ -8,8 +8,10 @@ import { createJobsStore } from "../src/jobs/store.ts";
 import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
-import { authorityExtensionRequestId, createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
+import { authorityExtensionRequestId } from "../src/runtime-authority-extension.ts";
+import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { unsettledRuntimeCommands } from "../src/runtime-idle-evidence.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
@@ -175,6 +177,8 @@ test.each([
   });
   const target = 60_000;
   const requestId = authorityExtensionRequestId(jobId);
+  const busy = async () =>
+    (await f.db.query(unsettledRuntimeCommands("$1", "$2"), [f.id, sandbox.generation])).rows.length > 0;
   const extend = () =>
     agent.extendCommandAuthority({
       jobId,
@@ -210,7 +214,9 @@ test.each([
     await answerHealth();
     f.onWait(async () => {
       if (kind === "expired dispatch") {
+        expect(await busy()).toBe(true);
         await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
+        expect(await busy()).toBe(false);
         const later = f.command("later-health");
         await bridge.enqueue(f.people.owner, later, active.epoch);
         expect((await bridge.next(active.runtimeToken, active.epoch)).command).toEqual(later);
