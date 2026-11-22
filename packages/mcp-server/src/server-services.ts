@@ -214,14 +214,7 @@ export async function createServerServices(env: Record<string, string | undefine
           await sandboxArmadaAccess.beforePrompt(provider, id);
         },
         beforeSnapshot: async (provider, id) => {
-          if (caller) {
-            try {
-              await modelAuth.capture(provider, id, caller);
-            } catch (error) {
-              recordNativeReadFailure("getPrompt", error);
-              throw error;
-            }
-          }
+          if (caller) await modelAuth.capture(provider, id, caller);
           await sandboxArmadaAccess.beforeSnapshot(provider, id);
           await mcp.beforeSnapshot(provider, id);
         },
