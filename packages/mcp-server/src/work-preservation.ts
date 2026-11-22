@@ -55,7 +55,7 @@ export type StopAuthority = {
 
 const NO_EXTRA_FENCE: StopFence = [null, null, null, null, null];
 
-/** Runtime preservation policy records acknowledged journal evidence, never a Git archive. */
+/** Describe journal evidence for runtime paths without physical Git capture. */
 export async function runtimePreservationNote(sql: Sql, id: string): Promise<string> {
   const checkpoint = (
     await sql.query<{ epoch: string; watermark: string }>(
@@ -311,10 +311,12 @@ async function captureAndStore(
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
-    if (stop.modal_runtime || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
+    const boatCapture = stop.boat_runtime && !!provider.captureRuntimeWork;
+    const runtimeCapture = stop.modal_runtime || boatCapture;
+    if (runtimeCapture || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
       if (!stop.work_stop_owned || !authority) return "pending";
-      progress.deferOnFailure = stop.modal_runtime;
-      if (!stop.modal_runtime) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
+      progress.deferOnFailure = runtimeCapture;
+      if (!runtimeCapture) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
       progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind, provider.id];
     }
     progress.stopToken = stop.stop_token;
@@ -328,7 +330,7 @@ async function captureAndStore(
       );
       return;
     }
-    if (stop.boat_runtime) {
+    if (stop.boat_runtime && !boatCapture) {
       await writePreservationNote(sql, id, await runtimePreservationNote(sql, id), stop.stop_token, progress.fence);
       return;
     }
@@ -340,8 +342,10 @@ async function captureAndStore(
     const current = await provider.get(providerId, { signal });
     if (expired()) return;
     observed("observed", current.state);
+    if (boatCapture && current.id !== providerId) return "pending";
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    const fencedNativeCapture = !stop.modal_runtime && provider.supportsExecPhysicalGeneration;
+    if (boatCapture && current.state === "stopping") return "pending";
+    const fencedNativeCapture = !runtimeCapture && provider.supportsExecPhysicalGeneration;
     const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
     if (
       fencedNativeCapture &&
@@ -375,7 +379,7 @@ async function captureAndStore(
     if (!(await ownsCapture())) return "pending";
     const context = { source, captureId: crypto.randomUUID() };
     let acknowledgements: string | null = null;
-    if (!stop.modal_runtime) {
+    if (!runtimeCapture) {
       // Native runtimes acknowledge interrupt only after active turns settle.
       stage = progress.stage = "quiesce";
       observed("quiesce_started");
@@ -399,14 +403,19 @@ async function captureAndStore(
       }
       observed("quiesce_finished");
     }
-    stage = progress.stage = stop.modal_runtime ? "quiesce" : "capture";
+    stage = progress.stage = runtimeCapture ? "quiesce" : "capture";
     observed("capture_started");
     const onWorkAtRisk = () => {
       progress.workAtRisk = true;
     };
     let result: WorkPreservation;
-    if (stop.modal_runtime) {
-      if (!provider.captureRuntimeWork || !current.physicalGeneration || current.id !== providerId)
+    if (runtimeCapture) {
+      if (
+        !provider.captureRuntimeWork ||
+        !current.physicalGeneration ||
+        current.id !== providerId ||
+        (boatCapture && !["ready", "running"].includes(current.state))
+      )
         throw new ProviderError({
           provider: provider.id,
           code: "sandbox_not_ready",

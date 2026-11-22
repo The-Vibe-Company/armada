@@ -132,7 +132,7 @@ export type StopFence = [
 ];
 
 export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
-  and provider in ('boat','modal') and not boat_runtime
+  and provider in ('boat','modal')
   and (provider='modal' or runtime_transport is distinct from 'dialout')
   and provider_sandbox_id=$2::text and provider::text=$6::text
   and lifecycle_generation=$4::bigint

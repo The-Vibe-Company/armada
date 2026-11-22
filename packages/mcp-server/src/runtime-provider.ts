@@ -6,25 +6,29 @@ type RuntimeTtlPort = {
   setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
 };
 
-export type RuntimeWorkProvider = Provider & RuntimeTtlPort & { captureRuntimeWork?: ModalRuntimeCapture };
+type RuntimeWorkPort = { captureRuntimeWork?: ModalRuntimeCapture };
+export type RuntimeWorkProvider = Provider & RuntimeTtlPort & RuntimeWorkPort;
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
  * to host agent methods, including optional ports added in future.
  */
 export function createRuntimeProvider(
-  host: Provider & RuntimeTtlPort,
+  host: RuntimeWorkProvider,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
-  captureRuntimeWork?: ModalRuntimeCapture,
+  modalCapture?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
   let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
+  let captureRuntimeWork: RuntimeWorkPort["captureRuntimeWork"];
   switch (host.id) {
     case "boat":
       setRuntimeTtl = host.setRuntimeTtl;
+      captureRuntimeWork = host.captureRuntimeWork?.bind(host);
       break;
     case "modal":
+      captureRuntimeWork = modalCapture;
       break;
     default:
       throw Error("boat_runtime_host_required");
@@ -146,6 +150,7 @@ export function createRuntimeProvider(
       ? {
           captureRuntimeWork(request: Parameters<typeof captureRuntimeWork>[0]) {
             target(request.sandboxId);
+            request.signal.throwIfAborted();
             return captureRuntimeWork(request);
           },
         }
