@@ -3,7 +3,7 @@ import { createGoldenBuildJob } from "../golden-worker.ts";
 import { retentionMaintenanceJob } from "../retention-maintenance.ts";
 import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
-function fixture(kind = "stop") {
+function fixture(kind = "stop", dispatchBudgetMs?: number) {
   let now = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
@@ -38,7 +38,7 @@ function fixture(kind = "stop") {
       row.owner = owner;
       row.expires = now + seconds * 1000;
       row.lease_epoch = String(++row.attempts);
-      return { ...row };
+      return { ...row, ...(dispatchBudgetMs === undefined ? {} : { dispatchBudgetMs }) };
     },
     async inspect(job, owner) {
       if (!current(job, owner)) return "lost";
@@ -102,6 +102,43 @@ function fixture(kind = "stop") {
 }
 
 const tick = new AbortController().signal;
+
+test("a renewed Boat extension attempt aborts at its original dispatch deadline", async () => {
+  const f = fixture("boat_runtime_extend", 12_000);
+  const entered = Promise.withResolvers<AbortSignal>();
+  const finish = Promise.withResolvers<void>();
+  const runner = f.runner(async (_job, { signal }) => {
+    entered.resolve(signal);
+    await finish.promise;
+    return { status: "done" };
+  });
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  const signal = await entered.promise;
+  try {
+    f.advance(10_000);
+    await Promise.resolve();
+    expect(signal.aborted).toBe(false);
+    f.advance(2_000);
+    expect(signal.aborted).toBe(true);
+  } finally {
+    finish.resolve();
+    await runner.drain();
+  }
+  expect(f.completed).toEqual([]);
+});
+
+test("a Boat extension claim delivered after its dispatch budget skips the handler", async () => {
+  const f = fixture("boat_runtime_extend", 0);
+  let entered = false;
+  const runner = f.runner(async () => {
+    entered = true;
+    return { status: "done" };
+  });
+  await runner.reconcileOne(tick);
+  await runner.drain();
+  expect(entered).toBe(false);
+  expect(f.completed).toEqual([]);
+});
 
 test("lease loss aborts the active handler, allows takeover, and ignores the late result", async () => {
   const f = fixture();

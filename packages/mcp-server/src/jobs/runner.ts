@@ -9,6 +9,7 @@ export interface Job {
   lease_epoch: string;
   attempts: number;
   max_attempts: number;
+  dispatchBudgetMs?: number;
   payload: unknown;
   outcome: unknown;
 }
@@ -70,6 +71,9 @@ export function createJobsRunner(
   let nextKind = 0;
 
   async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
+    const budget = job.dispatchBudgetMs;
+    if (budget !== undefined && budget <= 0) lease.abort();
+    const cancelBudget = budget !== undefined && budget > 0 ? schedule(budget, () => lease.abort()) : undefined;
     const ownership = AbortSignal.any([lease.signal, shutdown.signal]);
     const deadline = handler.timeoutMs === undefined ? undefined : new AbortController();
     const signal = deadline ? AbortSignal.any([ownership, deadline.signal]) : ownership;
@@ -139,6 +143,7 @@ export function createJobsRunner(
     } finally {
       lease.abort();
       cancelExpiry();
+      cancelBudget?.();
       cancelDeadline?.();
       cancelRenewal?.();
       await renewal;
