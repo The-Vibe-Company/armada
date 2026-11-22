@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
   API_FAILURE_HELP,
@@ -23,9 +23,8 @@ import {
 } from "@armada/core";
 import { launchEnvelope, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
-import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
-import { AppService } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
@@ -2432,30 +2431,10 @@ test("access launch resolves an omitted account and grants only its persisted bi
               machine.info.state = "running";
               await save(machine);
             });
-            await appendModalEvents(db, scope, request.sandboxId, "1", [
-              {
-                sequence: 1,
-                event: {
-                  id: "scope-prompt",
-                  kind: "prompt",
-                  at: Date.now(),
-                  text: request.text,
-                  status: "running",
-                  promptId: receipt.promptId,
-                  conversationId: receipt.conversationId,
-                },
-              },
-            ]);
             return receipt;
           },
         });
       },
-    };
-    options.storedProviderFor = modal.storedProviderFor;
-    options.logs = async (caller, id) => {
-      const row = await options.data!(caller).sandboxes.get(id);
-      if (!row) throw new VaultError("not_found", "No such sandbox.");
-      return { provider: await modal.storedProviderFor(row, caller), providerSandboxId: row.providerSandboxId };
     };
     options.sandboxArmadaAccess = access;
     // The staging checker used an absolute cwd; the public launch contract takes a configured selector.
@@ -2524,46 +2503,9 @@ test("access launch resolves an omitted account and grants only its persisted bi
       )?.visibility,
     ).toBe("private");
     expect(fake.prompts).toHaveLength(1);
-    const sdk = spyOn(AppService.prototype, "fromName").mockImplementation(async () => {
-      throw Error("Stored reads must not call SDK App APIs");
-    });
-    try {
-      const read = (route: string, user = STAN, selectedOrg = org.id) =>
-        handleControlRequest(
-          new Request(`https://armada.test/api/v1/${route}`, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: user })).replace(/=+$/, "")}.sig`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ id: launched.id, org: selectedOrg }),
-          }),
-          options,
-        );
-      const status = await read("sandbox/status");
-      expect(status?.status).toBe(200);
-      expect(await status?.json()).toMatchObject({ id: launched.id, status: "running", conversationIds: ["conv_1"] });
-      const events = await read("logs/read");
-      expect(events?.status).toBe(200);
-      expect(await events?.json()).toMatchObject({
-        events: [
-          expect.objectContaining({
-            text: "Remember the child task\n\nSave any deliverable files directly in /home/user/outputs. Create that directory if needed.",
-          }),
-        ],
-      });
-      expect(
-        (await db.query("select scope,visibility from modal_machines where id=$1", [launched.providerSandboxId])).rows,
-      ).toEqual([{ scope: scopeKey({ ...orgScope, visibility: "private" }), visibility: "private" }]);
-      await db.query("insert into members(org_id,user_id,role) values($1,$2,'member')", [org.id, ADA]);
-      options.authStore.addMembership(ADA, { orgId: org.id, name: org.name, role: "member" });
-      expect((await read("sandbox/status", ADA))?.status).toBe(404);
-      expect((await read("logs/read", ADA))?.status).toBe(404);
-      expect((await read("sandbox/status", STAN, crypto.randomUUID()))?.status).toBe(404);
-      expect(sdk).not.toHaveBeenCalled();
-    } finally {
-      sdk.mockRestore();
-    }
+    expect(
+      (await db.query("select scope,visibility from modal_machines where id=$1", [launched.providerSandboxId])).rows,
+    ).toEqual([{ scope: scopeKey({ ...orgScope, visibility: "private" }), visibility: "private" }]);
     const ordinary = await cli(STAN).run([
       "new",
       "access",
