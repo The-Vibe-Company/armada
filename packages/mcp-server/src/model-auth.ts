@@ -320,8 +320,6 @@ export function createModelAuthOwnership(
         await this.capture(provider, providerId, caller);
       } catch (error) {
         recordNativeReadFailure("getPrompt", error);
-        // The terminal receipt contains metadata only. Output reads still require
-        // their own credential proof before releasing a transcript.
         if (!(error instanceof NativeObservationSuperseded)) throw error;
       }
     },
