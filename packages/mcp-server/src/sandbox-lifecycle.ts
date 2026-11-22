@@ -1853,6 +1853,11 @@ export function createSandboxLifecycle(
             or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
+          -- Skip known contention before LIMIT. The lease trigger checks again under the row lock.
+          and not (candidate.provider='boat' and candidate.boat_runtime and exists(
+            select 1 from public.jobs j where j.sandbox_id=candidate.id
+              and j.kind='boat_runtime_extend' and j.state='leased' and j.lease_until>now()
+          ))
           order by case
             when recovery.retained_resume then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
             when recovery.modal_resume then candidate.activity_until

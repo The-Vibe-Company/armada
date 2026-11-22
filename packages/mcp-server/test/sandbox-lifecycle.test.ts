@@ -5,6 +5,7 @@ import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData, type ServerSandboxPatch } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
@@ -576,6 +577,52 @@ for (const outcome of [
     );
   });
 }
+
+test("Boat reconciliation skips an older due candidate while its extension lease is live", async () => {
+  const { db, people } = await sharedDatabase();
+  const sql = bunLikeSql(db);
+  const older = crypto.randomUUID();
+  const newer = crypto.randomUUID();
+  await db.query(
+    `insert into public.sandboxes
+      (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
+       lifecycle_generation, expires_at, boat_runtime, reconcile_after)
+     select due.id, 'boat', due.binding, g.id, $3, $4, 'codex', 'running',
+       2, 'infinity', true, now()-due.age
+     from public.goldens g cross join (values
+       ($1::uuid, 'bx_23456789', interval '2 minutes'),
+       ($2::uuid, 'bx_2345678a', interval '1 minute')
+     ) as due(id,binding,age) where g.name='shared'`,
+    [older, newer, people.org, people.owner],
+  );
+  const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+  const kind = "boat_runtime_extend";
+  const job = await jobs.enqueue(kind, older, 2, older, null, {
+    orgId: people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01"),
+  });
+  expect((await jobs.claim(kind, crypto.randomUUID(), 3600, 1))?.id).toBe(job);
+  const worker = createSandboxLifecycle(sql, async (id) =>
+    createBoatProvider({
+      apiKey: "test-key",
+      fetch: (async () =>
+        Response.json({
+          ok: true,
+          sandbox: retainedSandbox({ id: id === older ? "bx_23456789" : "bx_2345678a" }),
+        })) as typeof fetch,
+    }),
+  );
+  const status = async (id: string) =>
+    (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [id])).rows[0]?.status;
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(await status(newer)).toBe("stopped");
+  expect(await status(older)).toBe("running");
+  await db.query("update public.jobs set lease_until='-infinity' where id=$1", [job]);
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(await status(older)).toBe("stopped");
+  await worker.drain();
+});
 
 test.each(["short", "unknown", "native", "superseded", "lost-stop-response"] as const)(
   "ordinary Boat reconciliation handles %s physical deadline evidence",
