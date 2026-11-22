@@ -55,6 +55,19 @@ test.each(["forward", "backward"] as const)(
       }),
     };
     const input = { direction, cursor: "from" };
+    if (direction === "backward") {
+      pending = true;
+      expect(
+        readLogsOperation.output.parse(await readLogs(options, caller, scope.id, { ...input, follow: true })),
+      ).toEqual({
+        events: [],
+        cursor: "from",
+        olderCursor: "from",
+        hasMore: true,
+        settled: false,
+      });
+      pending = false;
+    }
     const live = readLogsOperation.output.parse(await readLogs(options, caller, scope.id, input));
 
     failWrite = true;
@@ -73,7 +86,12 @@ test.each(["forward", "backward"] as const)(
     if (direction === "backward") {
       const request = { ...input, sandboxId: "boat-id" };
       for (const mismatch of [{ limit: 1 }, { cursor: "other-boundary" }, { conversationId: "other-conversation" }]) {
-        await expect(journalProvider.events({ ...request, ...mismatch })).rejects.toBeInstanceOf(NativeOutputPending);
+        expect(await journalProvider.events({ ...request, ...mismatch })).toEqual({
+          events: [],
+          cursor: mismatch.cursor ?? request.cursor,
+          olderCursor: mismatch.cursor ?? request.cursor,
+          hasMore: true,
+        });
       }
       const server = createArmadaServer(
         {
