@@ -1130,7 +1130,7 @@ describe("preservation checks", () => {
             return json({
               status: stopping ? "stopped" : "ready",
               id: sandboxId,
-              ...(defaultAdmission || fault === "default_policy"
+              ...(fault === "none" || defaultAdmission || fault === "default_policy"
                 ? {
                     settled: true,
                     statusMessage: fault === "default_admission_setup_failed" ? "Modal launch setup failed." : null,
@@ -1861,6 +1861,7 @@ function lifecycleFixture(
   fault: LifecycleFault = "none",
   handler?: (call: Call) => Response | undefined,
   launchElapsedMs = 500,
+  setupPendingReads = 0,
 ) {
   // Per-sandbox state: concurrent case lanes interleave their calls.
   interface Life {
@@ -1925,7 +1926,12 @@ function lifecycleFixture(
         status: life.stopped ? "stopped" : !life.sends && ++life.readiness === 1 ? "starting" : "ready",
         providerState: life.stopped ? "stopped" : "active",
         expiresAt: life.expiry,
+        prompt: null,
+        settled: life.readiness > setupPendingReads,
+        statusMessage: life.readiness > setupPendingReads ? null : "Modal launch setup is still in progress.",
       });
+    if (life.readiness <= setupPendingReads && (call.path === "sandbox/exec" || call.path === "sandbox/send"))
+      return json({ error: { code: "sandbox_not_ready" } }, 409);
     if (call.path === "sandbox/send") {
       life.sends++;
       life.stopped = false;
@@ -2334,7 +2340,7 @@ test("lifecycle failures reject false receipts and report unknown launches or le
 });
 
 test("an ordinary lifecycle launch continues on the sandbox observed after a response timeout", async () => {
-  const fake = lifecycleFixture("recovered_launch");
+  const fake = lifecycleFixture("recovered_launch", undefined, 500, 4);
   expect(await fake.run()).toBe(true);
   const starts = fake.calls.filter((call) => call.path === "sandbox/launch");
   expect(starts).toHaveLength(1);
@@ -2849,16 +2855,20 @@ test("vault/template failures remain failures without bypassing the combined lif
 });
 
 test("GitHub refresh accepts the runtime receipt after proving launch access", async () => {
-  const fake = lifecycleFixture("admission_receipt", (call) =>
-    call.path === "github/refresh"
-      ? json({
-          id: call.body.id,
-          status: "connected",
-          login: "owner",
-          runtime: { kind: "armada", epoch: "1" },
-          revision: "2",
-        })
-      : undefined,
+  const fake = lifecycleFixture(
+    "admission_receipt",
+    (call) =>
+      call.path === "github/refresh"
+        ? json({
+            id: call.body.id,
+            status: "connected",
+            login: "owner",
+            runtime: { kind: "armada", epoch: "1" },
+            revision: "2",
+          })
+        : undefined,
+    500,
+    4,
   );
   const timeout = spyOn(AbortSignal, "timeout");
   try {
@@ -3006,7 +3016,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
 test("golden runtime integrity probes are staging-only, fail closed, and retain stopped cleanup on Modal", async () => {
   const staging = "https://armada-mcp-staging.up.railway.app";
   for (const provider of ["modal"]) {
-    for (const broken of [undefined, "provider", "helper", "skillpack"] as const) {
+    for (const broken of [undefined, "provider", "setup", "helper", "skillpack"] as const) {
       let stopped = false;
       const fake = fixture((call) => {
         if (call.path === "sandbox/launch") return json({ sandbox: { id: sandboxFixtureId, status: "starting" } });
@@ -3032,6 +3042,9 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
             expiresAt: null,
             status: stopped ? "stopped" : "ready",
             providerState: stopped ? "stopped" : "active",
+            prompt: null,
+            settled: true,
+            statusMessage: broken === "setup" ? "Modal launch setup failed." : null,
           });
         if (
           call.path === "sandbox/exec" &&
@@ -3055,12 +3068,15 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
         ),
       ).toBe(broken === undefined);
       const reports = fake.receipts();
-      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(broken !== "provider");
+      const setupSuccessful = broken !== "provider" && broken !== "setup";
+      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(setupSuccessful);
       expect(reports.some((line) => line.step === "golden_skillpack_integrity")).toBe(
-        broken !== "provider" && broken !== "helper",
+        setupSuccessful && broken !== "helper",
       );
       if (broken === "provider")
         expect(reports).toContainEqual({ case: 0, step: "list_ready", pass: false, code: "list_status_mismatch" });
+      if (broken === "setup")
+        expect(reports).toContainEqual({ case: 0, step: "launch_setup", pass: false, code: "invalid_response" });
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
       expect(stopped).toBe(true);
       expect(fake.lines.join("\n")).not.toContain("private-output");

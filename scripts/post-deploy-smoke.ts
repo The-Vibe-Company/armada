@@ -988,7 +988,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               });
             }
           });
-          if (recovered !== undefined) return { result: recovered, recovered: true };
+          if (recovered !== undefined) return { result: recovered, recovered: true, recoveryUntil: until };
         }
         throw new SmokeFailure(error.code, error.status, undefined, {
           timeoutMs,
@@ -1331,6 +1331,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let verifiedRecoveryId: string | undefined;
     let launchSkills: unknown;
     let hasAdmissionReceipt = false;
+    let launchSetupUntil: number | undefined;
     let sandboxId: string | undefined;
     let commit: string | undefined;
     const preservationMarker = crypto.randomUUID();
@@ -1468,7 +1469,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               return { sandbox: status, golden: { id: goldenId } };
             }
           : undefined;
-        const { result, recovered } = await launchWithObservation<LaunchReceipt>(
+        const { result, recovered, recoveryUntil } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
           launchBudget,
@@ -1486,6 +1487,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
         if (!sandboxId || result.promptId) fail("invalid_response");
         hasAdmissionReceipt = acceptsAdmission && !!parseLaunchAdmissionReceipt(item.provider, result);
+        if (!scoped && !defaultSkills && (hasAdmissionReceipt || (recovered && item.provider === "modal")))
+          launchSetupUntil = recoveryUntil ?? Math.min(deadline, io.now() + launchBudget);
         if (!recovered && parent?.provider !== item.provider && !hasAdmissionReceipt) fail("invalid_response");
         if (requiresLaunchReceipt && !hasAdmissionReceipt && result.golden?.id !== item.goldenId)
           fail("invalid_response");
@@ -1594,8 +1597,32 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             elapsedMs: io.now() - startedAt,
           }),
         );
-      if (hasAdmissionReceipt)
+      const setupUntil = launchSetupUntil;
+      if (setupUntil !== undefined) {
+        await step("list_ready", () => consistent("ready", undefined, () => setupUntil - io.now()));
+        await step("launch_setup", async () => {
+          await poll(
+            (timeoutMs) =>
+              sandbox<{
+                id: string;
+                status: string;
+                prompt: unknown;
+                settled: boolean;
+                statusMessage: string | null;
+              }>("status", { id: sandboxId }, timeoutMs),
+            (status) => {
+              if (status?.id !== sandboxId || status.status !== "ready" || status.prompt !== null)
+                fail("invalid_response");
+              if (status.settled !== true) return false;
+              if (status.statusMessage !== null) fail("invalid_response");
+              return true;
+            },
+            { until: setupUntil },
+          );
+        });
+      } else if (hasAdmissionReceipt) {
         await measuredStep("list_ready", () => consistent("ready", defaultSkills ? item.goldenId : undefined));
+      }
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
@@ -1909,7 +1936,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       await nativeTurn(false);
       if (lifecycle && !dirty) {
-        if (!hasAdmissionReceipt) await measuredStep("list_ready", () => consistent("ready"));
+        if (!hasAdmissionReceipt && setupUntil === undefined)
+          await measuredStep("list_ready", () => consistent("ready"));
         await measuredStep("steer_refused", async () => {
           try {
             await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
