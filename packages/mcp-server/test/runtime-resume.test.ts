@@ -21,7 +21,7 @@ import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
-import { RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
+import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runtime-resume.ts";
@@ -1657,6 +1657,7 @@ const boatResumeRecoveryCases = [
   "short coverage",
   "missing coverage",
   "coverage lease lost",
+  "ticket write failure",
   "response lost",
   "handoff rollback",
   "transition fault",
@@ -1677,6 +1678,18 @@ test.each(boatResumeRecoveryCases)(
     const shortCoverage = condition === "short coverage";
     const missingCoverage = condition === "missing coverage";
     const coverageLeaseLost = condition === "coverage lease lost";
+    const ticketWriteFailure = condition === "ticket write failure";
+    let attemptedTicketWrite = false;
+    const authority = ticketWriteFailure
+      ? createRuntimeEnrolments(
+          bunLikeSql(f.db, (statement) => {
+            if (!statement.startsWith("insert into public.runtime_enrolments as r")) return;
+            attemptedTicketWrite = true;
+            throw Error("Injected ticket write failure");
+          }),
+          ENCRYPTION_KEY,
+        )
+      : f.authority;
     const unsafeCoverage = shortCoverage || missingCoverage;
     const logicalDeadline = new Date("2099-01-01T00:00:00Z");
     const physicalDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
@@ -1732,8 +1745,8 @@ test.each(boatResumeRecoveryCases)(
               beforeFailure = rows[0];
             }
             await value.activate?.(value.signal);
-            if (condition === "confirmed" || coverageLeaseLost) {
-              await f.authority.issue({
+            if (condition === "confirmed" || coverageLeaseLost || ticketWriteFailure) {
+              await authority.issue({
                 sandboxId: value.sandbox.id,
                 ownerId: f.caller.userId,
                 configuration: {},
@@ -1781,9 +1794,26 @@ test.each(boatResumeRecoveryCases)(
       await expect(
         createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
       ).rejects.toThrow();
+      const observation = await f.db.query(
+        `select observed_provider_id, observed_generation::int, observed_expires_at
+         from public.boat_runtime_extension_state where sandbox_id=$1`,
+        [f.row.id],
+      );
+      expect(observation.rows).toEqual(
+        condition === "confirmed"
+          ? [{ observed_provider_id: "physical", observed_generation: 2, observed_expires_at: physicalDeadline }]
+          : [],
+      );
+      expect(attemptedTicketWrite).toBe(ticketWriteFailure);
       expect(handoffRolledBack).toBe(rollbackHandoff || fault);
       expect(canIssueTicket).toBe(
-        !taint && !expired && !unverified && !responseLost && !unsafeCoverage && !coverageLeaseLost,
+        !taint &&
+          !expired &&
+          !unverified &&
+          !responseLost &&
+          !unsafeCoverage &&
+          !coverageLeaseLost &&
+          !ticketWriteFailure,
       );
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
