@@ -45,9 +45,10 @@ const ids = [1, 2, 3].map((id) => `20000000-0000-4000-8000-${String(id).padStart
 const sql = { query: (q: string, values?: unknown[]) => database().query(q, values) } as Sql;
 beforeAll(async () => {
   connection = new PGlite();
-  await database().exec(`create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
+  await database().exec(`create role anon; create role authenticated; create role service_role;
+    create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
     create table account_exhaustion(account_id uuid primary key,account_version integer,resets_at timestamptz);
-    create table sandboxes(id uuid primary key,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,
+    create table sandboxes(id uuid primary key,org_id uuid,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,
       status text,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
     create table account_turn_queue(sandbox_id uuid,state text,dispatch_generation bigint,account_id uuid,dispatch_until timestamptz);
     create table runtime_commands(sandbox_id uuid,request_id text,result_enc bytea);
@@ -59,6 +60,7 @@ beforeAll(async () => {
   );
   for (const id of ids)
     await database().query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
+  await database().exec(readFileSync("supabase/migrations/20261119024017_jobs.sql", "utf8"));
 });
 afterAll(async () => {
   const db = connection;

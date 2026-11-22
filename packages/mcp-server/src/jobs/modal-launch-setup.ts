@@ -1,9 +1,6 @@
 import { parseGoldenConfig } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 
-export const MODAL_LAUNCH_SETUP_KEY = `format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
-  s.org_id,s.id,s.lifecycle_generation,s.id)`;
-
 export function parseModalLaunchWorkspace(payload: { workspace?: unknown }) {
   return parseGoldenConfig(payload.workspace);
 }
