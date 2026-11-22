@@ -149,6 +149,36 @@ npm deprecate '@the-vibe-company/armada@<2.0.0' \
 
 Keep published historical versions available; do not unpublish them or delete users' v1 config.
 
+## Release lead time (#2837)
+
+Measure from the version PR's merge timestamp to the first publication of that
+version of `@the-vibe-company/armada` in the npm registry. Include queue time,
+approvals and recovery attempts because the package is unavailable until publication.
+
+| Release PR | Merged (UTC) | npm publication (UTC) | Lead time |
+| --- | --- | --- | --- |
+| [4.0.0 (#2957)](https://github.com/The-Vibe-Company/armada/pull/2957) | Nov 19, 2026 20:42:59 | Nov 20, 2026 09:41:16 | 12h 58m 17s |
+| [5.0.0 (#3538)](https://github.com/The-Vibe-Company/armada/pull/3538) | Nov 20, 2026 16:05:11 | Nov 20, 2026 20:10:32 | 4h 5m 21s |
+| [6.0.0 (#3682)](https://github.com/The-Vibe-Company/armada/pull/3682) | Nov 21, 2026 18:10:02 | Nov 21, 2026 19:33:52 | 1h 23m 50s |
+
+The first three releases after [#2989](https://github.com/The-Vibe-Company/armada/pull/2989)
+had a median of **4h 5m 21s**, above the 20-minute target in
+[#2837](https://github.com/The-Vibe-Company/armada/issues/2837).
+Publication timestamps come from the [npm registry's version history](https://registry.npmjs.org/@the-vibe-company%2Farmada)
+and are shown to the second. This measures elapsed time for the full train.
+
+In a [4.0.0 release attempt](https://github.com/The-Vibe-Company/armada/actions/runs/44611538082),
+the release check failed at 21:04:41 UTC, before the first binary job
+started at 21:04:56 and pinned staging smoke started at 21:05:04.
+The binaries and staging smoke overlapped on this attempt.
+
+In the [initial 6.0.0 run](https://github.com/The-Vibe-Company/armada/actions/runs/44934011029),
+the release check, binary matrix and pinned staging smoke all started.
+Binaries and staging smoke succeeded, the release check failed, and
+finalization, production and npm publication were skipped. The workflow concluded
+with a failure. [#2989](https://github.com/The-Vibe-Company/armada/pull/2989)
+also records a simulated check failure that skipped production and npm publication.
+
 ## Dry runs and recovery
 
 If production Armada cannot launch a repair worker, use the
