@@ -65,6 +65,9 @@ const admission = defects.includes("job-admission");
 const sandboxId = admission ? "88888888-8888-4888-8888-888888888888" : "worker";
 let launchRef: string | undefined;
 let admissionStatusReads = 0;
+let initialPromptId = "prompt";
+let conversationId = "conversation";
+let initialAliasPublished = false;
 let followupId = "followup";
 let followupAliasPublished = false;
 const shellOld = defects.includes("opencode-shell-old");
@@ -381,13 +384,15 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/sandbox/status") && admission && body.prompt_id) {
-    if (!sends || body.id !== sandboxId || body.prompt_id !== followupId) throw Error("wrong queued turn status");
-    followupAliasPublished = true;
+    if (body.id !== sandboxId) throw Error("wrong queued turn sandbox");
+    if (idle && firstSends && body.prompt_id === initialPromptId) initialAliasPublished = true;
+    else if (sends && body.prompt_id === followupId) followupAliasPublished = true;
+    else throw Error("wrong queued turn status");
     return Response.json({
       id: sandboxId,
-      status: "ready",
+      status: defects.includes("idle-stopped-first-turn") ? "stopped" : "ready",
       settled: true,
-      prompt: { promptId: followupId, state: "finished" },
+      prompt: { promptId: body.prompt_id, state: "finished" },
     });
   }
   if (path.endsWith("/sandbox/status")) {
@@ -398,9 +403,14 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         id: sandboxId,
         status: "ready",
         settled,
-        statusMessage: settled ? null : "Modal launch setup is still in progress.",
-        prompt: settled ? { promptId: "prompt", conversationId: null, state: "finished" } : null,
-        conversationIds: settled ? ["conversation"] : [],
+        statusMessage: settled
+          ? defects.includes("idle-setup-failed")
+            ? "Modal launch setup failed."
+            : null
+          : "Modal launch setup is still in progress.",
+        prompt: settled && !idle ? { promptId: "prompt", conversationId: null, state: "finished" } : null,
+        conversationIds: settled && !idle ? ["conversation"] : [],
+        skills: receipts,
       });
     }
     skillStatuses++;
@@ -499,6 +509,10 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     if (idle) {
       if (Object.hasOwn(body, "prompt")) throw Error("Idle launch must omit prompt");
       if (variables) return Response.json(ordinary ? templateReceipt(body, true) : pinnedLaunchEnvelope(body, true));
+      if (admission) {
+        launchRef = body.externalRef;
+        return Response.json({ sandbox: { id: sandboxId, status: "starting" } });
+      }
       return Response.json({
         sandbox: {
           id: sandboxId,
@@ -555,6 +569,19 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       firstSends++;
       if (Object.hasOwn(body, "conversation_id") || body.id !== sandboxId || !/^[a-f0-9-]{36}$/.test(body.request_id))
         throw Error("Unsafe first send");
+      if (admission) {
+        if (emptyResume || admissionStatusReads < 2) throw Error("first send before settled live setup");
+        readPrompt(body.prompt);
+        initialPromptId = body.request_id;
+        conversationId = `first_${body.request_id}`;
+        return Response.json({
+          id: sandboxId,
+          requestId: body.request_id,
+          promptId: initialPromptId,
+          conversationId,
+          status: "queued",
+        });
+      }
       if (emptyResume) {
         if (stops !== 1 || checkpoints !== 2 || ++resumes !== 1) throw Error("Unsafe empty activation");
       }
@@ -608,7 +635,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         id: sandboxId,
         requestId: body.request_id,
         promptId: followupId,
-        conversationId: "conversation",
+        conversationId,
         status: "queued",
       });
     }
@@ -625,6 +652,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     if (idle && !firstSends)
       return Response.json({
         source: "armada-runtime",
+        hasMore: defects.includes("idle-incomplete-history"),
         events:
           defects.includes("idle-running-history") || (defects.includes("empty-hidden-history") && stops > 0)
             ? [{ id: "unexpected", at: 1, kind: "prompt", promptId: "unexpected", status: "finished", text: "" }]
@@ -645,7 +673,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         id: "finished-" + promptId,
         at: 2,
         promptId,
-        conversationId: "conversation",
+        conversationId,
         kind: "prompt",
         text: "",
         status: "finished",
@@ -653,7 +681,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     ];
     let events: FixtureEvent[] = [
       ...pair(
-        defects.includes("wrong-prompt") ? "foreign" : "prompt",
+        defects.includes("wrong-prompt") ? "foreign" : initialAliasPublished ? initialPromptId : "prompt",
         answer,
         defects.includes("tool-result") ? "tool_result" : "assistant",
       ),
@@ -885,6 +913,30 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
                 ? 6
                 : 4,
       },
+    });
+  }
+  if (path.endsWith("/sandbox/resume-runtime-v1") && admission && emptyResume) {
+    if (
+      ++resumes !== 1 ||
+      ++firstSends !== 1 ||
+      stops !== 1 ||
+      checkpoints !== 2 ||
+      body.id !== sandboxId ||
+      body.runtimeVersion !== 1 ||
+      !body.request_id ||
+      Object.hasOwn(body, "conversation_id")
+    )
+      throw Error("Unsafe explicit empty activation");
+    readPrompt(body.prompt);
+    conversationId = `first_${body.request_id}`;
+    return Response.json({
+      id: sandboxId,
+      requestId: body.request_id,
+      resumed: true,
+      runtime: { kind: "armada", epoch: "2" },
+      sourceCheckpoint: { epoch: "1", watermark: 4, empty: true },
+      promptId: "prompt",
+      conversationId,
     });
   }
   if (path.endsWith("/sandbox/resume-runtime-v1")) {
