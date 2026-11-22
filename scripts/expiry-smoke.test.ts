@@ -6,7 +6,7 @@ import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
 
 const deadlines = deadlineTable["modal/expiry"];
-const ownedWorker = "12345678-1234-1234-1234-123456789abc";
+const ownedWorker = "12345678-1234-1234-8234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =
   | "none"
@@ -71,6 +71,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
           throw new DOMException("secret transport detail", "TimeoutError");
         }
         if (fault === "unreadable_launch") return new Response("{", { status: 200 });
+        if (fault === "none") return Response.json({ sandbox: { id: ownedWorker, status: "starting" } });
         return Response.json({
           sandbox:
             fault === "missing_launch_id"
@@ -194,7 +195,18 @@ function fixture(provider: "modal", fault: Fault = "none") {
 test("Modal expires through the ordinary stop lane without a manual stop or model turn", async () => {
   const provider = "modal";
   const fake = fixture(provider);
-  expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(true);
+  const directory = mkdtempSync(join(tmpdir(), "expiry-smoke-"));
+  try {
+    const journal = join(directory, "sandboxes.json");
+    expect(await postDeploySmoke({ ...fake.env, ARMADA_SMOKE_JOURNAL: journal }, ["--expiry"], fake.io)).toBe(true);
+    expect(await Bun.file(journal).json()).toEqual([]);
+    expect(fake.reports.find((line) => line.step === "smoke_sandbox_receipt")).toMatchObject({
+      id: ownedWorker,
+      provider,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
   for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
