@@ -380,6 +380,8 @@ export function createRuntimeGitHub(options: {
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== path) return null;
     const headers = { "cache-control": "no-store" };
+    let sandboxId: string | undefined;
+    let reason = "binding_unavailable";
     try {
       if (request.method !== "POST" || request.headers.has("origin")) return denied();
       const token = request.headers.get("authorization")?.match(/^Bearer (armada_gh_[a-f0-9]{64})$/)?.[1] ?? denied();
@@ -396,15 +398,24 @@ export function createRuntimeGitHub(options: {
       )
         return denied();
       const grant = await read(sql, hash(token));
+      sandboxId = grant.sandbox_id;
       const before = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
         const now = await current(tx, grant.sandbox_id),
           cap = await read(tx, hash(token));
-        if (scope.epoch !== cap.epoch || !same(now.binding, cap.binding) || !allowed(cap.binding, body.repository))
+        if (scope.epoch !== cap.epoch || !same(now.binding, cap.binding)) {
+          reason = "binding_changed";
           return denied();
+        }
+        if (!allowed(cap.binding, body.repository)) {
+          reason = "repository_outside_binding";
+          return denied();
+        }
         return now;
       });
+      reason = "github_connection_check_failed";
       const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, grant.binding.ownerId);
       if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
+      reason = "binding_unavailable";
       return await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
         const now = await current(tx, grant.sandbox_id),
           cap = await read(tx, hash(token));
@@ -413,8 +424,11 @@ export function createRuntimeGitHub(options: {
           !same(now.binding, before.binding) ||
           !same(now.binding, cap.binding) ||
           !allowed(cap.binding, body.repository)
-        )
+        ) {
+          reason = "binding_changed";
           return denied();
+        }
+        reason = "token_delivery_failed";
         await issued(tx, now.binding, access.token);
         await tx.query(
           "update runtime_github_capabilities set acquisition_count=acquisition_count+1,last_accessed_at=now() where hash=$1",
@@ -423,7 +437,15 @@ export function createRuntimeGitHub(options: {
         return Response.json({ token: access.token }, { headers });
       });
     } catch {
-      return new Response(null, { status: 403, headers });
+      const response = new Response(null, { status: 403, headers });
+      if (!sandboxId) return response;
+      try {
+        const event = "runtime_github_credentials_denied";
+        console.warn(JSON.stringify({ level: "warn", message: event, event, sandboxId, reason }));
+      } catch {
+        return response;
+      }
+      return response;
     }
   };
   async function prepareLaunch(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
