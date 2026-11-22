@@ -84,7 +84,7 @@ export async function deleteSmokeReceipts(
   token: string,
   rows: SmokeSandboxReceipt[],
   io: CleanupIo,
-  { limit = 32, stopFirst = false } = {},
+  { limit = 32, stopFirst = false, timeoutMs = 120_000 } = {},
 ): Promise<SmokeSandboxReceipt[]> {
   if (origin !== STAGING_ORIGIN) throw new Error("staging_only");
   const scoped = (row: SmokeSandboxReceipt) => row.requestKey.startsWith("smoke-scoped-");
@@ -111,7 +111,7 @@ export async function deleteSmokeReceipts(
         {
           method: "DELETE",
           redirect: "error",
-          signal: AbortSignal.timeout(120_000),
+          signal: AbortSignal.timeout(Math.min(timeoutMs, 120_000)),
           headers: { authorization: `Bearer ${token}` },
         },
       );

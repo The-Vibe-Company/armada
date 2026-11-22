@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +70,8 @@ test("a malformed Modal launch is cleaned up without stop polling and a refused 
     const path = join(directory, "journal.json");
     const calls: string[] = [];
     let clock = 0;
+    const timeout = spyOn(AbortSignal, "timeout");
+    let deleteTimeout: number | undefined;
     try {
       const backlog = Array.from({ length: 100 }, (_, index) => ({
         ...row,
@@ -106,10 +108,18 @@ test("a malformed Modal launch is cleaned up without stop polling and a refused 
             calls.push(action);
             if (action === "launch")
               return Response.json({ sandbox: { id: row.id, provider: "modal" }, promptId: "unexpected-prompt" });
-            if (action === "stop") return Response.json({ id: JSON.parse(String(init.body)).id, status: "stopped" });
+            if (action === "stop") {
+              const { id } = JSON.parse(String(init.body));
+              if (id === row.id && !deleted) clock = 40 * 60_000 - 50;
+              return Response.json({ id, status: id === row.id && !deleted ? "stopping" : "stopped" });
+            }
             if (action === "delete") {
               const id = new URL(url).pathname.split("/").at(-1);
-              if (id === row.id && deleted) return Response.json({ id, status: "deleted" });
+              if (id === row.id) {
+                if (deleted) return Response.json({ id, status: "deleted" });
+                const signalIndex = timeout.mock.results.findIndex((result) => result.value === init.signal);
+                deleteTimeout = timeout.mock.calls[signalIndex]?.[0];
+              }
               return Response.json({ error: { code: "conflict" } }, { status: 409 });
             }
             throw new Error("unexpected request");
@@ -118,8 +128,12 @@ test("a malformed Modal launch is cleaned up without stop polling and a refused 
       );
       expect(passed).toBe(false);
       expect(calls.slice(calls.indexOf("launch"))).toEqual(["launch", "stop", "delete"]);
-      expect(await readSmokeJournal(path)).toHaveLength(deleted ? 100 : 101);
+      const retained = await readSmokeJournal(path);
+      expect(retained).toHaveLength(deleted ? 100 : 101);
+      expect(retained.some(({ id }) => id === row.id)).toBe(!deleted);
+      if (!deleted) expect(deleteTimeout).toBe(50);
     } finally {
+      timeout.mockRestore();
       await rm(directory, { recursive: true, force: true });
     }
   }

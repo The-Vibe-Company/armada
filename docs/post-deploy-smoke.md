@@ -194,8 +194,9 @@ model account takes turns, see below).
 Every step receipt from a lane carries its `case` index and `lane`, so
 interleaved output still gives one attributable failure report per case. Each
 lane keeps its own cleanup reserve: one lane entering cleanup never extends or
-shortens another lane's deadline. The run waits for every lane, including its
-cleanup, before journal deletion and passes only if every lane passes.
+shortens another lane's deadline. Cleanup-only Modal lanes submit DELETE
+before returning. The final journal sweep runs after every lane finishes,
+and the run passes only if every lane and the sweep pass.
 The scoped-access snapshot diff ignores sandboxes this same run launched through
 the owner API in other lanes; any other new sandbox remains unattributed and
 fails the probe. Verified children are stopped first. Only a row nothing else
@@ -623,12 +624,11 @@ state (Modal stopped), unchanged expiry, reason exactly
 early/manual-looking stops, changed deadlines and provider hard exits without
 the expiry reason cannot count as proof.
 
-A failing known worker gets one explicit cleanup-stop attempt plus read-only
-reconciliation (never mutation replay). That cleanup cannot convert the expiry
-verdict to success. Failed workers retain logical failed status after cleanup;
-their finite durable stoppedAt receipt confirms physical exit because the
-terminal-failure status projection intentionally hides provider state. A failed
-row without that receipt remains unconfirmed. `expiry_cleanup_summary` reports leftover IDs or ambiguous
+A failing known worker gets one explicit cleanup-stop attempt. Journal-backed
+runs check one DELETE acknowledgement. In a manual run without the journal,
+read-only reconciliation checks physical exit, using a finite durable
+`stoppedAt` for failed rows because their status response hides provider state.
+Cleanup cannot convert the expiry verdict to success. `expiry_cleanup_summary` reports leftover IDs or ambiguous
 launches with `org`, `golden` (snapshot name), and `startedAt`. Lost create
 responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
@@ -642,8 +642,8 @@ use the measured `expiry_ready`, `expiry_deadline` and `expiry_as_stop` budgets.
 The TTL check shares one deadline across all inventory pages, and natural stop
 proof includes its final inventory read. Without a measured entry, the TTL check
 retains its existing per-request timeout and pagination limit, readiness allows
-120 observations and natural expiry allows 360. Cleanup still allows 120
-observations. Staging operators must budget this extra compute time.
+120 observations and natural expiry allows 360. Manual stop-only cleanup
+allows 120 observations. Staging operators must budget this extra compute time.
 No production, new capabilities or migrations.
 The coordinator executes the eligible Modal pairs after merge; fake transport tests
 prove verdicts and cleanup, not real-provider expiry success.
@@ -844,9 +844,10 @@ Synthetic protocol/build proofs are not inference or production acceptance.
 
 Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
 `ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
-probe validation; cleanup deletes known IDs after all stop/recovery assertions.
-The startup sweep submits one stop and one DELETE per older sandbox ID, up to 32 IDs;
-current-run deletion has an independent 64-ID bound. It never lists all stopped
+probe validation. Cleanup-only Modal lanes delete known IDs as they finish.
+The startup sweep submits one stop and one DELETE per older sandbox ID, up to 32 IDs.
+The final sweep handles up to 64 remaining current-run IDs after all stop and recovery
+assertions finish. It never lists all stopped
 sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
 deleted audit rows remain but do not grow active dashboard lists.
 

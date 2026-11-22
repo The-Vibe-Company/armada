@@ -145,7 +145,7 @@ interface SmokeIo {
   now: () => number;
   out: (line: string) => void;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
-  deleteModalCleanup?: (org: string, id: string) => Promise<void>;
+  deleteModalCleanup?: (org: string, id: string, timeoutMs: number) => Promise<void>;
   recordSandboxDelete?: (org: string, id: string, accepted: boolean) => void;
 }
 const OBSERVED_SANDBOX_STATUSES: readonly string[] = [
@@ -560,6 +560,15 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   }
   const deadline = io.now() + 35 * 60_000;
   const cleanupDeadline = deadline + 5 * 60_000;
+  const deleteModalReceipt = io.deleteModalCleanup;
+  const deleteModalCleanup =
+    deleteModalReceipt &&
+    (async (org: string, id: string) => {
+      const remaining = cleanupDeadline - io.now();
+      if (remaining <= 0) fail("poll_limit_exceeded");
+      await deleteModalReceipt(org, id, remaining);
+      if (io.now() > cleanupDeadline) fail("poll_limit_exceeded");
+    });
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
   type UsageRead = { deadline: number; onDispatch: () => void };
@@ -899,7 +908,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           } catch (error) {
             if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
           }
-          if (io.deleteModalCleanup) return io.deleteModalCleanup(item.org, id);
+          if (deleteModalCleanup) return deleteModalCleanup(item.org, id);
           await poll(
             () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
             (result) => {
@@ -1004,7 +1013,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, out, step, budgets } = unit(index, item.provider, "expiry");
     const timeoutMs = budgets.expiry_launch ?? 120_000;
-    const deleteSandbox = io.deleteModalCleanup;
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
@@ -1026,7 +1034,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         step,
         withCleanup,
         idle: release,
-        deleteSandbox: deleteSandbox ? (id) => deleteSandbox(item.org, id) : undefined,
+        ...(deleteModalCleanup ? { deleteSandbox: (id: string) => deleteModalCleanup(item.org, id) } : {}),
       }),
     );
   }
@@ -1217,7 +1225,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     } finally {
       if (id) {
         const cleanupId = id;
-        const deleteSandbox = item.provider === "modal" ? io.deleteModalCleanup : undefined;
+        const deleteSandbox = item.provider === "modal" ? deleteModalCleanup : undefined;
         try {
           await withCleanup(async () => {
             await step("real_model_stop", () =>
@@ -1347,7 +1355,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
-    const cleanupDelete = scoped ? undefined : io.deleteModalCleanup;
+    const cleanupDelete = scoped ? undefined : deleteModalCleanup;
     async function requestStop() {
       if (!stopRequested) {
         try {
@@ -2296,10 +2304,10 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
   const token = env.ARMADA_TOKEN;
   const trackedIo: SmokeIo = {
     ...io,
-    deleteModalCleanup: async (org, id) => {
+    deleteModalCleanup: async (org, id, timeoutMs) => {
       const receipt = rows.find((row) => row.org === org && row.id === id && row.provider === "modal");
       if (!receipt) fail("invalid_receipt");
-      const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, token, [receipt], io);
+      const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, token, [receipt], io, { timeoutMs });
       deleteResults.set(`${org}/${id}`, remaining.length === 0);
       if (remaining.length) fail("operation_failed");
     },
