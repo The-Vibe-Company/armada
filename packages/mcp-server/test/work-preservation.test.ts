@@ -937,6 +937,7 @@ async function seedNativeDrainReceipt(
 test.each([
   "stopped",
   "stop-requested tombstone",
+  "settled tombstone",
   "stop-requested mismatched tombstone",
   "stop-requested live journal",
   "tombstone with live lease",
@@ -985,6 +986,7 @@ test.each([
         phase: tombstone ? "deleted" : "stopped",
         generation: 1,
         ...(scenario === "stop-requested mismatched tombstone" ? { deletePhysicalExitGeneration: 2 } : {}),
+        ...(scenario === "settled tombstone" ? { deletePhysicalExitGeneration: 1 } : {}),
       }),
       scenario === "tombstone with live lease" ? crypto.randomUUID() : null,
     ],
@@ -1048,7 +1050,7 @@ test.each([
     expect(remove).toHaveBeenCalledTimes(scenario === "journal replacement before dispatch" ? 0 : 1);
     expect((await sandboxes.get(sandboxId))?.status).toBe("stopped");
     return;
-  } else if (scenario !== "stopped" && scenario !== "stop-requested tombstone") {
+  } else if (scenario !== "stopped" && scenario !== "stop-requested tombstone" && scenario !== "settled tombstone") {
     await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     expect(remove).not.toHaveBeenCalled();
     if (stopRequested) expect(resolve).not.toHaveBeenCalled();
