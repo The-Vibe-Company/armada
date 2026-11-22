@@ -1,3 +1,4 @@
+import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
@@ -197,11 +198,20 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         reason?: unknown;
         requestId?: string;
         id?: string;
+        status?: string;
         promptId?: string;
         provider?: string;
-        manifest?: { skillReceipts?: unknown };
+        envelope?: unknown;
+        manifest?: {
+          skillReceipts?: unknown;
+          resolvedSkills?: unknown;
+          templateId?: string;
+          revision?: number;
+          requestKey?: string;
+        };
       };
       let recovered = false;
+      let admitted = false;
       const result = await io.step(`${label}_launch`, () =>
         io.trackLaunch<LaunchReceipt>(async (submit, claim) => {
           record.launchAttempted = true;
@@ -221,7 +231,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           async function observeLaunch(requirePrompt: boolean) {
             if (item.provider !== "modal") return;
             const until = Math.min(io.deadline, io.now() + timeout);
-            let claimed = false;
+            let claimed = admitted;
             return observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io
                 .request<{ sandboxes: { id: string; provider: string; externalRef: string }[] }>(
@@ -255,15 +265,22 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                   id: string;
                   externalRef?: string;
                   status: string;
+                  settled?: boolean;
+                  statusMessage?: string | null;
                   prompt?: { promptId?: string; state?: string } | null;
                 }>("sandbox/status", { id: sandbox.id }, Math.min(5_000, left)).catch((error: unknown) => {
                   if (io.isAmbiguousLaunch(error)) return undefined;
                   throw error;
                 });
-                const promptId = status?.prompt?.promptId;
+                if (status?.id !== sandbox.id || status.externalRef !== record.requestKey) return;
                 if (
-                  status?.id === sandbox.id &&
-                  status.externalRef === record.requestKey &&
+                  admitted &&
+                  (["failed", "stopping", "stopped", "deleted"].includes(status.status) ||
+                    (status.settled === true && !!status.statusMessage))
+                )
+                  fail("turn_failed");
+                const promptId = status.prompt?.promptId;
+                if (
                   ["ready", "running"].includes(status.status) &&
                   typeof promptId === "string" &&
                   promptId &&
@@ -284,6 +301,35 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             record.uncertain = false;
             recovered = true;
             return { ...observed, state: "succeeded" };
+          }
+          const admission = parseLaunchAdmissionReceipt(item.provider, result?.envelope);
+          if (admission || (result?.state === "succeeded" && result.status === "starting")) {
+            if (
+              !admission ||
+              result.state !== "succeeded" ||
+              result.provider !== item.provider ||
+              result.id !== admission.sandbox.id ||
+              result.manifest?.requestKey !== record.requestKey
+            )
+              fail("invalid_response");
+            record.sandboxId = admission.sandbox.id;
+            record.uncertain = false;
+            claim(record.sandboxId);
+            await io.recordSandbox?.(record.sandboxId, record.requestKey);
+            if (
+              admission.sandbox.status !== "starting" ||
+              result.status !== admission.sandbox.status ||
+              result.manifest.templateId !== record.resource!.id ||
+              result.manifest.revision !== record.resource!.currentRevision
+            )
+              fail("invalid_response");
+            const pins = result.manifest.resolvedSkills;
+            if (!Array.isArray(pins) || pins.length !== (pin ? 1 : 0) || (pin && pins[0] !== pin))
+              fail("invalid_receipt");
+            admitted = true;
+            const observed = await observeLaunch(true);
+            if (!observed?.promptId) fail("invalid_response");
+            return { ...result, promptId: observed.promptId };
           }
           if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
           if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
@@ -314,7 +360,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           const manifestSkills = result.manifest?.skillReceipts;
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
           verifyReceipts(status.skills, [pin]);
-          if (recovered) return;
+          if (recovered || admitted) return;
           verifyReceipts(manifestSkills, [pin]);
           for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
             if (manifestSkills[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
