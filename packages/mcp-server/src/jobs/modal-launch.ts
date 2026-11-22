@@ -131,7 +131,7 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
      join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
      join public.members m on m.org_id=r.org_id and m.user_id=r.actor_id
      where r.id=$1 and r.org_id=$2 and r.actor_id=$3
-     for update of r for share of m`,
+     for update of r,t for share of m`,
     [receiptId, orgId, ownerId],
   );
   if (!reservation) throw new GoldenError("not_found", "Modal template launch reservation not found.");

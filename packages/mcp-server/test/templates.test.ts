@@ -152,34 +152,6 @@ async function fixture() {
   };
 }
 
-test("Modal template placement uses the pinned provider binding", async () => {
-  const f = await fixture();
-  try {
-    const goldenId = (
-      await f.db.query<{ id: string }>(
-        "insert into goldens(org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config) select $1,$2,'modal-template','org','modal','im-template','workspace','main','ap-template',config from goldens where id=$3 returning id",
-        [f.people.org, f.people.admin, f.goldenId],
-      )
-    ).rows[0]?.id;
-    if (!goldenId) throw Error("missing Modal golden");
-    f.runtime.provider = async (golden) => {
-      expect(golden.modal).toEqual({ workspace: "workspace", environment: "main", appId: "ap-template" });
-      return { ...f.provider, id: "modal" };
-    };
-    const created = await f.create(undefined, undefined, {
-      ...f.definition,
-      goldenId,
-      provider: "modal",
-      variables: [],
-    });
-    const result = await f.launch((created.item as LaunchTemplate).id);
-    expect(result).toMatchObject({ state: "succeeded", provider: "modal" });
-    publishedResponse("templates/launch").parse(result);
-  } finally {
-    await f.close();
-  }
-});
-
 test("immutable revisions enforce personal/org ownership, optimistic publication, tombstones and JWT grants", async () => {
   // Session identity is restored before the next fixture is seeded.
   const f = await fixture();

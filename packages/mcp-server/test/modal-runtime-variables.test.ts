@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
 import { isRecord } from "@armada/core";
+import { pinnedModalLaunchReceipt } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlVaultStore,
@@ -315,13 +316,18 @@ for (const entry of ["explicit", "default"] as const)
     const request = f.request(template.id);
     const first = await f.api(request);
     expect(first.status).toBe(200);
-    const launched = await first.json();
+    const launched = (await first.json()) as {
+      id: string;
+      status: string;
+      manifest: { variables: Record<string, string> };
+    };
+    if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
     const {
       id: sandboxId,
       status,
       templateManifest,
     } = entry === "explicit"
-      ? publishedResponse("sandbox/launch").parse(launched).sandbox
+      ? pinnedModalLaunchReceipt.parse(launched).sandbox
       : { id: launched.id, status: launched.status, templateManifest: launched.manifest };
     expect(status).toBe("starting");
     expect(launched).not.toHaveProperty("promptId");
@@ -811,7 +817,7 @@ test("pinned Modal replays a claimed reservation after interrupted preparation",
   expect((await f.api(input)).status).toBe(500);
   const {
     rows: [reserved],
-  } = await f.db.query("select sandbox_id from template_launch_requests");
+  } = await f.db.query<{ sandbox_id: string }>("select sandbox_id from template_launch_requests");
   f.options.admitModalLaunch = admit;
   const response = await f.api(input);
   expect(response.status).toBe(200);

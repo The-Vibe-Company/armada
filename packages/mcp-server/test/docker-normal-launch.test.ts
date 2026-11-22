@@ -2677,7 +2677,7 @@ test.each([false, true])(
       provider: async () => {
         throw Error("Docker cannot resolve a golden provider");
       },
-      beforeDockerReserve: async (tx, sandboxId) => {
+      beforeReserve: async (tx, sandboxId) => {
         allocations++;
         expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
       },

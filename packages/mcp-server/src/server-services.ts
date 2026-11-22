@@ -313,7 +313,10 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
     modelAuth,
   });
-  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
+    store,
+    app: githubApp,
+  });
   const modalLaunchJob = modal.launchJob(async (sandbox) => {
     if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
     const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
@@ -323,6 +326,7 @@ export async function createServerServices(env: Record<string, string | undefine
       sandbox.credentialId,
       sandbox.credentialVersion,
     );
+    await modalLaunchCredentials.enrollAccount?.(actor, credentials);
     const plan = await runtimeConfigurationWithVariables(
       sql,
       {
@@ -403,7 +407,7 @@ export async function createServerServices(env: Record<string, string | undefine
         const tokens = await modal.modalTokensFor(golden, caller);
         return (
           await modal.modalProviderFor(
-            tokens,
+            { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
             golden.modal,
             { target: golden, caller, credentialScope: tokens.scope },
             true,

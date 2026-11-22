@@ -60,7 +60,7 @@ export interface TemplateRuntime {
     },
   ): Promise<DockerLaunchResult>;
   beforeDockerStart?(): Promise<void>;
-  beforeDockerReserve?(tx: Sql, sandboxId: string): Promise<void>;
+  beforeReserve?(tx: Sql, sandboxId: string): Promise<void>;
 }
 type Header = {
   id: string;
@@ -707,6 +707,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           credentialVersion: m.account.version,
           revalidate: async (tx) => {
             await revalidateInTransaction(tx, actor, org, m);
+            await active.beforeReserve?.(tx, row.sandbox_id);
           },
         },
       );
@@ -726,7 +727,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     try {
       const beforeReserve = async (tx: Sql) => {
         await revalidateInTransaction(tx, actor, org, m);
-        if (runtime.beforeDockerReserve) await runtime.beforeDockerReserve(tx, request.sandbox_id);
+        if (runtime.beforeReserve) await runtime.beforeReserve(tx, request.sandbox_id);
         else await runtime.options?.beforeFork?.(request.sandbox_id);
         await tx.query("update public.template_launch_requests set state='allocating',updated_at=now() where id=$1", [
           request.id,

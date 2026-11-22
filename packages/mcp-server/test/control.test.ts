@@ -2856,12 +2856,12 @@ test("versioned runtime launch is explicit/default-off and never selects native 
 
 // Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
 // and no native agent/configuration fallback on the accepted model-only path.
-test.each([{ harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-boat" }])(
-  "Enrolled golden launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
-  async ({ harness, fromDefaults, entry }) => {
+test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
+  "Enrolled golden launch prepares default MCP and skills before its first prompt ($entry)",
+  async ({ harness, entry }) => {
     const ordinary = entry.startsWith("ordinary");
     const scoped = entry.startsWith("ordinary-scoped");
-    const idle = entry === "ordinary-scoped-idle";
+    const idle = false;
     const boat = entry === "ordinary-scoped-boat";
     const provider = boat ? "boat" : "modal";
     const runtimeFields = boat ? { boatRuntime: true } : { runtimeTransport: "dialout" };
@@ -2870,11 +2870,7 @@ test.each([{ harness: "codex" as const, fromDefaults: true, entry: "ordinary-sco
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
       await db.query(
         "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
-        [
-          STAN,
-          await encryptSecret("fixture-model-key", KEY),
-          harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
-        ],
+        [STAN, await encryptSecret("fixture-model-key", KEY), "openai"],
       );
       await db.query(
         `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
@@ -2902,12 +2898,9 @@ test.each([{ harness: "codex" as const, fromDefaults: true, entry: "ordinary-sco
         golden: `${provider}-runtime`,
         provider,
         harness,
-        ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         ...(idle ? {} : { prompt: "reply" }),
         ...(scoped ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
         ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
-        skipSkillDefaults: true,
-        connections: [],
       };
       const fake = fakeBoat();
       const host = {
@@ -3057,7 +3050,6 @@ test.each([{ harness: "codex" as const, fromDefaults: true, entry: "ordinary-sco
         },
         connections: {
           async defaults() {
-            expect(fromDefaults).toBe(true);
             return [connection];
           },
           async validate(_actor, ids) {
@@ -3096,44 +3088,7 @@ test.each([{ harness: "codex" as const, fromDefaults: true, entry: "ordinary-sco
           } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
         };
       }
-      const input = {
-        ...body,
-        connections: fromDefaults ? undefined : [connection],
-        skills: fromDefaults ? undefined : [skill],
-        skipSkillDefaults: fromDefaults ? undefined : true,
-      };
-      if (entry === "ordinary-mcp") {
-        const caller = { userId: STAN, orgs: [{ orgId: org.id, role: "admin" as const }], via: "service" as const };
-        if (!options.data || !options.launch || !options.skillDefaults) throw Error("Missing default scoped context");
-        const result = await callSharedTool(
-          {
-            caller,
-            data: options.data(caller),
-            provider: async () => native,
-            launchCredentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
-            exposedSecrets: async () => [],
-            launch: options.launch,
-            skillDefaults: options.skillDefaults,
-            now: () => new Date(),
-            sleep: async () => {
-              throw Error("No waits");
-            },
-          },
-          "launch",
-          input,
-        );
-        expect(launchEnvelope.parse(result)).toMatchObject({
-          runtime: { kind: "armada", epoch: "1" },
-          sandbox: { provider: "modal", runtimeTransport: "dialout" },
-          promptId: "modal-initial",
-        });
-        expect(starts).toBe(1);
-        expect(fake.forks).toHaveLength(1);
-        expect(fake.prompts).toHaveLength(0);
-        expect(fake.execs).toHaveLength(0);
-        return;
-      }
-      const response = await request(input);
+      const response = await request(body);
       if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
       expect(response?.status).toBe(200);
       const launched = launchEnvelope.parse(await response?.json());
@@ -3223,7 +3178,7 @@ test.each(["rest", "explicit", "mcp"] as const)("public %s Modal launch admits b
     const binding = { workspace: "workspace", environment: "main", appId: "app" };
     await db.query(
       `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-       values($1,$2,'modal-runtime','org','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+       values($1,$2,'modal-runtime','org','modal','master','image',$3,$4,$5,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')`,
       [org.id, STAN, binding.workspace, binding.environment, binding.appId],
     );
     const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
