@@ -119,7 +119,7 @@ test.each([
           stopped.add(body.id);
           if (scenario === "finished with complete text") {
             now += 100;
-            return Response.json({ id: body.id, status: body.id === id(7) ? "stopping" : "stopped" });
+            return Response.json({ id: body.id, status: body.id === id(5) ? "stopping" : "stopped" });
           }
           return Response.json({});
         default:
@@ -140,7 +140,7 @@ test.each([
     }
     const confirmations = timeouts.get("stop-confirmation")!;
     expect(confirmations).toHaveLength(1);
-    const stopBudget = budgets("docker").real_model_stop;
+    const stopBudget = budgets("modal").real_model_stop;
     if (stopBudget === undefined) expect(confirmations[0]).toBe(120_000);
     else {
       expect(confirmations[0]).toBeGreaterThan(0);
