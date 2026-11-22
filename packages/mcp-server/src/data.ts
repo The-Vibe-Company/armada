@@ -1463,6 +1463,7 @@ export function createSqlData(
                 generation: row.generation,
                 fromState: row.status,
                 toState: stopStatus,
+                confirmedStop: patch.stoppedAt != null,
                 ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
                 code: patch.finishActivity
                   ? "owner_stop_settled"

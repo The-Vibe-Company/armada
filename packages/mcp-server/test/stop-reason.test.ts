@@ -1,11 +1,37 @@
 import { expect, test } from "bun:test";
 import type { SandboxPatch } from "@armada/core";
 import { createSqlData, type SandboxView, type ServerSandboxStore } from "../src/data.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { readStatus } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const failureDatabase = rowOnlyDatabase();
+
+async function queueExtension(
+  db: Awaited<ReturnType<typeof failureDatabase>>["db"],
+  sandboxId: string,
+  orgId: string,
+  generation: number,
+) {
+  const jobId = await createJobsStore(db, ENCRYPTION_KEY).enqueue(
+    "boat_runtime_extend",
+    sandboxId,
+    generation,
+    sandboxId,
+    null,
+    {
+      orgId,
+      maxAttempts: 3,
+      deadline: new Date("2099-01-01"),
+    },
+  );
+  await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
+    sandboxId,
+    jobId,
+  ]);
+  return jobId;
+}
 
 test.each([
   { usable: true, runtime: false },
@@ -161,6 +187,8 @@ test.each([
       via: "service",
     }).sandboxes;
     const sandbox = (await store.get(id))!;
+    if (sandbox.lifecycleGeneration === undefined) throw new Error("Missing sandbox generation.");
+    const pendingJobId = runtime ? await queueExtension(db, id, people.org, sandbox.lifecycleGeneration) : null;
     const diagnostic = confirmed || from === "stopped" ? "Provider reported a runtime failure. ".repeat(100) : "";
     await db.query(
       `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
@@ -209,6 +237,11 @@ test.each([
         [id],
       );
       const row = await store.get(id);
+      if (pendingJobId)
+        expect(
+          (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id]))
+            .rows,
+        ).toEqual([{ pending_job_id: applied && confirmed ? null : pendingJobId }]);
       const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
       expect(reservation.rows).toEqual(applied && confirmed ? [] : [{ sandbox_id: id }]);
       if (from === "stopped" && !confirmed) {
@@ -253,6 +286,40 @@ test.each([
     }
   },
 );
+
+test("owner stop detaches extension intent when it confirms exit on an already failed Boat sandbox", async () => {
+  const { db, people, sharedGoldenId } = await failureDatabase();
+  const id = crypto.randomUUID();
+  const activityToken = crypto.randomUUID();
+  await db.query(
+    `insert into public.sandboxes
+     (id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime,
+      activity_lease_id,activity_until,lifecycle_generation,stop_requested_at)
+     values ($1,'boat','bx_23456789',$2,$3,$4,'codex','failed',true,$5,'infinity',2,now())`,
+    [id, sharedGoldenId, people.org, people.owner, activityToken],
+  );
+  await queueExtension(db, id, people.org, 1);
+  const store = createSqlData(db)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const stoppedAt = "2026-01-01T00:00:00.000Z";
+  await store.update(id, {
+    ownerStop: true,
+    status: "failed",
+    finishActivity: true,
+    stopRequested: false,
+    stoppedAt,
+    activityToken,
+    expectedGeneration: 2,
+  });
+  expect(await store.get(id)).toMatchObject({ status: "failed", stoppedAt });
+  expect(
+    (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id])).rows,
+  ).toEqual([{ pending_job_id: null }]);
+  expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+});
 
 test.each([
   { runtime: true, scenario: "ready" },

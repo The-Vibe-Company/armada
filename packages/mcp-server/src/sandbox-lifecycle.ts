@@ -913,6 +913,18 @@ export async function clearStartingModalStop(tx: Sql, sandboxId: string, generat
   );
 }
 
+async function detachBoatExtensionAfterStop(tx: Sql, sandboxId: string, generation: number | string) {
+  await tx.query(
+    `update public.boat_runtime_extension_state e set pending_job_id=null
+     from public.sandboxes s, public.jobs j
+     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='boat' and s.boat_runtime
+       and s.status in ('stopped','failed') and s.stopped_at is not null
+       and e.sandbox_id=s.id and j.id=e.pending_job_id and j.sandbox_id=s.id
+       and j.kind='boat_runtime_extend' and j.generation<=s.lifecycle_generation`,
+    [sandboxId, generation],
+  );
+}
+
 export async function publishOwnerStop(
   tx: Sql,
   stop: {
@@ -921,24 +933,34 @@ export async function publishOwnerStop(
     fromState: SandboxStatus;
     toState: "stopping" | "stopped" | "failed";
     statusReason?: string | null;
+    confirmedStop?: boolean;
     code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
   },
 ) {
-  if (stop.fromState === stop.toState) return;
-  const result = await transitionSandbox(tx, {
-    sandboxId: stop.sandboxId,
-    expectedGeneration: stop.generation,
-    fromStates: [stop.fromState],
-    toState: stop.toState,
-    actor:
-      stop.code === "owner_stop_settled" ? "lifecycle_runner" : stop.code === "runtime_retained_stop" ? "api" : "owner",
-    code: stop.code,
-    effects: [],
-    ...(stop.statusReason !== undefined
-      ? { settlement: { lease: null, statusReason: stop.statusReason, stopRequestedAt: null, stoppedAt: null } }
-      : {}),
-  });
-  if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
+  let generation: string | number = stop.generation;
+  if (stop.fromState !== stop.toState) {
+    const result = await transitionSandbox(tx, {
+      sandboxId: stop.sandboxId,
+      expectedGeneration: stop.generation,
+      fromStates: [stop.fromState],
+      toState: stop.toState,
+      actor:
+        stop.code === "owner_stop_settled"
+          ? "lifecycle_runner"
+          : stop.code === "runtime_retained_stop"
+            ? "api"
+            : "owner",
+      code: stop.code,
+      effects: [],
+      ...(stop.statusReason !== undefined
+        ? { settlement: { lease: null, statusReason: stop.statusReason, stopRequestedAt: null, stoppedAt: null } }
+        : {}),
+    });
+    if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
+    generation = result.generation;
+  }
+  if (stop.code === "owner_stop_settled" && stop.confirmedStop)
+    await detachBoatExtensionAfterStop(tx, stop.sandboxId, generation);
 }
 
 export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
@@ -1562,7 +1584,11 @@ export async function recordObservedProviderState(
           "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
           [sandboxId, reason, stoppedAt],
         );
-      if (stoppedAt !== null) await releaseAccountCapacity(tx, sandboxId);
+      if (stoppedAt !== null) {
+        if (toState === "stopped" || toState === "failed")
+          await detachBoatExtensionAfterStop(tx, sandboxId, result.generation);
+        await releaseAccountCapacity(tx, sandboxId);
+      }
     }
     return result;
   });
@@ -2194,6 +2220,7 @@ export function createSandboxLifecycle(
               ],
             );
             if (!saved.rows.length) throw lostLease;
+            if (terminal) await detachBoatExtensionAfterStop(tx, row.id, row.lifecycle_generation);
             return true;
           })
           .catch((failure: unknown) => {
