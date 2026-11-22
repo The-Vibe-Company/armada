@@ -13,7 +13,7 @@ const sharedDatabase = rowOnlyDatabase();
 
 async function fixture(
   provider: "boat" | "modal" = "boat",
-  options: { now?: () => number; commandGrantExpiresAt?: number; idle?: boolean } = {},
+  options: { now?: () => number; commandGrantExpiresAt?: number; idle?: boolean; githubFetch?: typeof fetch } = {},
 ) {
   const f = await runtimeFixture(
     await sharedDatabase(),
@@ -38,6 +38,7 @@ async function fixture(
       ],
     );
     let githubRequests = 0;
+    const { now, githubFetch } = options;
     const service = createRuntimeGitHub({
       sql: f.sql,
       key: ENCRYPTION_KEY,
@@ -47,8 +48,10 @@ async function fixture(
         store: createSqlVaultStore(f.sql),
         encryptionKey: ENCRYPTION_KEY,
         app: { clientId: "app", clientSecret: "offline-app-secret" },
-        fetch: (async (url: string | URL | Request) => {
+        ...(now ? { now: () => new Date(now()) } : {}),
+        fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           githubRequests++;
+          if (githubFetch) return githubFetch(url, init);
           if (String(url).includes("/repos/")) return Response.json({ full_name: "example/web" });
           return Response.json({ id: 123, login: "owner", name: "Owner" });
         }) as unknown as typeof fetch,
@@ -271,41 +274,65 @@ function runtimeCase(
     test(name, async () => action(await prepared()));
   });
 }
-runtimeCase("Boat runtime launch binds every repository in a multi-repository golden", async (x) => {
-  const { f, service } = x;
-  const repositories = ["api", "docs", "infra", "worker", "cli", "sdk", "web", "dashboard"];
-  await f.db.query("update goldens set config=$2::jsonb where id=$1", [
-    f.row.goldenId,
-    JSON.stringify({
-      repos: repositories.map((dir) => ({ url: `https://github.com/example/${dir}.git`, branch: "main", dir })),
-      init: [],
-    }),
-  ]);
-  await f.db.query(
-    "update sandboxes set status='starting',activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
-    [f.row.id, crypto.randomUUID()],
+describe("Boat GitHub access token rollover during launch", () => {
+  let clock = 0;
+  const renewedAccess = "renewed-offline-access";
+  const prepared = scopedRuntimeFixture(
+    () => {
+      clock = Date.now();
+      return fixture("boat", {
+        now: () => clock,
+        githubFetch: (async (url: string | URL | Request) =>
+          String(url) === "https://github.com/login/oauth/access_token"
+            ? Response.json({ access_token: renewedAccess, refresh_token: "renewed-offline-refresh", expires_in: 3600 })
+            : Response.json({ id: 123, login: "owner", name: "Owner" })) as typeof fetch,
+      });
+    },
+    { timeout: 20_000 },
   );
-
-  expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected" });
-  expect(x.config().repositories).toEqual(repositories.map((repo) => `example/${repo}`));
-  for (const repo of repositories) {
-    expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
-  }
-  const log = spyOn(console, "warn");
-  try {
-    await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
-    expect(log).toHaveBeenCalledWith(
+  test("binds every repository and renews access for the eighth refresh after 37 seconds", async () => {
+    const x = await prepared();
+    const { f, service } = x;
+    const repositories = Array.from({ length: 8 }, (_, index) => `repo-${index + 1}`);
+    await f.db.query("update goldens set config=$2::jsonb where id=$1", [
+      f.row.goldenId,
       JSON.stringify({
-        level: "warn",
-        message: "runtime_github_credentials_denied",
-        event: "runtime_github_credentials_denied",
-        sandboxId: f.row.id,
-        reason: "repository_outside_binding",
+        repos: repositories.map((dir) => ({ url: `https://github.com/example/${dir}.git`, branch: "main", dir })),
+        init: [],
       }),
+    ]);
+    await f.db.query(
+      "update sandboxes set status='starting',activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+      [f.row.id, crypto.randomUUID()],
     );
-  } finally {
-    log.mockRestore();
-  }
+    await f.db.query("update github_connections set access_expires_at=$2 where user_id=$1", [
+      f.people.owner,
+      new Date(clock + 5 * 60_000 + 37_000),
+    ]);
+
+    expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected" });
+    expect(x.config().repositories).toEqual(repositories.map((repo) => `example/${repo}`));
+    for (const repo of repositories.slice(0, -1)) {
+      expect((await x.broker.acquire(`example/${repo}`, "git")) === x.access).toBe(true);
+    }
+    clock += 37_000;
+    expect((await x.broker.acquire("example/repo-8", "git")) === renewedAccess).toBe(true);
+    const log = spyOn(console, "warn");
+    try {
+      await expect(x.broker.acquire("example/outside-golden", "git")).rejects.toThrow("github_credentials_http_denied");
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({
+          level: "warn",
+          message: "runtime_github_credentials_denied",
+          event: "runtime_github_credentials_denied",
+          sandboxId: f.row.id,
+          reason: "repository_outside_binding",
+        }),
+      );
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
 
 for (const provider of ["boat", "modal"] as const)
