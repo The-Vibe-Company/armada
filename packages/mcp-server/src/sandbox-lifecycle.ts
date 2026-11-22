@@ -2090,6 +2090,7 @@ export function createSandboxLifecycle(
       let initialObservation = true;
       let handingOffObservedResume = false;
       let waitingForRetention = false;
+      let observedNativeReady = false;
       let stoppedAt: Date | undefined;
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
       const expired = logicalDeadline <= now();
@@ -2129,12 +2130,27 @@ export function createSandboxLifecycle(
                 stop_requested_at: string | null;
                 stopped_at: string | null;
                 settled_at: string;
+                can_settle_native_turn: boolean;
               }>(
-                `select status,status_reason,stop_requested_at::text,stopped_at::text,now()::text as settled_at
-               from public.sandboxes where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+                `select status,status_reason,stop_requested_at::text,stopped_at::text,now()::text as settled_at,
+                 ($4::boolean and provider=$5 and provider_sandbox_id=$6 and task_prompt_id is not distinct from $7
+                   and not boat_runtime and runtime_transport is distinct from 'dialout'
+                   and expires_at>clock_timestamp() and stop_requested_at is null and stopped_at is null
+                   and deleted_at is null and not native_drain_pending and activity_lease_id is null
+                   and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+                 ) as can_settle_native_turn
+               from public.sandboxes s where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                  and reconcile_lease_until>clock_timestamp()
                  and (activity_until is null or activity_until<now()) for update`,
-                [row.id, token, row.lifecycle_generation],
+                [
+                  row.id,
+                  token,
+                  row.lifecycle_generation,
+                  observedNativeReady,
+                  providerId,
+                  row.provider_sandbox_id,
+                  row.task_prompt_id,
+                ],
               )
             ).rows[0];
             if (!current) return true;
@@ -2226,6 +2242,20 @@ export function createSandboxLifecycle(
               ],
             );
             if (!saved.rows.length) throw lostLease;
+            if (status === "running" && toState === status && current.can_settle_native_turn) {
+              signal?.throwIfAborted();
+              const result = await transitionSandbox(tx, {
+                sandboxId: row.id,
+                expectedGeneration: row.lifecycle_generation,
+                fromStates: ["running"],
+                toState: "ready",
+                actor: "native_turn",
+                code: "native_turn_settled",
+                effects: [],
+                settlement: { lease: null, statusReason, stopRequestedAt: null, stoppedAt: null },
+              });
+              if (result.kind === "conflict") throw lostLease;
+            }
             if (terminal) await detachBoatExtensionAfterStop(tx, row.id, row.lifecycle_generation);
             return true;
           })
@@ -2623,6 +2653,14 @@ export function createSandboxLifecycle(
           (expired || shortBoatDeadline || row.status === "stopping" || row.stop_requested_at !== null)
         )
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
+        observedNativeReady =
+          native &&
+          !expired &&
+          !physicalExit &&
+          error === null &&
+          provider.id === providerId &&
+          info.id === row.provider_sandbox_id &&
+          info.state === "ready";
       } catch (caught) {
         if (handingOffObservedResume) throw caught;
         const authorityLost =

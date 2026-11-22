@@ -29,6 +29,95 @@ function expectDeadlineWithin(deadline: number, before: number, after: number, t
   expect(deadline).toBeLessThanOrEqual(Math.ceil(after) + ttlSeconds * 1000);
 }
 
+test.each(["ready", "publication failure", "activity lease", "stop intent"] as const)(
+  "native ready observation with %s",
+  async (scenario) => {
+    const { db, people } = await sharedDatabase();
+    const sql = bunLikeSql(db);
+    const id = crypto.randomUUID();
+    const placement = "bx_23456789";
+    await db.query(
+      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
+       select $1,'boat',$2,id,$3,$4,'claude','running',now()+interval '1 hour'
+       from public.goldens where name='shared'`,
+      [id, placement, people.org, people.owner],
+    );
+    const read = async () =>
+      (
+        await sql.query<{
+          status: string;
+          reconcile_lease: string | null;
+          reconcile_after: Date;
+          lifecycle_generation: string;
+          activity_lease_id: string | null;
+          stop_requested_at: Date | null;
+          last_observed_at: Date | null;
+        }>(
+          `select status,reconcile_lease,reconcile_after,lifecycle_generation::text,activity_lease_id,
+             stop_requested_at,last_observed_at from public.sandboxes where id=$1`,
+          [id],
+        )
+      ).rows[0]!;
+    const activity = crypto.randomUUID();
+    if (scenario === "activity lease")
+      await sql.query(
+        "update public.sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 second' where id=$1",
+        [id, activity],
+      );
+    const publicationFailure = new Error("injected native turn publication failure");
+    let claimed: Awaited<ReturnType<typeof read>> | undefined;
+    const provider: Pick<Provider, "id" | "get"> = {
+      id: "boat",
+      async get() {
+        claimed = await read();
+        if (scenario === "stop intent")
+          await sql.query("update public.sandboxes set stop_requested_at=now() where id=$1", [id]);
+        return { id: placement, name: placement, state: "ready", providerState: "ready", labels: {} };
+      },
+    };
+    const workerSql: Sql =
+      scenario === "publication failure"
+        ? {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  async query<T>(statement: string, args?: unknown[]) {
+                    const result = await tx.query<T>(statement, args);
+                    if (statement.includes("public.sandbox_transition(") && args?.[5] === "native_turn_settled")
+                      throw publicationFailure;
+                    return result;
+                  },
+                }),
+              ),
+          }
+        : sql;
+    const run = createSandboxLifecycle(workerSql, async () => provider as Provider).reconcileOne();
+    if (scenario === "publication failure") {
+      await expect(run).rejects.toBe(publicationFailure);
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
+      expect(await read()).toEqual(claimed);
+    } else {
+      expect(await run).toBe(true);
+      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
+      const row = await read();
+      expect(row.status).toBe(scenario === "ready" ? "ready" : "running");
+      expect(row.reconcile_lease).toBeNull();
+      expect(row.lifecycle_generation).toBe(claimed.lifecycle_generation);
+      if (scenario === "activity lease") expect(row.activity_lease_id).toBe(activity);
+      if (scenario === "stop intent") expect(row.stop_requested_at).toBeTruthy();
+    }
+    expect(
+      (await sql.query("select actor,code,generation::text from public.sandbox_transitions where sandbox_id=$1", [id]))
+        .rows,
+    ).toEqual(
+      scenario === "ready"
+        ? [{ actor: "native_turn", code: "native_turn_settled", generation: claimed?.lifecycle_generation }]
+        : [],
+    );
+  },
+);
+
 // Private Docker reservations have their own mailbox/local TTL owner, not a full
 // Provider adapter. The generic worker must neither claim nor diagnose them.
 test("private Docker reservations remain untouched while the generic lifecycle reconciles a coexisting Boat candidate", async () => {
