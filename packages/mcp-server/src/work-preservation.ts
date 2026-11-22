@@ -344,7 +344,7 @@ async function captureAndStore(
     observed("observed", current.state);
     if (boatCapture && current.id !== providerId) return "pending";
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    if (boatCapture && current.state === "stopping") return "pending";
+    if (boatCapture && !["ready", "running"].includes(current.state)) return "pending";
     const fencedNativeCapture = !runtimeCapture && provider.supportsExecPhysicalGeneration;
     const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
     if (
@@ -410,12 +410,11 @@ async function captureAndStore(
     };
     let result: WorkPreservation;
     if (runtimeCapture) {
-      if (
-        !provider.captureRuntimeWork ||
-        !current.physicalGeneration ||
-        current.id !== providerId ||
-        (boatCapture && !["ready", "running"].includes(current.state))
-      )
+      const captureGeneration = boatCapture
+        ? await provider.observeCaptureBoot?.(providerId, signal)
+        : current.physicalGeneration;
+      if (boatCapture && (!captureGeneration || !(await ownsCapture()))) return "pending";
+      if (!provider.captureRuntimeWork || !captureGeneration || current.id !== providerId)
         throw new ProviderError({
           provider: provider.id,
           code: "sandbox_not_ready",
@@ -424,7 +423,7 @@ async function captureAndStore(
         });
       result = await provider.captureRuntimeWork({
         sandboxId: providerId,
-        physicalGeneration: current.physicalGeneration,
+        physicalGeneration: captureGeneration,
         signal,
         context,
         onWorkAtRisk,

@@ -691,6 +691,7 @@ test.each([
     "takeover_during_capture",
     "lost_receipt_response",
     "physical_generation_missing",
+    "takeover_during_boot_probe",
     "physical_generation_changed",
     "wrong_binding",
     "archiving",
@@ -711,7 +712,10 @@ test.each([
         );
       let observed = 0;
       let captures = 0;
-      let physicalGeneration = "7";
+      const initialGeneration = hostId === "boat" ? "e76cc889-0359-4544-9320-dd938debba67" : "7";
+      const replacementBoot = "32bfc56e-248e-4c0a-9ec1-feee745598bd";
+      let physicalGeneration = initialGeneration;
+      let bootProbes = 0;
       const host: RuntimeWorkProvider = {
         ...provider,
         id: hostId,
@@ -724,13 +728,22 @@ test.each([
             state: observed === 1 && scenario === "archiving" ? "stopping" : "ready",
             providerState: observed === 1 && scenario === "archiving" ? "archiving" : "active",
             labels: {},
-            ...(observed === 1 && scenario === "physical_generation_missing" ? {} : { physicalGeneration }),
+            physicalGeneration: hostId === "boat" ? "stale-get-identity" : physicalGeneration,
           };
+        },
+        async observeCaptureBoot(sandboxId, signal) {
+          expect(sandboxId).toBe(physical);
+          expect(signal.aborted).toBe(false);
+          if (++bootProbes === 1) {
+            if (scenario === "takeover_during_boot_probe") await takeOver();
+            if (scenario === "physical_generation_missing") return null;
+          }
+          return physicalGeneration;
         },
         async captureRuntimeWork(request) {
           expect(request.sandboxId).toBe(physical);
           expect(request.physicalGeneration).toBe(
-            captures === 1 && scenario === "physical_generation_changed" ? "8" : "7",
+            captures === 1 && scenario === "physical_generation_changed" ? replacementBoot : initialGeneration,
           );
           expect(request.signal.aborted).toBe(false);
           captures++;
@@ -740,7 +753,7 @@ test.each([
               if (scenario === "takeover_on_failure") return { status: "failed", reason: "collector_failed" };
             }
             if (scenario === "quiescence_rejected") throw Error("unverified process quiescence");
-            if (scenario === "physical_generation_changed") physicalGeneration = "8";
+            if (scenario === "physical_generation_changed") physicalGeneration = replacementBoot;
           }
           if (request.physicalGeneration !== physicalGeneration)
             throw Error("collector refused the replaced incarnation");
@@ -783,12 +796,22 @@ test.each([
         const noFirstDispatch = [
           "takeover_before_capture",
           "physical_generation_missing",
+          "takeover_during_boot_probe",
           "wrong_binding",
           "archiving",
         ].includes(scenario);
         const pending = takeover || collectorRefused || scenario === "lost_receipt_response" || noFirstDispatch;
         expect(outcome).toBe(pending ? "pending" : undefined);
         expect(captures).toBe(noFirstDispatch ? 0 : 1);
+        if (["wrong_binding", "archiving", "takeover_before_capture"].includes(scenario)) expect(bootProbes).toBe(0);
+        if (scenario === "physical_generation_missing" || scenario === "takeover_during_boot_probe") {
+          expect(bootProbes).toBe(1);
+          const { rows } = await db.query<{ unpublished: boolean }>(
+            "select preservation_stop_generation is null as unpublished from sandboxes where id=$1",
+            [id],
+          );
+          expect(rows[0]?.unpublished).toBe(true);
+        }
         if (takeover || collectorRefused || noFirstDispatch)
           expect(await readWorkRecovery(sql, recoveryScope, id)).toBeNull();
         if (scenario === "archiving") return;

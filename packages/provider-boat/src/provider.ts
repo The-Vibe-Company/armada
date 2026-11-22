@@ -231,8 +231,9 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
   return { items, cursor: pageInfo?.hasMore ? pageInfo.nextCursor : null };
 }
 
-/** Compute-only activation port; intentionally not required by legacy managed adapters. */
+/** Compute-only runtime ports; intentionally not required by legacy managed adapters. */
 interface BoatRuntimeHost {
+  observeCaptureBoot(sandboxId: string, signal: AbortSignal): Promise<string | null>;
   resumeRuntime(
     sandboxId: string,
     ttlSeconds: number,
@@ -708,6 +709,37 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       const info = sandboxInfo(current);
       if (current.state === "archived") info.retainedSnapshot = await observeArchivedRetention(current, signal);
       return info;
+    },
+
+    async observeCaptureBoot(sandboxId, signal) {
+      signal.throwIfAborted();
+      const current = await provider.get(sandboxId, { signal });
+      signal.throwIfAborted();
+      if (!["ready", "running"].includes(current.state) || current.physicalExitConfirmed) return null;
+
+      const result = await call(() =>
+        api.command(
+          {
+            sandboxId,
+            commandRequest: { command: "cat /proc/sys/kernel/random/boot_id", timeoutSeconds: 5 },
+          },
+          { signal },
+        ),
+      );
+      signal.throwIfAborted();
+      if (
+        !("exitCode" in result) ||
+        result.type !== "command.finished" ||
+        result.ok !== true ||
+        result.success !== true ||
+        result.exitCode !== 0 ||
+        result.timedOut !== false ||
+        result.stdoutTruncated === true ||
+        typeof result.stdout !== "string"
+      )
+        return null;
+      const boot = result.stdout.trim();
+      return boot && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(boot) ? boot.toLowerCase() : null;
     },
 
     async resumeBestEffort(sandboxId: string): Promise<void> {

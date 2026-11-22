@@ -6,7 +6,10 @@ type RuntimeTtlPort = {
   setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
 };
 
-type RuntimeWorkPort = { captureRuntimeWork?: ModalRuntimeCapture };
+type RuntimeWorkPort = {
+  captureRuntimeWork?: ModalRuntimeCapture;
+  observeCaptureBoot?(sandboxId: string, signal: AbortSignal): Promise<string | null>;
+};
 export type RuntimeWorkProvider = Provider & RuntimeTtlPort & RuntimeWorkPort;
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
@@ -22,10 +25,12 @@ export function createRuntimeProvider(
 ): RuntimeWorkProvider {
   let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
   let captureRuntimeWork: RuntimeWorkPort["captureRuntimeWork"];
+  let observeCaptureBoot: RuntimeWorkPort["observeCaptureBoot"];
   switch (host.id) {
     case "boat":
       setRuntimeTtl = host.setRuntimeTtl;
       captureRuntimeWork = host.captureRuntimeWork?.bind(host);
+      observeCaptureBoot = host.observeCaptureBoot?.bind(host);
       break;
     case "modal":
       captureRuntimeWork = modalCapture;
@@ -143,6 +148,15 @@ export function createRuntimeProvider(
           async listOutputEntries(request: Parameters<NonNullable<Provider["listOutputEntries"]>>[0]) {
             target(request.sandboxId);
             return host.listOutputEntries!(request);
+          },
+        }
+      : {}),
+    ...(observeCaptureBoot
+      ? {
+          observeCaptureBoot(id: string, signal: AbortSignal) {
+            target(id);
+            signal.throwIfAborted();
+            return observeCaptureBoot(id, signal);
           },
         }
       : {}),
