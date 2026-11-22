@@ -35,6 +35,7 @@ export type Defect =
   | "idle-wrong-first-epoch"
   | "idle-wrong-first-request"
   | "lost-followup"
+  | "job-admission"
   | "lost-launch"
   | "mcp-error-result"
   | "mcp-no-result"
@@ -2416,7 +2417,7 @@ export const scenarios: Scenario[] = [
     defects: ["resume-stop-unknown"],
     expected: expected.resumeBadCheckpoint,
   },
-  { label: "github", args: ["--github"], defects: [], expected: expected.opencodeGithub },
+  { label: "github-job-admission", args: ["--github"], defects: ["job-admission"], expected: expected.opencodeGithub },
   { label: "github-resume", args: ["--resume", "--github"], defects: [], expected: expected.opencodeGithubResume },
   {
     label: "github-old-preflight",
