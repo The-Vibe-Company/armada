@@ -948,6 +948,7 @@ test.each([
   "unmarked pending intent",
   "admission rollback",
   "lost provider reply",
+  "provider reply without exit proof",
   "journal replacement before dispatch",
   "journal replacement before settlement",
 ] as const)("historical Modal drain handles %s", async (scenario) => {
@@ -1094,6 +1095,7 @@ test.each([
     "stopped journal",
     "stopped journal with stop intent",
     "lost provider reply",
+    "provider reply without exit proof",
     "interrupted stopped admission",
     "interrupted stopped settlement",
   ].includes(scenario);
@@ -1222,11 +1224,12 @@ test.each([
   }
   if (stopped && scenario !== "stopped journal with stop intent") {
     const deleteMachine = mock(async (target: Parameters<Provider["delete"]>[0]) => {
-      expect(target).toEqual({ sandboxId: placement, generation: 5 });
+      expect<Record<string, unknown>>(target).toEqual({ sandboxId: placement, generation: 5 });
       expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
       await db.query(
-        `update modal_machines set record=record||'{"phase":"deleted","deletePhysicalExitGeneration":1}'::jsonb where id=$1`,
-        [placement],
+        `update modal_machines set record=record||jsonb_build_object('phase','deleted',
+          'deletePhysicalExitGeneration',$2::int) where id=$1`,
+        [placement, scenario === "provider reply without exit proof" ? 2 : 1],
       );
       if (scenario === "lost provider reply") throw new Error("Interrupted provider reply");
       return { status: "deleted" as const };
@@ -1242,6 +1245,12 @@ test.each([
       },
       true,
     );
+    if (scenario === "provider reply without exit proof") {
+      await expect(remove(candidate)).rejects.toThrow("Sandbox deletion receipt is stale.");
+      expect(deleteMachine).toHaveBeenCalledTimes(1);
+      expect(await state()).toEqual({ status: "stopped", generation: "5", epoch: "2", legacy_epoch: "2" });
+      return;
+    }
     if (scenario === "interrupted stopped admission") {
       await expect(remove(candidate)).rejects.toThrow("Interrupted stopped admission");
       expect(deleteMachine).not.toHaveBeenCalled();

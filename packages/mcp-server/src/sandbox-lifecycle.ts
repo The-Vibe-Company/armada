@@ -1254,7 +1254,8 @@ export async function lockHistoricalManagedModalParent(
        from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3 for update nowait`,
     [id, orgId, member.owner_id],
   );
-  if (!sandbox || sandbox.status === "deleted") return sandbox;
+  if (!sandbox) return;
+  if (sandbox.status === "deleted") return { ...sandbox, parentId: null };
   // WARNING: The legacy and scoped epoch triggers acquire the other authority row.
   const {
     rows: [parent],
@@ -1294,7 +1295,7 @@ export async function settleHistoricalManagedModalDeletion(
     const parent = await lockHistoricalManagedModalParent(tx, target, actorId);
     if (!parent) return;
     if (parent.status === "deleted") return "already-deleted" as const;
-    if (!("parentId" in parent)) throw new Error("Managed native drain authority is unavailable.");
+    if (!parent.parentId) throw new Error("Managed native drain authority is unavailable.");
     if (!parent.idle || !(await lockHistoricalManagedModalTombstone(tx, id))) {
       const candidate = await tx.query(
         `select 1 from public.sandboxes s where s.id=$1 and ${historicalModalDrainCandidate(true)}`,

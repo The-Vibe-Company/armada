@@ -1365,7 +1365,7 @@ export function createSqlData(
             const parent = managedModalDrain
               ? await lockHistoricalManagedModalParent(tx, managedModalDrain, caller.userId)
               : undefined;
-            if (managed && (!parent || !("parentId" in parent) || (!parent.idle && !parent.native_drain_pending)))
+            if (managed && (!parent?.parentId || (!parent.idle && !parent.native_drain_pending)))
               throw new DataError("Managed Modal drain lost its parent admission.", "sandbox_not_ready");
             const {
               rows: [locked],
@@ -1422,7 +1422,7 @@ export function createSqlData(
               if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
                 throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
             }
-            if (managedModalDrain && parent && "parentId" in parent && !locked.native_drain_pending)
+            if (managedModalDrain && parent?.parentId && !locked.native_drain_pending)
               await managedModalDrain.revoke(tx, parent.parentId);
             const updated = await applyUpdate(tx);
             if (!updated.rows[0]?.id)
