@@ -34,6 +34,15 @@ export class RuntimeCommandPending extends Error {
     super("runtime_command_pending");
   }
 }
+async function assertAdmittedClaim(tx: Sql, assertClaim?: (tx: Sql) => Promise<void>) {
+  try {
+    await assertClaim?.(tx);
+  } catch (error) {
+    if (error instanceof RuntimeCommandRefused) throw new RuntimeCommandConflict();
+    throw error;
+  }
+}
+
 interface RuntimeCommandReply {
   epoch: string;
   requestId: string;
@@ -146,7 +155,8 @@ export function createRuntimeCommands(
     const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
     let deferred = false;
     const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
-      await assertClaim?.(tx);
+      const isExtension = extensionLeaseEpoch !== undefined;
+      if (!isExtension) await assertClaim?.(tx);
       // Application-secret taint forbids file egress: never admit or replay an output read (row
       // locked here). A stored reply may predate the taint, and a read has no effect to reconcile.
       if (
@@ -164,6 +174,7 @@ export function createRuntimeCommands(
         )
       ).rows[0];
       if (previous) {
+        if (isExtension) await assertAdmittedClaim(tx, assertClaim);
         if (previous.epoch !== scope.epoch || (expectedEpoch !== undefined && scope.epoch !== expectedEpoch))
           throw new RuntimeCommandConflict();
         const encoded = await decryptSecret(previous.request_enc, key);
@@ -185,10 +196,12 @@ export function createRuntimeCommands(
             for (const wakeKey of wakeKeys) deferred = deferTransactionWake(tx, wakeKey);
           }
         }
-        await assertClaim?.(tx);
+        if (isExtension) await assertAdmittedClaim(tx, assertClaim);
+        else await assertClaim?.(tx);
         return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: Boolean(rebound) };
       }
       // Every fence below refuses new work before any row is written: a definite refusal.
+      if (isExtension) await assertClaim?.(tx);
       if (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) throw new RuntimeCommandRefused();
       // Checkpoint intent fences every mutation entry point, including Docker.
       if (
@@ -414,7 +427,7 @@ export function createRuntimeCommands(
         return { state: "superseded" as const };
       if (row.result_enc) {
         const reply = JSON.parse(await decryptSecret(row.result_enc, key)) as RuntimeCommandReply;
-        await assertReceiptClaim?.(tx);
+        if (assertReceiptClaim) await assertAdmittedClaim(tx, assertReceiptClaim);
         return { state: "finished" as const, reply };
       }
       return { state: row.epoch === scope.epoch ? ("pending" as const) : ("superseded" as const) };

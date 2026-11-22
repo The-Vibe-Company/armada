@@ -9,7 +9,7 @@ import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { continueRequest, observeRequest } from "../src/request-observability.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { authorityExtensionRequestId } from "../src/runtime-authority-extension.ts";
-import { createRuntimeCommands, RuntimeCommandRefused } from "../src/runtime-commands.ts";
+import { createRuntimeCommands, RuntimeCommandConflict, RuntimeCommandRefused } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "../src/runtime-idle-evidence.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
@@ -136,6 +136,7 @@ test.each([
   "late ACK",
   "lost claim",
   "expired dispatch",
+  "expired claim after ACK",
   "successor rebinds",
 ] as const)("extension authority receipt handles %s", async (kind) => {
   const f = await fixture(kind === "late ACK" ? 2_500 : 250, true);
@@ -209,6 +210,7 @@ test.each([
       expiresAt: kind === "short deadline" ? target - 1 : target + 1,
     });
     if (kind === "lost claim") ownsClaim = false;
+    if (kind === "expired claim after ACK") await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
   };
   f.onWait(async () => {
     await answerHealth();
@@ -233,6 +235,10 @@ test.each([
     await expect(extend()).rejects.toThrow("runtime_command_pending");
   } else if (kind === "lost claim") {
     await expect(extend()).rejects.toThrow("extension claim lost");
+  } else if (kind === "expired claim after ACK") {
+    await expect(extend()).rejects.toStrictEqual(new RuntimeCommandConflict());
+    f.onWait(answerHealth);
+    await expect(extend()).rejects.toStrictEqual(new RuntimeCommandConflict());
   } else if (kind === "successor rebinds") {
     await expect(extend()).rejects.toThrow("runtime_command_pending");
     await f.db.query("update jobs set lease_until=now() where id=$1", [jobId]);
