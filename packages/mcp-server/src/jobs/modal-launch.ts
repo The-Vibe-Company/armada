@@ -18,6 +18,7 @@ import {
   createSqlSandboxStore,
   createSqlVaultStore,
   decryptSecret,
+  GOLDEN_ROOT,
   GoldenError,
   LaunchError,
   type Machine,
@@ -52,6 +53,12 @@ import type { RuntimeGitHub } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
+import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
+import {
+  type RestoreScopedRuntimeAccess,
+  registerSandboxArmadaParent,
+  type SandboxArmadaAccessOptions,
+} from "../sandbox-armada-access.ts";
 import {
   bindModalLaunchMachine,
   clearStartingModalStop,
@@ -82,6 +89,7 @@ export interface ModalLaunchAdmission {
   sandbox: ModalLaunchSandbox;
   allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
   initialPrompt?: string;
+  armadaAccess?: SandboxArmadaAccessOptions;
   connections?: string[];
   resolvedSkills?: string[];
   deadline: Date;
@@ -132,7 +140,7 @@ export async function admitModalLaunch(
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
 ) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
-  const { orgId, ownerId, sandbox, allocation, request, templateReceiptId } = input;
+  const { orgId, ownerId, sandbox, allocation, request, templateReceiptId, armadaAccess } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
@@ -272,7 +280,18 @@ export async function admitModalLaunch(
       if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
       if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
-      const visibility = sandbox.visibility === "private" ? "private" : golden.visibility;
+      const visibility = armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
+      const scopedCredential = sandbox.credentialId;
+      if (armadaAccess) {
+        const limit = armadaAccess.maxActiveChildren;
+        if (reservation || sandbox.harness !== "codex" || !scopedCredential || !sandbox.credentialVersion)
+          throw new VaultError(
+            "invalid",
+            "Scoped Armada access requires an ordinary Modal launch with a bound Codex account.",
+          );
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100))
+          throw new VaultError("invalid", "Scoped Armada access requires a child limit between 1 and 100.");
+      }
       const actor = { userId: ownerId, orgId };
       await insertStartingModalSandbox(
         tx,
@@ -286,6 +305,8 @@ export async function admitModalLaunch(
         },
         sandbox,
       );
+      if (armadaAccess && scopedCredential)
+        await registerSandboxArmadaParent(tx, actor, sandboxId, sandbox.goldenId, scopedCredential, armadaAccess);
       if (reservation) {
         const { bindings } = await readRuntimeTemplateEnvironment(tx, actor, sandboxId, "modal");
         await assertLaunchSecretBindings(tx, actor, bindings, reservation.template_scope === "org");
@@ -311,7 +332,13 @@ export async function admitModalLaunch(
         sandboxId,
         generation,
         sandboxId,
-        { launchJobId: jobId, prompt: input.initialPrompt, workspace, skills },
+        {
+          launchJobId: jobId,
+          prompt: input.initialPrompt,
+          workspace,
+          skills,
+          ...(armadaAccess ? { scopedAccess: true } : {}),
+        },
         { orgId, maxAttempts: 3 },
         tx,
       );
@@ -350,6 +377,7 @@ export function createModalInitialTurnJob(
   commands: Parameters<typeof runtimeAgentFor>[0],
   prepareMcp: RuntimeMcp["prepare"],
   github?: Pick<RuntimeGitHub, "prepareLaunch">,
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const runtime = createRuntimeEnrolments(sql, encryptionKey);
   return {
@@ -363,6 +391,7 @@ export function createModalInitialTurnJob(
           prompt: z.string().optional(),
           workspace: z.unknown(),
           skills: z.array(z.string()),
+          scopedAccess: z.literal(true).optional(),
         })
         .safeParse(job.payload);
       if (!sandboxId || !generation || !payload.success)
@@ -547,6 +576,33 @@ export function createModalInitialTurnJob(
         if (error instanceof VaultError || error instanceof RuntimeCommandRefused || error instanceof GoldenError)
           return { status: "fail", reason: "modal_initial_turn_mcp_refused" };
         throw error;
+      }
+
+      if (payload.data.scopedAccess) {
+        if (!restoreScopedAccess) return { status: "fail", reason: "modal_initial_turn_scoped_access_unavailable" };
+        const projectDir = target.repository_dir ? `${GOLDEN_ROOT}/${target.repository_dir}` : GOLDEN_ROOT;
+        const installed = await agent.workspaceExec(
+          {
+            sandboxId: target.provider_sandbox_id,
+            cwd: projectDir,
+            command: sandboxAccessReferenceCommand(projectDir, target.harness),
+            timeoutSeconds: 300,
+          },
+          SCOPED_REFERENCE_STEP,
+          epoch,
+          context.signal,
+        );
+        if (installed.detached || installed.timedOut || installed.truncated || installed.exitCode !== 0)
+          return { status: "fail", reason: "modal_initial_turn_scoped_reference_refused" };
+        await restoreScopedAccess(
+          actor.userId,
+          sandboxId,
+          epoch,
+          String(generation),
+          context.signal,
+          assertRuntimeClaim,
+          true,
+        );
       }
 
       const { prompt } = payload.data;

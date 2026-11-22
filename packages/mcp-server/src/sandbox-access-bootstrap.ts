@@ -21,6 +21,17 @@ owned children, expiry and active-child limits. Never use the owner's API token.
 No ticket routing, review, merge or scheduling policy is supplied by Armada.
 `;
 
+export const SCOPED_REFERENCE_STEP = { phase: "init", index: 100, attempt: 0 } as const;
+
+export function sandboxAccessReferenceCommand(projectDir: string, harness: Harness | undefined) {
+  if (!projectDir.startsWith("/") || [...projectDir].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+    throw new Error("orchestrator_invalid_bootstrap");
+  const referenceDir = `${projectDir}/${harness === "claude" ? ".claude" : ".agents"}/skills/armada-tools`;
+  const referenceFile = quote(`${referenceDir}/SKILL.md`);
+  // Never follow a redirected destination or overwrite an unrelated package.
+  return `test ! -L ${quote(referenceDir)} && mkdir -p ${quote(referenceDir)} && if test -e ${referenceFile}; then test ! -L ${referenceFile} && test "$(cat ${referenceFile})" = "$(printf '%s' ${quote(toolReference)})"; else (set -C; printf '%s' ${quote(toolReference)} > ${referenceFile}); fi`;
+}
+
 /** Preparation precedes delegated authority and the first turn. Never return guest diagnostics. */
 export async function bootstrapSandboxAccess(
   provider: Provider,
@@ -40,17 +51,12 @@ export async function bootstrapSandboxAccess(
 ): Promise<SkillReceipt | null> {
   const { sandboxId, projectDir, skill } = request;
   if (
-    !projectDir.startsWith("/") ||
-    [...projectDir].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) ||
-    (skill !== undefined &&
-      (skill.length > 256 || !SKILL_PIN_PATTERN.test(skill) || skill.split("/").at(-1)?.startsWith("armada-tools@")))
+    skill !== undefined &&
+    (skill.length > 256 || !SKILL_PIN_PATTERN.test(skill) || skill.split("/").at(-1)?.startsWith("armada-tools@"))
   ) {
     throw new Error("orchestrator_invalid_bootstrap");
   }
-  const referenceDir = `${projectDir}/${request.harness === "claude" ? ".claude" : ".agents"}/skills/armada-tools`;
-  const referenceFile = quote(`${referenceDir}/SKILL.md`);
-  // Never follow a redirected destination or overwrite an unrelated package.
-  const referenceCommand = `test ! -L ${quote(referenceDir)} && mkdir -p ${quote(referenceDir)} && if test -e ${referenceFile}; then test ! -L ${referenceFile} && test "$(cat ${referenceFile})" = "$(printf '%s' ${quote(toolReference)})"; else (set -C; printf '%s' ${quote(toolReference)} > ${referenceFile}); fi`;
+  const referenceCommand = sandboxAccessReferenceCommand(projectDir, request.harness);
   let receipt: SkillReceipt | null = null;
   try {
     const privateSkill = skill !== undefined && !skill.includes("/");

@@ -27,6 +27,40 @@ export interface SandboxArmadaAccessOptions {
   maxActiveChildren?: number;
 }
 
+function requireScopedAccount(
+  sandbox: Pick<SandboxRecord, "credentialId" | "visibility" | "ownerId" | "orgId">,
+  actor: GoldenActor,
+) {
+  const { credentialId } = sandbox;
+  if (
+    !credentialId ||
+    sandbox.visibility !== "private" ||
+    sandbox.ownerId !== actor.userId ||
+    sandbox.orgId !== actor.orgId
+  )
+    throw new VaultError("invalid", "Delegated access requires a private sandbox and a bound model account.");
+  return credentialId;
+}
+
+export async function registerSandboxArmadaParent(
+  tx: Sql,
+  actor: Pick<GoldenActor, "orgId" | "userId">,
+  sandboxId: string,
+  goldenId: string,
+  credentialId: string,
+  options: SandboxArmadaAccessOptions,
+) {
+  await tx.query(
+    `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+     values($1,'sandbox',$2,$3,$1,'ready',$4::uuid[],$5::uuid[])`,
+    [sandboxId, actor.orgId, actor.userId, [goldenId], [credentialId]],
+  );
+  await tx.query(`insert into public.orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,$2)`, [
+    sandboxId,
+    options.maxActiveChildren ?? 3,
+  ]);
+}
+
 /** Ordinary sandbox authority. There is deliberately no orchestrator identity,
  * orchestration policy, owner token or ambient access for unselected sandboxes. */
 export function createSandboxArmadaAccess(input: {
@@ -115,6 +149,7 @@ export function createSandboxArmadaAccess(input: {
     lifecycleGeneration: string,
     signal: AbortSignal,
     assertClaim?: (tx: Sql) => Promise<void>,
+    required = false,
   ) {
     signal.throwIfAborted();
     const parent = (
@@ -126,7 +161,10 @@ export function createSandboxArmadaAccess(input: {
         [sandboxId, ownerId],
       )
     ).rows[0];
-    if (!parent) return;
+    if (!parent) {
+      if (required) throw new VaultError("conflict", "Scoped runtime parent is unavailable.");
+      return;
+    }
     if (!input.commands) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
     const transport = createEnrolledDelegatedTransport(input.commands, {
       ownerId,
@@ -194,26 +232,9 @@ export function createSandboxArmadaAccess(input: {
     options: SandboxArmadaAccessOptions,
     runtime?: { epoch: string; exec: Provider["exec"]; signal: AbortSignal },
   ) {
-    const credentialId = sandbox.credentialId;
-    if (
-      !credentialId ||
-      sandbox.visibility !== "private" ||
-      sandbox.ownerId !== actor.userId ||
-      sandbox.orgId !== actor.orgId
-    )
-      throw new VaultError("invalid", "Delegated access requires a private sandbox and a bound model account.");
-    const consent = { scopes: [...workerScopes], goldenIds: [sandbox.goldenId], credentialIds: [credentialId] };
-    async function register(tx: Sql) {
-      await tx.query(
-        `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
-        values($1,'sandbox',$2,$3,$1,'ready',$4::uuid[],$5::uuid[])`,
-        [sandbox.id, actor.orgId, actor.userId, consent.goldenIds, consent.credentialIds],
-      );
-      await tx.query(`insert into public.orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,$2)`, [
-        sandbox.id,
-        options.maxActiveChildren ?? 3,
-      ]);
-    }
+    const credentialId = requireScopedAccount(sandbox, actor);
+    const register = (tx: Sql) =>
+      registerSandboxArmadaParent(tx, actor, sandbox.id, sandbox.goldenId, credentialId, options);
     const bootstrap = {
       sandboxId: sandbox.providerSandboxId,
       projectDir: sandbox.repositoryDir ? `${GOLDEN_ROOT}/${sandbox.repositoryDir}` : GOLDEN_ROOT,
