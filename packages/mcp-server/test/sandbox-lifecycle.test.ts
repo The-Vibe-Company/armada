@@ -606,7 +606,7 @@ test("Boat reconciliation skips an older due candidate while its extension lease
   const worker = createSandboxLifecycle(sql, async (id) =>
     createBoatProvider({
       apiKey: "test-key",
-      fetch: (async () =>
+      fetch: (async (_input: Request | string | URL) =>
         Response.json({
           ok: true,
           sandbox: retainedSandbox({ id: id === older ? "bx_23456789" : "bx_2345678a" }),
