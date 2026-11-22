@@ -416,7 +416,7 @@ export function createRuntimeGitHub(options: {
       const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, grant.binding.ownerId);
       if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
       reason = "binding_unavailable";
-      return await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
+      const response = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
         const now = await current(tx, grant.sandbox_id),
           cap = await read(tx, hash(token));
         if (
@@ -436,6 +436,18 @@ export function createRuntimeGitHub(options: {
         );
         return Response.json({ token: access.token }, { headers });
       });
+      try {
+        const event = "runtime_github_credentials_issued";
+        // Correlate delivery of the same token across sandboxes without exposing the token or repository.
+        const tokenFingerprint = createHmac("sha256", Buffer.from(key, "base64"))
+          .update(JSON.stringify(["armada/runtime/github/token-log/v1", grant.binding.ownerId, access.token]))
+          .digest("hex")
+          .slice(0, 32);
+        console.info(JSON.stringify({ level: "info", message: event, event, sandboxId, tokenFingerprint }));
+      } catch {
+        // Logging must not turn a committed credential issuance into a refusal.
+      }
+      return response;
     } catch {
       const response = new Response(null, { status: 403, headers });
       if (!sandboxId) return response;
