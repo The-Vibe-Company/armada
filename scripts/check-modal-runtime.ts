@@ -45,7 +45,7 @@ interface Reply {
   statusMessage?: string | null;
   settled?: boolean;
   conversationIds?: string[];
-  prompt?: unknown;
+  prompt?: { promptId?: string; state?: string } | null;
   revision?: string;
   configured?: boolean;
   credentialRequests?: number;
@@ -415,7 +415,12 @@ const verifyGitHub = async (expectedPromptId: string, expectedEpoch: string, rev
   )
     throw Error("Missing archived gh command and current-epoch credential acquisition proof.");
 };
-const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string, expectedConversationId?: string) => {
+const verifyPrompt = async (
+  expectedPromptId: string,
+  expectedAnswer: string,
+  expectedConversationId?: string,
+  queued = false,
+) => {
   let cursor: string | undefined;
   let foundAnswer = false;
   let finished = false;
@@ -423,12 +428,29 @@ const verifyPrompt = async (expectedPromptId: string, expectedAnswer: string, ex
   let foundVariables = !variablesMode;
   const claudeCalls = new Map<string, ToolCall>();
   const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
-  const deadline = Date.now() + 300000;
+  const deadline = Date.now() + 300_000;
+  if (queued) {
+    // Read the archive only after the public prompt alias is published. Earlier pages can contain native IDs.
+    while (Date.now() < deadline) {
+      const turn = await api("sandbox/status", { id, prompt_id: expectedPromptId }, Math.max(1, deadline - Date.now()));
+      if (turn.id !== id || turn.prompt?.promptId !== expectedPromptId)
+        throw Error("Queued Modal follow-up does not match its status.");
+      if (turn.settled === true) {
+        if (turn.prompt.state !== "finished") throw Error("Queued Modal follow-up did not finish successfully.");
+        break;
+      }
+      await Bun.sleep(1000);
+    }
+  }
   while (
     Date.now() < deadline &&
     (!foundAnswer || !finished || !foundMcp || !foundVariables || (usageMode && !usageCheck.has(expectedPromptId)))
   ) {
-    const page = await api("logs/read", { id, limit: 1000, ...(cursor ? { cursor } : {}) });
+    const page = await api(
+      "logs/read",
+      { id, limit: 1000, ...(cursor ? { cursor } : {}) },
+      Math.max(1, deadline - Date.now()),
+    );
     if (page.source !== "armada-runtime") throw Error("Modal answer was not read from the common runtime archive.");
     if (page.runtimeFailure) throw Error("Modal enrolled runtime failed; inspect server diagnostics.");
     for (const event of page.events ?? []) {
@@ -638,11 +660,7 @@ async function observeAdmittedTurn(sandboxId: string, externalRef: string) {
     throw Error("Admitted Modal sandbox does not match the owner inventory.");
   if (terminal.includes(row.status)) throw Error("Admitted Modal sandbox entered a terminal lifecycle state.");
   while (Date.now() < deadline) {
-    const current = await api<Reply & { prompt?: { promptId?: string; state?: string } | null }>(
-      "sandbox/status",
-      { id: sandboxId },
-      remaining(),
-    );
+    const current = await api("sandbox/status", { id: sandboxId }, remaining());
     if (current.id !== sandboxId) throw Error("Admitted Modal status does not match the sandbox.");
     if (terminal.includes(current.status ?? "") || (current.settled === true && current.statusMessage))
       throw Error("Admitted Modal launch or initial turn failed.");
@@ -930,7 +948,12 @@ try {
       "Missing same-conversation/current-epoch Modal follow-up acknowledgement; reconcile request_id, never send again.",
     );
   epoch ??= followed.runtime?.epoch;
-  await verifyPrompt(followed.promptId, memory, admission ? conversationId : undefined);
+  await verifyPrompt(
+    followed.promptId,
+    memory,
+    jobAdmission ? conversationId : undefined,
+    jobAdmission && followed.status === "queued",
+  );
   if (initialGitHubRevision) await verifyGitHub(followed.promptId, epoch ?? "", initialGitHubRevision);
   followupPromptId = followed.promptId;
   const firstCheckpoint = await checkpoint(epoch);
@@ -1078,7 +1101,12 @@ if (
         [promptId, followupPromptId, resumed.promptId].includes(sent.promptId)
       )
         throw Error("Missing current-epoch GitHub follow-up acknowledgement.");
-      await verifyPrompt(sent.promptId, memory, jobAdmission ? conversationId : undefined);
+      await verifyPrompt(
+        sent.promptId,
+        memory,
+        jobAdmission ? conversationId : undefined,
+        jobAdmission && sent.status === "queued",
+      );
       await verifyGitHub(sent.promptId, currentEpoch, revision);
     }
     await checkpoint(resumed.runtime.epoch ?? "");

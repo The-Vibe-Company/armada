@@ -8,6 +8,7 @@ interface RequestBody {
   org: string;
   owner?: string;
   prompt: string;
+  prompt_id?: string;
   provider: string;
   repository: string;
   request_id: string;
@@ -65,6 +66,7 @@ const sandboxId = admission ? "88888888-8888-4888-8888-888888888888" : "worker";
 let launchRef: string | undefined;
 let admissionStatusReads = 0;
 let followupId = "followup";
+let followupAliasPublished = false;
 const shellOld = defects.includes("opencode-shell-old");
 const inventoryReject = defects.some((d) =>
   ["opencode-mcp-collision", "opencode-mcp-duplicate-name", "opencode-mcp-inventory-missing"].includes(d),
@@ -378,6 +380,16 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
           }[body.scope],
     });
   }
+  if (path.endsWith("/sandbox/status") && admission && body.prompt_id) {
+    if (!sends || body.id !== sandboxId || body.prompt_id !== followupId) throw Error("wrong queued turn status");
+    followupAliasPublished = true;
+    return Response.json({
+      id: sandboxId,
+      status: "ready",
+      settled: true,
+      prompt: { promptId: followupId, state: "finished" },
+    });
+  }
   if (path.endsWith("/sandbox/status")) {
     if (admission) {
       if (body.id !== sandboxId || !launchRef || stops) throw Error("wrong admitted sandbox status");
@@ -609,6 +621,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/logs/read")) {
+    const archivedFollowup = admission && !followupAliasPublished ? "native-followup" : followupId;
     if (idle && !firstSends)
       return Response.json({
         source: "armada-runtime",
@@ -644,7 +657,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         answer,
         defects.includes("tool-result") ? "tool_result" : "assistant",
       ),
-      ...(sends ? pair(followupId, memory) : []),
+      ...(sends ? pair(archivedFollowup, memory) : []),
       ...(resumes && !emptyResume
         ? pair("resumed", memory, defects.includes("resume-tool-result") ? "tool_result" : "assistant")
         : []),
@@ -654,7 +667,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       sends &&
       !(defects.includes("github-missing-tool") && !defects.includes("opencode-github-display-only"))
     ) {
-      const toolPrompt = resumes && !emptyResume && sends > 1 ? "github-resumed" : followupId;
+      const toolPrompt = resumes && !emptyResume && sends > 1 ? "github-resumed" : archivedFollowup;
       events.push(...pair("github-resumed", memory).filter(() => resumes && !emptyResume && sends > 1));
       events.push({
         id: "gh-tool",
