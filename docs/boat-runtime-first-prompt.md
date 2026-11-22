@@ -1,6 +1,6 @@
 # Boat runtime
 
-Experimental, **default off**, ordinary Boat Codex/Claude/OpenCode workers only. Selected launches
+The repository default for ordinary Boat launches is currently `native`. Runtime-selected launches
 use Armada's compiled runtime for prompts, journal/history and private model
 configuration. Native Boat sessions remain native; Modal retains its existing
 tunnel. There is no native-agent fallback after runtime failure and no migration
@@ -14,10 +14,17 @@ server/runtime image through the normal process. Do not deploy or apply migratio
 from a worker. Set trusted server `ARMADA_BOAT_RUNTIME_MANIFEST` to the matching
 `/opt/armada/runtime-manifests/x64.json` (or arm64 on that architecture).
 The normal image publishes runtime/harness bytes automatically; no manual copy.
-Missing configuration means unavailable, not native fallback.
+Set `ARMADA_BOAT_AGENT_PATH=runtime` to select Armada runtime for ordinary new
+Boat launches. Server startup with this setting requires valid installed runtime
+artifacts. The startup error names `ARMADA_BOAT_RUNTIME_MANIFEST` and
+`ARMADA_RUNTIME_ARTIFACT_DIR` when artifact validation fails.
 
-`POST /api/v1/launch/options` advertises `boatRuntime.enabled:true` when enabled,
-plus capability versions for diagnostics/follow-up/checkpoint/resume/GitHub/MCP.
+`POST /api/v1/launch/options` reports `boatRuntime.defaultPath` and
+`boatRuntime.enabled`, plus capability versions for diagnostics, follow-up,
+checkpoint, resume, GitHub and MCP. To verify the ordinary launch path, require
+`boatRuntime.defaultPath:"runtime"` and `boatRuntime.enabled:true`, then use an
+ordinary Boat launch without `runtimeVersion` or `boatRuntime` overrides. The
+explicit launch below checks runtime availability independently of the selector.
 Preflight the versions required by your check **before** allocating. Disabling
 new launches does not remove existing runtime read/cleanup routing.
 
@@ -91,6 +98,15 @@ A checkpoint neither stops the VM nor creates a Git work archive or proves retai
 disk. Follow with ordinary `sandbox/stop` and confirm physical stop separately.
 Raw stop still cleans compute but does not claim a checkpoint. Reuse requires a
 same-current-epoch receipt whose final prefix still matches after stop fencing.
+
+Enrolled Boat stop records a checkpoint note. Dirty work recovery relies on
+confirmed retained disk. The stop receipt provides no Git work archive. The probe
+reads the executing Linux boot ID, which can survive a retained restore. Boat can
+also admit a command after an independent resume, so the preceding liveness read
+cannot bind the command to the same live incarnation. Archive collection needs
+that binding and trusted proof that the checkpoint barrier holds through
+collection. The checkpoint note is the accepted outcome for the current Boat
+host contract. [Archive gate decision](https://github.com/The-Vibe-Company/armada/issues/2741#issuecomment-7081451175)
 
 Owner API `POST /api/v1/sandbox/resume-runtime-v1`:
 
