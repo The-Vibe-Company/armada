@@ -626,6 +626,8 @@ test("Boat reconciliation skips an older due candidate while its extension lease
 
 for (const evidence of [
   "covered",
+  "terminal-covered",
+  "terminal-short",
   "short",
   "scoped-short",
   "unknown",
@@ -650,22 +652,30 @@ for (const evidence of [
     if (!binding) throw Error("Missing Boat sandbox.");
     const sql = bunLikeSql(db);
     const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
-    let physicalDeadline = evidence === "covered" ? coveredDeadline : binding.expires_at;
-    const pendingJobId =
-      evidence === "covered"
-        ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
-            "boat_runtime_extend",
-            id,
-            binding.lifecycle_generation,
-            id,
-            null,
-            { orgId: people.org, maxAttempts: 3, deadline: binding.expires_at },
-          )
-        : null;
+    const shouldClear = evidence === "terminal-covered" || evidence === "lost-observation-response";
+    const terminalJob = shouldClear || evidence === "terminal-short";
+    const hasPendingJob = evidence === "covered" || terminalJob;
+    let physicalDeadline = evidence === "covered" || shouldClear ? coveredDeadline : binding.expires_at;
+    const pendingJobId = hasPendingJob
+      ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
+          "boat_runtime_extend",
+          id,
+          binding.lifecycle_generation,
+          id,
+          null,
+          { orgId: people.org, maxAttempts: 3, deadline: binding.expires_at },
+        )
+      : null;
     if (pendingJobId)
       await db.query("insert into public.boat_runtime_extension_state(sandbox_id,pending_job_id) values($1,$2)", [
         id,
         pendingJobId,
+      ]);
+    const failureReceipt = { reason: "deadline" };
+    if (terminalJob)
+      await db.query("update public.jobs set state='failed', outcome=$2::jsonb where id=$1", [
+        pendingJobId,
+        JSON.stringify(failureReceipt),
       ]);
     if (evidence === "scoped-short")
       await db.query(
@@ -722,7 +732,7 @@ for (const evidence of [
     const readSandbox = async () =>
       (
         await db.query(
-          "select status, status_reason, expires_at, stop_requested_at from public.sandboxes where id=$1",
+          "select status, status_reason, expires_at, stop_requested_at, lifecycle_error from public.sandboxes where id=$1",
           [id],
         )
       ).rows[0];
@@ -736,13 +746,18 @@ for (const evidence of [
       ).rows;
     if (evidence === "lost-observation-response") {
       expect(stops).toBe(0);
-      expect(await readSandbox()).toMatchObject({ status: "running", expires_at: binding.expires_at });
-      expect(await readObservation()).toMatchObject([{ observed_expires_at: binding.expires_at }]);
-      physicalDeadline = coveredDeadline;
+      expect(await readSandbox()).toMatchObject({
+        status: "running",
+        expires_at: binding.expires_at,
+        lifecycle_error: expect.stringContaining("Provider lifecycle observation unavailable"),
+      });
+      expect(await readObservation()).toMatchObject([{ pending_job_id: null, observed_expires_at: coveredDeadline }]);
+      physicalDeadline = new Date(coveredDeadline.getTime() + 60_000);
       await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
       const successor = createSandboxLifecycle(sql, async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
       await successor.drain();
+      expect(await readSandbox()).toMatchObject({ lifecycle_error: null });
     }
     if (evidence === "lost-stop-response") {
       expect(await readSandbox()).toMatchObject({
@@ -757,18 +772,22 @@ for (const evidence of [
     }
 
     const row = await readSandbox();
-    const shouldStop = ["short", "scoped-short", "lost-stop-response"].includes(evidence);
+    const shouldStop = ["short", "scoped-short", "terminal-short", "lost-stop-response"].includes(evidence);
     expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
     expect(row).toMatchObject(
       shouldStop
         ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
-        : { status: "running", status_reason: null },
+        : {
+            status: "running",
+            status_reason: null,
+            expires_at: evidence === "superseded" ? expect.any(Date) : binding.expires_at,
+          },
     );
     expect(await readObservation()).toEqual(
-      shouldStop || evidence === "covered" || evidence === "lost-observation-response"
+      shouldStop || hasPendingJob
         ? [
             {
-              pending_job_id: pendingJobId,
+              pending_job_id: shouldClear ? null : pendingJobId,
               observed_provider_id: "bx_23456789",
               observed_generation: binding.lifecycle_generation,
               observed_at: expect.any(Date),
@@ -777,6 +796,10 @@ for (const evidence of [
           ]
         : [],
     );
+    if (terminalJob)
+      expect((await db.query("select state,outcome from public.jobs where id=$1", [pendingJobId])).rows).toEqual([
+        { state: "failed", outcome: failureReceipt },
+      ]);
   });
 }
 

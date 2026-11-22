@@ -2297,7 +2297,7 @@ export function createSandboxLifecycle(
             `with locked as materialized (
                select s.* from public.sandboxes s where s.id=$1 for update
              )
-             insert into public.boat_runtime_extension_state
+             insert into public.boat_runtime_extension_state as extension
                (sandbox_id,observed_provider_id,observed_generation,observed_at,observed_expires_at)
              select s.id,s.provider_sandbox_id,s.lifecycle_generation,to_timestamp($6::float8),to_timestamp($7::float8)
              from locked s
@@ -2309,7 +2309,16 @@ export function createSandboxLifecycle(
                and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
              on conflict (sandbox_id) do update set
                observed_provider_id=excluded.observed_provider_id, observed_generation=excluded.observed_generation,
-               observed_at=excluded.observed_at, observed_expires_at=excluded.observed_expires_at
+               observed_at=excluded.observed_at, observed_expires_at=excluded.observed_expires_at,
+               pending_job_id=case
+                 when $7::numeric >= $5::numeric + $8::integer and exists (
+                   select 1 from public.jobs j
+                   where j.id=extension.pending_job_id and j.sandbox_id=excluded.sandbox_id
+                     and j.generation=excluded.observed_generation and j.kind='boat_runtime_extend'
+                     and j.state in ('done','failed')
+                 ) then null
+                 else extension.pending_job_id
+               end
              returning sandbox_id`,
             [
               row.id,
@@ -2319,6 +2328,7 @@ export function createSandboxLifecycle(
               row.expiry_epoch,
               now() / 1000,
               physicalDeadline / 1000,
+              SANDBOX_STOP_MARGIN_SECONDS,
             ],
           );
           if (!saved.rows.length) return true;
