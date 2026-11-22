@@ -344,8 +344,8 @@ failed setup cannot proceed to inference. General exec remains a separate contro
 path; this private operation is launch-only.
 
 Runtime launches require an authorized bound model account and refuse requested
-helper capabilities. Enrolled Boat lifetime extension returns `extension_state`
-before provider I/O. Choose the required lifetime at launch. Extension is
+helper capabilities. The owner `sandbox/extend` operation returns
+`extension_state` for enrolled Boat before provider I/O. Choose the required lifetime at launch. Extension is
 deferred to [#4011](https://github.com/The-Vibe-Company/armada/issues/4011).
 The stop receipt continues to carry the checkpoint note described above.
 
