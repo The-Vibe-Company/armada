@@ -209,16 +209,16 @@ test.each([{ boatRuntime: true, runtimeTransport: "dialout" }, { boatRuntime: tr
     const calls: string[] = [];
     const expiresAt = new Date("2026-11-13T12:25:00.000Z");
     const provider = {
-      id: "boat",
-      async get() {
+      ...fakeBoat().provider,
+      async get(id) {
         calls.push("read");
-        return { state: "ready", providerState: "active", expiresAt };
+        return { id, name: id, labels: {}, state: "ready", providerState: "active", expiresAt };
       },
       async extendLifetime() {
         calls.push("extend");
         return expiresAt;
       },
-    } as Provider;
+    } satisfies Provider;
 
     await expect(extendSandbox(f.store, sandbox, provider, 1_200)).rejects.toMatchObject({ code: "extension_state" });
     expect(calls).toEqual([]);
