@@ -1065,6 +1065,102 @@ test.each([
   await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
 });
 
+test.each([
+  "full tombstone",
+  "legacy stop-requested tombstone",
+  "physical-only tombstone",
+  "stopped journal",
+  "no opt-in",
+  "nonowner member",
+  "existing recovery",
+  "unresolved child operation",
+  "interrupted transition",
+  "interrupted terminal cleanup",
+] as const)("managed historical Modal drain handles %s", async (scenario) => {
+  const { db, people, modalGoldenId } = sharedDatabase();
+  const id = crypto.randomUUID();
+  const parentId = crypto.randomUUID();
+  const placement = `managed-${id}`;
+  const legacy = scenario === "legacy stop-requested tombstone";
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,access_owner_id,visibility,provider,
+       provider_sandbox_id,harness,status,created_at,stopped_at,stop_requested_at,lifecycle_generation)
+     values($1,$2,$3,$4,$4,'private','modal',$5,'codex','stopped','2026-11-21',now(),
+       case when $6::boolean then now() end,4)`,
+    [id, modalGoldenId, people.org, people.owner, placement, legacy],
+  );
+  await db.query(`insert into orchestrators(id,org_id,owner_id,sandbox_id,state) values($1,$2,$3,$4,'stopped')`, [
+    parentId,
+    people.org,
+    people.owner,
+    id,
+  ]);
+  await db.query(
+    `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+     values('drain-fixture',$1,$2,'private',$3,$3,$4::jsonb)`,
+    [
+      people.org,
+      people.owner,
+      placement,
+      JSON.stringify({
+        phase: scenario === "stopped journal" ? "stopped" : "deleted",
+        generation: 1,
+        ...(legacy ? {} : { deletePhysicalExitGeneration: 1 }),
+        ...(scenario === "physical-only tombstone" ? { deleteScope: "physical-only" } : {}),
+      }),
+    ],
+  );
+  if (scenario === "existing recovery")
+    await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
+      id,
+      new Uint8Array([21, 34, 55]),
+    ]);
+  if (scenario === "unresolved child operation")
+    await db.query(
+      `insert into orchestrator_child_operations(orchestrator_id,org_id,owner_id,parent_generation,
+         parent_epoch,action,target_id,scope_target,idempotency_key,request_digest,state)
+       values($1,$2,$3,4,1,'launch',$4,$1,'pending-launch',repeat('a',64),'uncertain')`,
+      [parentId, people.org, people.owner, crypto.randomUUID()],
+    );
+  const sql = bunLikeSql(db, (statement) => {
+    if (scenario === "interrupted transition" && statement.includes("from public.sandbox_transition("))
+      throw new Error("Interrupted transition");
+    if (scenario === "interrupted terminal cleanup" && statement.includes("delete from public.sandbox_work_recovery"))
+      throw new Error("Interrupted terminal cleanup");
+  });
+  const actorId = scenario === "nonowner member" ? people.member : people.owner;
+  const drain = configureNativeDrain(
+    sql,
+    "modal",
+    actorId,
+    { ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY, ARMADA_PUBLIC_URL: PUBLIC_URL },
+    scenario !== "no opt-in",
+  );
+  const candidate = { id, org_id: people.org, role: "member" as const };
+  const state = async () =>
+    (
+      await db.query(
+        `select s.status,s.lifecycle_generation::text as generation,p.authority_epoch::text as epoch,
+           o.authority_epoch::text as legacy_epoch
+         from sandboxes s join orchestrators o on o.sandbox_id=s.id
+         join armada_access_parents p on p.id=o.id where s.id=$1`,
+        [id],
+      )
+    ).rows[0];
+  if (scenario === "full tombstone" || legacy) {
+    await expect(drain.remove(candidate)).resolves.toBe("without-proof");
+    await expect(drain.remove(candidate)).resolves.toBeUndefined();
+    expect(await state()).toEqual({ status: "deleted", generation: "5", epoch: "2", legacy_epoch: "2" });
+    return;
+  }
+  await expect(drain.remove(candidate)).rejects.toThrow(
+    scenario.startsWith("interrupted") ? /Interrupted/ : /managed|deletion access denied/i,
+  );
+  expect(await state()).toEqual({ status: "stopped", generation: "4", epoch: "1", legacy_epoch: "1" });
+  if (scenario === "existing recovery")
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(1);
+});
+
 test("historical opt-in keeps provider resolution before strict admission for a row with proof", async () => {
   const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal", "clean");
   const { sandboxes } = createSqlData(bunLikeSql(db))({

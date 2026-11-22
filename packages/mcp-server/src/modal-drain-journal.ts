@@ -123,6 +123,29 @@ export const historicalModalDrainCandidate = `${historicalModalCohort} and exist
   where ${historicalJournalMatch} and ${availableJournal} and ${historicalAdmission}
 )`;
 
+export async function lockHistoricalManagedModalTombstone(tx: Sql, id: string) {
+  // WARNING: Modal ingest can acquire the journal before the sandbox.
+  const {
+    rows: [journal],
+  } = await tx.query<{ scope: string; id: string; lease_id: string | null }>(
+    `select m.scope,m.id,m.lease_id
+     from public.sandboxes s join public.modal_machines m on ${historicalJournalMatch}
+     where s.id=$1 and ${historicalModalCohort} and not s.native_drain_pending
+       and ${availableJournal} and m.record->'historicalDrainAdmission' is null
+       and m.record->>'phase'='deleted'
+       and (m.record->'deleteScope' is null or m.record->>'deleteScope'='physical-and-retained')
+       and (
+         ${hasModalDrainExitProof("m.record")}
+         or (s.stop_requested_at is not null and m.record->'deletePhysicalExitGeneration' is null
+           and m.record->'deleteScope' is null and m.record->>'recoveryImageId' is null
+           and coalesce(m.record->'retainedRecoveryIds','[]'::jsonb)='[]'::jsonb)
+       )
+     for update of m nowait`,
+    [id],
+  );
+  return !!journal && (!journal.lease_id || (await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id)));
+}
+
 export function historicalModalDrainPhase(allow: string) {
   return `case when ${allow} and ${historicalModalCohort} then (
     select m.record->>'phase' from public.modal_machines m

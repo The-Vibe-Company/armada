@@ -22,6 +22,7 @@ import {
   hasModalDrainExitProof,
   historicalModalDrainPhase,
   isFullModalDrainTombstone,
+  lockHistoricalManagedModalTombstone,
   strictNativeDrainJournals,
   withdrawExpiredModalDrainLease,
 } from "./modal-drain-journal.ts";
@@ -1224,6 +1225,76 @@ export async function recordNativeDrainDeleteOperation(
   return rows.length > 0;
 }
 
+export async function settleHistoricalManagedModalDeletion(
+  sql: Sql,
+  target: { id: string; org_id: string },
+  actorId: string,
+  revoke: (tx: Sql, parentId: string) => Promise<void>,
+) {
+  if (!sql.transaction) throw new Error("Managed Modal drain requires a transaction.");
+  const { id, org_id: orgId } = target;
+  return sql.transaction(async (tx) => {
+    // WARNING: Keep delegated admission's membership -> sandbox -> parent lock order.
+    const {
+      rows: [member],
+    } = await tx.query<{ owner_id: string }>(
+      `select s.owner_id from public.sandboxes s
+       join public.orchestrators o on o.sandbox_id=s.id and o.org_id=s.org_id and o.owner_id=s.owner_id
+       join public.members owner on owner.org_id=s.org_id and owner.user_id=s.owner_id
+       join public.members actor on actor.org_id=s.org_id and actor.user_id=$3
+       where s.id=$1 and s.org_id=$2 and (s.owner_id=actor.user_id or actor.role='admin')
+       for share of owner,actor nowait`,
+      [id, orgId, actorId],
+    );
+    if (!member) return;
+    const {
+      rows: [sandbox],
+    } = await tx.query<{ status: SandboxStatus; idle: boolean }>(
+      `select status,
+         (activity_lease_id is null and activity_until is null and reconcile_lease is null
+           and reconcile_lease_until is null) as idle
+       from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3 for update nowait`,
+      [id, orgId, member.owner_id],
+    );
+    if (sandbox?.status === "deleted") return "already-deleted" as const;
+    // WARNING: The legacy and scoped epoch triggers acquire the other authority row.
+    const {
+      rows: [parent],
+    } = await tx.query<{ id: string }>(
+      `select p.id from public.orchestrators o join public.armada_access_parents p
+       on p.id=o.id and p.kind='orchestrator' and p.sandbox_id=o.sandbox_id
+         and p.org_id=o.org_id and p.owner_id=o.owner_id
+       where o.sandbox_id=$1 and o.org_id=$2 and o.owner_id=$3
+       for no key update of o,p nowait`,
+      [id, orgId, member.owner_id],
+    );
+    if (!sandbox?.idle || !parent || !(await lockHistoricalManagedModalTombstone(tx, id)))
+      throw new VaultError("conflict", "Managed native drain requires an idle parent and a full historical tombstone.");
+    const {
+      rows: [eligible],
+    } = await tx.query(
+      `select 1 from public.sandboxes s where s.id=$1
+       and (select outcome from public.native_drain_work_proof(s.id,s.lifecycle_generation))='unverified'
+       and not exists(select 1 from public.sandbox_work_recovery a where a.sandbox_id=s.id)
+       and not exists(select 1 from public.orchestrator_child_operations c
+         where c.orchestrator_id=$2 and c.state in ('pending','uncertain'))`,
+      [id, parent.id],
+    );
+    if (!eligible) throw new VaultError("conflict", "Managed native drain found unresolved work or saved recovery.");
+    await revoke(tx, parent.id);
+    const {
+      rows: [receipt],
+    } = await tx.query<{ generation: string }>(
+      `update public.sandboxes set lifecycle_generation=lifecycle_generation+1,preservation_note=null
+       where id=$1 returning lifecycle_generation::text as generation`,
+      [id],
+    );
+    if (!receipt) throw new Error("Locked managed sandbox disappeared.");
+    await finishSandboxDeletion(tx, id, receipt.generation);
+    return "without-proof" as const;
+  });
+}
+
 export async function completeSandboxDeletion(
   tx: Sql,
   scope: [string[], string],
@@ -1262,9 +1333,14 @@ export async function completeSandboxDeletion(
   );
   const receipt = rows[0];
   if (!receipt) return false;
+  await finishSandboxDeletion(tx, sandboxId, receipt.generation);
+  return true;
+}
+
+async function finishSandboxDeletion(tx: Sql, sandboxId: string, generation: string) {
   const transition = await transitionSandbox(tx, {
     sandboxId,
-    expectedGeneration: receipt.generation,
+    expectedGeneration: generation,
     fromStates: ["stopped", "failed"],
     toState: "deleted",
     actor: "delete_job",
@@ -1274,7 +1350,6 @@ export async function completeSandboxDeletion(
   if (transition.kind === "conflict") throw new Error("Locked sandbox deletion could not transition.");
   await purgeWorkRecovery(tx, sandboxId);
   await releaseAccountCapacity(tx, sandboxId);
-  return true;
 }
 
 export async function finishLaunchFailure(
