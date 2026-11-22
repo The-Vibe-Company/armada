@@ -6,10 +6,12 @@
  */
 
 export {
+  ACCOUNT_ACTIVE_WORK_PREDICATE,
   ACCOUNT_WORKING_PREDICATE,
   accountModelCountsSql,
   accountWaitingCountSql,
   accountWorkingCountSql,
+  modalLaunchSetupKeySql,
 } from "./account-work-sql.ts";
 export { type ApplicationVault, type ApplicationVaultActor, createApplicationVault } from "./application-vault.ts";
 export { boatSnapshotName } from "./boat-snapshot-name.ts";

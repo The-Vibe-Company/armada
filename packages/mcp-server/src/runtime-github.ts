@@ -6,6 +6,7 @@ import {
   encryptSecret,
   type GitHubResolveDeps,
   gitIdentity,
+  modalLaunchSetupKeySql,
   resolveGitHubAccess,
   type SandboxProviderId,
   type Sql,
@@ -16,7 +17,7 @@ import { createSqlData } from "./data.ts";
 import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
-import { MODAL_LAUNCH_SETUP_KEY, parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
+import { parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -42,7 +43,7 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  modal_setup.id as modal_setup_id,modal_setup.payload_enc as modal_setup_enc
  from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
  left join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
- left join public.jobs modal_setup on s.provider='modal' and modal_setup.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+ left join public.jobs modal_setup on s.provider='modal' and modal_setup.idem_key=${modalLaunchSetupKeySql()}
  join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null

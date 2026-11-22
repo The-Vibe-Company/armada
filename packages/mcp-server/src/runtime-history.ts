@@ -8,10 +8,9 @@ import {
   type Provider,
   ProviderError,
 } from "@armada/core";
-import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
+import { decryptSecret, modalLaunchSetupKeySql, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
-import { MODAL_LAUNCH_SETUP_KEY } from "./jobs/modal-launch-setup.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 /** Durable journal reads, never live host/native-agent observations. */
@@ -141,7 +140,7 @@ export function createModalJobReader(sql: Sql, key: string) {
           case when s.status in ('ready','running') and not coalesce(turn.settled,false)
             then s.task_prompt_id end as active_prompt
          from public.sandboxes s
-         left join public.jobs setup on setup.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+         left join public.jobs setup on setup.idem_key=${modalLaunchSetupKeySql()}
          left join public.runtime_idle_turns turn on turn.sandbox_id=s.id and turn.prompt_id=s.task_prompt_id
          where ${SANDBOX_VISIBLE} and s.id=$3 and s.lifecycle_generation=$4 and s.provider='modal' and s.runtime_transport='dialout'`,
           scope,

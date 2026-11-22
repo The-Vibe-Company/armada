@@ -5,6 +5,7 @@ import {
   decryptSecret,
   encryptSecret,
   type Harness,
+  modalLaunchSetupKeySql,
   resolveModelChoice,
   type Sql,
   VaultError,
@@ -24,7 +25,7 @@ import {
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
-import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY } from "./jobs/modal-launch-setup.ts";
+import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
@@ -173,7 +174,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
                   s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
                   case when s.provider='modal' and not $3::boolean then (
-                    select j.state from public.jobs j where j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+                    select j.state from public.jobs j where j.idem_key=${modalLaunchSetupKeySql()}
                   ) end as launch_setup_state
            from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=$2

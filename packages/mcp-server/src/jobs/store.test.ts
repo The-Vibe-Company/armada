@@ -9,7 +9,7 @@ import {
   scopeKey,
 } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
-import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
+import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
@@ -1387,6 +1387,55 @@ async function modalFirstTurnLane(
     modal: { launchCleanupJob: { concurrency: 1 } },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
+
+test.each([
+  { prompted: false, max: null, limits: { "gpt-5": 1 }, refusal: "Model gpt-5" },
+  { prompted: true, max: 1, limits: {}, refusal: "1/1 agents working" },
+])("Modal enrolment preserves capacity through setup ($refusal)", async ({ prompted, max, limits, refusal }) => {
+  const fixture = await modalAdmissionFixture();
+  if (!prompted) delete fixture.input.initialPrompt;
+  const { f, id, makeRunner } = await modalLaunchFixture(fixture);
+  await f.db.query("update credentials set max_agents=$2,model_limits=$3 where id=$1", [
+    f.openaiCredentialId,
+    max,
+    limits,
+  ]);
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+
+  const anotherLaunch = () =>
+    admitModalLaunch(f.sql, launchEncryptionKey, {
+      ...fixture.input,
+      request: { key: "second-launch", payload: "second" },
+      sandbox: { ...fixture.input.sandbox, credentialId: f.openaiCredentialId, credentialVersion: 1 },
+    });
+  await expect(anotherLaunch()).rejects.toThrow(refusal);
+
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  const setup = await modalFirstTurnLane(f, {
+    async acceptInitialLaunch(...args) {
+      const accepted = await queue.acceptInitialLaunch(...args);
+      const {
+        rows: [turn],
+      } = await f.sql.query<Parameters<typeof admitAccountTurn>[1]>(
+        "select * from account_turn_queue where sandbox_id=$1 and request_id=$2",
+        [id, args[1].request_id],
+      );
+      if (!accepted || !turn || !(await admitAccountTurn(f.sql, turn))) throw Error("First turn was not admitted.");
+      return accepted;
+    },
+  });
+  expect(await setup.reconcileOne(signal)).toBe(true);
+  await setup.drain();
+  expect(
+    (await f.db.query("select state from jobs where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN])).rows,
+  ).toEqual([{ state: "done" }]);
+
+  if (prompted) await expect(anotherLaunch()).rejects.toThrow(refusal);
+  else expect((await anotherLaunch()).sandbox.status).toBe("starting");
+});
 
 test.each(["first turn", "promptless setup"] as const)(
   "Modal scoped access is acknowledged before %s completes after a lost reference reply",
