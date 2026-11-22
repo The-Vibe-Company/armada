@@ -2282,7 +2282,6 @@ export function createSandboxLifecycle(
         const physicalDeadline = info.expiresAt?.getTime() ?? Number.NaN;
         const observedBoatDeadline =
           row.boat_runtime &&
-          providerId === "boat" &&
           !expired &&
           row.stop_requested_at === null &&
           (row.status === "ready" || row.status === "running") &&
