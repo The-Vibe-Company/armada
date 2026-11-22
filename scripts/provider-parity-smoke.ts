@@ -1925,7 +1925,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !feature ||
         step === feature ||
         step === "launch" ||
-        (step === "stop" && resumePrerequisites) ||
+        (step === "stop" && (resumePrerequisites || feature === "client-stop")) ||
         (step === "stop" && productionBoat && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
         ((feature === "client-send" ||

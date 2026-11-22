@@ -17,6 +17,7 @@ for (const mode of [
   "client_send_full",
   "client_send_full_slow",
   "client_stop_full",
+  "client_stop_full_focused",
   "client_stop_full_slow",
   "client_stop_full_no_resume",
   "client_stop_full_usage_lost",
@@ -401,7 +402,9 @@ for (const mode of [
                                           ? ["--parity", "--feature", debtFeature]
                                           : mode === "invalid_filter"
                                             ? ["--parity", "--feature", "typo"]
-                                            : ["--parity"],
+                                            : mode === "client_stop_full_focused"
+                                              ? ["--parity", "--only", "docker", "--feature", "client-stop"]
+                                              : ["--parity"],
       {
         now: () => clock,
         ...(modalLaunchScenario || dockerLaunchScenario ? { deadline: 3_500 } : {}),
@@ -1136,7 +1139,8 @@ for (const mode of [
                     text:
                       clientStopFull && (turns.get(p)?.length ?? 0) > 1
                         ? prompts.get(p)
-                        : mode === "skills_resume_full" && String(body.id).endsWith("template-2")
+                        : mode === "client_stop_full_focused" ||
+                            (mode === "skills_resume_full" && String(body.id).endsWith("template-2"))
                           ? "SMOKE_OK"
                           : mode === "snapshot_answer_missing" || mode === "template_no_answer"
                             ? "WRONG"
@@ -1930,6 +1934,12 @@ for (const mode of [
         ])
           expect(report.features[name][provider].status).toBe("pass");
       }
+      return;
+    }
+    if (mode === "client_stop_full_focused") {
+      expect(passed).toBe(true);
+      expect(report.features["client-stop"].docker.status).toBe("pass");
+      expect(clientStops.get("docker")).toBe(2);
       return;
     }
     if (clientStopFull) {
