@@ -350,6 +350,7 @@ export function createSandboxArmadaAccess(input: {
         if (!current || current.modal_drain_cleaned_placement === placement) return true;
         await authorityFor(tx).revoke(parent.id);
         await recordCleanup(tx);
+        await assertOwner(tx);
         return true;
       });
       if (tombstoneCleaned) return;

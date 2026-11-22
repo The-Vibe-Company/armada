@@ -2421,6 +2421,7 @@ test.each([
   "lost detached archive during cleanup",
   "rolled back tombstone cleanup",
   "lost tombstone cleanup commit reply",
+  "lease expiry during tombstone cleanup",
 ] as const)("scoped Modal drain handles %s without bypassing cleanup", async (scenario) => {
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
   await db.query(
@@ -2428,6 +2429,7 @@ test.each([
     [sandboxId, people.org, people.owner],
   );
   const tombstone = scenario.includes("tombstone");
+  const expiresDuringCleanup = scenario === "lease expiry during tombstone cleanup";
   if (tombstone)
     await db.query("update modal_machines set record=record || $2::jsonb where id=$1", [
       `bx_${sandboxId}`,
@@ -2448,6 +2450,8 @@ test.each([
           if (statement.includes("set modal_drain_cleaned_placement")) {
             recordedCleanup = true;
             if (firstPass && scenario.startsWith("rolled back")) throw interruption;
+            if (firstPass && expiresDuringCleanup)
+              await tx.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
           }
           return queried;
         },
@@ -2498,7 +2502,9 @@ test.each([
     expect(provider.delete).not.toHaveBeenCalled();
     return;
   }
-  await expect(drain()).rejects.toThrow(scenario);
+  await expect(drain()).rejects.toThrow(
+    expiresDuringCleanup ? "Native drain no longer owns this placement." : scenario,
+  );
   expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
   if (tombstone)
     expect(
@@ -2509,7 +2515,7 @@ test.each([
         )
       ).rows,
     ).toEqual([
-      scenario.startsWith("rolled back")
+      scenario.startsWith("rolled back") || expiresDuringCleanup
         ? { authority_epoch: 1, modal_drain_cleaned_placement: null }
         : { authority_epoch: 2, modal_drain_cleaned_placement: `bx_${sandboxId}` },
     ]);
