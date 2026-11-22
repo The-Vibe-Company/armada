@@ -53,15 +53,16 @@ export function runtimeResumePlacement<H extends Provider>(
       sandbox.credentialVersion ?? undefined,
     );
     const host = await placement.host(caller, sandbox);
+    const observeCoverage = placement.verifyRestoredCoverage?.bind(placement, host, sandbox);
     return {
       start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticket) => {
-        if (placement.verifyRestoredCoverage && !ticket) throw Error(placement.admissionError);
+        if (observeCoverage && !ticket) throw Error(placement.admissionError);
         let recordCoverage: ((tx: Sql) => Promise<void>) | undefined;
         const verifyRestoredCoverage = async (signal: AbortSignal, assertDispatch?: () => Promise<void>) => {
-          if (!placement.verifyRestoredCoverage) return;
+          if (!observeCoverage) return;
           await assertDispatch?.();
           signal.throwIfAborted();
-          recordCoverage = await placement.verifyRestoredCoverage(host, sandbox, signal);
+          recordCoverage = await observeCoverage(signal);
         };
         return options.policy.start({
           host,
@@ -77,7 +78,7 @@ export function runtimeResumePlacement<H extends Provider>(
                   lockPrerequisites: ticket.guard.lockPrerequisites,
                   async check(tx: Sql) {
                     await ticket.guard.check(tx);
-                    if (!placement.verifyRestoredCoverage) return;
+                    if (!observeCoverage) return;
                     if (!recordCoverage) throw Error(placement.admissionError);
                     await recordCoverage(tx);
                   },
@@ -86,7 +87,7 @@ export function runtimeResumePlacement<H extends Provider>(
             : {}),
           ...(ticket?.recovery
             ? {
-                ...(placement.verifyRestoredCoverage
+                ...(observeCoverage
                   ? { activate: (admission: AbortSignal) => verifyRestoredCoverage(admission, assertDispatch) }
                   : {}),
               }
@@ -127,6 +128,13 @@ export function runtimeResumePlacement<H extends Provider>(
               }),
         });
       },
+      ...(observeCoverage
+        ? {
+            async checkDispatchCoverage(signal: AbortSignal) {
+              await observeCoverage(signal);
+            },
+          }
+        : {}),
       stop: () => placement.stop(host, sandbox),
     };
   };

@@ -207,6 +207,7 @@ describe.each([
           activations++;
           return f.reboot(restore);
         },
+        async checkDispatchCoverage() {},
         async stop() {
           throw Error("Healthy resume must not stop compute");
         },
@@ -351,6 +352,7 @@ describe("retained Boat extension supersession", () => {
         atRestore = rows;
         return f.reboot(restore);
       },
+      async checkDispatchCoverage() {},
       async stop() {},
     }));
     await expect(resume(f.caller, input(f.row.id))).resolves.toMatchObject({ resumed: true });
@@ -689,6 +691,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           }
           return ready;
         },
+        async checkDispatchCoverage() {},
         async stop() {
           if (!unenrolled && !ambiguous) throw Error("Unexpected stop during queued wake");
           stops++;
@@ -932,7 +935,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         resumed: true,
         requestId: request.request_id,
       });
-      expect(preparations).toBe(1);
+      expect(preparations).toBe(provider === "boat" && accepted.state === "missing" ? 2 : 1);
       expect(f.starts).toHaveLength(2);
       if (scoped) expect(await acknowledgedScopedGrant(f.sql, f.row.id)).toBe(true);
     } else {
@@ -974,6 +977,7 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
         f.deliverPromptEventsBeforeReply();
         return f.reboot(restore);
       },
+      async checkDispatchCoverage() {},
       async stop() {
         throw Error("Live enrolled uncertainty must remain reconcilable");
       },
@@ -1042,6 +1046,7 @@ test("a wake that loses its activity lease after prompt acceptance cannot publis
     };
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, bridge, async () => ({
       start: async (_signal, restore) => f.reboot(restore),
+      async checkDispatchCoverage() {},
       async stop() {
         throw Error("The stale wake no longer owns the sandbox");
       },
@@ -1169,6 +1174,7 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
         refusalStatus = response?.status;
         throw Error("runtime_protocol_unsupported");
       },
+      async checkDispatchCoverage() {},
       async stop() {
         requestSideStops++;
       },
@@ -1259,6 +1265,7 @@ test.each(interruptedResumeProofs)(
           await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
           throw Error("Owner lost its lease before it could hand off");
         },
+        async checkDispatchCoverage() {},
         async stop() {
           throw Error("The request has no cleanup authority");
         },
@@ -1622,6 +1629,7 @@ test("failed GitHub reauthorization prevents resumed inference and can reconcile
           activations++;
           return f.reboot(restore);
         },
+        async checkDispatchCoverage() {},
         async stop() {},
       }),
       undefined,
@@ -1674,6 +1682,69 @@ function interceptBoatResume(reply: (url: string) => Response | Promise<Response
   }) as typeof fetch);
   return { requests, restore: () => network.mockRestore() };
 }
+
+test("Boat refuses a new resume prompt when its physical deadline shortens after enrolment", async () => {
+  const f = await stopped();
+  const logicalDeadline = new Date("2099-01-01T00:00:00Z");
+  const coveringDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
+  let restored = false;
+  let enrolled = false;
+  let postEnrolmentChecks = 0;
+  let activations = 0;
+  const { restore } = interceptBoatResume((url) => {
+    if (url.endsWith("/resume")) {
+      restored = true;
+      activations++;
+    } else if (enrolled) postEnrolmentChecks++;
+    return Response.json({
+      ok: true,
+      sandbox: restored
+        ? sdkSandbox({
+            id: "physical",
+            state: "running",
+            archiveAfter: (enrolled ? logicalDeadline : coveringDeadline).toISOString(),
+          })
+        : retainedSandbox({ id: "physical", snapshotAvailable: true }),
+    });
+  });
+  try {
+    await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, logicalDeadline.toISOString()]);
+    const prepare = boatRuntimeResume({
+      sql: f.sql,
+      vault: createSqlVaultStore(f.sql),
+      key: ENCRYPTION_KEY,
+      modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
+      policy: {
+        async start(value) {
+          await value.activate?.(value.signal);
+          const ready = await f.reboot(value.restoreCheckpoint!);
+          enrolled = true;
+          return {
+            ...ready,
+            prompt: async () => {
+              throw Error("Resume must dispatch through the enrolled command bridge");
+            },
+          };
+        },
+      },
+    });
+    const request = input(f.row.id);
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(postEnrolmentChecks).toBe(1);
+    const withoutBoatPolicy = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge);
+    await expect(withoutBoatPolicy(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(postEnrolmentChecks).toBe(2);
+    expect(activations).toBe(1);
+    expect(await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2")).toEqual({
+      state: "missing",
+    });
+  } finally {
+    restore();
+    await f.close();
+  }
+});
 
 const boatResumeRecoveryCases = [
   "confirmed",
@@ -1932,6 +2003,7 @@ test.each(boatResumeRecoveryCases)(
           (
             await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
               start: (_signal, restore) => f.reboot(restore),
+              async checkDispatchCoverage() {},
               stop: async () => {},
             }))(f.caller, input(f.row.id))
           ).sourceCheckpoint.epoch,
@@ -1947,6 +2019,7 @@ test.each(boatResumeRecoveryCases)(
         await expect(
           createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
             start: (_signal, restore) => f.reboot(restore),
+            async checkDispatchCoverage() {},
             stop: async () => {},
           }))(f.caller, input(f.row.id)),
         ).resolves.toMatchObject({
@@ -2027,6 +2100,7 @@ describe.each([
           activations++;
           return f.reboot(restore);
         },
+        async checkDispatchCoverage() {},
         async stop() {
           throw Error("No healthy activation cleanup");
         },
