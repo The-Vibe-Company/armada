@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseExplicitPinnedAdmission } from "./modal-pinned-smoke-receipt.ts";
 
-const sandbox = { id: "4ddc67d3-db73-4d3b-8c46-e84b4aa13d59", status: "starting" };
+const sandbox = { id: "4ddc67d3-db73-4d3b-8c46-e84b4aa13d59", status: "starting" as const };
 const templateManifest = { revision: 2, resolvedSkills: [] };
 
 test("explicit pinned smoke reads a prompt-free starting receipt and its frozen manifest", () => {
