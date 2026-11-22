@@ -1,5 +1,8 @@
 begin;
 
+set local lock_timeout = '2s';
+set local statement_timeout = '5s';
+
 alter table public.jobs add constraint jobs_boat_runtime_extend_binding
   check (kind <> 'boat_runtime_extend'
     or (sandbox_id is not null and generation is not null and deadline_at is not null));
