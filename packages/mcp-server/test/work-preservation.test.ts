@@ -1225,7 +1225,8 @@ test("native drain retains its source archive when detached recovery disappears 
 test.each([
   ["deleted", 1, "no parent", true],
   ["deleted", 1, "cleaned parent", true],
-  ["deleted", 1, "uncleaned parent", false],
+  ["deleted", 1, "uncleaned parent", true],
+  ["deleted", 1, "physical-only parent", false],
   ["deleted", 2, "no parent", false],
   ["deleting", 1, "no parent", false],
 ] as const)(
@@ -1235,7 +1236,11 @@ test.each([
     const placement = `bx_${sandboxId}`;
     await db.query("update modal_machines set record=record || $2::jsonb where id=$1", [
       placement,
-      JSON.stringify({ phase, deletePhysicalExitGeneration: exit }),
+      JSON.stringify({
+        phase,
+        deletePhysicalExitGeneration: exit,
+        ...(scopedCleanup === "physical-only parent" ? { deleteScope: "physical-only" } : {}),
+      }),
     ]);
     if (scopedCleanup !== "no parent")
       await db.query(
@@ -1249,7 +1254,18 @@ test.each([
       userId: people.owner,
       orgs: [{ orgId: people.org, role: "member" }],
     });
-    const remove = mock(async () => ({ status: "deleted" as const }));
+    const remove = mock(async () => {
+      if (scopedCleanup === "uncleaned parent")
+        expect(
+          (
+            await db.query(
+              "select authority_epoch::int,modal_drain_cleaned_placement from armada_access_parents where id=$1",
+              [sandboxId],
+            )
+          ).rows,
+        ).toEqual([{ authority_epoch: 2, modal_drain_cleaned_placement: placement }]);
+      return { status: "deleted" as const };
+    });
     const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
     const provider: Provider = {
       ...fakeBoat().provider,
@@ -1274,6 +1290,7 @@ test.each([
     await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted", drainProof: "with-proof" });
     await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
     expect(remove).toHaveBeenCalledTimes(1);
+
     expect(
       (await db.query("select archive_enc from native_drain_recovery where archive_id=$1", [archiveId])).rows,
     ).toEqual([{ archive_enc: ciphertext }]);
@@ -2402,12 +2419,20 @@ test.each([
   "rolled back cleanup receipt",
   "lost cleanup commit reply",
   "lost detached archive during cleanup",
+  "rolled back tombstone cleanup",
+  "lost tombstone cleanup commit reply",
 ] as const)("scoped Modal drain handles %s without bypassing cleanup", async (scenario) => {
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
   await db.query(
     "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
     [sandboxId, people.org, people.owner],
   );
+  const tombstone = scenario.includes("tombstone");
+  if (tombstone)
+    await db.query("update modal_machines set record=record || $2::jsonb where id=$1", [
+      `bx_${sandboxId}`,
+      JSON.stringify({ phase: "deleted", deletePhysicalExitGeneration: 1 }),
+    ]);
   const sql = bunLikeSql(db);
   const transaction = sql.transaction;
   if (!transaction) throw new Error("Missing transaction support");
@@ -2422,13 +2447,13 @@ test.each([
           const queried = await tx.query<T>(statement, params);
           if (statement.includes("set modal_drain_cleaned_placement")) {
             recordedCleanup = true;
-            if (firstPass && scenario === "rolled back cleanup receipt") throw interruption;
+            if (firstPass && scenario.startsWith("rolled back")) throw interruption;
           }
           return queried;
         },
       }),
     );
-    if (recordedCleanup && firstPass && scenario === "lost cleanup commit reply") throw interruption;
+    if (recordedCleanup && firstPass && scenario.includes("cleanup commit reply")) throw interruption;
     return result;
   };
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
@@ -2441,13 +2466,17 @@ test.each([
     ...fake,
     id: "modal",
     get: mock(async () => {
-      if (removed) throw new Error("Physical placement cannot be observed after deletion");
+      if (removed || tombstone) throw new Error("Physical placement cannot be observed after deletion");
       if (firstPass && scenario === "unavailable cleanup") throw interruption;
       if (scenario === "lost detached archive during cleanup")
         await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
       return { ...info, state: "stopped" as const };
     }),
     delete: mock(async () => {
+      if (tombstone)
+        expect(
+          (await db.query("select authority_epoch::int from armada_access_parents where id=$1", [sandboxId])).rows,
+        ).toEqual([{ authority_epoch: 2 }]);
       if (firstPass && scenario === "lost delete reply") {
         removed = true;
         throw interruption;
@@ -2471,10 +2500,26 @@ test.each([
   }
   await expect(drain()).rejects.toThrow(scenario);
   expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
+  if (tombstone)
+    expect(
+      (
+        await db.query(
+          "select authority_epoch::int,modal_drain_cleaned_placement from armada_access_parents where id=$1",
+          [sandboxId],
+        )
+      ).rows,
+    ).toEqual([
+      scenario.startsWith("rolled back")
+        ? { authority_epoch: 1, modal_drain_cleaned_placement: null }
+        : { authority_epoch: 2, modal_drain_cleaned_placement: `bx_${sandboxId}` },
+    ]);
   firstPass = false;
   await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
   await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
-  expect(provider.get).toHaveBeenCalledTimes(lostReply || scenario === "lost cleanup commit reply" ? 1 : 2);
+  expect(provider.get).toHaveBeenCalledTimes(
+    tombstone ? 0 : lostReply || scenario.includes("cleanup commit reply") ? 1 : 2,
+  );
+
   expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   expect(
     (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,

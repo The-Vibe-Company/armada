@@ -19,7 +19,9 @@ import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import {
+  hasModalDrainExitProof,
   historicalModalDrainPhase,
+  isFullModalDrainTombstone,
   strictNativeDrainJournals,
   withdrawExpiredModalDrainLease,
 } from "./modal-drain-journal.ts";
@@ -1102,9 +1104,8 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
          else (
            j.record->>'phase'='stopped'
            or ((j.record->>'phase'='deleted' or ($2 and j.record->>'phase'='deleting'))
-             and jsonb_typeof(j.record->'generation')='number'
-             and j.record->'deletePhysicalExitGeneration'=j.record->'generation'
-             and ($2 or not exists (
+             and ${hasModalDrainExitProof("j.record")}
+             and ($2 or (${isFullModalDrainTombstone("j.record")}) or not exists (
                select 1 from public.armada_access_parents p
                where p.sandbox_id=s.id and p.kind='sandbox'
                  and p.modal_drain_cleaned_placement is distinct from s.provider_sandbox_id

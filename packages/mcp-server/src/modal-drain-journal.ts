@@ -14,6 +14,38 @@ export async function withdrawExpiredModalDrainLease(
   return rows.length === 1;
 }
 
+export function hasModalDrainExitProof(record: string) {
+  return `jsonb_typeof(${record}->'generation')='number'
+    and ${record}->'deletePhysicalExitGeneration'=${record}->'generation'`;
+}
+
+export function isFullModalDrainTombstone(record: string) {
+  return `${record}->>'phase'='deleted'
+    and ${record}->>'deleteScope' is distinct from 'physical-only'
+    and ${hasModalDrainExitProof(record)}`;
+}
+
+export async function lockFullModalDrainTombstone(tx: Sql, id: string) {
+  // Modal ingest takes the sandbox and journal locks in reverse order.
+  const {
+    rows: [journal],
+  } = await tx.query<{ scope: string; id: string; lease_id: string | null }>(
+    `select m.scope,m.id,m.lease_id
+     from public.sandboxes s join public.modal_machines m
+       on m.org_id=s.org_id and m.owner_id=s.owner_id and m.id=s.provider_sandbox_id
+     join public.sandbox_native_preservation_receipts r on r.sandbox_id=s.id
+     where s.id=$1 and m.record->>'commonRuntime' is distinct from 'true'
+       and ${isFullModalDrainTombstone("m.record")}
+       and r.capture_acknowledgements->>'drainAdmissionGeneration'=m.record->>'generation'
+       and 1=(select count(*) from public.modal_machines placement
+         where placement.org_id=s.org_id and placement.id=s.provider_sandbox_id)
+       and ${availableJournal}
+     for update of m nowait`,
+    [id],
+  );
+  return !!journal && (!journal.lease_id || (await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id)));
+}
+
 type StrictNativeDrainJournal = {
   lockActive(tx: Sql, id: string): Promise<boolean>;
   hasRetainedCheckpoint(sql: Sql, id: string, generation: number, physicalGeneration?: string): Promise<boolean>;
