@@ -18,7 +18,7 @@ import { createNativeStateStore, NativeObservationSuperseded } from "./model-aut
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
 
-export function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
+function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
   recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
     causeCode: error instanceof NativeObservationSuperseded ? error.reason : undefined,
   });
@@ -314,6 +314,14 @@ export function createModelAuthOwnership(
         }
       }
       throw new VaultError("conflict", "Native auth publication is not acknowledged.");
+    },
+    async captureAfterBoatPrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
+      try {
+        await this.capture(provider, providerId, caller);
+      } catch (error) {
+        recordNativeReadFailure("getPrompt", error);
+        if (!(error instanceof NativeObservationSuperseded)) throw error;
+      }
     },
     async redactBoatEvents(
       provider: Provider,

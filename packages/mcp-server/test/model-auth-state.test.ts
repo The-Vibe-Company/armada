@@ -131,6 +131,32 @@ test("real native state publication seals rotation without replacing binding, fe
   await expect(auth.state.read({ ...actor, userId: PEER }, account.id, 1, SANDBOX)).rejects.toMatchObject({
     code: "not_found",
   });
+  const promptStatus = { promptId: "finished-turn", status: "finished", done: true } as const;
+  const promptProvider = createBoatProvider({
+    apiKey: "fixture",
+    fetch: (async () => Response.json({ ok: true, promptRun: promptStatus })) as unknown as typeof fetch,
+    afterPrompt: (_provider, target) => auth.captureAfterBoatPrompt(provider, target, actor),
+  });
+  authJson = native(6);
+  let winningRevision = 2;
+  onRead = async () => {
+    winningRevision = await auth.state.publish({
+      actor,
+      accountId: account.id,
+      version: 1,
+      sandboxId: SANDBOX,
+      generation: "boat:1",
+      expectedRevision: winningRevision,
+      authJson: native(10 + winningRevision),
+      verifySource: async () => {},
+    });
+  };
+  expect(await promptProvider.getPrompt({ sandboxId: "native", promptId: promptStatus.promptId })).toEqual(
+    promptStatus,
+  );
+  onRead = undefined;
+  expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(14), revision: 5 });
+  authJson = native(2);
   let eventRevision = 2;
   const publicProvider = createBoatProvider({
     apiKey: "synthetic-boat-key",
@@ -509,6 +535,15 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   );
   expect(page).toMatchObject({ events: [], cursor: "verified", settled: false });
   expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
+  const promptStatus = { promptId: "finished-turn", status: "finished", done: true } as const;
+  const promptProvider = createBoatProvider({
+    apiKey: "fixture",
+    fetch: (async () => Response.json({ ok: true, promptRun: promptStatus })) as unknown as typeof fetch,
+    afterPrompt: (_provider, target) => shared.captureAfterBoatPrompt(boat.provider, target, actor),
+  });
+  const readPrompt = () => promptProvider.getPrompt({ sandboxId: physical.id, promptId: promptStatus.promptId });
+  expect(await readPrompt()).toEqual(promptStatus);
+  expect(await broker.secrets(account.id, 1)).not.toContain("synthetic-refresh-4");
   duringSample = undefined;
   const runningInfo = boat.sandbox(physical.id).info;
   boat.sandbox(physical.id).info = { ...runningInfo, state: "stopping" };
@@ -524,6 +559,7 @@ test("shared Boat output samples late native disk secrets and refuses uncertain 
   await boat.provider.stop({ sandboxId: physical.id });
   const beforeUnknownStop = samples;
   await expect(events("unknown-stopped-output")).rejects.toMatchObject({ code: "unavailable" });
+  await expect(readPrompt()).rejects.toMatchObject({ code: "unavailable" });
   expect(samples).toBe(beforeUnknownStop);
   const ready = () => {
     boat.sandbox(physical.id).info = { ...boat.sandbox(physical.id).info, state: "ready", providerState: "ready" };
