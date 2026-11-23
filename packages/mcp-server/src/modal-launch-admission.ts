@@ -2,6 +2,7 @@ import type { GoldenActor, GoldenRecord, LaunchOptions, Sql } from "@armada/core
 import { type LaunchRequest, type LaunchStores, prepareGoldenLaunch, VaultError } from "@armada/core/server";
 import { type ModalLaunchAdmission, replayModalLaunch } from "./jobs/modal-launch.ts";
 import { requireLaunchAccountBinding } from "./launch-account-admission.ts";
+import { preparePoolCandidates, readLaunchAccountDefault } from "./launch-account-pool.ts";
 
 import { checkpointGoldenLaunch } from "./request-timing.ts";
 
@@ -35,28 +36,61 @@ export function createModalLaunchAdmission(
     const provider = await placement.provider(actor, golden);
     checkpointGoldenLaunch("provider_resolution");
     const { pin, armadaAccess } = admission ?? {};
-    const { plan } = await prepareGoldenLaunch(
-      provider,
-      {
-        ...stores,
-        goldens: { ...stores.goldens, findByName: async () => [golden] },
-        credentials: placement.credentials,
-        connections: placement.connections,
-      },
-      actor,
-      request,
-      {
-        ...options,
-        runtime: placement.policy,
-        ...(armadaAccess ? { privateVisibility: true } : {}),
-        ...(pin ? { credentialVersion: pin.credentialVersion } : {}),
-      },
-    );
+    const credentials = placement.credentials;
+    let repositories: Promise<void> | undefined;
+    const prepare = async (candidate: LaunchRequest, version?: number) =>
+      (
+        await prepareGoldenLaunch(
+          provider,
+          {
+            ...stores,
+            goldens: { ...stores.goldens, findByName: async () => [golden] },
+            credentials: {
+              ...credentials,
+              async authorizeRepositories(...args) {
+                repositories ??= credentials.authorizeRepositories?.(...args);
+                await repositories;
+              },
+            },
+            connections: placement.connections,
+          },
+          actor,
+          candidate,
+          {
+            ...options,
+            runtime: placement.policy,
+            ...(armadaAccess ? { privateVisibility: true } : {}),
+            ...(version !== undefined ? { credentialVersion: version } : {}),
+          },
+        )
+      ).plan;
+    const preference =
+      request.credentialId === undefined && !pin
+        ? await readLaunchAccountDefault(sql, actor.userId, request.harness)
+        : undefined;
+    const pool = preference?.credentialIds.length
+      ? { harness: request.harness, credentialIds: preference.credentialIds, model: request.model ?? preference.model }
+      : undefined;
+    const candidates = pool
+      ? await preparePoolCandidates(sql, actor.userId, pool, async (credentialId, model) =>
+          prepare({ ...request, credentialId, model }),
+        )
+      : undefined;
+    const plan = candidates ? candidates.values().next().value! : await prepare(request, pin?.credentialVersion);
+    const prepared =
+      candidates &&
+      new Map(
+        [...candidates].map(([id, candidate]) => [
+          id,
+          { ...candidate.choice, ...requireLaunchAccountBinding(candidate.credentials.binding) },
+        ]),
+      );
     if (plan.golden.id !== golden.id) throw new VaultError("conflict", "Modal launch golden changed.");
     const binding = requireLaunchAccountBinding(plan.credentials.binding);
     const project = plan.resourceProject;
     checkpointGoldenLaunch("account_resolution");
     return admit({
+      ...(pool && prepared ? { accountPool: { pool, prepared } } : {}),
       orgId: actor.orgId,
       ownerId: actor.userId,
       sandbox: {

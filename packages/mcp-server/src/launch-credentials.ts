@@ -66,6 +66,7 @@ export function launchCredentials(
   /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
   repositoryGithub?: GitHubLaunchOptions,
 ): LaunchCredentialResolver & {
+  launchAccountDefault?: ModelAuthOwnership["launchAccountDefault"];
   admitExistingSandbox: NonNullable<LaunchCredentialResolver["admit"]>;
   resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
 } {
@@ -95,6 +96,7 @@ export function launchCredentials(
   const repositoryAccess = github ?? repositoryGithub;
   return {
     resolveModel,
+    ...(ownership ? { launchAccountDefault: ownership.launchAccountDefault } : {}),
     installPrivateSkill,
     ...(repositoryAccess
       ? ({
