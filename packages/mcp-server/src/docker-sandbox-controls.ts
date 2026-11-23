@@ -592,11 +592,13 @@ export function createDockerSandboxControls(
                      'requestId',j.request_id,'operation',j.bound_operation,'outcome',j.outcome,
                      'createdAt',j.created_at,'completedAt',j.completed_at,'cancelledAt',j.cancelled_at
                    ) order by j.position)
-                   from public.docker_host_jobs j
-                   where j.bound_sandbox_id=s.id
-                     and ((j.request_id=s.id and j.bound_operation='create')
-                       or j.bound_operation='bootstrap'
-                       or (j.request_id=$2 and j.bound_operation='stop'))) as "hostJobs"
+                   from (
+                     select request_id,bound_operation,outcome,created_at,completed_at,cancelled_at,position
+                     from public.docker_host_jobs where bound_sandbox_id=s.id and bound_operation in ('create','bootstrap')
+                     union all
+                     select request_id,bound_operation,outcome,created_at,completed_at,cancelled_at,position
+                     from public.docker_host_jobs where bound_sandbox_id=s.id and request_id=$2 and bound_operation='stop'
+                   ) j) as "hostJobs"
            from public.sandboxes s
            left join public.docker_hosts h on h.id=s.docker_host_id
            left join public.docker_launch_requests d on d.sandbox_id=s.id
@@ -684,7 +686,7 @@ export function createDockerSandboxControls(
       if (job?.outcome === "failed")
         throw failure("conflict", "Docker sandbox cleanup failed. Use a new request ID to retry.");
       if (clock.now() >= deadline) {
-        if (operation === "stop") await logStopReceiptTimeout(row.id, selected);
+        if (operation === "stop") void logStopReceiptTimeout(row.id, selected);
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       }
       await clock.wait(Math.min(250, deadline - clock.now()));

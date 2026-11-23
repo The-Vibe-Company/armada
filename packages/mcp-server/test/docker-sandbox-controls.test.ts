@@ -467,6 +467,7 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
   let lines: unknown[][];
   try {
     await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
+    await db.query("select 1");
     lines = [...warning.mock.calls];
   } finally {
     warning.mockRestore();
