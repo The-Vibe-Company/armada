@@ -8,6 +8,7 @@ import {
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { ENCRYPTION_KEY, fakeBoat, SECRETS } from "./support.ts";
 
@@ -83,11 +84,18 @@ test("Modal freezes a secret-free credential/catalog context before inference an
         return fake.provider.prompt(request);
       },
     };
-    const result = await launchSandbox(provider, stores, actor, {
-      golden: "priced-modal",
-      harness: "claude",
-      prompt: "Reply OK",
-    });
+    const options = { runtime: enrolledLaunchPolicy(db) };
+    const result = await launchSandbox(
+      provider,
+      stores,
+      actor,
+      {
+        golden: "priced-modal",
+        harness: "claude",
+        prompt: "Reply OK",
+      },
+      options,
+    );
     expect(admitted).toBeDefined();
     expect(JSON.stringify(admitted)).not.toContain(SECRETS.ownerClaude);
     const context = (await credentials.resolve(actor, "claude")).usagePricing!;
@@ -126,6 +134,7 @@ test("Modal freezes a secret-free credential/catalog context before inference an
         },
         actor,
         { golden: "priced-modal", harness: "claude", prompt: "Must not run" },
+        options,
       ),
     ).rejects.toThrow("price admission failed");
     expect(prompts).toBe(1);

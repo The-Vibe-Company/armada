@@ -22,6 +22,7 @@ import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/s
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 import { ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
@@ -505,6 +506,7 @@ test("Template REST validates authoring and launch requests", async () => {
   const f = await fixture();
   try {
     const options: ControlOptions = {
+      launch: { runtime: enrolledLaunchPolicy(f.sql) },
       templates: f.service,
       store: createSqlVaultStore(f.sql),
       authStore: createSqlAuthStore(f.sql),

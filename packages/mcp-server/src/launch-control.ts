@@ -34,6 +34,7 @@ import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
+import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -147,7 +148,7 @@ async function launchGolden(
     : golden;
   const launchOptions: import("@armada/core").LaunchOptions = {
     ...options.launch,
-    ...(runtimePolicy ? { boatRuntime: runtimePolicy } : {}),
+    ...(runtimePolicy ? { runtime: runtimePolicy } : {}),
   };
   const credentials = launchCredentials(
     options.store,
@@ -172,34 +173,21 @@ async function launchGolden(
       launchOptions,
     );
     timing.checkpoint("account_resolution");
-    const scopedRuntimeDefault =
-      armadaAccess && account.runtimeDefault?.policy.supportsScopedAccess ? account.runtimeDefault : undefined;
-    if (scopedRuntimeDefault) {
-      const provider = await scopedRuntimeDefault.provider(actor, target);
-      if (provider.id !== golden.provider)
-        throw new LaunchError(
-          "invalid_request",
-          "Runtime default must retain the golden provider; no native fallback.",
-        );
-      timing.checkpoint("provider_resolution");
-      return {
-        provider,
-        credentials: scopedRuntimeDefault.credentials,
-        options: { ...account.options, runtime: scopedRuntimeDefault.policy },
-        connections: scopedRuntimeDefault.connections,
-      };
-    }
-    const provider = runtimeHost
-      ? runtimeHost(
-          (
-            await resolveBoatKey(options.store, options.encryptionKey, {
-              userId: caller.userId,
-              orgId: actor.orgId,
-              visibility: golden.visibility,
-            })
-          ).key,
-        )
-      : await providerForGolden(options, caller, target);
+    const provider = account.placement
+      ? await account.placement.provider(actor, target)
+      : runtimeHost
+        ? runtimeHost(
+            (
+              await resolveBoatKey(options.store, options.encryptionKey, {
+                userId: caller.userId,
+                orgId: actor.orgId,
+                visibility: golden.visibility,
+              })
+            ).key,
+          )
+        : await providerForGolden(options, caller, target);
+    if (provider.id !== golden.provider)
+      throw new LaunchError("invalid_request", "Runtime placement must retain the golden provider.");
     timing.checkpoint("provider_resolution");
     return { ...account, provider };
   };
@@ -208,8 +196,7 @@ async function launchGolden(
   // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
   const dispatch = async (receiptId?: string) => {
     const account = await prepareOnce();
-    const connectionLifecycle =
-      account.connections ?? (runtime ? options.runtimeMcp?.connections : options.connections);
+    const connectionLifecycle = account.placement?.connections ?? options.runtimeMcp?.connections;
     timing.checkpoint("receipt_admission");
     const result = await launchSandbox(
       account.provider,
@@ -328,7 +315,12 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
           ) => options.dockerLaunch!.launch(caller, body, admission),
         }
       : {}),
-    provider: (golden: GoldenRecord) => providerForGolden(options, caller, golden),
+    provider: (golden: GoldenRecord) => {
+      const launch = options.launch;
+      if (!launch?.runtime && !launch?.boatRuntime && !launch?.[runtimeBridgeProfiles[golden.provider].launchDefault])
+        throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
+      return providerForGolden(options, caller, golden);
+    },
     ...(options.launch ? { options: options.launch } : {}),
   } satisfies TemplateRuntime;
 }

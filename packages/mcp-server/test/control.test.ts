@@ -37,6 +37,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -1140,9 +1141,9 @@ describe("control API", () => {
         expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
           { provider_sandbox_id: "bx_1" },
         ]);
-        expect(boat.preparations).toEqual(
-          repo === undefined ? [] : [{ sandboxId: "bx_1", harness: "claude", cwd: "/home/user/web" }],
-        );
+        expect(boat.preparations).toEqual([]);
+        if (repo !== undefined)
+          expect((await db.query("select repository_dir from sandboxes")).rows).toEqual([{ repository_dir: "web" }]);
         expect(text).not.toContain("server-only-boat-key");
         expect(text).not.toContain("server-only-model-token");
       };
@@ -1693,6 +1694,7 @@ async function withServer(
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
       data: createSqlData(db),
+      launch: { runtime: enrolledLaunchPolicy(db) },
     };
     const cli = (userId: string, opts: { session?: boolean; armadaUrl?: boolean; token?: string } = {}): Who => {
       const who: Who = {
@@ -2239,6 +2241,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
 
 test("versioned runtime launch is explicit/default-off and never selects native fork credentials or prompt", async () => {
   await withServer(async ({ db, options }) => {
+    delete options.launch;
     const org = await options.store.createOrg("Runtime", STAN);
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
@@ -2296,6 +2299,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       runtimeVersion: 1,
     };
     expect((await request("sandbox/launch", body))?.status).toBe(503);
+    expect(
+      (await request("sandbox/launch", { golden: body.golden, org: body.org, provider: "boat", harness: "codex" }))
+        ?.status,
+    ).toBe(503);
     expect(host.forks).toHaveLength(0);
     const connection = "44444444-4444-4444-8444-444444444444";
     let mcpPrepared = false,
@@ -2795,7 +2802,6 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
       if (ordinary) {
         if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
         options.launch = {
-          ...options.launch,
           [boat ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
             policy: runtimePolicy,
             credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),

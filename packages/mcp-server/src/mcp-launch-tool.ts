@@ -106,14 +106,19 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
         context.launch ?? {},
       );
       timing.checkpoint("account_resolution");
-      const provider = await context.provider(chosen);
+      const provider = account.placement
+        ? await account.placement.provider(actor, chosen)
+        : await context.provider(chosen);
+      if (provider.id !== chosen.provider)
+        throw new ToolError("invalid", "Runtime placement must retain the golden provider.");
       timing.checkpoint("provider_resolution");
       return { ...account, provider };
     };
     let prepared: ReturnType<typeof prepare> | undefined;
     const prepareOnce = () => (prepared ??= prepare());
     const dispatch = async (receiptId?: string) => {
-      const { provider, credentials, options } = await prepareOnce();
+      const { provider, credentials, options, placement } = await prepareOnce();
+      const connections = placement?.connections ?? context.connections;
       timing.checkpoint("receipt_admission");
       const result = await launchSandbox(
         provider,
@@ -122,7 +127,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
           goldens: data.goldens,
           sandboxes: data.sandboxes,
           credentials,
-          ...(context.connections ? { connections: context.connections } : {}),
+          ...(connections ? { connections } : {}),
         },
         actor,
         request,
