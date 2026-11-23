@@ -567,7 +567,7 @@ export function configureTools(
             ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }
             : {};
         await admitModalStop(data.sandboxes, found, { ...admission, ...note });
-        return { id: found.id, status, ...note };
+        return { id: found.id, status, ...note } as const;
       }
       return sandboxActivity(data.sandboxes, found, admission, async (signal, token) => {
         signal.throwIfAborted();
