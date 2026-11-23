@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { rmdirSync, unlinkSync } from "node:fs";
-import { chmod, chown, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { chmod, chown, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
@@ -210,10 +210,10 @@ export class GitHubBroker {
         }
       },
     });
-    const credentialOptions = {
+    const credentials = Bun.serve({
       unix: socket,
       maxRequestBodySize: 1048576,
-      fetch: async (request: Request) => {
+      fetch: async (request) => {
         try {
           const path = new URL(request.url).pathname;
           if (request.method !== "POST") throw Error("denied");
@@ -256,19 +256,10 @@ export class GitHubBroker {
           return Response.json({ error: code }, { status: 403, headers: { "cache-control": "no-store" } });
         }
       },
-    };
-    let credentials: Bun.Server<undefined> | undefined;
-    try {
-      credentials = Bun.serve(credentialOptions);
-      await chmod(socket, 0o600);
-      await chmod(redactSocket, 0o600);
-      if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
-    } catch (error) {
-      credentials?.stop(true);
-      redaction.stop(true);
-      throw error;
-    }
-    const credentialServer = credentials;
+    });
+    await chmod(socket, 0o600);
+    await chmod(redactSocket, 0o600);
+    if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
     return {
       socket,
       redactSocket,
@@ -276,7 +267,7 @@ export class GitHubBroker {
       close: () => {
         active = false;
         this.configure(null);
-        credentialServer.stop(true);
+        credentials.stop(true);
         redaction.stop(true);
         for (const path of [socket, redactSocket]) {
           try {
@@ -287,22 +278,5 @@ export class GitHubBroker {
         }
       },
     };
-  }
-
-  async listenRuntime() {
-    const root = await mkdtemp("/tmp/armada-github-");
-    try {
-      const listener = await this.listen(root);
-      return {
-        ...listener,
-        close() {
-          listener.close();
-          rmdirSync(root);
-        },
-      };
-    } catch (error) {
-      await rm(root, { recursive: true, force: true });
-      throw error;
-    }
   }
 }

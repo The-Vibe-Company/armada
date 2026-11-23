@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as claudeSdk from "@anthropic-ai/claude-agent-sdk/core";
 import { AUTH_HEADER, ClaudeDriver, CodexDriver, type Driver, Journal, Runner } from "../src/index.ts";
 
 // Real private Runner RPC + native JSONL subprocess: no fake driver can echo proof.
@@ -239,8 +240,10 @@ test("Claude native resume initializes the existing session without creating a u
     signal: new AbortController().signal,
     request: { sandboxId: "s", harness: "claude" as const, model: "claude-opus-5-5" },
   };
+  const sdkQuery = spyOn(claudeSdk, "query");
   try {
     expect(await driver.resumeSession(context)).toEqual({ sessionId });
+    expect(sdkQuery.mock.lastCall?.[0].options?.settings).toMatchObject({ sandbox: { enabled: false } });
     const observed = JSON.parse(await readFile(proof, "utf8")) as { argv: string[]; cwd: string };
     expect(observed.cwd).toBe(root);
     expect(observed.argv).toContain(`--resume=${sessionId}`);
@@ -252,6 +255,7 @@ test("Claude native resume initializes the existing session without creating a u
       await rejecting.close();
     }
   } finally {
+    sdkQuery.mockRestore();
     await driver.close();
     await rm(root, { recursive: true, force: true });
   }

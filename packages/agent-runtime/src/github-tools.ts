@@ -1,5 +1,5 @@
 import { chmod, chown, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { shellQuote as q } from "../../core/src/shell-quote.ts";
 import { githubToolCommands } from "./github-client.ts";
 
@@ -125,7 +125,7 @@ export async function installUserGitHubTools(input: {
     body: JSON.stringify({ key: input.activation }),
   });
   if (!response.ok) throw Error("github_tools_denied");
-  await replace(join(input.root, "..", "github-socket"), join(dirname(input.socket), "redact.sock"), 0o600);
+  await replace(join(input.root, "..", "github-socket"), join(input.root, "redact.sock"), 0o600);
   await replace(join(input.root, "..", "github-native-proxy"), `#!/bin/sh\n${commands.native} "$@"\n`, 0o700);
 }
 
