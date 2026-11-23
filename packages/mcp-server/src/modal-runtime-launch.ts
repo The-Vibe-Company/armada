@@ -1,4 +1,5 @@
 import type { ModalProvider } from "@armada/provider-modal";
+import { modalDialoutPlacement } from "./provider-runtime-admission.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions, type RuntimeLaunchPolicy } from "./runtime-launch.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
@@ -9,7 +10,7 @@ export function modalRuntimeLaunch(
     modelAuth?: NonNullable<RuntimeConfigurationInput["modelAuth"]>;
   },
 ): RuntimeLaunchPolicy {
-  const startRuntime = createRuntimeLaunch(options, "modal");
+  const startRuntime = createRuntimeLaunch(options, "modal", modalDialoutPlacement);
   return {
     supportsScopedAccess: true,
     async start(input) {

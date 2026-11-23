@@ -11,7 +11,7 @@ export function boatRuntimeLaunch(
     modelAuth?: RuntimeConfigurationInput["modelAuth"];
   },
 ): RuntimeLaunchPolicy {
-  const startRuntime = createRuntimeLaunch(options, "boat");
+  const startRuntime = createRuntimeLaunch(options, "boat", (sandbox) => sandbox.boatRuntime === true);
   const manifest = structuredClone(options.manifest);
   const { architecture, modelAuth } = options;
   return {

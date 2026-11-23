@@ -195,8 +195,6 @@ export async function deleteSandboxWithActivity(
   const found = await sandboxes.get(id);
   if (!found) throw new ToolError("not_found", `No sandbox with id '${id}' that you can see.`);
   if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
-  if (nativeDrain && found.provider !== "boat")
-    throw new ToolError("unsupported", "Native drain is available only for Boat.");
   if (nativeDrain && !found.providerSandboxId)
     throw new ToolError("conflict", "Native drain requires an exact provider placement.");
   if (nativeDrain && found.stopRequestedAt)

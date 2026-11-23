@@ -1836,15 +1836,15 @@ export function createSandboxLifecycle(
         // WARNING: Read intent after claiming because SQL can recheck the sandbox against a newer version than the marker snapshot.
         const {
           rows: [owned],
-        } = await sql.query<{ strict: boolean }>(
-          `select exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+        } = await sql.query<{ strict: boolean; drain_supported: boolean }>(
+          `select s.provider='boat' as drain_supported, exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
              and r.stop_generation=s.stop_generation) as strict
            from public.sandboxes s where s.id=$1 and s.reconcile_lease=$2::uuid
              and s.lifecycle_generation=$3 and s.reconcile_lease_until>clock_timestamp()
              and s.status='stopping' and s.stop_requested_at is not null`,
           [row.id, token, row.lifecycle_generation],
         );
-        if (!owned || (owned.strict && providerId !== "boat")) return true;
+        if (!owned || (owned.strict && !owned.drain_supported)) return true;
         strictNativeStop = owned.strict;
       }
       const recoverInterruptedResume = async (observedProviderId: string | null) => {

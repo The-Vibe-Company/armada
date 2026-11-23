@@ -8,9 +8,10 @@ import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 type StatusCount = { status: SandboxState; count: number };
 type NativeRow = { id: string; org_id: string; role: MemberRole | null };
 type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | undefined>;
-type NativeDrainRequest = { provider: "boat"; dryRun: boolean };
+const drainProvider = "boat";
+type NativeDrainRequest = { provider: typeof drainProvider; dryRun: boolean };
 
-const usage = "Usage: bun scripts/ops/drain-native.ts --provider boat [--dry-run]";
+const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${drainProvider} [--dry-run]`;
 const nativeCohort = `
   where s.provider = $1
     and not s.boat_runtime
@@ -34,7 +35,12 @@ const candidatesQuery = `
 
 export function parseNativeDrainArgs(args: readonly string[]) {
   const [flag, provider, mode] = args;
-  if (flag !== "--provider" || provider !== "boat" || args.length > 3 || (mode !== undefined && mode !== "--dry-run"))
+  if (
+    flag !== "--provider" ||
+    provider !== drainProvider ||
+    args.length > 3 ||
+    (mode !== undefined && mode !== "--dry-run")
+  )
     throw new Error(usage);
   return { provider, dryRun: mode === "--dry-run" } as const;
 }
