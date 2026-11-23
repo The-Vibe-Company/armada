@@ -1217,8 +1217,6 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
     expect(await post("sandbox/launch", body)).toEqual(launched);
   } else {
-    // The refusal encodings need an enrolled sandbox and an admitted prompt,
-    // which can be prepared without repeating machine creation and bootstrap.
     await f.seedRunningSandbox();
     const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
     const prompt = {

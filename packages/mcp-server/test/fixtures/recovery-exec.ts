@@ -49,7 +49,6 @@ export function encryptedRecoveryExec(archive: () => string, fallback: Provider[
   };
 }
 
-/** Lifecycle tests use a real synthetic RSA pair. Core owns the key-generation protocol. */
 export function reuseCollectorKeyPair() {
   const pair = nodeCrypto.generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -57,6 +56,7 @@ export function reuseCollectorKeyPair() {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
   const generate = nodeCrypto.generateKeyPairSync;
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Reuse a real synthetic RSA pair for lifecycle tests; archive encryption and decryption still run.
   const spy = spyOn(nodeCrypto, "generateKeyPairSync").mockImplementation(((
     type: string,
     options: {
