@@ -714,16 +714,16 @@ type IssueRuntimeTicket = Parameters<ReturnType<typeof createRuntimeEnrolments>[
 
 interface ModalLaunchPlan {
   placement: ModalLaunchPlacement;
+  computeExpiresAt: Date;
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
   canUseModalCredential(tx: Sql): Promise<boolean>;
-  prepareRuntimeTicket(
-    request: Parameters<PrepareModalTicket>[0],
-  ): Promise<
+  prepareRuntimeTicket(request: Parameters<PrepareModalTicket>[0]): Promise<
     Omit<ModalTicket, "enrolmentToken"> &
-      Pick<IssueRuntimeTicket, "ownerId" | "configuration" | "commandGrantExpiresAt"> &
-      Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
+      Pick<IssueRuntimeTicket, "ownerId"> & {
+        configuration: IssueRuntimeTicket["configuration"] & { grant: { expiresAt: number } };
+      } & Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
   >;
 }
 
@@ -798,6 +798,7 @@ export function createModalLaunchJob(
               rows: [row],
             } = await tx.query<
               RuntimeConfigurationTarget & {
+                jobCreatedAt: Date;
                 appName: string;
                 sourceVisibility: ModalLaunchPlacement["sourceVisibility"];
                 visibility: ModalLaunchPlacement["scope"]["visibility"];
@@ -809,7 +810,7 @@ export function createModalLaunchJob(
                       s.deleted_at as "deletedAt", s.stop_requested_at as "stopRequestedAt",
                       s.expires_at as "expiresAt", s.credential_id as "credentialId",
                       s.credential_version as "credentialVersion", s.repository_dir as "repositoryDir",
-                      s.visibility, s.source_golden_visibility as "sourceVisibility", a.app_name as "appName", a.authority_scope as "credentialScope",
+                      j.created_at as "jobCreatedAt", s.visibility, s.source_golden_visibility as "sourceVisibility", a.app_name as "appName", a.authority_scope as "credentialScope",
                       a.authority_owner_id as "credentialOwnerId"
                from public.sandboxes s
                join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
@@ -828,10 +829,12 @@ export function createModalLaunchJob(
           });
           if (!target) return;
           context.signal.throwIfAborted();
-          const { appName, credentialScope, credentialOwnerId, sourceVisibility, ...sandbox } = target;
+          const { appName, credentialScope, credentialOwnerId, sourceVisibility, jobCreatedAt, ...sandbox } = target;
+          const computeExpiresAt = new Date(new Date(jobCreatedAt).getTime() + allocation.computeTtlSeconds * 1000);
           machine = await openMachine({ binding, appName, credentialScope, credentialOwnerId }, context.signal);
           return {
             allocation,
+            computeExpiresAt,
             placement: {
               scope: { orgId: sandbox.orgId, userId: sandbox.ownerId, visibility: sandbox.visibility, binding },
               sourceVisibility,
@@ -1000,8 +1003,7 @@ export async function runModalLaunch(
   };
   const dispatch = plan
     ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation, handoff) => {
-        const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
-          preparation;
+        const { ownerId, configuration, lockPrerequisites, checkAccountPin, ...prepared } = preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
             Uint8Array.from(Buffer.from(pending.bootstrap_ticket_enc, "base64")),
@@ -1032,12 +1034,18 @@ export async function runModalLaunch(
           return current ? { ...prepared, enrolmentToken } : null;
         }
         if (!handoff && !pending.handoff_staged) return null;
+        const commandGrantExpiresAt = plan.computeExpiresAt.getTime();
+        if (!Number.isFinite(commandGrantExpiresAt) || commandGrantExpiresAt < configuration.grant.expiresAt)
+          throw new Error("Modal compute deadline does not cover the initial runtime grant.");
         try {
           const ticket = await enrolments.issue({
             sandboxId,
             ownerId,
-            configuration,
-            ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+            configuration: {
+              ...configuration,
+              grant: { ...configuration.grant, expiresAt: commandGrantExpiresAt },
+            },
+            commandGrantExpiresAt,
             expectedGeneration: generation,
             expectedProviderSandboxId: request.machineId,
             async assertClaim(tx) {
@@ -1213,7 +1221,14 @@ async function dispatchModalLaunch(
         const preparation = await plan.prepareRuntimeTicket(request);
         const handoff =
           !handoffStaged && (await target())?.provider_sandbox_id === request.machineId
-            ? await prepareModalLaunchHandoff(request, plan.machine, plan.placement, plan.allocation, signal)
+            ? await prepareModalLaunchHandoff(
+                request,
+                plan.machine,
+                plan.placement,
+                plan.allocation,
+                plan.computeExpiresAt,
+                signal,
+              )
             : undefined;
         return { preparation, handoff };
       })().catch(async (error: unknown) => {

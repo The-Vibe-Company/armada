@@ -1,4 +1,5 @@
 import {
+  failureDiagnostic,
   PROVIDER_LIMITS,
   type Provider,
   ProviderError,
@@ -8,7 +9,21 @@ import {
   sandboxActivity,
 } from "@armada/core/server";
 import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { ToolError } from "./tool-error.ts";
+
+const stateRefusals = {
+  sandbox_not_running: "Only running or idle sandboxes can be extended.",
+  deadline_not_extended: "The requested deadline must extend the existing lifetime.",
+  boat_runtime_unsupported: "Enrolled Boat sandboxes do not support lifetime extension.",
+  generation_unavailable: "The runtime lifecycle generation is unavailable.",
+  compute_not_running: "Only running compute can be extended.",
+  physical_deadline_unavailable: "The physical Modal deadline is unavailable.",
+  provider_extension_unsupported: "Provider does not support lifetime extension.",
+  provider_state_refused: "Sandbox cannot be extended in this state.",
+  provider_deadline_unconfirmed:
+    "Provider could not confirm the requested lifetime; an unsafe shortened lifetime is scheduled for preservation and stop. Refresh status.",
+} as const;
 
 /** Caller resolves owner/admin interior access (or scoped own-child authority) before entry. */
 export async function extendSandbox(
@@ -25,27 +40,33 @@ export async function extendSandbox(
   if (ttlSeconds > max) throw new ToolError("extension_maximum", "Requested lifetime exceeds the provider maximum.");
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > max)
     refuse(`TTL must be a whole number of seconds from 1 to ${max}.`);
-  if (!["ready", "running"].includes(sandbox.status))
-    throw new ToolError("extension_state", "Only running or idle sandboxes can be extended.");
+  function stateRefusal(refusalCode: keyof typeof stateRefusals) {
+    const error = new ToolError("extension_state", stateRefusals[refusalCode]);
+    recordOperatorDiagnostic("sandbox.extend", failureDiagnostic(error), {
+      sandboxId: sandbox.id,
+      code: error.code,
+      refusalCode,
+    });
+    return error;
+  }
+  if (!["ready", "running"].includes(sandbox.status)) throw stateRefusal("sandbox_not_running");
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
-    throw new ToolError("extension_state", "The requested deadline must extend the existing lifetime.");
-  if (sandbox.boatRuntime)
-    throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
+    throw stateRefusal("deadline_not_extended");
+  if (sandbox.boatRuntime) throw stateRefusal("boat_runtime_unsupported");
   if (sandbox.runtimeTransport === "dialout") {
     // Modal's compute deadline is fixed. Observe it, then publish only the logical
     // deadline, since advancing the lifecycle generation would revoke the enrolled epoch.
-    if (sandbox.lifecycleGeneration === undefined)
-      throw new ToolError("extension_state", "The runtime lifecycle generation is unavailable.");
+    if (sandbox.lifecycleGeneration === undefined) throw stateRefusal("generation_unavailable");
     const physical = await provider.get(sandbox.providerSandboxId);
     if (
       physical.providerState !== "active" ||
       !["ready", "running"].includes(physical.state) ||
       physical.physicalExitConfirmed
     )
-      throw new ToolError("extension_state", "Only running compute can be extended.");
+      throw stateRefusal("compute_not_running");
     const hard = physical.expiresAt?.getTime() ?? NaN;
-    if (!Number.isFinite(hard)) throw new ToolError("extension_state", "The physical Modal deadline is unavailable.");
+    if (!Number.isFinite(hard)) throw stateRefusal("physical_deadline_unavailable");
     if (hard < requested.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000)
       throw new ToolError("extension_maximum", "Requested lifetime exceeds the physical provider deadline.");
     const expiresAt = requested.toISOString();
@@ -57,7 +78,7 @@ export async function extendSandbox(
     });
     return { id: sandbox.id, expiresAt, ttlSeconds };
   }
-  if (!provider.extendLifetime) throw new ToolError("extension_state", "Provider does not support lifetime extension.");
+  if (!provider.extendLifetime) throw stateRefusal("provider_extension_unsupported");
   const result = await sandboxActivity<{ id: string; expiresAt: string; ttlSeconds: number } | ToolError | null>(
     store,
     sandbox,
@@ -75,7 +96,7 @@ export async function extendSandbox(
           if (error.code === "invalid_request" && provider.id === "modal")
             return new ToolError("extension_maximum", "Requested lifetime exceeds the physical provider deadline.");
           if (["invalid_request", "sandbox_not_ready"].includes(error.code))
-            return new ToolError("extension_state", "Sandbox cannot be extended in this state.");
+            return stateRefusal("provider_state_refused");
         }
         throw error;
       });
@@ -101,10 +122,6 @@ export async function extendSandbox(
     },
   );
   if (result instanceof ToolError) throw result;
-  if (result === null)
-    throw new ToolError(
-      "extension_state",
-      "Provider could not confirm the requested lifetime; an unsafe shortened lifetime is scheduled for preservation and stop. Refresh status.",
-    );
+  if (result === null) throw stateRefusal("provider_deadline_unconfirmed");
   return result;
 }

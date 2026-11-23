@@ -28,6 +28,7 @@ export async function prepareModalLaunchHandoff(
   machine: Pick<ModalMachineOptions, "client" | "binding" | "deploymentId">,
   placement: ModalLaunchPlacement,
   compute: { computeTtlSeconds: number; size: MachineSize | null },
+  computeExpiresAt: Date,
   signal: AbortSignal,
 ) {
   const { sandboxId, generation, machineId } = allocation;
@@ -47,6 +48,7 @@ export async function prepareModalLaunchHandoff(
       providerState: "active",
       labels: {},
       createdAt: new Date(),
+      expiresAt: computeExpiresAt,
     },
     generation,
     commonRuntime: true,

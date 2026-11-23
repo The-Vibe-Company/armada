@@ -4,6 +4,8 @@ import { launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { MODAL_INITIAL_TURN } from "../src/jobs/modal-launch.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
 import type { AdmitModalLaunch } from "../src/modal-launch-admission.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
@@ -169,7 +171,7 @@ describe("provider routing", () => {
     expect(server.boat.forks).toEqual([]);
   });
 
-  test("REST attributes receipt SQL only to the fresh Modal launch", async () => {
+  test("REST preserves the initial Modal prompt and attributes receipt SQL only to the fresh launch", async () => {
     const modal = fakeBoat();
     const server = await start();
     await seedModal(server);
@@ -205,7 +207,8 @@ describe("provider routing", () => {
           body: JSON.stringify({
             golden: "shared",
             provider: "modal",
-            harness: "claude",
+            harness: "codex",
+            prompt: "Inspect the repository.",
             idempotencyKey: "modal-timing-request",
           }),
         }),
@@ -221,6 +224,13 @@ describe("provider routing", () => {
       expect(replay?.status).toBe(200);
       expect(await replay?.json()).toEqual(response);
       expect(modal.forks).toHaveLength(0);
+      const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+      const launchJob = await jobs.claim("launch", crypto.randomUUID(), 30, 1);
+      const setupJob = await jobs.claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
+      expect(setupJob).toMatchObject({
+        sandbox_id: response.sandbox.id,
+        payload: { launchJobId: launchJob?.id, prompt: "Inspect the repository." },
+      });
 
       const samples = launchSamples(log);
       expect(samples).toHaveLength(1);

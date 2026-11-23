@@ -62,7 +62,7 @@ export function createRuntimeFollowup(
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => {
+  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim, { fromQueue = false } = {}) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -86,10 +86,11 @@ export function createRuntimeFollowup(
         `select j.state, exists (
            select 1 from public.account_turn_queue q
            where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
+             and (q.request_id is distinct from $5::uuid or q.state<>'dispatching')
          ) as prompt_pending
          from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
          where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
-        [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
+        [found.id, caller.userId, found.orgId, found.lifecycleGeneration, fromQueue ? requestId : null],
       );
       if (!setup)
         throw new RuntimeFollowupConflict(
