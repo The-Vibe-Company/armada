@@ -242,7 +242,10 @@ describe("sandbox attention projection", () => {
     ];
     expect(sandboxAttention(sandbox, summarizeEvents(events), NOW).attention).toBeNull();
   });
-  test("a finished turn with only an assistant preamble before tool work still asks the agent to continue", () => {
+  test.each<ChatEvent>([
+    { id: "3", at: 3, kind: "message", text: "", partial: false, tools: [{ id: "t", name: "Bash" }], promptId: "p1" },
+    { id: "3", at: 3, kind: "steer", text: "Check the tests too.", promptId: "p1" },
+  ])("a finished turn still asks the agent to continue after unanswered $kind activity", (laterActivity) => {
     const events: ChatEvent[] = [
       { id: "1", at: 1, kind: "prompt", text: "Ship the fix", status: "running", promptId: "p1" },
       {
@@ -251,10 +254,11 @@ describe("sandbox attention projection", () => {
         kind: "message",
         text: "I will check the branch.",
         partial: false,
-        tools: [{ id: "tool-1", name: "Bash" }],
+        tools: [],
         promptId: "p1",
       },
-      { id: "3", at: 3, kind: "prompt", text: "", status: "finished", promptId: "p1" },
+      laterActivity,
+      { id: "4", at: 4, kind: "prompt", text: "", status: "finished", promptId: "p1" },
     ];
     expect(sandboxAttention(sandbox, summarizeEvents(events), NOW).attention).toBe("unconcluded");
   });

@@ -49,7 +49,10 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
       const text = item.text.trim();
       prompt = text && text.length <= RESEND_MAX_CHARS ? text : null;
       hasFinalReply = false;
-    } else if ((item.promptId ?? null) === promptId && (item.kind === "assistant" || item.kind === "tool")) {
+    } else if (
+      (item.promptId ?? null) === promptId &&
+      (item.kind === "assistant" || item.kind === "tool" || item.kind === "steer")
+    ) {
       hasFinalReply = item.kind === "assistant" && !item.streaming && Boolean(item.text.trim());
     }
   }
