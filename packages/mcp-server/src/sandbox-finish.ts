@@ -3,7 +3,7 @@ import { DelegatedAuthorityDenied, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
-import { usesHostLaunch } from "./provider-runtime-admission.ts";
+import { usesHostLaunch, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { enqueueModalStop, transitionSandbox } from "./sandbox-lifecycle.ts";
 import { runtimePreservationNote } from "./work-preservation.ts";
@@ -69,8 +69,7 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   if (!usesHostLaunch(row.provider)) {
     await admit();
     if (
-      row.provider === "modal" &&
-      row.runtime_transport === "dialout" &&
+      usesRuntimeStopJob({ provider: row.provider, runtimeTransport: row.runtime_transport }) &&
       !(await enqueueModalStop(
         sql,
         row.id,

@@ -22,6 +22,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
+import { usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -2409,6 +2410,7 @@ export function createSandboxLifecycle(
           signal?.throwIfAborted();
           if (!sql.transaction) throw new Error("Reconciler stop admission requires a transaction.");
           const stopConflict = new Error("Reconciler stop transition lost ownership.");
+          const usesStopJob = usesRuntimeStopJob({ provider: providerId, runtimeTransport: row.runtime_transport });
           const owned = await sql
             .transaction(async (tx) => {
               const {
@@ -2478,8 +2480,7 @@ export function createSandboxLifecycle(
                 if (result.kind === "conflict") throw stopConflict;
               }
               if (
-                providerId === "modal" &&
-                row.runtime_transport === "dialout" &&
+                usesStopJob &&
                 !(await enqueueModalStop(
                   tx,
                   row.id,
@@ -2497,7 +2498,7 @@ export function createSandboxLifecycle(
               if (failure === stopConflict) return false;
               throw failure;
             });
-          if (!owned || (providerId === "modal" && row.runtime_transport === "dialout")) return true;
+          if (!owned || usesStopJob) return true;
           signal?.throwIfAborted();
           // These durable phases already fence native admission. Active-only
           // observation or recapture would prevent the owning reconciler from retrying.

@@ -7,12 +7,27 @@ export const runtimeBridgeProfiles = {
     launchDefault: "boatRuntimeDefault",
     endpointDefault: "boatEndpointRuntime",
     hostPorts: true,
+    stopDispatch: "provider",
   },
-  modal: { placement: "dialout", launchDefault: "modalRuntimeDefault", endpointDefault: undefined, hostPorts: false },
+  modal: {
+    placement: "dialout",
+    launchDefault: "modalRuntimeDefault",
+    endpointDefault: undefined,
+    hostPorts: false,
+    stopDispatch: "job",
+  },
 } as const satisfies Record<SandboxProviderId, object>;
 
 export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
   return target.runtimeTransport === "dialout";
+}
+
+export function usesRuntimeStopJob(target: { provider: string; runtimeTransport?: string | null }) {
+  return (
+    isSandboxProvider(target.provider) &&
+    runtimeBridgeProfiles[target.provider].stopDispatch === "job" &&
+    target.runtimeTransport === "dialout"
+  );
 }
 
 export const usesHostLaunch = (provider: unknown) =>

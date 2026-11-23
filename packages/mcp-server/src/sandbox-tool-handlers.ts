@@ -16,7 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, runtimeBridgeTarget, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import {
@@ -561,7 +561,7 @@ export function configureTools(
         stopRequested: true,
         ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
       };
-      if (found.provider === "modal" && found.runtimeTransport === "dialout") {
+      if (usesRuntimeStopJob(found)) {
         const note =
           checkpoint === null
             ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }

@@ -24,7 +24,7 @@ export function createRuntimeProvider(
   modalCapture?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
   if (!isSandboxProvider(host.id)) throw Error("boat_runtime_host_required");
-  const { hostPorts } = runtimeBridgeProfiles[host.id];
+  const { hostPorts, stopDispatch } = runtimeBridgeProfiles[host.id];
   const setRuntimeTtl = hostPorts ? host.setRuntimeTtl : undefined;
   const captureRuntimeWork = hostPorts ? host.captureRuntimeWork?.bind(host) : modalCapture;
   const observeCaptureBoot = hostPorts ? host.observeCaptureBoot?.bind(host) : undefined;
@@ -84,7 +84,7 @@ export function createRuntimeProvider(
     },
     async stop(request) {
       target(request.sandboxId);
-      return host.id === "modal" ? unsupported() : host.stop(request);
+      return stopDispatch === "job" ? unsupported() : host.stop(request);
     },
     async delete(request) {
       target(request.sandboxId);

@@ -16,7 +16,7 @@ import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
-import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
@@ -174,7 +174,7 @@ export function createSandboxAccessServices(input: {
       stopRequested: true,
       statusReason,
     };
-    if (saved.provider === "modal" && saved.runtimeTransport === "dialout") {
+    if (usesRuntimeStopJob(saved)) {
       await admitModalStop(stopStore, saved, admission, operation.id);
       return;
     }
@@ -384,7 +384,7 @@ export function createSandboxAccessServices(input: {
     async reconcile(operation, signal) {
       signal?.throwIfAborted();
       const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
-      if (operation.action === "stop" && saved.provider === "modal" && saved.runtimeTransport === "dialout") {
+      if (operation.action === "stop" && usesRuntimeStopJob(saved)) {
         const { rows } = await sql.query(
           `select 1 from public.jobs where sandbox_id=$1 and org_id=$2 and kind='stop'
            and coalesce(outcome->>'childOperation',outcome#>>'{evidence,childOperation}')=$3`,
