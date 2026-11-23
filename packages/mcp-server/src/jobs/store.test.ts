@@ -1484,7 +1484,7 @@ async function modalFirstTurnLane(
 test("fresh Modal launch job batches its lease checks", async () => {
   const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
   let statements = 0;
-  const record = (sql: Sql): Sql => {
+  const record: (sql: Sql) => Sql = (sql) => {
     const { transaction } = sql;
     return {
       ...sql,

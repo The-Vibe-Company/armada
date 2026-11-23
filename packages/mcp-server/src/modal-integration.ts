@@ -382,6 +382,7 @@ export function createModalIntegration(options: {
     if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
     const authority = await managementAuthority(target, caller);
     const { tokenId, tokenSecret } = await resolveManagementCredentials(authority);
+    // The resolver's scope label is not the structured machine Scope.
     // Pass only the token pair, exactly as the live registry does.
     const { provider } = await providerWithAuthority(
       { tokenId, tokenSecret },
