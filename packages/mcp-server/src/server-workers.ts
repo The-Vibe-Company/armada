@@ -57,6 +57,8 @@ export function startServerWorkers(
       else await waitForTimeout(1000, shutdown.signal);
     }
     wake?.close();
+    // SDKs may not support cancellation after a request has reached the provider. Keep
+    // those operations tracked through shutdown; cancellation forbids subsequent actions.
     await Promise.all(group.map((lane) => lane.drain()));
   }
   const managed = lanes.filter((lane) => !lane.independentJobs);

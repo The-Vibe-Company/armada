@@ -673,6 +673,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return complete(sql, job.generation);
     },
   } satisfies JobStore & {
+    settleTurnDispatchMirrors: () => Promise<void>;
     enqueue: (...args: never[]) => Promise<string>;
     modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
     modalFailedLaunchJournal: (
