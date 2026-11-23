@@ -17,7 +17,6 @@ import type {
   VaultStore,
 } from "@armada/core/server";
 import type { Caller, SupabaseProject } from "./caller.ts";
-import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
@@ -35,6 +34,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { SandboxLogReader } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
+import type { CredentialBindingRecovery } from "./sandbox-account-change.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 export interface ControlOptions {

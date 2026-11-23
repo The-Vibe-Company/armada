@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Harness, HarnessCredentials, Sql } from "@armada/core";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 
-function fixture(status = "stopped", provider = "boat") {
+function fixture(status = "stopped", provider = "boat", runtimeTransport: string | null = "dialout") {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID(),
     id = crypto.randomUUID();
@@ -14,9 +14,8 @@ function fixture(status = "stopped", provider = "boat") {
     org_id: org,
     provider,
     harness: "codex" as Harness,
-    provider_sandbox_id: "physical",
-    runtime_transport: "dialout",
-    boat_runtime: true,
+    runtime_transport: runtimeTransport,
+    boat_runtime: provider === "boat",
     model: "gpt-test",
     status,
     deleted_at: null,
@@ -27,23 +26,15 @@ function fixture(status = "stopped", provider = "boat") {
   };
   const writes: Array<{ sql: string; values: unknown[] }> = [];
   let stops = 0;
-  const machine = {
-    phase: "stopped",
-    golden: false,
-    launchUserId: user,
-    recoveryImageId: "retained-image",
-    info: { state: "stopped", providerState: "stopped", labels: { credentialId: old, credentialVersion: "1" } },
-  };
+  let strictStop = false;
   const sql: Sql = {
     query: async (query, values = []) => {
       if (query.startsWith("update")) {
         writes.push({ sql: query, values: [...values] });
         return { rows: [{ id }] } as never;
       }
-      if (query.includes("native_drain_stop_requests")) return { rows: [] } as never;
+      if (query.includes("native_drain_stop_requests")) return { rows: strictStop ? [{ id }] : [] } as never;
       if (query.includes("from public.sandboxes s")) return { rows: [{ ...row }] } as never;
-      if (query.includes("from public.modal_machines"))
-        return { rows: [{ scope: "scope", owner_id: user, leased: false, record: structuredClone(machine) }] } as never;
       return { rows: [{ id: selected }] } as never;
     },
     transaction: async (work) => work(sql),
@@ -57,15 +48,16 @@ function fixture(status = "stopped", provider = "boat") {
     }),
   };
   const caller = { via: "supabase" as const, userId: user, orgs: [{ orgId: org, role: "member" as const }] };
-  const bind = createSandboxAccountChange(sql, credentials, async () => {
-    throw Error("legacy must not run");
-  });
+  const bind = createSandboxAccountChange(sql, credentials);
   const quiesce = async () => {
     stops++;
     row.status = "stopped";
     row.stopped_at = "2026-11-13";
   };
-  return { row, writes, caller, bind, selected, quiesce, stopped: () => stops };
+  const markStrictStop = () => {
+    strictStop = true;
+  };
+  return { row, writes, caller, bind, selected, quiesce, markStrictStop, stopped: () => stops };
 }
 
 test("owner account changes quiesce live compute before replacing stopped pins", async () => {
@@ -111,20 +103,29 @@ test("a concurrent binding winner is not overwritten after stopping", async () =
   expect(f.writes).toHaveLength(0);
 });
 
-test("Modal account changes update the retained private pin and labels with the public pin", async () => {
-  const f = fixture("stopped", "modal");
-  f.row.runtime_transport = "native";
-  await f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce);
-  expect(f.writes).toHaveLength(3);
-  expect(f.writes[0]?.values).toEqual(["scope", "physical", f.selected, 2]);
-  const record = JSON.parse(String(f.writes[1]?.values[2]));
-  expect(record.info.labels).toEqual({ credentialId: f.selected, credentialVersion: "2" });
-  expect(f.writes[2]?.values).toEqual([f.row.id, f.selected, 2]);
+test("an account change rechecks strict-stop ownership after quiescing", async () => {
+  const f = fixture("ready");
+  await expect(
+    f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, async () => {
+      await f.quiesce();
+      f.markStrictStop();
+    }),
+  ).rejects.toMatchObject({ code: "conflict", message: "Native sandbox preservation is pending." });
+  expect(f.writes).toHaveLength(0);
 });
 
 test("native Boat cannot falsely report an account switch without refreshing its retained environment", async () => {
   const f = fixture();
   f.row.boat_runtime = false;
+  await expect(f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce)).rejects.toMatchObject({
+    code: "credential_binding_unsupported",
+  });
+  expect(f.stopped()).toBe(0);
+  expect(f.writes).toHaveLength(0);
+});
+
+test("Modal account binding requires an enrolled runtime before changing a stopped pin", async () => {
+  const f = fixture("stopped", "modal", null);
   await expect(f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce)).rejects.toMatchObject({
     code: "credential_binding_unsupported",
   });

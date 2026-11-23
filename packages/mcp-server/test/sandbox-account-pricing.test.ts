@@ -72,9 +72,7 @@ test("account changes price new turns under the subscription without rewriting o
   const before = (
     await db.query<{ usage_turns: { turns: TurnTokenUsage[] } }>("select usage_turns from sandboxes where id=$1", [id])
   ).rows[0]!.usage_turns.turns[0];
-  await createSandboxAccountChange(sql, credentials, async () => {
-    throw Error("not legacy");
-  })(caller, { id, credentialId: subscription });
+  await createSandboxAccountChange(sql, credentials)(caller, { id, credentialId: subscription });
   const newAdmission = await store.captureUsagePricingContext!(id);
   await store.recordUsage!(
     id,

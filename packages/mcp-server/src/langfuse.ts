@@ -86,8 +86,6 @@ export function langfuseSpans(
 ) {
   const spans = [];
   for (const end of events) {
-    // Only a known final status ends a turn: Modal native history does not
-    // validate guest statuses, and an unknown one must never become a span.
     if (end.kind !== "prompt" || !isFinalPromptStatus(end.status) || !end.promptId) continue;
     const history = events.filter((e) => e.promptId === end.promptId);
     const start = history.find((e): e is PromptEvent => e.kind === "prompt" && e.status === "running");
@@ -356,8 +354,6 @@ export function createLangfuse(
     if (!evidence) return "dropped";
     const { events, nativeProvider } = evidence;
     const terminal = events.findLast((e): e is PromptEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
-    // The native Modal runner can answer getPrompt before its journal flush commits.
-    if (nativeProvider === "modal" && !terminal && job.waiting_for_history) return "pending";
     const turnEvents = events.filter((e) => e.kind !== "prompt" || !isFinalPromptStatus(e.status));
     const outcome = job.runtime_ack === null ? observedPromptOutcome(job.terminal_status, job.prompt_id, events) : null;
     turnEvents.push({

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { GITHUB_REFRESH_MODAL_NATIVE } from "@armada/core";
 import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import type { ToolContext } from "../src/tools.ts";
 
@@ -9,7 +8,6 @@ test.each([
   { caller: "owner", state: "running", providerId: "boat", expected: "connected" },
   { caller: "admin", state: "running", providerId: "boat", expected: "forbidden" },
   { caller: "owner", state: "stopped", providerId: "boat", expected: "conflict" },
-  { caller: "owner", state: "running", providerId: "modal", expected: "unsupported" },
 ])("legacy GitHub repair authorizes $caller on $providerId $state", async ({ caller, state, providerId, expected }) => {
   const calls: unknown[] = [];
   const context = repairContext(
@@ -32,7 +30,6 @@ test.each([
   } else {
     await expect(dispatchGitHubRestControl(context, "github/refresh", { id: "sandbox" })).rejects.toMatchObject({
       code: expected,
-      ...(expected === "unsupported" ? { status: 400, message: GITHUB_REFRESH_MODAL_NATIVE } : {}),
     });
     expect(calls).toEqual([]);
   }

@@ -9,7 +9,6 @@ import {
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 
@@ -22,7 +21,6 @@ type Target = {
   org_id: string;
   provider: string;
   harness: Harness;
-  provider_sandbox_id: string;
   runtime_transport: string | null;
   boat_runtime: boolean;
   model: string | null;
@@ -34,13 +32,30 @@ type Target = {
   credential_id: string | null;
   credential_version: number | null;
 };
+export interface CredentialBindingRecoveryInput {
+  id: string;
+  credentialId: string;
+  org?: string;
+}
+export interface CredentialBindingRecoveryResult {
+  id: string;
+  credentialId: string;
+  credentialVersion: number;
+  harness: Harness;
+  status: "bound";
+}
+export type CredentialBindingRecovery = (
+  caller: Caller,
+  input: CredentialBindingRecoveryInput,
+  quiesce?: QuiesceAccountChange,
+) => Promise<CredentialBindingRecoveryResult>;
+
 export type QuiesceAccountChange = (id: string, org: string) => Promise<void>;
 
 /** Account changes quiesce compute before replacing pins; never hot-swap a live driver's environment. */
 export function createSandboxAccountChange(
   sql: Sql,
   credentials: Pick<LaunchCredentialResolver, "resolve" | "enrollAccount">,
-  legacy: CredentialBindingRecovery,
 ): CredentialBindingRecovery {
   const transaction = sql.transaction?.bind(sql);
   async function target(db: Sql, caller: Caller, id: string, lock = false): Promise<Target> {
@@ -77,6 +92,8 @@ export function createSandboxAccountChange(
       throw new VaultError("conflict", "Native sandbox preservation is pending.");
     if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
+    if (row.provider === "modal" && row.runtime_transport !== "dialout")
+      throw new VaultError("credential_binding_unsupported", "Modal account changes require Armada runtime enrolment.");
     return row;
   }
   return async (caller, input, quiesce) => {
@@ -99,11 +116,6 @@ export function createSandboxAccountChange(
     };
     if (input.org && input.org !== before.org_id)
       throw new VaultError("forbidden", "Choose the organization that owns this sandbox.");
-    // Preserve the stricter physical-evidence recovery policy for pre-account native Modal machines.
-    if (before.provider === "modal" && before.credential_id === null && before.runtime_transport !== "dialout") {
-      if (before.status === "ready" && quiesce) await stopOwnedIdle();
-      return legacy(caller, input);
-    }
     const actor = { userId: caller.userId, orgId: before.org_id, role: "member" as const };
     const resolved = await credentials.resolve(actor, before.harness, input.credentialId);
     const pin = resolved.binding;
@@ -151,45 +163,6 @@ export function createSandboxAccountChange(
         );
       if (current.credential_id !== before.credential_id || current.credential_version !== before.credential_version)
         throw new VaultError("conflict", "Another account change won. Refresh the sandbox before trying again.");
-      if (current.provider === "modal" && current.runtime_transport !== "dialout") {
-        const machines = await tx.query<{
-          scope: string;
-          record: import("@armada/provider-modal").Machine;
-          leased: boolean;
-          owner_id: string;
-        }>(
-          `select m.scope,m.record,m.owner_id,coalesce(m.lease_until>=now(),false) as leased from public.modal_machines m join public.modal_server_harnesses h on h.scope=m.scope and h.machine_id=m.id
-          where m.id=$1 and m.org_id=$2 and h.credential_id is not distinct from $3::uuid
-          and h.credential_version is not distinct from $4 for update of m,h`,
-          [current.provider_sandbox_id, current.org_id, before.credential_id, before.credential_version],
-        );
-        if (machines.rows.length !== 1)
-          throw new VaultError("conflict", "The retained workspace account cannot be identified safely.");
-        const machine = machines.rows[0]!;
-        if (
-          machine.leased ||
-          machine.record.golden ||
-          (machine.record.launchUserId ?? machine.owner_id) !== caller.userId ||
-          machine.record.phase !== "stopped" ||
-          machine.record.info.state !== "stopped" ||
-          machine.record.info.providerState !== "stopped" ||
-          !machine.record.recoveryImageId
-        )
-          throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
-        machine.record.info.labels = {
-          ...machine.record.info.labels,
-          credentialId: pin.credentialId,
-          credentialVersion: String(pin.credentialVersion),
-        };
-        await tx.query(
-          "update public.modal_server_harnesses set credential_id=$3,credential_version=$4 where scope=$1 and machine_id=$2",
-          [machine.scope, current.provider_sandbox_id, pin.credentialId, pin.credentialVersion],
-        );
-        await tx.query(
-          "update public.modal_machines set record=$3::jsonb,lease_id=null,lease_until=null where scope=$1 and id=$2",
-          [machine.scope, current.provider_sandbox_id, JSON.stringify(machine.record)],
-        );
-      }
       // Generation change revokes old runtime/enrolment tokens and sealed configuration via the existing trigger.
       await tx.query(
         "update public.sandboxes set credential_id=$2,credential_version=$3,lifecycle_generation=lifecycle_generation+1 where id=$1",

@@ -4,11 +4,9 @@ import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@arm
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
-import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { createSqlData } from "../src/data.ts";
 import { configureNativeDrain } from "../src/native-drain.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
-import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../src/sandbox-rest-controls.ts";
@@ -1232,7 +1230,7 @@ test("active native drain can request preservation after a pending prompt settle
   expect((await sandbox())?.status).toBe("stopping");
 });
 
-test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", async (providerId) => {
+test("ordinary native Boat exec excludes owner stop", async () => {
   const boat = fakeBoat();
   const machine = await boat.provider.fork({
     from: "fixture-snapshot",
@@ -1244,7 +1242,6 @@ test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", a
   let stopDuringExec: CallToolResult | undefined;
   const provider = {
     ...boat.provider,
-    id: providerId,
     async exec(request: Parameters<typeof boat.provider.exec>[0]) {
       if (request.command === "edit workspace") stopDuringExec = await invoke("stop", { id: sandboxId });
       return boat.provider.exec(request);
@@ -1269,9 +1266,9 @@ test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", a
   expect(boat.execs).toHaveLength(commands);
 });
 
-test("ordinary native exec refuses newly tainted Modal workspaces before provider preparation", async () => {
+test("ordinary native exec refuses newly tainted Boat workspaces before provider preparation", async () => {
   const fake = fakeBoat();
-  const provider = { ...fake.provider, id: "modal" };
+  const provider = fake.provider;
   const { db, context, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID());
   const prepare = mock(async () => {});
   context.connections = {
@@ -1494,10 +1491,10 @@ test.each([
 });
 
 test.each(["lost command response", "failed redaction", "failed evidence insert", "failed evidence delete"])(
-  "ordinary native Modal exec preserves the admission and handoff invariants after %s",
+  "ordinary native Boat exec preserves the admission and handoff invariants after %s",
   async (failure) => {
     const fake = fakeBoat();
-    const provider = { ...fake.provider, id: "modal" };
+    const provider = { ...fake.provider };
     const { db, context, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID(), (statement) => {
       if (failure === "failed evidence insert" && statement.includes("insert into public.sandbox_native_exec_attempts"))
         throw new Error(failure);
@@ -1571,7 +1568,6 @@ test("ordinary native exec skips post-command provider sampling after the activi
   const fake = fakeBoat();
   const provider = {
     ...fake.provider,
-    id: "modal",
     async exec(request: Parameters<typeof fake.provider.exec>[0]) {
       const completed = await fake.provider.exec(request);
       jest.advanceTimersByTime(180_000);
@@ -2039,81 +2035,6 @@ test("authenticated sandbox updates are refused only during the current strict s
   await expect(updateAsOwner()).rejects.toMatchObject({ code: "55000" });
   expect(await copy()).toBe("archived");
 });
-
-test.each(["a rebind racing admission", "unbound recovery"] as const)(
-  "a strict native stop keeps its proof and account pin during %s",
-  async (attempt) => {
-    const { db, people, sandboxId, copy } = await seedNativeDrainReceipt(undefined, "modal");
-    const placement = `bx_${sandboxId}`;
-    const credentialId = crypto.randomUUID();
-    const scope = `retained-${sandboxId}`;
-    await db.query(
-      "insert into credentials(id,scope,owner_id,created_by,kind,value_enc) values($1,'user',$2,$2,'claude_oauth',$3)",
-      [credentialId, people.owner, await encryptSecret("fixture-value", ENCRYPTION_KEY)],
-    );
-    await db.query("insert into modal_server_scopes(scope,context) values($1,$2::jsonb)", [
-      scope,
-      JSON.stringify({ binding: { workspace: "workspace", environment: "main", appId: "app" } }),
-    ]);
-    const record = {
-      phase: "stopped",
-      recoveryImageId: "retained-image",
-      info: { state: "stopped", providerState: "stopped", labels: {} },
-    };
-    await db.query(
-      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'private',$4,$4,$5::jsonb)",
-      [scope, people.org, people.owner, placement, JSON.stringify(record)],
-    );
-    await db.query("insert into modal_server_harnesses(scope,machine_id,harness) values($1,$2,'claude')", [
-      scope,
-      placement,
-    ]);
-    async function admitStrictStop() {
-      await db.query(
-        `insert into native_drain_stop_requests(sandbox_id,stop_generation)
-         select id,stop_generation from sandboxes where id=$1`,
-        [sandboxId],
-      );
-    }
-    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
-    const recovery = createCredentialBindingRecovery(db, ENCRYPTION_KEY);
-    let bind = recovery;
-    if (attempt === "unbound recovery") {
-      await admitStrictStop();
-    } else {
-      const previousId = crypto.randomUUID();
-      await db.query(
-        "insert into credentials(id,scope,owner_id,created_by,kind,value_enc) select $1,scope,owner_id,created_by,kind,value_enc from credentials where id=$2",
-        [previousId, credentialId],
-      );
-      await db.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [sandboxId, previousId]);
-      await db.query("update modal_server_harnesses set credential_id=$2,credential_version=1 where scope=$1", [
-        scope,
-        previousId,
-      ]);
-      bind = createSandboxAccountChange(
-        db,
-        {
-          resolve: async () => {
-            await admitStrictStop();
-            return { env: {}, secrets: [], codexAuthJson: false, binding: { credentialId, credentialVersion: 1 } };
-          },
-        },
-        recovery,
-      );
-    }
-    await expect(bind(caller, { id: sandboxId, credentialId })).rejects.toMatchObject({
-      code: "conflict",
-      message: "Native sandbox preservation is pending.",
-    });
-    expect(await copy()).toBe("archived");
-    const { rows } = await db.query(
-      "select credential_id from modal_server_harnesses where scope=$1 and credential_id=$2",
-      [scope, credentialId],
-    );
-    expect(rows).toEqual([]);
-  },
-);
 
 test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
   "a confirmed strict stop preserves its drain proof against %s",
