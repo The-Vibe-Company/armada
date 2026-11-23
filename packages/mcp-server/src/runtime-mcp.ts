@@ -97,6 +97,7 @@ export function createRuntimeMcp(options: {
     selected: string[],
     lockForAdmission = false,
   ) {
+    if (!selected.length) return [];
     const { rows: result } = await db.query<
       ConnectionDefinition & {
         id: string;

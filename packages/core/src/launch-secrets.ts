@@ -26,14 +26,18 @@ export async function assertLaunchSecretBindings(
   bindings: readonly ApplicationSecretBinding[],
   orgOnly = false,
 ): Promise<void> {
+  if (!bindings.length) return;
+  const { rows } = await sql.query<{ id: string; version: number; scope: string }>(
+    `select v.id,v.version,v.scope from public.application_secrets v
+     join public.members m on m.org_id=v.org_id and m.user_id=$3
+     where v.id=any($1::uuid[]) and v.org_id=$2 and v.status='active'
+       and (v.expires_at is null or v.expires_at>now()) and (v.scope='org' or v.owner_id=$3)
+     order by v.id for share of v`,
+    [bindings.map((binding) => binding.secretId), actor.orgId, actor.userId],
+  );
+  const byId = new Map(rows.map((row) => [row.id, row]));
   for (const binding of [...bindings].sort((a, b) => a.secretId.localeCompare(b.secretId))) {
-    const row = (
-      await sql.query<{ version: number; scope: string }>(
-        `select v.version,v.scope from public.application_secrets v join public.members m on m.org_id=v.org_id and m.user_id=$3
-       where v.id=$1 and v.org_id=$2 and v.status='active' and (v.expires_at is null or v.expires_at>now()) and (v.scope='org' or v.owner_id=$3) for share of v`,
-        [binding.secretId, actor.orgId, actor.userId],
-      )
-    ).rows[0];
+    const row = byId.get(binding.secretId);
     if (!row || (orgOnly && row.scope !== "org")) throw new LaunchSecretRefusal("secret_unavailable");
     if (row.version !== binding.version) throw new LaunchSecretRefusal("secret_version_changed");
   }

@@ -53,13 +53,15 @@ export function createSkillDefaultsService(sql: Sql) {
     const row = (
       await tx.query<{ skills: unknown }>(`select skills from public.${target.table} where ${target.key}=$1`, [key])
     ).rows[0];
-    if (!row) return [];
+    return parseSkills(row?.skills ?? []);
+  }
+  function parseSkills(skills: unknown) {
     try {
-      validateSkillPins(row.skills);
+      validateSkillPins(skills);
     } catch {
       throw new VaultError("unavailable", "Skill defaults unavailable.");
     }
-    return [...row.skills];
+    return [...skills];
   }
   return {
     async command(
@@ -107,12 +109,33 @@ export function createSkillDefaultsService(sql: Sql) {
   async function resolveInTransaction(tx: Sql, actor: GoldenActor, golden: GoldenRecord | null) {
     if (golden && actor.orgId !== golden.orgId) throw new VaultError("not_found", "Golden unavailable.");
     try {
-      await membership(tx, actor.userId, actor.orgId);
-      if (golden) await goldenAccess(tx, actor.userId, actor.orgId, golden.id);
+      const {
+        rows: [row],
+      } = await tx.query<{
+        golden_id: string | null;
+        environment: unknown;
+        org: unknown;
+        personal: unknown;
+      }>(
+        `with membership as materialized (
+           select user_id from public.members where org_id=$1 and user_id=$2 for share
+         )
+         select g.id as golden_id,
+           coalesce((select skills from public.golden_skill_defaults where golden_id=g.id), '[]'::jsonb) as environment,
+           coalesce((select skills from public.org_skill_defaults where org_id=$1), '[]'::jsonb) as org,
+           coalesce((select skills from public.personal_skill_defaults where user_id=m.user_id), '[]'::jsonb) as personal
+         from membership m left join lateral (
+           select id from public.goldens where id=$3 and org_id=$1 and removed_at is null
+             and (visibility='org' or owner_id=m.user_id) for share
+         ) g on true`,
+        [actor.orgId, actor.userId, golden?.id ?? null],
+      );
+      if (!row) throw new VaultError("forbidden", "Skill defaults access denied.");
+      if (golden && !row.golden_id) throw new VaultError("not_found", "Golden unavailable.");
       return {
-        environment: golden ? await read(tx, "golden", golden.id) : [],
-        org: await read(tx, "org", actor.orgId),
-        personal: await read(tx, "personal", actor.userId),
+        environment: parseSkills(row.environment),
+        org: parseSkills(row.org),
+        personal: parseSkills(row.personal),
       };
     } catch (error) {
       if (error instanceof VaultError) throw error;

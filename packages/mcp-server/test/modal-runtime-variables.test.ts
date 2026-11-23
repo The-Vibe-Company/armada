@@ -19,6 +19,7 @@ import { type ControlOptions, dispatchControlCommand, handleControlRequest } fro
 import { createSqlData } from "../src/data.ts";
 import { createGoldenRuntimeEnvironment } from "../src/golden-runtime-environment.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
+import { createModalIntegration } from "../src/modal-integration.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -44,8 +45,12 @@ async function fixture(
   deliverSecrets = false,
 ) {
   const { db, people } = await sharedDatabase();
+  const statements: string[] = [];
   const driver = (connection: Pick<Sql, "query">) => ({
-    unsafe: async (query: string, params: never[]) => (await connection.query(query, params)).rows,
+    unsafe: async (query: string, params: never[]) => {
+      statements.push(query);
+      return (await connection.query(query, params)).rows;
+    },
   });
   const sql = sqlOver({
     ...driver(db),
@@ -230,14 +235,35 @@ async function fixture(
     };
   };
   if (entry === "default") enableDefault();
-  if (provider === "modal")
+  if (provider === "modal") {
+    let placement: Parameters<typeof modalAdmissionFixture>[4] = host;
+    if (entry === "default") {
+      await db.query(
+        `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+         values($1,'org','org',$1,'app',$2,$3)`,
+        [people.org, binding.appId, binding.environment],
+      );
+      const tokenPair = ["ak", "as"].map((prefix) => [prefix, "fixture".repeat(2)].join("-")).join(" ");
+      await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2)", [
+        people.org,
+        await encryptSecret(tokenPair, ENCRYPTION_KEY),
+      ]);
+      const integration = createModalIntegration({
+        sql,
+        vault: options.store,
+        encryptionKey: ENCRYPTION_KEY,
+        publicUrl: "https://armada.test",
+      });
+      placement = (actor, golden) => integration.launchProviderFor(golden, actor);
+    }
     options.admitModalLaunch = await modalAdmissionFixture(
       sql,
       ENCRYPTION_KEY,
       options.store,
       { orgId: people.org, userId: people.owner, visibility: "private", binding },
-      host,
+      placement,
     );
+  }
   const create = async (def: unknown = definition) =>
     (
       await templates.command(caller, "create", {
@@ -284,6 +310,7 @@ async function fixture(
   return {
     db,
     sql,
+    statements,
     people,
     authority,
     options,
@@ -313,9 +340,12 @@ for (const entry of ["explicit", "default"] as const)
       modalRuntime: { variablesVersion: 1, defaultPath: "runtime" },
     });
     const template = await f.create();
-    const request = f.request(template.id);
+    const request = { ...f.request(template.id), skipSkillDefaults: false };
+    const beforeLaunch = f.statements.length;
     const first = await f.api(request);
     expect(first.status).toBe(200);
+    const launchStatements = f.statements.length - beforeLaunch;
+    expect(launchStatements).toBeLessThanOrEqual(30);
     const launched = (await first.json()) as {
       id: string;
       status: string;
@@ -804,7 +834,9 @@ for (const harness of ["codex", "claude"] as const)
     const f = await fixture(harness, "boat");
     const template = await f.create();
     const request = f.request(template.id);
+    process.env.TRACE_LAUNCH = "1";
     const first = await f.api(request);
+    delete process.env.TRACE_LAUNCH;
     expect(first.status).toBe(200);
     const launched = (await first.json()) as { id: string };
     expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);

@@ -224,6 +224,48 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!r) throw new VaultError("not_found", "Template revision unavailable.");
     return r;
   }
+  async function launchSelection(
+    tx: Sql,
+    actor: ApplicationVaultActor,
+    org: string,
+    templateId: string,
+    options: { key: string; revision: number | null } | undefined,
+  ) {
+    if (!actor.orgs.some((o) => o.orgId === org)) throw new VaultError("forbidden", "Template access denied.");
+    const {
+      rows: [row],
+    } = await tx.query<{
+      role: GoldenActor["role"];
+      header: Header | null;
+      revision: Revision | null;
+      receipt: RequestRow | null;
+      epoch: string | null;
+    }>(
+      `with membership as materialized (
+         select role from public.members where org_id=$1 and user_id=$2 for share
+       )
+       select m.role, to_jsonb(t) as header, to_jsonb(v) as revision, to_jsonb(r) as receipt, e.epoch::text
+       from membership m
+       left join lateral (
+         select * from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$4
+       ) r on true
+       left join lateral (
+         select * from public.launch_templates where id=$3 and org_id=$1 and (scope='org' or owner_id=$2)
+           and r.id is null for update
+       ) t on true
+       left join public.launch_template_revisions v on $4::text is not null and v.template_id=t.id
+         and v.revision=coalesce($5,t.current_revision)
+       left join lateral (
+         select epoch from public.mcp_actor_epochs where org_id=$1 and user_id=$2 and t.id is not null for share
+       ) e on true`,
+      [org, actor.userId, templateId, options?.key ?? null, options?.revision ?? null],
+    );
+    if (!row) throw new VaultError("forbidden", "Template access denied.");
+    const a = { userId: actor.userId, orgId: org, role: row.role };
+    if (row.receipt) return { kind: "replay" as const, a, receipt: row.receipt };
+    if (row.header?.status !== "active") throw new VaultError("not_found", "Template unavailable.");
+    return { kind: "template" as const, a, h: row.header, r: row.revision, actorEpoch: Number(row.epoch ?? 0) };
+  }
   async function golden(
     tx: Sql,
     actor: GoldenActor,
@@ -233,8 +275,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     launchAdmission = false,
   ) {
     const row = (
-      await tx.query<GoldenRow>(
-        `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share`,
+      await tx.query<GoldenRow & { snapshot_sealed: boolean }>(
+        `select ${GOLDEN_SELECT}, exists (
+           select 1 from public.golden_snapshot_retirements r
+           where r.provider=g.provider::text and r.old_snapshot=g.provider_snapshot_id and r.sealed
+         ) as snapshot_sealed from public.goldens g
+         where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share of g`,
         [goldenId, actor.orgId, actor.userId],
       )
     ).rows[0];
@@ -246,7 +292,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (launchAdmission) throw new GoldenError("conflict", `Golden '${row.name}' has no snapshot yet.`);
       unavailable("environment_unavailable");
     }
-    return mapGoldenRow(row);
+    return { record: mapGoldenRow(row), snapshotSealed: row.snapshot_sealed };
   }
   async function snapshotSealed(tx: Sql, provider: GoldenRecord["provider"], snapshot: string | null) {
     return (
@@ -298,9 +344,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         if (!snapshot) unavailable("environment_snapshot_unavailable");
       }
     } else {
-      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
+      const target = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
+      g = target.record;
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
-      if (await snapshotSealed(tx, g.provider, g.providerSnapshotId)) unavailable("environment_snapshot_unavailable");
+      if (target.snapshotSealed) unavailable("environment_snapshot_unavailable");
     }
     const values = await resolveLaunchVariables(tx, actor, def.variables, scope === "org");
     await assertLaunchSecretBindings(tx, actor, def.secrets ?? [], scope === "org");
@@ -310,19 +357,34 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       invalid();
     }
     const connections: Manifest["connections"] = [];
-    for (const connectionId of def.connections) {
-      const c = (
-        await tx.query<{ version: number; generation: number; scope: string; status: string }>(
-          `select g.version,g.generation,c.scope,public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id where c.id=$1 and c.org_id=$2 and not c.disabled and (c.scope='org' or c.owner_id=$3) for share of c,g`,
-          [connectionId, actor.orgId, actor.userId],
+    if (def.connections.length) {
+      const { rows } = await tx.query<{
+        id: string;
+        version: number;
+        generation: number;
+        scope: string;
+        status: string;
+      }>(
+        `select c.id,g.version,g.generation,c.scope,
+           public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until) as status
+         from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
+         where c.id=any($1::uuid[]) and c.org_id=$2 and not c.disabled and (c.scope='org' or c.owner_id=$3)
+         order by c.id for share of c,g`,
+        [def.connections, actor.orgId, actor.userId],
+      );
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      for (const connectionId of def.connections) {
+        const c = byId.get(connectionId.toLowerCase());
+        if (!c || c.status !== "connected" || (scope === "org" && c.scope !== "org"))
+          unavailable("connection_unavailable");
+        const expected = expectedConnections?.find((binding) => binding.id === connectionId);
+        if (
+          expectedConnections &&
+          (!expected || c.version !== expected.version || c.generation !== expected.generation)
         )
-      ).rows[0];
-      if (!c || c.status !== "connected" || (scope === "org" && c.scope !== "org"))
-        unavailable("connection_unavailable");
-      const expected = expectedConnections?.find((binding) => binding.id === connectionId);
-      if (expectedConnections && (!expected || c.version !== expected.version || c.generation !== expected.generation))
-        unavailable("connection_version_changed");
-      connections.push({ id: connectionId, version: c.version, generation: c.generation });
+          unavailable("connection_version_changed");
+        connections.push({ id: connectionId, version: c.version, generation: c.generation });
+      }
     }
     if (def.modelAccount) {
       const c = (
@@ -366,7 +428,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       invalid();
     }
     const hostLaunch = capabilities(d.provider).launchSource === "host";
-    const g = hostLaunch ? null : await golden(tx, actor, scope, id(d.goldenId), d.provider);
+    const g = hostLaunch ? null : (await golden(tx, actor, scope, id(d.goldenId), d.provider)).record;
     if (hostLaunch) {
       id(d.hostId);
       if (d.snapshotId !== undefined) id(d.snapshotId);
@@ -427,16 +489,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     };
     await references(tx, actor, scope, result);
     return result;
-  }
-  async function epoch(tx: Sql, actor: GoldenActor) {
-    return Number(
-      (
-        await tx.query<{ epoch: string }>(
-          "select epoch from public.mcp_actor_epochs where org_id=$1 and user_id=$2 for share",
-          [actor.orgId, actor.userId],
-        )
-      ).rows[0]?.epoch ?? 0,
-    );
   }
   async function saveRevision(tx: Sql, h: Header, actor: GoldenActor, def: TemplateDefinition) {
     const r = (
@@ -534,7 +586,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     runtime?: TemplateRuntime,
   ): Promise<Record<string, unknown>> {
     if (!runtime) throw new VaultError("unavailable", "Template launching unavailable.");
-    id(input.id);
+    const templateId = id(input.id);
     const key = input.requestKey;
     if (typeof key !== "string") invalid();
     const routineKey = key.startsWith("routine:");
@@ -542,7 +594,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
       : templateLaunchFields.requestKey.safeParse(key).success;
     if (!validKey) invalid();
-    if (input.revision !== undefined) integer(input.revision);
+    const requestedRevision = input.revision === undefined ? null : integer(input.revision);
     if (!templateLaunchFields.prompt.safeParse(input.prompt).success) invalid();
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
     if (!templateLaunchFields.repo.safeParse(input.repo).success) invalid();
@@ -563,22 +615,12 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         : input,
     );
     // Resolve a model account before the claim, then revalidate that binding inside admission.
-    const existing = await transaction(async (tx) => {
-      await member(tx, actor, org);
-      return (
-        await tx.query<RequestRow>(
-          "select * from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$3",
-          [org, actor.userId, key],
-        )
-      ).rows[0];
-    });
-    if (existing) return resume(existing);
-    const selection = await transaction(async (tx) => {
-      const a = await member(tx, actor, org);
-      const h = await header(tx, a, id(input.id));
-      return { a, h, r: await revision(tx, h, input.revision) };
-    });
-    const def = selection.r.definition;
+    const selectionOptions = { key, revision: requestedRevision };
+    const selection = await transaction((tx) => launchSelection(tx, actor, org, templateId, selectionOptions));
+    if (selection.kind === "replay") return resume(selection.receipt, selection.a);
+    const selectedRevision = selection.r;
+    if (!selectedRevision) throw new VaultError("not_found", "Template revision unavailable.");
+    const def = selectedRevision.definition;
     if (
       !runtime.scheduled &&
       isSandboxProvider(def.provider) &&
@@ -613,17 +655,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       unavailable("model_account_version_changed");
     let claimed = false;
     const request = await transaction(async (tx) => {
-      const a = await member(tx, actor, org);
-      const h = await header(tx, a, id(input.id));
-      const previous = (
-        await tx.query<RequestRow>(
-          "select * from public.template_launch_requests where org_id=$1 and actor_id=$2 and client_key=$3",
-          [org, a.userId, key],
-        )
-      ).rows[0];
-      if (previous) return previous;
-      const r = await revision(tx, h, input.revision);
-      if (r.id !== selection.r.id) unavailable("template_revision_changed");
+      const current = await launchSelection(tx, actor, org, templateId, selectionOptions);
+      if (current.kind === "replay") return current.receipt;
+      const { a, h, r, actorEpoch } = current;
+      if (!r || r.id !== selectedRevision.id) unavailable("template_revision_changed");
       const resolved = await references(
         tx,
         a,
@@ -663,7 +698,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         variables: resolved.variables,
         variableProvenance: def.variables,
         account: { id: credentials.binding!.credentialId, version: credentials.binding!.credentialVersion },
-        actorEpoch: await epoch(tx, a),
+        actorEpoch,
         actorId: a.userId,
         requestKey: key,
       };
@@ -980,9 +1015,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     return output;
   }
   async function revalidateInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, m: Manifest) {
-    const a = await member(tx, actor, org);
-    const h = await header(tx, a, m.templateId);
-    if ((await epoch(tx, a)) !== m.actorEpoch) unavailable("authorization_changed");
+    const current = await launchSelection(tx, actor, org, m.templateId, undefined);
+    if (current.kind !== "template") throw new Error("Unexpected template receipt during revalidation.");
+    const { a, h, actorEpoch } = current;
+    if (actorEpoch !== m.actorEpoch) unavailable("authorization_changed");
     const resolved = await references(
       tx,
       a,

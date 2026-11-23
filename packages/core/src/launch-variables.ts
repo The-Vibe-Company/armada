@@ -12,14 +12,17 @@ export async function resolveLaunchVariables(
   orgOnly = false,
 ): Promise<Record<string, string>> {
   const values: Record<string, string> = {};
+  if (!bindings.length) return values;
+  const { rows } = await sql.query<{ id: string; value: string; version: number; scope: string }>(
+    `select v.id,v.value,v.version,v.scope from public.readable_variables v
+     join public.members m on m.org_id=v.org_id and m.user_id=$3
+     where v.id=any($1::uuid[]) and v.org_id=$2 and v.status='active' and (v.scope='org' or v.owner_id=$3)
+     order by v.id for share of v`,
+    [bindings.map((binding) => binding.variableId), actor.orgId, actor.userId],
+  );
+  const byId = new Map(rows.map((row) => [row.id, row]));
   for (const binding of [...bindings].sort((a, b) => a.variableId.localeCompare(b.variableId))) {
-    const row = (
-      await sql.query<{ value: string; version: number; scope: string }>(
-        `select v.value,v.version,v.scope from public.readable_variables v join public.members m on m.org_id=v.org_id and m.user_id=$3
-       where v.id=$1 and v.org_id=$2 and v.status='active' and (v.scope='org' or v.owner_id=$3) for share of v`,
-        [binding.variableId, actor.orgId, actor.userId],
-      )
-    ).rows[0];
+    const row = byId.get(binding.variableId);
     if (!row || (orgOnly && row.scope !== "org"))
       throw new VaultError("conflict", "Template launch refused: variable_unavailable.");
     if (row.version !== binding.version)

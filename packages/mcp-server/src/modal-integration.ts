@@ -47,10 +47,14 @@ export function createModalIntegration(options: {
   async function managementAuthority(
     target: ProviderTarget,
     caller: { userId: string },
-  ): Promise<ModalManagementAuthority> {
+  ): Promise<ModalManagementAuthority & { appName: string }> {
     if (!target.modal) throw new VaultError("invalid", "Modal binding is missing.");
-    const result = await options.sql.query<{ authority_scope: "org" | "user"; authority_owner_id: string }>(
-      "select authority_scope,authority_owner_id from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
+    const result = await options.sql.query<{
+      authority_scope: "org" | "user";
+      authority_owner_id: string;
+      app_name: string;
+    }>(
+      "select authority_scope,authority_owner_id,app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
       [target.orgId, target.modal.appId, target.modal.environment],
     );
     const saved = result.rows[0];
@@ -64,6 +68,7 @@ export function createModalIntegration(options: {
       throw new VaultError("forbidden", "Modal credential authority does not match this resource.");
     return {
       orgId: target.orgId,
+      appName: saved.app_name,
       sourceGoldenVisibility: sourceVisibility,
       credentialScope: saved.authority_scope,
       credentialOwnerId: saved.authority_owner_id,
@@ -159,12 +164,18 @@ export function createModalIntegration(options: {
     storedReads = false,
     onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
   ) => {
-    const authority = await options.sql.query<{ app_name: string }>(
-      "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
-      [context.target.orgId, binding.appId, binding.environment],
-    );
-    const appName = authority.rows[0]?.app_name;
-    if (!appName) throw new Error("Modal App binding is not registered on this server.");
+    const provenance = await managementAuthority(context.target, context.caller);
+    return providerWithAuthority(tokens, binding, context, provenance, storedReads, onRuntimeBinding);
+  };
+  async function providerWithAuthority(
+    tokens: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[0],
+    binding: ModalBinding,
+    context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
+    provenance: Awaited<ReturnType<typeof managementAuthority>>,
+    storedReads: boolean,
+    onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
+  ) {
+    const { appName } = provenance;
     const scope: Scope = {
       orgId: context.target.orgId,
       userId: context.caller.userId,
@@ -176,7 +187,6 @@ export function createModalIntegration(options: {
         "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
         [scopeKey(scope), JSON.stringify(scope)],
       );
-    const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
     const composed: RuntimeModalOptions = {
       measure: measureProviderPhase,
@@ -209,7 +219,7 @@ export function createModalIntegration(options: {
       provider: observeProvider("modal", provider, sandbox),
       captureRuntimeWork: observeProvider("modal", { captureRuntimeWork }, sandbox).captureRuntimeWork,
     };
-  };
+  }
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,
     caller: { userId: string },
@@ -370,13 +380,13 @@ export function createModalIntegration(options: {
   };
   async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
     if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
-    const tokens = await modalTokensFor(target, caller);
-    const { provider } = await modalProviderFor(
-      // The resolver's scope label is not the structured machine Scope.
-      // Pass only the token pair, exactly as the live registry does.
-      { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+    const authority = await managementAuthority(target, caller);
+    const { tokenId, tokenSecret } = await resolveManagementCredentials(authority);
+    const { provider } = await providerWithAuthority(
+      { tokenId, tokenSecret },
       target.modal,
-      { target, caller, credentialScope: tokens.scope },
+      { target, caller, credentialScope: authority.credentialScope },
+      authority,
       true,
     );
     return provider;

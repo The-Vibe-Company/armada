@@ -1481,6 +1481,26 @@ async function modalFirstTurnLane(
   } as unknown as Parameters<LaneFactory>[0])!;
 }
 
+test("fresh Modal launch job batches its lease checks", async () => {
+  const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  const statements: string[] = [];
+  function record(sql: Sql): Sql {
+    return {
+      ...sql,
+      query<T>(statement: string, params?: unknown[]) {
+        statements.push(statement);
+        return sql.query<T>(statement, params);
+      },
+      transaction: sql.transaction && ((work) => sql.transaction!((tx) => work(record(tx)))),
+    };
+  }
+  const runner = makeRunner(undefined, record(f.sql));
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(statements.length).toBeLessThanOrEqual(51);
+});
+
 test.each([
   { prompted: false, max: null, limits: { "gpt-5": 1 }, refusal: "Model gpt-5" },
   { prompted: true, max: 1, limits: {}, refusal: "1/1 agents working" },

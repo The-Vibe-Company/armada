@@ -361,7 +361,8 @@ async function resolveGoldenLaunch(
   if (runtime && !runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = validateGoldenLaunchPrompt(request.prompt);
-  request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
+  if (request.credentialId === undefined || request.model === undefined)
+    request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = resolveModelChoice(harness, request);
   if (!(runtime ? HARNESS_CAPABILITIES[harness] : provider.capabilities[harness])?.reasoningEffort) {
     throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);

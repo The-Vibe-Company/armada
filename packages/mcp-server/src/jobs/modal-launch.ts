@@ -280,11 +280,15 @@ export async function admitModalLaunch(
         await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
       const sourceScope = scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal });
       const {
-        rows: [image],
-      } = await tx.query<{ image_id: string }>(
-        `select record->>'imageId' as image_id from public.modal_images
-         where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
-           and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null`,
+        rows: [source],
+      } = await tx.query<{ image_id: string | null; sealed: boolean }>(
+        `select (
+           select record->>'imageId' from public.modal_images
+           where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
+             and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null
+         ) as image_id, exists (
+           select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$2 and sealed
+         ) as sealed`,
         [sourceScope, snapshot],
       );
       const jobId = await store.enqueue(
@@ -296,7 +300,7 @@ export async function admitModalLaunch(
           allocation: {
             ...allocation,
             size: sandbox.machineSize.effective,
-            source: { kind: "snapshot", ref: image?.image_id },
+            source: { kind: "snapshot", ref: source?.image_id ?? undefined },
           },
           snapshot,
           modal,
@@ -322,12 +326,8 @@ export async function admitModalLaunch(
 
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
-      const { rows: sealed } = await tx.query(
-        "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
-        [snapshot],
-      );
-      if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
-      if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
+      if (source?.sealed) throw new GoldenError("conflict", "Golden snapshot is being retired.");
+      if (!source?.image_id) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
       const visibility = armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
       const scopedCredential = sandbox.credentialId;
