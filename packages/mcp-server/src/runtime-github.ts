@@ -29,6 +29,24 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const denied = (): never => {
   throw new VaultError("forbidden", "Runtime GitHub access is unavailable.");
 };
+type AcquisitionDenial =
+  | "request_method"
+  | "request_origin"
+  | "capability_malformed"
+  | "request_body_invalid"
+  | "capability_lookup_failed"
+  | "capability_unknown"
+  | "capability_expired"
+  | "enrolment_unavailable"
+  | "sandbox_binding_unavailable"
+  | "runtime_epoch_changed"
+  | "binding_changed"
+  | "repository_outside_binding"
+  | "github_connection_check_failed"
+  | `github_connection_${Exclude<Awaited<ReturnType<typeof resolveGitHubAccess>>["status"], "connected">}`
+  | "github_identity_changed"
+  | "token_delivery_failed";
+
 interface Binding {
   sandboxId: string;
   ownerId: string;
@@ -158,10 +176,11 @@ export function createRuntimeGitHub(options: {
     if (!Array.isArray(row.binding.repositories)) return denied();
     return row;
   };
-  const read = async (tx: Sql, capHash: string) =>
+  const lookupCapability = async (tx: Sql, capHash: string) =>
     (
       await tx.query<{
         sandbox_id: string;
+        active: boolean;
         epoch: string;
         revision: string;
         binding: Binding;
@@ -169,10 +188,15 @@ export function createRuntimeGitHub(options: {
         delivered_at: string | null;
         last_accessed_at: string | null;
       }>(
-        "select sandbox_id,epoch::text,revision::text,binding,acquisition_count::text,delivered_at::text,last_accessed_at::text from public.runtime_github_capabilities where hash=$1 and expires_at>now()",
+        "select sandbox_id,expires_at>now() as active,epoch::text,revision::text,binding,acquisition_count::text,delivered_at::text,last_accessed_at::text from public.runtime_github_capabilities where hash=$1",
         [capHash],
       )
-    ).rows[0] ?? denied();
+    ).rows[0];
+  const read = async (tx: Sql, capHash: string) => {
+    const cap = await lookupCapability(tx, capHash);
+    if (!cap?.active) return denied();
+    return cap;
+  };
   const issued = async (tx: Sql, binding: Binding, value: string) =>
     tx.query(
       `insert into public.github_runtime_issued(sandbox_id,owner_id,physical_generation,hash,token_enc) values($1,$2,$3,$4,$5) on conflict do nothing`,
@@ -382,58 +406,69 @@ export function createRuntimeGitHub(options: {
     if (new URL(request.url).pathname !== path) return null;
     const headers = { "cache-control": "no-store" };
     let sandboxId: string | undefined;
-    let reason = "binding_unavailable";
+    let reason: AcquisitionDenial = "request_method";
+    const refuse = (code: AcquisitionDenial): never => {
+      reason = code;
+      return denied();
+    };
     try {
-      if (request.method !== "POST" || request.headers.has("origin")) return denied();
-      const token = request.headers.get("authorization")?.match(/^Bearer (armada_gh_[a-f0-9]{64})$/)?.[1] ?? denied();
+      if (request.method !== "POST") return refuse("request_method");
+      if (request.headers.has("origin")) return refuse("request_origin");
+      const token = request.headers.get("authorization")?.match(/^Bearer (armada_gh_[a-f0-9]{64})$/)?.[1];
+      if (!token) return refuse("capability_malformed");
+      const capHash = hash(token);
+      async function readGrant(tx: Sql) {
+        reason = "capability_lookup_failed";
+        const cap = await lookupCapability(tx, capHash);
+        if (!cap) return refuse("capability_unknown");
+        sandboxId = cap.sandbox_id;
+        if (!cap.active) return refuse("capability_expired");
+        return cap;
+      }
+      const grant = await readGrant(sql);
+      reason = "request_body_invalid";
       const body = JSON.parse(await readBoundedText(request, 1024)) as {
         version: number;
         repository: string;
         operation: string;
       };
       if (
+        !body ||
         Object.keys(body).some((k) => !["version", "repository", "operation"].includes(k)) ||
         body.version !== 1 ||
         typeof body.repository !== "string" ||
         !["gh", "git"].includes(body.operation)
       )
-        return denied();
-      const grant = await read(sql, hash(token));
-      sandboxId = grant.sandbox_id;
-      const before = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
-        const now = await current(tx, grant.sandbox_id),
-          cap = await read(tx, hash(token));
-        if (scope.epoch !== cap.epoch || !same(now.binding, cap.binding)) {
-          reason = "binding_changed";
-          return denied();
-        }
-        if (!allowed(cap.binding, body.repository)) {
-          reason = "repository_outside_binding";
-          return denied();
-        }
+        return refuse("request_body_invalid");
+
+      async function checkBinding(tx: Sql, epoch: string, expected?: Binding) {
+        reason = "sandbox_binding_unavailable";
+        const now = await current(tx, grant.sandbox_id);
+        const cap = await readGrant(tx);
+        if (epoch !== cap.epoch) return refuse("runtime_epoch_changed");
+        if (!same(now.binding, cap.binding) || (expected && !same(now.binding, expected)))
+          return refuse("binding_changed");
+        if (!allowed(cap.binding, body.repository)) return refuse("repository_outside_binding");
         return now;
-      });
+      }
+
+      reason = "enrolment_unavailable";
+      const before = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, (tx, scope) =>
+        checkBinding(tx, scope.epoch),
+      );
       reason = "github_connection_check_failed";
       const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, grant.binding.ownerId);
-      if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
-      reason = "binding_unavailable";
+      if (access.status !== "connected") return refuse(`github_connection_${access.status}`);
+      if (access.identity.id !== before.binding.githubId) return refuse("github_identity_changed");
+
+      reason = "enrolment_unavailable";
       const response = await authority.withOwner(grant.sandbox_id, grant.binding.ownerId, async (tx, scope) => {
-        const now = await current(tx, grant.sandbox_id),
-          cap = await read(tx, hash(token));
-        if (
-          scope.epoch !== cap.epoch ||
-          !same(now.binding, before.binding) ||
-          !same(now.binding, cap.binding) ||
-          !allowed(cap.binding, body.repository)
-        ) {
-          reason = "binding_changed";
-          return denied();
-        }
+        const now = await checkBinding(tx, scope.epoch, before.binding);
         reason = "token_delivery_failed";
         await issued(tx, now.binding, access.token);
         await tx.query(
           "update runtime_github_capabilities set acquisition_count=acquisition_count+1,last_accessed_at=now() where hash=$1",
-          [hash(token)],
+          [capHash],
         );
         return Response.json({ token: access.token }, { headers });
       });
@@ -459,10 +494,18 @@ export function createRuntimeGitHub(options: {
       return response;
     } catch {
       const response = new Response(null, { status: 403, headers });
-      if (!sandboxId) return response;
       try {
         const event = "runtime_github_credentials_denied";
-        console.warn(JSON.stringify({ level: "warn", message: event, event, sandboxId, reason }));
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: event,
+            event,
+            requestId: currentRequestId(),
+            sandboxId: sandboxId ?? null,
+            reason,
+          }),
+        );
       } catch {
         return response;
       }

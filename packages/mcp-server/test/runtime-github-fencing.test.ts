@@ -27,6 +27,7 @@ test.each(["boat", "modal", "docker"] as const)(
       userRequests = 0;
     let duringUserRequest = () => {};
     const cap = {
+      active: true,
       sandbox_id: binding.sandboxId,
       epoch: "1",
       revision: "1",
