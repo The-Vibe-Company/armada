@@ -171,6 +171,11 @@ export function createSandboxAccessServices(input: {
       saved,
       { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason },
       async (signal, token) => {
+        if (saved.provider === "modal" && saved.runtimeTransport === "dialout")
+          return {
+            result: undefined,
+            patch: { ownerStop: true, status: stoppingStatus, stopRequested: true, statusReason },
+          };
         if (
           (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
             kind: "activity",

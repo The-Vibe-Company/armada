@@ -223,6 +223,7 @@ async function collect(
     generation: string;
     periodic?: boolean;
     canDispatch?: () => Promise<boolean>;
+    onPublish?: ((tx: Sql) => Promise<void>) | undefined;
   },
 ) {
   const { signal, writes, generation, periodic } = options;
@@ -279,7 +280,7 @@ async function collect(
           { sandboxId: providerId, ...(signal ? { signal } : {}) },
           scan,
           key,
-          { generation, mode: "live", writes },
+          { generation, mode: "live", writes, onPublish: options.onPublish },
         ),
       );
       return;
@@ -354,6 +355,7 @@ async function collect(
       [id, JSON.stringify(payload)],
     );
     await recordOutputPublication(tx, id, scan);
+    await options.onPublish?.(tx);
     signal?.throwIfAborted();
   });
   // A write already in progress is bounded by SQL and settles before the pool closes.
@@ -384,7 +386,7 @@ export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader,
   id: string,
-  options: { key?: string | undefined; signal?: AbortSignal } = {},
+  options: { key?: string | undefined; signal?: AbortSignal; onPublish?: (tx: Sql) => Promise<void> } = {},
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
@@ -419,7 +421,11 @@ export async function captureFinalOutputs(
     providerKind = row.provider;
     try {
       await outputPhase("publish_snapshot", () =>
-        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, generation: row.generation }),
+        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
+          signal,
+          generation: row.generation,
+          onPublish: options.onPublish,
+        }),
       );
     } catch (error) {
       if (

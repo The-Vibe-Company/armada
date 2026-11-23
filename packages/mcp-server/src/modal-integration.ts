@@ -30,6 +30,7 @@ import {
   modalArtifactFailure,
 } from "./modal-artifact-cache.ts";
 import { boundedModalSql, createModalReaper } from "./modal-reaper.ts";
+import { createModalStopJob } from "./modal-stop-job.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
@@ -381,6 +382,8 @@ export function createModalIntegration(options: {
     return provider;
   }
   return {
+    stopJob: (providerFor: Parameters<typeof createModalStopJob>[3]) =>
+      createModalStopJob(options.sql, options.encryptionKey, openMachine, providerFor),
     launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
     launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
       createModalLaunchJob(options.sql, options.encryptionKey, openMachine, prepare),

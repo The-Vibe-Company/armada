@@ -2,14 +2,13 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
 import type { Sandbox } from "modal";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
-import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
+import { observeModalCompute, terminateModalCompute } from "./machine.ts";
+import type { Machine, ModalResourceReceipt, ModalStore } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 interface RuntimeLifecycleDependencies {
   store: ModalStore;
-  distribution: Pick<RunnerDistribution, "prepareSnapshot">;
   bound(): Promise<unknown>;
   assertMachineSource(row: Machine): void;
   physical(row: Machine, signal?: AbortSignal): Promise<Sandbox>;
@@ -24,7 +23,6 @@ interface RuntimeLifecycleDependencies {
 
 export function createRuntimeLifecycle({
   store,
-  distribution,
   bound,
   assertMachineSource,
   physical,
@@ -62,88 +60,6 @@ export function createRuntimeLifecycle({
           "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",
         );
       });
-    },
-    async stopRuntime(input) {
-      if (!/^[1-9][0-9]{0,18}$/.test(input.epoch) || !Number.isSafeInteger(input.watermark) || input.watermark < 0)
-        throw refusal("invalid_request", "A durable common checkpoint epoch and watermark are required.");
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        await store.lease(input.sandboxId, async (row, save) => {
-          observed = row;
-          assertMachineSource(row);
-          if (
-            !row.commonRuntime ||
-            row.golden ||
-            !row.physicalId ||
-            input.physicalGeneration !== String(row.generation)
-          )
-            throw refusal("conflict", "Retained stop requires the exact enrolled physical incarnation.");
-          const expected = {
-            epoch: input.epoch,
-            watermark: input.watermark,
-            physicalId: row.physicalId,
-            generation: row.generation,
-          };
-          const prior = row.runtimeCheckpoint;
-          if (
-            prior &&
-            prior.generation === row.generation &&
-            (prior.epoch !== expected.epoch ||
-              prior.watermark !== expected.watermark ||
-              prior.physicalId !== expected.physicalId)
-          )
-            throw refusal("conflict", "Retained stop belongs to another checkpoint.");
-          if (row.phase === "stopped") {
-            if (!row.recoveryImageId || !prior) throw refusal("conflict", "No retained common checkpoint exists.");
-            return;
-          }
-          if (!["active", "checkpoint", "terminate"].includes(row.phase))
-            throw refusal("conflict", "Snapshot outcome is unknown; retain the physical source for reconciliation.");
-          const sb = await physical(row);
-          const needsSnapshot = row.phase !== "terminate";
-          if (!needsSnapshot && (!row.recoveryImageId || !prior || !row.quiesced))
-            throw refusal("conflict", "Termination lacks a retained common checkpoint.");
-          await stopModalCompute(sb, {
-            ...(needsSnapshot && {
-              checkpoint: {
-                async prepare() {
-                  if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
-                  delete row.runtimeResumeGeneration;
-                  row.runtimeCheckpoint = expected;
-                  row.phase = "checkpoint";
-                  row.info.state = "stopping";
-                  await save(row);
-                  if (!row.quiesced) {
-                    await distribution.prepareSnapshot(sb, row);
-                    row.quiesced = true;
-                    await save(row);
-                  }
-                },
-                async recordIntent() {
-                  row.phase = "snapshot";
-                  await save(row);
-                },
-                async recordImage(recoveryImageId) {
-                  if (row.recoveryImageId)
-                    row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-                  row.recoveryImageId = recoveryImageId;
-                  row.phase = "terminate";
-                  await save(row);
-                },
-              },
-            }),
-          });
-          row.phase = "stopped";
-          row.info.state = "stopped";
-          row.info.providerState = "stopped";
-          row.info.stoppedAt = new Date();
-          await save(row);
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
     },
     async resumeRuntime(input, signal, onResumeStage) {
       const { epoch, watermark } = input.checkpoint;
@@ -256,5 +172,5 @@ export function createRuntimeLifecycle({
         await save(row);
       });
     },
-  } satisfies Pick<ModalProvider, "startRuntime" | "stopRuntime" | "resumeRuntime" | "rollbackRuntimeResume">;
+  } satisfies Pick<ModalProvider, "startRuntime" | "resumeRuntime" | "rollbackRuntimeResume">;
 }

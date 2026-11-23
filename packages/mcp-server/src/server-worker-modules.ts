@@ -103,6 +103,7 @@ const jobsLane: LaneFactory = ({
     jobs,
     {
       delete: modal.launchCleanupJob,
+      stop: modal.stopJob(lifecycleProvider),
       ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
       ...(config.encryptionKey
         ? {

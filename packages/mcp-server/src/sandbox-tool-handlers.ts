@@ -552,7 +552,7 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      return sandboxActivity(
+      return sandboxActivity<{ id: string; status: SandboxStatus; preservationNote?: string }>(
         data.sandboxes,
         found,
         {
@@ -564,6 +564,15 @@ export function configureTools(
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         },
         async (signal, token) => {
+          if (found.provider === "modal" && found.runtimeTransport === "dialout")
+            return {
+              result: { id: found.id, status: found.status === "failed" ? ("failed" as const) : ("stopping" as const) },
+              patch: {
+                ownerStop: true,
+                status: found.status === "failed" ? "failed" : "stopping",
+                stopRequested: true,
+              },
+            };
           signal.throwIfAborted();
 
           const preservation = await data.sandboxes

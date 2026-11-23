@@ -72,7 +72,12 @@ export async function collectOutputTransfers(
   request: { sandboxId: string; signal?: AbortSignal },
   scan: string,
   key: string,
-  options: { generation: string; mode: keyof typeof WRITE_ELIGIBILITY; writes?: Set<Promise<unknown>> | undefined },
+  options: {
+    generation: string;
+    mode: keyof typeof WRITE_ELIGIBILITY;
+    writes?: Set<Promise<unknown>> | undefined;
+    onPublish?: ((tx: Sql) => Promise<void>) | undefined;
+  },
 ): Promise<void> {
   const { signal } = request;
   const { generation, mode, writes } = options;
@@ -284,6 +289,7 @@ export async function collectOutputTransfers(
       [id, scan],
     );
     await recordOutputPublication(tx, id, scan, mode === "live" ? undefined : generation);
+    await options.onPublish?.(tx);
   });
 }
 

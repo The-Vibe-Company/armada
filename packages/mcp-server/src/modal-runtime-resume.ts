@@ -30,6 +30,5 @@ export function modalRuntimeResume(
         observe,
       );
     },
-    stop: (host, sandbox) => host.stop({ sandboxId: sandbox.providerSandboxId }),
   });
 }

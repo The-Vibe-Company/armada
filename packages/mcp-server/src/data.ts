@@ -1196,6 +1196,7 @@ export function createSqlData(
         if (patch.deleteRequested) {
           params.push(MODAL_LAUNCH_FAILURE);
           fence += ` and s.status in ('stopped','failed')
+            and not (s.provider='modal' and s.runtime_transport='dialout' and s.stop_requested_at is not null)
             and not (s.status='failed' and s.provider='modal' and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
             and not ${SANDBOX_DELETION_MANAGED}`;

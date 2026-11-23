@@ -74,7 +74,7 @@ export interface RuntimeResumePlacement {
   ): Promise<{ epoch: string }>;
   checkDispatchCoverage?(signal: AbortSignal): Promise<void>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
-  stop(): Promise<void>;
+  stop?(): Promise<void>;
 }
 export type RuntimeResume = ReturnType<typeof createRuntimeResume>;
 export type RuntimeResumePrepare = (caller: Caller, sandbox: SandboxView) => Promise<RuntimeResumePlacement>;
@@ -575,7 +575,7 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && placement && !preActivationArchive) await placement.stop().catch(() => {});
+      if (cleanup === "failed" && placement && !preActivationArchive) await placement.stop?.().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(
           "conflict",

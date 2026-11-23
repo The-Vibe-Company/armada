@@ -9,6 +9,7 @@ import {
   SANDBOX_STOP_MARGIN_SECONDS,
   type Sql,
 } from "@armada/core/server";
+import { scopeKey } from "@armada/provider-modal";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { admitClaimedAccountTurn, dispatchAccountTurn } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
@@ -16,9 +17,11 @@ import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
+import { createModalStopJob } from "../src/modal-stop-job.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
@@ -71,24 +74,104 @@ describe("Modal user stop and wake-on-send", () => {
       const f = await fixture();
       let needsRetry = recover;
       let state: "ready" | "stopped" = "ready";
+      let captures = 0,
+        terminations = 0;
       let retained: { epoch: string; watermark: number } | undefined;
+      const { id, orgId, ownerId, providerSandboxId } = f.row;
+      const binding = { appId: "app", workspace: "workspace", environment: "main" };
+      const scope = scopeKey({ orgId, userId: ownerId, visibility: "org", binding });
+      const physicalId = "attached-vm";
+      await f.db.query(
+        `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+         values($1,'org','org',$1,'modal-app','app','main') on conflict do nothing`,
+        [orgId],
+      );
+      await f.db.query(
+        `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+         values($1,$2,$3,'org',$4,$5,$6::jsonb)`,
+        [
+          scope,
+          orgId,
+          ownerId,
+          providerSandboxId,
+          id,
+          JSON.stringify({
+            info: { id: providerSandboxId, name: "initial-placement", state },
+            generation: 1,
+            physicalId,
+            commonRuntime: true,
+            golden: false,
+            phase: "active",
+            processBaseline: { physicalId, generation: 1 },
+            managementAuthority: { credentialScope: "org", credentialOwnerId: orgId },
+          }),
+        ],
+      );
       const host = {
         id: "modal",
         async get() {
-          return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
+          return { id: providerSandboxId, state, providerState: state, physicalGeneration: "1" };
         },
         async stop() {
-          state = "stopped";
+          throw Error("The owner stop must use the Machine job.");
         },
-        async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
+        async readOutputs() {
+          captures++;
+          return [{ name: "final.txt", bytes: new TextEncoder().encode("last write") }];
+        },
+      };
+      const physical = {
+        sandboxId: physicalId,
+        async getTags() {
+          return { armada_scope: scope, armada_sandbox: providerSandboxId, armada_generation: "1" };
+        },
+        async poll() {
+          return state === "stopped" ? 0 : null;
+        },
+        async exec() {
           if (needsRetry) {
             needsRetry = false;
-            throw Error("Stop response was lost before physical stop was confirmed");
+            throw Error("Worker lost after capturing outputs and before checkpoint preparation.");
           }
-          retained = { epoch, watermark };
+          return {
+            stdin: { async writeText() {}, async close() {} },
+            async wait() {
+              return 0;
+            },
+          };
+        },
+        async snapshotFilesystem() {
+          return { imageId: "saved-recovery" };
+        },
+        async terminate() {
+          terminations++;
           state = "stopped";
         },
       };
+      const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
+        stop: createModalStopJob(
+          f.sql,
+          ENCRYPTION_KEY,
+          async () => ({
+            client: {
+              apps: { fromName: async () => ({ appId: "app" }) },
+              sandboxes: { fromId: async () => physical },
+            } as never,
+            appName: "modal-app",
+            binding,
+            deploymentId: "deployment",
+            async prepareCheckpoint() {},
+            async resolveRuntimeTicket() {
+              return null;
+            },
+            async canUseModalCredential() {
+              return true;
+            },
+            close() {},
+          }),
+          async () => host as unknown as Provider,
+        ),
+      });
       const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
       const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
         async start(_signal, restore) {
@@ -131,20 +214,31 @@ describe("Modal user stop and wake-on-send", () => {
         runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
       };
       const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
+      expect(await stop()).toMatchObject({ status: "stopping" });
+      expect(terminations).toBe(0);
+      const signal = new AbortController().signal;
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
       if (recover) {
-        await expect(stop()).rejects.toThrow();
-        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
-        const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
-        const provider = await providers.resolve(target, f.caller);
-        const stopCall = spyOn(provider, "stop");
-        const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
-        expect(await lifecycle.reconcileOne()).toBe(true);
-        await lifecycle.drain();
-        expect(stopCall).toHaveBeenCalledWith({ sandboxId: f.row.providerSandboxId, requireRetention: true });
-        expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
-      } else {
-        expect(await stop()).toMatchObject({ status: "stopped" });
+        expect(terminations).toBe(0);
+        await f.db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='stop'", [id]);
+        expect(await runner.reconcileOne(signal)).toBe(true);
+        await runner.drain();
       }
+      expect(terminations).toBe(1);
+      expect(captures).toBe(1);
+      const stopped = (
+        await f.db.query<{ recovery: string; checkpoint: typeof retained }>(
+          "select record->>'recoveryImageId' as recovery,record->'runtimeCheckpoint' as checkpoint from modal_machines where scope=$1 and id=$2",
+          [scope, providerSandboxId],
+        )
+      ).rows[0];
+      expect(stopped?.recovery).toBe("saved-recovery");
+      retained = stopped?.checkpoint;
+      expect(
+        await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1 and name='final.txt'", [id]),
+      ).toMatchObject({ rows: [expect.any(Object)] });
+      expect((await controls.data(f.caller).sandboxes.get(id))?.status).toBe("stopped");
       const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
       accountTurns.setDispatch((caller, request) =>
         dispatchControlCommand("sandbox/send", caller, { ...request }, controls),

@@ -20,7 +20,7 @@ type Delete = Parameters<Machine["delete"]>[0];
 type RecordEntry = {
   revision: number;
   intent: string;
-  operation: "create" | "resume";
+  operation: "create" | "resume" | "stop";
   phase: "creating" | "allocated" | "stopping" | "stopped" | "deleting" | "deleted";
   machineId?: string;
   retain?: boolean;
@@ -41,6 +41,9 @@ export interface ModalMachineOptions {
   binding: ModalBinding;
   deploymentId: string;
   journal: ModalMachineJournal;
+  existing?: { machine: MachineIdentity; ownershipTags?: Record<string, string> };
+  authorizeStop?(): Promise<void>;
+
   resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket | null>;
   prepareCheckpoint(request: Stop, sandbox: Sandbox): Promise<void>;
 }
@@ -139,12 +142,18 @@ async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal
 
 export async function terminateModalCompute(
   sandbox: Sandbox,
-  { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined } = {},
+  {
+    wait = true,
+    signal,
+    beforeTerminate,
+  }: { wait?: boolean; signal?: AbortSignal | undefined; beforeTerminate?: (() => Promise<void>) | undefined } = {},
 ) {
   signal?.throwIfAborted();
   const exitCode = await sandbox.poll();
   signal?.throwIfAborted();
   if (exitCode !== null) return;
+  await beforeTerminate?.();
+  signal?.throwIfAborted();
   if (wait) await sandbox.terminate({ wait: true });
   else await sandbox.terminate();
   signal?.throwIfAborted();
@@ -208,7 +217,16 @@ export function createModalMachine(options: ModalMachineOptions) {
     armada_machine_key: key(id),
   });
   async function verify(sandbox: Sandbox, id: MachineIncarnation) {
-    verifyModalComputeOwnership(await sandbox.getTags(), tags(id));
+    const existing = options.existing;
+    verifyModalComputeOwnership(
+      await sandbox.getTags(),
+      existing &&
+        existing.machine.sandboxId === id.sandboxId &&
+        existing.machine.generation === id.generation &&
+        existing.machine.machineId === sandbox.sandboxId
+        ? (existing.ownershipTags ?? tags(id))
+        : tags(id),
+    );
     return sandbox;
   }
 
@@ -311,7 +329,23 @@ export function createModalMachine(options: ModalMachineOptions) {
         );
     },
     async stop(request) {
-      let entry = await current(request);
+      let saved = await journal.read(key(request));
+      if (!saved && options.existing?.machine.machineId === request.machineId) {
+        await bound();
+        const sb = await exact(request, request.signal);
+        request.signal?.throwIfAborted();
+        if ((await sb.poll()) !== null && !request.retain) return null;
+        request.signal?.throwIfAborted();
+        saved = await save(request, undefined, {
+          operation: "stop",
+          phase: "allocated",
+          intent: "bound-stop",
+          machineId: request.machineId,
+        });
+      }
+      if (!saved || saved.machineId !== request.machineId)
+        throw conflict("Modal receipt does not match the addressed machine.");
+      let entry = saved;
       if (entry.phase === "allocated")
         entry = await save(request, entry, { ...entry, phase: "stopping", retain: request.retain });
       if ((entry.phase !== "stopping" && entry.phase !== "stopped") || entry.retain !== request.retain)
@@ -325,10 +359,13 @@ export function createModalMachine(options: ModalMachineOptions) {
         await stopModalCompute(sb, {
           wait: false,
           signal: request.signal,
+          beforeTerminate: options.authorizeStop,
           ...(needsSnapshot && {
             checkpoint: {
               async prepare() {
                 if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
+                await options.authorizeStop?.();
+                request.signal?.throwIfAborted();
                 await prepareCheckpoint(request, sb);
               },
               async recordIntent() {
@@ -389,14 +426,13 @@ export function createModalMachine(options: ModalMachineOptions) {
         const entry = await journal.read(key(request));
         if (request.machineId && entry?.machineId && request.machineId !== entry.machineId) return { kind: "unknown" };
         if (entry?.phase === "deleted") return { kind: "absent", receipt: { operation: "delete" } };
-        const sb = entry?.machineId
-          ? await exact(identity(request, entry.machineId), request.signal)
-          : await named(request);
+        const machineId = entry?.machineId ?? options.existing?.machine.machineId;
+        const sb = machineId ? await exact(identity(request, machineId), request.signal) : await named(request);
         if (!sb) return { kind: entry || request.machineId ? "unknown" : "absent" };
         if (request.machineId && request.machineId !== sb.sandboxId) return { kind: "unknown" };
         const machine = identity(request, entry?.machineId ?? sb.sandboxId);
         const observation = await observeModalCompute(machine, sb, request.signal);
-        if (observation.phase === "stopped" && entry?.phase === "stopped") {
+        if (observation.phase === "stopped" && (entry?.phase === "stopped" || entry?.recoveryImageId)) {
           const recovery = entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
           return { ...observation, receipt: { operation: "stop", retained: recovery } };
         }
@@ -404,7 +440,7 @@ export function createModalMachine(options: ModalMachineOptions) {
         return {
           ...observation,
           phase: stopping && observation.phase === "running" ? "stopping" : observation.phase,
-          ...(entry && { receipt: { operation: entry.operation, machine } }),
+          ...(entry && entry.operation !== "stop" && { receipt: { operation: entry.operation, machine } }),
         };
       } catch {
         request.signal?.throwIfAborted();

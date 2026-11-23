@@ -41,7 +41,7 @@ export function runtimeResumePlacement<H extends Provider>(
       observe: ResumeStageObserver,
     ): Promise<unknown>;
     verifyRestoredCoverage?(host: H, sandbox: Sandbox, signal: AbortSignal): Promise<(tx: Sql) => Promise<void>>;
-    stop(host: H, sandbox: Sandbox): Promise<void>;
+    stop?(host: H, sandbox: Sandbox): Promise<void>;
   },
 ): RuntimeResumePrepare {
   return async (caller, sandbox) => {
@@ -135,7 +135,7 @@ export function runtimeResumePlacement<H extends Provider>(
             },
           }
         : {}),
-      stop: () => placement.stop(host, sandbox),
+      ...(placement.stop ? { stop: placement.stop.bind(placement, host, sandbox) } : {}),
     };
   };
 }

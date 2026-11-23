@@ -57,12 +57,6 @@ export interface ModalProviderOptions extends ModalConnection {
 }
 export interface ModalProvider extends Provider {
   startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
-  stopRuntime(input: {
-    sandboxId: string;
-    physicalGeneration: string;
-    epoch: string;
-    watermark: number;
-  }): Promise<void>;
   resumeRuntime(
     input: {
       sandboxId: string;
@@ -297,7 +291,6 @@ export function createModalProvider(options: ModalProviderOptions) {
     }),
     ...createRuntimeLifecycle({
       store,
-      distribution,
       bound,
       assertMachineSource,
       physical,

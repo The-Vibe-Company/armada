@@ -1,4 +1,4 @@
-import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
+import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
@@ -18,20 +18,11 @@ import {
   resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
 import type { ModalLaunchHandoff } from "../modal-launch-handoff.ts";
-import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
+import { createJobsEnqueue } from "./enqueue.ts";
+
+export { ConflictingJobRequest, JOBS_WAKE, jobRequestKey } from "./enqueue.ts";
+
 import type { Job, JobStore } from "./runner.ts";
-
-export const JOBS_WAKE = "jobs";
-
-export function jobRequestKey(orgId: string, kind: string, ownerId: string, key: string) {
-  return JSON.stringify(["request", orgId, kind, ownerId, key]);
-}
-
-export class ConflictingJobRequest extends Error {
-  constructor() {
-    super("Conflicting job request.");
-  }
-}
 
 type JobRow = Omit<Job, "payload"> & { payload_enc: string | null };
 
@@ -151,13 +142,6 @@ export async function recordModalBootstrapTicket(
 // WARNING: Only call inside a fenced job completion after requeueing the job.
 export async function rescheduleRecurringJob(tx: Sql, job: Job, after: Date) {
   await tx.query("update public.jobs set attempts=0,run_after=$2 where id=$1", [job.id, after]);
-}
-
-interface EnqueueOptions {
-  orgId: string;
-  maxAttempts: number;
-  deadline?: Date;
-  request?: { ownerId: string; digest: string };
 }
 
 export function createJobsStore(sql: Sql, encryptionKey?: string) {
@@ -433,6 +417,22 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
+    modalStopJournal(job: Job, canDispatch: (tx: Sql) => Promise<boolean>) {
+      return modalMachineJournal(
+        job,
+        job.id,
+        async () => true,
+        async (tx, _revision, next) => next.phase === "stopped" || Boolean(next.recoveryImageId) || canDispatch(tx),
+      );
+    },
+    async checkpointStopCapture(tx: Sql, job: Job) {
+      const { rows } = await tx.query(
+        `update public.jobs set outcome=jsonb_set(coalesce(outcome, '{}'::jsonb), '{captured}', 'true')
+         where id=$1 and lease_epoch=$2 and state='leased' and lease_until>clock_timestamp() returning id`,
+        [job.id, job.lease_epoch],
+      );
+      return rows.length > 0;
+    },
     modalLaunchJournal(job: Job, canCreate?: (tx: Sql) => Promise<boolean>) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
@@ -462,56 +462,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         "{evidence,modal_machine}",
       );
     },
-    async enqueue(
-      kind: string,
-      sandboxId: string | null,
-      generation: number | null,
-      idemKey: string,
-      payload: unknown,
-      options: EnqueueOptions,
-      tx?: Sql,
-    ) {
-      const db = tx ?? sql;
-      const { orgId, request, deadline, maxAttempts } = options;
-      const key = request
-        ? jobRequestKey(orgId, kind, request.ownerId, idemKey)
-        : JSON.stringify(["internal", orgId, kind, sandboxId, generation, idemKey]);
-      const serialized = JSON.stringify(payload);
-      if (serialized === undefined) throw new Error("Job payload must be JSON.");
-      const sealed = payload === null ? null : toBytea(await encryptSecret(serialized, encryptionKey));
-      const { rows: insertedRows } = await db.query<{ id: string }>(
-        `insert into public.jobs
-           (kind, sandbox_id, generation, idem_key, payload_enc, org_id, max_attempts, deadline_at,
-            request_owner_id, request_digest)
-         values ($1,$2,$3,$4,$5::text::bytea,$6,$7,$8,$9,$10)
-         on conflict (idem_key) do nothing returning id`,
-        [
-          kind,
-          sandboxId,
-          generation,
-          key,
-          sealed,
-          orgId,
-          maxAttempts,
-          deadline ?? null,
-          request?.ownerId ?? null,
-          request?.digest ?? null,
-        ],
-      );
-      if (insertedRows[0]) {
-        if (!deferTransactionWake(db, JOBS_WAKE)) {
-          if (!tx || tx === sql) runtimeWakes.notify(JOBS_WAKE);
-          else await tx.transaction?.(async (raw) => deferTransactionWake(raw, JOBS_WAKE));
-        }
-        return insertedRows[0].id;
-      }
-      const { rows: existingRows } = await db.query<{ id: string }>(
-        `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2`,
-        [key, request?.digest ?? null],
-      );
-      if (!existingRows[0]) throw new ConflictingJobRequest();
-      return existingRows[0].id;
-    },
+    enqueue: createJobsEnqueue(sql, encryptionKey),
     async claim(kind, owner, seconds, concurrency) {
       const claimStartedAt = performance.now();
       const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
@@ -655,6 +606,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return complete(sql, job.generation);
     },
   } satisfies JobStore & {
+    modalStopJournal: (job: Job, canDispatch: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
+    checkpointStopCapture: (tx: Sql, job: Job) => Promise<boolean>;
     enqueue: (...args: never[]) => Promise<string>;
     modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
     modalFailedLaunchJournal: (

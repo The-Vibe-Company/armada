@@ -1,5 +1,4 @@
 import {
-  failureDiagnostic,
   isFinalPromptStatus,
   type MemberRole,
   type Provider,
@@ -12,7 +11,6 @@ import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
-import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
@@ -135,72 +133,12 @@ export function createRuntimeServing(sql: Sql, key: string) {
       { model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
     );
     const host = typeof apiKey === "string" ? createObservedBoatProvider({ apiKey }, sandbox.id) : apiKey;
-    // Modal runtime stop may retain disk only after the common journal checkpoint commits.
-    const refuseRetainedStop = (refusalCode: string, message: string) => {
-      const error = new VaultError("conflict", message);
-      recordOperatorDiagnostic("sandbox.stop.runtime_dispatch", failureDiagnostic(error), {
-        sandboxId: sandbox.id,
-        refusalCode,
-      });
-      return error;
-    };
-    const compute =
-      sandbox.provider !== "modal"
-        ? host
-        : new Proxy(host, {
-            get(instance, property) {
-              if (property !== "stop") {
-                const value = Reflect.get(instance, property, instance);
-                return typeof value === "function" ? value.bind(instance) : value;
-              }
-              return async (request: Parameters<Provider["stop"]>[0]) => {
-                if (request.sandboxId !== sandbox.providerSandboxId)
-                  throw new VaultError("not_found", "No runtime stop target.");
-                const proof = (
-                  await sql.query<{ epoch: string; watermark: string }>(
-                    `select p.epoch::text,p.watermark::text
-            from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
-            join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
-            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-            where s.id=$1 and s.owner_id=$2 and s.provider_sandbox_id=$3 and s.runtime_transport='dialout'
-            and s.status in ('ready','running','stopping') and s.deleted_at is null and not s.application_secret_tainted
-            and p.watermark is not null and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)`,
-                    [sandbox.id, sandbox.ownerId, sandbox.providerSandboxId],
-                  )
-                ).rows[0];
-                if (!proof) {
-                  if (request.requireRetention)
-                    throw refuseRetainedStop(
-                      "checkpoint_proof_missing",
-                      "Retained stop requires a verified runtime checkpoint.",
-                    );
-                  return instance.stop(request); // No checkpoint: compute-only cleanup, no disk claim.
-                }
-                const current = await instance.get(request.sandboxId);
-                if (current.state === "stopped" && !request.requireRetention) return;
-                const watermark = Number(proof.watermark);
-                if (
-                  !Number.isSafeInteger(watermark) ||
-                  watermark < 0 ||
-                  !current.physicalGeneration ||
-                  !/^[1-9][0-9]*$/.test(current.physicalGeneration)
-                )
-                  throw refuseRetainedStop("physical_checkpoint_unbound", "No physical checkpoint binding.");
-                return (instance as import("@armada/provider-modal").ModalProvider).stopRuntime({
-                  ...request,
-                  physicalGeneration: current.physicalGeneration!,
-                  epoch: proof.epoch,
-                  watermark,
-                });
-              };
-            },
-          });
     const authorize = () => {
       if (actor.userId !== sandbox.ownerId)
         throw new VaultError("forbidden", "Only the runtime owner may control this sandbox.");
     };
     return createRuntimeProvider(
-      compute,
+      host,
       sandbox.providerSandboxId,
       {
         async getPrompt(request) {

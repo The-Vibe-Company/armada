@@ -14,7 +14,7 @@ const owners = [
   ["triggers", [`${server}/inbound-trigger-store.ts`, `${server}/inbound-trigger-admin.ts`]],
   ["trigger_deliveries", [`${server}/inbound-trigger-store.ts`]],
   ["trigger_admin_audit", [`${server}/inbound-trigger-admin.ts`]],
-  ["jobs", [`${server}/jobs/store.ts`]],
+  ["jobs", [`${server}/jobs/store.ts`, `${server}/jobs/enqueue.ts`]],
   [
     "boat_runtime_extension_state",
     [`${server}/boat-runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/runtime-resume.ts`],

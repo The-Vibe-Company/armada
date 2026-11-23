@@ -261,20 +261,6 @@ test.each(["scrub", "snapshot"] as const)(
   },
 );
 
-test("a missing Modal image receipt preserves the enrolled source", async () => {
-  const f = fixture("missing image");
-  f.state().golden = false;
-  f.state().commonRuntime = true;
-  const stop = () =>
-    f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 });
-
-  await expect(stop()).rejects.toMatchObject({ code: "unavailable" });
-  await expect(stop()).rejects.toMatchObject({ code: "conflict" });
-  expect(f.terminated()).toBe(0);
-  expect(f.snapshots()).toBe(1);
-  expect(f.state()).toMatchObject({ phase: "snapshot", recoveryImageId: "prior-recovery" });
-});
-
 test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)(
   "retention policy refuses compute-only state (%s)",
   async (mode) => {
