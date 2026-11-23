@@ -800,6 +800,16 @@ async function admitLocked(
       await store.save(state);
     } catch {}
   }
+  function reportStop(ledger: State, receipt: Receipt) {
+    if (
+      receipt.operation === "stop" &&
+      (receipt.cleaned || ledger.cleanupGenerations?.includes(generationKey(receipt.request)))
+    ) {
+      const { machineId: _removed, ...exit } = receipt;
+      return api.result(ledger, exit);
+    }
+    return api.result(ledger, receipt);
+  }
   async function reportRetainedStop(ledger: State, receipt: Receipt) {
     const key = generationKey(receipt.request);
     const eligible =
@@ -898,7 +908,11 @@ async function admitLocked(
       }
       receipt.outcome = "completed";
     } catch (error) {
-      if (receipt.operation === "restore" && isUncertainDockerFailure(error)) throw error;
+      if (
+        (receipt.operation === "restore" || receipt.operation === "stop" || receipt.operation === "delete") &&
+        isUncertainDockerFailure(error)
+      )
+        throw error;
       receipt.outcome = "failed";
       if (receipt.operation === "stop" && !refusal && polled?.retainedStopProof && executor.isRetainedStop)
         receipt.retentionProofPending = true;
@@ -1012,7 +1026,7 @@ async function admitLocked(
         ...(old[10] ? { missingRefIndex: old[10] } : {}),
         ...(old[11] ? { machineId: old[11] } : {}),
       } as Receipt;
-      await api.result(state, replay);
+      await reportStop(state, replay);
       return "worked";
     }
     const oldGeneration = retired.filter((r) => r[2] === generationKey(job.request));
@@ -1095,6 +1109,12 @@ async function admitLocked(
           const latest = await store.load();
           const saved = latest.receipts.find((item) => item.requestId === accepted.requestId);
           if (saved?.retentionProofPending) await reportRetainedStop(latest, saved);
+        });
+      } else if (accepted.operation === "stop") {
+        await exclusive(store, async () => {
+          const latest = await store.load();
+          const saved = latest.receipts.find((item) => item.requestId === accepted.requestId) ?? accepted;
+          await reportStop(latest, saved);
         });
       } else {
         await api.result(state, accepted);

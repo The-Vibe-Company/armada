@@ -452,6 +452,7 @@ async function machineStopFixture() {
 test("Machine stop recovers the authenticated retained ID after worker takeover", async () => {
   const a = await machineStopFixture();
   const request = { ...a.machine, retain: true };
+  await database().query("update sandboxes set status='stopping', lifecycle_generation=2 where id=$1", [a.sandboxId]);
   const first = store.machineCleanup(a.owner);
   await denied(first.stop({ ...request, generation: 2 }));
   await denied(first.stop({ ...request, machineId: "e".repeat(64) }));
@@ -475,6 +476,7 @@ test("Machine stop recovers the authenticated retained ID after worker takeover"
   const successor = createDockerHostStore(sql, key).machineCleanup(a.owner);
   expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
   await expect(successor.stop(request)).rejects.toThrow("outcome is unknown");
+  await denied(successor.stop({ ...request, retain: false }));
   expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(requestId);
 
   const result = { requestId, outcome: "completed" as const, machineId: a.machine.machineId };
@@ -486,13 +488,15 @@ test("Machine stop recovers the authenticated retained ID after worker takeover"
   });
   expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
   await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
   const retained = {
     sandboxId: a.sandboxId,
     generation: a.machine.generation,
-    kind: "container",
+    kind: "container" as const,
     ref: result.machineId,
   };
   expect(await successor.stop(request)).toEqual(retained);
+  await denied(successor.stop({ ...request, retain: false }));
   expect(await successor.observe(a.machine)).toEqual({
     kind: "present",
     machine: a.machine,
@@ -500,6 +504,8 @@ test("Machine stop recovers the authenticated retained ID after worker takeover"
     receipt: { operation: "stop", retained },
   });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  const status = await database().query("select status from sandboxes where id=$1", [a.sandboxId]);
+  expect(status.rows).toEqual([{ status: "stopping" }]);
 });
 
 test("Machine non-retaining stop confirms removal after an ID-less stop acknowledgement", async () => {

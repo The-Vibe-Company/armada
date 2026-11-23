@@ -163,7 +163,9 @@ test.each(["create", "restore", "stop"] as const)(
 
     const cleaned = await store.load();
     const saved = cleaned.receipts.find((receipt) => receipt.requestId === allocation.requestId) ?? fail();
-    saved.cleaned = true;
+    if (operation === "stop") {
+      cleaned.retention = [{ request: saved.request, requestId: saved.requestId, deadline: 200_000 }];
+    } else saved.cleaned = true;
     cleaned.receipts.push({
       requestId: crypto.randomUUID(),
       operation: "buildSnapshot",
@@ -186,6 +188,43 @@ test.each(["create", "restore", "stop"] as const)(
     expect(executions).toBe(1);
   },
 );
+
+test.each(["stop", "delete"] as const)(
+  "%s retries an ambiguous executor failure without sealing a receipt",
+  async (operation) => {
+    const { store, api, executor, state } = fixture(operation);
+    let calls = 0;
+    executor[operation] = async () => {
+      if (calls++ === 0) throw new DockerMachineError("docker_failed");
+    };
+    await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("docker_failed");
+    expect(state().receipts[0]?.outcome).toBeUndefined();
+    await tick(store, api, executor, false, () => 0);
+    expect(state().receipts[0]?.outcome).toBe("completed");
+    expect(calls).toBe(2);
+  },
+);
+
+test("stop replay after local retention cleanup acknowledges exit without offering the removed container", async () => {
+  const { job, store, api, executor } = fixture("stop");
+  const ids: (string | undefined)[] = [];
+  executor.stop = async () => ({ machineId: "b".repeat(64) });
+  executor.deleteStopped = async () => {};
+  api.result = async (_state, receipt) => {
+    if (receipt.operation !== "stop") return;
+    ids.push(receipt.machineId);
+    if (ids.length === 1) throw Error("acknowledgement lost");
+  };
+  api.cleaned = async () => {
+    throw Error("cleanup report unavailable");
+  };
+  await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("acknowledgement lost");
+  const retained = await store.load();
+  retained.retention = [{ request: job.request, requestId: job.requestId, deadline: 1 }];
+  await store.save(retained);
+  await tick(store, api, executor, false, () => 1);
+  expect(ids).toEqual(["b".repeat(64), undefined]);
+});
 
 test("physical-only mailbox delete replays an uncommitted result for the same immutable ID", async () => {
   const { job, store, api, executor, acknowledgements, state } = fixture();

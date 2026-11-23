@@ -300,6 +300,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     bound?: Bound,
     lifecycleGeneration?: string,
     runnerJobId?: string,
+    machineRetain?: boolean,
   ) {
     const canonical = input(job);
     if (
@@ -311,7 +312,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
     const serialized = bound
-      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId })
+      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId, machineRetain })
       : canonical;
     const metadata: Bound = {
       snapshot_id: null,
@@ -363,6 +364,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function readStoredJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]) {
     let runnerJobId: string | undefined;
     let lifecycleGeneration: string | undefined;
+    let machineRetain: boolean | undefined;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -381,10 +383,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           typeof stored === "object" &&
           stored !== null &&
           "lifecycleGeneration" in stored);
+      const machineStop = fenced && row.bound_operation === "stop";
       exact(stored, [
         "bound",
         "job",
         ...(fenced ? ["lifecycleGeneration"] : []),
+        ...(machineStop ? ["machineRetain"] : []),
         ...(row.bound_operation === "restore" ? ["runnerJobId"] : []),
       ]);
       if (row.bound_operation === "restore") {
@@ -392,6 +396,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         runnerJobId = stored.runnerJobId;
       }
       if (stored.bound !== 1) deny();
+      if (machineStop) {
+        if (typeof stored.machineRetain !== "boolean") deny();
+        machineRetain = stored.machineRetain;
+      }
       if (fenced) {
         if (
           typeof stored.lifecycleGeneration !== "string" ||
@@ -431,7 +439,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       job.requestId !== machineCleanupId(job.request.generation, job.operation)
     )
       deny();
-    return { job, runnerJobId, lifecycleGeneration, machineCleanup };
+    return { job, runnerJobId, lifecycleGeneration, machineCleanup, machineRetain };
   }
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
@@ -795,7 +803,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!delivered.machineCleanup || delivered.lifecycleGeneration !== (await currentMachineCleanup(tx, row)))
       return undefined;
     await requireCurrentMachine(tx, row, delivered.job);
-    return receipt;
+    return { ...receipt, retain: delivered.machineRetain };
   }
 
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
@@ -1554,7 +1562,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
             }
             if (row.status === "deleted") return unknown;
             const stopped = await machineCleanupReceipt(tx, row, "stop");
-            if (stopped?.outcome !== "completed" || stopped.cancelled_at || stopped.result_machine_id !== machineId)
+            if (
+              stopped?.outcome !== "completed" ||
+              stopped.retain !== true ||
+              stopped.cancelled_at ||
+              stopped.result_machine_id !== machineId
+            )
               return unknown;
             const machine = { sandboxId: request.sandboxId, generation: request.generation, machineId };
             return {
@@ -1589,6 +1602,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (removal) return !retain && removal.outcome === "completed" && !removal.cancelled_at ? null : undefined;
             if (row.status === "deleted") deny();
             const stopped = await machineCleanupReceipt(tx, row, "stop");
+            if (stopped && stopped.retain !== retain) deny();
             if (stopped?.outcome === "completed" && !stopped.cancelled_at && retain) {
               return stopped.result_machine_id === machineId
                 ? { sandboxId, generation, kind: "container" as const, ref: machineId }
@@ -1609,6 +1623,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 bound_operation: operation,
               },
               String(generation),
+              undefined,
+              stopped ? undefined : retain,
             );
             return undefined;
           });

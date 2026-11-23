@@ -1370,7 +1370,7 @@
     "packages/core/src/docker-disk-policy.ts": 1,
     "packages/core/src/docker-host-job.ts": 2,
     "packages/core/src/docker-image.ts": 1,
-    "packages/core/src/docker-machine.ts": 15,
+    "packages/core/src/docker-machine.ts": 14,
     "packages/core/src/docker-resource-policy.ts": 3,
     "packages/core/src/docker-resources.ts": 2,
     "packages/core/src/docker-retention.ts": 1,
