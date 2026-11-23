@@ -44,6 +44,7 @@ test("activity counts cover the full filtered inventory while rendering only the
   expect(sandboxActivityPage(rows, "viewer", "mine", 2, turns, now).rows).toHaveLength(10);
   const waiting = sandboxActivityPage(rows, "viewer", "need", 99, turns, now);
   expect(waiting.page).toBe(2);
+  expect(waiting.waitingIncomplete).toBe(false);
   expect(waiting.rows.map(({ id }) => id)).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 50)));
 });
 
@@ -79,6 +80,16 @@ test("Waiting for you counts only owned, live sandboxes with a finished turn and
   const page = sandboxActivityPage(rows, "viewer", "need", 1, turns, now);
   expect(page.rows.map(({ id }) => id)).toEqual(["waiting"]);
   expect(page.counts).toEqual({ all: 16, mine: 15, need: 1, working: 2, stopped: 1, failed: 1 });
+});
+
+test("Waiting for you reports incomplete evidence for a recorded fallback, but not for an idle machine", () => {
+  const rows = [row("idle")];
+  const idle = { ...finished, prompt: null };
+  const recorded = { ...idle, statusMessage: "Provider observation unavailable; showing recorded state." };
+  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", idle]]), now).waitingIncomplete).toBe(false);
+  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", recorded]]), now).waitingIncomplete).toBe(
+    true,
+  );
 });
 
 test("attention sort still prioritizes stopped outcomes, preserved work and urgent deadlines", () => {

@@ -19,7 +19,10 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
   ).attention;
 }
 
-export type SandboxTurnObservation = Pick<SandboxStatus, "status" | "settled" | "prompt" | "expiresAt">;
+export type SandboxTurnObservation = Pick<
+  SandboxStatus,
+  "status" | "settled" | "prompt" | "expiresAt" | "statusMessage"
+>;
 
 function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
@@ -27,21 +30,6 @@ function beforeDeadline(expiresAt: string | null, now: Date) {
 
 export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
   return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
-}
-
-function sandboxNeedsViewer(
-  row: SandboxListMetadata,
-  viewerId: string,
-  observation: SandboxTurnObservation | undefined,
-  now: Date,
-) {
-  return (
-    isWaitingCandidate(row, viewerId, now) &&
-    observation?.status === "ready" &&
-    observation.settled === true &&
-    observation.prompt?.state === "finished" &&
-    beforeDeadline(observation.expiresAt, now)
-  );
 }
 
 /**
@@ -57,9 +45,23 @@ export function sandboxActivityPage(
   now = new Date(),
 ) {
   const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
-  const waitingIds = new Set(
-    rows.filter((row) => sandboxNeedsViewer(row, viewerId, turns.get(row.id), now)).map((row) => row.id),
-  );
+  const waitingIds = new Set<string>();
+  let waitingIncomplete = false;
+  for (const row of rows) {
+    if (!isWaitingCandidate(row, viewerId, now)) continue;
+    const turn = turns.get(row.id);
+    if (!turn || (turn.status === "ready" && turn.prompt === null && turn.statusMessage)) {
+      waitingIncomplete = true;
+      continue;
+    }
+    if (
+      turn.status === "ready" &&
+      turn.settled === true &&
+      turn.prompt?.state === "finished" &&
+      beforeDeadline(turn.expiresAt, now)
+    )
+      waitingIds.add(row.id);
+  }
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
@@ -77,5 +79,5 @@ export function sandboxActivityPage(
   ) as Record<keyof typeof predicates, number>;
   const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
-  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page, waitingIds };
+  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page, waitingIds, waitingIncomplete };
 }

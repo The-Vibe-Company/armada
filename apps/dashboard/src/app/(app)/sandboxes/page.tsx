@@ -508,13 +508,12 @@ async function loadInventory(
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewer.id), filters.sort);
-  const { turns, waitingIncomplete } = await readWaitingTurns(rows, viewer);
+  const turns = await readWaitingTurns(rows, viewer);
   const now = new Date();
   const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, now);
   return {
     ...activityPage,
     now,
-    waitingIncomplete,
     total: rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
@@ -527,7 +526,7 @@ async function readWaitingTurns(rows: readonly SandboxListMetadata[], viewer: Vi
   const now = new Date();
   const candidates = rows.filter((row) => isWaitingCandidate(row, viewer.id, now));
   const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return { turns, waitingIncomplete: candidates.length > 0 };
+  if (!serverUrl || !viewer.token) return turns;
 
   const deadline = performance.now() + CONTROL_TIMEOUT_MS;
   for (let offset = 0; offset < candidates.length; offset += 8) {
@@ -541,5 +540,5 @@ async function readWaitingTurns(rows: readonly SandboxListMetadata[], viewer: Vi
       }),
     );
   }
-  return { turns, waitingIncomplete: turns.size < candidates.length };
+  return turns;
 }
