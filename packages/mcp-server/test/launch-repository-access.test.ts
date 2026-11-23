@@ -97,3 +97,53 @@ test("runtime-only repository preflight resolves access without putting a token 
   await resolver.authorizeRepositories!(actor, credentials, [repository]);
   expect(credentials).toEqual({ env: { MODEL: "fixture_only" }, secrets: [], codexAuthJson: false });
 });
+
+test("runtime repository admission recovers when a concurrent rotation invalidates its token", async () => {
+  const key = Buffer.alloc(32, 21).toString("base64");
+  const now = new Date("2026-11-23T10:30:00Z");
+  const firstToken = "offline-first-access";
+  const nextToken = "offline-next-access";
+  let connection = {
+    userId: actor.userId,
+    githubId: 7,
+    connectionEpoch: "same-connection",
+    login: "caller",
+    name: null,
+    refreshTokenEnc: await encryptSecret("offline-first-refresh", key),
+    refreshExpiresAt: null,
+    revokedAt: null,
+    accessTokenEnc: await encryptSecret(firstToken, key),
+    accessExpiresAt: new Date(now.getTime() + 8 * 3600_000),
+  };
+  const successor = {
+    ...connection,
+    refreshTokenEnc: await encryptSecret("offline-next-refresh", key),
+    accessTokenEnc: await encryptSecret(nextToken, key),
+  };
+  const store = {
+    withGitHubConnectionRefresh: async (_id: string, work: any) => work(store, connection),
+    getGitHubConnection: async () => connection,
+    updateGitHubProfile: async () => {},
+  } as unknown as GitHubConnectionStore;
+  const refAttempts: (string | null)[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    const authorization = new Headers(init?.headers).get("authorization");
+    if (url === "https://api.github.com/user") return Response.json({ id: 7, login: "caller", name: null });
+    if (url.includes("/git/ref/")) {
+      refAttempts.push(authorization);
+      // The other replica has published by the time GitHub refuses the old token.
+      connection = successor;
+      return Response.json({}, { status: authorization === `Bearer ${nextToken}` ? 200 : 401 });
+    }
+    return Response.json({ private: true });
+  }) as typeof fetch;
+  const resolver = launchCredentials({} as CredentialReader, key, undefined, undefined, {
+    store,
+    app: { clientId: "fixture", clientSecret: "fixture" },
+    now: () => now,
+    fetch: fetchImpl,
+  });
+  await resolver.authorizeRepositories!(actor, { env: {}, secrets: [], codexAuthJson: false }, [repository]);
+  expect(refAttempts).toEqual([`Bearer ${firstToken}`, `Bearer ${nextToken}`]);
+});
