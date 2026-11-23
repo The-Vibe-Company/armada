@@ -7,12 +7,14 @@ export function SandboxListTabs({
   counts,
   tab,
   page,
+  waitingIncomplete,
   search,
 }: {
-  rows: { id: string; need: boolean; working: boolean; content: ReactNode }[];
+  rows: { id: string; content: ReactNode }[];
   counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
   tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
   page: number;
+  waitingIncomplete: boolean;
   search: string;
 }) {
   function href(activity: string, nextPage = 1) {
@@ -57,7 +59,7 @@ export function SandboxListTabs({
         ))}
         {!rows.length && (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            {tab === "need" ? "Nothing needs you here." : "No sandboxes in this view."}
+            {tab === "need" && !waitingIncomplete ? "Nothing needs you here." : "No sandboxes in this view."}
           </p>
         )}
       </section>

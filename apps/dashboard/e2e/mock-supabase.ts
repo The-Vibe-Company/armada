@@ -3223,6 +3223,26 @@ const server = Bun.serve({
         route.startsWith("creds/accounts/")
       )
         return accounts(route, body, request);
+      if (route === "sandbox/status") {
+        const userId = viewer(request);
+        if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+        const target = state.sandboxes.find((row) => row.id === body.id && canOpenSandbox(row, userId));
+        if (!target) return controlFail(404, "not_found", "Sandbox not found.");
+        const last = state.events.get(String(target.id))?.findLast((event) => event.kind === "prompt");
+        return json({
+          status: target.status,
+          expiresAt: target.expires_at ?? null,
+          settled: target.status === "ready" && last?.status !== "running" && last?.status !== "queued",
+          prompt: last
+            ? {
+                promptId: last.promptId ?? last.id,
+                conversationId: last.conversationId ?? null,
+                state: last.status,
+                reason: last.reason ?? null,
+              }
+            : null,
+        });
+      }
       if (route === "sandbox/test-model-connection") {
         const userId = viewer(request);
         if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
