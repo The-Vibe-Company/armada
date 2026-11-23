@@ -492,19 +492,24 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
         if (!artifact || artifact.status !== "ready") throw new Error("unusable snapshot");
         return start(artifact.content);
       },
-      exec: async ({ command }) => ({
-        detached: false,
-        exitCode:
-          (failure === "scan" && command.includes("ARMADA_SCAN")) ||
-          ((failure === "initial-baseline" || (failure === "baseline" && checkoutRan)) &&
-            command.includes("ARMADA_BASELINE_1_FAILED"))
-            ? 97
-            : 0,
-        stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
-        stderr: failure.endsWith("baseline") ? "ARMADA_BASELINE_1_FAILED jq" : "",
-        timedOut: false,
-        truncated: false,
-      }),
+      exec: async ({ command }) => {
+        const installFailed = failure === "install" && command.includes("apt-get update");
+        const verifyFailed =
+          (failure === "initial-baseline" || (failure === "baseline" && checkoutRan)) &&
+          command.includes("ARMADA_BASELINE_1_FAILED");
+        return {
+          detached: false,
+          exitCode: installFailed || verifyFailed || (failure === "scan" && command.includes("ARMADA_SCAN")) ? 97 : 0,
+          stdout: command.includes("/helper/0.1.0/armada-helper") ? helperOutput : "",
+          stderr: installFailed
+            ? "private provider output\nARMADA_BASELINE_INSTALL_FAILED apt-get update\n"
+            : verifyFailed
+              ? "ARMADA_BASELINE_1_FAILED jq"
+              : "",
+          timedOut: false,
+          truncated: false,
+        };
+      },
     };
     const transaction = originalTransaction.bind(db);
     db.transaction = (async (work) => {
@@ -539,12 +544,17 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
     expect(machines.get(artifacts.get(first.snapshot)!.source)?.stopped).toBe(true);
     const unchanged = (await db.query("select * from goldens")).rows;
     const binding = (await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows;
-    for (const stage of ["initial-baseline", "scan", "baseline", "snapshot", "request", "persist"]) {
+    const failureMessages: Record<string, string> = {
+      install: "Snapshot baseline installation failed: apt-get update exited 97.",
+      "initial-baseline": "Snapshot baseline 1 requires a working jq",
+      baseline: "Snapshot baseline 1 requires a working jq",
+    };
+    for (const stage of ["install", "initial-baseline", "scan", "baseline", "snapshot", "request", "persist"]) {
       failure = stage;
       await expect(
         service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before }),
-      ).rejects.toThrow(stage.endsWith("baseline") ? "Snapshot baseline 1 requires a working jq" : undefined);
-      expect(checkoutRan).toBe(stage !== "initial-baseline");
+      ).rejects.toThrow(failureMessages[stage]);
+      expect(checkoutRan).toBe(stage !== "install" && stage !== "initial-baseline");
       expect((await db.query("select * from goldens")).rows).toEqual(unchanged);
       expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
         binding,

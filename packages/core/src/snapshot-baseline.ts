@@ -47,7 +47,7 @@ function installSteps(apt: string) {
       "curl (Node archive)",
       `curl -fsSL --retry 3 -o node.tar.xz "https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-$arch.tar.xz"`,
     ],
-    ["sha256sum -c (Node archive)", 'echo "$node_sha  node.tar.xz" | sha256sum -c -'],
+    ["sha256sum -c (Node archive)", `printf '%s  node.tar.xz\\n' "$node_sha" | sha256sum -c -`],
     ["tar (Node archive)", "tar -xJf node.tar.xz --strip-components=1 -C /usr/local"],
     ["npm install (Bun)", `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}`],
     ["npm cache clean", "npm cache clean --force"],
@@ -62,7 +62,7 @@ function installSteps(apt: string) {
     ],
     [
       "sha256sum -c (Git archive)",
-      'echo "3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5  git.tar.xz" | sha256sum -c -',
+      `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -`,
     ],
     ["tar (Git archive)", "tar -xJf git.tar.xz"],
     ["cd to the Git source directory", `cd git-${GIT}`],
@@ -81,14 +81,23 @@ export function snapshotBaselineInstall(
   const apt = [...packages.map((name) => (locks[name] ? `${name}=${locks[name]}` : name)), ...extraPackages]
     .map(shellQuote)
     .join(" ");
+  return renderInstall(apt, false);
+}
+
+export function snapshotBaselineBuilderInstall() {
+  return renderInstall(packages.map(shellQuote).join(" "), true);
+}
+
+function renderInstall(apt: string, reportStep: boolean) {
   return [
     "set -eu",
     "export PATH=/usr/local/bin:/usr/bin:/bin DEBIAN_FRONTEND=noninteractive",
     "work=",
     'trap \'if [ -n "$work" ]; then rm -rf -- "$work"; fi\' EXIT',
-    ...installSteps(apt).map(
-      ([step, command]) =>
-        `${command} || { status=$?; echo ${shellQuote(`${installFailure} ${step}`)} >&2; exit "$status"; }`,
+    ...installSteps(apt).map(([step, command]) =>
+      reportStep
+        ? `${command} || { status=$?; echo ${shellQuote(`${installFailure} ${step}`)} >&2; exit "$status"; }`
+        : command,
     ),
   ].join("; ");
 }

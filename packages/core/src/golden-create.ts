@@ -21,9 +21,9 @@ import { HOST_CAPABILITIES, isSandboxProvider, PROVIDER_LIMITS } from "./sandbox
 import { shellQuote } from "./shell-quote.ts";
 import {
   SNAPSHOT_BASELINE_VERSION,
+  snapshotBaselineBuilderInstall,
   snapshotBaselineFailure,
   snapshotBaselineFailureMessage,
-  snapshotBaselineInstall,
   snapshotBaselineInstallFailure,
   snapshotBaselineVerify,
 } from "./snapshot-baseline.ts";
@@ -123,7 +123,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         sshStdinCheckout(provider, input, { ...(input.onWarning ? { onWarning: input.onWarning } : {}) })),
     verifyHelper: verifyGoldenHelper,
     async installBaseline(provider, sandboxId) {
-      const script = snapshotBaselineInstall();
+      const script = snapshotBaselineBuilderInstall();
       const result = await provider.exec({
         sandboxId,
         timeoutSeconds: 600,
