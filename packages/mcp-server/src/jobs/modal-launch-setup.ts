@@ -1,5 +1,28 @@
 import { parseGoldenConfig } from "@armada/core";
 import { VaultError } from "@armada/core/server";
+import type { WorkspaceTimingStep } from "../runtime-workspace.ts";
+
+export function modalLaunchSetupTimer(
+  identity: { sandboxId: string; jobId: string; generation: string; attempt: number },
+  now = () => performance.now(),
+  write = (line: string) => console.info(line),
+) {
+  return (
+    phase: "load_target" | "environment" | "workspace" | "skills" | "mcp" | "scoped_access" | "first_prompt",
+    step?: WorkspaceTimingStep | { step: "receipt_lookup" },
+  ) => {
+    const started = now();
+    const log = (state: "started" | "finished", durationMs?: number) => {
+      try {
+        write(JSON.stringify({ event: "modal_launch_setup_phase", ...identity, phase, ...step, state, durationMs }));
+      } catch {
+        // Best-effort diagnostics must not change the setup outcome.
+      }
+    };
+    log("started");
+    return () => log("finished", Math.round(now() - started));
+  };
+}
 
 export function parseModalLaunchWorkspace(payload: { workspace?: unknown }) {
   return parseGoldenConfig(payload.workspace);
