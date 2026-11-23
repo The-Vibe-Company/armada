@@ -169,6 +169,35 @@ test.each([
   }
 });
 
+test("an expired GitHub capability is refused and logged against its sandbox", async () => {
+  const x = await fixture();
+  const { f, service } = x;
+  const warn = spyOn(console, "warn");
+  try {
+    await service.prepare(f.caller, f.row.id);
+    await f.db.query("update runtime_github_capabilities set expires_at=now() where sandbox_id=$1", [f.row.id]);
+    const requests = x.requests();
+    const requestId = crypto.randomUUID();
+    await expect(continueRequest(requestId, () => x.broker.acquire("example/web", "git"))).rejects.toThrow(
+      "github_credentials_http_denied",
+    );
+    expect(x.requests()).toBe(requests);
+    expect(warn.mock.calls.map(([value]) => JSON.parse(value))).toEqual([
+      {
+        level: "warn",
+        message: "runtime_github_credentials_denied",
+        event: "runtime_github_credentials_denied",
+        requestId,
+        sandboxId: f.row.id,
+        reason: "capability_expired",
+      },
+    ]);
+  } finally {
+    warn.mockRestore();
+    await x.close();
+  }
+});
+
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
   let clock = Date.now();
   const ceiling = new Date(clock + 20 * 60_000);
