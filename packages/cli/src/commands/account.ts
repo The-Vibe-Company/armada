@@ -47,8 +47,8 @@ export default {
   },
   help: `Usage: armada account <command> [arguments]
 Manage model credentials, GitHub access or your personal Armada session.
-  ls            List credential metadata. Use --presets for connection choices.
-  add           Store a credential kind or use --preset for a named connection.
+  ls            List credential metadata.
+  add           Store a credential kind.
   login codex   Authorize native Codex in your browser.
   import        Import native Claude or Codex credentials securely.
   default       Select a default model account by ID.
@@ -73,9 +73,8 @@ Example: armada account logout --help
   subcommandHelp: {
     "account login": nativeLoginHelp,
     "account login codex": nativeLoginHelp,
-    "account ls": `Usage: armada account ls [--org <name> | --presets] [--json]
+    "account ls": `Usage: armada account ls [--org <name>] [--json]
 List credential metadata after Armada login; secret values are never returned.
-Use --presets without --org to list built-in provider choices without signing in.
 Use --json to obtain account IDs for default and rm.
 Example: armada account ls --json
 `,
@@ -108,18 +107,14 @@ A successful check is not a full harness compatibility test. Failure exits 1.
 Example: armada account test SANDBOX_UUID --model deployment-name --json
 `,
     "account add": `Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
-       armada account add --preset <id> --name NAME [--org NAME] [--file PATH]
 Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
-List presets and their model requirements with armada account ls --presets --json.
-Presets with a custom address take --base-url and --models. Fixed addresses take --models
-only when required by the preset. Use --api-version only with a supported preset or OpenAI endpoint.
+OpenAI custom endpoints also accept --api-version where supported.
 Official Azure addresses make a tiny billable request per deployment before storing the account.
 Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
 Claude gateways take --base-url and optional --endpoint-auth bearer|api-key (default bearer).
 Custom endpoints accept --price-model, --price-input, --price-output and optional --price-cached-input
 in USD per million tokens. Re-enter prices when replacing a connection.
 Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
-Example: armada account add --preset morph --name shared --file /private/morph-key
 `,
     "account import": importHelp(),
     "account import claude": importHelp("claude"),
@@ -149,7 +144,7 @@ Example: armada account logout
   helpWhenBare: true,
   useSelectedOrg(argv) {
     const args = parseAccountArgs(argv);
-    return args.positionals[0] === "ls" && args.positionals.length === 1 && !args.options.has("--presets");
+    return args.positionals[0] === "ls" && args.positionals.length === 1;
   },
   async run(argv, { auth, deps }) {
     return accountCommand(argv, vaultIo(auth, deps));

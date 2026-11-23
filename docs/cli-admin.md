@@ -130,3 +130,43 @@ Redirect a private JSON file or pipe JSON on stdin for value-bearing requests.
 Secret responses contain only metadata. Variable reads return JSON with both
 `item` and `value`. After a version conflict, inspect current metadata before
 deciding whether to retry. See the [vault API and limits](vault-cli.md#control-api-and-limits).
+
+## MCP connections
+
+Send the organization UUID in `org` on every request. Use connection IDs from
+the list response except when inspecting a sandbox, which takes its sandbox ID.
+
+| Removed command | Replacement | Additional JSON body fields |
+| --- | --- | --- |
+| `mcp catalog` | `armada api mcp/catalog -` | None |
+| `mcp list` | `armada api mcp/list -` | None |
+| `mcp add` | `armada api mcp/create -` | Connection definition including `name` and `scope` (`personal` or `org`) |
+| `mcp update` | `armada api mcp/update -` | `id` and replacement definition with the existing scope |
+| `mcp rename` | `armada api mcp/metadata -` | `id`, `name` |
+| `mcp default` | `armada api mcp/metadata -` | `id`, boolean `defaultForLaunch` |
+| `mcp enable` / `mcp disable` | `armada api mcp/set-enabled -` | `id`, boolean `enabled` |
+| `mcp connect` | `armada api mcp/connect -` | `id` |
+| `mcp status` | `armada api mcp/status -` | `id` |
+| `mcp reconnect` | `armada api mcp/revoke -` then `armada api mcp/connect -` | Same `id` on both calls |
+| `mcp revoke` | `armada api mcp/revoke -` | `id` |
+| `mcp delete` | `armada api mcp/delete -` | `id` |
+| `mcp sandbox-connections` | `armada api mcp/sandbox-connections -` | Sandbox UUID in `id` |
+
+For a catalog service, supply `serviceId` in the create definition. For a
+public HTTP URL, supply `url`, `transport: "http"`, and `authType: "auto"`.
+Use the dashboard for browser authorization, or open the server's
+`authorizationUrl` when supplied and check `mcp/status` for completion.
+See [MCP registry](mcp-registry.md) for the definition and authorization flow.
+
+## Model-account presets
+
+| Removed command | Replacement |
+| --- | --- |
+| `account ls --presets` (formerly `creds list --presets`) | Browse the preset catalog in the dashboard's Models account form. Preset discovery used a bundled catalog and has no REST route. |
+| `account add --preset` | `armada api creds/accounts/set -` with an explicit account definition, or select the preset in the dashboard. |
+
+Submit `scope` (`user` or `org`), `org` for shared accounts, `kind`, `name`,
+`value`, and optional `maxAgents`. For example, a Morph definition uses
+`kind: "morph"` and the key as `value`. Custom endpoints use a serialized
+connection object as `value`. Use stdin for every body containing a key.
+See [named model accounts](named-model-credentials.md) for the API contract.

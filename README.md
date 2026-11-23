@@ -91,7 +91,7 @@ armada account ls
 ```
 
 Morph is another model-account option for Claude Code, Codex and OpenCode:
-`armada account add --preset morph --name shared --file /private/morph-key`.
+add it in Models in the dashboard or use the [account API](docs/cli-admin.md#model-account-presets).
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
 See [Morph accounts](docs/morph.md) for supported models and restrictions.
@@ -148,17 +148,15 @@ Fable (`claude-fable-5-2`) is not suggested in the shared catalogue: Boat is kno
 
 ## Bring your MCP servers
 
-Register an MCP server once, connect it (the browser opens when it asks for OAuth), then attach it to the sandboxes that need it. Replace `CONNECTION_ID` with the ID from `armada mcp list` and `SANDBOX_ID` with the ID printed by launch. Only connected servers can be attached, and tokens never go on the command line. For an ordinary cloud launch with a personal connection, use a private snapshot (named `private-web` below). An admin can register an organization-wide connection with `armada mcp add --scope org` using the same name and URL arguments.
+Register and authorize the connection in the dashboard. Use its connection ID
+at launch. A personal connection requires a private snapshot for this cloud launch.
 
 ```sh
-armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
-armada mcp list
-armada mcp connect CONNECTION_ID
 armada new private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
-armada mcp sandbox-connections SANDBOX_ID
+armada api mcp/sandbox-connections '{"id":"SANDBOX_ID","org":"ORG_UUID"}'
 ```
 
-Details: [docs/cli-capabilities-and-mcp-shortcuts.md](docs/cli-capabilities-and-mcp-shortcuts.md).
+See the [MCP administration routes](docs/cli-admin.md#mcp-connections).
 
 ## Drive Armada from your own agent
 

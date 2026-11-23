@@ -1,6 +1,4 @@
-# CLI capabilities and MCP URL creation
-
-These CLI additions use the same canonical Armada HTTP contracts as web. Server-side authorization, capacity and connection policy remain authoritative; consolidated cross-package/deployment acceptance is coordinator-owned.
+# CLI snapshot capabilities and MCP connections
 
 ## Snapshot capabilities
 
@@ -13,44 +11,20 @@ armada api golden/capabilities '{"provider":"modal","org":"ORG_UUID"}'
 
 This calls authenticated `POST /api/v1/golden/capabilities` with optional `provider` and `org`. Pass `org` in the request body when selecting an organization. The response is exactly `{provider,maxGoldens}` with `maxGoldens: number | null`. Null is unbounded/unknown, never zero or a locally assumed Boat limit.
 
-## Public/OAuth MCP URL shortcut
+## MCP connection definitions
+
+Create a public HTTP connection with automatic OAuth discovery:
 
 ```sh
-armada mcp add Docs https://mcp.example.com/mcp
-armada mcp add SharedDocs https://mcp.example.com/mcp --scope org --org "$ORG_UUID"
+armada api mcp/create '{"org":"ORG_UUID","name":"Docs","url":"https://mcp.example.com/mcp","scope":"personal","transport":"http","authType":"auto"}'
 ```
 
-`mcp add NAME URL` sends `POST /api/v1/mcp/create` with:
-
-```json
-{"org":"<selected-org-uuid>","name":"Docs","url":"https://mcp.example.com/mcp","scope":"personal","transport":"http","authType":"auto"}
-```
-
-Set `CONNECTION_UUID` to the `connection.id` returned when you add Docs, then connect it.
+For full definitions and write-only authentication values, redirect JSON on stdin:
 
 ```sh
-armada mcp connect "$CONNECTION_UUID"
+armada api mcp/create - < /private/connection.json
+armada api mcp/update - < /private/replacement.json
 ```
 
-Only `--scope personal|org` changes the shortcut's default scope. Explicit `--org` overrides persisted selection; a scope decision never replaces the server's membership/admin/grant checks. Creation returns the real connection metadata, not a connected claim. Use the existing connect command for discovery/browser consent and authenticated status polling; `--no-browser` and `--timeout` retain their existing behavior. Unconfigured backend/discovery failure must not become fake success.
-
-The shortcut is for public/OAuth endpoint URLs, not credentials. Obvious userinfo, secret-like query parameters and URL fragments are refused without echoing the URL. Endpoint/DNS/SSRF/discovery validation remains backend-owned. Never place bearer tokens, header values or credential-bearing URLs on argv: use a full JSON definition via stdin/file for write-only authentication instead.
-
-## Full definitions and immutable updates
-
-Pinned stdio, custom headers and advanced OAuth options still use the existing full definition contract:
-
-```sh
-armada mcp add --file definition.json --org "$ORG_UUID"
-cat definition.json | armada mcp add --org "$ORG_UUID"
-armada mcp update "$CONNECTION_UUID" --file replacement.json --org "$ORG_UUID"
-```
-
-A URL shortcut cannot also supply `--file` or nonempty stdin. Full JSON creation remains unchanged. Updates still pass the full replacement definition to the server; immutable scope/org/grant rules are not reimplemented or loosened in CLI. `--scope` is a URL-create shortcut flag, not an update override; put creation scope in a full create definition when using JSON. The CLI does not dump imported definitions or write-only values; it displays only the server's metadata response.
-
-`packages/cli/test/parity-shortcuts-api.test.ts` covers the actual command → authenticated canonical Request/body boundary, persisted preference reopen, explicit org override, nullable capacity, Modal failure/mismatch without fallback, URL defaults, file/stdin compatibility and ambiguous/credential-like input rejection. Existing connect/poll tests remain their behavior owner. This is source/contract evidence, not a deployed connection or capacity claim.
-
-The historical implementation validation for version 2.4.0 is not a current
-repository or deployment verdict. Verify changes with the repository's current
-lint/typecheck and targeted test commands; real connection/capacity acceptance
-remains coordinator-owned.
+Include the organization UUID in both bodies and the connection ID in the update.
+See the [MCP administration routes](cli-admin.md#mcp-connections) for authorization.
