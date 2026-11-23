@@ -226,8 +226,8 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`mcp-server/sandbox-access-child-launch.ts:1–216`](../packages/mcp-server/src/sandbox-access-child-launch.ts#L1-L216) | 216 | Native credential hooks on scoped child launch |
 | [`mcp-server/account-turn-queue.ts:1–553`](../packages/mcp-server/src/account-turn-queue.ts#L1-L553) | 553 | Native versus enrolled queue lane, native prompt mapping and settlement. Keep capacity accounting |
 | [`mcp-server/turns.ts:1–601`](../packages/mcp-server/src/turns.ts#L1-L601) | 601 | Native usage projection, collection and fallback. Keep merged history and shared usage |
-| [`provider-modal/artifact.ts:1–18`](../packages/provider-modal/src/artifact.ts#L1-L18) | 18 | Runner artifact loader. Trace consumers before removing build/package inputs |
-| [`provider-modal/embedded.ts:1–11`](../packages/provider-modal/src/embedded.ts#L1-L11) | 11 | Embedded runner loader. Trace consumers before removing build/package inputs |
+| `provider-modal/artifact.ts:1–18` | 18 | Runner artifact loader. Trace consumers before removing build/package inputs |
+| `provider-modal/embedded.ts:1–11` | 11 | Embedded runner loader. Trace consumers before removing build/package inputs |
 | [`provider-modal/ports.ts:1–220`](../packages/provider-modal/src/ports.ts#L1-L220) | 220 | Native runner transport, distribution and ingest ports. Retain host and storage contracts |
 | [`mcp-server/tools.ts:1809–1917`](../packages/mcp-server/src/tools.ts#L1809-L1917) | 109 | Ordinary native send, wake, credential preparation and prompt receipt |
 | [`mcp-server/boat-delegated-access-provider.ts:1–119`](../packages/mcp-server/src/boat-delegated-access-provider.ts#L1-L119) | 119 | Boat-specific delegated generation provider |

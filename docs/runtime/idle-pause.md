@@ -122,17 +122,16 @@ Existing explicit unsealed manual stop/resume remains available.
 
 No Docker, Modal or Boat staging success is claimed by unit tests. Run the
 coordinator procedure in #1562 and retain provider compute/recall evidence.
-Native Boat/native Modal are handled by the leased native lifecycle path described below, not by this enrolled-runtime worker.
+The leased lifecycle path below handles native Boat.
 
 
-## Native Boat / native Modal
+## Native Boat
 
 The existing generation-fenced lifecycle worker also detects idle native
 sandboxes using the same global delay. It requires a bound model account, no
 application-secret taint, no unresolved activity lease, a terminal current
 prompt and its terminal event in the bounded newest 200 events. Boat must
-report every conversation inactive; Modal must report quiescence for its exact
-physical generation with a synchronized event watermark. Missing/unknown ports,
+report every conversation inactive. Missing/unknown ports,
 active turns, missing history and unbound legacy workers stay live until the
 ordinary TTL policy or explicit owner action resolves them.
 
@@ -159,16 +158,6 @@ keeps Armada's logical expiry fixed and its existing expiry cleanup in force.
 These are deterministic code-level checks, not staging evidence. The coordinator
 must still observe actual native/provider shutdown and same-conversation recall
 on staging. The deployed setting override has not been inspected here.
-
-Once native Modal has durably entered checkpoint/snapshot/terminate, its own
-stop reconciler owns the transition. Idle retries do not run active-only
-observation or Git recapture against that fenced incarnation; they delegate
-the existing stop reconciliation with a retention-required policy. Automatic idle
-must not use ordinary stop's compute-only failure fallback: failed checkpoint
-or unknown snapshot outcomes retain the source and refuse destructive cleanup,
-never blindly retry snapshot/create. Explicit and TTL cleanup keep their
-existing default policy. A provider-reported lost workspace is failed, not
-advertised as a resumable paused sandbox.
 
 ## Read the effective deployed delay
 

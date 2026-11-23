@@ -93,12 +93,7 @@ export function createPhysicalLifecycle(deps: {
       });
     }
   }
-  async function create(
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    _env: Readonly<Record<string, string>>,
-    onResumeStage?: ResumeStageObserver,
-  ) {
+  async function create(row: Machine, save: (row: Machine) => Promise<void>, onResumeStage?: ResumeStageObserver) {
     const app = await bound();
     let sb: Sandbox;
     if (row.phase === "creating") {

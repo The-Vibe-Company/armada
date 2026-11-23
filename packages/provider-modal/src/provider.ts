@@ -44,6 +44,7 @@ export interface ModalProviderOptions extends ModalConnection {
   deploymentId?: string;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
   storedReads?: boolean;
+  admissionSleep?(milliseconds: number): Promise<void>;
   cleanupSleep?(milliseconds: number): Promise<void>;
   detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
@@ -171,8 +172,17 @@ export function createModalProvider(options: ModalProviderOptions) {
     cleanupSleep: options.cleanupSleep,
   });
   async function assertActive(row: Machine) {
+    assertMachineSource(row);
     if (row.phase !== "active" || (row.golden && row.quiesced) || (await (await physical(row)).poll()) !== null)
       throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
+  }
+  function pendingGoldenRestore(row: Machine) {
+    return row.golden && row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase);
+  }
+  async function readyLeased(row: Machine, save: (row: Machine) => Promise<void>) {
+    assertMachineSource(row);
+    if (pendingGoldenRestore(row) && !row.quiesced) await create(row, save);
+    await assertActive(row);
   }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
@@ -349,7 +359,7 @@ export function createModalProvider(options: ModalProviderOptions) {
           if (["reserved", "creating", "booting"].includes(row.phase)) {
             if (!same || row.goldenRestore?.generation !== row.generation)
               throw refusal("conflict", "Another golden restore is in progress.");
-            return create(row, save, {});
+            return create(row, save);
           }
           if (row.phase !== "restoring") {
             if (!["deleted", "stopped"].includes(row.phase) && !(row.phase === "checkpoint" && row.quiesced))
@@ -392,7 +402,7 @@ export function createModalProvider(options: ModalProviderOptions) {
           row.physicalName = `armada-${createHash("sha256").update(row.info.id).digest("hex").slice(0, 32)}-${row.generation}`;
           row.phase = "reserved";
           await save(row);
-          return create(row, save, {});
+          return create(row, save);
         });
       } catch (error) {
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
@@ -403,13 +413,25 @@ export function createModalProvider(options: ModalProviderOptions) {
       request.signal?.throwIfAborted();
       if (request.onlyIfRunning || request.expectedPhysicalGeneration !== undefined)
         throw refusal("invalid_request", "Generation-fenced workspace commands require the common transport.");
-      await bound();
-      return store.lease(request.sandboxId, async (row) => {
-        if (!row.golden) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
-        await assertActive(row);
-        request.signal?.throwIfAborted();
-        return executeGoldenCommand(await physical(row), request);
-      });
+      const target = await store.get(request.sandboxId);
+      if (!target.golden) return requiresRuntime();
+      for (let attempt = 0; ; attempt++) {
+        let entered = false;
+        try {
+          return await store.lease(request.sandboxId, async (row, save) => {
+            entered = true;
+            if (!row.golden) throw refusal("conflict", "Sandbox role changed during golden exec admission.");
+            request.signal?.throwIfAborted();
+            await readyLeased(row, save);
+            request.signal?.throwIfAborted();
+            return executeGoldenCommand(await physical(row), request);
+          });
+        } catch (error) {
+          if (entered || modalError(error).providerCode !== "lifecycle_lease_busy" || attempt >= 99) throw error;
+          if ((await store.get(request.sandboxId)).phase !== "active") throw error;
+          await (options.admissionSleep ?? Bun.sleep)(20);
+        }
+      }
     },
     ...createSnapshotLifecycle({
       store,
@@ -488,8 +510,13 @@ export function createModalProvider(options: ModalProviderOptions) {
     },
     delete: deleteSandbox,
     async sshKey({ sandboxId, key }) {
-      const row = await store.get(sandboxId);
-      await assertActive(row);
+      let row = await store.get(sandboxId);
+      if (pendingGoldenRestore(row)) {
+        row = await store.lease(sandboxId, async (current, save) => {
+          await readyLeased(current, save);
+          return current;
+        });
+      } else await assertActive(row);
       return store.lease(sandboxId, async (current) => {
         if (current.phase !== "active" || current.generation !== row.generation)
           throw refusal("sandbox_not_ready", "SSH lifecycle changed.");

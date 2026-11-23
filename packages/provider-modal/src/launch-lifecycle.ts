@@ -108,7 +108,7 @@ export function createLaunchLifecycle({
       return await store.lease(row.info.id, async (current, save) => {
         observed = current;
         if (!needsBoot(current)) return sandboxInfo(current);
-        return create(current, save, "env" in request ? (request.env ?? {}) : {});
+        return create(current, save);
       });
     } catch (error) {
       if (

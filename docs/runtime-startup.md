@@ -6,7 +6,7 @@ configuration. Codex uses app-server; Claude uses the Agent SDK;
 the shared Boat runtime. The enrolled dial-out path selects the admitted
 Claude Code, Codex or OpenCode harness. [Boat runtime](boat-runtime-first-prompt.md) is
 experimental and default off; [Docker placement](docker-host-daemon.md) supports normal host-bound launches
-and retained lifecycle controls behind its server opt-ins. Modal retains its existing bootstrap/listener/authenticated tunnel.
+and retained lifecycle controls behind its server opt-ins. Modal uses SDK exec to bootstrap the enrolled dial-out runtime.
 Neither a successful build nor a synthetic protocol check proves real-provider
 lifecycle acceptance.
 
@@ -22,7 +22,7 @@ bun packages/agent-runtime/build-compiled.ts
 selected Codex archive. The manifest pins versions, architecture, byte counts,
 SHA256 and the harness's complete regular-file inventory, including executable
 bits. Codex resources retain their native layout. Credentials are never embedded.
-The separate `build.ts`/native validation path still serves Modal.
+The separate `build.ts` path builds the bundle used by release validation.
 
 The normal server Docker build runs `scripts/publish-runtime-artifacts.ts` and
 publishes only x64 plus pinned harness/OpenCode bytes. The requestable architecture

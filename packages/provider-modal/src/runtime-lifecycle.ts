@@ -205,7 +205,7 @@ export function createRuntimeLifecycle({
           )
             throw refusal("conflict", "Common resume belongs to another activation.");
           signal?.throwIfAborted();
-          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {}, onResumeStage);
+          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, onResumeStage);
           if (row.phase === "active") {
             const sb = await physical(row);
             const { phase } = await observeModalCompute(

@@ -111,7 +111,11 @@ function createFixtureSql(getDatabase: typeof getDb) {
   return sql;
 }
 const fixtureSql = createFixtureSql(getDb);
-function fixture(accessScope: Scope = scope, sql: Sql = fixtureSql) {
+function fixture(
+  accessScope: Scope = scope,
+  sql: Sql = fixtureSql,
+  admissionSleep?: (milliseconds: number) => Promise<void>,
+) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
@@ -281,6 +285,7 @@ function fixture(accessScope: Scope = scope, sql: Sql = fixtureSql) {
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
   const { provider, captureRuntimeWork, readResourceReceipts } = createModalProvider({
+    ...(admissionSleep ? { admissionSleep } : {}),
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
@@ -2164,6 +2169,32 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     connection.close();
     outsider.close();
+  });
+  test("golden exec waits for a competing active builder lease", async () => {
+    const delays: number[] = [];
+    const f = fixture(scope, fixtureSql, async (milliseconds) => {
+      delays.push(milliseconds);
+      release.resolve();
+      await holder;
+    });
+    const builder = await f.seedMachine(goldenTemplate);
+    const acquired = deferred();
+    const release = deferred();
+    const holder = f.store.lease(builder.id, async () => {
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    try {
+      await expect(f.provider.exec({ sandboxId: builder.id, command: "root scanner" })).resolves.toMatchObject({
+        exitCode: 0,
+      });
+      expect(delays).toEqual([20]);
+      expect(f.log).toContain("root-exec");
+    } finally {
+      release.resolve();
+      await holder;
+    }
   });
   test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
     const f = fixture();
