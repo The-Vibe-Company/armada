@@ -167,6 +167,8 @@ export function httpApi(
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
 } {
+  let stopIdentitySupported = false;
+
   async function post(
     server: string,
     endpoint: string,
@@ -286,6 +288,7 @@ export function httpApi(
       async function poll(body: DockerHostPollRequest, timeoutMs?: number) {
         let retainedStopProof = false;
         const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs, undefined, (response) => {
+          stopIdentitySupported = response.headers.get("x-armada-docker-stop-identity") === "1";
           retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
         })) as DockerHostPollResponse;
         if (
@@ -392,7 +395,9 @@ export function httpApi(
       const machineId =
         !expired &&
         receipt.outcome === "completed" &&
-        (receipt.operation === "create" || receipt.operation === "restore")
+        (receipt.operation === "create" ||
+          receipt.operation === "restore" ||
+          (receipt.operation === "stop" && stopIdentitySupported))
           ? receipt.machineId
           : undefined;
       const body: DockerHostResultRequest & { retained?: true } = {

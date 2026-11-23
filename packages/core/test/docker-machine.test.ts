@@ -186,6 +186,17 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
+  test("stop returns the exact retained container ID and is a no-op on replay", async () => {
+    const f = fixture();
+    expect(await f.executor.stop(request)).toBeUndefined();
+    const { machineId } = await f.executor.create(request);
+    expect(await f.executor.stop(request)).toEqual({ machineId });
+    expect(await f.executor.stop(request)).toEqual({ machineId });
+    expect(f.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "stop").map(({ argv }) => argv)).toEqual(
+      [["container", "stop", "--time", "10", machineId]],
+    );
+  });
+
   test.each(["update", "start"])(
     "allocation cannot %s a different container that takes the verified name",
     async (action) => {
