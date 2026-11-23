@@ -5,6 +5,8 @@ export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
   drain(): Promise<void>;
   stopAdmission?(): void;
+  /** The shared jobs lane keeps its claim ticks independent of legacy reconciliation. */
+  independentJobs?: true;
   /** Isolated sweeps can bound provider calls individually and run until shutdown. */
   isolatedSweep?: true;
 }
@@ -15,7 +17,12 @@ export function startServerWorkers(
   isolated: readonly ServerLifecycleLane[] = [],
 ) {
   const shutdown = new AbortController();
-  async function runLanes(group: readonly ServerLifecycleLane[], timebox = true, wakes = false) {
+  async function runLanes(
+    group: readonly ServerLifecycleLane[],
+    timebox = true,
+    wakes = false,
+    admissionWakes = false,
+  ) {
     const wake = wakes ? runtimeWakes.watch(JOBS_WAKE) : undefined;
     let nextLane = 0;
     let nextAdmissionWake = 0;
@@ -41,7 +48,7 @@ export function startServerWorkers(
         log("armada: sandbox lifecycle tick unavailable; durable leases remain fenced.");
       } finally {
         clearTimeout(timeout);
-        if (wake && performance.now() >= nextAdmissionWake) {
+        if (admissionWakes && performance.now() >= nextAdmissionWake) {
           nextAdmissionWake = performance.now() + 1000;
           runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
         }
@@ -50,11 +57,14 @@ export function startServerWorkers(
       else await waitForTimeout(1000, shutdown.signal);
     }
     wake?.close();
-    // SDKs may not support cancellation after a request has reached the provider. Keep
-    // those operations tracked through shutdown; cancellation forbids subsequent actions.
     await Promise.all(group.map((lane) => lane.drain()));
   }
-  const lifecycleDone = runLanes(lanes, true, true);
+  const managed = lanes.filter((lane) => !lane.independentJobs);
+  const jobs = lanes.filter((lane) => lane.independentJobs);
+  const lifecycleDone = Promise.all([
+    runLanes(managed, true, true, true),
+    ...jobs.map((lane) => runLanes([lane], true, true)),
+  ]).then(() => {});
   const isolatedDone = Promise.all(isolated.map((lane) => runLanes([lane], !lane.isolatedSweep)));
   const done = Promise.all([lifecycleDone, isolatedDone]).then(() => {});
   return {

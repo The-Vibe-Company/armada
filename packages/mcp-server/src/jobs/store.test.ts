@@ -4019,6 +4019,52 @@ test("a generation change before turn admission retargets the job without chargi
   expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
 });
 
+test("the legacy dispatch sweep settles only queued jobs whose matching receipt is no longer live", async () => {
+  const f = await fixture();
+  const sandboxId = await sandbox(f);
+  const enqueue = async (receipt: "queued" | "dispatching" | "failed" | "missing", leased = false) => {
+    const requestId = crypto.randomUUID();
+    if (receipt !== "missing") {
+      await seedTurn(f, sandboxId, requestId);
+      await f.db.query("update account_turn_queue set state=$1 where request_id=$2", [receipt, requestId]);
+    }
+    const id = await f.store.enqueue(
+      "turn_dispatch",
+      sandboxId,
+      2,
+      requestId,
+      { requestId },
+      {
+        orgId: f.people.org,
+        maxAttempts: 2,
+      },
+    );
+    if (leased) {
+      await f.db.query("update jobs set state='leased', lease_owner=$2, lease_until='infinity' where id=$1", [
+        id,
+        crypto.randomUUID(),
+      ]);
+    }
+    return id;
+  };
+  const queued = await enqueue("queued");
+  const dispatching = await enqueue("dispatching");
+  const failed = await enqueue("failed");
+  const missing = await enqueue("missing");
+  const leased = await enqueue("missing", true);
+  await f.db.query("update jobs set generation=3 where id=$1", [dispatching]);
+
+  await f.store.settleTurnDispatchMirrors();
+  const { rows } = await f.db.query<{ id: string; state: string }>("select id,state from jobs");
+  expect(Object.fromEntries(rows.map(({ id, state }) => [id, state]))).toEqual({
+    [queued]: "queued",
+    [dispatching]: "queued",
+    [failed]: "done",
+    [missing]: "done",
+    [leased]: "leased",
+  });
+});
+
 test.each([
   "queued",
   "native evidence",

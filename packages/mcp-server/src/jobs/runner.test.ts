@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createGoldenBuildJob } from "../golden-worker.ts";
 import { retentionMaintenanceJob } from "../retention-maintenance.ts";
+import { startServerWorkers } from "../server-workers.ts";
 import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
 function fixture(kind = "stop", dispatchBudgetMs?: number) {
@@ -107,6 +108,29 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
 }
 
 const tick = new AbortController().signal;
+
+test("the jobs lane admits two due initial turns while a sibling lane and the first turn are in flight", async () => {
+  const f = fixture("launch_initial_turn");
+  const releaseFirst = Promise.withResolvers<void>();
+  const releaseSibling = Promise.withResolvers<boolean>();
+  const started: string[] = [];
+  const runner = f.runner(async (job) => {
+    started.push(job.id);
+    if (job.id === "one") await releaseFirst.promise;
+    return { status: "done" };
+  }, 2);
+  const workers = startServerWorkers([runner, { reconcileOne: () => releaseSibling.promise, async drain() {} }]);
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(started).toEqual(["one", "two"]);
+    expect(f.completed).not.toContain("one");
+  } finally {
+    workers.stop();
+    releaseFirst.resolve();
+    releaseSibling.resolve(false);
+    await workers.done;
+  }
+});
 
 test("an exhausted stop job still reaches its handler for recovery", async () => {
   const f = fixture();

@@ -512,6 +512,24 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       if (!existingRows[0]) throw new ConflictingJobRequest();
       return existingRows[0].id;
     },
+    async settleTurnDispatchMirrors() {
+      await sql.query(
+        `with settled as (
+           select j.id from public.jobs j
+           where j.kind='turn_dispatch' and j.state='queued'
+             and not exists (
+               select 1 from public.account_turn_queue q
+               where q.sandbox_id=j.sandbox_id and q.org_id=j.org_id
+                 and q.state in ('queued','dispatching')
+                 and j.idem_key=format('["internal","%s","turn_dispatch","%s",%s,"%s"]',
+                   q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
+             )
+           order by j.run_after,j.id limit 32 for update of j skip locked
+         )
+         update public.jobs j set state='done'
+         from settled where j.id=settled.id`,
+      );
+    },
     async claim(kind, owner, seconds, concurrency) {
       const claimStartedAt = performance.now();
       const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
