@@ -317,7 +317,10 @@ export class CodexDriver implements Driver {
           if (delta) {
             if (
               typeof m.params.turnId === "string" &&
-              Object.values(delta).some((value) => typeof value === "number" && value > 0)
+              (delta.inputTokens !== 0 ||
+                delta.outputTokens !== 0 ||
+                delta.cachedTokens !== 0 ||
+                Object.values(delta).some((value) => typeof value === "number" && value > 0))
             )
               usageTurnIds.add(m.params.turnId);
             usage.latest = delta;
@@ -627,7 +630,7 @@ export class CodexDriver implements Driver {
           if (result.turn.status === "completed" && !result.turn.error) {
             if (c.sessionId && threadId !== c.sessionId) {
               recovering = true;
-              const { thread } = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: false });
+              const { thread } = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: true });
               const rollout = thread?.id === threadId && thread.path ? await stat(thread.path).catch(() => null) : null;
               if (!rollout?.isFile() || !rollout.size) throw new HarnessError("session_restore_failed");
               c.session(threadId, c.sessionId);
