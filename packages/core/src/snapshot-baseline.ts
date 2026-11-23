@@ -33,7 +33,7 @@ const packages = [
 
 const installFailure = "ARMADA_BASELINE_INSTALL_FAILED";
 
-function installSteps(apt: string): readonly (readonly [string, string])[] {
+function installSteps(apt: string) {
   return [
     ["apt-get update", "apt-get update"],
     ["apt-get install", `apt-get install -y --no-install-recommends ${apt}`],
@@ -71,7 +71,7 @@ function installSteps(apt: string): readonly (readonly [string, string])[] {
       "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
     ],
     ["rm (apt lists)", "rm -rf /var/lib/apt/lists/*"],
-  ];
+  ] satisfies [string, string][];
 }
 
 export function snapshotBaselineInstall(
@@ -93,7 +93,7 @@ export function snapshotBaselineInstall(
   ].join("; ");
 }
 
-export function snapshotBaselineInstallFailure(result: ExecResult): string {
+export function snapshotBaselineInstallFailure(result: ExecResult) {
   if (result.detached) return "Snapshot baseline installation returned a detached command.";
   if (result.timedOut) return "Snapshot baseline installation timed out.";
   const steps = installSteps("").map(([step]) => step);
