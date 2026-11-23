@@ -69,5 +69,5 @@ test("collects Modal parent setup failures before any scoped tool call", () => {
     { event: "operator_failure", phase, sandboxId: unrelatedId },
   ]);
   expect(scopedEvidenceFilter(smoke)).toBe(`@event:operator_failure AND (@sandboxId:${parentId})`);
-  expect(scopedEvidence(smoke, logs)).toMatchObject({ diagnostics: [{ phase, sandboxId: parentId }] });
+  expect(scopedEvidence(smoke, logs).diagnostics).toEqual([{ phase, sandboxId: parentId }]);
 });
