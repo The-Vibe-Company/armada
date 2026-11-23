@@ -466,7 +466,7 @@ export function parseOutputFiles(values: unknown): OutputFile[] {
 }
 
 /** Server-side admission of any provider's read: names and bounds are enforced here, not trusted. */
-export function admitOutputs(files: readonly OutputFile[]): OutputFile[] {
+export function admitOutputs(files: readonly OutputFile[]) {
   if (files.length > OUTPUT_MAX_FILES) throw Error("output_limit");
   const names = new Set<string>();
   let total = 0;

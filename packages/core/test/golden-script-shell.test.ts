@@ -468,7 +468,6 @@ chmod +x "$4/bin/bun"
       { mode: 0o755 },
     );
     if (mode === "preinstalled" || mode === "writable-parent") {
-      // Modal's managed image: the protected Bun is already at the pin, so nothing is installed.
       mkdirSync(join(opt, "runtime-bun"), { recursive: true });
       if (mode === "writable-parent") chmodSync(opt, 0o775);
       writeFileSync(
