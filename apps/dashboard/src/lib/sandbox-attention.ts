@@ -27,9 +27,11 @@ export type TurnSummary = {
   promptId?: string | null;
   /** The latest prompt as sent, for a one-click resend; null when it is too long to carry or has no text. */
   prompt?: string | null;
+  /** Whether the latest prompt has a completed assistant message with visible text. */
+  hasFinalReply?: boolean;
 };
 
-export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string) {
+export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string): TurnSummary {
   const { items, running } = projectChat(
     currentConversation
       ? events.filter((event) => !event.conversationId || event.conversationId === currentConversation)
@@ -39,6 +41,7 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
   let reason: string | null = null;
   let promptId: string | null = null;
   let prompt: TurnSummary["prompt"] = null;
+  let hasFinalReply = false;
   for (const item of items) {
     if (item.kind === "user") {
       status = item.status;
@@ -46,6 +49,14 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
       promptId = item.promptId ?? null;
       const text = item.text.trim();
       prompt = text && text.length <= RESEND_MAX_CHARS ? text : null;
+      hasFinalReply = false;
+    } else if (
+      item.kind === "assistant" &&
+      !item.streaming &&
+      item.text.trim() &&
+      (item.promptId ?? null) === promptId
+    ) {
+      hasFinalReply = true;
     }
   }
   if (running) {
@@ -57,6 +68,7 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
     reason,
     promptId,
     prompt,
+    hasFinalReply,
   };
 }
 
@@ -193,8 +205,8 @@ export type Attention = "ready" | "blocked" | "failed" | "interrupted" | "unconc
  * - ready, blocked: the agent reported it (#742), on a live or a stopped machine;
  * - failed: a real failure, the latest state of its sandbox ({@link attentionState});
  * - interrupted: a turn cut short that the same prompt resumes, on a live machine;
- * - unconcluded: a live agent whose turn finished without an outcome, or a sandbox stopped mid-turn whose unpushed
- *   work was preserved;
+ * - unconcluded: a live agent whose turn finished without an outcome or a final reply, or a sandbox stopped mid-turn
+ *   whose unpushed work was preserved;
  * - expiring: a live agent still at work whose deadline is under {@link EXPIRY_WARNING_SECONDS}.
  */
 export function attentionOf(
@@ -216,7 +228,7 @@ export function attentionOf(
       if (isActiveStatus(status)) return "interrupted";
       return preservation?.kind === "preserved" ? "unconcluded" : null;
     case "finished":
-      return "unconcluded";
+      return turn?.hasFinalReply ? null : "unconcluded";
     case "stopped": {
       // Unread events cannot show the turn concluded: preserved work then still needs a look.
       const midTurn = turn === null || (turn.status !== "finished" && turn.status !== null);
