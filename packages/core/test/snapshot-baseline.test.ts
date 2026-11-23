@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { snapshotBaselineInstallFailure } from "../src/snapshot-baseline.ts";
+import { snapshotBaselineInstall, snapshotBaselineInstallFailure } from "../src/snapshot-baseline.ts";
 
 test("a baseline failure cannot expose an unrecognized command from the provider", () => {
   expect(
@@ -30,4 +30,8 @@ test("baseline provisioning reports the protected path component it refused", ()
   ).toBe(
     "Snapshot baseline installation failed: install (Bun directory) exited 86. Failed check: /opt/armada is a symlink.",
   );
+});
+
+test("the image baseline fits on a single Dockerfile RUN instruction", () => {
+  expect(snapshotBaselineInstall()).not.toContain("\n");
 });

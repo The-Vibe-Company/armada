@@ -34,6 +34,9 @@ const packages = [
 
 const installFailure = "ARMADA_BASELINE_INSTALL_FAILED";
 
+const managedBunProvisionLines = [...MANAGED_BUN_PROVISION.split("\n"), "provision_managed_bun_dirs"].map(shellQuote);
+const provisionManagedBun = `/bin/sh -c "$(printf '%s\\n' ${managedBunProvisionLines.join(" ")})"`;
+
 function installSteps(apt: string, reportStep = false) {
   return [
     ["apt-get update", "apt-get update"],
@@ -53,8 +56,7 @@ function installSteps(apt: string, reportStep = false) {
     ["tar (Node archive)", "tar -xJf node.tar.xz --strip-components=1 -C /usr/local"],
     ["npm install (Bun)", `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}`],
     ["npm cache clean", "npm cache clean --force"],
-    [null, MANAGED_BUN_PROVISION],
-    ["install (Bun directory)", "provision_managed_bun_dirs"],
+    ["install (Bun directory)", provisionManagedBun],
     [
       "install (Bun executable)",
       `/usr/bin/install -o root -g root -m 555 -T /usr/local/lib/node_modules/bun/bin/bun.exe ${MANAGED_BUN}`,
