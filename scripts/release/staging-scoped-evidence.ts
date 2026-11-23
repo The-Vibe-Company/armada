@@ -28,7 +28,6 @@ function correlationKeys(smoke: string) {
       if (
         record.step === "scoped_cleanup_summary" &&
         failedSetupCases.delete(record.case) &&
-        record.provider === "modal" &&
         typeof record.parentId === "string" &&
         uuid.test(record.parentId)
       )
