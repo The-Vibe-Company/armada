@@ -449,7 +449,7 @@ async function machineStopFixture() {
   return { ...a, machine: { sandboxId: a.sandboxId, generation: a.request.generation, machineId } };
 }
 
-test.each(["revocation", "physical removal"] as const)(
+test.each(["revocation", "physical removal", "failed physical removal"] as const)(
   "Machine stop recovers on takeover and fences %s",
   async (fence) => {
     const a = await machineStopFixture();
@@ -523,7 +523,10 @@ test.each(["revocation", "physical removal"] as const)(
         machineId: a.machine.machineId,
         lifecycleGeneration: a.machine.generation,
       });
-      await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+      await store.complete(a.hostToken, a.installationId, {
+        requestId,
+        outcome: fence === "failed physical removal" ? "failed" : "completed",
+      });
     }
     expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
   },

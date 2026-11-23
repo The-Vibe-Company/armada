@@ -353,7 +353,7 @@ export async function runJobs(
   const running = new Map<string, Promise<void>>();
   const live = { running: new Set<string>(), sandboxes: new Set<string>(), snapshots: new Set<string>() };
   let finished = 0;
-  const deferUncertain = new Set<string>();
+  const deferUncertain = new Map<string, boolean>();
   const restoreConflicts = new Map<string, string>();
   const settled = () => Promise.race(running.values());
   try {
@@ -364,12 +364,14 @@ export async function runJobs(
         continue;
       }
       const finishedBefore = finished;
+      const excluded = new Set(deferUncertain.keys());
+      for (const [id, isCleanup] of deferUncertain) if (!isCleanup) deferUncertain.delete(id);
       let outcome: TickOutcome;
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
-          deferUncertain: new Set(deferUncertain),
+          deferUncertain: excluded,
           restoreConflicts,
           dispatch(job, work) {
             const done = work
@@ -378,7 +380,7 @@ export async function runJobs(
                   isUncertainDockerFailure(job.operation, error) &&
                   deferUncertain.size < MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS
                 )
-                  deferUncertain.add(job.requestId);
+                  deferUncertain.set(job.requestId, job.operation !== "restore");
                 loop.failed?.("job");
               })
               .finally(() => {

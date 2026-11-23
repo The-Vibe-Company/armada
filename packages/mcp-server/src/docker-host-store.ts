@@ -756,17 +756,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return (await bindings.lookup({ sandboxId: row.id, generation: Number(row.lifecycle_generation) })) === requestId;
   }
 
-  async function machineCleanupBinding(tx: Sql, row: Sandbox) {
-    return (
+  async function currentMachineCleanup(tx: Sql, row: Sandbox) {
+    const generation = (
       await tx.query<{ machine_generation: string }>(
         `select machine_generation::text from public.docker_machine_bindings
          where sandbox_id=$1 and host_id=$2 and installation_id=$3 and daemon_generation=$4`,
         [row.id, row.docker_host_id, row.docker_installation_id, row.docker_generation],
       )
     ).rows[0]?.machine_generation;
-  }
-  async function currentMachineCleanup(tx: Sql, row: Sandbox) {
-    const generation = await machineCleanupBinding(tx, row);
     if (!generation) return undefined;
     const current = BigInt(row.lifecycle_generation);
     if (
@@ -776,7 +773,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return generation;
     return undefined;
   }
-
   async function allocationReceipt(tx: Sql, row: Sandbox) {
     return (
       await tx.query<{ result_machine_id: string | null }>(
@@ -787,7 +783,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
     ).rows[0]?.result_machine_id;
   }
-
   async function machineCleanupReceipt(tx: Sql, row: Sandbox, operation: MachineCleanupOperation) {
     const receipt = (
       await tx.query<StoredJob>(
@@ -803,11 +798,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
     await requireCurrentMachine(tx, row, delivered.job);
     return { ...receipt, retain: delivered.machineRetain };
   }
-
-  async function physicalRemovalPendingOrCompleted(tx: Sql, row: Sandbox, machineId: string) {
+  async function hasPhysicalRemovalIntent(tx: Sql, row: Sandbox, machineId: string) {
     const { rows } = await tx.query<StoredJob>(
       `select * from public.docker_host_jobs where host_id=$1 and bound_sandbox_id=$2
-       and bound_operation='deletePhysical' and outcome is distinct from 'failed' and cancelled_at is null`,
+       and bound_operation='deletePhysical'`,
       [row.docker_host_id, row.id],
     );
     for (const receipt of rows) {
@@ -821,13 +815,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
     }
     return false;
   }
-
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
     const frozen = await machine(tx, logical, "stop");
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(
@@ -1584,7 +1576,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               stopped.retain !== true ||
               stopped.cancelled_at ||
               stopped.result_machine_id !== machineId ||
-              (await physicalRemovalPendingOrCompleted(tx, row, machineId))
+              (await hasPhysicalRemovalIntent(tx, row, machineId))
             )
               return unknown;
             const machine = { sandboxId: request.sandboxId, generation: request.generation, machineId };
@@ -1625,7 +1617,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               if (
                 host.revoked ||
                 stopped.result_machine_id !== machineId ||
-                (await physicalRemovalPendingOrCompleted(tx, row, machineId))
+                (await hasPhysicalRemovalIntent(tx, row, machineId))
               )
                 return undefined;
               return { sandboxId, generation, kind: "container" as const, ref: machineId };
