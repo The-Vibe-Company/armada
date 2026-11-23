@@ -15,9 +15,6 @@ import {
 import { PrivateMcpFile } from "./mcp-file.ts";
 import { ModelRateLimitWait } from "./model-rate-limit.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
-
-const armadaSandboxSettings = { sandbox: { enabled: false } };
-
 /** Each query owns its process and input stream; no global interrupt. */
 export class ClaudeDriver implements Driver {
   private children = new ChildOwner();
@@ -52,7 +49,6 @@ export class ClaudeDriver implements Driver {
         resume: c.sessionId,
         model: c.request.model,
         settingSources: [],
-        settings: armadaSandboxSettings,
         strictMcpConfig: true,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -164,7 +160,7 @@ export class ClaudeDriver implements Driver {
       strictMcpConfig: true,
       settingSources: [],
       persistSession: true,
-      settings: { ...armadaSandboxSettings, ...(c.request.fast ? { fastMode: true } : {}) },
+      ...(c.request.fast ? { settings: { fastMode: true } } : {}),
       model: c.request.model ?? "claude-opus-5-5",
       effort: effort as NonNullable<Options["effort"]>,
       ...(c.sessionId ? { resume: c.sessionId } : {}),

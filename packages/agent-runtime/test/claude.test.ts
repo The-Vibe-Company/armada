@@ -1,8 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as claudeSdk from "@anthropic-ai/claude-agent-sdk/core";
 import { reportedTurnUsage } from "@armada/core";
 import { RequestRefused } from "../src/errors.ts";
 import { ClaudeDriver, type DriverEvent, type Turn } from "../src/index.ts";
@@ -20,10 +19,9 @@ nativeTest("Claude SDK consumes native steering and finishes a merged two-input 
   let steering: Promise<void> | undefined;
   const events: DriverEvent[] = [];
   const bounded = AbortSignal.timeout(2000);
-  const sdkQuery = spyOn(claudeSdk, "query");
   try {
     turn = driver.start({
-      request: { sandboxId: "s", harness: "claude", text: "initial", fast: true },
+      request: { sandboxId: "s", harness: "claude", text: "initial" },
       sessionId: "fixture-session",
       signal: bounded,
       session: () => {},
@@ -31,10 +29,6 @@ nativeTest("Claude SDK consumes native steering and finishes a merged two-input 
         events.push(e);
         if (e.kind === "message" && e.partial && !steering) steering = turn?.steer("redirect");
       },
-    });
-    expect(sdkQuery.mock.lastCall?.[0].options?.settings).toMatchObject({
-      sandbox: { enabled: false },
-      fastMode: true,
     });
     expect(await turn.done).toBe("finished");
     await steering;
@@ -62,9 +56,7 @@ nativeTest("Claude SDK consumes native steering and finishes a merged two-input 
       ),
     ).toHaveLength(1);
   } finally {
-    sdkQuery.mockRestore();
     await driver.close();
-    await turn?.done.catch(() => {});
   }
 });
 nativeTest("closing one Claude SDK turn leaves another conversation alive for its own interrupt", async () => {

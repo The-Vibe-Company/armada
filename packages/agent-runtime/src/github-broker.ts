@@ -17,8 +17,11 @@ const acquisitionFailures = [
   "github_credentials_invalid_token",
 ] as const;
 
+type BrokerListener = { socket: string; redactSocket: string; activation: string; close(): void };
+
 /** GitHub-only capability. No vault, refresh-token, provider or model operations. */
 export class GitHubBroker {
+  private listener: Promise<BrokerListener> | undefined;
   private configuration: GitHubBrokerConfiguration | undefined;
   private revision = 0;
   private minimum = 0n;
@@ -130,10 +133,15 @@ export class GitHubBroker {
   }
 
   /** Credential replies require root IPC. Unprivileged native processes get only a redact oracle. */
-  async listen(
-    root: string,
-    owner = process.getuid?.(),
-  ): Promise<{ socket: string; redactSocket: string; activation: string; close(): void }> {
+  listen(root: string, owner = process.getuid?.()): Promise<BrokerListener> {
+    this.listener ??= this.bind(root, owner).catch((error) => {
+      this.listener = undefined;
+      throw error;
+    });
+    return this.listener;
+  }
+
+  private async bind(root: string, owner: number | undefined) {
     await mkdir(root, { recursive: true, mode: 0o700 });
     const directory = await lstat(root);
     if (directory.isSymbolicLink() || !directory.isDirectory() || directory.uid !== owner || directory.mode & 0o077)
@@ -210,10 +218,10 @@ export class GitHubBroker {
         }
       },
     });
-    const credentials = Bun.serve({
+    const credentialOptions = {
       unix: socket,
       maxRequestBodySize: 1048576,
-      fetch: async (request) => {
+      fetch: async (request: Request) => {
         try {
           const path = new URL(request.url).pathname;
           if (request.method !== "POST") throw Error("denied");
@@ -256,26 +264,40 @@ export class GitHubBroker {
           return Response.json({ error: code }, { status: 403, headers: { "cache-control": "no-store" } });
         }
       },
-    });
-    await chmod(socket, 0o600);
-    await chmod(redactSocket, 0o600);
-    if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
+    };
+    let credentials: Bun.Server<undefined> | undefined;
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      active = false;
+      credentials?.stop(true);
+      redaction.stop(true);
+      for (const path of credentials ? [socket, redactSocket] : [redactSocket]) {
+        try {
+          unlinkSync(path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    };
+    try {
+      credentials = Bun.serve(credentialOptions);
+      await chmod(socket, 0o600);
+      await chmod(redactSocket, 0o600);
+      if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
+    } catch (error) {
+      close();
+      throw error;
+    }
     return {
       socket,
       redactSocket,
       activation,
       close: () => {
-        active = false;
+        if (closed) return;
         this.configure(null);
-        credentials.stop(true);
-        redaction.stop(true);
-        for (const path of [socket, redactSocket]) {
-          try {
-            unlinkSync(path);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-        }
+        close();
       },
     };
   }
