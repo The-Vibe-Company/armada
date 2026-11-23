@@ -30,7 +30,6 @@ function launchBlocksTurn(sandbox: string, turn: string) {
 
 export const TURN_LAUNCH_WAITING = launchBlocksTurn("s", "q");
 
-// A launch-blocked follow-up can have a lower sequence than its own initial turn.
 export const TURN_FIFO_ELIGIBLE = `(exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null)
   or not exists(select 1 from public.account_turn_queue earlier join public.sandboxes target on target.id=earlier.sandbox_id
     where earlier.account_id=q.account_id and earlier.state='queued'

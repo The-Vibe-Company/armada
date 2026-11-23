@@ -231,7 +231,6 @@ test("a send during launch waits for setup and the initial turn before dispatch"
   const initial = { id, request_id: setup, prompt: "initial instruction" };
   expect(await queue.acceptInitialLaunch(caller, initial, "1", async () => true)).toBe(true);
   await sql.query("update jobs set state='done' where id=$1", [setup]);
-  // Make the earlier follow-up eligible for another job claim. It must yield even though it has the older sequence.
   await sql.query(
     "update jobs set run_after='-infinity' where kind='turn_dispatch' and attempts=0 and run_after>now()",
   );
@@ -248,6 +247,27 @@ test("a send during launch waits for setup and the initial turn before dispatch"
   await run();
   expect(sent).toEqual([initial.prompt, followup.prompt]);
   expect(await queue.status(caller, id, followup.request_id)).toEqual({ nativePromptId: "runtime-turn" });
+});
+
+test.each(["done", "failed"] as const)("a launch without an initial turn leaves setup %s", async (state) => {
+  const id = ids[0]!;
+  const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query("update sandboxes set status='starting',provider='modal',runtime_transport='dialout' where id=$1", [
+    id,
+  ]);
+  const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
+    orgId: org,
+    maxAttempts: 3,
+  });
+  expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued" });
+  await sql.query("update sandboxes set status='ready' where id=$1", [id]);
+  await sql.query("update jobs set state=$2 where id=$1", [setup, state]);
+  const send = spyOn({ send: async () => ({ promptId: "runtime-turn" }) }, "send");
+  await sharedDispatcher(send)();
+  expect(send).toHaveBeenCalledTimes(state === "done" ? 1 : 0);
+  expect(await queue.status(caller, id, followup.request_id)).toMatchObject(
+    state === "done" ? { nativePromptId: "runtime-turn" } : { failed: true },
+  );
 });
 
 test.each(["provider replies", "provider refuses"])(
