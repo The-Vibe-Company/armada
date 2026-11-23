@@ -9,7 +9,6 @@ export {
   type LaunchResult,
   type LaunchStores,
   launchSandbox,
-  MAX_LAUNCH_TTL_SECONDS,
   prepareLaunchWorkspace,
   resolveGoldenLaunchResources,
   validateGoldenLaunchHelpers,

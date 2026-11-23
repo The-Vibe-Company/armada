@@ -70,7 +70,7 @@ export function launchInfrastructure(id: string) {
 }
 
 /** What a provider's infrastructure allows, independent of any agent capability. */
-export interface ProviderLimits {
+interface ProviderLimits {
   /** The longest a sandbox may run before the provider stops it. A longer TTL is refused, never clamped. */
   maxTtlSeconds: number;
   /** In words, for error messages. */
@@ -216,7 +216,7 @@ export interface ProviderTarget {
 }
 
 /** Builds the provider for one target, for one caller. It resolves that caller's management credential itself. */
-export type ProviderFactory = (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
+type ProviderFactory = (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
 
 export interface ProviderRegistry {
   /** The provider of the target's own backend, never another one. */

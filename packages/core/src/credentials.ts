@@ -100,7 +100,7 @@ function authJsonSecrets(value: string): string[] {
 }
 
 export const MAX_SECRET_LENGTH = 8192;
-export const MAX_AUTH_FILE_LENGTH = 65536;
+const MAX_AUTH_FILE_LENGTH = 65536;
 
 /** Where Codex reads its login file in a boat.dev sandbox. */
 export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";

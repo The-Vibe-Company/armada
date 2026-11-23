@@ -209,7 +209,7 @@ export interface SandboxRow {
 }
 
 /** The longest failure reason kept; a longer one is cut. */
-export const MAX_STATUS_REASON_LENGTH = 2000;
+const MAX_STATUS_REASON_LENGTH = 2000;
 
 const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at, external_ref`;

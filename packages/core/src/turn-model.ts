@@ -1,7 +1,7 @@
 import { dedupeEvents } from "./outcome.ts";
 import type { AgentEvent } from "./provider.ts";
 
-export type ModelSelectionReason = "model_selection_mismatch" | "model_selection_unverified";
+type ModelSelectionReason = "model_selection_mismatch" | "model_selection_unverified";
 
 export interface TurnModelEvidence {
   requestedModel: string | null;

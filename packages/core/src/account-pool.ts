@@ -42,12 +42,12 @@ export interface AccountSkip {
   reason: AccountRefusal;
 }
 
-export type AccountChoice = { model: string; skips: AccountSkip[] } & (
+type AccountChoice = { model: string; skips: AccountSkip[] } & (
   | { kind: "account"; credentialId: string; credentialVersion: number }
   | { kind: "wait" | "refuse" }
 );
 
-export interface AccountPoolFacts {
+interface AccountPoolFacts {
   now: number;
   candidates: ReadonlyMap<string, AccountCandidate>;
   explicit?: { credentialId: string; credentialVersion?: number };

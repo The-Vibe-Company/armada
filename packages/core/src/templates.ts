@@ -79,7 +79,7 @@ export const TEMPLATE_REFUSAL_HELP = {
   template_revision_changed: "Template revision changed during admission. Get the current revision before retrying.",
   authorization_changed: "Template launch authorization changed during admission. Check current membership and access.",
 } as const;
-export type TemplateRefusalReason = keyof typeof TEMPLATE_REFUSAL_HELP;
+type TemplateRefusalReason = keyof typeof TEMPLATE_REFUSAL_HELP;
 
 export function templateRefusalHelp(reason: unknown): string {
   return typeof reason === "string" && Object.hasOwn(TEMPLATE_REFUSAL_HELP, reason)
