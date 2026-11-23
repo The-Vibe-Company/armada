@@ -179,7 +179,6 @@ function eligibleJob(physical: number, restore: number) {
 }
 
 type MachineCleanupOperation = "stop" | "delete";
-
 function machineCleanupId(daemonGeneration: string, operation: MachineCleanupOperation) {
   const digest = createHash("sha256").update(`docker-machine:${daemonGeneration}:${operation}`).digest("hex");
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`;
@@ -475,8 +474,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
     const host =
       (
-        await tx.query<Host>(
-          `select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
+        await tx.query<Host & { revoked: boolean }>(
+          `select id,org_id,owner_id,revoked_at is not null as revoked from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
        and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
           [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
         )
@@ -766,7 +765,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
     ).rows[0]?.machine_generation;
   }
-
   async function currentMachineCleanup(tx: Sql, row: Sandbox) {
     const generation = await machineCleanupBinding(tx, row);
     if (!generation) return undefined;
@@ -804,6 +802,24 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return undefined;
     await requireCurrentMachine(tx, row, delivered.job);
     return { ...receipt, retain: delivered.machineRetain };
+  }
+
+  async function physicalRemovalPendingOrCompleted(tx: Sql, row: Sandbox, machineId: string) {
+    const { rows } = await tx.query<StoredJob>(
+      `select * from public.docker_host_jobs where host_id=$1 and bound_sandbox_id=$2
+       and bound_operation='deletePhysical' and outcome is distinct from 'failed' and cancelled_at is null`,
+      [row.docker_host_id, row.id],
+    );
+    for (const receipt of rows) {
+      const job = await readJob(receipt);
+      if (
+        job.operation === "deletePhysical" &&
+        job.request.generation === row.docker_generation &&
+        job.machineId === machineId
+      )
+        return true;
+    }
+    return false;
   }
 
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
@@ -1549,8 +1565,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         async observe(request) {
           request.signal?.throwIfAborted();
           return transaction<MachineObservation>(async (tx) => {
-            const { row } = await lockSandboxAdmission(tx, actor, request.sandboxId, "stop");
+            const { host, row } = await lockSandboxAdmission(tx, actor, request.sandboxId, "stop");
             await permission(tx, actor, row, "stop");
+            if (host.revoked) return unknown;
             const machineId = await allocationReceipt(tx, row);
             if (!machineId || (request.machineId !== undefined && request.machineId !== machineId)) return unknown;
             if ((await currentMachineCleanup(tx, row)) !== String(request.generation)) return unknown;
@@ -1566,7 +1583,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
               stopped?.outcome !== "completed" ||
               stopped.retain !== true ||
               stopped.cancelled_at ||
-              stopped.result_machine_id !== machineId
+              stopped.result_machine_id !== machineId ||
+              (await physicalRemovalPendingOrCompleted(tx, row, machineId))
             )
               return unknown;
             const machine = { sandboxId: request.sandboxId, generation: request.generation, machineId };
@@ -1604,9 +1622,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (removal) return removal.outcome === "completed" && !removal.cancelled_at ? null : undefined;
             if (row.status === "deleted") deny();
             if (stopped?.outcome === "completed" && !stopped.cancelled_at && retain) {
-              return stopped.result_machine_id === machineId
-                ? { sandboxId, generation, kind: "container" as const, ref: machineId }
-                : undefined;
+              if (
+                host.revoked ||
+                stopped.result_machine_id !== machineId ||
+                (await physicalRemovalPendingOrCompleted(tx, row, machineId))
+              )
+                return undefined;
+              return { sandboxId, generation, kind: "container" as const, ref: machineId };
             }
             if (stopped && (stopped.outcome !== "completed" || stopped.cancelled_at)) return undefined;
             const operation = stopped ? "delete" : "stop";

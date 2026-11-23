@@ -353,7 +353,7 @@ export async function runJobs(
   const running = new Map<string, Promise<void>>();
   const live = { running: new Set<string>(), sandboxes: new Set<string>(), snapshots: new Set<string>() };
   let finished = 0;
-  let deferUncertain = new Set<string>();
+  const deferUncertain = new Set<string>();
   const restoreConflicts = new Map<string, string>();
   const settled = () => Promise.race(running.values());
   try {
@@ -364,19 +364,21 @@ export async function runJobs(
         continue;
       }
       const finishedBefore = finished;
-      const deferred = deferUncertain;
-      deferUncertain = new Set();
       let outcome: TickOutcome;
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
-          deferUncertain: deferred,
+          deferUncertain: new Set(deferUncertain),
           restoreConflicts,
           dispatch(job, work) {
             const done = work
               .catch((error) => {
-                if (isUncertainDockerFailure(job.operation, error)) deferUncertain.add(job.requestId);
+                if (
+                  isUncertainDockerFailure(job.operation, error) &&
+                  deferUncertain.size < MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS
+                )
+                  deferUncertain.add(job.requestId);
                 loop.failed?.("job");
               })
               .finally(() => {
@@ -397,6 +399,7 @@ export async function runJobs(
         outcome = "idle";
       }
       if (loop.stopping()) break;
+      if (outcome === "held" || outcome === "idle") deferUncertain.clear();
       if (outcome === "busy" && finished !== finishedBefore) continue;
       if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);

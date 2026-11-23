@@ -2317,16 +2317,15 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
 });
 
-test("an ambiguous stop yields the next poll to unrelated work", async () => {
+test("ambiguous stops yield the mailbox to unrelated work", async () => {
   const { store, api, executor, job } = fixture("stop");
-  const unrelated = fixture().job;
-  const failed = Promise.withResolvers<void>();
+  const queue = [job, fixture("stop").job, fixture().job];
+  let failed = Promise.withResolvers<void>();
   let stopped = false;
   let polls = 0;
   api.poll = async (_state, options) => {
-    if (++polls === 1) return { job, held: true };
-    stopped = true;
-    return { job: options?.running?.includes(job.requestId) ? unrelated : job, held: true };
+    stopped = ++polls === queue.length;
+    return { job: queue.find((entry) => !options?.running?.includes(entry.requestId)) ?? null, held: true };
   };
   executor.stop = async () => {
     throw new DockerMachineError("docker_failed");
@@ -2341,6 +2340,7 @@ test("an ambiguous stop yields the next poll to unrelated work", async () => {
     async beforeTick() {
       if (polls === 0) return;
       await failed.promise;
+      failed = Promise.withResolvers<void>();
       await Promise.resolve();
     },
     failed: () => failed.resolve(),
@@ -2349,7 +2349,7 @@ test("an ambiguous stop yields the next poll to unrelated work", async () => {
     },
     now: () => 0,
   });
-  expect(completed).toEqual([unrelated.requestId]);
+  expect(completed).toEqual([queue[2]?.requestId]);
 });
 
 test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {
