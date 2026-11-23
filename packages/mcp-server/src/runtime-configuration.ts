@@ -35,7 +35,7 @@ export type RuntimeConfigurationTarget = Pick<
   | "credentialVersion"
   | "repositoryDir"
   | "visibility"
-> & { provider: string; expiresAt: SandboxRecord["expiresAt"] | Date };
+> & { provider: string; expiresAt?: string | Date };
 
 export interface RuntimeConfigurationInput {
   actor: GoldenActor;
