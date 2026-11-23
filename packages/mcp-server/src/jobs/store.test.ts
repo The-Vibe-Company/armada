@@ -1309,7 +1309,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       await atStep?.("runtime ticket");
       return {
         ownerId: f.people.owner,
-        configuration: { artifactManifest },
+        configuration: { artifactManifest, grant: { expiresAt: 1 } },
         serverUrl: "https://armada.invalid",
         artifact: artifactManifest.runtime,
         cacheDir: "/home/user/runtime-cache",
@@ -3346,7 +3346,9 @@ test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its 
 });
 
 test("a job-launched Modal sandbox can use its reserved extension headroom", async () => {
-  const { f, id, jobId, makeRunner, retentionHost } = await modalLaunchFixture(await modalAdmissionFixture());
+  const { f, id, jobId, makeRunner, retentionHost, activeRuntime } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
   const runner = makeRunner();
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
@@ -3363,6 +3365,7 @@ test("a job-launched Modal sandbox can use its reserved extension headroom", asy
   const hardDeadline = new Date(created_at.getTime() + 3_600_000);
   const extension = await extendSandbox(store, sandbox, provider, 1860);
   expect((await provider.get(sandbox.providerSandboxId)).expiresAt).toEqual(hardDeadline);
+  expect(activeRuntime().configuration).toMatchObject({ grant: { expiresAt: hardDeadline.getTime() } });
   expect((await store.get(id))!).toMatchObject({
     expiresAt: extension.expiresAt,
     lifecycleGeneration: sandbox.lifecycleGeneration,

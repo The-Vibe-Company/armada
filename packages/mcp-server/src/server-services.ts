@@ -316,7 +316,7 @@ export async function createServerServices(env: Record<string, string | undefine
     store,
     app: githubApp,
   });
-  const modalLaunchJob = modal.launchJob(async (sandbox, computeExpiresAt) => {
+  const modalLaunchJob = modal.launchJob(async (sandbox) => {
     if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
     const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
     const credentials = await modalLaunchCredentials.resolve(
@@ -339,9 +339,6 @@ export async function createServerServices(env: Record<string, string | undefine
       "modal",
       "modal_runtime_empty_v1",
     );
-    if (!Number.isFinite(computeExpiresAt) || computeExpiresAt < plan.configuration.grant.expiresAt)
-      throw new Error("Modal compute deadline does not cover the initial runtime grant.");
-    plan.configuration.grant.expiresAt = computeExpiresAt;
     return {
       ...plan,
       ownerId: sandbox.ownerId,
