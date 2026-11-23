@@ -26,6 +26,7 @@ import { createModalJobReader, createModalLogReader } from "../runtime-history.t
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
+import { extendSandbox } from "../sandbox-extend.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -1346,6 +1347,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
           run(job: Job, context: JobContext) {
             return runModalLaunch(jobsSql, launchEncryptionKey, job, context, () => ({
               allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+              computeExpiresAt: new Date(Date.now() + 600_000),
               bindingRef: job.id,
               placement: {
                 scope: { orgId: f.people.org, userId: f.people.owner, visibility: "private", binding: machine.binding },
@@ -3341,6 +3343,30 @@ test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its 
   expect(effects().allocations).toBe(1);
   expect(effects().bootstrapped).toEqual(["physical"]);
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
+
+test("a job-launched Modal sandbox can use its reserved extension headroom", async () => {
+  const { f, id, jobId, makeRunner, retentionHost } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  const store = createSqlData(f.sql)({
+    via: "service",
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  const provider = retentionHost().provider;
+  const { created_at } = (await f.db.query<{ created_at: Date }>("select created_at from jobs where id=$1", [jobId]))
+    .rows[0]!;
+  const hardDeadline = new Date(created_at.getTime() + 3_600_000);
+  const extension = await extendSandbox(store, sandbox, provider, 1860);
+  expect((await provider.get(sandbox.providerSandboxId)).expiresAt).toEqual(hardDeadline);
+  expect((await store.get(id))!).toMatchObject({
+    expiresAt: extension.expiresAt,
+    lifecycleGeneration: sandbox.lifecycleGeneration,
+  });
 });
 
 test("interrupted Modal enrolment rolls back readiness and the provider handoff and leaves its ticket usable", async () => {
