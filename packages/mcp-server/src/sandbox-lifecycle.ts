@@ -21,6 +21,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
+import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -1925,6 +1926,7 @@ export function createSandboxLifecycle(
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let observedNativeReady = false;
+      const requireMissingObservation = requiresMissingMachineObservation(providerId);
       let stoppedAt: Date | undefined;
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
       const expired = logicalDeadline <= now();
@@ -2450,7 +2452,7 @@ export function createSandboxLifecycle(
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
         waitingForRetention =
-          providerId === "boat" &&
+          retainsDiskOnStop(providerId) &&
           info.state === "stopped" &&
           info.retainedSnapshot !== "usable" &&
           !physicalExit &&
@@ -2497,12 +2499,12 @@ export function createSandboxLifecycle(
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
-          (providerId !== "boat" || observing) &&
+          (!requireMissingObservation || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"
         ) {
           terminal = true;
-          if (providerId === "boat") physicalExit = true;
+          if (requireMissingObservation) physicalExit = true;
         } else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       return settle();
