@@ -3232,7 +3232,7 @@ const server = Bun.serve({
             state.sandboxes.flatMap((row) => {
               if (row.org_id !== body.org || !canOpenSandbox(row, userId)) return [];
               const last = state.events.get(String(row.id))?.findLast((event) => event.kind === "prompt");
-              return last?.status && ["queued", "running", "finished"].includes(last.status)
+              return last?.status && ["queued", "running", "finished"].includes(String(last.status))
                 ? [[row.id, last.status]]
                 : [];
             }),
