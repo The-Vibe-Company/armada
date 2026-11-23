@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import type { Sql } from "../../packages/core/src/golden-store.ts";
+import { ProviderError } from "../../packages/core/src/provider.ts";
+import { VaultError } from "../../packages/core/src/vault-error.ts";
 import { parseNativeDrainArgs, runNativeDrain } from "./drain-native.ts";
 
 const db = new PGlite();
@@ -76,6 +78,7 @@ test("real drain reports proof outcomes in aggregate and skips deleted rows on r
     deletedWithProof: 1,
     alreadyDeleted: 0,
     failed: 1,
+    failuresByReason: { unexpected_error: 1 },
   });
   expect(await run("--provider", "boat", "--dry-run")).toMatchObject({ total: 1, byStatus: { stopped: 1 } });
 
@@ -89,6 +92,7 @@ test("real drain reports proof outcomes in aggregate and skips deleted rows on r
     deletedWithProof: 0,
     deletedWithoutProof: 1,
     failed: 0,
+    failuresByReason: {},
   });
   expect(await runNativeDrain(request, sql, operation)).toMatchObject({ total: 0, deleted: 0, failed: 0 });
   expect(calls).toEqual(["archived-id", "unproven-id", "unproven-id"]);
@@ -96,4 +100,60 @@ test("real drain reports proof outcomes in aggregate and skips deleted rows on r
 
 test("the retired Modal drain is rejected by the command parser", () => {
   expect(() => parseNativeDrainArgs(["--provider", "modal"])).toThrow("Usage:");
+});
+
+test("real drain groups typed failures and keeps private error payloads out of its report", async () => {
+  const providerError = (status: number) =>
+    new ProviderError({
+      provider: "boat",
+      status,
+      code: "unknown",
+      message: "private-provider-response",
+      requestId: "private-request",
+      retryable: false,
+    });
+  const failures = [
+    new VaultError("missing_credential", "private-org"),
+    providerError(401),
+    providerError(404),
+    providerError(503),
+    { reason: "private-row" },
+  ];
+  const actorId = crypto.randomUUID();
+  const fakeSql: Sql = {
+    async query<T>(statement: string) {
+      const rows = statement.startsWith("SET")
+        ? []
+        : failures.map(() => ({ id: "private-row", org_id: "private-org", role: "admin" }));
+      return { rows: rows as T[] };
+    },
+    transaction: (work) => work(fakeSql),
+  };
+  let index = 0;
+  const report = await runNativeDrain(
+    parseNativeDrainArgs(["--provider", "boat", "--allow-unpreserved-boat"]),
+    fakeSql,
+    {
+      actorId,
+      async remove() {
+        throw failures[index++];
+      },
+    },
+  );
+  expect(report).toEqual({
+    provider: "boat",
+    mode: "drain",
+    total: 5,
+    deleted: 0,
+    deletedWithProof: 0,
+    deletedWithoutProof: 0,
+    alreadyDeleted: 0,
+    failed: 5,
+    failuresByReason: {
+      provider_credentials_missing: 1,
+      provider_http_4xx: 2,
+      provider_http_5xx: 1,
+      unexpected_error: 1,
+    },
+  });
 });
