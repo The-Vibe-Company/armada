@@ -1393,7 +1393,6 @@ export function createSqlData(
                   (recovery?.outcome === "unverified" || recovery?.outcome === "ineligible") &&
                   (
                     await tx.query(
-                      // The locked copy helper also returns ineligible for lifecycle refusals.
                       `select 1 from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$2
                          and s.status in ('stopped','failed') and ${NATIVE_DRAIN_WITHOUT_PROOF}`,
                       [id, expectedGeneration],
