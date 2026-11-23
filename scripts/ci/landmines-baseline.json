@@ -345,7 +345,7 @@
     "packages/agent-runtime/src/github-tools.ts": 6,
     "packages/agent-runtime/src/harness-cache.ts": 9,
     "packages/agent-runtime/src/identity.ts": 1,
-    "packages/agent-runtime/src/journal.ts": 12,
+    "packages/agent-runtime/src/journal.ts": 11,
     "packages/agent-runtime/src/main.ts": 15,
     "packages/agent-runtime/src/mcp-file.ts": 1,
     "packages/agent-runtime/src/mcp-revisions.ts": 2,
