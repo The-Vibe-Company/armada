@@ -12,6 +12,7 @@ import {
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import type { Caller } from "../caller.ts";
 import { createQueuedSandboxDispatch } from "../control.ts";
 import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
@@ -1741,25 +1742,28 @@ test.each(["before", "after"] as const)(
     ]);
     await claim(await modalFirstTurnLane(f, interruptedQueue));
     expect(await intentState()).toEqual({ state: "leased", attempts: crash === "after" ? 3 : 1 });
-    if (crash === "before")
-      await expect(
-        queue.accept(
-          { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" },
-          { id, prompt: "Follow up" },
-        ),
-      ).rejects.toThrow("Modal launch setup is still in progress.");
     expect((await turns()).rows).toHaveLength(crash === "after" ? 1 : 0);
     expect((await dispatchJobs()).rows).toHaveLength(crash === "after" ? 1 : 0);
+    const caller: Caller = {
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" }],
+      via: "service",
+    };
+    const followup = { id, request_id: crypto.randomUUID(), prompt: "Follow up" };
+    expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued", promptId: followup.request_id });
 
     await db.query("update jobs set lease_until='-infinity' where id=$1", [intent!.id]);
     await claim(await modalFirstTurnLane(f, queue));
     expect(await intentState()).toEqual({ state: "done", attempts: crash === "after" ? 4 : 2 });
     const { rows } = await turns();
-    expect(rows.map(({ request_id }) => request_id)).toEqual([intent!.id]);
-    expect(JSON.parse(await decryptSecret(rows[0]!.input_enc, launchEncryptionKey))).toMatchObject({
+    expect(rows).toHaveLength(2);
+    const initial = rows.find(({ request_id }) => request_id === intent!.id);
+    expect(initial).toBeDefined();
+    expect(JSON.parse(await decryptSecret(initial!.input_enc, launchEncryptionKey))).toMatchObject({
       prompt: admission.input.initialPrompt,
     });
-    expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
+    expect(await queue.status(caller, id, followup.request_id)).toMatchObject({ failed: false });
+    expect((await dispatchJobs()).rows).toHaveLength(2);
   },
 );
 
@@ -2152,8 +2156,6 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
         { userId: people.owner, orgs: [{ orgId: people.org, role: "member" }], via: "service" },
         { id, prompt: "Follow up" },
       );
-    if (scenario === "acknowledgement lost")
-      await expect(sendFollowUp()).rejects.toThrow("Modal launch setup is still in progress.");
     const firstTurn = (wait: () => Promise<void>) =>
       createJobsRunner(
         createJobsStore(sql, launchEncryptionKey),
@@ -2764,6 +2766,14 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
     statusMessage: "Modal launch setup is still in progress.",
   });
   expect(await callSharedTool(context, "status", { id, recorded: true })).toMatchObject({ status: "starting" });
+  const followup = { id, request_id: crypto.randomUUID(), prompt: "Follow up during setup" };
+  expect(await callSharedTool(context, "send", followup)).toMatchObject({ status: "queued" });
+  expect(await callSharedTool(context, "status", { id, prompt_id: followup.request_id })).toMatchObject({
+    status: "starting",
+    settled: false,
+    prompt: { promptId: followup.request_id, state: "running" },
+  });
+  await f.db.query("delete from account_turn_queue where request_id=$1", [followup.request_id]);
   const { input } = admission;
   const actor = { orgId: input.orgId, userId: input.ownerId, role: "member" as const };
   expect(await replayModalLaunch(f.sql, actor, input.sandbox.goldenId, input.request!)).toEqual({

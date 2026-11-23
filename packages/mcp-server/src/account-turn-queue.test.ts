@@ -50,7 +50,7 @@ beforeAll(async () => {
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
-      conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
+      provider_sandbox_id text,conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,stop_generation bigint not null default 0,reconcile_lease_until timestamptz,
       application_secret_tainted boolean not null default false,native_drain_pending boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
@@ -60,6 +60,8 @@ beforeAll(async () => {
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid,
       bound_actor_id uuid,host_id uuid,bound_operation text,bound_actor_epoch bigint,cancelled_at timestamptz,
       refused_resume_generation bigint,outcome text);
+    create table docker_launch_requests(sandbox_id uuid primary key,async_launch boolean not null,result_enc bytea);
+    create table docker_queued_prompts(sandbox_id uuid,status text);
     create table docker_hosts(id uuid,org_id uuid,installation_id uuid,owner_id uuid,hash text,
       registration_hash text,revoked_at timestamptz);
     create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
@@ -113,7 +115,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_requests; delete from docker_queued_prompts; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -202,6 +204,97 @@ function sharedDispatcher(send: DispatchTurn) {
     await runner.drain();
   };
 }
+
+test("a send during launch waits for setup and the initial turn before dispatch", async () => {
+  const id = ids[0]!;
+  const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query("update sandboxes set status='starting',provider='modal',runtime_transport='dialout' where id=$1", [
+    id,
+  ]);
+  const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
+    orgId: org,
+    maxAttempts: 3,
+  });
+  expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued", promptId: followup.request_id });
+  const sent: string[] = [];
+  const run = sharedDispatcher(async (_actor, input) => {
+    sent.push(input.prompt);
+    await sql.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [id, "runtime-turn"]);
+    return { promptId: "runtime-turn" };
+  });
+  await run();
+  expect(await queue.status(caller, id, followup.request_id)).toMatchObject({ failed: false });
+  expect(sent).toEqual([]);
+
+  await sql.query("update sandboxes set status='ready',provider_sandbox_id='machine' where id=$1", [id]);
+  await sql.query("insert into runtime_enrolments(sandbox_id,lifecycle_generation,runtime_hash) values($1,1,'bound')", [
+    id,
+  ]);
+  const initial = { id, request_id: setup, prompt: "initial instruction" };
+  expect(await queue.acceptInitialLaunch(caller, initial, "1", async () => true)).toBe(true);
+  await sql.query("update jobs set state='done' where id=$1", [setup]);
+  await sql.query(
+    "update jobs set run_after='-infinity' where kind='turn_dispatch' and attempts=0 and run_after>now()",
+  );
+  await run();
+  expect(sent).toEqual([]);
+  await run();
+  expect(sent).toEqual([initial.prompt]);
+
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt]);
+  await sql.query("insert into runtime_idle_turns values($1,'runtime-turn',true)", [id]);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt, followup.prompt]);
+  expect(await queue.status(caller, id, followup.request_id)).toEqual({ nativePromptId: "runtime-turn" });
+});
+
+test.each(["done", "failed"] as const)("a launch without an initial turn leaves setup %s", async (state) => {
+  const id = ids[0]!;
+  const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query("update sandboxes set status='starting',provider='modal',runtime_transport='dialout' where id=$1", [
+    id,
+  ]);
+  const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
+    orgId: org,
+    maxAttempts: 3,
+  });
+  expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued" });
+  await sql.query("update sandboxes set status='ready' where id=$1", [id]);
+  await sql.query("update jobs set state=$2 where id=$1", [setup, state]);
+  const send = spyOn({ send: async () => ({ promptId: "runtime-turn" }) }, "send");
+  await sharedDispatcher(send)();
+  expect(send).toHaveBeenCalledTimes(state === "done" ? 1 : 0);
+  expect(await queue.status(caller, id, followup.request_id)).toMatchObject(
+    state === "done" ? { nativePromptId: "runtime-turn" } : { failed: true },
+  );
+});
+
+test("a Docker follow-up waits for deferred launch publication and runtime turn settlement", async () => {
+  const id = ids[0]!;
+  const input = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query("update sandboxes set status='starting',provider='docker' where id=$1", [id]);
+  await sql.query("insert into docker_launch_requests values($1,true,null)", [id]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued", promptId: input.request_id });
+  const send = spyOn({ send: async () => ({ promptId: "follow-up-turn" }) }, "send");
+  const run = sharedDispatcher(send);
+  await run();
+  expect(await queue.status(caller, id, input.request_id)).toMatchObject({ failed: false });
+
+  await sql.query("update sandboxes set status='ready',task_prompt_id='initial-turn' where id=$1", [id]);
+  await sql.query("update docker_launch_requests set result_enc='sealed'::bytea where sandbox_id=$1", [id]);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch'");
+  await run();
+  expect(send).not.toHaveBeenCalled();
+
+  await sql.query("insert into runtime_idle_turns values($1,'initial-turn',true)", [id]);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch'");
+  await run();
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(await queue.status(caller, id, input.request_id)).toEqual({ nativePromptId: "follow-up-turn" });
+});
 
 test.each(["provider replies", "provider refuses"])(
   "an expired shared claim cannot settle when the %s",

@@ -145,6 +145,7 @@ export function registerStatusTools(
         statusReason: setupPending ? null : jobReader!.setupFailure,
         settled: !setupPending,
         statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
+        ...(currentTurn ? {} : queuePatch),
       };
     const stopEvidence = async (status: SandboxStatus) => {
       const latest = await jobReader?.verify();

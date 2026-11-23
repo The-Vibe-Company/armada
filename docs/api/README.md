@@ -283,10 +283,12 @@ with a selector, use `sandbox/status` with its original request UUID as
 Sends that pass these checks to a sandbox with a pinned model account, which
 includes every Docker sandbox, then pass through the account turn queue. For runtime and Docker
 sandboxes, the queue returns HTTP 400 `invalid` for a refused override. It
-returns HTTP 409
-`conflict` when the sandbox cannot accept a prompt now, for example while a
-Docker launch is still `starting`. It also returns 409 `conflict` for a reused
-`request_id` with different input, or for one whose queued send has failed.
+returns HTTP 409 `conflict` for a pending stop request, a reused `request_id`
+with different input, or a request whose queued send has failed.
+
+Modal launch jobs and deferred Docker launches accept sends while the sandbox
+is still `starting`. Armada holds those sends until launch setup finishes and
+the initial prompt settles, if the launch supplied one.
 
 An admitted send returns `queued` with its `requestId`. Until the conversation
 is recorded, the returned `conversationId` is a placeholder. Armada dispatches
