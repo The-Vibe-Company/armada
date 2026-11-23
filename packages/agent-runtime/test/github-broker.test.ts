@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import { GitHubBroker } from "../src/github-broker.ts";
 
 test("late acquisition cannot publish across replacement/scrub and retired values stay registered", async () => {
@@ -57,4 +59,44 @@ test("acquisition failures identify their boundary without exposing upstream tex
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(`github_credentials_${code}`);
   }
+});
+
+test("runtime serves credentials for multiple repositories over private local sockets", async () => {
+  const repositories = ["acme/first", "acme/second"];
+  const broker = new GitHubBroker(
+    () => {},
+    async (_url, init) => {
+      const { repository } = JSON.parse(String(init?.body)) as { repository: string };
+      return Response.json({ token: `offline-${repository}` });
+    },
+    () => 100,
+  );
+  broker.configure({
+    version: 1,
+    revision: "1",
+    generation: "one",
+    url: "https://armada.example/api/runtime/github/credentials",
+    capability: `armada_gh_${"a".repeat(64)}`,
+    expiresAt: 200,
+    repositories,
+  });
+  const listener = await broker.listenRuntime();
+  const directory = dirname(listener.socket);
+  const post = (unix: string, path: string, body: unknown) =>
+    fetch(`http://private${path}`, { unix, method: "POST", body: JSON.stringify(body) });
+  try {
+    expect(dirname(directory)).toBe("/tmp");
+    expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    const activation = await post(listener.socket, "/activate", { key: listener.activation });
+    expect(activation.ok).toBe(true);
+    await activation.body?.cancel();
+    expect(await (await post(listener.redactSocket, "/repositories", {})).json()).toEqual({ repositories });
+    for (const repository of repositories) {
+      const response = await post(listener.socket, "/", { repository, operation: "git" });
+      expect(await response.json()).toEqual({ token: `offline-${repository}` });
+    }
+  } finally {
+    listener.close();
+  }
+  await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
 });

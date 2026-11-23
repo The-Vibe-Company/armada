@@ -394,7 +394,7 @@ async function main(dialout = false) {
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
-    githubSocket ??= await github.listen(githubRoot);
+    githubSocket ??= await github.listenRuntime();
     const tools: Parameters<typeof installUserGitHubTools>[0] = {
       root: githubRoot,
       socket: githubSocket.socket,
