@@ -81,7 +81,7 @@ import {
 } from "../sandbox-lifecycle.ts";
 import { publicSandboxStatusSql } from "../sandbox-readiness.ts";
 import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
-import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
+import { modalLaunchSetupTimer, parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import {
   adoptObservedModalAllocation,
@@ -467,29 +467,7 @@ export function createModalInitialTurnJob(
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
 
-      function timePhase(
-        phase: "load_target" | "environment" | "workspace" | "skills" | "mcp" | "scoped_access" | "first_prompt",
-      ) {
-        const started = performance.now();
-        const log = (state: "started" | "finished", durationMs?: number) => {
-          try {
-            console.info(
-              JSON.stringify({
-                event: "modal_launch_setup_phase",
-                sandboxId,
-                jobId: job.id,
-                generation,
-                attempt: job.attempts,
-                phase,
-                state,
-                durationMs,
-              }),
-            );
-          } catch {}
-        };
-        log("started");
-        return () => log("finished", Math.round(performance.now() - started));
-      }
+      const timePhase = modalLaunchSetupTimer({ sandboxId, jobId: job.id, generation, attempt: job.attempts });
 
       const endLoad = timePhase("load_target");
       const {
@@ -608,14 +586,19 @@ export function createModalInitialTurnJob(
       const endWorkspace = timePhase("workspace");
       try {
         const config = parseModalLaunchWorkspace(payload.data);
-        const workspaceStarted =
-          github &&
-          (
-            await sql.query(
+        let workspaceStarted = false;
+        if (github) {
+          const endLookup = timePhase("workspace", { step: "receipt_lookup" });
+          try {
+            const { rows } = await sql.query(
               "select 1 from public.runtime_commands where sandbox_id=$1 and epoch=$2 and request_id=$3",
               [sandboxId, epoch, workspaceCommandId(epoch, { phase: "repository", index: 0, attempt: 0 })],
-            )
-          ).rows.length > 0;
+            );
+            workspaceStarted = rows.length > 0;
+          } finally {
+            endLookup();
+          }
+        }
         const workspace = runtimeWorkspace(
           {
             actor,
@@ -630,6 +613,7 @@ export function createModalInitialTurnJob(
           {
             trackPushes: true,
             healthRequestId: `workspace_health_${job.id}_${epoch}`,
+            timeStep: (step) => timePhase("workspace", step),
             assertClaim: assertRuntimeClaim,
           },
         );
