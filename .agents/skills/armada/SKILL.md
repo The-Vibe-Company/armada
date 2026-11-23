@@ -264,3 +264,10 @@ Capture the response's `token` once and supply it through the agent's secret sto
 with `ARMADA_URL` set to the API origin. Verify with `armada whoami --json`. From a personal login,
 use `armada api token/list` to find the key ID, then
 `armada api token/revoke '{"id":"TOKEN_UUID"}'`.
+
+### Administrative operations
+
+For MCP registry changes, model-account presets, and other administrative work,
+use the dashboard or the [CLI administration routes](https://github.com/The-Vibe-Company/armada/blob/main/docs/cli-admin.md).
+For example, list connections with `armada api mcp/list '{"org":"ORG_UUID"}'`.
+Use `armada api ROUTE -` with JSON on stdin for bodies that contain credentials.

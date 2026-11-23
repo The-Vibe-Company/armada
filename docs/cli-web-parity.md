@@ -28,17 +28,15 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Agent turns | Send, steer and interrupt | `prompt ID PROMPT`, `prompt ID --steer TEXT`, `stop ID --turn`; model/effort overrides where supported |
 | Stop / wait | Stop after settlement and track turn progress | `stop ID`, `stop ID --after [--timeout SECONDS]`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
 | Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
-| MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
-| Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |
-| Existing sandbox bindings | Selected connection metadata | `mcp sandbox-connections SANDBOX_UUID --org UUID`; read-only |
+| MCP definitions | Personal/shared definitions, status and authorization | [MCP administration routes](cli-admin.md#mcp-connections) |
+| Existing sandbox bindings | Selected connection metadata | `api mcp/sandbox-connections` with sandbox `id` and `org` in the body |
 | Theme and layout | Local presentation preferences | No cloud command |
 
 See [sandbox list and JSON output](cli-web-parity-556.md) for filter limits, totals and compatibility shapes.
 
 ## Model accounts and limits
 
-Use `armada account ls --presets --json` to discover named model connections shared with
-the dashboard. Morph is a model-account kind, not a compute provider; one account
+Browse presets in Models in the dashboard. One Morph account
 supports Claude Code, Codex and OpenCode on supported runtime-backed placements.
 Select an account explicitly with `--credential-id ACCOUNT_UUID` at launch, or
 use the authorized compatible default. Never pass the key in arguments.
@@ -49,7 +47,6 @@ do not count. A busy selected account refuses admission rather than silently
 switching billing. Lowering a cap leaves existing running agents alone.
 
 ```sh
-armada account add --preset morph --name shared --file /private/morph-key --max-agents 2
 armada account limits ACCOUNT_UUID --max-agents 2
 armada account limits ACCOUNT_UUID --unlimited
 ```

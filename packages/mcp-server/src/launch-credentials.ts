@@ -31,6 +31,7 @@ import {
 } from "@armada/core/server";
 import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { currentRequestId } from "./request-observability.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = MODEL_CREDENTIAL_KINDS;
@@ -43,6 +44,13 @@ export interface GitHubLaunchOptions {
   fetch?: typeof fetch;
   now?: () => Date;
 }
+
+type RepositoryDenial =
+  | "metadata_denied"
+  | "metadata_unverified"
+  | "private_without_connection"
+  | "branch_denied"
+  | "repository_access_token_rejected";
 
 /**
  * What a launch hands to the sandbox, resolved in this process with the same rules as `armada launch`:
@@ -57,6 +65,7 @@ export function launchCredentials(
   /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
   repositoryGithub?: GitHubLaunchOptions,
 ): LaunchCredentialResolver & {
+  launchAccountDefault?: ModelAuthOwnership["launchAccountDefault"];
   admitExistingSandbox: NonNullable<LaunchCredentialResolver["admit"]>;
   resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
 } {
@@ -86,17 +95,34 @@ export function launchCredentials(
   const repositoryAccess = github ?? repositoryGithub;
   return {
     resolveModel,
+    ...(ownership ? { launchAccountDefault: ownership.launchAccountDefault } : {}),
     installPrivateSkill,
     ...(repositoryAccess
       ? ({
           async authorizeRepositories(actor, credentials, repositories) {
-            const access =
-              credentials.github ??
-              (await resolveGitHubAccess(
+            const resolveAccess = () =>
+              resolveGitHubAccess(
                 { ...repositoryAccess, encryptionKey, caller: "launch", minimumLifetimeMs: 3_600_000 },
                 actor.userId,
-              ));
-            const connected = access?.status === "connected" ? access : undefined;
+              );
+            const access = credentials.github ?? (await resolveAccess());
+            let connected = access.status === "connected" ? access : undefined;
+            let rechecked = false;
+            const reportDenial = (reason: RepositoryDenial) => {
+              try {
+                const event = "launch_repository_github_denied";
+                console.warn(
+                  JSON.stringify({
+                    level: "warn",
+                    event,
+                    message: event,
+                    requestId: currentRequestId(),
+                    reason,
+                    connectionStatus: access.status,
+                  }),
+                );
+              } catch {}
+            };
             for (const repository of repositories) {
               let identity: { owner: string; repo: string };
               try {
@@ -104,17 +130,21 @@ export function launchCredentials(
               } catch {
                 continue;
               } // Legacy non-GitHub sources retain their existing refresh path.
-              const denied = () =>
-                new LaunchError(
+              const denied = (reason: RepositoryDenial) => {
+                reportDenial(reason);
+                return new LaunchError(
                   "no_credentials",
                   `Repository ${repository.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
                 );
-              const unknown = () =>
-                new LaunchError(
+              };
+              const unknown = () => {
+                reportDenial("metadata_unverified");
+                return new LaunchError(
                   "no_credentials",
                   `Repository ${repository.dir} could not be verified as public before launch. Run armada account login github or retry when GitHub is available.`,
                 );
-              const request = async (suffix = "") => {
+              };
+              const fetchRepository = async (suffix: string) => {
                 try {
                   return await (repositoryAccess.fetch ?? fetch)(
                     `https://api.github.com/repos/${identity.owner}/${identity.repo}${suffix}`,
@@ -131,6 +161,23 @@ export function launchCredentials(
                   return undefined;
                 } // No cheap evidence: refresh still classifies its own outcome.
               };
+              const request = async (suffix = "") => {
+                const response = await fetchRepository(suffix);
+                if (!repositoryGithub || github || rechecked || !connected || response?.status !== 401) return response;
+                rechecked = true;
+                const previous = connected;
+                const latest = await resolveAccess();
+                if (
+                  latest.status !== "connected" ||
+                  latest.identity.id !== previous.identity.id ||
+                  latest.connectionEpoch !== previous.connectionEpoch ||
+                  latest.token === previous.token
+                )
+                  return response;
+                connected = latest;
+                const retried = await fetchRepository(suffix);
+                return retried?.ok ? retried : response;
+              };
               const response = await request();
               if (
                 !response ||
@@ -142,7 +189,8 @@ export function launchCredentials(
                 if (!connected) throw unknown();
                 continue;
               }
-              if ([401, 403, 404].includes(response.status)) throw denied();
+              if (response.status === 401) throw denied("repository_access_token_rejected");
+              if ([403, 404].includes(response.status)) throw denied("metadata_denied");
               if (!response.ok) {
                 if (!connected) throw unknown();
                 continue;
@@ -158,7 +206,7 @@ export function launchCredentials(
                 continue;
               }
               if (!metadata.private) continue;
-              if (!connected) throw denied();
+              if (!connected) throw denied("private_without_connection");
               const contents = await request(`/git/ref/heads/${encodeURIComponent(repository.branch)}`);
               if (
                 contents &&
@@ -166,7 +214,7 @@ export function launchCredentials(
                 contents.headers.get("x-ratelimit-remaining") !== "0" &&
                 !contents.headers.has("retry-after")
               )
-                throw denied();
+                throw denied(contents.status === 401 ? "repository_access_token_rejected" : "branch_denied");
             }
           },
         } satisfies Pick<LaunchCredentialResolver, "authorizeRepositories">)

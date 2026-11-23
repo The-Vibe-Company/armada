@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { controlRouteKey, operations } from "@armada/core/contract";
-import { mcp } from "../../../../../../../packages/cli/src/operation-commands.ts";
 import { operation } from "../../../../../../../packages/cli/src/operations.ts";
 import { memorySessionStore } from "../../../../../../../packages/cli/src/session.ts";
 import { forwardControl } from "./control-proxy.ts";
@@ -48,51 +47,6 @@ test("user POST operations reach the dashboard proxy and direct-server POSTs sta
   }
 });
 
-test("CLI MCP subcommands reach the dashboard proxy", async () => {
-  const previous = process.env.ARMADA_MCP_URL;
-  process.env.ARMADA_MCP_URL = "https://control.test/mcp";
-  try {
-    for (const command of Object.keys(mcp.subcommandHelp)) {
-      const action = command.slice("mcp ".length);
-      const parameters: Record<string, string[]> = {
-        list: [],
-        catalog: [],
-        add: ["fixture", "https://service.test"],
-        rename: [id, "fixture"],
-        default: [id, "on"],
-      };
-      let forwarded = 0;
-      await operation(
-        "mcp",
-        [action, ...(parameters[action] ?? [id]), "--org", id],
-        {
-          env: { ARMADA_TOKEN: "fixture", ARMADA_URL: "https://dashboard.test" },
-          session: memorySessionStore(),
-          now: () => new Date(0),
-          open: () => {},
-          out: () => {},
-          err: () => {},
-          fetch: (input, init) => {
-            const request = new Request(input, init);
-            const path = new URL(request.url).pathname;
-            expect(request.method, command).toBe("POST");
-            expect(path, command).toStartWith("/api/v1/");
-            return forwardControl(request, path.slice("/api/v1/".length).split("/"), async () => {
-              forwarded++;
-              return Response.json({ connection: { id, status: "connected" } });
-            });
-          },
-        },
-        async () => "{}",
-      );
-      expect(forwarded, command).toBeGreaterThan(0);
-    }
-  } finally {
-    if (previous === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = previous;
-  }
-});
-
 test("CLI info and stop forward authenticated scope through the public proxy", async () => {
   const org = "22222222-2222-4222-8222-222222222222";
   const token = "fixture-owner";
@@ -106,33 +60,28 @@ test("CLI info and stop forward authenticated scope through the public proxy", a
     for (const { command, route, expectedBody } of cases) {
       const path = `/api/v1/sandbox/${route}`;
       const forwarded: Request[] = [];
-      await operation(
-        command,
-        [id, "--org", org, "--json"],
-        {
-          env: { ARMADA_TOKEN: token, ARMADA_URL: "https://dashboard.test" },
-          fetch: async (input, init) => {
-            const incoming = new Request(input, init);
-            expect(incoming.url).toBe(`https://dashboard.test${path}`);
-            expect(incoming.headers.get("accept")).toBe("application/json");
-            expect(incoming.headers.get("content-type")).toBe("application/json");
-            return forwardControl(
-              incoming,
-              new URL(incoming.url).pathname.slice("/api/v1/".length).split("/"),
-              async (target, options) => {
-                forwarded.push(new Request(target, options));
-                return Response.json({ id, status: "stopped", settled: true, prompt: null });
-              },
-            );
-          },
-          session: memorySessionStore(),
-          now: () => new Date(0),
-          open: () => {},
-          out: () => {},
-          err: () => {},
+      await operation(command, [id, "--org", org, "--json"], {
+        env: { ARMADA_TOKEN: token, ARMADA_URL: "https://dashboard.test" },
+        fetch: async (input, init) => {
+          const incoming = new Request(input, init);
+          expect(incoming.url).toBe(`https://dashboard.test${path}`);
+          expect(incoming.headers.get("accept")).toBe("application/json");
+          expect(incoming.headers.get("content-type")).toBe("application/json");
+          return forwardControl(
+            incoming,
+            new URL(incoming.url).pathname.slice("/api/v1/".length).split("/"),
+            async (target, options) => {
+              forwarded.push(new Request(target, options));
+              return Response.json({ id, status: "stopped", settled: true, prompt: null });
+            },
+          );
         },
-        async () => "",
-      );
+        session: memorySessionStore(),
+        now: () => new Date(0),
+        open: () => {},
+        out: () => {},
+        err: () => {},
+      });
       expect(forwarded).toHaveLength(1);
       const upstream = forwarded[0];
       expect(upstream?.url).toBe(`https://control.test${path}`);

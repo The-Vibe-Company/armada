@@ -1,8 +1,8 @@
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  isNativePathSource,
   isNonTestSource,
-  nativePathExclusions,
   nativePathPattern,
   providerAdapterExclusions,
   providerBranchPattern,
@@ -34,7 +34,7 @@ export function countArchitecture(files: ReadonlyMap<string, string>) {
     if (source) {
       sourceLines += content === "" ? 0 : content.split("\n").length - Number(content.endsWith("\n"));
       if (path.endsWith(".ts") || path.endsWith(".tsx")) {
-        if (!nativePathExclusions.test(path)) {
+        if (isNativePathSource(path)) {
           const matches = Array.from(content.matchAll(nativePathPattern)).length;
           nativeReferences += matches;
           nativeReferenceFiles += Number(matches > 0);

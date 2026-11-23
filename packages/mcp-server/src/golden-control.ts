@@ -1,4 +1,10 @@
-import { goldenForSettings, goldenResponse, parseMachineSizePolicy, providerRateLimitDetails } from "@armada/core";
+import {
+  goldenForSettings,
+  goldenResponse,
+  HOST_CAPABILITIES,
+  parseMachineSizePolicy,
+  providerRateLimitDetails,
+} from "@armada/core";
 import { controlRouteKey, goldenOperations } from "@armada/core/contract";
 import {
   addGoldenRepositories,
@@ -73,7 +79,8 @@ export async function createGoldenRoute(options: GoldenControlOptions, caller: C
   const target = options.goldenTarget
     ? await options.goldenTarget(targetInput, caller)
     : { ...targetInput, modal: null };
-  if (target.provider === "modal" && !target.modal)
+  const requiresBinding = HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding;
+  if (requiresBinding && !target.modal)
     throw new ProviderRoutingError("provider_routing_unavailable", "modal", "Modal is not configured.");
   const name = required(body, "name");
   const config = body.config === undefined ? undefined : normalizeGitHubGoldenConfig(parseSnapshotConfig(body.config));
@@ -81,7 +88,7 @@ export async function createGoldenRoute(options: GoldenControlOptions, caller: C
   const setup = optional(body, "setup");
   const actor: GoldenActor = { userId: caller.userId, orgId: org.id, role: org.role };
   assertGoldenMutation(actor, { orgId: org.id, visibility, ownerId: caller.userId, name });
-  if (target.provider === "modal" && !options.providers)
+  if (requiresBinding && !options.providers)
     throw new ProviderRoutingError(
       "provider_routing_unavailable",
       "modal",

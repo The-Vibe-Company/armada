@@ -3,6 +3,7 @@ import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { dispatchableRuntimeCommand } from "./runtime-authority-extension.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
@@ -118,7 +119,7 @@ export function createRuntimeIdle(
         for (const row of rows) {
           signal.throwIfAborted();
           cursor = row.id;
-          if (row.provider === "docker" && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
+          if (usesHostLaunch(row.provider) && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.
@@ -154,7 +155,7 @@ export function createRuntimeIdle(
               (tx) => guard(tx, row.id, generation, row),
             );
             signal.throwIfAborted();
-            if (row.provider === "docker") {
+            if (usesHostLaunch(row.provider)) {
               // Host store rechecks checkpoint identity under its own ordered locks
               // and atomically commits both the idle marker and durable stop job.
               await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);

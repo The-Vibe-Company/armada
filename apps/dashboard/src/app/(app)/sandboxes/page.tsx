@@ -26,12 +26,14 @@ import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
+import { CONTROL_TIMEOUT_MS, createControlClient } from "@/lib/control";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
+import { mcpUrl } from "@/lib/env";
 import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
@@ -42,7 +44,7 @@ import {
   type SandboxListMetadata,
   skippedRowsNote,
 } from "@/lib/sandbox-access";
-import { sandboxActivityPage, sandboxNeedsViewer } from "@/lib/sandbox-activity";
+import { isWaitingCandidate, type SandboxTurnObservation, sandboxActivityPage } from "@/lib/sandbox-activity";
 import {
   FACETS,
   type Facet,
@@ -98,7 +100,7 @@ async function SandboxesContent({ searchParams }: Props) {
         </Empty>
       </>
     );
-  const inventory = loadInventory(supabase, selected.org.id, filters, viewer.id, query.activity);
+  const inventory = loadInventory(supabase, selected.org.id, filters, viewer, query.activity);
   const hosts = readSelectedDockerHosts();
   // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
   const costsRead = inventory.then(({ rows }) => listSandboxCosts(supabase, rows));
@@ -128,7 +130,7 @@ async function SandboxesContent({ searchParams }: Props) {
     return snapshots;
   });
   const [
-    { rows, total, inventoryTotal, skipped, facets, activity, counts, page },
+    { rows, total, inventoryTotal, skipped, facets, activity, counts, page, waitingIds, waitingIncomplete, now },
     directory,
     setup,
     hostRead,
@@ -152,7 +154,6 @@ async function SandboxesContent({ searchParams }: Props) {
     snapshotsRead,
   ]);
 
-  const now = new Date();
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
@@ -231,6 +232,12 @@ async function SandboxesContent({ searchParams }: Props) {
         <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
       </SandboxToolbar>
 
+      {waitingIncomplete && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Some turn statuses could not be checked. The Waiting for you count may be incomplete.
+        </p>
+      )}
+
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
           {skippedRowsNote(skipped)}
@@ -273,15 +280,13 @@ async function SandboxesContent({ searchParams }: Props) {
           counts={counts}
           tab={activity}
           page={page}
+          waitingIncomplete={waitingIncomplete}
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
-            const working = sandbox.status === "running" || sandbox.status === "starting";
-            const need = sandboxNeedsViewer(sandbox, viewer.id, now);
+            const readyLabel = waitingIds.has(sandbox.id) ? "Waiting for you" : "Ready";
             return {
               id: sandbox.id,
-              need,
-              working,
               content: (
                 <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-4 py-[11px] hover:bg-muted/40 lg:grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] lg:items-center">
                   <div className="min-w-0">
@@ -293,7 +298,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         idlePaused={sandbox.idlePaused}
                         expiresAt={sandbox.expiresAt}
                         statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
-                        readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : undefined}
+                        readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : readyLabel}
                       />
                       <span aria-hidden="true">·</span>
                       <span className="font-mono" title={sandbox.id}>
@@ -484,7 +489,7 @@ async function loadInventory(
   supabase: Supabase,
   orgId: string,
   filters: ReturnType<typeof parseSandboxFilters>,
-  viewerId: string,
+  viewer: Viewer,
   requestedActivity: string | string[] | undefined,
 ) {
   const inventory: SandboxListMetadata[] = [];
@@ -502,13 +507,38 @@ async function loadInventory(
     skipped += parsed.skipped.length;
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
-  const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
-  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page);
+  const rows = sortSandboxes(filterSandboxes(inventory, filters, viewer.id), filters.sort);
+  const turns = await readWaitingTurns(rows, viewer);
+  const now = new Date();
+  const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, now);
   return {
     ...activityPage,
+    now,
     total: rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
-    facets: sandboxFacetCounts(inventory, filters, viewerId),
+    facets: sandboxFacetCounts(inventory, filters, viewer.id),
   };
+}
+
+async function readWaitingTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
+  const turns = new Map<string, SandboxTurnObservation>();
+  const now = new Date();
+  const candidates = rows.filter((row) => isWaitingCandidate(row, viewer.id, now));
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return turns;
+
+  const deadline = performance.now() + CONTROL_TIMEOUT_MS;
+  for (let offset = 0; offset < candidates.length; offset += 8) {
+    const timeoutMs = Math.floor(deadline - performance.now());
+    if (timeoutMs < 1) break;
+    const client = createControlClient({ serverUrl, token: viewer.token, timeoutMs });
+    await Promise.all(
+      candidates.slice(offset, offset + 8).map(async ({ id }) => {
+        const observation = await client.post<SandboxTurnObservation>("sandbox/status", { id }).catch(() => null);
+        if (observation) turns.set(id, observation);
+      }),
+    );
+  }
+  return turns;
 }

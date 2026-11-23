@@ -1151,32 +1151,21 @@ per declared deployment before saving. Empty lists, rejected/invalid responses
 and unavailable checks save nothing. All declarations must pass; this is not an
 optional browser-only check.
 
-CLI equivalents from this checkout, with the staging Armada token already
-exported from your secret source:
+For automated setup, submit separate personal accounts using
+`armada api creds/accounts/set -` with JSON on stdin. Use `kind: "openai"` for
+Azure Codex and `kind: "opencode"` for Azure OpenCode. Set `value` to the
+serialized JSON string for the selected account kind. The inner objects have
+different shapes (placeholders only):
 
-```bash
-export ARMADA_URL=https://armada-mcp-staging.up.railway.app
-export AZURE_V1_URL='https://YOUR-RESOURCE.openai.azure.com/openai/v1'
-# For a Foundry resource, use its https://YOUR-RESOURCE.services.ai.azure.com/openai/v1 address.
-export AZURE_DEPLOYMENT='YOUR-ACTUAL-DEPLOYMENT-NAME'
-export AZURE_KEY_FILE='/private/azure-key'
+- Codex: `{"endpoint":{"version":1,"baseUrl":"AZURE_V1_URL"},"apiKey":"KEY","models":["DEPLOYMENT"]}`
+- OpenCode: `{"endpoint":{"version":1,"baseUrl":"AZURE_V1_URL","protocol":"azure","models":["DEPLOYMENT"]},"apiKey":"KEY"}`
 
-bun run armada account add --preset azure-foundry --name 'Azure Codex' \
-  --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
-  --file "$AZURE_KEY_FILE"
-
-bun run armada account add --preset opencode-azure --name 'Azure OpenCode' \
-  --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
-  < "$AZURE_KEY_FILE"
-```
-
-These create separate personal accounts, not a mutation of a retained sandbox's
-billing account. Neither command accepts a secret in argv; omit `--file` to read
-stdin. Use a CLI containing `account add --preset` (the source command avoids an old
-installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
+Build the outer request with `scope: "user"`, the account `name`, `kind` and
+the serialized `value`. Pass it through stdin from your secret source.
+See [model-account administration](cli-admin.md#model-account-presets).
+OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
-that preset. Both commands use the same mandatory server admission as the
-dashboard. Save success means each declared Azure deployment returned an accepted
+that preset. The route uses the same mandatory server admission as the dashboard. Save success means each declared Azure deployment returned an accepted
 native Responses receipt, **not** that answer/follow-up/resume with a harness is
 proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 

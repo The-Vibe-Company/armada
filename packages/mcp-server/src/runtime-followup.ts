@@ -1,3 +1,4 @@
+import { isSandboxProvider } from "@armada/core";
 import {
   modalLaunchSetupKeySql,
   ProviderError,
@@ -10,7 +11,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { canRepeatPinnedRuntimeSettings, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -61,7 +62,7 @@ export function createRuntimeFollowup(
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => {
+  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim, { fromQueue = false } = {}) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -70,8 +71,8 @@ export function createRuntimeFollowup(
     const found = await store.get(input.id);
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found))
       throw new VaultError("not_found", "No owned runtime sandbox.");
-    // Only Boat may repeat pinned settings; redundant fields stay out of durable command/resume identity.
-    const repeatPinned = found.provider === "boat";
+    // Redundant pinned settings stay out of durable command/resume identity.
+    const repeatPinned = canRepeatPinnedRuntimeSettings(found.provider);
     if (
       (input.model !== undefined && (!repeatPinned || input.model !== found.model)) ||
       (input.reasoning_effort !== undefined && (!repeatPinned || input.reasoning_effort !== found.reasoningEffort))
@@ -85,10 +86,11 @@ export function createRuntimeFollowup(
         `select j.state, exists (
            select 1 from public.account_turn_queue q
            where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
+             and (q.request_id is distinct from $5::uuid or q.state<>'dispatching')
          ) as prompt_pending
          from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
          where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
-        [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
+        [found.id, caller.userId, found.orgId, found.lifecycleGeneration, fromQueue ? requestId : null],
       );
       if (!setup)
         throw new RuntimeFollowupConflict(
@@ -161,7 +163,7 @@ export function createRuntimeFollowup(
         throw new RuntimeFollowupConflict("runtime_prompt_running", "Wait for the current runtime prompt to finish.");
     }
     const configuredEpoch =
-      previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
+      previous.state === "missing" && isSandboxProvider(found.provider)
         ? await environment.deliver(
             found.provider,
             { userId: caller.userId, orgId: found.orgId },

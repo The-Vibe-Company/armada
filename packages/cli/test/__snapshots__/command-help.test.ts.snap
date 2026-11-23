@@ -71,8 +71,6 @@ Usage:
   armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
-  armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
-                                           Read actual bound connection metadata, never mutate bindings
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
   armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
@@ -89,11 +87,6 @@ Usage:
   armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]
                                            List or download saved outputs
   armada api ROUTE [JSON|-]
-  armada mcp catalog|rename ID NAME|default ID on|off [--org UUID]
-  armada mcp add NAME --service notion|linear [--scope personal|org] [--org UUID]
-  armada mcp add NAME URL [--scope personal|org] [--org UUID]
-                                           Public/OAuth URL shortcut; auto discovery, no secret argv
-  armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
   armada logout
   armada whoami [--json]
@@ -340,8 +333,8 @@ Use snapshot show to inspect the build later. --json prints a single receipt.
 exports[`armada account help preserves its output 1`] = `
 "Usage: armada account <command> [arguments]
 Manage model credentials, GitHub access or your personal Armada session.
-  ls            List credential metadata. Use --presets for connection choices.
-  add           Store a credential kind or use --preset for a named connection.
+  ls            List credential metadata.
+  add           Store a credential kind.
   login codex   Authorize native Codex in your browser.
   import        Import native Claude or Codex credentials securely.
   default       Select a default model account by ID.
@@ -380,17 +373,13 @@ Example: armada account import claude --name personal --file /private/native-cre
 
 exports[`armada account add help preserves its output 1`] = `
 "Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
-       armada account add --preset <id> --name NAME [--org NAME] [--file PATH]
 Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
-List presets and their model requirements with armada account ls --presets --json.
-Presets with a custom address take --base-url and --models. Fixed addresses take --models
-only when required by the preset. Use --api-version only with a supported preset or OpenAI endpoint.
+OpenAI custom endpoints also accept --api-version where supported.
 Official Azure addresses make a tiny billable request per deployment before storing the account.
 Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
 Claude gateways take --base-url and optional --endpoint-auth bearer|api-key (default bearer).
 Custom endpoints accept --price-model, --price-input, --price-output and optional --price-cached-input
 in USD per million tokens. Re-enter prices when replacing a connection.
 Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
-Example: armada account add --preset morph --name shared --file /private/morph-key
 "
 `;

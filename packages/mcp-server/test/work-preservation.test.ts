@@ -6,6 +6,7 @@ import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { configureNativeDrain, createNativeDrainRemoval } from "../src/native-drain.ts";
+import { nativeDrainFailureReason } from "../src/native-drain-failure.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
@@ -959,19 +960,19 @@ async function seedNativeDrainReceipt(
       `bx_${sandboxId}`,
     ],
   );
-  if (outcome === "archived")
-    await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
-      archiveId,
-      sandboxId,
-      ciphertext,
-    ]);
   await db.query(
-    `insert into sandbox_native_preservation_receipts
+    `with archive as (
+       insert into sandbox_work_recovery(id,sandbox_id,archive_enc)
+       select $2::uuid,$1::uuid,$3::bytea where $4::boolean returning id
+     )
+     insert into sandbox_native_preservation_receipts
        (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
-     values($1,4,2,4,2,$2,$3::jsonb)`,
+     values($1,4,2,4,2,(select id from archive),$5::jsonb)`,
     [
       sandboxId,
-      outcome === "archived" ? archiveId : null,
+      archiveId,
+      ciphertext,
+      outcome === "archived",
       provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null,
     ],
   );
@@ -991,7 +992,7 @@ async function seedNativeDrainReceipt(
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-test("Boat drain without a preservation receipt requires opt-in through provider confirmation", async () => {
+test("Boat drain with activity but no preservation receipt requires opt-in through provider confirmation", async () => {
   const { db, people, sharedGoldenId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   const placement = `bx_${sandboxId}`;
@@ -1010,13 +1011,16 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   const row = { id: sandboxId, org_id: people.org, role: "member" as const };
   const drain = (optIn: boolean) => createNativeDrainRemoval(sql, "boat", people.owner, access, providers, optIn)(row);
 
-  await expect(drain(false)).rejects.toThrow("work preservation could not be verified");
+  await db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [sandboxId]);
+  expect(await drain(true).catch(nativeDrainFailureReason)).toBe("lease_busy");
+  await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
+  expect(await drain(false).catch(nativeDrainFailureReason)).toBe("preservation_refused");
   await db.query("insert into sandbox_native_exec_attempts(sandbox_id,generation) values($1,1)", [sandboxId]);
-  await expect(drain(true)).rejects.toThrow("work preservation could not be verified");
+  expect(await drain(false).catch(nativeDrainFailureReason)).toBe("not_eligible");
   expect(remove).not.toHaveBeenCalled();
-  await db.query("delete from sandbox_native_exec_attempts where sandbox_id=$1", [sandboxId]);
-  await expect(drain(true)).rejects.toThrow("Provider deletion is pending");
+  expect(await drain(true).catch(nativeDrainFailureReason)).toBe("deletion_pending");
   expect(remove).toHaveBeenCalledWith({ sandboxId: placement, generation: 2 });
+  expect(await drain(true).catch(nativeDrainFailureReason)).toBe("lease_busy");
   await db.query("update sandboxes set activity_until='-infinity' where id=$1", [sandboxId]);
   await expect(drain(false)).rejects.toThrow("requires verified work preservation");
   await expect(drain(true)).resolves.toBe("without-proof");
@@ -1029,6 +1033,20 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   });
   const { rows } = await db.query("select status from sandboxes where id=$1", [sandboxId]);
   expect(rows).toEqual([{ status: "deleted" }]);
+});
+
+test("Boat drain reports a stored key that cannot be decrypted before claiming deletion", async () => {
+  const { db, people, sandboxId } = await seedNativeDrainReceipt();
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", people.owner, {
+    ARMADA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  const row = { id: sandboxId, org_id: people.org, role: "member" as const };
+
+  expect(await drain.remove(row).catch(nativeDrainFailureReason)).toBe("provider_credentials_unreadable");
+  expect((await db.query("select native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { native_drain_pending: false },
+  ]);
 });
 
 test.each(["Boat unclaimed", "Boat acknowledged"] as const)(

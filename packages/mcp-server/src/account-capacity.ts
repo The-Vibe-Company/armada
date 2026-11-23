@@ -1,3 +1,4 @@
+import type { AccountRefusal } from "@armada/core";
 import {
   ACCOUNT_ACTIVE_WORK_PREDICATE,
   accountWorkingCountSql,
@@ -6,7 +7,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 
-interface CapacityAccount {
+export interface CapacityAccount {
   name: string;
   max_agents: number | null;
   model_limits: Record<string, number>;
@@ -92,7 +93,16 @@ async function reserveAccountCapacity(
   );
 }
 
-async function checkAccountLimits(
+export class AccountCapacityRefusal extends VaultError {
+  constructor(
+    readonly reason: Extract<AccountRefusal["code"], "account_full" | "model_full">,
+    message: string,
+  ) {
+    super("conflict", message);
+  }
+}
+
+export async function checkAccountLimits(
   tx: Sql,
   account: CapacityAccount,
   accountId: string,
@@ -106,8 +116,8 @@ async function checkAccountLimits(
     );
     const running = Number(result.rows[0]?.running ?? 0);
     if (running >= account.max_agents)
-      throw new VaultError(
-        "conflict",
+      throw new AccountCapacityRefusal(
+        "account_full",
         `Account ${account.name} is at its limit: ${running}/${account.max_agents} agents working; wait for a turn to finish, raise the limit, or pick another account.`,
       );
   }
@@ -123,8 +133,8 @@ async function checkAccountLimits(
       ).rows[0]?.running ?? 0,
     );
     if (used >= modelLimit)
-      throw new VaultError(
-        "conflict",
+      throw new AccountCapacityRefusal(
+        "model_full",
         `Model ${model} on account ${account.name} is at its limit: ${used}/${modelLimit} agents working.`,
       );
   }

@@ -1,6 +1,12 @@
 import { lstatSync, readFileSync } from "node:fs";
 import ts from "typescript";
-import { providerAdapterExclusions, providerBranchPattern, testPaths } from "../metrics/architecture-rules";
+import {
+  isNativePathSource,
+  nativePathPattern,
+  providerAdapterExclusions,
+  providerBranchPattern,
+  testPaths,
+} from "../metrics/architecture-rules";
 
 const serverAdapters = new Set(
   [
@@ -108,7 +114,7 @@ type Counter = {
   includes: (path: string) => boolean;
 } & ({ pattern: RegExp } | { scan: (path: string, content: string) => Iterable<Occurrence> });
 
-const counters: Record<string, Counter | null> = {
+const counters: Record<string, Counter> = {
   "provider-branch": {
     name: "provider-branch",
     includes: (path) => !providerAdapterExclusions.test(path) && !serverAdapters.has(path),
@@ -124,7 +130,11 @@ const counters: Record<string, Counter | null> = {
     includes: (path) => serverSource.test(path),
     pattern: /(["'`])(?:deprecation|sunset)\1|\b(?:deprecation|sunset)\b(?=\s*:)/gi,
   },
-  "native-path": null,
+  "native-path": {
+    name: "native-path",
+    includes: isNativePathSource,
+    pattern: nativePathPattern,
+  },
   "append-point": {
     name: "append-point",
     includes: (path) => appendPoints.has(path),
@@ -132,16 +142,21 @@ const counters: Record<string, Counter | null> = {
   },
 };
 
-const activeCounters = Object.values(counters).filter((counter) => counter !== null);
+const activeCounters = Object.values(counters);
 type Files = ReadonlyMap<string, string>;
 
-function inScope(path: string) {
+function isNonTestTypeScript(path: string) {
   return path.endsWith(".ts") && !testPaths.test(path);
+}
+
+function inScope(path: string) {
+  return isNonTestTypeScript(path) || isNativePathSource(path);
 }
 
 function* matches(counter: Counter, files: Files) {
   for (const [path, content] of files) {
-    if (!inScope(path) || !counter.includes(path)) continue;
+    if (!counter.includes(path)) continue;
+    if (counter.name !== "native-path" && !isNonTestTypeScript(path)) continue;
     if ("scan" in counter) {
       for (const occurrence of counter.scan(path, content)) yield { path, content, ...occurrence };
     } else {
@@ -235,7 +250,18 @@ function readHead() {
 
 function readBase(base: string) {
   const candidates = git(
-    ["grep", "--text", "-ilz", "-E", "-e", "boat|modal|docker|switch|-v[0-9]|deprecation|sunset", base, "--", "*.ts"],
+    [
+      "grep",
+      "--text",
+      "-ilz",
+      "-E",
+      "-e",
+      "boat|modal|docker|switch|-v[0-9]|deprecation|sunset|agent|native|transport",
+      base,
+      "--",
+      "*.ts",
+      "*.tsx",
+    ],
     { exitOne: true },
   )
     .toString()

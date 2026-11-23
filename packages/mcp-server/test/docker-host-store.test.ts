@@ -437,6 +437,118 @@ test("Machine create replays one intent and recovers the authenticated container
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
+async function machineStopFixture() {
+  const a = await machineCreateFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  const machineId = "d".repeat(64);
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: a.generation,
+    outcome: "completed",
+    machineId,
+  });
+  return { ...a, machine: { sandboxId: a.sandboxId, generation: a.request.generation, machineId } };
+}
+
+test.each(["revocation", "physical removal", "failed physical removal"] as const)(
+  "Machine stop recovers on takeover and fences %s",
+  async (fence) => {
+    const a = await machineStopFixture();
+    const request = { ...a.machine, retain: true };
+    await database().query("update sandboxes set status='stopping', lifecycle_generation=$2 where id=$1", [
+      a.sandboxId,
+      fence === "revocation" ? 2 : 1,
+    ]);
+    const first = store.machineCleanup(a.owner);
+    await denied(first.stop({ ...request, generation: 2 }));
+    await denied(first.stop({ ...request, machineId: "e".repeat(64) }));
+    const interrupted = interruptDockerCommit(
+      async (tx) =>
+        (
+          await tx.query("select 1 from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='stop'", [
+            a.sandboxId,
+          ])
+        ).rows.length > 0,
+    );
+    await expect(interrupted.faultingStore.machineCleanup(a.owner).stop(request)).rejects.toMatchObject({
+      cause: interrupted.failure,
+    });
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+
+    await expect(first.stop(request)).rejects.toThrow("outcome is unknown");
+    const pending = await store.poll(a.hostToken, a.installationId);
+    expect(pending).toMatchObject({ operation: "stop", request: { sandboxId: a.sandboxId, generation: a.generation } });
+    const requestId = pending!.requestId;
+    const successor = createDockerHostStore(sql, key).machineCleanup(a.owner);
+    expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
+    await expect(successor.stop(request)).rejects.toThrow("outcome is unknown");
+    await denied(successor.stop({ ...request, retain: false }));
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(requestId);
+
+    const result = { requestId, outcome: "completed" as const, machineId: a.machine.machineId };
+    await denied(store.complete(a.hostToken, randomUUID(), result));
+    await denied(store.complete(a.hostToken, a.installationId, { ...result, machineId: "e".repeat(64) }));
+    const interruptedReceipt = failDockerJobCommit(requestId, "completed");
+    await expect(
+      interruptedReceipt.faultingStore.complete(a.hostToken, a.installationId, result),
+    ).rejects.toMatchObject({
+      cause: interruptedReceipt.failure,
+    });
+    expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
+    await store.complete(a.hostToken, a.installationId, result);
+    await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+    const retained = {
+      sandboxId: a.sandboxId,
+      generation: a.machine.generation,
+      kind: "container" as const,
+      ref: result.machineId,
+    };
+    expect(await successor.stop(request)).toEqual(retained);
+    await denied(successor.stop({ ...request, retain: false }));
+    expect(await successor.observe(a.machine)).toEqual({
+      kind: "present",
+      machine: a.machine,
+      phase: "stopped",
+      receipt: { operation: "stop", retained },
+    });
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+    const status = await database().query("select status from sandboxes where id=$1", [a.sandboxId]);
+    expect(status.rows).toEqual([{ status: "stopping" }]);
+    if (fence === "revocation") await store.revoke(a.actor, a.hostId);
+    else {
+      await database().query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
+      const requestId = randomUUID();
+      await store.enqueueSandbox(a.owner, a.sandboxId, {
+        requestId,
+        operation: "deletePhysical",
+        machineId: a.machine.machineId,
+        lifecycleGeneration: a.machine.generation,
+      });
+      await store.complete(a.hostToken, a.installationId, {
+        requestId,
+        outcome: fence === "failed physical removal" ? "failed" : "completed",
+      });
+    }
+    expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
+  },
+);
+
+test("Machine non-retaining stop confirms removal after an ID-less stop acknowledgement", async () => {
+  const a = await machineStopFixture();
+  const adapter = store.machineCleanup(a.owner);
+  const request = { ...a.machine, retain: false };
+  await expect(adapter.stop(request)).rejects.toThrow("outcome is unknown");
+  const stop = await store.poll(a.hostToken, a.installationId);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop!.requestId, outcome: "completed" });
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "unknown" });
+  await expect(adapter.stop(request)).rejects.toThrow("outcome is unknown");
+  const removal = await store.poll(a.hostToken, a.installationId);
+  expect(removal?.operation).toBe("delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: removal!.requestId, outcome: "completed" });
+  expect(await adapter.stop(request)).toBeNull();
+  await denied(adapter.stop({ ...request, retain: true }));
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
+});
+
 test("Machine create freezes a snapshot from the admitted host installation", async () => {
   const host = await fixture();
   const db = database();
@@ -1240,14 +1352,14 @@ test("the daemon recovers pending restores and drains unrelated work with a full
     },
   };
   const now = () => Date.UTC(2026, 0, 1);
-  const deferRestores = new Set<string>();
+  const deferUncertain = new Set<string>();
   for (const { restore } of pairs) {
-    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferRestores })).rejects.toThrow(
+    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferUncertain })).rejects.toThrow(
       DockerMachineError,
     );
-    deferRestores.add(restore.requestId);
+    deferUncertain.add(restore.requestId);
   }
-  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferRestores);
+  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferUncertain);
   expect(state.receipts.every(({ outcome }) => !outcome)).toBe(true);
 
   const live = [job(), job(), job()];

@@ -17,6 +17,7 @@ import {
   isSnapshotBaselineTool,
   type Machine,
   type MachineIdentity,
+  type MachineObservation,
   readOutputArchive,
   type SnapshotBaselineTool,
   VaultError,
@@ -177,6 +178,16 @@ function eligibleJob(physical: number, restore: number) {
         and pending.bound_operation='restore' and pending.outcome is null))`;
 }
 
+type MachineCleanupOperation = "stop" | "delete";
+function machineCleanupId(daemonGeneration: string, operation: MachineCleanupOperation) {
+  const digest = createHash("sha256").update(`docker-machine:${daemonGeneration}:${operation}`).digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`;
+}
+
+function isCleanupOperation(operation: string | null): operation is MachineCleanupOperation {
+  return operation === "stop" || operation === "delete";
+}
+
 function generationFenced(operation: string | null) {
   return operation === "deletePhysical" || operation === "restore";
 }
@@ -288,12 +299,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
     bound?: Bound,
     lifecycleGeneration?: string,
     runnerJobId?: string,
+    machineRetain?: boolean,
   ) {
     const canonical = input(job);
+    if (
+      isCleanupOperation(job.operation) &&
+      (job.requestId === machineCleanupId(job.request.generation, job.operation)) !==
+        (lifecycleGeneration !== undefined)
+    )
+      deny();
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
     const serialized = bound
-      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId })
+      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId, machineRetain })
       : canonical;
     const metadata: Bound = {
       snapshot_id: null,
@@ -345,6 +363,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function readStoredJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]) {
     let runnerJobId: string | undefined;
     let lifecycleGeneration: string | undefined;
+    let machineRetain: boolean | undefined;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -357,11 +376,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
       throw error;
     }
     if (row.bound_sandbox_id !== null || row.snapshot_id) {
-      const fenced = generationFenced(row.bound_operation);
+      const fenced =
+        generationFenced(row.bound_operation) ||
+        (isCleanupOperation(row.bound_operation) &&
+          typeof stored === "object" &&
+          stored !== null &&
+          "lifecycleGeneration" in stored);
+      const machineStop = fenced && row.bound_operation === "stop";
       exact(stored, [
         "bound",
         "job",
         ...(fenced ? ["lifecycleGeneration"] : []),
+        ...(machineStop ? ["machineRetain"] : []),
         ...(row.bound_operation === "restore" ? ["runnerJobId"] : []),
       ]);
       if (row.bound_operation === "restore") {
@@ -369,6 +395,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         runnerJobId = stored.runnerJobId;
       }
       if (stored.bound !== 1) deny();
+      if (machineStop) {
+        if (typeof stored.machineRetain !== "boolean") deny();
+        machineRetain = stored.machineRetain;
+      }
       if (fenced) {
         if (
           typeof stored.lifecycleGeneration !== "string" ||
@@ -401,7 +431,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
         job.build.ownerId !== row.bound_actor_id)
     )
       deny();
-    return { job, runnerJobId, lifecycleGeneration };
+    const machineCleanup = isCleanupOperation(job.operation) && lifecycleGeneration !== undefined;
+    if (
+      isCleanupOperation(job.operation) &&
+      machineCleanup &&
+      job.requestId !== machineCleanupId(job.request.generation, job.operation)
+    )
+      deny();
+    return { job, runnerJobId, lifecycleGeneration, machineCleanup, machineRetain };
   }
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
@@ -437,8 +474,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
     const host =
       (
-        await tx.query<Host>(
-          `select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
+        await tx.query<Host & { revoked: boolean }>(
+          `select id,org_id,owner_id,revoked_at is not null as revoked from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
        and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
           [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
         )
@@ -719,12 +756,70 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return (await bindings.lookup({ sandboxId: row.id, generation: Number(row.lifecycle_generation) })) === requestId;
   }
 
+  async function currentMachineCleanup(tx: Sql, row: Sandbox) {
+    const generation = (
+      await tx.query<{ machine_generation: string }>(
+        `select machine_generation::text from public.docker_machine_bindings
+         where sandbox_id=$1 and host_id=$2 and installation_id=$3 and daemon_generation=$4`,
+        [row.id, row.docker_host_id, row.docker_installation_id, row.docker_generation],
+      )
+    ).rows[0]?.machine_generation;
+    if (!generation) return undefined;
+    const current = BigInt(row.lifecycle_generation);
+    if (
+      current === BigInt(generation) ||
+      (["stopping", "stopped"].includes(row.status) && current === BigInt(generation) + 1n)
+    )
+      return generation;
+    return undefined;
+  }
+  async function allocationReceipt(tx: Sql, row: Sandbox) {
+    return (
+      await tx.query<{ result_machine_id: string | null }>(
+        `select result_machine_id from public.docker_host_jobs
+         where request_id=$1 and host_id=$2 and bound_sandbox_id=$3
+           and bound_operation in ('create','restore') and outcome='completed' and cancelled_at is null`,
+        [row.docker_generation, row.docker_host_id, row.id],
+      )
+    ).rows[0]?.result_machine_id;
+  }
+  async function machineCleanupReceipt(tx: Sql, row: Sandbox, operation: MachineCleanupOperation) {
+    const receipt = (
+      await tx.query<StoredJob>(
+        `select * from public.docker_host_jobs
+         where request_id=$1 and host_id=$2 and bound_sandbox_id=$3 and bound_operation=$4`,
+        [machineCleanupId(row.docker_generation, operation), row.docker_host_id, row.id, operation],
+      )
+    ).rows[0];
+    if (!receipt || (await supersededLifecycle(tx, receipt))) return undefined;
+    const delivered = await readStoredJob(receipt);
+    if (!delivered.machineCleanup || delivered.lifecycleGeneration !== (await currentMachineCleanup(tx, row)))
+      return undefined;
+    await requireCurrentMachine(tx, row, delivered.job);
+    return { ...receipt, retain: delivered.machineRetain };
+  }
+  async function hasPhysicalRemovalIntent(tx: Sql, row: Sandbox, machineId: string) {
+    const { rows } = await tx.query<StoredJob>(
+      `select * from public.docker_host_jobs where host_id=$1 and bound_sandbox_id=$2
+       and bound_operation='deletePhysical'`,
+      [row.docker_host_id, row.id],
+    );
+    for (const receipt of rows) {
+      const job = await readJob(receipt);
+      if (
+        job.operation === "deletePhysical" &&
+        job.request.generation === row.docker_generation &&
+        job.machineId === machineId
+      )
+        return true;
+    }
+    return false;
+  }
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
     const frozen = await machine(tx, logical, "stop");
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(
@@ -1456,6 +1551,102 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    machineCleanup(actor: Actor) {
+      const unknown = { kind: "unknown" } as const;
+      return {
+        async observe(request) {
+          request.signal?.throwIfAborted();
+          return transaction<MachineObservation>(async (tx) => {
+            const { host, row } = await lockSandboxAdmission(tx, actor, request.sandboxId, "stop");
+            await permission(tx, actor, row, "stop");
+            if (host.revoked) return unknown;
+            const machineId = await allocationReceipt(tx, row);
+            if (!machineId || (request.machineId !== undefined && request.machineId !== machineId)) return unknown;
+            if ((await currentMachineCleanup(tx, row)) !== String(request.generation)) return unknown;
+            const removal = await machineCleanupReceipt(tx, row, "delete");
+            if (removal) {
+              return removal.outcome === "completed" && !removal.cancelled_at
+                ? { kind: "absent", receipt: { operation: "delete" } }
+                : unknown;
+            }
+            if (row.status === "deleted") return unknown;
+            const stopped = await machineCleanupReceipt(tx, row, "stop");
+            if (
+              stopped?.outcome !== "completed" ||
+              stopped.retain !== true ||
+              stopped.cancelled_at ||
+              stopped.result_machine_id !== machineId ||
+              (await hasPhysicalRemovalIntent(tx, row, machineId))
+            )
+              return unknown;
+            const machine = { sandboxId: request.sandboxId, generation: request.generation, machineId };
+            return {
+              kind: "present",
+              machine,
+              phase: "stopped",
+              receipt: {
+                operation: "stop",
+                retained: {
+                  sandboxId: machine.sandboxId,
+                  generation: machine.generation,
+                  kind: "container",
+                  ref: machineId,
+                },
+              },
+            };
+          });
+        },
+        async stop(request) {
+          request.signal?.throwIfAborted();
+          const result = await transaction(async (tx) => {
+            const { sandboxId, generation, machineId, retain } = request;
+            const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, "stop");
+            const epoch = await permission(tx, actor, row, "stop");
+            if (
+              !/^[a-f0-9]{64}$/.test(machineId) ||
+              (await allocationReceipt(tx, row)) !== machineId ||
+              (await currentMachineCleanup(tx, row)) !== String(generation)
+            )
+              deny();
+            const stopped = await machineCleanupReceipt(tx, row, "stop");
+            if (stopped && stopped.retain !== retain) deny();
+            const removal = await machineCleanupReceipt(tx, row, "delete");
+            if (removal) return removal.outcome === "completed" && !removal.cancelled_at ? null : undefined;
+            if (row.status === "deleted") deny();
+            if (stopped?.outcome === "completed" && !stopped.cancelled_at && retain) {
+              if (
+                host.revoked ||
+                stopped.result_machine_id !== machineId ||
+                (await hasPhysicalRemovalIntent(tx, row, machineId))
+              )
+                return undefined;
+              return { sandboxId, generation, kind: "container" as const, ref: machineId };
+            }
+            if (stopped && (stopped.outcome !== "completed" || stopped.cancelled_at)) return undefined;
+            const operation = stopped ? "delete" : "stop";
+            const allocation = await machine(tx, row, operation);
+            request.signal?.throwIfAborted();
+            await insert(
+              tx,
+              host.id,
+              { requestId: machineCleanupId(row.docker_generation, operation), operation, request: allocation },
+              {
+                bound_sandbox_id: sandboxId,
+                bound_actor_id: actor.userId,
+                bound_actor_epoch: epoch,
+                bound_operation: operation,
+              },
+              String(generation),
+              undefined,
+              stopped ? undefined : retain,
+            );
+            return undefined;
+          });
+          if (result === undefined) throw new Error("Docker Machine stop outcome is unknown.");
+          return result;
+        },
+      } satisfies Pick<Machine, "stop" | "observe">;
+    },
     async submitMachineCreate(actor: Actor, request: Parameters<Machine["create"]>[0]) {
       const { sandboxId, generation, source, computeTtlSeconds, signal } = request;
       signal?.throwIfAborted();
@@ -2055,7 +2246,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
               row.bound_operation ?? deny(),
               row.bound_actor_epoch,
             );
-            await state(tx, logical, row.bound_operation ?? deny());
+            const delivered = isCleanupOperation(row.bound_operation) ? await readStoredJob(row) : undefined;
+            if (delivered?.machineCleanup) {
+              if (
+                delivered.lifecycleGeneration !== (await currentMachineCleanup(tx, logical)) ||
+                (await supersededLifecycle(tx, row))
+              ) {
+                supersededPlacement = true;
+                deny();
+              }
+            } else await state(tx, logical, row.bound_operation ?? deny());
             if (row.bound_operation !== "deletePhysical") await machine(tx, logical, row.bound_operation ?? deny());
             // Create pickup belongs to activation 1. Resume timing comes from its durable host claim.
             if (row.bound_operation === "create")
@@ -2374,15 +2574,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id, result.requestId],
         );
         const job = jobs.rows[0] ?? deny();
+        const cleanup = isCleanupOperation(job.bound_operation);
+        const machineCleanup = cleanup && (await readStoredJob(job)).machineCleanup;
         if (
           result.machineId !== undefined &&
           (result.outcome !== "completed" ||
             typeof result.machineId !== "string" ||
             !/^[a-f0-9]{64}$/.test(result.machineId) ||
             !job.bound_sandbox_id ||
-            (job.bound_operation !== "create" && job.bound_operation !== "restore"))
+            (job.bound_operation !== "create" && job.bound_operation !== "restore" && job.bound_operation !== "stop"))
         )
           deny();
+        if (job.bound_operation === "stop" && result.machineId !== undefined && logical) {
+          const allocatedId = await allocationReceipt(tx, logical);
+          if (allocatedId && allocatedId !== result.machineId) deny();
+        }
         // A cancelled job's server outcome is not a machine fact. The first host
         // receipt replaces it; after that, terminal facts are immutable.
         if (
@@ -2507,11 +2713,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           // (see runtime-progress).
           if (job.bound_operation === "create")
             await recordLaunchStageForActivation(tx, job.bound_sandbox_id, 1, "machine_started");
-          if (logical && (job.bound_operation === "stop" || job.bound_operation === "delete"))
+          if (logical && isCleanupOperation(job.bound_operation) && !machineCleanup)
             await recordDockerCleanupReceipt(tx, logical.id, Number(logical.lifecycle_generation), job.bound_operation);
           // A self-finish stop is a durable cleanup intent, not retained idle compute.
           // Enqueue removal in this same ACK transaction; a lost ACK can safely repair it.
-          if (job.bound_operation === "stop" && logical?.status_reason === "agent_finished") {
+          if (!machineCleanup && job.bound_operation === "stop" && logical?.status_reason === "agent_finished") {
             const current = await sandbox(tx, logical.id, host, installationId);
             const known = await tx.query(
               `select 1 from public.docker_host_jobs where bound_sandbox_id=$1

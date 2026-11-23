@@ -45,18 +45,40 @@ export type GoldenErrorCode =
   | "snapshot_failed"
   | "build_failed";
 
+export const GOLDEN_SSH_RECEIPT_PHASES = {
+  ssh: "ssh",
+  checkout: "checkout",
+  bun: "bun",
+  chromium: "chromium",
+  harness: "harness",
+  skillpack: "skillpack",
+  helper: null,
+  init: "init",
+  ownership: "ownership",
+  output_collector: null,
+  credential_cleanup: "credential_cleanup",
+  inline_scan: "inline_scan",
+} as const;
+
+type GoldenSshPhase = keyof typeof GOLDEN_SSH_RECEIPT_PHASES;
+
 export class GoldenError extends Error {
   override readonly name = "GoldenError";
   readonly code: GoldenErrorCode;
   readonly safeReason: "skillpack_integrity_failed" | undefined;
   /** Curated public diagnostic only. Never supply upstream messages, output or command text. */
   readonly safeMessage: string | undefined;
-  readonly safePhase: string | undefined;
+  readonly safePhase: GoldenSshPhase | undefined;
 
   constructor(
     code: GoldenErrorCode,
     message: string,
-    options?: { cause?: unknown; safeReason?: "skillpack_integrity_failed"; safeMessage?: string; safePhase?: string },
+    options?: {
+      cause?: unknown;
+      safeReason?: "skillpack_integrity_failed";
+      safeMessage?: string;
+      safePhase?: GoldenSshPhase;
+    },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;

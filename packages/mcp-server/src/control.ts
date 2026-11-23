@@ -102,7 +102,9 @@ export function createQueuedSandboxDispatch(options: ControlOptions) {
               },
             }
           : {}),
-        ...(runtimeSend ? { runtimeSend: (actor, request) => runtimeSend(actor, request, claim) } : {}),
+        ...(runtimeSend
+          ? { runtimeSend: (actor, request) => runtimeSend(actor, request, claim, { fromQueue: true }) }
+          : {}),
       },
     );
   return dispatch;

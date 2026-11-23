@@ -126,13 +126,13 @@ test.each(["create", "stop", "delete"] as const)(
   },
 );
 
-test.each(["create", "restore"] as const)(
-  "%s replays the verified allocation ID after a lost acknowledgement and ledger compaction",
+test.each(["create", "restore", "stop"] as const)(
+  "%s replays the verified container ID after a lost acknowledgement and ledger compaction",
   async (operation) => {
-    const { job, store, api, executor, state } = fixture();
+    const { job, store, api, executor, state } = fixture(operation === "stop" ? "stop" : "create");
     const machineId = "b".repeat(64);
     const allocation: Job =
-      operation === "create"
+      operation !== "restore"
         ? job
         : {
             ...job,
@@ -140,18 +140,21 @@ test.each(["create", "restore"] as const)(
             request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
             predecessor: { request: job.request, machineId: "a".repeat(64) },
           };
-    api.poll = async () => ({ job: allocation });
-    let allocations = 0;
+    let executions = 0;
     executor[operation] = async () => {
-      allocations++;
+      executions++;
       return { machineId };
     };
     const reported: unknown[] = [];
-    api.result = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+    const transport = httpApi((async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/poll"))
+        return Response.json({ job: allocation }, { headers: { "x-armada-docker-stop-identity": "1" } });
       reported.push(JSON.parse(String(init?.body)));
       if (reported.length === 1) throw new Error("acknowledgement lost");
       return new Response(null, { status: 204 });
-    }) as typeof fetch).result;
+    }) as typeof fetch);
+    api.poll = transport.poll;
+    api.result = transport.result;
     const run = () => tick(store, api, executor, false, () => 100_000);
 
     await expect(run()).rejects.toThrow("acknowledgement lost");
@@ -160,7 +163,9 @@ test.each(["create", "restore"] as const)(
 
     const cleaned = await store.load();
     const saved = cleaned.receipts.find((receipt) => receipt.requestId === allocation.requestId) ?? fail();
-    saved.cleaned = true;
+    if (operation === "stop") {
+      cleaned.retention = [{ request: saved.request, requestId: saved.requestId, deadline: 200_000 }];
+    } else saved.cleaned = true;
     cleaned.receipts.push({
       requestId: crypto.randomUUID(),
       operation: "buildSnapshot",
@@ -180,7 +185,53 @@ test.each(["create", "restore"] as const)(
       machineId,
     };
     expect(reported).toEqual([body, body, body]);
-    expect(allocations).toBe(1);
+    expect(executions).toBe(1);
+  },
+);
+
+test.each(["stop", "delete"] as const)(
+  "%s retries an ambiguous executor failure without sealing a receipt",
+  async (operation) => {
+    const { store, api, executor, state } = fixture(operation);
+    let calls = 0;
+    executor[operation] = async () => {
+      if (calls++ === 0) throw new DockerMachineError("docker_failed");
+    };
+    await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("docker_failed");
+    expect(state().receipts[0]?.outcome).toBeUndefined();
+    await tick(store, api, executor, false, () => 0);
+    expect(state().receipts[0]?.outcome).toBe("completed");
+    expect(calls).toBe(2);
+  },
+);
+
+test.each(["retention deadline", "inventory absence"] as const)(
+  "stop replay after %s acknowledges exit without offering the removed container",
+  async (cause) => {
+    const { job, store, api, executor } = fixture("stop");
+    const ids: (string | undefined)[] = [];
+    executor.stop = async () => ({ machineId: "b".repeat(64) });
+    executor.deleteStopped = async () => {};
+    api.result = async (_state, receipt) => {
+      if (receipt.operation !== "stop") return;
+      ids.push(receipt.machineId);
+      if (ids.length === 1) throw Error("acknowledgement lost");
+    };
+    api.cleaned = async () => {
+      throw Error("cleanup report unavailable");
+    };
+    await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("acknowledgement lost");
+    const retained = await store.load();
+    retained.retention = [
+      { request: job.request, requestId: job.requestId, deadline: cause === "retention deadline" ? 1 : 10 },
+    ];
+    if (cause === "inventory absence") {
+      executor.isAbsent = async () => true;
+      executor.isStopped = async () => false;
+    }
+    await store.save(retained);
+    await tick(store, api, executor, false, () => 1);
+    expect(ids).toEqual(["b".repeat(64), undefined]);
   },
 );
 
@@ -2264,6 +2315,42 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
   expect(polls[0]).toEqual({ waitSeconds: 20, running: [] });
   expect(polls[1]).toEqual({ waitSeconds: 20, running: [a.job.requestId] });
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
+});
+
+test("ambiguous stops yield the mailbox to unrelated work", async () => {
+  const { store, api, executor, job } = fixture("stop");
+  const unrelated = fixture().job;
+  const queue = [job, fixture("stop").job, unrelated];
+  let failed = Promise.withResolvers<void>();
+  let stopped = false;
+  let polls = 0;
+  api.poll = async (_state, options) => {
+    stopped = ++polls === queue.length;
+    return { job: queue.find((entry) => !options?.running?.includes(entry.requestId)) ?? null, held: true };
+  };
+  executor.stop = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  executor.create = async () => {};
+  const completed: string[] = [];
+  api.result = async (_state, receipt) => {
+    completed.push(receipt.requestId);
+  };
+  await runJobs(store, api, executor, {
+    stopping: () => stopped,
+    async beforeTick() {
+      if (polls === 0) return;
+      await failed.promise;
+      failed = Promise.withResolvers<void>();
+      await Promise.resolve();
+    },
+    failed: () => failed.resolve(),
+    sleep: async () => {
+      throw Error("Unexpected idle");
+    },
+    now: () => 0,
+  });
+  expect(completed).toEqual([unrelated.requestId]);
 });
 
 test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {

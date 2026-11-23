@@ -46,7 +46,7 @@ reports the base and head totals and the locations of new matches.
   server TypeScript.
 - `append-point` counts central control routes, server workers and mounts, core
   barrel exports, and CLI command table entries.
-- `native-path` is reserved for #2859.
+- `native-path` tracks provider-run tokens in non-test TypeScript and TSX using the architecture metric’s scope and token list. The Armada runtime’s harness drivers are excluded.
 
 Run `bun scripts/ci/ratchets.ts [base]` locally. Without a base argument or
 `origin/main`, it prints working-tree totals. These counters are trend

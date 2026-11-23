@@ -52,6 +52,7 @@ import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
+import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { responseJsonSchema } from "../src/launch-response-schemas.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -339,7 +340,10 @@ async function fixture(
         }) as typeof fetch,
       }).authorizeRepositories
     : undefined;
-  const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories" | "defaults"> = {
+  const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories" | "defaults"> & {
+    launchAccountDefault: NonNullable<typeof credentials.launchAccountDefault>;
+  } = {
+    launchAccountDefault: (userId, harness) => readLaunchAccountDefault(sql, userId, harness),
     defaults: async (...args) => credentials.defaults?.(...args),
     ...(publicRepositoryAccess ? { authorizeRepositories: publicRepositoryAccess } : {}),
     ...(options.repositoryAccessDenied
@@ -541,7 +545,7 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
 
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
   const db = database();
-  const f = await fixture();
+  const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
   const vault = createSqlVaultStore(sql);
   await vault.setAgentDefault!(f.actor.userId, {
     harness: "codex",
@@ -576,11 +580,20 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
       status: "unavailable",
       message: "GitHub access requires repositories in the Docker launch or snapshot configuration.",
     },
-    runtime: { kind: "armada", epoch: f.session()?.epoch },
+    runtime: { kind: "armada", epoch: "1" },
     ttlSeconds: 14400,
     promptId: f.receipt.promptId,
     conversationId: f.receipt.conversationId,
   });
+  expect(
+    (
+      await db.query<{ generation: string; epoch: string; runtime_generation: string }>(
+        `select s.lifecycle_generation::text as generation,r.epoch::text,r.lifecycle_generation::text as runtime_generation
+     from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.body.requestId],
+      )
+    ).rows[0],
+  ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
   expect(result.sandbox.createdAt).toMatch(/^\d{4}-/);
   expect(result.expiresAt).toBe(result.sandbox.expiresAt as string);
   expect(result.sandbox.model).toBe("gpt-6-astra");
@@ -920,23 +933,6 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
     ).rows,
   ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
-});
-
-test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
-  const db = database();
-  const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
-  const result = await f.service().launch(f.caller, f.body);
-  expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-  expect(result.promptId).toBe(f.receipt.promptId);
-  expect(
-    (
-      await db.query<{ generation: string; epoch: string; runtime_generation: string }>(
-        `select s.lifecycle_generation::text as generation,r.epoch::text,r.lifecycle_generation::text as runtime_generation
-     from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
-        [f.body.requestId],
-      )
-    ).rows[0],
-  ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
 });
 
 /** The public REST control surface over a fixture's Docker services, authenticated as its owner. */
@@ -3793,6 +3789,57 @@ test("Docker refuses models outside the Morph account and freezes its OpenCode d
     await controls.invoke(f.caller, "stop", { id: admitted.sandbox.id });
   }
 });
+
+test.each(["account_full", "incompatible_model"] as const)(
+  "Docker pool fallback persists %s in its launch manifest",
+  async (reason) => {
+    const capped = reason === "account_full";
+    const harness = capped ? "codex" : "opencode";
+    const f = await fixture({ harness });
+    const db = database();
+    const second = randomUUID();
+    if (capped) {
+      await db.query("update credentials set max_agents=1 where id=$1", [f.body.credentialId]);
+      await f.seedRunningSandbox();
+    }
+    const value = capped
+      ? "offline-fallback"
+      : JSON.stringify({
+          apiKey: "offline-fallback",
+          endpoint: { version: 1, baseUrl: "https://models.example/v1", models: ["other-model"] },
+        });
+    await db.query(
+      "insert into credentials(id,scope,owner_id,kind,name,value_enc) values($1,'user',$2,$4,'fallback',$3)",
+      [second, f.actor.userId, await encryptSecret(value, key), capped ? "openai" : "opencode"],
+    );
+    await db.query("insert into agent_defaults(user_id,harness,credential_id,credential_ids) values($1,$4,$2,$3)", [
+      f.actor.userId,
+      f.body.credentialId,
+      [f.body.credentialId, second],
+      harness,
+    ]);
+    const { credentialId: _explicit, ...implicit } = f.body;
+    const body = { ...implicit, requestId: randomUUID(), ...(capped ? {} : { model: "armada/other-model" }) };
+    const server = f.service(sql, true, 10_000, officialImage, true);
+    try {
+      const admitted = await server.launch(f.caller, body);
+      expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
+      const {
+        rows: [row],
+      } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_enc from docker_launch_requests where sandbox_id=$1",
+        [body.requestId],
+      );
+      expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
+        credentialId: second,
+        credentialVersion: 1,
+        accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
+      });
+    } finally {
+      await server.close();
+    }
+  },
+);
 
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {
   for (const explicit of [false, true]) {

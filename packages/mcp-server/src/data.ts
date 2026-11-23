@@ -45,6 +45,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { withNativeDrainReason } from "./native-drain-failure.ts";
 import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
@@ -62,7 +63,7 @@ import {
   finishLaunchFailure,
   finishLaunchSuccess,
   markNativeDrainDispatchUnclaimed,
-  NATIVE_DRAIN_MISSING_RECEIPT,
+  NATIVE_DRAIN_WITHOUT_PROOF,
   nativeDrainDispatch,
   publishNativeResumeAdmission,
   publishNativeTurn,
@@ -656,7 +657,11 @@ export function createSqlData(
           action,
           allowUnpreservedBoat,
         );
-        if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
+        if (!owned)
+          throw withNativeDrainReason(
+            new DataError("Native drain no longer owns this placement.", "sandbox_not_ready"),
+            "deletion_fence_lost",
+          );
         return owned;
       },
       async recordUsage(id, usage, options) {
@@ -926,7 +931,11 @@ export function createSqlData(
             activityToken,
             operation,
           );
-          if (!recorded) throw new DataError("Native drain operation evidence is stale.", "sandbox_not_ready");
+          if (!recorded)
+            throw withNativeDrainReason(
+              new DataError("Native drain operation evidence is stale.", "sandbox_not_ready"),
+              "deletion_fence_lost",
+            );
           return;
         }
         if (patch.deleteCompleted) {
@@ -944,7 +953,10 @@ export function createSqlData(
               patch.nativeDrain === "without-proof",
             ),
           );
-          if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
+          if (!applied) {
+            const error = new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
+            throw patch.nativeDrain ? withNativeDrainReason(error, "deletion_fence_lost") : error;
+          }
           return;
         }
         if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
@@ -1277,7 +1289,7 @@ export function createSqlData(
             id: string | null;
             status?: SandboxStatus;
             generation?: string;
-            observed?: Record<string, unknown> | null;
+            observed?: (Record<string, unknown> & { activityLeaseHeld: boolean; reconcileLeaseHeld: boolean }) | null;
             stop_evidence?: (StopRefusalEvidence & { nativeExecPending: boolean }) | null;
           }>(
             patch.renewActivity
@@ -1327,8 +1339,10 @@ export function createSqlData(
               rows: [locked],
             } = await tx.query<{
               native_drain_pending: boolean;
+              lease_busy: boolean;
             }>(
-              `select s.native_drain_pending
+              `select s.native_drain_pending,
+                 coalesce(greatest(s.activity_until,s.reconcile_lease_until)>clock_timestamp(),false) as lease_busy
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider='boat' and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
@@ -1338,10 +1352,17 @@ export function createSqlData(
                    and (s.owner_id=$2::uuid or m.role='admin')) for update of s`,
               [...scope, id, provider, placement],
             );
-            if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            if (!locked)
+              throw withNativeDrainReason(
+                new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready"),
+                "not_eligible",
+              );
             if (locked.native_drain_pending) {
               if (!(await fenceBoatDrainReplay(tx, id, allowUnpreservedBoat)))
-                throw new DataError("Boat drain requires verified work preservation.", "sandbox_not_ready");
+                throw withNativeDrainReason(
+                  new DataError("Boat drain requires verified work preservation.", "sandbox_not_ready"),
+                  "preservation_refused",
+                );
               const {
                 rows: [retry],
               } = await tx.query<{ allowed: boolean }>(
@@ -1354,7 +1375,10 @@ export function createSqlData(
                 [id, provider, placement],
               );
               if (!retry?.allowed)
-                throw new DataError("Native drain deletion outcome is unknown.", "sandbox_not_ready");
+                throw withNativeDrainReason(
+                  new DataError("Native drain deletion outcome is unknown.", "sandbox_not_ready"),
+                  "deletion_outcome_unknown",
+                );
             } else {
               const {
                 rows: [recovery],
@@ -1365,20 +1389,35 @@ export function createSqlData(
               if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived") {
                 const withoutReceipt =
                   allowUnpreservedBoat &&
-                  recovery?.outcome === "unverified" &&
+                  !locked.lease_busy &&
+                  (recovery?.outcome === "unverified" || recovery?.outcome === "ineligible") &&
                   (
                     await tx.query(
-                      `select 1 from public.sandboxes s where s.id=$1 and ${NATIVE_DRAIN_MISSING_RECEIPT}`,
-                      [id],
+                      `select 1 from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$2
+                         and s.status in ('stopped','failed') and ${NATIVE_DRAIN_WITHOUT_PROOF}`,
+                      [id, expectedGeneration],
                     )
                   ).rows.length > 0;
+                if (!withoutReceipt && recovery?.outcome === "ineligible")
+                  throw withNativeDrainReason(
+                    new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready"),
+                    locked.lease_busy ? "lease_busy" : "not_eligible",
+                  );
                 if (!withoutReceipt)
-                  throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+                  throw withNativeDrainReason(
+                    new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready"),
+                    "preservation_refused",
+                  );
               }
             }
             const updated = await applyUpdate(tx);
-            if (!updated.rows[0]?.id)
-              throw new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready");
+            if (!updated.rows[0]?.id) {
+              const observed = updated.rows[0]?.observed;
+              throw withNativeDrainReason(
+                new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready"),
+                observed?.activityLeaseHeld || observed?.reconcileLeaseHeld ? "lease_busy" : "admission_conflict",
+              );
+            }
             if (!locked.native_drain_pending) await markNativeDrainDispatchUnclaimed(tx, id);
             return updated;
           });

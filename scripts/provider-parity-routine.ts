@@ -1,3 +1,4 @@
+import { capabilities } from "../packages/core/src/machine-capabilities.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** Coordinator-only scheduled execution proof; helper for the single --parity entrypoint. */
@@ -67,6 +68,7 @@ export async function probeRoutine(
   item: RoutineProbeCase,
   io: RoutineProbeIo,
 ): Promise<{ id: string; provider: RoutineProbeCase["provider"] }> {
+  const { launchSource } = capabilities(item.provider);
   const until = Math.min(io.deadline, io.now() + 110_000);
   const name = `parity-routine-${crypto.randomUUID()}`;
   const marker = `ROUTINE_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -154,11 +156,11 @@ export async function probeRoutine(
       definition.harness !== item.harness ||
       definition.model !== item.model ||
       (definition.modelAccount && definition.modelAccount.id !== item.modelAccountId) ||
-      (item.provider === "docker" && definition.hostId !== item.hostId)
+      (launchSource === "host" && definition.hostId !== item.hostId)
     )
       fail();
     let goldenName: string | undefined;
-    if (item.provider !== "docker") {
+    if (launchSource === "golden") {
       const listed = await request<{ goldens: Array<{ id: string; name: string; provider: string }> }>(
         "golden/list",
         {},
@@ -235,7 +237,7 @@ export async function probeRoutine(
       state.harness !== item.harness ||
       state.model !== item.model ||
       state.billingAccount?.id !== item.modelAccountId ||
-      (item.provider === "docker" ? state.hostId !== item.hostId : state.golden !== goldenName)
+      (launchSource === "host" ? state.hostId !== item.hostId : state.golden !== goldenName)
     )
       fail();
     const instructed = new Set<string>(),

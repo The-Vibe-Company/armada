@@ -2354,7 +2354,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           requestKey,
           org,
           id,
-          ...(provider === "boat" || provider === "modal" || provider === "docker" ? { provider } : {}),
+          ...(provider ? { provider } : {}),
         };
         if (!row.provider || row.provider === "boat") unknownLaunch = true;
         rows.push(row);

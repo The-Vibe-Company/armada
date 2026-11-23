@@ -2,6 +2,8 @@ import { appendFile } from "node:fs/promises";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import { isHarness } from "../packages/core/src/harnesses.ts";
 import type { LaunchProviderOption } from "../packages/core/src/index.ts";
+import { capabilities } from "../packages/core/src/machine-capabilities.ts";
+import { HOST_CAPABILITIES, isSandboxProvider } from "../packages/core/src/sandbox-provider.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
@@ -284,7 +286,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
         !isHarness(c.harness) ||
         (c.snapshotId !== undefined &&
-          (c.provider !== "docker" ||
+          (capabilities(c.provider).launchSource !== "host" ||
             typeof c.snapshotId !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(c.snapshotId))) ||
         (c.subscriptionAccount !== undefined && typeof c.subscriptionAccount !== "boolean") ||
@@ -308,7 +310,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           (typeof c.githubRepository !== "string" ||
             !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(c.githubRepository))) ||
         [c.org, c.model, c.modelAccountId].some((v) => typeof v !== "string" || !v.trim()) ||
-        (c.provider === "docker"
+        (capabilities(c.provider).launchSource === "host"
           ? typeof c.hostId !== "string" || !c.hostId.trim()
           : typeof c.golden !== "string" || !c.golden.trim())
       )
@@ -378,13 +380,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       headers: { authorization: `Bearer ${env.ARMADA_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const modalLaunch = path === "sandbox/launch" && (body as { provider?: unknown }).provider === "modal";
-    const keyedDockerLaunch =
+    const provider = (body as { provider?: unknown } | undefined)?.provider;
+    const jobLaunch =
       path === "sandbox/launch" &&
-      body &&
-      (body as { provider?: unknown }).provider === "docker" &&
-      "externalRef" in body;
-    const trackedLaunch = modalLaunch || keyedDockerLaunch || path === "templates/launch";
+      isSandboxProvider(provider) &&
+      HOST_CAPABILITIES[provider].goldenLaunchAdmission === "job";
+    const keyedDockerLaunch = path === "sandbox/launch" && provider === "docker" && body && "externalRef" in body;
+    const trackedLaunch = jobLaunch || keyedDockerLaunch || path === "templates/launch";
     const requestId = trackedLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
@@ -424,20 +426,18 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         ...correlation,
       });
     })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown } } | null;
-    if (modalLaunch && parseLaunchAdmissionReceipt("modal", result)) return result as T;
+    if (jobLaunch && parseLaunchAdmissionReceipt(provider, result)) return result as T;
     if (path === "sandbox/launch") {
-      const expected = (body as { provider?: unknown }).provider;
       if (
+        ((keyedDockerLaunch || jobLaunch) &&
+          (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id))) ||
         (keyedDockerLaunch &&
-          (typeof result?.sandbox?.id !== "string" ||
-            !UUID.test(result.sandbox.id) ||
-            result.sandbox.provider !== "docker" ||
-            result.sandbox.externalRef !== (body as { externalRef?: unknown }).externalRef ||
-            smokeReceiptProvider(result) !== "docker")) ||
-        (modalLaunch &&
-          (typeof result?.sandbox?.id !== "string" ||
-            !UUID.test(result.sandbox.id) ||
-            (result.sandbox.provider === undefined && (result.provider === undefined || result.provider === "modal"))))
+          (result?.sandbox?.provider !== provider ||
+            result?.sandbox?.externalRef !== (body as { externalRef?: unknown }).externalRef ||
+            smokeReceiptProvider(result) !== provider)) ||
+        (jobLaunch &&
+          result?.sandbox?.provider === undefined &&
+          (result?.provider === undefined || result.provider === provider))
       )
         throw new ParityError({
           code: "launch_response_unreadable",
@@ -445,7 +445,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           message: "Launch response had no usable sandbox receipt.",
           ...correlation,
         });
-      if (smokeReceiptProvider(result) !== expected || (modalLaunch && result?.sandbox?.provider !== "modal"))
+      if (smokeReceiptProvider(result) !== provider || (jobLaunch && result?.sandbox?.provider !== provider))
         throw new ParityError({
           code: "invalid_launch_receipt",
           message: "Unexpected launch provider",
@@ -532,6 +532,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
   }
   let starts = 0;
   for (const c of cases) {
+    const { launchSource, stopRetention } = capabilities(c.provider);
     const idleFeature = feature && ["idle-pause", "wake-on-send"].includes(feature);
     const idleUnavailable =
       idleDelay === undefined
@@ -562,7 +563,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if ((!feature || feature === name) && name !== harnessFeature)
         record(name, c.provider, "not-run", "harness_account_not_configured");
     if (requestedHarness && feature !== harnessFeature) continue;
-    if ((!feature || feature === "launch-snapshot") && c.provider === "docker") {
+    if ((!feature || feature === "launch-snapshot") && launchSource === "host") {
       if (!feature || !c.snapshotId) {
         record(
           "launch-snapshot",
@@ -716,7 +717,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
-      const dockerInput = provider === "docker" ? dockerLaunchInput() : undefined;
+      const dockerInput = launchSource === "host" ? dockerLaunchInput() : undefined;
       const observeAllocation = (until: number, detail?: Diagnostic) =>
         observeSmokeLaunch(until, io, async (remainingMs) => {
           const readStarted = io.now();
@@ -878,7 +879,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               stopRequested = false;
               afterResume = true;
               try {
-                if (c.provider === "docker") {
+                if (stopRetention === "container") {
                   const result = await api<{ id?: string; status?: string }>("sandbox/resume", {
                     id: sandboxId,
                     request_id: crypto.randomUUID(),
@@ -1702,12 +1703,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         }
         if (
           c.harness === "opencode" &&
-          (c.provider === "boat"
-            ? options.boatRuntime
-            : c.provider === "docker"
-              ? options.dockerRuntime
-              : options.modalRuntime
-          )?.opencodeMcpProofVersion !== 1
+          { boat: options.boatRuntime, docker: options.dockerRuntime, modal: options.modalRuntime }[c.provider]
+            ?.opencodeMcpProofVersion !== 1
         ) {
           record(feature, c.provider, "not-run", "opencode_mcp_native_proof_not_advertised");
           continue;
@@ -1799,7 +1796,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           until: readableUntil,
         });
       }
-      if (feature === "launch-snapshot" && c.provider === "docker") {
+      if (feature === "launch-snapshot" && launchSource === "host") {
         if (option.capabilities.goldens !== true || !option.launchSources?.includes("golden")) {
           record(
             feature,
@@ -1850,7 +1847,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         dockerSnapshot = snapshot;
         snapshotSourceVerified = true;
       }
-      if ((!feature || feature === "launch-snapshot") && c.provider !== "docker") {
+      if ((!feature || feature === "launch-snapshot") && launchSource === "golden") {
         const listed = await discoveryApi<{
           goldens: Array<{ id: string; name: string; provider: string; providerSnapshotId: string | null }>;
         }>("golden/list");
@@ -1870,7 +1867,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         c.githubRepository &&
         (!feature || feature === "github") &&
         option.capabilities.github !== false &&
-        c.provider !== "docker"
+        launchSource === "golden"
       ) {
         // Runtime GitHub grants are bound to the frozen golden repositories.
         // Do not allocate a sandbox whose grant cannot authorize this fixture.
@@ -1895,7 +1892,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             message: "GitHub fixture must be included in the selected provider golden.",
           });
       }
-      if (c.provider === "docker" && option.capabilities.launch) {
+      if (launchSource === "host" && option.capabilities.launch) {
         const hosts = await discoveryApi<{ hosts: { id: string; state: string }[] }>("docker/hosts/list");
         if (!hosts.hosts.some((h) => h.id === c.hostId && h.state === "online")) {
           blocked = "host_offline";
@@ -2208,7 +2205,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       manifest.definition?.provider !== c.provider ||
                       manifest.definition.harness !== c.harness ||
                       manifest.definition.model !== c.model ||
-                      (c.provider === "docker"
+                      (launchSource === "host"
                         ? manifest.definition.hostId !== c.hostId
                         : manifest.golden?.provider !== c.provider ||
                           (manifest.golden.name !== c.golden && manifest.golden.id !== c.golden) ||
@@ -2423,11 +2420,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const requestId = crypto.randomUUID();
             const invoke = () => api<{ status: string }>(`sandbox/${step}`, { id, request_id: requestId });
             let receipt: { status: string };
-            if (step === "resume" && feature === "mcp-resume" && c.provider !== "docker") {
-              await verifyMcp();
-              receipt = { status: "ready" };
-            } else if (step === "resume" && c.provider !== "docker") {
-              await runTurn(feature !== "skills-resume");
+            if (step === "resume" && stopRetention !== "container") {
+              if (feature === "mcp-resume") await verifyMcp();
+              else await runTurn(feature !== "skills-resume");
               receipt = { status: "ready" };
             } else if (step === "delete") {
               receipt = await deleteKnown();
@@ -2440,12 +2435,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             else if (receipt.status !== "deleted") throw new Error("delete_unconfirmed");
             stopped = step !== "resume";
             if (step === "resume" && feature === "mcp-resume") {
-              if (c.provider === "docker") await verifyMcp();
+              if (stopRetention === "container") await verifyMcp();
               record("mcp-after-resume", c.provider, "pass");
               record("mcp-resume", c.provider, "pass");
             }
             if (step === "resume" && feature === "skills-resume") {
-              if (c.provider === "docker") await runTurn();
+              if (stopRetention === "container") await runTurn();
               await verifySkills();
               record("skills-after-resume", c.provider, "pass");
               record("skills-resume", c.provider, "pass");
@@ -2454,7 +2449,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               step === "resume" &&
               (!feature || ["resume-recall", "usage", "exact-cost", "subscription-account"].includes(feature))
             ) {
-              if (c.provider === "docker") await runTurn(true);
+              if (stopRetention === "container") await runTurn(true);
               record("resume-recall", c.provider, "pass");
             }
           }
@@ -2502,7 +2497,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     if (
       (!feature || feature === "launch-snapshot") &&
-      (c.provider !== "docker" || snapshotSourceVerified) &&
+      (launchSource === "golden" || snapshotSourceVerified) &&
       report["launch-snapshot"]?.[c.provider]?.status !== "pass"
     ) {
       const source = ["launch", "send"]
@@ -2777,8 +2772,8 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
       if (c.notRunReason !== undefined && c.notRunReason !== "account has no declared model")
         invalid(`${path}.notRunReason`, "must equal account has no declared model when supplied");
       if (!c.notRunReason) nonempty(c.model, `${path}.model`);
-      for (const name of ["org", "modelAccountId", c.provider === "docker" ? "hostId" : "golden"] as const)
-        nonempty(c[name], `${path}.${name}`);
+      const sourceField = capabilities(c.provider).launchSource === "host" ? "hostId" : "golden";
+      for (const name of ["org", "modelAccountId", sourceField] as const) nonempty(c[name], `${path}.${name}`);
       const key = `${c.provider}:${c.account}`;
       if (seen.has(key)) invalid(`${path}.account`, "duplicate provider/account pair");
       seen.add(key);

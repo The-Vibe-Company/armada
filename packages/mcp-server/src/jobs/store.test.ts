@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createMemoryAuthStore } from "@armada/auth";
 import { modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore, decryptSecret, encryptSecret, GoldenError, type Sql } from "@armada/core/server";
 import {
@@ -11,6 +12,7 @@ import {
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { createQueuedSandboxDispatch } from "../control.ts";
 import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
@@ -21,11 +23,13 @@ import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeEvents } from "../runtime-events.ts";
+import { createRuntimeFollowup } from "../runtime-followup.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
+import { extendSandbox } from "../sandbox-extend.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -676,6 +680,50 @@ test.each([
   expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
+test("two Modal pool launches at cap minus one bind different accounts", async () => {
+  const { db, sql, input } = await modalAdmissionFixture();
+  const first = crypto.randomUUID();
+  const second = crypto.randomUUID();
+  await db.query(
+    `insert into credentials(id,scope,owner_id,kind,name,value_enc,max_agents)
+     values($1,'user',$3,'openai','first',$4,2),($2,'user',$3,'openai','second',$4,1)`,
+    [first, second, input.ownerId, await encryptSecret("offline-pool-account", launchEncryptionKey)],
+  );
+  const sandbox = { ...input.sandbox, credentialId: first, credentialVersion: 1 };
+  await admitModalLaunch(sql, launchEncryptionKey, { ...input, sandbox });
+  const accountPool = {
+    pool: { harness: "codex" as const, credentialIds: [first, second], model: sandbox.model },
+    prepared: new Map(
+      [first, second].map((id) => [
+        id,
+        {
+          model: sandbox.model,
+          reasoningEffort: sandbox.reasoningEffort,
+          credentialVersion: 1,
+        },
+      ]),
+    ),
+  };
+  const launch = (key: string) =>
+    admitModalLaunch(sql, launchEncryptionKey, {
+      ...input,
+      sandbox,
+      accountPool,
+      request: { key, payload: key },
+    });
+  const receipts = await Promise.all([launch("pool-first"), launch("pool-second")]);
+  const { rows } = await db.query(
+    `select s.credential_id,s.model
+     from unnest($1::uuid[]) with ordinality requested(id,position) join sandboxes s on s.id=requested.id
+     order by requested.position`,
+    [receipts.map(({ sandbox }) => sandbox.id)],
+  );
+  expect(rows).toEqual([
+    { credential_id: first, model: sandbox.model },
+    { credential_id: second, model: sandbox.model },
+  ]);
+});
+
 test("Modal admission refuses a fresh launch on an exhausted bound account", async () => {
   const { db, sql, input, openaiCredentialId } = await modalAdmissionFixture();
   await db.query(
@@ -1308,7 +1356,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       await atStep?.("runtime ticket");
       return {
         ownerId: f.people.owner,
-        configuration: { artifactManifest },
+        configuration: { artifactManifest, grant: { expiresAt: 1 } },
         serverUrl: "https://armada.invalid",
         artifact: artifactManifest.runtime,
         cacheDir: "/home/user/runtime-cache",
@@ -1346,6 +1394,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
           run(job: Job, context: JobContext) {
             return runModalLaunch(jobsSql, launchEncryptionKey, job, context, () => ({
               allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+              computeExpiresAt: new Date(Date.now() + 600_000),
               bindingRef: job.id,
               placement: {
                 scope: { orgId: f.people.org, userId: f.people.owner, visibility: "private", binding: machine.binding },
@@ -1713,6 +1762,72 @@ test.each(["before", "after"] as const)(
     expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
   },
 );
+
+test("the Modal launch prompt dispatches its own receipt through the account worker", async () => {
+  const admission = await modalAdmissionFixture();
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  const setup = await modalFirstTurnLane(f, queue);
+  expect(await setup.reconcileOne(signal)).toBe(true);
+  await setup.drain();
+  const receipt = async () =>
+    (
+      await f.db.query<{ request_id: string; state: string }>(
+        "select request_id,state from account_turn_queue where sandbox_id=$1",
+        [id],
+      )
+    ).rows[0]!;
+  const { request_id } = await receipt();
+  const { runtimeToken, epoch } = activeRuntime();
+  const authority = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+  const commands = createRuntimeCommands(authority, launchEncryptionKey, {
+    now: () => 0,
+    async wait() {
+      const { command } = await commands.next(runtimeToken, epoch);
+      if (command?.op !== "prompt") throw new Error("Expected the launch prompt.");
+      expect(command.input.text).toBe(admission.input.initialPrompt!);
+      await commands.complete(runtimeToken, epoch, {
+        epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: {
+          version: 1,
+          requestId: command.requestId,
+          result: { promptId: "initial-prompt", conversationId: command.input.conversationId, status: "running" },
+        },
+      });
+    },
+  });
+  const runtimeSend = createRuntimeFollowup(f.sql, launchEncryptionKey, commands);
+  const caller = { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" } as const;
+  const dispatch = createQueuedSandboxDispatch({
+    authStore: createMemoryAuthStore(),
+    supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+    store: createSqlVaultStore(f.sql),
+    encryptionKey: launchEncryptionKey,
+    data: createSqlData(f.sql),
+    providers: {
+      async resolve() {
+        throw new Error("Modal launch prompt must use the runtime.");
+      },
+    },
+    runtimeSend,
+  });
+  queue.setDispatch(async (...args) => {
+    await expect(runtimeSend(caller, { id, request_id, prompt: "Unrelated prompt" })).rejects.toMatchObject({
+      reason: "modal_launch_prompt_pending",
+    });
+    return dispatch(...args);
+  });
+  expect(await queue.reconcileOne(signal)).toBe(true);
+  await queue.drain();
+  expect(await receipt()).toEqual({ request_id, state: "admitted" });
+  expect(await queue.status(caller, id, request_id)).toEqual({ nativePromptId: "initial-prompt" });
+});
 
 test("a replacement Modal setup claimant replays workspace commands before admitting the first turn", async () => {
   const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
@@ -3341,6 +3456,33 @@ test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its 
   expect(effects().allocations).toBe(1);
   expect(effects().bootstrapped).toEqual(["physical"]);
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
+
+test("a job-launched Modal sandbox can use its reserved extension headroom", async () => {
+  const { f, id, jobId, makeRunner, retentionHost, activeRuntime } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  const store = createSqlData(f.sql)({
+    via: "service",
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  const provider = retentionHost().provider;
+  const { created_at } = (await f.db.query<{ created_at: Date }>("select created_at from jobs where id=$1", [jobId]))
+    .rows[0]!;
+  const hardDeadline = new Date(created_at.getTime() + 3_600_000);
+  const extension = await extendSandbox(store, sandbox, provider, 1860);
+  expect((await provider.get(sandbox.providerSandboxId)).expiresAt).toEqual(hardDeadline);
+  expect(activeRuntime().configuration).toMatchObject({ grant: { expiresAt: hardDeadline.getTime() } });
+  expect((await store.get(id))!).toMatchObject({
+    expiresAt: extension.expiresAt,
+    lifecycleGeneration: sandbox.lifecycleGeneration,
+  });
 });
 
 test("interrupted Modal enrolment rolls back readiness and the provider handoff and leaves its ticket usable", async () => {

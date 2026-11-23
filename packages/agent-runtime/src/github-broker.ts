@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { chmod, chown, lstat, mkdir } from "node:fs/promises";
+import { rmdirSync, unlinkSync } from "node:fs";
+import { chmod, chown, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
@@ -17,8 +17,11 @@ const acquisitionFailures = [
   "github_credentials_invalid_token",
 ] as const;
 
+type BrokerListener = { socket: string; redactSocket: string; activation: string; close(): void };
+
 /** GitHub-only capability. No vault, refresh-token, provider or model operations. */
 export class GitHubBroker {
+  private listener: Promise<BrokerListener> | undefined;
   private configuration: GitHubBrokerConfiguration | undefined;
   private revision = 0;
   private minimum = 0n;
@@ -130,10 +133,41 @@ export class GitHubBroker {
   }
 
   /** Credential replies require root IPC. Unprivileged native processes get only a redact oracle. */
-  async listen(
-    root: string,
-    owner = process.getuid?.(),
-  ): Promise<{ socket: string; redactSocket: string; activation: string; close(): void }> {
+  listen(root?: string, owner = process.getuid?.()): Promise<BrokerListener> {
+    this.listener ??= (root === undefined ? this.bindRuntime() : this.bind(root, owner)).catch((error) => {
+      this.listener = undefined;
+      throw error;
+    });
+    return this.listener;
+  }
+
+  async close(): Promise<void> {
+    const listener = await this.listener?.catch(() => undefined);
+    listener?.close();
+  }
+
+  private async bindRuntime() {
+    // WARNING: Boat can remount /home after the runtime has already started.
+    const root = await mkdtemp("/tmp/armada-github-");
+    try {
+      const listener = await this.bind(root, process.getuid?.());
+      let closed = false;
+      return {
+        ...listener,
+        close() {
+          if (closed) return;
+          closed = true;
+          listener.close();
+          rmdirSync(root);
+        },
+      };
+    } catch (error) {
+      await rm(root, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async bind(root: string, owner: number | undefined) {
     await mkdir(root, { recursive: true, mode: 0o700 });
     const directory = await lstat(root);
     if (directory.isSymbolicLink() || !directory.isDirectory() || directory.uid !== owner || directory.mode & 0o077)
@@ -143,7 +177,7 @@ export class GitHubBroker {
     const activation = randomBytes(32).toString("hex");
     this.remember([activation]);
     let active = false;
-    async function body(request: Request, limit: number): Promise<Buffer> {
+    async function body(request: Request, limit: number) {
       const chunks: Uint8Array[] = [];
       let bytes = 0;
       if (request.body)
@@ -191,7 +225,7 @@ export class GitHubBroker {
           const output: string[] = [];
           while (consumed < value.length) {
             const tail = value.slice(consumed);
-            // Prefer waiting for a longer possible leaf over publishing its shorter prefix.
+            // WARNING: Publishing a partial secret would bypass redaction.
             if (streaming && secrets.some((secret) => secret.length > tail.length && secret.startsWith(tail))) break;
             const match = secrets.find((secret) => value.startsWith(secret, consumed));
             if (match) {
@@ -210,10 +244,10 @@ export class GitHubBroker {
         }
       },
     });
-    const credentials = Bun.serve({
+    const credentialOptions = {
       unix: socket,
       maxRequestBodySize: 1048576,
-      fetch: async (request) => {
+      fetch: async (request: Request) => {
         try {
           const path = new URL(request.url).pathname;
           if (request.method !== "POST") throw Error("denied");
@@ -256,26 +290,40 @@ export class GitHubBroker {
           return Response.json({ error: code }, { status: 403, headers: { "cache-control": "no-store" } });
         }
       },
-    });
-    await chmod(socket, 0o600);
-    await chmod(redactSocket, 0o600);
-    if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
+    };
+    let credentials: Bun.Server<undefined> | undefined;
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      active = false;
+      credentials?.stop(true);
+      redaction.stop(true);
+      for (const path of credentials ? [socket, redactSocket] : [redactSocket]) {
+        try {
+          unlinkSync(path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    };
+    try {
+      credentials = Bun.serve(credentialOptions);
+      await chmod(socket, 0o600);
+      await chmod(redactSocket, 0o600);
+      if (owner !== undefined && owner !== process.getuid?.()) await chown(redactSocket, owner, owner);
+    } catch (error) {
+      close();
+      throw error;
+    }
     return {
       socket,
       redactSocket,
       activation,
       close: () => {
-        active = false;
+        if (closed) return;
         this.configure(null);
-        credentials.stop(true);
-        redaction.stop(true);
-        for (const path of [socket, redactSocket]) {
-          try {
-            unlinkSync(path);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
-        }
+        close();
       },
     };
   }

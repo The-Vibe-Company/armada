@@ -542,9 +542,20 @@ export function createDockerMachineExecutor(options: {
     await checked(["cp", "--archive", "-", `${state.containerName}:/home`], archive);
   }
 
-  async function stop(request: DockerMachineRequest): Promise<void> {
+  async function stop(request: DockerMachineRequest) {
     const state = await owned(request);
-    if (state.container) await checked(["container", "stop", "--time", "10", state.containerName]);
+    if (!state.container) return;
+    const machineId = state.container.Id;
+    if (typeof machineId !== "string" || !dockerContainerId.test(machineId)) fail("ownership_mismatch");
+    const before = object(state.container.State);
+    if (before.Running === false && before.Status === "exited") return { machineId };
+    await checked(["container", "stop", "--time", "10", machineId]);
+    const stopped = await owned(request);
+    if (!stopped.container) return;
+    const status = object(stopped.container.State);
+    if (stopped.container.Id !== machineId) fail("ownership_mismatch");
+    if (status.Running !== false || status.Status !== "exited") fail("docker_failed");
+    return { machineId };
   }
 
   async function remove(

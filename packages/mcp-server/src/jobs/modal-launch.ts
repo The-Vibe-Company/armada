@@ -1,4 +1,5 @@
 import { sha256Hex } from "@armada/auth";
+import type { AccountPool, AccountSkip } from "@armada/core";
 import {
   EncryptionKeyError,
   type GoldenActor,
@@ -19,6 +20,7 @@ import {
   createSqlSandboxStore,
   createSqlVaultStore,
   decryptSecret,
+  failureDiagnostic,
   GOLDEN_ROOT,
   GoldenError,
   LaunchError,
@@ -35,6 +37,7 @@ import { lockAndCheckStartingLaunchAccount } from "../account-capacity.ts";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
+import { admitAccount } from "../launch-account-pool.ts";
 import { launchCredentials } from "../launch-credentials.ts";
 import {
   type ModalLaunchHandoff,
@@ -46,7 +49,7 @@ import {
   ordinaryLaunchFingerprint,
   replayOrdinaryLaunchFailure,
 } from "../ordinary-launch-receipts.ts";
-import { recordOperatorFailure } from "../request-observability.ts";
+import { recordOperatorDiagnostic, recordOperatorFailure } from "../request-observability.ts";
 import { recordModalLaunchAdmission } from "../request-timing.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
@@ -57,7 +60,7 @@ import {
   type RuntimeTicketGuard,
   scopedRuntimeSql,
 } from "../runtime-enrolment.ts";
-import type { RuntimeGitHub } from "../runtime-github.ts";
+import { type RuntimeGitHub, RuntimeGitHubDeliveryError } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
@@ -97,6 +100,10 @@ export interface ModalLaunchAdmission {
   templateReceiptId?: string;
   revalidateTemplate?(tx: Sql): Promise<void>;
   sandbox: ModalLaunchSandbox;
+  accountPool?: {
+    pool: AccountPool;
+    prepared: ReadonlyMap<string, { credentialVersion: number; model: string; reasoningEffort: string }>;
+  };
   allocation: Omit<ModalLaunchAllocation, "size"> & { source: { kind: "snapshot" } };
   initialPrompt?: string;
   armadaAccess?: SandboxArmadaAccessOptions;
@@ -197,7 +204,7 @@ export async function admitModalLaunch(
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
 ) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
-  const { orgId, ownerId, sandbox, allocation, request, templateReceiptId, armadaAccess } = input;
+  const { orgId, ownerId, sandbox: plannedSandbox, allocation, request, templateReceiptId, armadaAccess } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
@@ -253,7 +260,7 @@ export async function admitModalLaunch(
          where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
          for update of g for share of m`,
-        [sandbox.goldenId, orgId, ownerId],
+        [plannedSandbox.goldenId, orgId, ownerId],
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
@@ -266,7 +273,7 @@ export async function admitModalLaunch(
       if (reservation) {
         const frozen = reservation.frozen_golden;
         if (
-          frozen?.id !== sandbox.goldenId ||
+          frozen?.id !== plannedSandbox.goldenId ||
           frozen.providerSnapshotId !== snapshot ||
           frozen.modal?.workspace !== modal.workspace ||
           frozen.modal.environment !== modal.environment ||
@@ -294,7 +301,7 @@ export async function admitModalLaunch(
         {
           allocation: {
             ...allocation,
-            size: sandbox.machineSize.effective,
+            size: plannedSandbox.machineSize.effective,
             source: { kind: "snapshot", ref: image?.image_id },
           },
           snapshot,
@@ -317,7 +324,7 @@ export async function admitModalLaunch(
         [jobId, orgId, ownerId],
       );
       if (!receipt) throw new Error("Modal launch receipt is missing.");
-      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, sandbox.goldenId);
+      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, plannedSandbox.goldenId);
 
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
@@ -328,6 +335,14 @@ export async function admitModalLaunch(
       if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
       if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
+      let sandbox = plannedSandbox;
+      let accountSkips: AccountSkip[] = [];
+      if (input.accountPool) {
+        const { pool, prepared } = input.accountPool;
+        const { credentialId, candidate, skips } = await admitAccount(tx, ownerId, pool, sandboxId, prepared);
+        sandbox = { ...sandbox, ...candidate, credentialId };
+        accountSkips = skips;
+      }
       const visibility = armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
       const scopedCredential = sandbox.credentialId;
       if (armadaAccess) {
@@ -342,7 +357,7 @@ export async function admitModalLaunch(
       }
       const actor = { userId: ownerId, orgId };
       const { credentialId, credentialVersion } = sandbox;
-      if (credentialId != null && credentialVersion != null)
+      if (!input.accountPool && credentialId != null && credentialVersion != null)
         await lockAndCheckStartingLaunchAccount(tx, { credentialId, credentialVersion }, sandboxId, sandbox.model);
       await input.revalidateTemplate?.(tx);
       await insertStartingModalSandbox(
@@ -386,6 +401,7 @@ export async function admitModalLaunch(
         sandboxId,
         {
           launchJobId: jobId,
+          ...(accountSkips.length ? { accountSkips } : {}),
           prompt: input.initialPrompt,
           workspace,
           skills,
@@ -594,7 +610,14 @@ export function createModalInitialTurnJob(
           (error instanceof ProviderError && !error.details?.runtimeRequestId)
         )
           return { status: "fail", reason: "modal_initial_turn_workspace_refused" };
-        recordOperatorFailure("modal.launch_setup.workspace", error, { sandboxId });
+        recordOperatorDiagnostic("modal.launch_setup.workspace", failureDiagnostic(error), {
+          sandboxId,
+          code:
+            error instanceof RuntimeGitHubDeliveryError
+              ? "github_configuration_unacknowledged"
+              : "modal_initial_turn_workspace_error",
+          ...(error instanceof ProviderError ? { causeCode: error.code } : {}),
+        });
         throw error;
       }
 
@@ -706,16 +729,16 @@ type IssueRuntimeTicket = Parameters<ReturnType<typeof createRuntimeEnrolments>[
 
 interface ModalLaunchPlan {
   placement: ModalLaunchPlacement;
+  computeExpiresAt: Date;
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
   canUseModalCredential(tx: Sql): Promise<boolean>;
-  prepareRuntimeTicket(
-    request: Parameters<PrepareModalTicket>[0],
-  ): Promise<
+  prepareRuntimeTicket(request: Parameters<PrepareModalTicket>[0]): Promise<
     Omit<ModalTicket, "enrolmentToken"> &
-      Pick<IssueRuntimeTicket, "ownerId" | "configuration" | "commandGrantExpiresAt"> &
-      Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
+      Pick<IssueRuntimeTicket, "ownerId"> & {
+        configuration: IssueRuntimeTicket["configuration"] & { grant: { expiresAt: number } };
+      } & Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
   >;
 }
 
@@ -790,6 +813,7 @@ export function createModalLaunchJob(
               rows: [row],
             } = await tx.query<
               RuntimeConfigurationTarget & {
+                jobCreatedAt: Date;
                 appName: string;
                 sourceVisibility: ModalLaunchPlacement["sourceVisibility"];
                 visibility: ModalLaunchPlacement["scope"]["visibility"];
@@ -801,7 +825,7 @@ export function createModalLaunchJob(
                       s.deleted_at as "deletedAt", s.stop_requested_at as "stopRequestedAt",
                       s.expires_at as "expiresAt", s.credential_id as "credentialId",
                       s.credential_version as "credentialVersion", s.repository_dir as "repositoryDir",
-                      s.visibility, s.source_golden_visibility as "sourceVisibility", a.app_name as "appName", a.authority_scope as "credentialScope",
+                      j.created_at as "jobCreatedAt", s.visibility, s.source_golden_visibility as "sourceVisibility", a.app_name as "appName", a.authority_scope as "credentialScope",
                       a.authority_owner_id as "credentialOwnerId"
                from public.sandboxes s
                join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
@@ -820,10 +844,12 @@ export function createModalLaunchJob(
           });
           if (!target) return;
           context.signal.throwIfAborted();
-          const { appName, credentialScope, credentialOwnerId, sourceVisibility, ...sandbox } = target;
+          const { appName, credentialScope, credentialOwnerId, sourceVisibility, jobCreatedAt, ...sandbox } = target;
+          const computeExpiresAt = new Date(new Date(jobCreatedAt).getTime() + allocation.computeTtlSeconds * 1000);
           machine = await openMachine({ binding, appName, credentialScope, credentialOwnerId }, context.signal);
           return {
             allocation,
+            computeExpiresAt,
             placement: {
               scope: { orgId: sandbox.orgId, userId: sandbox.ownerId, visibility: sandbox.visibility, binding },
               sourceVisibility,
@@ -992,8 +1018,7 @@ export async function runModalLaunch(
   };
   const dispatch = plan
     ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation, handoff) => {
-        const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
-          preparation;
+        const { ownerId, configuration, lockPrerequisites, checkAccountPin, ...prepared } = preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
             Uint8Array.from(Buffer.from(pending.bootstrap_ticket_enc, "base64")),
@@ -1024,12 +1049,18 @@ export async function runModalLaunch(
           return current ? { ...prepared, enrolmentToken } : null;
         }
         if (!handoff && !pending.handoff_staged) return null;
+        const commandGrantExpiresAt = plan.computeExpiresAt.getTime();
+        if (!Number.isFinite(commandGrantExpiresAt) || commandGrantExpiresAt < configuration.grant.expiresAt)
+          throw new Error("Modal compute deadline does not cover the initial runtime grant.");
         try {
           const ticket = await enrolments.issue({
             sandboxId,
             ownerId,
-            configuration,
-            ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+            configuration: {
+              ...configuration,
+              grant: { ...configuration.grant, expiresAt: commandGrantExpiresAt },
+            },
+            commandGrantExpiresAt,
             expectedGeneration: generation,
             expectedProviderSandboxId: request.machineId,
             async assertClaim(tx) {
@@ -1205,7 +1236,14 @@ async function dispatchModalLaunch(
         const preparation = await plan.prepareRuntimeTicket(request);
         const handoff =
           !handoffStaged && (await target())?.provider_sandbox_id === request.machineId
-            ? await prepareModalLaunchHandoff(request, plan.machine, plan.placement, plan.allocation, signal)
+            ? await prepareModalLaunchHandoff(
+                request,
+                plan.machine,
+                plan.placement,
+                plan.allocation,
+                plan.computeExpiresAt,
+                signal,
+              )
             : undefined;
         return { preparation, handoff };
       })().catch(async (error: unknown) => {
