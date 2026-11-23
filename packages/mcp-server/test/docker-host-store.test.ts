@@ -521,6 +521,7 @@ test("Machine non-retaining stop confirms removal after an ID-less stop acknowle
   expect(removal?.operation).toBe("delete");
   await store.complete(a.hostToken, a.installationId, { requestId: removal!.requestId, outcome: "completed" });
   expect(await adapter.stop(request)).toBeNull();
+  await denied(adapter.stop({ ...request, retain: true }));
   expect(await adapter.observe(a.machine)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
 });
 
@@ -1327,14 +1328,14 @@ test("the daemon recovers pending restores and drains unrelated work with a full
     },
   };
   const now = () => Date.UTC(2026, 0, 1);
-  const deferRestores = new Set<string>();
+  const deferUncertain = new Set<string>();
   for (const { restore } of pairs) {
-    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferRestores })).rejects.toThrow(
+    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferUncertain })).rejects.toThrow(
       DockerMachineError,
     );
-    deferRestores.add(restore.requestId);
+    deferUncertain.add(restore.requestId);
   }
-  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferRestores);
+  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferUncertain);
   expect(state.receipts.every(({ outcome }) => !outcome)).toBe(true);
 
   const live = [job(), job(), job()];

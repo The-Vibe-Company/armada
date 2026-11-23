@@ -205,26 +205,35 @@ test.each(["stop", "delete"] as const)(
   },
 );
 
-test("stop replay after local retention cleanup acknowledges exit without offering the removed container", async () => {
-  const { job, store, api, executor } = fixture("stop");
-  const ids: (string | undefined)[] = [];
-  executor.stop = async () => ({ machineId: "b".repeat(64) });
-  executor.deleteStopped = async () => {};
-  api.result = async (_state, receipt) => {
-    if (receipt.operation !== "stop") return;
-    ids.push(receipt.machineId);
-    if (ids.length === 1) throw Error("acknowledgement lost");
-  };
-  api.cleaned = async () => {
-    throw Error("cleanup report unavailable");
-  };
-  await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("acknowledgement lost");
-  const retained = await store.load();
-  retained.retention = [{ request: job.request, requestId: job.requestId, deadline: 1 }];
-  await store.save(retained);
-  await tick(store, api, executor, false, () => 1);
-  expect(ids).toEqual(["b".repeat(64), undefined]);
-});
+test.each(["retention deadline", "inventory absence"] as const)(
+  "stop replay after %s acknowledges exit without offering the removed container",
+  async (cause) => {
+    const { job, store, api, executor } = fixture("stop");
+    const ids: (string | undefined)[] = [];
+    executor.stop = async () => ({ machineId: "b".repeat(64) });
+    executor.deleteStopped = async () => {};
+    api.result = async (_state, receipt) => {
+      if (receipt.operation !== "stop") return;
+      ids.push(receipt.machineId);
+      if (ids.length === 1) throw Error("acknowledgement lost");
+    };
+    api.cleaned = async () => {
+      throw Error("cleanup report unavailable");
+    };
+    await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("acknowledgement lost");
+    const retained = await store.load();
+    retained.retention = [
+      { request: job.request, requestId: job.requestId, deadline: cause === "retention deadline" ? 1 : 10 },
+    ];
+    if (cause === "inventory absence") {
+      executor.isAbsent = async () => true;
+      executor.isStopped = async () => false;
+    }
+    await store.save(retained);
+    await tick(store, api, executor, false, () => 1);
+    expect(ids).toEqual(["b".repeat(64), undefined]);
+  },
+);
 
 test("physical-only mailbox delete replays an uncommitted result for the same immutable ID", async () => {
   const { job, store, api, executor, acknowledgements, state } = fixture();
@@ -2306,6 +2315,41 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
   expect(polls[0]).toEqual({ waitSeconds: 20, running: [] });
   expect(polls[1]).toEqual({ waitSeconds: 20, running: [a.job.requestId] });
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
+});
+
+test("an ambiguous stop yields the next poll to unrelated work", async () => {
+  const { store, api, executor, job } = fixture("stop");
+  const unrelated = fixture().job;
+  const failed = Promise.withResolvers<void>();
+  let stopped = false;
+  let polls = 0;
+  api.poll = async (_state, options) => {
+    if (++polls === 1) return { job, held: true };
+    stopped = true;
+    return { job: options?.running?.includes(job.requestId) ? unrelated : job, held: true };
+  };
+  executor.stop = async () => {
+    throw new DockerMachineError("docker_failed");
+  };
+  executor.create = async () => {};
+  const completed: string[] = [];
+  api.result = async (_state, receipt) => {
+    completed.push(receipt.requestId);
+  };
+  await runJobs(store, api, executor, {
+    stopping: () => stopped,
+    async beforeTick() {
+      if (polls === 0) return;
+      await failed.promise;
+      await Promise.resolve();
+    },
+    failed: () => failed.resolve(),
+    sleep: async () => {
+      throw Error("Unexpected idle");
+    },
+    now: () => 0,
+  });
+  expect(completed).toEqual([unrelated.requestId]);
 });
 
 test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {

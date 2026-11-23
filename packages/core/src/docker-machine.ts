@@ -553,8 +553,8 @@ export function createDockerMachineExecutor(options: {
     const stopped = await owned(request);
     if (!stopped.container) return;
     const status = object(stopped.container.State);
-    if (stopped.container.Id !== machineId || status.Running !== false || status.Status !== "exited")
-      fail("ownership_mismatch");
+    if (stopped.container.Id !== machineId) fail("ownership_mismatch");
+    if (status.Running !== false || status.Status !== "exited") fail("docker_failed");
     return { machineId };
   }
 

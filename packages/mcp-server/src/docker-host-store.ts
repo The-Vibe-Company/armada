@@ -1598,11 +1598,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
               (await currentMachineCleanup(tx, row)) !== String(generation)
             )
               deny();
-            const removal = await machineCleanupReceipt(tx, row, "delete");
-            if (removal) return !retain && removal.outcome === "completed" && !removal.cancelled_at ? null : undefined;
-            if (row.status === "deleted") deny();
             const stopped = await machineCleanupReceipt(tx, row, "stop");
             if (stopped && stopped.retain !== retain) deny();
+            const removal = await machineCleanupReceipt(tx, row, "delete");
+            if (removal) return removal.outcome === "completed" && !removal.cancelled_at ? null : undefined;
+            if (row.status === "deleted") deny();
             if (stopped?.outcome === "completed" && !stopped.cancelled_at && retain) {
               return stopped.result_machine_id === machineId
                 ? { sandboxId, generation, kind: "container" as const, ref: machineId }
