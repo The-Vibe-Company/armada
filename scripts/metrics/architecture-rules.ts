@@ -10,7 +10,11 @@ export function isNonTestSource(path: string) {
   return sourceRoots.test(path) && sourceExtensions.test(path) && !testPaths.test(path) && !generatedPaths.test(path);
 }
 
-export const nativePathExclusions = /^(?:packages\/agent-runtime|scripts\/metrics)\//;
+const nativePathExclusions = /^(?:packages\/agent-runtime|scripts\/metrics)\//;
+export function isNativePathSource(path: string) {
+  return /\.tsx?$/.test(path) && isNonTestSource(path) && !nativePathExclusions.test(path);
+}
+
 export const nativePathPattern = /\b(?:agentPath|nativeRuntime|nativeCli|runtimeTransport)\b|["']native["']/g;
 export const providerAdapterExclusions = /^(?:packages\/(?:provider-[^/]+|docker-host)|scripts\/metrics)\//;
 export const providerBranchPattern =
