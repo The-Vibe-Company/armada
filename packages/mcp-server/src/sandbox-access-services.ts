@@ -16,6 +16,7 @@ import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
@@ -194,7 +195,7 @@ export function createSandboxAccessServices(input: {
         );
         const terminal =
           observed.state === "stopped" &&
-          (provider.id !== "boat" || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
+          (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
         return {
           result: undefined,
           patch: {

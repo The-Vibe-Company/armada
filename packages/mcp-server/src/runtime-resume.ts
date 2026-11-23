@@ -1,4 +1,5 @@
 import { sha256Hex } from "@armada/auth";
+import { isSandboxProvider } from "@armada/core";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { CONFIRMED_WAKE_WITHOUT_TICKET } from "./account-turn-dispatch.ts";
@@ -126,8 +127,7 @@ export function createRuntimeResume(
     if (!empty && conversation !== found.conversationIds.at(-1))
       throw new VaultError("conflict", SINGLE_CONVERSATION_GUIDANCE);
     const actor = { userId: caller.userId, orgId: found.orgId };
-    if (!prior && (found.provider === "modal" || found.provider === "boat"))
-      await environment.validate(found.provider, actor, found.id);
+    if (!prior && isSandboxProvider(found.provider)) await environment.validate(found.provider, actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const lockAccount = (tx: Sql) =>
@@ -447,7 +447,7 @@ export function createRuntimeResume(
           if (existing.state === "missing") {
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
-            if (!admitted.first && !admitted.bootstrap && (found.provider === "modal" || found.provider === "boat"))
+            if (!admitted.first && !admitted.bootstrap && isSandboxProvider(found.provider))
               await environment.deliver(
                 found.provider,
                 actor,

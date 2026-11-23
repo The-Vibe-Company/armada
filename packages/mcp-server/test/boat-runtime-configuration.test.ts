@@ -54,6 +54,16 @@ function fixture() {
   return { actor, sandbox, manifest, credentials, key, architecture: "x64" as const };
 }
 
+test("Modal job runtime grants retain the sandbox expiry milliseconds returned by SQL", async () => {
+  const input = fixture();
+  const expiresAt = new Date("2100-01-01T00:00:00.789Z");
+  const plan = await runtimeConfiguration(
+    { ...input, sandbox: { ...input.sandbox, provider: "modal", expiresAt } },
+    "modal",
+  );
+  expect(plan.configuration.grant.expiresAt).toBe(expiresAt.getTime());
+});
+
 for (const provider of ["boat", "modal"] as const)
   test.each(["key", "endpoint", "native", "native-fresh", "shared"] as const)(
     `${provider} private Codex configuration projects %s without host/unselected harness authority`,

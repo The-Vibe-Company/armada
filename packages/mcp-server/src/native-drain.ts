@@ -1,7 +1,8 @@
 import type { MemberRole, ProviderRegistry, Sql } from "@armada/core";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createSqlVaultStore, VaultError } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import { providerRegistry } from "./http.ts";
+import { withNativeDrainReason } from "./native-drain-failure.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { requestNativeDrainStop } from "./sandbox-lifecycle.ts";
@@ -16,7 +17,11 @@ export function configureNativeDrain(
 ) {
   const encryptionKey = env.ARMADA_ENCRYPTION_KEY;
   const publicUrl = env.ARMADA_PUBLIC_URL;
-  if (!encryptionKey || !publicUrl) throw new Error("Native drain provider configuration is incomplete.");
+  if (!encryptionKey || !publicUrl)
+    throw withNativeDrainReason(
+      new Error("Native drain provider configuration is incomplete."),
+      "provider_configuration_missing",
+    );
   const vault = createSqlVaultStore(sql);
   const scopedAccess = createSandboxArmadaAccess({ sql, encryptionKey, publicUrl });
   const deploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
@@ -38,28 +43,41 @@ export function createNativeDrainRemoval(
 ) {
   const data = createSqlData(sql);
   return async (row: { id: string; org_id: string; role: MemberRole | null }) => {
-    if (!row.role) throw new Error("The operator has no organization membership.");
+    if (!row.role)
+      throw withNativeDrainReason(new Error("The operator has no organization membership."), "authorization_refused");
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     const target = await sandboxes.get(row.id);
     if (target && (target.status === "ready" || target.status === "running")) {
       if (!(await requestNativeDrainStop(sql, target, provider, actorId, allowUnpreservedBoat)))
-        throw new Error("Native drain could not admit strict preservation.");
-      throw new Error(
-        allowUnpreservedBoat
-          ? "Native drain is waiting for the stop to settle."
-          : "Native drain cannot delete before preservation and stop are confirmed.",
+        throw withNativeDrainReason(
+          new Error("Native drain could not admit strict preservation."),
+          "stop_admission_refused",
+        );
+      throw withNativeDrainReason(
+        new Error(
+          allowUnpreservedBoat
+            ? "Native drain is waiting for the stop to settle."
+            : "Native drain cannot delete before preservation and stop are confirmed.",
+        ),
+        "stop_pending",
       );
     }
     if (target?.stopRequestedAt || target?.status === "stopping")
-      throw new Error("Native drain is waiting for the stop to settle.");
+      throw withNativeDrainReason(new Error("Native drain is waiting for the stop to settle."), "stop_pending");
     const result = await deleteSandboxWithActivity(
       sandboxes,
       {
         beforeNativeDrainDelete: scopedAccess.beforeNativeDrainDelete,
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
-            throw new Error("The sandbox route changed after inventory.");
-          return providers.resolve(target, caller);
+            throw withNativeDrainReason(new Error("The sandbox route changed after inventory."), "not_eligible");
+          try {
+            return await providers.resolve(target, caller);
+          } catch (error) {
+            if (error instanceof VaultError && error.code === "unavailable")
+              throw withNativeDrainReason(error, "provider_credentials_unreadable");
+            throw error;
+          }
         },
       },
       row.id,

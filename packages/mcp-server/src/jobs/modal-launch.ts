@@ -19,6 +19,7 @@ import {
   createSqlSandboxStore,
   createSqlVaultStore,
   decryptSecret,
+  failureDiagnostic,
   GOLDEN_ROOT,
   GoldenError,
   LaunchError,
@@ -46,7 +47,7 @@ import {
   ordinaryLaunchFingerprint,
   replayOrdinaryLaunchFailure,
 } from "../ordinary-launch-receipts.ts";
-import { recordOperatorFailure } from "../request-observability.ts";
+import { recordOperatorDiagnostic, recordOperatorFailure } from "../request-observability.ts";
 import { recordModalLaunchAdmission } from "../request-timing.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
@@ -57,7 +58,7 @@ import {
   type RuntimeTicketGuard,
   scopedRuntimeSql,
 } from "../runtime-enrolment.ts";
-import type { RuntimeGitHub } from "../runtime-github.ts";
+import { type RuntimeGitHub, RuntimeGitHubDeliveryError } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
@@ -594,7 +595,14 @@ export function createModalInitialTurnJob(
           (error instanceof ProviderError && !error.details?.runtimeRequestId)
         )
           return { status: "fail", reason: "modal_initial_turn_workspace_refused" };
-        recordOperatorFailure("modal.launch_setup.workspace", error, { sandboxId });
+        recordOperatorDiagnostic("modal.launch_setup.workspace", failureDiagnostic(error), {
+          sandboxId,
+          code:
+            error instanceof RuntimeGitHubDeliveryError
+              ? "github_configuration_unacknowledged"
+              : "modal_initial_turn_workspace_error",
+          ...(error instanceof ProviderError ? { causeCode: error.code } : {}),
+        });
         throw error;
       }
 
