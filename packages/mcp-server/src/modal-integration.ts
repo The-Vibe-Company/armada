@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { HOST_CAPABILITIES } from "@armada/core";
 import {
   type CredentialReader,
   createSqlVaultStore,
@@ -213,7 +214,7 @@ export function createModalIntegration(options: {
     target: Omit<ProviderTarget, "modal">,
     caller: { userId: string },
   ): Promise<ProviderTarget> {
-    if (target.provider === "boat") return { ...target, modal: null };
+    if (!HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding) return { ...target, modal: null };
     const resolved = await resolveModalTokens(options.vault, options.encryptionKey, {
       ...caller,
       orgId: target.orgId,

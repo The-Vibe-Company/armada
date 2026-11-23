@@ -4,7 +4,7 @@ import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
-import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
@@ -140,7 +140,7 @@ export function createRuntimeCheckpoint(
       !row ||
       row.ownerId !== caller.userId ||
       !(
-        (row.provider === "docker" && options.docker) ||
+        (usesHostLaunch(row.provider) && options.docker) ||
         ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
       ) ||
       !runtimeHarnessSupported(row.provider, row.harness) ||

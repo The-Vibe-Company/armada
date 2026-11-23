@@ -18,7 +18,7 @@ import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { runtimeBridgeTarget, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { currentRequestId } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -110,7 +110,7 @@ export function createRuntimeGitHub(options: {
     if (
       !s ||
       s.ownerId !== caller.userId ||
-      !(s.provider === "docker" || (native && runtimeBridgeTarget(native))) ||
+      !(usesHostLaunch(s.provider) || (native && runtimeBridgeTarget(native))) ||
       s.deletedAt
     )
       return denied();
