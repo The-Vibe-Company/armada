@@ -17,7 +17,6 @@ interface RuntimeLifecycleDependencies {
   create(
     row: Machine,
     save: (row: Machine) => Promise<void>,
-    env: Readonly<Record<string, string>>,
     onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo>;
   sandboxInfo(row: Machine): SandboxInfo;
