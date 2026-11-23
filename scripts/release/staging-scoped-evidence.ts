@@ -16,22 +16,24 @@ function records(jsonl: string, strict = false) {
 
 function correlationKeys(smoke: string) {
   const keys = new Set<string>();
-  const rows = records(smoke);
-  const modalSetupFailed = rows.some(
-    (record) =>
-      record.step === "readiness_diagnostic" &&
-      record.readinessStep === "scoped_parent_ready" &&
-      record.code === "modal_launch_setup_failed",
-  );
-  for (const record of rows) {
-    if (
-      modalSetupFailed &&
-      record.step === "scoped_cleanup_summary" &&
-      record.provider === "modal" &&
-      typeof record.parentId === "string" &&
-      uuid.test(record.parentId)
-    )
-      keys.add(`sandboxId:${record.parentId}`);
+  const failedSetupCases = new Set<number>();
+  for (const record of records(smoke)) {
+    if (typeof record.case === "number") {
+      if (
+        record.step === "readiness_diagnostic" &&
+        record.readinessStep === "scoped_parent_ready" &&
+        record.code === "modal_launch_setup_failed"
+      )
+        failedSetupCases.add(record.case);
+      if (
+        record.step === "scoped_cleanup_summary" &&
+        failedSetupCases.delete(record.case) &&
+        record.provider === "modal" &&
+        typeof record.parentId === "string" &&
+        uuid.test(record.parentId)
+      )
+        keys.add(`sandboxId:${record.parentId}`);
+    }
     if (typeof record.step !== "string" || !diagnosticSteps.has(record.step)) continue;
     if (typeof record.operationId === "string" && uuid.test(record.operationId))
       keys.add(`operationId:${record.operationId}`);
