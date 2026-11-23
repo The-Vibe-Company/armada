@@ -24,12 +24,9 @@ type Source = {
   credential_id: string;
   credential_version: number | null;
   lifecycle_generation: number;
-  provider: "boat" | "modal";
+  provider: "boat";
   provider_sandbox_id: string | null;
 };
-function needsSubscriptionCheckpoint(source: Source) {
-  return source.provider === "modal";
-}
 export interface SubscriptionMigrationTransports {
   admission: typeof sshNativeAuthAdmission;
   read: typeof sshPrivateAuthState;
@@ -202,8 +199,7 @@ export function createSubscriptionMigration(
         await recheckLocked(source, tx);
         verified = true;
         return (
-          (await requestNativeSubscriptionStop(tx, source.id, source.lifecycle_generation, source.provider)) ||
-          needsSubscriptionCheckpoint(source) ||
+          (await requestNativeSubscriptionStop(tx, source.id, source.lifecycle_generation)) ||
           (await subscriptionStopPending(tx, source))
         );
       });
@@ -222,10 +218,6 @@ export function createSubscriptionMigration(
       throw new VaultError("conflict", "Subscription provider identity changed.");
     if (physical.state === "stopped") return;
     await recheck(source);
-    if (needsSubscriptionCheckpoint(source)) {
-      await handOffSubscriptionStop(source);
-      return;
-    }
     if (source.credential_version !== version) {
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
@@ -263,7 +255,7 @@ export function createSubscriptionMigration(
       const sources = await sql.query<Source>(
         `select s.id,s.org_id,s.owner_id,s.credential_id,s.credential_version,s.lifecycle_generation,s.provider::text,s.provider_sandbox_id
          from public.sandboxes s join public.credentials c on c.id=s.credential_id where c.id=$1
-         and s.harness='codex' and s.provider in ('boat','modal') and not s.boat_runtime
+         and s.harness='codex' and s.provider='boat' and not s.boat_runtime
          and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null and s.status not in ('failed','stopped','deleted')
          and ((c.scope='user' and s.owner_id=c.owner_id) or (c.scope='org' and s.org_id=c.owner_id)) order by s.id`,
         [id],
@@ -274,7 +266,7 @@ export function createSubscriptionMigration(
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
           // WARNING: A competing admission can advance the generation before this replica rechecks its source.
-          const requiresStop = needsSubscriptionCheckpoint(source) || source.credential_version !== version;
+          const requiresStop = source.credential_version !== version;
           const unresolved = requiresStop
             ? await subscriptionStopPending(sql, source)
             : await nativeWorkspaceCommandPending(sql, source.id);

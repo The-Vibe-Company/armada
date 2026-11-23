@@ -1,9 +1,8 @@
-import { GITHUB_REFRESH_MODAL_NATIVE, GitHubHydrationError, providerRateLimitDetails } from "@armada/core";
+import { GitHubHydrationError, providerRateLimitDetails } from "@armada/core";
 import { controlRouteKey, githubOperations } from "@armada/core/contract";
-import { ProviderError, VaultError } from "@armada/core/server";
+import { ProviderError } from "@armada/core/server";
 import type { z } from "zod";
 import { sandboxToolContext } from "./control-tool-routes.ts";
-import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -68,12 +67,9 @@ export async function dispatchGitHubRestControl(
       return runtimeGitHub.prepare(caller, sandboxId);
     }
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    if (found.provider === "modal" && !found.credentialId)
-      throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     const provider = await context.provider(found);
     if (found.ownerId !== caller.userId)
       throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
-    if (provider.id === "modal") throw new ToolError("unsupported", GITHUB_REFRESH_MODAL_NATIVE);
     if (provider.id !== "boat")
       throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
     const machine = await provider.get(found.providerSandboxId);

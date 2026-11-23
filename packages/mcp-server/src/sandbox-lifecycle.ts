@@ -967,12 +967,7 @@ export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
   return result.rows.length > 0;
 }
 
-export async function requestNativeSubscriptionStop(
-  tx: Sql,
-  id: string,
-  generation: number,
-  provider: "boat" | "modal",
-) {
+export async function requestNativeSubscriptionStop(tx: Sql, id: string, generation: number) {
   const token = crypto.randomUUID();
   const {
     rows: [admitted],
@@ -981,13 +976,13 @@ export async function requestNativeSubscriptionStop(
        activity_lease_id=$3, activity_until=clock_timestamp()+interval '2 minutes',
        stop_generation=stop_generation+1, stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp()
      where s.id=$1 and s.lifecycle_generation=$2 and s.status in ('ready','running','starting')
-       and s.provider=$4 and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
+       and s.provider='boat' and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
        and s.deleted_at is null and not s.native_drain_pending and s.expires_at>clock_timestamp()
        and s.activity_lease_id is null and (s.activity_until is null or s.activity_until<=clock_timestamp())
        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
      returning s.status, s.lifecycle_generation::text as generation`,
-    [id, generation, token, provider],
+    [id, generation, token],
   );
   if (!admitted) return false;
   await publishOwnerStop(tx, {
@@ -995,7 +990,7 @@ export async function requestNativeSubscriptionStop(
     generation: admitted.generation,
     fromState: admitted.status,
     toState: "stopping",
-    code: provider === "modal" ? "runtime_retained_stop" : "owner_stop_admitted",
+    code: "owner_stop_admitted",
   });
   await tx.query(
     `update public.sandboxes set activity_lease_id=null, activity_until=null
@@ -1817,7 +1812,8 @@ export function createSandboxLifecycle(
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
-          (s.status='stopping' and s.stop_requested_at is not null and exists(
+          ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
+            and s.status='stopping' and s.stop_requested_at is not null and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
               and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
               and t.actor='api' and t.code='runtime_retained_stop' and t.to_status='stopping'
@@ -1915,7 +1911,6 @@ export function createSandboxLifecycle(
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
-      const retainedNativeStop = native && providerId === "modal" && row.checkpointed_stop;
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
       const retainUnknownActivity =
@@ -2416,7 +2411,6 @@ export function createSandboxLifecycle(
           }
           const requireRetention =
             strictNativeStop ||
-            retainedNativeStop ||
             (!expired &&
               (row.checkpointed_stop ||
                 retainedResume ||
@@ -2480,7 +2474,6 @@ export function createSandboxLifecycle(
         }
         if (
           !strictNativeStop &&
-          !retainedNativeStop &&
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&

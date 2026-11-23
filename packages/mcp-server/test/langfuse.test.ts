@@ -100,7 +100,6 @@ test("each turn has its own trace and timing within the sandbox session", () => 
   }
 });
 test("a prompt event with an unknown status never becomes an exported span", () => {
-  // Modal native history keeps guest-supplied statuses unvalidated.
   const forged = { ...events[0]!, id: "forged", status: "customer_status" } as unknown as AgentEvent;
   const spans = langfuseSpans("sandbox", [...events, forged], [], false, { contentWithheld: "secret" });
   expect(spans).toHaveLength(2);
@@ -939,74 +938,6 @@ test("a timed-out native history exports the receipt, and an abandoned job settl
   expect(payloads).toHaveLength(1);
   expect(await counters()).toEqual([{ exported: "1", failed: "1" }]);
   expect(await runExport(db, exporter, new AbortController().signal)).toBe(false);
-});
-
-test("native Modal export waits for the terminal journal event after a live receipt", async () => {
-  const { db, people } = await database();
-  const id = crypto.randomUUID();
-  await db.query(
-    `with source as (
-       insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,
-          modal_workspace,modal_environment,modal_app_id,config)
-       values($2,$3,'modal-export','private','modal','modal-master','modal-image','workspace','main','app',
-          '{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":[]}')
-       returning id
-     )
-     insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,task_prompt_id)
-     select $1,id,$2,$3,'modal','modal_export','codex','ready','turn' from source`,
-    [id, people.org, people.owner],
-  );
-  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
-    people.org,
-    await encryptConfig(),
-  ]);
-  let history = events.slice(0, 1);
-  const provider = {
-    id: "modal",
-    getPrompt: async () => ({ promptId: "turn", status: "failed", done: true }),
-    events: async () => {
-      if (history === events) {
-        await db.query("update sandboxes set usage_turns=$2::jsonb where id=$1", [
-          id,
-          JSON.stringify({
-            turnCount: 1,
-            turns: [
-              { promptId: "turn", model: "codex_fixture", inputTokens: 4, outputTokens: 2, pricing: { usd: 0.12 } },
-            ],
-          }),
-        ]);
-      }
-      return { events: history, cursor: "native", hasMore: false };
-    },
-  } satisfies Pick<Provider, "id" | "getPrompt" | "events">;
-  const signal = new AbortController().signal;
-  await createNativeWebhookPrompts(db, async () => provider).reconcileOne(signal);
-  const payloads: string[] = [];
-  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "modal_export" }), (async (
-    _url,
-    init,
-  ) => {
-    payloads.push(String(init?.body));
-    return new Response(null, { status: 200 });
-  }) as typeof fetch);
-
-  expect(await runExport(db, exporter, signal)).toBe(true);
-  expect(payloads).toEqual([]);
-  // Pending releases the shared claim and schedules another attempt.
-  expect(
-    (
-      await db.query<{ state: string; deferred: boolean }>(
-        "select state,run_after > now() as deferred from jobs where sandbox_id=$1",
-        [id],
-      )
-    ).rows,
-  ).toEqual([{ state: "queued", deferred: true }]);
-  history = events;
-  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
-  expect(await runExport(db, exporter, signal)).toBe(true);
-  expect(payloads).toHaveLength(1);
-  expect(payloads[0]).toContain("customer_reply");
-  expect(payloads[0]).toContain("langfuse.observation.cost_details");
 });
 
 test("worker exports the persisted usage envelope and reconstructed archive through OTLP", async () => {

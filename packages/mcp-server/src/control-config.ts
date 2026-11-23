@@ -15,7 +15,6 @@ import {
 } from "@armada/core/server";
 import { dashboardOrigin, databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
-import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
 import { deviceLoginFromConfig } from "./device-login-control.ts";
@@ -130,7 +129,6 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     credentialBindingRecovery: createSandboxAccountChange(
       sql,
       launchCredentials(store, encryptionKey, undefined, modelAuth),
-      createCredentialBindingRecovery(sql, encryptionKey),
     ),
     invitations: new Invitations(sql, env.ARMADA_ENCRYPTION_KEY, invitationMailFromEnv(env)),
     templates,

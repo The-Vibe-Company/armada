@@ -16,7 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { nativeExecCancellation, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import {
@@ -414,7 +414,7 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const fencedExec = !enrolled && nativeExecCancellation[found.provider];
+    const fencedExec = !enrolled && found.provider === "boat";
     const managedNative =
       !enrolled &&
       (await context.launchCredentials.assertExec?.(
@@ -458,7 +458,7 @@ export function configureTools(
           return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
         };
         nativeExecCompleted =
-          fencedExec === true &&
+          fencedExec &&
           result.detached === false &&
           result.timedOut === false &&
           Number.isSafeInteger(result.exitCode) &&

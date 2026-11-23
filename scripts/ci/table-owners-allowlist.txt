@@ -9,9 +9,6 @@ packages/core/src/vault-store.ts	github_connections	update
 packages/core/src/vault-store.ts	github_connections	update
 packages/core/src/vault-store.ts	github_connections	update
 packages/core/src/vault-store.ts	github_refresh_fences	insert
-packages/mcp-server/src/credential-binding-recovery.ts	modal_machines	update
-packages/mcp-server/src/credential-binding-recovery.ts	modal_server_harnesses	update
-packages/mcp-server/src/credential-binding-recovery.ts	sandboxes	update
 packages/mcp-server/src/data.ts	account_agent_reservations	delete
 packages/mcp-server/src/data.ts	account_turn_queue	update
 packages/mcp-server/src/data.ts	account_turn_queue	update
@@ -54,8 +51,6 @@ packages/mcp-server/src/runtime-events.ts	sandbox_turn_models	update
 packages/mcp-server/src/runtime-github.ts	github_runtime_issued	insert
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	insert
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	update
-packages/mcp-server/src/sandbox-account-change.ts	modal_machines	update
-packages/mcp-server/src/sandbox-account-change.ts	modal_server_harnesses	update
 packages/mcp-server/src/sandbox-account-change.ts	sandbox_account_usage_pricing	insert
 packages/mcp-server/src/sandbox-account-change.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update

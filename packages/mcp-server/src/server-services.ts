@@ -20,7 +20,6 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
-import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
@@ -512,11 +511,7 @@ export async function createServerServices(env: Record<string, string | undefine
     publicUrl: config.publicUrl,
     modelAuth,
     sandboxBillingAccount: createSandboxBillingAccount(sql),
-    credentialBindingRecovery: createSandboxAccountChange(
-      sql,
-      dockerCredentials,
-      createCredentialBindingRecovery(sql, config.encryptionKey),
-    ),
+    credentialBindingRecovery: createSandboxAccountChange(sql, dockerCredentials),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
     invitations: new Invitations(sql, config.encryptionKey, invitationMail),

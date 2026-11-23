@@ -775,9 +775,7 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
       ),
     ],
   );
-  await createSandboxAccountChange(sql, launchCredentials(createSqlVaultStore(sql), key), async () => {
-    throw Error("not legacy");
-  })(
+  await createSandboxAccountChange(sql, launchCredentials(createSqlVaultStore(sql), key))(
     { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "supabase" },
     { id: f.sandbox.id, credentialId: selected },
   );

@@ -185,7 +185,7 @@ export interface ServerSandboxStore extends SandboxStore {
   ): Promise<{ operation_id: string | null }>;
   getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
   requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
-  /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
+  /** Refuse taint and stop intent before exec; native Boat exec also claims the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
