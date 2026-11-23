@@ -3,14 +3,20 @@ import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
 import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
-const modalCleanup = {
+const modalJobs = {
   launchCleanupJob: {
     concurrency: 1,
     async run() {
       throw new Error("An empty claim must not run Modal cleanup.");
     },
   },
-} satisfies Pick<ServerServices["modal"], "launchCleanupJob">;
+  stopJob: () => ({
+    concurrency: 1,
+    async run() {
+      throw new Error("An empty claim must not run Modal stop.");
+    },
+  }),
+} satisfies Pick<ServerServices["modal"], "launchCleanupJob" | "stopJob">;
 
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
@@ -43,7 +49,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     accountTurns: passiveLane,
     runtimeMcp: { prepare: neverCall },
     langfuse: { exportJob: { concurrency: 1 } },
-    modal: { ...modalCleanup, inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
+    modal: { ...modalJobs, inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
   expect(assembleServer(services).planWorkers().description).toMatchInlineSnapshot(`
@@ -134,7 +140,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
         },
       },
       runtimeMcp: { prepare: neverCalled },
-      modal: modalCleanup,
+      modal: modalJobs,
       modalLaunchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
@@ -152,7 +158,13 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
     expect(claimed).toEqual(
-      new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
+      new Set([
+        "delete",
+        "stop",
+        ...(encryptionKey ? ["launch_initial_turn", "outputs_publish"] : []),
+        ...expected,
+        "snapshot_retirement",
+      ]),
     );
     expect(backfillAttempts).toBe(encryptionKey ? 1 : 0);
     expect(errors).toEqual(encryptionKey ? ["armada: queued turn job backfill unavailable."] : []);
