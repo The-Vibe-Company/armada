@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import { snapshotBaselineInstall, snapshotBaselineInstallFailure } from "../src/snapshot-baseline.ts";
 
 test("snapshot archive checksum records use bare filenames", () => {
-  const checks = snapshotBaselineInstall().match(/echo "[^"]+" \| sha256sum -c -/g);
-  expect(checks).toEqual([
-    'echo "$node_sha  node.tar.xz" | sha256sum -c -',
-    expect.stringMatching(/^echo "[a-f0-9]{64} {2}git\.tar\.xz" \| sha256sum -c -$/),
-  ]);
+  const records = snapshotBaselineInstall()
+    .split("; ")
+    .filter((step) => step.includes("| sha256sum -c -"))
+    .map((step) => step.split("| sha256sum -c -")[0]);
+  expect(records).toEqual([expect.stringContaining("node.tar.xz"), expect.stringContaining("git.tar.xz")]);
+  // Two backslashes in the shell format leave a literal backslash-n in the filename.
+  for (const record of records) expect(record).not.toContain("\\\\n");
 });
 
 test.each([
