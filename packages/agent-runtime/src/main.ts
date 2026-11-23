@@ -38,6 +38,13 @@ import { createRedactor, HarnessState } from "./state.ts";
 
 let startupReason: import("../../core/src/runtime-startup-failure.ts").RuntimeStartupFailure = "runtime_configuration";
 let reportRuntimeFailure: ((error: unknown) => Promise<void>) | undefined;
+let githubSocket: Awaited<ReturnType<GitHubBroker["listenRuntime"]>> | undefined;
+
+function closeGitHubSocket() {
+  const listener = githubSocket;
+  githubSocket = undefined;
+  listener?.close();
+}
 async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
   const input = JSON.parse(await Bun.stdin.text());
@@ -391,13 +398,22 @@ async function main(dialout = false) {
   for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
     Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
   Object.assign(process.env, githubRuntimeEnvironment({ PATH: process.env.PATH }, githubRoot));
-  let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
+  let githubSocketStartup: ReturnType<GitHubBroker["listenRuntime"]> | undefined;
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
-    githubSocket ??= await github.listenRuntime();
+    const listener = await (githubSocketStartup ??= github.listenRuntime().then(
+      (bound) => {
+        githubSocket = bound;
+        return bound;
+      },
+      (error: unknown) => {
+        githubSocketStartup = undefined;
+        throw error;
+      },
+    ));
     const tools: Parameters<typeof installUserGitHubTools>[0] = {
       root: githubRoot,
-      socket: githubSocket.socket,
+      socket: listener.socket,
       gh: "/usr/bin/gh",
       git: "/usr/bin/git",
       homes: [
@@ -410,7 +426,7 @@ async function main(dialout = false) {
           ].filter((home): home is string => !!home),
         ),
       ],
-      activation: githubSocket.activation,
+      activation: listener.activation,
       ...(identity ? { identity } : {}),
     };
     await installUserGitHubTools(tools);
@@ -594,9 +610,12 @@ async function main(dialout = false) {
       closing ??= Promise.resolve().then(async () => {
         stop.abort();
         github.configure(null);
-        githubSocket?.close();
-        await runner.close();
-        await Promise.allSettled([...requests]);
+        try {
+          closeGitHubSocket();
+        } finally {
+          await runner.close();
+          await Promise.allSettled([...requests]);
+        }
       });
       return closing;
     };
@@ -654,6 +673,11 @@ if (process.argv[2] === "github-client") {
           ? runHarnessInstallMode()
           : main(process.argv[2] === "dialout")
   ).catch(async (error: unknown) => {
+    try {
+      closeGitHubSocket();
+    } catch {
+      process.stderr.write("github_socket_cleanup_failed\n");
+    }
     startupReason = runtimeStartupFailure(error, startupReason);
     await reportRuntimeFailure?.(error).catch(() => {});
     process.stderr.write("runner_boot_failed\n");

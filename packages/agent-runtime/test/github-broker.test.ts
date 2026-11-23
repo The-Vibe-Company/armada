@@ -65,10 +65,13 @@ test("runtime serves credentials for multiple repositories over private local so
   const repositories = ["acme/first", "acme/second"];
   const broker = new GitHubBroker(
     () => {},
-    async (_url, init) => {
-      const { repository } = JSON.parse(String(init?.body)) as { repository: string };
-      return Response.json({ token: `offline-${repository}` });
-    },
+    Object.assign(
+      async (_url: unknown, init?: RequestInit) => {
+        const { repository } = JSON.parse(String(init?.body)) as { repository: string };
+        return Response.json({ token: `offline-${repository}` });
+      },
+      { preconnect: fetch.preconnect },
+    ),
     () => 100,
   );
   broker.configure({
@@ -86,6 +89,7 @@ test("runtime serves credentials for multiple repositories over private local so
     fetch(`http://private${path}`, { unix, method: "POST", body: JSON.stringify(body) });
   try {
     expect(dirname(directory)).toBe("/tmp");
+    expect(dirname(listener.redactSocket)).toBe(directory);
     expect((await stat(directory)).mode & 0o777).toBe(0o700);
     const activation = await post(listener.socket, "/activate", { key: listener.activation });
     expect(activation.ok).toBe(true);
