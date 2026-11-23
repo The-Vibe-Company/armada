@@ -4,7 +4,6 @@ import { type RecordedTurn, sandboxActivityPage } from "../sandbox-activity";
 import { filterSandboxes, type parseSandboxFilters, sandboxFacetCounts, sortSandboxes } from "../sandbox-filters";
 import type { Supabase } from "../supabase/server";
 
-/** Read the authorized metadata once; activity tabs must see the entire loaded inventory, not one page. */
 export async function loadSandboxInventory(
   supabase: Supabase,
   orgId: string,
