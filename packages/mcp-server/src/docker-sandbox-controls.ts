@@ -581,7 +581,6 @@ export function createDockerSandboxControls(
   }
   async function logStopReceiptTimeout(sandboxId: string, stopRequestId: string) {
     try {
-      // Read the initial launch and the exact stop together before journal cleanup can remove them.
       const evidence = (
         await sql.query(
           `select s.docker_host_id as "hostId", h.last_seen_at as "hostLastSeenAt",
@@ -615,7 +614,7 @@ export function createDockerSandboxControls(
         }),
       );
     } catch {
-      // Evidence collection must preserve the existing stop response.
+      return;
     }
   }
   async function cleanup(

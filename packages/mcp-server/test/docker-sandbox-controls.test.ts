@@ -463,10 +463,11 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
       },
     },
   });
-  const lines: string[] = [];
-  const warning = spyOn(console, "warn").mockImplementation((line) => lines.push(String(line)));
+  const warning = spyOn(console, "warn");
+  let lines: unknown[][];
   try {
     await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
+    lines = [...warning.mock.calls];
   } finally {
     warning.mockRestore();
   }
@@ -480,7 +481,7 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
     ).rows;
   const original = (await jobs())[0];
   if (!original) throw Error("missing stop intent");
-  expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+  expect(lines.map(([line]) => JSON.parse(String(line)))).toContainEqual(
     expect.objectContaining({
       event: "docker_stop_receipt_timeout",
       sandboxId: f.sandbox.id,
@@ -1080,7 +1081,7 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
     (line) => lines.push(line),
   );
   expect(refusal).toMatchObject({ provider: "docker", code: "no_running_turn" });
-  expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
+  expect(lines.map(([line]) => JSON.parse(String(line))).filter((event) => event.event === "provider_call")).toEqual([
     expect.objectContaining({
       requestId: refused?.headers.get("x-request-id"),
       provider: "docker",
