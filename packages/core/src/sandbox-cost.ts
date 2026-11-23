@@ -10,7 +10,7 @@ import type { SandboxUsage, TurnTokenUsage } from "./sandbox-usage.ts";
  */
 export type CostBasis = "api_equivalent" | "estimated";
 
-export const COST_BASIS_LABELS: Readonly<Record<CostBasis, string>> = {
+const COST_BASIS_LABELS: Readonly<Record<CostBasis, string>> = {
   api_equivalent: "API-equivalent cost",
   estimated: "Estimated cost",
 };

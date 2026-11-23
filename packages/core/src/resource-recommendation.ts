@@ -17,7 +17,7 @@ export interface ResourceSessionEvidence {
   oomKills: number | null;
   complete: boolean;
 }
-export interface ResourceRecommendation {
+interface ResourceRecommendation {
   considered: number;
   sufficient: number;
   reason: ResourceAdvice["reason"];

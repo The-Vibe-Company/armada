@@ -36,7 +36,7 @@ export const LAUNCH_STAGE_LABELS: Record<LaunchStage, string> = {
   first_token: "First model token",
 };
 
-export const isLaunchStage = (value: unknown): value is LaunchStage =>
+const isLaunchStage = (value: unknown): value is LaunchStage =>
   typeof value === "string" && (LAUNCH_STAGES as readonly string[]).includes(value);
 
 export interface LaunchStageRow {

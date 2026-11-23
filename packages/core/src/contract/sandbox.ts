@@ -102,7 +102,7 @@ const expiryOutput = {
     .describe("True when known logical time left is at most five minutes, including expired resources."),
 };
 
-export const externalRefOutput = z.string().optional().describe("Opaque reference given at launch; absent when none.");
+const externalRefOutput = z.string().optional().describe("Opaque reference given at launch; absent when none.");
 const externalRefInput = z
   .string()
   .refine(isExternalRef, "1 to 200 characters without control characters.")

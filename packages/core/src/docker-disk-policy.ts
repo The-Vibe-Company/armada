@@ -3,7 +3,7 @@ export const DOCKER_DISK_FLOOR_BYTES = 10_000_000_000;
 export const DOCKER_DISK_FLOOR_MESSAGE =
   "Host disk free space is below the required 10 GB floor or unavailable; free space and retry.";
 
-export function validDockerDiskFreeBytes(value: unknown): value is number | null {
+function validDockerDiskFreeBytes(value: unknown): value is number | null {
   return value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
 }
 

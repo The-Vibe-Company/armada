@@ -95,15 +95,10 @@ export interface VaultStore extends CredentialReader, GitHubConnectionStore {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function parseOrgName(raw: string): string {
+function parseOrgName(raw: string): string {
   const name = raw.trim();
   if (name.length < 1 || name.length > 120) throw new VaultError("invalid", "An org name is 1 to 120 characters.");
   return name;
-}
-
-export function parseRole(raw: string): MemberRole {
-  if (raw === "admin" || raw === "member") return raw;
-  throw new VaultError("invalid", "A role is admin or member.");
 }
 
 /** Anyone signed in can create an org. They become its first admin. Orgs are isolated, and each brings its own keys. */

@@ -1,4 +1,3 @@
-import type { LaunchRequest } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { capabilities, MACHINE_SIZES, type MachineSize } from "./machine-capabilities.ts";
 import type { SandboxProviderId } from "./sandbox-provider.ts";
@@ -17,7 +16,7 @@ export interface MachineSizePolicy {
   /** Keys are configured repository directories, not arbitrary paths or repository aliases. */
   repositories: Record<string, MachineSize>;
 }
-export interface MachineCapacity {
+interface MachineCapacity {
   provider: SandboxProviderId;
   provenance: "requested-provider-resources";
   vcpus: number;
@@ -105,7 +104,3 @@ export interface MachineSizePolicyResult {
   repositories: { url: string; branch: string; dir: string }[];
   policy: MachineSizePolicy | null;
 }
-
-export const SIZED_LAUNCH_TOOL_V1 = "launch_sized_v1" as const;
-/** Required even when size is omitted and repository/golden policy semantics are relied upon. */
-export type SizedLaunchRequestV1 = LaunchRequest & { org?: string; sizePolicyVersion: 1 };

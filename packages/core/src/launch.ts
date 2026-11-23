@@ -43,9 +43,6 @@ export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 /** Four hours: long enough for an autonomous run, short enough that a forgotten sandbox stops by itself. */
 export const DEFAULT_LAUNCH_TTL_SECONDS = 14_400;
 
-/** The longest TTL any provider accepts (boat's 30 days). Each provider's own limit is in `PROVIDER_LIMITS`. */
-export const MAX_LAUNCH_TTL_SECONDS = Math.max(...Object.values(PROVIDER_LIMITS).map((limits) => limits.maxTtlSeconds));
-
 export interface LaunchRequest {
   /** Explicit admission requirement; slice 0 supports diagnose only. */
   helperCapabilities?: string[];
