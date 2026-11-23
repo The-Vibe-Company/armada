@@ -1386,10 +1386,9 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-const stopRecoveryCases = ["checkpoint", "handler", "both", "recovery rollback"];
+const stopRecoveryCases = ["checkpoint", "handler", "recovery rollback"];
 
 test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss) => {
-  const loseStopReply = loss === "both";
   const abortRecovery = loss === "recovery rollback";
   const suspendFirstStop = loss !== "checkpoint";
   const checkpointWritten = Promise.withResolvers<void>();
@@ -1405,7 +1404,6 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     let checkpointRequest: string | undefined;
     let checkpointCalls = 0;
     let hostAvailable = true;
-    let logicalId: string;
     const physicalDeadline = new Date(Date.now() + 16_000_000);
     const host = {
       ...fake.provider,
@@ -1420,19 +1418,8 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         expect(checkpointRequest).toBeDefined();
         return { status: "clean" as const };
       },
-      async stop(request: Parameters<typeof fake.provider.stop>[0] & { requireRetention?: boolean }) {
-        expect(checkpointRequest).toBeDefined();
-        expect(request.requireRetention).toBe(true);
-        expect(
-          (
-            await sql.query(
-              `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
-              [logicalId],
-            )
-          ).rows[0],
-        ).toEqual({ status_reason: "idle_paused", captured: true });
-        await fake.provider.stop(request);
-        if (loseStopReply) throw Error("synthetic lost compute stop response");
+      async stop() {
+        throw Error("A scoped Modal stop must admit a job.");
       },
     };
     const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
@@ -1509,7 +1496,6 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
           connections: { async validate() {}, async bind() {} },
           policy: {
             async start({ sandbox }) {
-              logicalId = sandbox.id;
               physicalId = sandbox.providerSandboxId;
               expect(sandbox.runtimeTransport).toBe("dialout");
               expect(sandbox.credentialId).toBe(selection.credentialId);
@@ -1582,7 +1568,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
         expect(stopped.id).toBe(first.id);
       }
-      expect(stopped.state).toBe(abortRecovery ? "pending" : loseStopReply ? "uncertain" : "succeeded");
+      expect(stopped.state).toBe(abortRecovery ? "pending" : "succeeded");
     } finally {
       releaseCheckpoint.resolve();
       await firstStop;
@@ -1598,7 +1584,15 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
       expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
     }
     expect(checkpointCalls).toBe(2);
-    expect(fake.stops).toHaveLength(abortRecovery ? 0 : 1);
+    expect(fake.stops).toHaveLength(0);
+    expect(
+      (
+        await sql.query(
+          "select state, outcome->>'childOperation' as operation from jobs where sandbox_id=$1 and kind='stop'",
+          [receipt.sandboxId],
+        )
+      ).rows,
+    ).toEqual(abortRecovery ? [] : [{ state: "queued", operation: stopped.id }]);
     expect(
       (
         await sql.query(
@@ -1607,16 +1601,9 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
           [receipt.sandboxId],
         )
       ).rows,
-    ).toEqual(
-      abortRecovery
-        ? []
-        : [
-            { actor: "api", code: "runtime_retained_stop", to_status: "stopping" },
-            ...(loseStopReply ? [] : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped" }]),
-          ],
-    );
+    ).toEqual(abortRecovery ? [] : [{ actor: "api", code: "runtime_retained_stop", to_status: "stopping" }]);
     await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
-      status: abortRecovery ? "running" : loseStopReply ? "stopping" : "stopped",
+      status: abortRecovery ? "running" : "stopping",
     });
   } finally {
     await close();

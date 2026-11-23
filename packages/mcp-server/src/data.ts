@@ -138,7 +138,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement?: boolean };
   ownerStop?: true;
-  modalStopJob?: true;
+  modalStopJob?: { childOperation?: string };
   ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -1456,7 +1456,9 @@ export function createSqlData(
                 fromState: row.status,
                 toState: stopStatus,
                 confirmedStop: patch.stoppedAt != null,
-                ...(patch.modalStopJob && patch.activityToken ? { modalActivity: patch.activityToken } : {}),
+                ...(patch.modalStopJob && patch.activityToken
+                  ? { modalActivity: { activity: patch.activityToken, ...patch.modalStopJob } }
+                  : {}),
                 ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
                 code: patch.finishActivity
                   ? "owner_stop_settled"

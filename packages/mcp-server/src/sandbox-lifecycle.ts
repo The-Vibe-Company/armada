@@ -934,7 +934,7 @@ export async function publishOwnerStop(
     toState: "stopping" | "stopped" | "failed";
     statusReason?: string | null;
     confirmedStop?: boolean;
-    modalActivity?: string;
+    modalActivity?: { activity: string; childOperation?: string };
     code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
   },
 ) {
@@ -962,9 +962,7 @@ export async function publishOwnerStop(
   }
   if (
     stop.modalActivity &&
-    !(await enqueueModalStop(tx, stop.sandboxId, stop.code === "runtime_retained_stop", {
-      activity: stop.modalActivity,
-    }))
+    !(await enqueueModalStop(tx, stop.sandboxId, stop.code === "runtime_retained_stop", stop.modalActivity))
   )
     throw Error("Modal owner stop could not commit its job.");
   if (stop.code === "owner_stop_settled" && stop.confirmedStop)
@@ -1743,13 +1741,14 @@ export async function enqueueModalStop(
   tx: Sql,
   sandboxId: string,
   retain: boolean,
-  handoff?: { activity: string } | { reconcile: string },
+  handoff?: { activity: string; childOperation?: string } | { reconcile: string },
 ) {
   const {
     rows: [target],
   } = await tx.query<{
     org_id: string;
     generation: string;
+    stop_generation: string;
     deadline: Date;
     checkpoint: { epoch: string; watermark: number } | null;
   }>(
@@ -1759,7 +1758,7 @@ export async function enqueueModalStop(
        and status in ('starting','stopping','failed') and stopped_at is null and stop_requested_at is not null
        and (activity_until is null or activity_until<=clock_timestamp() or activity_lease_id=$3::uuid)
        and (reconcile_lease is not distinct from $2::uuid or reconcile_lease_until<=clock_timestamp())
-     returning org_id,lifecycle_generation::text as generation,clock_timestamp()+interval '2 minutes' as deadline,
+     returning org_id,lifecycle_generation::text as generation,stop_generation::text,clock_timestamp()+interval '2 minutes' as deadline,
        (select jsonb_build_object('epoch',p.epoch::text,'watermark',p.watermark)
         from public.runtime_checkpoints p join public.runtime_enrolments r
           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
@@ -1777,13 +1776,19 @@ export async function enqueueModalStop(
     "stop",
     sandboxId,
     Number(target.generation),
-    "modal",
+    target.stop_generation,
     null,
     {
       orgId: target.org_id,
       maxAttempts: 40,
       deadline: target.deadline,
-      initialOutcome: { retain: retain || Boolean(target.checkpoint), checkpoint: target.checkpoint },
+      initialOutcome: {
+        retain: retain || Boolean(target.checkpoint),
+        checkpoint: target.checkpoint,
+        ...(handoff && "activity" in handoff && handoff.childOperation
+          ? { childOperation: handoff.childOperation }
+          : {}),
+      },
     },
     tx,
   );
@@ -1802,7 +1807,7 @@ export async function settleModalStop(
   tx: Sql,
   sandboxId: string,
   generation: string,
-  stoppedAt: Date,
+  stoppedAt: Date | null,
   retentionLost: boolean,
 ) {
   const {
@@ -1819,7 +1824,7 @@ export async function settleModalStop(
       sandboxId,
       expectedGeneration: generation,
       fromStates: [row.status],
-      toState: row.status === "starting" || retentionLost ? "failed" : "stopped",
+      toState: row.status === "starting" || !stoppedAt || retentionLost ? "failed" : "stopped",
       actor: "lifecycle_runner",
       code: row.status === "starting" ? "launch_interrupted" : "owner_stop_settled",
       effects: [],
@@ -1829,11 +1834,21 @@ export async function settleModalStop(
   await tx.query(
     `update public.sandboxes set stopped_at=$2,stop_requested_at=null,lifecycle_error=null,
       last_observed_at=clock_timestamp(),reconcile_after=clock_timestamp(),activity_lease_id=null,activity_until=null,
-      status_reason=case when $3 and $4 then 'modal_retention_unavailable' else status_reason end
+      status_reason=coalesce($3::text,status_reason)
      where id=$1`,
-    [sandboxId, stoppedAt, retentionLost, row.status !== "failed"],
+    [
+      sandboxId,
+      stoppedAt,
+      row.status === "failed"
+        ? null
+        : !stoppedAt
+          ? "modal_retention_refused"
+          : retentionLost
+            ? "modal_retention_unavailable"
+            : null,
+    ],
   );
-  await releaseAccountCapacity(tx, sandboxId);
+  if (stoppedAt) await releaseAccountCapacity(tx, sandboxId);
 }
 
 export function createSandboxLifecycle(
@@ -1912,7 +1927,7 @@ export function createSandboxLifecycle(
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")}
           and not (candidate.provider='modal' and exists(select 1 from public.jobs stop where stop.sandbox_id=candidate.id
-            and stop.generation=candidate.lifecycle_generation and stop.kind='stop'))
+            and stop.generation=candidate.lifecycle_generation and stop.kind='stop' and stop.state in ('queued','leased')))
           -- This transition and the cleanup job commit together.
           and not (candidate.provider='modal' and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure

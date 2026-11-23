@@ -568,25 +568,30 @@ export function createStagedOutputJob(sql: Sql) {
     concurrency: OUTSTANDING_MAX,
     async run(job: Job, context) {
       const id = job.sandbox_id;
-      if (!id || !job.generation || !job.payload || !(await context.canDispatch()))
+      if (!id || !job.payload || !(await context.canDispatch()))
         return { status: "fail", reason: "output_publication_dispatch_unavailable" };
-      const snapshot = job.payload as StagedOutputs;
+      const { snapshot, stopJobId, generation } = job.payload as {
+        snapshot: StagedOutputs;
+        stopJobId: string;
+        generation: string;
+      };
       const target = (
-        await sql.query<{ stopped_at: Date | null }>(
-          `select stopped_at from public.sandboxes where id=$1 and lifecycle_generation=$2
-             and status<>'deleted' and not application_secret_tainted`,
-          [id, job.generation],
+        await sql.query<{ state: string }>(
+          `select j.state from public.jobs j join public.sandboxes s on s.id=j.sandbox_id where j.id=$2
+          and j.sandbox_id=$1 and j.generation=$3 and j.kind='stop' and s.status<>'deleted' and not s.application_secret_tainted`,
+          [id, stopJobId, generation],
         )
       ).rows[0];
-      if (target && !target.stopped_at) return { status: "retry", after: new Date(Date.now() + 1_000) };
+      if (!target || target.state === "failed") return { status: "done" };
+      if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 1_000) };
       return {
         status: "done",
         async commit(tx) {
           const current = (
             await tx.query<{ org_id: string }>(
-              `select org_id from public.sandboxes where id=$1 and stopped_at is not null and status in ('stopped','failed')
-                 and lifecycle_generation=$3 and not application_secret_tainted and ${OUTPUT_SCAN_UNPUBLISHED}`,
-              [id, snapshot.scan, job.generation],
+              `select org_id from public.sandboxes where id=$1 and status<>'deleted'
+                 and not application_secret_tainted and ${OUTPUT_SCAN_UNPUBLISHED}`,
+              [id, snapshot.scan],
             )
           ).rows[0];
           if (!current) return;

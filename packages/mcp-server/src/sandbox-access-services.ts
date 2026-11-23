@@ -175,7 +175,7 @@ export function createSandboxAccessServices(input: {
       statusReason,
     };
     if (saved.provider === "modal" && saved.runtimeTransport === "dialout") {
-      await admitModalStop(stopStore, saved, admission);
+      await admitModalStop(stopStore, saved, admission, operation.id);
       return;
     }
     await sandboxActivity(stopStore, saved, admission, async (signal, token) => {
@@ -384,6 +384,14 @@ export function createSandboxAccessServices(input: {
     async reconcile(operation, signal) {
       signal?.throwIfAborted();
       const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+      if (operation.action === "stop" && saved.provider === "modal" && saved.runtimeTransport === "dialout") {
+        const { rows } = await sql.query(
+          `select 1 from public.jobs where sandbox_id=$1 and org_id=$2 and kind='stop'
+           and outcome->>'childOperation'=$3 and state in ('queued','leased','done')`,
+          [saved.id, operation.orgId, operation.id],
+        );
+        return { operationId: operation.id, sandboxId: saved.id, state: rows.length ? "succeeded" : "unknown" };
+      }
       const provider = await resolveProvider();
       const physical = await provider.get(saved.providerSandboxId, { ...(signal ? { signal } : {}) });
       const closed = physical.state === "stopped";

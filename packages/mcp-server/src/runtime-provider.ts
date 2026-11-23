@@ -84,7 +84,7 @@ export function createRuntimeProvider(
     },
     async stop(request) {
       target(request.sandboxId);
-      return host.stop(request);
+      return host.id === "modal" ? unsupported() : host.stop(request);
     },
     async delete(request) {
       target(request.sandboxId);

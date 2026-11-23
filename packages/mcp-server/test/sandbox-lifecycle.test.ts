@@ -1371,7 +1371,7 @@ test("runtime lifecycle stops compute without claiming a checkpoint invalidated 
   await lifecycle.drain();
 });
 
-test.each(["active", "terminate", "booting"] as const)("expired Modal stop from %s", async (phase) => {
+test("an expired Modal runtime admits one stop job without calling provider stop", async () => {
   const { db, people } = await sharedDatabase();
   const sql = bunLikeSql(db);
   const golden = (
@@ -1387,55 +1387,26 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
     values($1,'modal','compute',$2,$3,$4,'codex','running','dialout',now()-interval '1 second')`,
     [id, golden.id, people.org, people.owner],
   );
-  let stopped = false;
   const provider = {
     id: "modal",
-    get: async () => ({
-      id: "compute",
-      state: stopped ? "stopped" : "running",
-      providerState: phase,
-      physicalGeneration: "3",
-    }),
-    captureRuntimeWork: async () => {
-      if (phase !== "active") throw Error("Only active compute can preserve work");
-      return { status: "clean" };
-    },
+    get: async () => ({ id: "compute", state: "running", providerState: "active", physicalGeneration: "3" }),
     stop: async () => {
-      if (phase === "active")
-        expect(
-          (
-            await db.query(
-              "select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1",
-              [id],
-            )
-          ).rows,
-        ).toEqual([
-          { actor: "reconciler", code: "expired", generation: 1, from_status: "running", to_status: "stopping" },
-        ]);
-      expect(
-        (
-          await db.query(
-            "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
-            [id],
-          )
-        ).rows,
-      ).toEqual([{ captured: phase === "active" }]);
-      stopped = true;
-    },
-    quiesce: async () => {
-      throw Error("No tunnel quiesce");
-    },
-    exec: async () => {
-      throw Error("No native work capture");
+      throw Error("TTL stop must use the Machine job.");
     },
   } as unknown as import("@armada/core").Provider;
   const worker = createSandboxLifecycle(sql, async () => provider);
   expect(await worker.reconcileOne()).toBe(true);
-  expect(stopped).toBe(true);
-  expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
-    status: "stopped",
-    preservation_note: null,
-  });
+  expect((await db.query("select status,status_reason from sandboxes where id=$1", [id])).rows).toEqual([
+    { status: "stopping", status_reason: "expired" },
+  ]);
+  expect(
+    (
+      await db.query(
+        "select state,generation,deadline_at, outcome->>'retain' as retain from jobs where sandbox_id=$1 and kind='stop'",
+        [id],
+      )
+    ).rows,
+  ).toEqual([{ state: "queued", generation: 1, deadline_at: expect.any(Date), retain: "false" }]);
   await worker.drain();
 });
 

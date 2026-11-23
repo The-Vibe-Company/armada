@@ -1,4 +1,4 @@
-import type { ModalBinding, Provider, Sql } from "@armada/core/server";
+import { type ModalBinding, type Provider, ProviderError, type Sql } from "@armada/core/server";
 import {
   createModalMachine,
   type Machine as ModalRecord,
@@ -14,6 +14,8 @@ type CleanupMachine = Parameters<typeof import("./jobs/modal-launch.ts").createM
 type OpenMachine = (
   ...args: Parameters<CleanupMachine>
 ) => Promise<Awaited<ReturnType<CleanupMachine>> & { canUseModalCredential(tx: Sql): Promise<boolean> }>;
+
+class ModalRetentionRefused extends Error {}
 
 export function createModalStopJob(
   sql: Sql,
@@ -34,6 +36,11 @@ export function createModalStopJob(
       } as const;
       const sandboxId = job.sandbox_id;
       const generation = Number(job.generation);
+      const refused = {
+        status: "fail",
+        reason: "modal_retention_refused",
+        commit: (tx: Sql) => settleModalStop(tx, sandboxId, job.generation!, null, false),
+      } as const;
       try {
         const {
           retain: requestedRetention = false,
@@ -126,7 +133,8 @@ export function createModalStopJob(
                    join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
                    where p.sandbox_id=s.id and p.epoch=$6 and p.watermark=$7 and p.completed_at is not null
                      and not s.application_secret_tainted
-                     and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)))`,
+                     and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)))
+               for share of member,m`,
               [
                 sandboxId,
                 scope,
@@ -172,7 +180,12 @@ export function createModalStopJob(
               if (!checkpoint || !Number.isSafeInteger(checkpoint.watermark))
                 throw Error("Modal checkpoint proof unavailable.");
               signal.throwIfAborted();
-              await prepareFilesystemSnapshot(physical, record);
+              try {
+                await prepareFilesystemSnapshot(physical, record);
+              } catch (error) {
+                if (error instanceof ProviderError && !error.retryable) throw new ModalRetentionRefused();
+                throw error;
+              }
             },
           });
           let observation = await machine.observe(request);
@@ -182,6 +195,8 @@ export function createModalStopJob(
               : null;
           if (observation.kind !== "present" || observation.phase !== "stopped") {
             if (!(await canDispatch())) return reconcile;
+            if (retain && !checkpoint && observation.kind === "present" && observation.phase === "running")
+              return refused;
             const captureMs = +new Date(row.deadline_at) - Date.now() - 108_000;
             if (!captured && observation.kind === "present" && observation.phase === "running" && captureMs > 0) {
               const captureSignal = AbortSignal.any([signal, AbortSignal.timeout(captureMs)]);
@@ -195,9 +210,9 @@ export function createModalStopJob(
                   await jobs.enqueue(
                     OUTPUTS_PUBLISH,
                     sandboxId,
-                    generation,
-                    "modal-final",
-                    snapshot,
+                    null,
+                    job.id,
+                    { snapshot, stopJobId: job.id, generation: job.generation },
                     {
                       orgId: row.org_id,
                       maxAttempts: 600,
@@ -235,8 +250,9 @@ export function createModalStopJob(
         } finally {
           await ports.close();
         }
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
+        if (error instanceof ModalRetentionRefused) return refused;
         return (await canDispatch()) ? retry : reconcile;
       }
     },

@@ -69,216 +69,230 @@ describe("Modal user stop and wake-on-send", () => {
     perTest: true,
   });
 
-  test.each([false, true])(
-    "wake restores the same native conversation after Modal stop (recover=%s)",
-    async (recover) => {
-      const f = await fixture();
-      let needsRetry = recover;
-      let state: "ready" | "stopped" = "ready";
-      let captures = 0,
-        terminations = 0;
-      let retained: { epoch: string; watermark: number } | undefined;
-      const { id, orgId, ownerId, providerSandboxId } = f.row;
-      const binding = { appId: "app", workspace: "workspace", environment: "main" };
-      const scope = scopeKey({ orgId, userId: ownerId, visibility: "org", binding });
-      const physicalId = "attached-vm";
-      await f.db.query(
-        `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+  test.each(["normal", "retry", "retention refused"] as const)("Modal stop and wake-on-send (%s)", async (scenario) => {
+    const recover = scenario === "retry";
+    const f = await fixture();
+    let needsRetry = recover;
+    let state: "ready" | "stopped" = "ready";
+    let captures = 0,
+      terminations = 0;
+    let retained: { epoch: string; watermark: number } | undefined;
+    const { id, orgId, ownerId, providerSandboxId } = f.row;
+    const binding = { appId: "app", workspace: "workspace", environment: "main" };
+    const scope = scopeKey({ orgId, userId: ownerId, visibility: "org", binding });
+    const physicalId = "attached-vm";
+    await f.db.query(
+      `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
          values($1,'org','org',$1,'modal-app','app','main') on conflict do nothing`,
-        [orgId],
-      );
-      await f.db.query(
-        `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+      [orgId],
+    );
+    await f.db.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
          values($1,$2,$3,'org',$4,$5,$6::jsonb)`,
-        [
-          scope,
-          orgId,
-          ownerId,
-          providerSandboxId,
-          id,
-          JSON.stringify({
-            info: { id: providerSandboxId, name: "initial-placement", state },
-            generation: 1,
-            physicalId,
-            commonRuntime: true,
-            golden: false,
-            phase: "active",
-            processBaseline: { physicalId, generation: 1 },
-            managementAuthority: { credentialScope: "org", credentialOwnerId: orgId },
-          }),
-        ],
-      );
-      const host = {
-        id: "modal",
-        async get() {
-          return { id: providerSandboxId, state, providerState: state, physicalGeneration: "1" };
-        },
-        async stop() {
-          throw Error("The owner stop must use the Machine job.");
-        },
-        async readOutputs() {
-          captures++;
-          return [{ name: "final.txt", bytes: new TextEncoder().encode("last write") }];
-        },
-      };
-      const physical = {
-        sandboxId: physicalId,
-        async getTags() {
-          return { armada_scope: scope, armada_sandbox: providerSandboxId, armada_generation: "1" };
-        },
-        async poll() {
-          return state === "stopped" ? 0 : null;
-        },
-        async exec() {
-          if (needsRetry) {
-            needsRetry = false;
-            throw Error("Worker lost after capturing outputs and before checkpoint preparation.");
-          }
-          return {
-            stdin: { async writeText() {}, async close() {} },
-            async wait() {
-              return 0;
-            },
-          };
-        },
-        async snapshotFilesystem() {
-          return { imageId: "saved-recovery" };
-        },
-        async terminate() {
-          terminations++;
-          state = "stopped";
-        },
-      };
-      const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
-        stop: createModalStopJob(
-          f.sql,
-          ENCRYPTION_KEY,
-          async () => ({
-            client: {
-              apps: { fromName: async () => ({ appId: "app" }) },
-              sandboxes: { fromId: async () => physical },
-            } as never,
-            appName: "modal-app",
-            binding,
-            deploymentId: "deployment",
-            async prepareCheckpoint() {},
-            async resolveRuntimeTicket() {
-              return null;
-            },
-            async canUseModalCredential() {
-              return true;
-            },
-            close() {},
-          }),
-          async () => host as unknown as Provider,
-        ),
-      });
-      const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
-      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-        async start(_signal, restore) {
-          expect(restore).toMatchObject({
-            epoch: retained?.epoch,
-            watermark: retained?.watermark,
-            conversationId: f.first.conversationId,
-          });
-          return f.reboot(restore);
-        },
-        async stop() {
-          throw Error("Unexpected cleanup of healthy resume");
-        },
-      }));
-      const store = createSqlVaultStore(f.sql);
-      const providers = providerRegistry({
-        vault: store,
-        encryptionKey: ENCRYPTION_KEY,
-        providerFor: () => {
-          throw Error("Unexpected Boat fallback");
-        },
-        modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
-        modalProviderFor: () => ({
-          provider: host as unknown as Provider,
-          captureRuntimeWork: async () => ({ status: "clean" }),
+      [
+        scope,
+        orgId,
+        ownerId,
+        providerSandboxId,
+        id,
+        JSON.stringify({
+          info: { id: providerSandboxId, name: "initial-placement", state },
+          generation: 1,
+          physicalId,
+          commonRuntime: true,
+          golden: false,
+          phase: "active",
+          ...(scenario === "retention refused" ? {} : { processBaseline: { physicalId, generation: 1 } }),
+          managementAuthority: { credentialScope: "org", credentialOwnerId: orgId },
         }),
-        runtimeProviderFor: serve,
-      });
-      const controls = {
-        authStore: createMemoryAuthStore(),
-        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-        store,
-        encryptionKey: ENCRYPTION_KEY,
-        data: createSqlData(f.sql),
-        providers,
-        runtimeStopCheckpoint: createRuntimeStopCheckpoint(
-          f.sql,
-          createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
-        ),
-        runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
-      };
-      const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
-      expect(await stop()).toMatchObject({ status: "stopping" });
+      ],
+    );
+    const host = {
+      id: "modal",
+      async get() {
+        return { id: providerSandboxId, state, providerState: state, physicalGeneration: "1" };
+      },
+      async stop() {
+        throw Error("The owner stop must use the Machine job.");
+      },
+      async readOutputs() {
+        captures++;
+        return [{ name: "final.txt", bytes: new TextEncoder().encode("last write") }];
+      },
+    };
+    const physical = {
+      sandboxId: physicalId,
+      async getTags() {
+        return { armada_scope: scope, armada_sandbox: providerSandboxId, armada_generation: "1" };
+      },
+      async poll() {
+        return state === "stopped" ? 0 : null;
+      },
+      async exec() {
+        if (needsRetry) {
+          needsRetry = false;
+          throw Error("Worker lost after capturing outputs and before checkpoint preparation.");
+        }
+        return {
+          stdin: { async writeText() {}, async close() {} },
+          async wait() {
+            return 0;
+          },
+        };
+      },
+      async snapshotFilesystem() {
+        return { imageId: "saved-recovery" };
+      },
+      async terminate() {
+        terminations++;
+        state = "stopped";
+      },
+    };
+    const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
+      stop: createModalStopJob(
+        f.sql,
+        ENCRYPTION_KEY,
+        async () => ({
+          client: {
+            apps: { fromName: async () => ({ appId: "app" }) },
+            sandboxes: { fromId: async () => physical },
+          } as never,
+          appName: "modal-app",
+          binding,
+          deploymentId: "deployment",
+          async prepareCheckpoint() {},
+          async resolveRuntimeTicket() {
+            return null;
+          },
+          async canUseModalCredential() {
+            return true;
+          },
+          close() {},
+        }),
+        async () => host as unknown as Provider,
+      ),
+    });
+    const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        expect(restore).toMatchObject({
+          epoch: retained?.epoch,
+          watermark: retained?.watermark,
+          conversationId: f.first.conversationId,
+        });
+        return f.reboot(restore);
+      },
+      async stop() {
+        throw Error("Unexpected cleanup of healthy resume");
+      },
+    }));
+    const store = createSqlVaultStore(f.sql);
+    const providers = providerRegistry({
+      vault: store,
+      encryptionKey: ENCRYPTION_KEY,
+      providerFor: () => {
+        throw Error("Unexpected Boat fallback");
+      },
+      modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
+      modalProviderFor: () => ({
+        provider: host as unknown as Provider,
+        captureRuntimeWork: async () => ({ status: "clean" }),
+      }),
+      runtimeProviderFor: serve,
+    });
+    const controls = {
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store,
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(f.sql),
+      providers,
+      runtimeStopCheckpoint: createRuntimeStopCheckpoint(
+        f.sql,
+        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+      ),
+      runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
+    };
+    const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
+    expect(await stop()).toMatchObject({ status: "stopping" });
+    expect(terminations).toBe(0);
+    const signal = new AbortController().signal;
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    if (scenario === "retention refused") {
       expect(terminations).toBe(0);
-      const signal = new AbortController().signal;
+      expect(
+        (await f.db.query("select status,status_reason,stop_requested_at from sandboxes where id=$1", [id])).rows,
+      ).toEqual([{ status: "failed", status_reason: "modal_retention_refused", stop_requested_at: null }]);
+      expect(await stop()).toMatchObject({ status: "failed" });
+      expect(
+        (await f.db.query("select state from jobs where sandbox_id=$1 and kind='stop' order by created_at", [id])).rows,
+      ).toEqual([{ state: "failed" }, { state: "queued" }]);
+      return;
+    }
+
+    if (recover) {
+      expect(terminations).toBe(0);
+      await f.db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='stop'", [id]);
       expect(await runner.reconcileOne(signal)).toBe(true);
       await runner.drain();
-      if (recover) {
-        expect(terminations).toBe(0);
-        await f.db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='stop'", [id]);
-        expect(await runner.reconcileOne(signal)).toBe(true);
-        await runner.drain();
-      }
-      expect((await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([]);
-      const publisher = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
-        [OUTPUTS_PUBLISH]: createStagedOutputJob(f.sql),
-      });
+    }
+    expect((await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([]);
+    const publisher = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
+      [OUTPUTS_PUBLISH]: createStagedOutputJob(f.sql),
+    });
+    if (!recover) {
       expect(await publisher.reconcileOne(signal)).toBe(true);
       await publisher.drain();
-      expect(terminations).toBe(1);
-      expect(captures).toBe(1);
-      const stopped = (
-        await f.db.query<{ recovery: string; checkpoint: typeof retained }>(
-          "select record->>'recoveryImageId' as recovery,record->'runtimeCheckpoint' as checkpoint from modal_machines where scope=$1 and id=$2",
-          [scope, providerSandboxId],
-        )
-      ).rows[0];
-      expect(stopped?.recovery).toBe("saved-recovery");
-      retained = stopped?.checkpoint;
-      expect(
-        await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1 and name='final.txt'", [id]),
-      ).toMatchObject({ rows: [expect.any(Object)] });
-      expect((await controls.data(f.caller).sandboxes.get(id))?.status).toBe("stopped");
-      const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
-      accountTurns.setDispatch((caller, request) =>
-        dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
-      );
-      const outcome = Promise.withResolvers<"finished" | "interrupted">();
-      f.hold(outcome.promise);
-      const request = f.input();
-      expect(
-        await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
-      ).toMatchObject({
-        status: "queued",
-      });
-      expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
-      await accountTurns.drain();
-      expect(await accountTurns.status(f.caller, request.id, request.request_id)).toEqual({
-        nativePromptId: expect.any(String),
-      });
-      expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
-        f.first.conversationId,
-      ]);
-      const status = () =>
-        dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
-      expect(await status()).toMatchObject({ status: "running" });
-      outcome.resolve(recover ? "interrupted" : "finished");
-      await outcome.promise;
-      await f.runner.flushOutbox();
-      expect(await status()).toMatchObject({ status: "ready" });
-      const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
-      expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
-      expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
-      expect(f.starts).toEqual([undefined, "native-thread"]);
-    },
-  );
+    }
+    expect(terminations).toBe(1);
+    expect(captures).toBe(1);
+    const stopped = (
+      await f.db.query<{ recovery: string; checkpoint: typeof retained }>(
+        "select record->>'recoveryImageId' as recovery,record->'runtimeCheckpoint' as checkpoint from modal_machines where scope=$1 and id=$2",
+        [scope, providerSandboxId],
+      )
+    ).rows[0];
+    expect(stopped?.recovery).toBe("saved-recovery");
+    retained = stopped?.checkpoint;
+    expect((await controls.data(f.caller).sandboxes.get(id))?.status).toBe("stopped");
+    const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    accountTurns.setDispatch((caller, request) =>
+      dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
+    );
+    const outcome = Promise.withResolvers<"finished" | "interrupted">();
+    f.hold(outcome.promise);
+    const request = f.input();
+    expect(
+      await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
+    ).toMatchObject({
+      status: "queued",
+    });
+    expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
+    await accountTurns.drain();
+    expect(await accountTurns.status(f.caller, request.id, request.request_id)).toEqual({
+      nativePromptId: expect.any(String),
+    });
+    expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([f.first.conversationId]);
+    const status = () =>
+      dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
+    expect(await status()).toMatchObject({ status: "running" });
+    outcome.resolve(recover ? "interrupted" : "finished");
+    await outcome.promise;
+    await f.runner.flushOutbox();
+    expect(await status()).toMatchObject({ status: "ready" });
+    const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
+    expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
+    expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
+    expect(f.starts).toEqual([undefined, "native-thread"]);
+    if (recover) {
+      expect(await publisher.reconcileOne(signal)).toBe(true);
+      await publisher.drain();
+    }
+    expect(
+      await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1 and name='final.txt'", [id]),
+    ).toMatchObject({ rows: [expect.any(Object)] });
+  });
 });
 
 describe.each([

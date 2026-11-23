@@ -37,8 +37,15 @@ function bindingFromToken(key: string, token: string): Binding {
 /** Shared effect after live self authority is locked; no provider I/O on the reporting call. */
 export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: string, ownerId: string) {
   const row = (
-    await sql.query<{ id: string; provider: string; org_id: string; generation: string }>(
-      `select id,provider::text,org_id,lifecycle_generation::text as generation from public.sandboxes s
+    await sql.query<{
+      id: string;
+      provider: string;
+      org_id: string;
+      generation: string;
+      reconcile_lease: string | null;
+      runtime_transport: string | null;
+    }>(
+      `select id,provider::text,org_id,lifecycle_generation::text as generation,reconcile_lease,runtime_transport from public.sandboxes s
      where id=$1 and owner_id=$2 and status in ('ready','running') and stop_requested_at is null
        and not ${unresolvedModalLaunch("s")} for update`,
       [sandboxId, ownerId],
@@ -61,7 +68,17 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   const result = { id: row.id, status: "stopping" };
   if (!usesHostLaunch(row.provider)) {
     await admit();
-    if (row.provider === "modal") await enqueueModalStop(sql, row.id, false);
+    if (
+      row.provider === "modal" &&
+      row.runtime_transport === "dialout" &&
+      !(await enqueueModalStop(
+        sql,
+        row.id,
+        false,
+        row.reconcile_lease ? { reconcile: row.reconcile_lease } : undefined,
+      ))
+    )
+      throw new DelegatedAuthorityDenied();
     return result;
   }
 

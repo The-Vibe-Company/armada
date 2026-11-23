@@ -10,6 +10,7 @@ export async function admitModalStop(
   store: Pick<ServerSandboxStore, "update">,
   sandbox: Pick<SandboxRecord, "id" | "lifecycleGeneration">,
   patch: ServerSandboxPatch,
+  childOperation?: string,
 ) {
   const generation = sandbox.lifecycleGeneration;
   if (
@@ -21,7 +22,7 @@ export async function admitModalStop(
     throw Error("Cannot fence Modal stop generation.");
   await store.update(sandbox.id, {
     ...patch,
-    modalStopJob: true,
+    modalStopJob: childOperation ? { childOperation } : {},
     advanceGeneration: true,
     expectedGeneration: generation,
     activityToken: crypto.randomUUID(),

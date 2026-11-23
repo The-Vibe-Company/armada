@@ -604,7 +604,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt || (job.kind === "outputs_publish" && state !== "queued")) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
-        return sql.transaction((tx) => complete(tx, job.generation));
+        return sql.transaction(async (tx) => {
+          if (job.kind === "outputs_publish")
+            await tx.query("select id from public.sandboxes where id=$1 for update", [job.sandbox_id]);
+          return complete(tx, job.generation);
+        });
       }
       return complete(sql, job.generation);
     },
