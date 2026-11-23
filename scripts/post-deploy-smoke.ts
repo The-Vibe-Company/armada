@@ -863,7 +863,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       io: { ...io, out } satisfies SmokeIo,
     };
   }
-  // A failed launch can be visible before its cleanup job records physical exit.
   function stopObserved(result: { status: string; providerState?: string | null }) {
     if (result.status !== "stopped" && result.status !== "failed") return false;
     if (result.status === "failed" && result.providerState == null) return false;
@@ -2264,7 +2263,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
-  // Historical receipts did not record provider. Never contact Boat to classify them.
   const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
   rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
   if (deferred.length)

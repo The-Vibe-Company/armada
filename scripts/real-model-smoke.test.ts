@@ -157,7 +157,7 @@ test.each([
     expect(modalSetupReads).toBe(2);
     const readyBudget = budgets("modal").real_model_ready!;
     expect(timeouts.get("status")?.toSorted()).toEqual(
-      [readyBudget, readyBudget - 1000, budgets("docker").real_model_ready].toSorted(),
+      [readyBudget, readyBudget - 1000, budgets("docker").real_model_ready ?? 120_000].toSorted(),
     );
     expect(confirmations).toHaveLength(2);
     expect(confirmations[1]).toBe(confirmations[0]! - 1000);
