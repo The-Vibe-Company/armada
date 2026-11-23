@@ -49,7 +49,7 @@ export async function nativeIdleDue(
       ...(signal ? { signal } : {}),
     })
     .catch((error: unknown) => {
-      if (provider.id === "boat" && error instanceof ProviderError && error.code === "invalid_request") return null;
+      if (error instanceof ProviderError && error.code === "invalid_request") return null;
       throw error;
     });
   if (

@@ -447,9 +447,13 @@ export async function createServerServices(env: Record<string, string | undefine
         })
       : undefined;
   const modalJobReader = createModalJobReader(sql, config.encryptionKey);
-  const modalLogs = createModalLogReader(sql, config.encryptionKey, modal.storedProviderFor);
+  const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
+  const sandboxLogProviders = {
+    ...logProviders,
+    modal: createModalLogReader(sql, config.encryptionKey, logProviders.modal),
+  };
   const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
-    sandbox.provider === "modal" ? modalLogs(sandbox, caller) : providers.resolve(sandbox, caller);
+    sandboxLogProviders[sandbox.provider](sandbox, caller);
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
@@ -551,8 +555,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
   const nativeHistoryFor = createHistoricalSandboxProviderResolver({
-    resolve: (target, caller) =>
-      target.provider === "modal" ? modal.storedProviderFor(target, caller) : providers.resolve(target, caller),
+    resolve: (target, caller) => logProviders[target.provider](target, caller),
   });
   const langfuse = createLangfuse(sql, config.encryptionKey, (id, generation) => nativeHistoryFor(sql, id, generation));
   const runtimeEvents = createRuntimeEvents(
