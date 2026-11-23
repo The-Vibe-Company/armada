@@ -764,7 +764,7 @@ test("the runtime sweep settles a completed turn published by an overlapping ser
 test.each(["current", "superseded", "revoked", "rolled back"] as const)(
   "idle stop handoff with a %s checkpoint publication",
   async (scenario) => {
-    const f = await fixture();
+    const f = await fixture({ provider: scenario === "current" ? "modal" : "boat" });
     const active = await f.enrol();
     const promptId = crypto.randomUUID();
     await f.db.query(

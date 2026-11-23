@@ -161,6 +161,8 @@ OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
 Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
+Inactivity can pause Boat and Modal sandboxes. Docker keeps running while idle.
+
 In an interactive terminal, bare armada new opens the launcher.
 Pass explicit arguments in scripts.
 A successful launch saves the sandbox ID to .armada/sandbox in the current directory.

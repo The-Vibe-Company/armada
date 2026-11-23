@@ -1,4 +1,5 @@
-import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { capabilities } from "@armada/core/machine-capabilities";
+import { type AgentEvent, isFinalPromptStatus, isSandboxPlacementProvider, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
@@ -43,22 +44,33 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(
-    tx: Sql,
-    id: string,
-    generation: string,
-    existing: { request_id: string | null; merge_stop: boolean | null },
-  ) {
+  async function guard(tx: Sql, id: string, generation: string, requestId: string | null) {
     const target = (
-      await tx.query<{ task_prompt_id: string | null; merge_proof: boolean }>(
-        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
+      await tx.query<{
+        provider: string;
+        task_prompt_id: string | null;
+        merge_proof: boolean;
+        request_id: string | null;
+        merge_stop: boolean | null;
+      }>(
+        `select s.provider,s.task_prompt_id,${mergedWorkProof("s")} as merge_proof,p.request_id::text,p.merge_stop
+         from public.sandboxes s
+         join public.runtime_enrolments r on r.sandbox_id=s.id
+         left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
+         where s.id=$1 and s.lifecycle_generation=$2 and r.lifecycle_generation=s.lifecycle_generation`,
         [id, generation],
       )
     ).rows[0];
-    // A durable merge stop owns its checkpoint. A manual/idle checkpoint
-    // retains its original admission policy on retry.
-    const mergeStop = existing.request_id === null ? target?.merge_proof === true : existing.merge_stop === true;
-    if (!target?.task_prompt_id) throw Error("No settled task identity.");
+    if (!target?.task_prompt_id || target.request_id !== requestId) throw Error("Runtime checkpoint target changed.");
+    // A committed checkpoint can leave the guest quiesced and mutations fenced.
+    // The machine default controls fresh admission; the exact intent can still settle.
+    const mergeStop = requestId === null ? target.merge_proof : target.merge_stop === true;
+    if (
+      requestId === null &&
+      !mergeStop &&
+      (!isSandboxPlacementProvider(target.provider) || !capabilities(target.provider).idleStop)
+    )
+      throw Error("Machine does not stop for inactivity.");
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
@@ -98,9 +110,8 @@ export function createRuntimeIdle(
             provider: string;
             daemon_protocol: number | null;
             request_id: string | null;
-            merge_stop: boolean | null;
           }>(
-            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_protocol,p.request_id::text,p.merge_stop from public.sandboxes s
+            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_protocol,p.request_id::text from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
@@ -147,12 +158,12 @@ export function createRuntimeIdle(
             if (generation === undefined) continue;
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.
-            await guard(sql, row.id, generation, row);
+            await guard(sql, row.id, generation, row.request_id);
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
               { id: row.id, request_id: requestId, runtimeVersion: 1 },
-              (tx) => guard(tx, row.id, generation, row),
+              (tx) => guard(tx, row.id, generation, row.request_id),
             );
             signal.throwIfAborted();
             if (usesHostLaunch(row.provider)) {

@@ -18,6 +18,7 @@
     "./docker": "./src/docker-api.ts",
     "./launch": "./src/launch-exports.ts",
     "./launch-workdir": "./src/launch-workdir.ts",
+    "./machine-capabilities": "./src/machine-capabilities.ts",
     "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
   },

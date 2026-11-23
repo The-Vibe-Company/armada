@@ -1,6 +1,8 @@
 # Runtime idle pause (first delivery of #1562)
 
-The server checks enrolled Boat and Modal runtimes and eligible Docker hosts once per minute. The default
+The server checks enrolled Boat and Modal runtimes for inactivity once per minute.
+Docker sandboxes keep running during inactivity. Verified merged work can still trigger a
+retained stop on all three providers when stop after merge is enabled. The default
 quiet period is ten minutes, configured globally with
 `ARMADA_RUNTIME_IDLE_MINUTES` (positive whole milliseconds after conversion).
 There is no per-user setting. Native Boat and Modal use the leased lifecycle worker and the same delay, with their own quiescence evidence.
@@ -95,21 +97,18 @@ this change does not add native replay guarantees. Deploy the accepting server
 before these updated clients: older servers reject UUIDs on native sends.
 
 
-## Docker idle checkpoint, host stop and ordinary-send wake
+## Docker checkpointed merge stop and ordinary-send wake
 
-Docker uses the same global idle delay and archived-terminal-turn detector, not
-an independent host timer. Automatic pause requires placement/bootstrap to be
-configured and a registered host daemon reporting a supported protocol.
-Older/unknown daemons are skipped before checkpoint, never silently stopped.
-Pending commands, unknown task identity, active turns, application-secret taint
-and the existing archive bound remain conservative exclusions.
+Docker starts a new automatic checkpoint only after verified merged work.
+Eligible hosts must report a supported daemon protocol. Pending commands,
+unknown task identity, active turns and application-secret taint still prevent
+automatic checkpoint admission.
 
-The owner-authorized common checkpoint fences all runtime mutation admission.
-Only its synchronized current-epoch watermark allows the Docker host store to
-atomically mark an idle stop and enqueue the existing retained-container stop
-job. The normal host ACK publishes stopped; an ACK is not a runtime checkpoint.
-The Docker allocation, generation, workspace volume and absolute expiry stay
-unchanged. No provider adapter or Boat alias is introduced.
+Checkpoint admission fences runtime mutations. An already admitted checkpoint
+can still settle under its original intent. The host store checks the exact
+current-epoch watermark before atomically recording the stop and enqueuing the
+retained-container stop job. The host acknowledgement confirms physical stop.
+Previously idle-paused Docker sandboxes retain their existing wake behavior.
 
 Resume bootstrap embeds the sealed epoch/watermark/conversation proof in its
 new private runtime configuration. Readiness requires the guest to attest that

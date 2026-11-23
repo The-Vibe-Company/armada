@@ -16,6 +16,7 @@ observation, never interchangeable with this enum.
 | Send / turn tracking (`mcp-server/src/tools.ts`, `turns.ts`) | Admit activity under a lease; running reflects a turn, not a new machine. Completion can return to ready or record failure. |
 | Stop (`tools.ts`, `sandbox-lifecycle.ts`) | Reserve stop, attempt bounded best-effort preservation, request provider stop; stopping is not proof of physical exit. |
 | Reconcile (`sandbox-lifecycle.ts`) | Lease and generation-fence observations; stop on explicit request, interrupted starting, or expiry. Confirmed terminal provider state records stopped; failed launches retain failed and their diagnostic. Physical exit without verified recovery records failed. |
+| Automatic retained stop (runtime idle worker) | Settled runtime work can stop after the inactivity delay on Boat and Modal (`idle_paused`). On all three providers, verified merged work can stop independently (`work_merged`) unless the launch opted out. Docker stays active during inactivity and still honors self-finish, manual stop and TTL. |
 | Resume (`tools.ts`) | New activity/generation fences stale observations; restore retained compute and initialization before readiness. Not a fresh golden launch. |
 | Delete (`sandbox-rest-controls.ts`, `data.ts`) | Owner/current org admin, terminal unmanaged row only; provider deletion must be confirmed before metadata/archives are deleted. |
 
