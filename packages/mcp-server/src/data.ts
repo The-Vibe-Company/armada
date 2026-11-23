@@ -63,7 +63,7 @@ import {
   finishLaunchFailure,
   finishLaunchSuccess,
   markNativeDrainDispatchUnclaimed,
-  NATIVE_DRAIN_MISSING_RECEIPT,
+  NATIVE_DRAIN_WITHOUT_PROOF,
   nativeDrainDispatch,
   publishNativeResumeAdmission,
   publishNativeTurn,
@@ -1389,14 +1389,16 @@ export function createSqlData(
               if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived") {
                 const withoutReceipt =
                   allowUnpreservedBoat &&
-                  recovery?.outcome === "unverified" &&
+                  !locked.lease_busy &&
+                  (recovery?.outcome === "unverified" || recovery?.outcome === "ineligible") &&
                   (
                     await tx.query(
-                      `select 1 from public.sandboxes s where s.id=$1 and ${NATIVE_DRAIN_MISSING_RECEIPT}`,
-                      [id],
+                      `select 1 from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$2
+                         and s.status in ('stopped','failed') and ${NATIVE_DRAIN_WITHOUT_PROOF}`,
+                      [id, expectedGeneration],
                     )
                   ).rows.length > 0;
-                if (recovery?.outcome === "ineligible")
+                if (!withoutReceipt && recovery?.outcome === "ineligible")
                   throw withNativeDrainReason(
                     new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready"),
                     locked.lease_busy ? "lease_busy" : "not_eligible",

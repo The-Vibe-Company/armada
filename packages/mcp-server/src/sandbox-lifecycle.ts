@@ -1001,7 +1001,7 @@ export async function requestNativeSubscriptionStop(tx: Sql, id: string, generat
   return true;
 }
 
-export const NATIVE_DRAIN_MISSING_RECEIPT = `not exists (
+const NATIVE_DRAIN_MISSING_RECEIPT = `not exists (
   select 1 from public.sandbox_native_preservation_receipts r where r.sandbox_id=s.id
 )`;
 
@@ -1088,9 +1088,9 @@ const NATIVE_DRAIN_PENDING_PROOF = `(not s.application_secret_tainted and exists
     and ${NATIVE_DRAIN_DETACHED_PROOF}
 ))`;
 
-const NATIVE_DRAIN_WITHOUT_PROOF = `(not s.application_secret_tainted and ${NATIVE_DRAIN_MISSING_RECEIPT}
+export const NATIVE_DRAIN_WITHOUT_PROOF = `(not s.application_secret_tainted and ${NATIVE_DRAIN_MISSING_RECEIPT}
   and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
-    where outcome='unverified'))`;
+    where outcome in ('unverified','ineligible')))`;
 
 export async function fenceBoatDrainReplay(tx: Sql, id: string, allowUnpreservedBoat: boolean) {
   const { rows } = await tx.query<{ eligible: boolean }>(
