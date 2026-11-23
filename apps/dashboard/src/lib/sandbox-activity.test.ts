@@ -11,7 +11,7 @@ const finished = {
   expiresAt: null,
 } satisfies SandboxTurnObservation;
 
-function row(id: string, overrides: Partial<SandboxListMetadata> = {}): SandboxListMetadata {
+function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
   return {
     id,
     orgId: "org",
@@ -31,7 +31,7 @@ function row(id: string, overrides: Partial<SandboxListMetadata> = {}): SandboxL
     canOpen: true,
     canManage: true,
     ...overrides,
-  };
+  } satisfies SandboxListMetadata;
 }
 
 test("activity counts cover the full filtered inventory while rendering only the requested page", () => {

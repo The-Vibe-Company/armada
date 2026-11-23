@@ -26,7 +26,7 @@ import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
-import { createControlClient } from "@/lib/control";
+import { CONTROL_TIMEOUT_MS, createControlClient } from "@/lib/control";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
@@ -44,12 +44,7 @@ import {
   type SandboxListMetadata,
   skippedRowsNote,
 } from "@/lib/sandbox-access";
-import {
-  isWaitingCandidate,
-  type SandboxTurnObservation,
-  sandboxActivityPage,
-  sandboxNeedsViewer,
-} from "@/lib/sandbox-activity";
+import { isWaitingCandidate, type SandboxTurnObservation, sandboxActivityPage } from "@/lib/sandbox-activity";
 import {
   FACETS,
   type Facet,
@@ -135,7 +130,7 @@ async function SandboxesContent({ searchParams }: Props) {
     return snapshots;
   });
   const [
-    { rows, total, inventoryTotal, skipped, facets, activity, counts, page, turns, activityNow },
+    { rows, total, inventoryTotal, skipped, facets, activity, counts, page, waitingIds, waitingIncomplete, now },
     directory,
     setup,
     hostRead,
@@ -159,7 +154,6 @@ async function SandboxesContent({ searchParams }: Props) {
     snapshotsRead,
   ]);
 
-  const now = new Date();
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
@@ -238,6 +232,12 @@ async function SandboxesContent({ searchParams }: Props) {
         <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
       </SandboxToolbar>
 
+      {waitingIncomplete && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Some turn statuses could not be checked. The Waiting for you count may be incomplete.
+        </p>
+      )}
+
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
           {skippedRowsNote(skipped)}
@@ -280,10 +280,11 @@ async function SandboxesContent({ searchParams }: Props) {
           counts={counts}
           tab={activity}
           page={page}
+          waitingIncomplete={waitingIncomplete}
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
-            const waiting = sandboxNeedsViewer(sandbox, viewer.id, turns.get(sandbox.id), activityNow);
+            const waiting = waitingIds.has(sandbox.id);
             return {
               id: sandbox.id,
               content: (
@@ -509,13 +510,13 @@ async function loadInventory(
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewer.id), filters.sort);
-  const turns = await readWaitingTurns(rows, viewer);
-  const activityNow = new Date();
-  const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, activityNow);
+  const { turns, waitingIncomplete } = await readWaitingTurns(rows, viewer);
+  const now = new Date();
+  const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, now);
   return {
     ...activityPage,
-    turns,
-    activityNow,
+    now,
+    waitingIncomplete,
     total: rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
@@ -523,25 +524,24 @@ async function loadInventory(
   };
 }
 
-/** Read turn evidence only for the viewer's live rows, with bounded request concurrency. */
 async function readWaitingTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
   const turns = new Map<string, SandboxTurnObservation>();
-  const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return turns;
-
-  const client = createControlClient({ serverUrl, token: viewer.token });
   const now = new Date();
   const candidates = rows.filter((row) => isWaitingCandidate(row, viewer.id, now));
+  const serverUrl = mcpUrl();
+  if (!serverUrl || !viewer.token) return { turns, waitingIncomplete: candidates.length > 0 };
+
+  const deadline = performance.now() + CONTROL_TIMEOUT_MS;
   for (let offset = 0; offset < candidates.length; offset += 8) {
+    const timeoutMs = Math.floor(deadline - performance.now());
+    if (timeoutMs < 1) break;
+    const client = createControlClient({ serverUrl, token: viewer.token, timeoutMs });
     await Promise.all(
       candidates.slice(offset, offset + 8).map(async ({ id }) => {
-        try {
-          turns.set(id, await client.post<SandboxTurnObservation>("sandbox/status", { id }));
-        } catch {
-          // An unavailable observation cannot establish that the last turn finished.
-        }
+        const observation = await client.post<SandboxTurnObservation>("sandbox/status", { id }).catch(() => null);
+        if (observation) turns.set(id, observation);
       }),
     );
   }
-  return turns;
+  return { turns, waitingIncomplete: turns.size < candidates.length };
 }

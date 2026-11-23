@@ -29,7 +29,7 @@ export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, n
   return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
 }
 
-export function sandboxNeedsViewer(
+function sandboxNeedsViewer(
   row: SandboxListMetadata,
   viewerId: string,
   observation: SandboxTurnObservation | undefined,
@@ -44,6 +44,10 @@ export function sandboxNeedsViewer(
   );
 }
 
+/**
+ * All is the inventory and Mine is an ownership filter across activity tabs.
+ * Working, Waiting for you, Stopped, and Failed are mutually exclusive subsets.
+ */
 export function sandboxActivityPage(
   rows: SandboxListMetadata[],
   viewerId: string,
@@ -53,14 +57,14 @@ export function sandboxActivityPage(
   now = new Date(),
 ) {
   const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
-  const need = (row: SandboxListMetadata) => sandboxNeedsViewer(row, viewerId, turns.get(row.id), now);
-  // All is the inventory and Mine is an ownership filter across activity tabs.
-  // Working, Waiting for you, Stopped, and Failed are mutually exclusive subsets.
+  const waitingIds = new Set(
+    rows.filter((row) => sandboxNeedsViewer(row, viewerId, turns.get(row.id), now)).map((row) => row.id),
+  );
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
     working,
-    need,
+    need: (row: SandboxListMetadata) => waitingIds.has(row.id),
     stopped: (row: SandboxListMetadata) => row.status === "stopped",
     failed: (row: SandboxListMetadata) => row.status === "failed",
   };
@@ -73,5 +77,5 @@ export function sandboxActivityPage(
   ) as Record<keyof typeof predicates, number>;
   const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
-  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page };
+  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page, waitingIds };
 }
