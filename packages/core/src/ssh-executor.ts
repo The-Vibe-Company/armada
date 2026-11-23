@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
-import { GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
+import { GOLDEN_SSH_RECEIPT_PHASES, GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
 import { launchInfrastructure } from "./sandbox-provider.ts";
@@ -28,6 +28,7 @@ export async function sshStdinCheckout(
   provider: Provider,
   input: {
     sandboxId: string;
+    buildId?: string;
     token: string;
     script: string;
     timeoutMs?: number;
@@ -261,6 +262,7 @@ async function sshExchange(
   provider: Pick<Provider, "sshKey">,
   input: {
     sandboxId: string;
+    buildId?: string;
     token: string;
     script: string;
     repositories?: readonly string[];
@@ -343,6 +345,7 @@ async function sshExchange(
       deps.githubHydration === true,
       input.repositories,
       input.refs,
+      input.buildId,
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -397,6 +400,10 @@ function safeGitRepository(repositories: readonly string[] | undefined, index: n
     : `repository ${index}`;
 }
 
+const BUILD_FAILURE_RECORD = new RegExp(
+  `^ARMADA_BUILD_FAILURE (${Object.keys(GOLDEN_SSH_RECEIPT_PHASES).join("|")}) ([0-9]{1,3})(?: ([0-9]{1,2}))?$`,
+);
+
 function command(
   spawnImpl: typeof spawn,
   file: string,
@@ -410,6 +417,7 @@ function command(
   githubHydration = false,
   repositories?: readonly string[],
   refs?: readonly string[],
+  buildId?: string,
 ) {
   return new Promise<string>((resolve, reject) => {
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
@@ -417,7 +425,7 @@ function command(
     // exact @types/node version a workspace package without its own pin happens to get hoisted.
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
-    let phase = "ssh";
+    let phase: keyof typeof GOLDEN_SSH_RECEIPT_PHASES = "ssh";
     let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let commandIndex: string | undefined;
@@ -477,12 +485,9 @@ function command(
           }
           continue; // Never forward private SSH stderr, even build-looking records.
         }
-        const match =
-          /^ARMADA_BUILD_FAILURE (checkout|bun|chromium|harness|skillpack|init|ownership|output_collector|credential_cleanup|inline_scan) ([0-9]{1,3})(?: ([0-9]{1,2}))?$/.exec(
-            line,
-          );
+        const match = BUILD_FAILURE_RECORD.exec(line);
         if (match) {
-          phase = match[1]!;
+          phase = match[1] as keyof typeof GOLDEN_SSH_RECEIPT_PHASES;
           exitCode = match[2];
           commandIndex = match[3];
         }
@@ -544,7 +549,7 @@ function command(
           return;
         }
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
-        if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", phase, code: reason }));
+        if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", buildId, phase, code: reason }));
         if (hydrationPhase) {
           console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: hydrationPhase }));
           reject(new GitHubHydrationError(hydrationPhase));
@@ -567,14 +572,15 @@ function command(
               safeMessage: timedOut
                 ? `Build timed out during ${phase}.`
                 : phase === "checkout"
-                  ? (gitMessage ??
-                    `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`)
+                  ? gitMessage
+                    ? `${gitMessage} Git exited ${exitCode ?? code ?? "unknown"}.`
+                    : `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
                     : phase === "output_collector"
-                      ? "The sandbox output collector could not start. Verify the managed Bun executable, Linux glibc and /proc/self/fd before rebuilding."
+                      ? `The sandbox output collector exited ${exitCode ?? code ?? "unknown"}. Verify the managed Bun executable, Linux glibc and /proc/self/fd before rebuilding.`
                       : phase === "inline_scan"
-                        ? "Secret scan found token-shaped material; remove credentials from the repositories and builder before rebuilding."
+                        ? `Secret scan exited ${exitCode ?? code ?? "unknown"} after finding token-shaped material; remove credentials from the repositories and builder before rebuilding.`
                         : `Build failed during ${phase} (${reason}). Check connectivity, permissions and package availability.`,
               ...(phase === "skillpack" && exitCode === "98"
                 ? { safeReason: "skillpack_integrity_failed" as const }
