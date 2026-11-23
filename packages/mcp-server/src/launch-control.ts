@@ -34,6 +34,7 @@ import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
+import { withBoatManagementIdentity } from "./observed-boat.ts";
 import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
@@ -176,14 +177,12 @@ async function launchGolden(
     const provider = account.placement
       ? await account.placement.provider(actor, target)
       : runtimeHost
-        ? runtimeHost(
-            (
-              await resolveBoatKey(options.store, options.encryptionKey, {
-                userId: caller.userId,
-                orgId: actor.orgId,
-                visibility: golden.visibility,
-              })
-            ).key,
+        ? await resolveBoatKey(options.store, options.encryptionKey, {
+            userId: caller.userId,
+            orgId: actor.orgId,
+            visibility: golden.visibility,
+          }).then(({ key, scope }) =>
+            withBoatManagementIdentity(runtimeHost(key), scope, scope === "org" ? actor.orgId : caller.userId),
           )
         : await providerForGolden(options, caller, target);
     if (provider.id !== golden.provider)
@@ -233,6 +232,9 @@ async function launchGolden(
     };
   };
   if (idempotencyKey === undefined) return dispatch();
+  const receipts = options.ordinaryLaunchReceipts!;
+  const saved = await receipts.replay<Awaited<ReturnType<typeof dispatch>>>(actor, idempotencyKey, payload);
+  if (saved) return publicLaunchReceipt(saved.response);
   const { provider } = await prepareOnce();
   const management = await provider.managementIdentity?.();
   const backendId = (await provider.backendIdentity?.())?.id;
@@ -244,7 +246,7 @@ async function launchGolden(
     backendId,
   };
   // Same key and same request replays the recorded answer; a different request under the key is refused.
-  const receipt = await options.ordinaryLaunchReceipts!.run(actor, idempotencyKey, payload, dispatch, authority);
+  const receipt = await receipts.run(actor, idempotencyKey, payload, dispatch, authority);
   return publicLaunchReceipt(receipt);
 }
 
@@ -286,6 +288,8 @@ export function launchTemplate(
 export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
   const stores = options.data?.(caller);
   if (!stores) return undefined;
+  const boatPlacement = options.launch?.boatRuntimeDefault ?? options.launch?.boatEndpointRuntime;
+  const launch = { ...options.launch, ...(boatPlacement ? { boatRuntimeDefault: boatPlacement } : {}) };
   return {
     stores: {
       goldens: stores.goldens,
@@ -316,12 +320,11 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
         }
       : {}),
     provider: (golden: GoldenRecord) => {
-      const launch = options.launch;
-      if (!launch?.runtime && !launch?.boatRuntime && !launch?.[runtimeBridgeProfiles[golden.provider].launchDefault])
+      if (!launch.runtime && !launch.boatRuntime && !launch[runtimeBridgeProfiles[golden.provider].launchDefault])
         throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
       return providerForGolden(options, caller, golden);
     },
-    ...(options.launch ? { options: options.launch } : {}),
+    options: launch,
   } satisfies TemplateRuntime;
 }
 

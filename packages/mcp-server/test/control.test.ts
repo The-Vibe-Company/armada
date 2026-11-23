@@ -903,6 +903,7 @@ describe("control API", () => {
 
   test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
     await withServer(async ({ options }) => {
+      delete options.launch;
       const call = (init: RequestInit) =>
         handleControlRequest(new Request("https://armada.test/api/v1/launch/options", init), options);
       expect((await call({ method: "POST" }))?.status).toBe(401);
@@ -917,7 +918,8 @@ describe("control API", () => {
         enabled: true,
         launchSources: ["golden"],
         harnesses: ["claude", "codex"],
-        capabilities: { launch: true },
+        capabilities: { launch: false },
+        unsupportedReasons: { launch: expect.any(String) },
       });
       expect(
         body.harnesses
@@ -1287,6 +1289,7 @@ describe("control API", () => {
         launched.id,
         JSON.stringify(oldReceipt),
       ]);
+      delete keyed.launch;
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
       expect(await replay!.json()).toEqual(body);
@@ -2525,7 +2528,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     delete options.launch;
     expect(await (await request("launch/options", {}))?.json()).toMatchObject({
-      boatRuntime: { defaultPath: "native" },
+      boatRuntime: { defaultPath: "runtime", enabled: true },
     });
     // Actual startup timeout -> launch failure persistence -> public logs response.
     expectedForks = 2;

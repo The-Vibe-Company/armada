@@ -69,12 +69,10 @@ export async function prepareGoldenLaunchAccount(
     } satisfies LaunchCredentialResolver;
   };
   let resolver = placement?.credentials ?? credentials;
-  let account = await probe(resolver);
+  const account = await probe(resolver);
   if (!explicit && !placement && endpoint && account?.customEndpoint) {
     placement = endpoint;
     resolver = endpoint.credentials;
-    const binding = requireLaunchAccountBinding(account.binding);
-    account = { ...account, binding };
   }
   const runtime = explicit ?? placement?.policy;
   if (!runtime) throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");

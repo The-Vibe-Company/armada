@@ -1,10 +1,14 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { launchEnvelope } from "@armada/core/contract";
+import { createSqlVaultStore } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
+import { withBoatManagementIdentity } from "../src/observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { bunLikeSql, database, fakeBoat } from "./support.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
+import { bunLikeSql, database, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 let prepared: Promise<Awaited<ReturnType<typeof database>>> | undefined;
 beforeAll(async () => {
@@ -32,8 +36,6 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
   };
   const data = createSqlData(sql)(caller);
   const boat = fakeBoat();
-  // Production providerRegistry supplies immutable credential management provenance.
-  boat.provider.managementIdentity = async () => ({ scope: "org", ownerId: people.org });
   let allocations = 0;
   let logical = "";
   const fork = boat.provider.fork.bind(boat.provider);
@@ -43,11 +45,23 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
     await fork(request);
     throw Error("provider allocated, response lost");
   };
+  const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
   const context = {
     caller,
     data,
-    provider: async () => boat.provider,
-    launchCredentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+    provider: async () => {
+      throw Error("Launch must use the selected runtime placement");
+    },
+    // The raw launch host gains management provenance from the runtime placement.
+    launch: {
+      boatRuntimeDefault: {
+        policy: enrolledLaunchPolicy(sql),
+        provider: async () => withBoatManagementIdentity(boat.provider, "org", people.org),
+        connections: { async validate() {}, async bind() {} },
+        credentials,
+      },
+    },
+    launchCredentials: credentials,
     ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(sql),
     logError: () => {},
   } as unknown as ToolContext;
@@ -68,6 +82,7 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
   };
   const successInput = { ...input, idempotencyKey: "mcp-lost-success-key" };
   const first = launchEnvelope.parse(await callSharedTool(context, "launch", successInput));
+  delete context.launch;
   expect(await callSharedTool(context, "launch", successInput)).toEqual(first);
 
   await db.query("update ordinary_launch_receipts set response=$1::jsonb where request_key=$2", [

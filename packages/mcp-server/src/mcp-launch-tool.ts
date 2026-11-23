@@ -141,32 +141,10 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
       if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
       return dispatch();
     }
-    const { provider } = await prepareOnce();
-    const authority = {
-      target: {
-        provider: chosen.provider,
-        orgId: chosen.orgId,
-        visibility: chosen.visibility,
-        modal: chosen.modal,
-      },
-      management:
-        (await provider.managementIdentity?.()) ??
-        (() => {
-          throw new ToolError("invalid", "Provider cannot pin management authority.");
-        })(),
-      backendId:
-        (await provider.backendIdentity?.())?.id ??
-        (() => {
-          throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-        })(),
-    };
-    const receipt = await context.ordinaryLaunchReceipts.run(
-      actor,
-      args.idempotencyKey ?? crypto.randomUUID(),
-      payload,
-      dispatch,
-      authority,
-    );
+    const receipts = context.ordinaryLaunchReceipts;
+    const key = args.idempotencyKey ?? crypto.randomUUID();
+    const saved = args.idempotencyKey ? await receipts.replay(actor, key, payload) : undefined;
+    const receipt = saved ? saved.response : await admit();
     const envelope = launchEnvelope.safeParse(receipt);
     if (!envelope.success)
       throw new LaunchError(
@@ -174,6 +152,29 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
         "The saved launch receipt cannot be returned. Inspect the original sandbox through list. Do not use a new key.",
       );
     return publicLaunchReceipt(envelope.data);
+
+    async function admit() {
+      const { provider } = await prepareOnce();
+      const authority = {
+        target: {
+          provider: chosen.provider,
+          orgId: chosen.orgId,
+          visibility: chosen.visibility,
+          modal: chosen.modal,
+        },
+        management:
+          (await provider.managementIdentity?.()) ??
+          (() => {
+            throw new ToolError("invalid", "Provider cannot pin management authority.");
+          })(),
+        backendId:
+          (await provider.backendIdentity?.())?.id ??
+          (() => {
+            throw new ToolError("invalid", "Provider cannot pin allocation authority.");
+          })(),
+      };
+      return receipts.run(actor, key, payload, dispatch, authority);
+    }
   });
 }
 

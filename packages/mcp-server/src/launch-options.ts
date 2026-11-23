@@ -130,8 +130,8 @@ export function launchProviderOptions(
       enabled: true,
       launchSources: ["golden"],
       harnesses: boatRuntime ? [...HARNESSES] : ["claude", "codex"],
-      capabilities: { ...supported },
-      unsupportedReasons: {},
+      capabilities: { ...supported, launch: boatRuntime },
+      unsupportedReasons: boatRuntime ? {} : { launch: "Armada runtime launch is unavailable for Boat." },
     },
     {
       id: "modal",
@@ -171,12 +171,17 @@ export type LaunchDiscoveryOptions = Pick<
 >;
 
 export function readLaunchOptions(options: LaunchDiscoveryOptions) {
+  const explicitBoatRuntime = Boolean(options.boatRuntimeLaunch && options.runtimeHostFor);
+  const boatLaunch = Boolean(
+    options.launch?.runtime ||
+      options.launch?.boatRuntime ||
+      options.launch?.boatRuntimeDefault ||
+      options.launch?.boatEndpointRuntime ||
+      explicitBoatRuntime,
+  );
   return {
     ...launchOptions,
-    providers: launchProviderOptions(
-      options.docker,
-      Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
-    ),
+    providers: launchProviderOptions(options.docker, boatLaunch),
     modalRuntime: {
       defaultPath: "runtime",
       enabled: Boolean(options.modalRuntimeLaunch),
@@ -208,7 +213,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
           : 0,
     },
     boatRuntime: {
-      defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
+      defaultPath: "runtime",
       diagnosticsVersion: 1,
       followupVersion: options.runtimeSend ? 1 : 0,
       checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
@@ -228,7 +233,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
         options.runtimeSend
           ? 1
           : 0,
-      enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
+      enabled: explicitBoatRuntime,
     },
   } satisfies LaunchOptionsResponse;
 }
