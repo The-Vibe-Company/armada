@@ -395,10 +395,23 @@ async function main(dialout = false) {
   Object.assign(process.env, githubRuntimeEnvironment({ PATH: process.env.PATH }, githubRoot));
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubClosing = false;
-  closeGitHubBroker = () => {
+  const closeBroker = () => {
     githubClosing = true;
     return github.close();
   };
+  closeGitHubBroker = closeBroker;
+  const stopDuringStartup = (signal: NodeJS.Signals) => {
+    removeStartupSignalHandlers();
+    void closeBroker()
+      .catch(() => process.stderr.write("github_socket_cleanup_failed\n"))
+      .then(() => process.kill(process.pid, signal));
+  };
+  const removeStartupSignalHandlers = () => {
+    process.removeListener("SIGTERM", stopDuringStartup);
+    process.removeListener("SIGINT", stopDuringStartup);
+  };
+  process.once("SIGTERM", stopDuringStartup);
+  process.once("SIGINT", stopDuringStartup);
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
     if (githubClosing) throw Error("github_configuration_denied");
@@ -593,6 +606,8 @@ async function main(dialout = false) {
       throw Error("runtime_native_restore_failed");
   }
   runner.startOutboxDelivery();
+  if (githubClosing) return;
+  removeStartupSignalHandlers();
   if (channel) {
     const stop = new AbortController();
     const shutdown = () => stop.abort();
@@ -603,7 +618,7 @@ async function main(dialout = false) {
         stop.abort();
         github.configure(null);
         try {
-          await closeGitHubBroker?.();
+          await closeBroker();
         } finally {
           await runner.close();
           await Promise.allSettled([...requests]);
@@ -654,7 +669,7 @@ async function main(dialout = false) {
     const shutdown = () => {
       process.removeListener("SIGTERM", shutdown);
       process.removeListener("SIGINT", shutdown);
-      void Promise.allSettled([server.stop(true), closeGitHubBroker?.(), runner.close()]);
+      void Promise.allSettled([server.stop(true), closeBroker(), runner.close()]);
     };
     process.once("SIGTERM", shutdown);
     process.once("SIGINT", shutdown);
