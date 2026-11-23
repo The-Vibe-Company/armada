@@ -423,7 +423,7 @@
         "packages/mcp-server/test/runtime-checkpoint.test.ts",
         "packages/mcp-server/test/sandbox-access.test.ts",
         "packages/mcp-server/test/sandbox-activity.test.ts",
-        "packages/mcp-server/test/skill-defaults.test.ts",
+        "packages/mcp-server/test/skill-defaults.test.ts"
       ],
       "seconds": 6.709
     },
