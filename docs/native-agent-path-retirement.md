@@ -33,7 +33,7 @@ Modal sandbox launches use the Armada runtime and require `ARMADA_MODAL_DIALOUT=
 | Parity | Land #2734–#2739 in dependency order. Use the [Modal runbook](modal-runtime-first-prompt.md) for Modal and owner-enabled Docker staging evidence. Boat evidence is coordinator-only and on demand, outside CI, staging acceptance and the release gate. |
 | Modal default (#2740) | Release with the runtime default on for new Modal launches. Complete one release cycle with that default, pass the production checklist and confirm the previous release is recoverable. This evidence gates the Modal drain and the Boat default change. |
 | Boat default (#2741) | Release with the runtime default on for new Boat launches after Modal's checklist passes and #2735 lands. Complete one release cycle with that default, pass the production checklist and confirm the previous release is recoverable. The coordinator checks Boat on its own sandbox using the [Boat runbook](boat-runtime-first-prompt.md) and production parity with `--only boat --production-boat`. Release gating reports `boat: not part of the release gate`. |
-| Drain (#2742) | Record counts by provider, persisted path and status before the run. For each eligible native sandbox, use existing work preservation and then the normal delete operation. Repeat the inventory and reconcile pending prompt/steer work and account leases. Leave a row in place if preservation or deletion has failed and record it for retry. |
+| Drain (#2742) | Record counts by provider, persisted path and status before the run. For each eligible native sandbox, use existing work preservation and then the normal delete operation. Repeat the inventory and reconcile pending prompt/steer work and account leases. Record refusals for retry. The owner-approved Boat opt-in below permits deletion when a preservation receipt is absent. |
 | Delete (#2743–#2748) | After the default-on release cycle, checklist, recoverable previous release and successful drain, remove that provider's native path in the next release. Shared deletions wait for both providers and their owning tickets. Delete old public surfaces outright and update the Armada skill and coordinator commands where those surfaces break. |
 | Drop schema (#2749) | Verify the code that last used the objects is deployed and its predecessor has drained. Ship the drop one deploy later, after the 180-second overlap, with one append-only migration. |
 
@@ -55,7 +55,7 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 | Persisted state | Drain outcome and recovery |
 | --- | --- |
-| Native and active, stopped or retained | Preserve recoverable work first. A failed or uncertain preservation leaves the row for reconciliation. |
+| Native and active, stopped or retained | Preserve recoverable work first. A failed or uncertain preservation leaves the row for reconciliation under the default drain. The explicit Boat opt-in also admits eligible rows without receipts. |
 | Preservation complete | A crash before or during the delete call leaves the preserved work available. On restart, re-read the row and use the normal idempotent delete path. |
 | Delete requested or in progress | A crash before the response or report leaves the normal deletion owner responsible for reconciliation. Report completion only after terminal deletion is verified. |
 | Deleted | A rerun skips the row. A crash before recording the report is recovered from the next inventory. |
@@ -99,12 +99,21 @@ lifecycle workers before issuing strict stops. Prepare the checkout with
 `bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
 `ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
 `ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
-Run `bun scripts/ops/drain-native.ts --provider boat`.
+Run `bun scripts/ops/drain-native.ts --provider boat` to require verified
+preservation. For the owner-approved drain of native Boat rows without a
+preservation receipt, run
+`bun scripts/ops/drain-native.ts --provider boat --allow-unpreserved-boat`.
+The opt-in can discard unpushed work and reports confirmed deletions without
+receipts in the aggregate `deletedWithoutProof` count. The same authorization,
+stop, placement, and provider confirmation checks apply.
+[Owner decision](https://github.com/The-Vibe-Company/armada/issues/2742#issuecomment-7096183771)
 
-The command reports eligible running rows as incomplete while the lifecycle worker
-verifies work preservation and requests a retained stop. Rerun after the stop
-settles to delete through the recovery handoff. A nonzero failed count returns a
-failing exit status. A complete inventory rerun reports zero candidates.
+The default command reports eligible running rows as incomplete while the
+lifecycle worker verifies work preservation and requests a retained stop. The
+opt-in requests an ordinary stop if the row has no receipt. Rerun after the stop
+settles. Rows with valid archived proof use the recovery handoff. A nonzero failed
+count returns a failing exit status. A complete inventory rerun reports zero
+candidates.
 
 ### Coordinator ledger
 

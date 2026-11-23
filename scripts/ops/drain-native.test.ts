@@ -45,7 +45,7 @@ test("dry-run reports only live records on the selected persisted native route, 
   });
 });
 
-test("real drain reports failed preservation, keeps the row, and skips deleted rows on replay", async () => {
+test("real drain reports proof outcomes in aggregate and skips deleted rows on replay", async () => {
   const actorId = crypto.randomUUID();
   const request = parseNativeDrainArgs(["--provider", "boat"]);
   await db.query("insert into public.members values ('private-org', $1, 'admin')", [actorId]);
@@ -54,16 +54,18 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
       ('archived-id', 'boat', 'stopped', false, null, null),
       ('unproven-id', 'boat', 'stopped', false, null, null);
   `);
-  let proofAvailable = false;
+  const optIn = parseNativeDrainArgs(["--provider", "boat", "--allow-unpreserved-boat"]);
+  expect(optIn.allowUnpreservedBoat).toBe(true);
+  let allowUnpreserved = false;
   const calls: string[] = [];
   const operation = {
     actorId,
     async remove({ id, role }: { id: string; role: string | null }) {
       calls.push(id);
       expect(role).toBe("admin");
-      if (id === "unproven-id" && !proofAvailable) throw new Error("Unverified work for unproven-id");
+      if (id === "unproven-id" && !allowUnpreserved) throw new Error("Unverified work for unproven-id");
       await db.query("update public.sandboxes set status='deleted', deleted_at=now() where id=$1", [id]);
-      return "with-proof" as const;
+      return id === "unproven-id" ? "without-proof" : "with-proof";
     },
   };
   expect(await runNativeDrain(request, sql, operation)).toEqual({
@@ -77,11 +79,15 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
   });
   expect(await run("--provider", "boat", "--dry-run")).toMatchObject({ total: 1, byStatus: { stopped: 1 } });
 
-  proofAvailable = true;
-  expect(await runNativeDrain(request, sql, operation)).toMatchObject({
+  allowUnpreserved = true;
+  expect(await runNativeDrain(optIn, sql, operation)).toEqual({
+    provider: "boat",
+    mode: "drain",
+    alreadyDeleted: 0,
     total: 1,
     deleted: 1,
-    deletedWithProof: 1,
+    deletedWithProof: 0,
+    deletedWithoutProof: 1,
     failed: 0,
   });
   expect(await runNativeDrain(request, sql, operation)).toMatchObject({ total: 0, deleted: 0, failed: 0 });

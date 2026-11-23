@@ -58,10 +58,11 @@ import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
-  fencePreservedBoatDrainReplay,
+  fenceBoatDrainReplay,
   finishLaunchFailure,
   finishLaunchSuccess,
   markNativeDrainDispatchUnclaimed,
+  NATIVE_DRAIN_MISSING_RECEIPT,
   nativeDrainDispatch,
   publishNativeResumeAdmission,
   publishNativeTurn,
@@ -123,9 +124,9 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
-  nativeDrain?: true;
+  nativeDrain?: "with-proof" | "without-proof";
   nativeDrainDeleteOperation?: { provider: SandboxRecord["provider"]; placement: string; id: string };
-  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string };
+  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string; allowUnpreservedBoat: boolean };
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -183,7 +184,8 @@ export interface ServerSandboxStore extends SandboxStore {
     generation: number,
     activityToken: string,
     action: "inspect" | "claim",
-  ): Promise<{ operation_id: string | null }>;
+    allowUnpreservedBoat: boolean,
+  ): Promise<{ operation_id: string | null; preserved: boolean }>;
   getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
   requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat exec also claims the activity lease. */
@@ -643,8 +645,17 @@ export function createSqlData(
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async nativeDrainDispatch(id, placement, generation, activityToken, action) {
-        const owned = await nativeDrainDispatch(sql, scope, id, placement, generation, activityToken, action);
+      async nativeDrainDispatch(id, placement, generation, activityToken, action, allowUnpreservedBoat) {
+        const owned = await nativeDrainDispatch(
+          sql,
+          scope,
+          id,
+          placement,
+          generation,
+          activityToken,
+          action,
+          allowUnpreservedBoat,
+        );
         if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
         return owned;
       },
@@ -923,7 +934,15 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
             throw new DataError("Sandbox deletion completion requires its activity generation and token.");
           const applied = await sql.transaction((tx) =>
-            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken, patch.nativeDrain === true),
+            completeSandboxDeletion(
+              tx,
+              scope,
+              id,
+              expectedGeneration,
+              activityToken,
+              !!patch.nativeDrain,
+              patch.nativeDrain === "without-proof",
+            ),
           );
           if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
           return;
@@ -1299,7 +1318,7 @@ export function createSqlData(
         };
         let result: Awaited<ReturnType<typeof applyUpdate>> & { observationBlocked?: boolean };
         if (patch.nativeDrainAdmission) {
-          const { provider, placement } = patch.nativeDrainAdmission;
+          const { provider, placement, allowUnpreservedBoat } = patch.nativeDrainAdmission;
           const { expectedGeneration } = patch;
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");
@@ -1321,7 +1340,7 @@ export function createSqlData(
             );
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
             if (locked.native_drain_pending) {
-              if (!(await fencePreservedBoatDrainReplay(tx, id)))
+              if (!(await fenceBoatDrainReplay(tx, id, allowUnpreservedBoat)))
                 throw new DataError("Boat drain requires verified work preservation.", "sandbox_not_ready");
               const {
                 rows: [retry],
@@ -1343,8 +1362,19 @@ export function createSqlData(
                 "select public.copy_native_drain_recovery($1::uuid,$2::bigint) as outcome",
                 [id, expectedGeneration],
               );
-              if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
-                throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+              if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived") {
+                const withoutReceipt =
+                  allowUnpreservedBoat &&
+                  recovery?.outcome === "unverified" &&
+                  (
+                    await tx.query(
+                      `select 1 from public.sandboxes s where s.id=$1 and ${NATIVE_DRAIN_MISSING_RECEIPT}`,
+                      [id],
+                    )
+                  ).rows.length > 0;
+                if (!withoutReceipt)
+                  throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+              }
             }
             const updated = await applyUpdate(tx);
             if (!updated.rows[0]?.id)

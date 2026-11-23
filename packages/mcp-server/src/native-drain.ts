@@ -12,6 +12,7 @@ export function configureNativeDrain(
   provider: "boat",
   actorId: string,
   env: Record<string, string | undefined>,
+  allowUnpreservedBoat = false,
 ) {
   const encryptionKey = env.ARMADA_ENCRYPTION_KEY;
   const publicUrl = env.ARMADA_PUBLIC_URL;
@@ -24,7 +25,7 @@ export function configureNativeDrain(
     encryptionKey,
     providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
   });
-  return { remove: createNativeDrainRemoval(sql, provider, actorId, scopedAccess, providers) };
+  return { remove: createNativeDrainRemoval(sql, provider, actorId, scopedAccess, providers, allowUnpreservedBoat) };
 }
 
 export function createNativeDrainRemoval(
@@ -33,6 +34,7 @@ export function createNativeDrainRemoval(
   actorId: string,
   scopedAccess: Pick<ReturnType<typeof createSandboxArmadaAccess>, "beforeNativeDrainDelete">,
   providers: ProviderRegistry,
+  allowUnpreservedBoat = false,
 ) {
   const data = createSqlData(sql);
   return async (row: { id: string; org_id: string; role: MemberRole | null }) => {
@@ -40,9 +42,13 @@ export function createNativeDrainRemoval(
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     const target = await sandboxes.get(row.id);
     if (target && (target.status === "ready" || target.status === "running")) {
-      if (!(await requestNativeDrainStop(sql, target, provider, actorId)))
+      if (!(await requestNativeDrainStop(sql, target, provider, actorId, allowUnpreservedBoat)))
         throw new Error("Native drain could not admit strict preservation.");
-      throw new Error("Native drain cannot delete before preservation and stop are confirmed.");
+      throw new Error(
+        allowUnpreservedBoat
+          ? "Native drain is waiting for the stop to settle."
+          : "Native drain cannot delete before preservation and stop are confirmed.",
+      );
     }
     if (target?.stopRequestedAt || target?.status === "stopping")
       throw new Error("Native drain is waiting for the stop to settle.");
@@ -57,7 +63,7 @@ export function createNativeDrainRemoval(
         },
       },
       row.id,
-      "native-drain",
+      allowUnpreservedBoat ? "native-drain-allow-unpreserved" : "native-drain",
     );
     return result.drainProof;
   };
