@@ -5,18 +5,13 @@ import type { Sql } from "../../packages/core/src/golden-store.ts";
 import { SANDBOX_STATES, type SandboxState } from "../../packages/core/src/provider.ts";
 import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 
-const historicalModalFlag = "--allow-unpreserved-historical-modal";
-const nativeProviders = [
-  { provider: "modal", historicalDrainFlag: historicalModalFlag },
-  { provider: "boat", historicalDrainFlag: null },
-] as const;
-type NativeProvider = (typeof nativeProviders)[number]["provider"];
 type StatusCount = { status: SandboxState; count: number };
 type NativeRow = { id: string; org_id: string; role: MemberRole | null };
-type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | "without-proof" | undefined>;
-type NativeDrainRequest = { provider: NativeProvider; dryRun: boolean; allowHistoricalModal: boolean };
+type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | undefined>;
+const drainProvider = "boat";
+type NativeDrainRequest = { provider: typeof drainProvider; dryRun: boolean };
 
-const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.map(({ provider }) => provider).join("|")} [--dry-run | ${historicalModalFlag}]`;
+const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${drainProvider} [--dry-run]`;
 const nativeCohort = `
   where s.provider = $1
     and not s.boat_runtime
@@ -39,17 +34,15 @@ const candidatesQuery = `
 `;
 
 export function parseNativeDrainArgs(args: readonly string[]) {
-  const [flag, requestedProvider, mode] = args;
-  const config = nativeProviders.find(({ provider }) => provider === requestedProvider);
-  const allowHistoricalModal = mode === config?.historicalDrainFlag && mode !== undefined;
+  const [flag, provider, mode] = args;
   if (
     flag !== "--provider" ||
-    !config ||
+    provider !== drainProvider ||
     args.length > 3 ||
-    (mode !== undefined && mode !== "--dry-run" && !allowHistoricalModal)
+    (mode !== undefined && mode !== "--dry-run")
   )
     throw new Error(usage);
-  return { provider: config.provider, dryRun: mode === "--dry-run", allowHistoricalModal };
+  return { provider, dryRun: mode === "--dry-run" } as const;
 }
 
 async function inventory<Row>(sql: Sql, statement: string, params: string[]) {
@@ -81,14 +74,12 @@ export async function runNativeDrain(
   if (!operation) throw new Error("Native drain deletion requires a configured operator.");
   const rows = await inventory<NativeRow>(sql, candidatesQuery, [provider, operation.actorId]);
   let deletedWithProof = 0;
-  let deletedWithoutProof = 0;
   let alreadyDeleted = 0;
   let failed = 0;
   for (const row of rows) {
     try {
       const proof = await operation.remove(row);
       if (proof === "with-proof") deletedWithProof++;
-      else if (proof === "without-proof") deletedWithoutProof++;
       else alreadyDeleted++;
     } catch {
       failed++;
@@ -98,9 +89,8 @@ export async function runNativeDrain(
     provider,
     mode: "drain" as const,
     total: rows.length,
-    deleted: deletedWithProof + deletedWithoutProof,
+    deleted: deletedWithProof,
     deletedWithProof,
-    deletedWithoutProof,
     alreadyDeleted,
     failed,
   };
@@ -138,18 +128,8 @@ async function execute(request: NativeDrainRequest) {
 
 async function executeDeletion(request: NativeDrainRequest, sql: Sql, actorId: string) {
   const { configureNativeDrain } = await import("../../packages/mcp-server/src/native-drain.ts");
-  const { remove, settle } = configureNativeDrain(
-    sql,
-    request.provider,
-    actorId,
-    Bun.env,
-    request.allowHistoricalModal,
-  );
-  try {
-    return await runNativeDrain(request, sql, { actorId, remove });
-  } finally {
-    await settle();
-  }
+  const { remove } = configureNativeDrain(sql, request.provider, actorId, Bun.env);
+  return runNativeDrain(request, sql, { actorId, remove });
 }
 
 if (import.meta.main) {

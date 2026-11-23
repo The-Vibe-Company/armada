@@ -1,5 +1,9 @@
 import { isSandboxPlacementProvider, type SandboxProviderId } from "@armada/core";
 
+export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
+  return target.runtimeTransport === "dialout";
+}
+
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
   provider: string;
@@ -9,7 +13,7 @@ export function runtimeBridgeTarget(target: {
 }): boolean {
   return (
     ((target.provider === "boat" && Boolean(target.boatRuntime)) ||
-      (target.provider === "modal" && target.runtimeTransport === "dialout")) &&
+      (target.provider === "modal" && modalDialoutPlacement(target))) &&
     runtimeHarnessSupported(target.provider, target.harness)
   );
 }

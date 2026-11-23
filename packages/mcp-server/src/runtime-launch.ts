@@ -33,7 +33,11 @@ export interface RuntimeLaunchOptions {
 }
 
 /** One enrolled activation/readiness/session path; placement owns configuration and bootstrap transport. */
-export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "boat" | "modal") {
+export function createRuntimeLaunch(
+  options: RuntimeLaunchOptions,
+  provider: "boat" | "modal",
+  enrolledPlacement: (sandbox: LaunchInput["sandbox"]) => boolean,
+) {
   requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
@@ -48,6 +52,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
   }): Promise<Started> => {
     const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
+    if (input.host.id !== provider || !enrolledPlacement(sandbox)) throw Error("runtime_selection_required");
     const { model, reasoningEffort } = sandbox;
     if (!model || !reasoningEffort) throw Error("runtime_model_required");
     const plan = await request.configure();
