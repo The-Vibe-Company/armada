@@ -4,6 +4,7 @@ import {
   CODEX_ENDPOINT_ENV,
   type GoldenActor,
   type HarnessCredentials,
+  isSandboxPlacementProvider,
   OPENCODE_ENDPOINT_ENV,
   parseClaudeEndpoint,
   parseCodexEndpoint,
@@ -13,7 +14,7 @@ import {
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
-import { runtimeConfigurationFailure, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeConfigurationFailure, runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
 
 const allowedCredentials = {
   claude: new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]),
@@ -58,7 +59,7 @@ export async function runtimeConfiguration(
   emptyMcpRevision?: string,
 ) {
   try {
-    if (expectedProvider !== "boat" && expectedProvider !== "docker" && expectedProvider !== "modal") throw Error();
+    if (!isSandboxPlacementProvider(expectedProvider)) throw Error();
     const actor = { ...input.actor };
     const sandbox = { ...input.sandbox };
     const credentials = { ...input.credentials, env: { ...input.credentials.env } };
@@ -67,7 +68,7 @@ export async function runtimeConfiguration(
     const expiresAt = new Date(sandbox.expiresAt ?? "").getTime();
     if (
       sandbox.provider !== expectedProvider ||
-      (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
+      (usesHostLaunch(expectedProvider) && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
       !runtimeHarnessSupported(expectedProvider, sandbox.harness) ||
       sandbox.ownerId !== actor.userId ||
       sandbox.orgId !== actor.orgId ||

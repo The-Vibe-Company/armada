@@ -4,6 +4,7 @@ import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { publishRuntimeReadiness } from "./sandbox-lifecycle.ts";
@@ -115,7 +116,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const locked = new Set(members.rows.map((row) => row.user_id));
     if (!candidate || !locked.has(candidate.owner_id)) throw new RuntimeEnrolmentDenied();
     let docker_issuer_fence: string | null = null;
-    if (candidate.provider === "docker") {
+    if (usesHostLaunch(candidate.provider)) {
       if (!candidate.issuer_id || !locked.has(candidate.issuer_id)) throw new RuntimeEnrolmentDenied();
       // A fresh statement after acquiring membership locks observes their committed epoch.
       const epoch = (
@@ -138,7 +139,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       (ownerId !== undefined && candidate.owner_id !== ownerId)
     )
       throw new RuntimeEnrolmentDenied();
-    if (candidate.provider === "docker") {
+    if (usesHostLaunch(candidate.provider)) {
       const host = await tx.query(
         `select id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
          and installation_id=$4 and hash is not null and registration_hash is null and revoked_at is null for share`,
@@ -202,7 +203,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         (input.expectedGeneration !== undefined && sandbox.lifecycle_generation !== String(input.expectedGeneration))
       )
         throw new RuntimeEnrolmentDenied();
-      if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
+      if (usesHostLaunch(sandbox.provider) && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
       await input.assertClaim?.(tx);
       await input.ticketGuard?.check(tx);
       const parent = (
@@ -322,7 +323,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!row) throw new RuntimeEnrolmentDenied();
       if (!supported) {
         const refused =
-          sandbox.provider === "docker" &&
+          usesHostLaunch(sandbox.provider) &&
           (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, row.lifecycle_generation));
         if (sandbox.status === "failed" && !refused) throw new RuntimeEnrolmentDenied();
         if (refused) {

@@ -1,5 +1,6 @@
 import { type ApplicationSecretBinding, type Harness, validateReadableVariables } from "@armada/core";
 import { resolveLaunchSecrets, type Sql, VaultError } from "@armada/core/server";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 
@@ -61,7 +62,7 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
               op: "configureReadableVariables" as const,
               harness: source.harness,
               variables,
-              ...(provider !== "docker" ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
+              ...(!usesHostLaunch(provider) ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
             };
             await createRuntimeCommands(locked, key, clock).enqueue(ownerId, request, scope.epoch);
             await input.assertClaim?.(lockedTx);

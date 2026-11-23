@@ -23,7 +23,7 @@ import {
 import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -131,7 +131,7 @@ export async function readStatus(
 
   const info = await provider.get?.(sandbox.providerSandboxId);
   const stored = options.stored || !info;
-  if (provider.id === "boat" && info?.state === "stopped" && info.retainedSnapshot !== "usable")
+  if (retainsDiskOnStop(provider.id) && info?.state === "stopped" && info.retainedSnapshot !== "usable")
     return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
@@ -227,7 +227,7 @@ export async function readStatus(
       let nativeExhaustionRecorded = retained?.nativeExhaustionRecorded;
       if (
         !nativeExhaustionRecorded &&
-        (sandbox.provider === "boat" || sandbox.provider === "modal") &&
+        isSandboxProvider(sandbox.provider) &&
         !sandbox.boatRuntime &&
         !sandbox.runtimeTransport &&
         outcome.state === "failed" &&

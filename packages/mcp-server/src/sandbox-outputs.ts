@@ -34,6 +34,7 @@ import {
   recordOutputPublication,
   remainingOutputOrgBytes,
 } from "./output-transfers.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { claimOutputFailure, markOutputCollectorSupported } from "./sandbox-lifecycle.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
@@ -725,7 +726,7 @@ export function createSandboxOutputs(
         const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
         const work = (async () => {
           const provider = await outputPhase("resolve_reader", async () =>
-            row.provider === "docker" ? (docker?.(id) ?? {}) : providerFor(id),
+            usesHostLaunch(row.provider) ? (docker?.(id) ?? {}) : providerFor(id),
           );
           if (row.retained) {
             return outputPhase("store_transfers", () =>
