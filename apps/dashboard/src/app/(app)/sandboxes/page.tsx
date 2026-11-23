@@ -298,11 +298,8 @@ async function SandboxesContent({ searchParams }: Props) {
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
             const readyLabel = waitingIds.has(sandbox.id) ? "Waiting for you" : "Ready";
-            const activityLabel = workingIds.has(sandbox.id)
-              ? "Working"
-              : sandbox.status === "running"
-                ? "Running"
-                : undefined;
+            const working = workingIds.has(sandbox.id);
+            const activityLabel = working ? "Working" : sandbox.status === "running" ? "Running" : undefined;
             return {
               id: sandbox.id,
               content: (
@@ -324,7 +321,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         {sandbox.id.slice(0, 8)}
                       </span>
                     </div>
-                    <ConversationHint sandbox={sandbox} now={now} />
+                    {!working && <ConversationHint sandbox={sandbox} now={now} />}
                     <OutcomeHint sandbox={sandbox} />
                     {sandbox.canOpen && sandbox.statusMessage && (
                       <p className="mt-1 text-xs text-muted-foreground">{sandbox.statusMessage}</p>

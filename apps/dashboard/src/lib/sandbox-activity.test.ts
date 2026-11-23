@@ -97,14 +97,17 @@ test("activity reports unavailable turn observations while accepting a successfu
   const idle = { ...finished, prompt: null };
   const recorded = { ...idle, statusMessage: "Provider observation unavailable; showing recorded state." };
   const stale = { ...finished, statusMessage: "Stored prompt state is incomplete; live data may be stale." };
-  for (const [observation, incomplete] of [
-    [idle, false],
-    [recorded, true],
-    [stale, true],
+  const queued = { ...stale, prompt: { ...stale.prompt, state: "queued" } } satisfies SandboxTurnObservation;
+  for (const [observation, incomplete, working] of [
+    [idle, false, 0],
+    [recorded, true, 0],
+    [stale, true, 0],
+    [queued, true, 1],
   ] as const) {
     const turns = new Map<string, SandboxTurnObservation>([["sandbox", { ...observation, status: "running" }]]);
     const activity = sandboxActivityPage([row("sandbox", { status: "running" })], "viewer", "working", 1, turns, now);
     expect(activity.turnsIncomplete).toBe(incomplete);
+    expect(activity.counts.working).toBe(working);
   }
 });
 

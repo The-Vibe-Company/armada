@@ -33,7 +33,6 @@ function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: str
     status === "starting" ||
     status === "ready" ||
     status === "running" ||
-    // A retained stop can have a queued wake-on-send turn before the machine resumes.
     (status === "stopped" && expiresAt !== null && beforeDeadline(expiresAt, now))
   );
 }
@@ -64,16 +63,22 @@ export function sandboxActivityPage(
   for (const row of rows) {
     if (!isTurnCandidate(row, now)) continue;
     const turn = turns.get(row.id);
-    if (!turn || incompleteTurnObservation(turn)) {
+    if (!turn) {
       turnsIncomplete = true;
       continue;
     }
+    const incomplete = incompleteTurnObservation(turn);
+    turnsIncomplete ||= incomplete;
     const state = turn.prompt?.state;
-    if (canHaveActiveTurn(turn.status, turn.expiresAt, now) && (state === "queued" || state === "running")) {
+    if (
+      canHaveActiveTurn(turn.status, turn.expiresAt, now) &&
+      (state === "queued" || (!incomplete && state === "running"))
+    ) {
       workingIds.add(row.id);
       continue;
     }
     if (
+      !incomplete &&
       row.ownerId === viewerId &&
       row.status === "ready" &&
       beforeDeadline(row.expiresAt, now) &&
