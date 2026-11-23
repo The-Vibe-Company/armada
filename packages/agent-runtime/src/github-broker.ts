@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { chmod, chown, lstat, mkdir } from "node:fs/promises";
+import { rmdirSync, unlinkSync } from "node:fs";
+import { chmod, chown, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
@@ -133,12 +133,38 @@ export class GitHubBroker {
   }
 
   /** Credential replies require root IPC. Unprivileged native processes get only a redact oracle. */
-  listen(root: string, owner = process.getuid?.()): Promise<BrokerListener> {
-    this.listener ??= this.bind(root, owner).catch((error) => {
+  listen(root?: string, owner = process.getuid?.()): Promise<BrokerListener> {
+    this.listener ??= (root === undefined ? this.bindRuntime() : this.bind(root, owner)).catch((error) => {
       this.listener = undefined;
       throw error;
     });
     return this.listener;
+  }
+
+  async close(): Promise<void> {
+    const listener = await this.listener?.catch(() => undefined);
+    listener?.close();
+  }
+
+  private async bindRuntime(): Promise<BrokerListener> {
+    // Boat can remount /home after the runtime has already started.
+    const root = await mkdtemp("/tmp/armada-github-");
+    try {
+      const listener = await this.bind(root, process.getuid?.());
+      let closed = false;
+      return {
+        ...listener,
+        close() {
+          if (closed) return;
+          closed = true;
+          listener.close();
+          rmdirSync(root);
+        },
+      };
+    } catch (error) {
+      await rm(root, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   private async bind(root: string, owner: number | undefined) {

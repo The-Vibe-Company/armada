@@ -38,6 +38,8 @@ import { createRedactor, HarnessState } from "./state.ts";
 
 let startupReason: import("../../core/src/runtime-startup-failure.ts").RuntimeStartupFailure = "runtime_configuration";
 let reportRuntimeFailure: ((error: unknown) => Promise<void>) | undefined;
+let closeGitHubBroker: (() => Promise<void>) | undefined;
+
 async function main(dialout = false) {
   // Bootstrap is delivered through a private stdin pipe, never argv or a golden file.
   const input = JSON.parse(await Bun.stdin.text());
@@ -392,9 +394,15 @@ async function main(dialout = false) {
     Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
   Object.assign(process.env, githubRuntimeEnvironment({ PATH: process.env.PATH }, githubRoot));
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
+  let githubClosing = false;
+  closeGitHubBroker = () => {
+    githubClosing = true;
+    return github.close();
+  };
   let githubConfiguration = Promise.resolve();
   const ensureGitHubTools = async (identity?: { name: string; email: string }) => {
-    githubSocket = await github.listen(githubRoot);
+    if (githubClosing) throw Error("github_configuration_denied");
+    githubSocket = await github.listen();
     const tools: Parameters<typeof installUserGitHubTools>[0] = {
       root: githubRoot,
       socket: githubSocket.socket,
@@ -594,9 +602,12 @@ async function main(dialout = false) {
       closing ??= Promise.resolve().then(async () => {
         stop.abort();
         github.configure(null);
-        githubSocket?.close();
-        await runner.close();
-        await Promise.allSettled([...requests]);
+        try {
+          await closeGitHubBroker?.();
+        } finally {
+          await runner.close();
+          await Promise.allSettled([...requests]);
+        }
       });
       return closing;
     };
@@ -634,12 +645,19 @@ async function main(dialout = false) {
       // SQLite closes naturally when this listener-free process exits.
     }
   } else {
-    Bun.serve({
+    const server = Bun.serve({
       hostname: "0.0.0.0",
       port: config.port,
       fetch: (request) => runner.handle(request),
       maxRequestBodySize: 1048576,
     });
+    const shutdown = () => {
+      process.removeListener("SIGTERM", shutdown);
+      process.removeListener("SIGINT", shutdown);
+      void Promise.allSettled([server.stop(true), closeGitHubBroker?.(), runner.close()]);
+    };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
   }
 }
 if (process.argv[2] === "github-client") {
@@ -654,6 +672,9 @@ if (process.argv[2] === "github-client") {
           ? runHarnessInstallMode()
           : main(process.argv[2] === "dialout")
   ).catch(async (error: unknown) => {
+    await closeGitHubBroker?.().catch(() => {
+      process.stderr.write("github_socket_cleanup_failed\n");
+    });
     startupReason = runtimeStartupFailure(error, startupReason);
     await reportRuntimeFailure?.(error).catch(() => {});
     process.stderr.write("runner_boot_failed\n");
