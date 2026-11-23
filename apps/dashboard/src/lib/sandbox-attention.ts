@@ -27,11 +27,10 @@ export type TurnSummary = {
   promptId?: string | null;
   /** The latest prompt as sent, for a one-click resend; null when it is too long to carry or has no text. */
   prompt?: string | null;
-  /** Whether the latest prompt has a completed assistant message with visible text. */
   hasFinalReply?: boolean;
 };
 
-export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string): TurnSummary {
+export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string) {
   const { items, running } = projectChat(
     currentConversation
       ? events.filter((event) => !event.conversationId || event.conversationId === currentConversation)
@@ -50,13 +49,8 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
       const text = item.text.trim();
       prompt = text && text.length <= RESEND_MAX_CHARS ? text : null;
       hasFinalReply = false;
-    } else if (
-      item.kind === "assistant" &&
-      !item.streaming &&
-      item.text.trim() &&
-      (item.promptId ?? null) === promptId
-    ) {
-      hasFinalReply = true;
+    } else if ((item.promptId ?? null) === promptId && (item.kind === "assistant" || item.kind === "tool")) {
+      hasFinalReply = item.kind === "assistant" && !item.streaming && Boolean(item.text.trim());
     }
   }
   if (running) {
@@ -69,7 +63,7 @@ export function summarizeEvents(events: readonly ChatEvent[], currentConversatio
     promptId,
     prompt,
     hasFinalReply,
-  };
+  } satisfies TurnSummary;
 }
 
 /**
