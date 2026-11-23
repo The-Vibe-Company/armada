@@ -9,7 +9,7 @@ const pathFailures: Readonly<Record<string, string>> = {
   symlink: "is a symlink",
 };
 
-export function outputCollectorFailureDetail(line: string): string | undefined {
+export function outputCollectorFailureDetail(line: string) {
   if (line === `${FAILURE_RECORD} ffi`) return "Bun could not load Linux glibc through FFI";
   if (line === `${FAILURE_RECORD} proc_fd`) return "the collector could not open a directory through /proc/self/fd";
   const [marker, reason, path, ...extra] = line.split(" ");
@@ -46,7 +46,6 @@ managed_bun_path() {
 }
 `;
 
-// Secure each parent before looking at its children. Never recurse into inherited files.
 export const MANAGED_BUN_PROVISION = `${MANAGED_BUN_PATH_CHECK}
 armada_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n -- "$@"; fi; }
 provision_managed_bun_dirs() {
