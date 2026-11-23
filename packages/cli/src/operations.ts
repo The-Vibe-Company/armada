@@ -19,7 +19,6 @@ import {
   resolveSandboxReference,
 } from "./current-sandbox.ts";
 import { setupStatus } from "./devx.ts";
-import { mcpCommand } from "./mcp-commands.ts";
 import { sandboxListText } from "./sandbox-list.ts";
 import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
 
@@ -41,15 +40,11 @@ export async function operation(
       >
     | "ls"
     | "info"
-    | "rm"
-    | "mcp",
+    | "rm",
   argv: readonly string[],
   auth: AuthIo,
-  read: (path?: string) => Promise<string>,
-  readOptionalStdin: () => Promise<string> = async () => "",
   sandboxFile?: CurrentSandboxFile,
 ) {
-  if (command === "mcp") return mcpCommand(argv, auth, read, readOptionalStdin);
   const args = parseArgs(
     argv,
     command === "report"

@@ -27,10 +27,9 @@ do not alter running or resumed sandbox selections.
 CLI examples:
 
 ```sh
-armada mcp catalog --org UUID
-armada mcp add Work --service linear --org UUID
-armada mcp rename CONNECTION_UUID "Work account" --org UUID
-armada mcp default CONNECTION_UUID on --org UUID
+armada api mcp/catalog '{"org":"ORG_UUID"}'
+armada api mcp/create '{"org":"ORG_UUID","name":"Work","scope":"personal","serviceId":"linear"}'
+armada api mcp/metadata '{"org":"ORG_UUID","id":"CONNECTION_UUID","name":"Work account","defaultForLaunch":true}'
 armada new SNAPSHOT --provider boat --agent claude --no-connections
 armada new SNAPSHOT --provider boat --agent claude --connections UUID,UUID
 ```

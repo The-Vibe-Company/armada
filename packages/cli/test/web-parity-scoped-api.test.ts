@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryAuthStore } from "@armada/auth";
 import { encryptSecret } from "@armada/core";
-import { createSqlMcpRegistry, createSqlVaultStore } from "@armada/core/server";
+import { createSqlVaultStore } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSqlData } from "../../mcp-server/src/data.ts";
 import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
@@ -328,56 +328,6 @@ test("CLI golden list preserves discoverable UUIDs and provider-neutral metadata
   }
 });
 
-test("CLI sandbox-connections reads authorized persisted bindings without hidden mutations", async () => {
-  const f = await fixture();
-  try {
-    await f.seed(34, "ready", "claude", other, "private");
-    await f.seed(35, "ready", "claude", me, "private");
-    const registry = createSqlMcpRegistry(f.db, key);
-    f.options.mcp = { registry };
-    const connection = await registry.save(me, org, {
-      name: "Bound public service",
-      scope: "personal",
-      transport: "http",
-      url: "https://example.com/mcp",
-      authType: "none",
-    });
-    await f.db.query("update mcp_grants set status='connected' where connection_id=$1", [connection.id]);
-    await f.db.query(
-      "insert into mcp_bindings(sandbox_id,connection_id,grant_id) select $1,connection_id,id from mcp_grants where connection_id=$2",
-      [sid(35), connection.id],
-    );
-    const grantMetadata = async () =>
-      (
-        await f.db.query(
-          "select g.generation,g.version,g.status,g.revoked_at,c.disabled from mcp_grants g join mcp_connections c on c.id=g.connection_id where c.id=$1",
-          [connection.id],
-        )
-      ).rows;
-    const beforeRead = await grantMetadata();
-    const bindings = await f.cli(["mcp", "sandbox-connections", sid(35), "--json"]);
-    expect(bindings.code).toBe(0);
-    expect(JSON.parse(bindings.out).connections).toEqual([
-      expect.objectContaining({ id: connection.id, name: "Bound public service", scope: "personal", orgId: org }),
-    ]);
-    expect(f.requests.at(-1)).toMatchObject({
-      path: "/api/v1/mcp/sandbox-connections",
-      body: { org, sandboxId: sid(35) },
-    });
-    const adminRead = await f.cli(["mcp", "sandbox-connections", sid(34), "--json"]);
-    expect(adminRead.code).toBe(0);
-    expect(JSON.parse(adminRead.out).connections).toEqual([]);
-    expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--org", secondOrg, "--json"])).code).toBe(1);
-    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, other]);
-    await f.setActor(other);
-    expect((await f.cli(["mcp", "sandbox-connections", sid(35), "--json"])).code).toBe(1);
-    expect((await f.db.query("select sandbox_id from mcp_bindings")).rows).toHaveLength(1);
-    expect(await grantMetadata()).toEqual(beforeRead);
-  } finally {
-    await f.close();
-  }
-});
-
 test("CLI retires launch visibility without changing source golden authority", async () => {
   const f = await fixture();
   try {
@@ -421,27 +371,6 @@ test("CLI retires launch visibility without changing source golden authority", a
     expect(text.out).toContain("enforced by the server");
     expect(text.out).not.toContain("(private)");
     expect(text.out).not.toContain("first (org)");
-  } finally {
-    await f.close();
-  }
-});
-
-test("CLI catalog service create and metadata actions use the API and preserve UUID identity", async () => {
-  const f = await fixture();
-  f.options.mcp = { registry: createSqlMcpRegistry(f.db, key) };
-  try {
-    const catalog = await f.cli(["mcp", "catalog", "--json"]);
-    expect(catalog.code).toBe(0);
-    expect(JSON.parse(catalog.out).services.find((s: { id: string }) => s.id === "slack").availability).toBe(
-      "setup_required",
-    );
-    const added = await f.cli(["mcp", "add", "Work", "--service", "linear", "--json"]);
-    expect(added.code).toBe(0);
-    const id = JSON.parse(added.out).connection.id;
-    const renamed = await f.cli(["mcp", "rename", id, "Second account", "--json"]);
-    expect(JSON.parse(renamed.out).connection).toMatchObject({ id, name: "Second account", catalogId: "linear" });
-    const defaults = await f.cli(["mcp", "default", id, "on", "--json"]);
-    expect(JSON.parse(defaults.out).connection).toMatchObject({ id, defaultForLaunch: true });
   } finally {
     await f.close();
   }

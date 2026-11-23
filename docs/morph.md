@@ -4,16 +4,11 @@ One Morph API-key account is shared by Claude Code, Codex and OpenCode. No addit
 
 ## Add and launch
 
-After Armada login, store the key from a private file or stdin, never argv:
-
-```sh
-armada account add --preset morph --name shared --file /private/morph-key
-armada account ls
-```
-
-Alternatively, dashboard **What agents have → Models → Add account → Morph**: name the
-account, paste the key and save. Select that same account for any of these harnesses.
-The model picker offers the catalog’s Morph plan models. The key is encrypted and is never returned by listing.
+In the dashboard, open **What agents have → Models → Add account → Morph**.
+Name the account, paste the key and save. For automation, see
+[model-account preset replacements](cli-admin.md#model-account-presets).
+Use `armada account ls` to find the account ID. The model picker offers the
+catalog’s Morph plan models. The key is encrypted and never returned by listing.
 
 Use the ordinary launch flow for the target snapshot or Docker host, with
 `--credential-id ACCOUNT_UUID --model morph-kimik31` and the desired harness.

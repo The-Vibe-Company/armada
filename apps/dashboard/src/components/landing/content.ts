@@ -23,7 +23,7 @@ export const STORY = {
   golden: "armada snapshot new widgets --repo https://github.com/acme/widgets --provider modal",
   launch:
     'armada new widgets --provider modal --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
-  tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",
+  tools: `armada api mcp/create '{"org":"ORG_UUID","name":"docs","url":"https://mcp.example.com/mcp","scope":"org","transport":"http","authType":"auto"}'`,
   resume: 'armada prompt 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 "Now cover the empty cart"',
   keys: "armada account add codex-auth --file ~/.codex/auth.json",
   watch: "armada events 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 -f",

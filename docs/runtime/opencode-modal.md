@@ -258,31 +258,11 @@ honest estimated/unknown costs and cleanup. Azure deployment names may have no
 catalog price; unknown cost is not a free request. No live Azure request has been
 proved by the deterministic adapter-selection tests.
 
-## Shared provider presets in the CLI (#1579)
+## Shared provider presets
 
-`armada account ls --presets` lists the same model connection choices as the dashboard,
-including their compatible agent. `--json` returns non-secret preset metadata.
-Create a named account with `account add --preset`, without writing connection JSON or
-choosing an internal credential kind:
-
-```sh
-armada account add --preset opencode-anthropic --name 'Anthropic coding' \
-  --models claude-opus-5-5 --file /private/anthropic-key
-armada account add --preset opencode-azure --name 'Azure coding' \
-  --base-url https://resource.openai.azure.com/openai/v1 \
-  --models my-deployment --file /private/azure-key
-armada account add --preset deepseek --name 'DeepSeek coding' \
-  --models deepseek-flash --file /private/deepseek-key
-```
-
-Omit `--file` to pipe a key on stdin. Fixed provider addresses cannot be
-overridden. Presets with resource-specific addresses require `--base-url`;
-custom providers require comma-separated `--models`. Ordinary OpenAI,
-Anthropic-for-Claude and OpenCode plan-key presets use the agent's own model
-list and take neither address nor model options. Add `--org` for an authorized
-shared account. This command creates accounts; the existing version-checked
-replacement/import commands remain unchanged. Preset catalog prices are captured
-by the same core serializer as dashboard creation; unknown prices remain unknown.
+Choose a connection preset in Models in the dashboard. For automation,
+use the [account API](../cli-admin.md#model-account-presets) with an explicit
+connection definition.
 
 ## OpenAI Responses connections for OpenCode (#1579)
 
@@ -291,11 +271,6 @@ The shared preset fixes the official OpenAI address and selects the pinned
 native OpenAI SDK's Responses API. The generic **Other OpenAI-compatible**
 chat-completions route remains unchanged for other providers. No ChatGPT
 subscription import or automatic conversion of an existing account is implied.
-
-```sh
-armada account add --preset opencode-openai --name 'OpenAI coding' \
-  --models gpt-6.1-sol --file /private/openai-key
-```
 
 This creates a named `opencode` account with a sealed `protocol: "openai"`
 endpoint. Model IDs retain the `armada/` launch namespace. Credentials stay in

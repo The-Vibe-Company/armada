@@ -67,7 +67,6 @@ describe("run", () => {
     "prompt",
     "exec",
     "stop",
-    "mcp",
     "login",
     "logout",
     "org",
@@ -99,6 +98,9 @@ describe("run", () => {
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
       [["token", "create"], "token", true],
+      [["mcp", "list"], "mcp", true],
+      [["github", "refresh"], "github", true],
+      ...["create", "publish", "delete"].map((verb) => [["template", verb], `template ${verb}`, true] as const),
       [["routine", "create"], "routine", true],
       [["vars"], "vars", true],
       [["vars", "set"], "vars", true],
@@ -184,4 +186,14 @@ test("bare discovery families succeed without profile, account or input I/O", as
     expect(result.out).toContain(`Example: armada ${family}`);
     expect(result.out).not.toContain("Quick start / common examples:");
   }
+});
+
+test.each([
+  [["account", "ls", "--presets"], "--presets"],
+  [["account", "add", "--preset", "morph", "--name", "Shared"], "--preset"],
+] as const)("removed account preset option in %j exits with a usage error", async (args, option) => {
+  const { code, out, err } = await capture([...args]);
+  expect(code).toBe(2);
+  expect(out).toBe("");
+  expect(err).toContain(`Unknown option '${option}'.`);
 });
