@@ -4,7 +4,7 @@ import type { GoldenActor } from "./golden.ts";
 import { assertGoldenMutation } from "./golden.ts";
 import type { GoldenBuildStatus } from "./golden-build-status.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
-import { GoldenError, parseGoldenName } from "./golden-config.ts";
+import { GOLDEN_SSH_RECEIPT_PHASES, GoldenError, parseGoldenName } from "./golden-config.ts";
 import {
   authorizeGoldenRepositories,
   createGoldenCreateService,
@@ -49,6 +49,30 @@ interface Job {
   build_warnings: GoldenBuildWarning[];
   failure_reason: string | null;
 }
+type FailureReason =
+  | "skillpack_integrity_failed"
+  | "provider_payment_required"
+  | "provider_snapshot_rejected"
+  | `detail:${string}`;
+
+const INTERRUPTED_BUILD: FailureReason =
+  "detail:Build execution was interrupted before recording an outcome. Ask an administrator to inspect the build.";
+const FAILED_BUILD: FailureReason =
+  "detail:The operation did not complete. Ask an administrator to inspect this build's status before retrying.";
+
+function receiptFailureReason(error: unknown, phase: string, safeToRelease: boolean) {
+  if (error instanceof GoldenError) {
+    if (error.safeReason) return error.safeReason;
+    if (error.safeMessage) return `detail:${error.safeMessage.slice(0, 1017)}` satisfies FailureReason;
+  }
+  if (safeToRelease && error instanceof ProviderError) {
+    if (error.code === "payment_required") return "provider_payment_required";
+    if (error.code === "invalid_request" && error.status === 400 && phase === "snapshot")
+      return "provider_snapshot_rejected";
+  }
+  return FAILED_BUILD;
+}
+
 export interface GoldenBuildJobsOptions {
   sql: Sql;
   encryptionKey: string | undefined;
@@ -473,10 +497,11 @@ export class GoldenBuildJobs {
         signal?.throwIfAborted();
         if (current.reservation_id) await sqlGoldenBackendSlots(sql).release(current.reservation_id);
         await sql.query(
-          "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
+          "update public.golden_build_jobs set state='failed',failure_reason=case when failure_reason=$3 then $2 else coalesce(failure_reason,$2) end,updated_at=now() where id=$1",
           [
             current.id,
             "detail:Build expired during authorization before any builder started. Its reservation was released; start a new build request when ready.",
+            INTERRUPTED_BUILD,
           ],
         );
       });
@@ -606,7 +631,10 @@ export class GoldenBuildJobs {
         await this.actor(sql, current);
         signal?.throwIfAborted();
         if (row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
-        await sql.query("update public.golden_build_jobs set state='failed',updated_at=now() where id=$1", [row.id]);
+        await sql.query(
+          "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
+          [row.id, INTERRUPTED_BUILD],
+        );
       });
     } catch {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
@@ -636,10 +664,10 @@ export class GoldenBuildJobs {
       signal?.throwIfAborted();
       if (row.state === "running") {
         const expired = await sql.query(
-          `update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now()
+          `update public.golden_build_jobs set state='recovery_required',error_code='build_failed',failure_reason=coalesce(failure_reason,$3),updated_at=now()
             where id=$1 and (deadline<=clock_timestamp() or lease_until<=clock_timestamp()
               or (lease_until='infinity' and fence<>$2)) returning id`,
-          [id, fence],
+          [id, fence, INTERRUPTED_BUILD],
         );
         return expired.rows.length ? { ...row, state: "recovery_required" as const, recover: true } : row;
       }
@@ -711,13 +739,17 @@ export class GoldenBuildJobs {
         await this.transaction(async (sql) => {
           await this.lock(sql, job, epoch, signal);
           if (!(await this.ownsLease(sql, job.id, epoch)))
-            throw new GoldenError("build_failed", "Build lease is no longer owned.");
+            throw new GoldenError("build_failed", "Build lease is no longer owned.", {
+              safeMessage: "The build worker lost its lease.",
+            });
           const changed = await sql.query(
             "update public.golden_build_jobs set phase=$2,updated_at=now() where id=$1 and deadline>clock_timestamp() returning id",
             [job.id, next],
           );
           if (!changed.rows.length || !(await this.ownsLease(sql, job.id, epoch, false)))
-            throw new GoldenError("build_failed", "Build lease or deadline expired.");
+            throw new GoldenError("build_failed", "Build lease or deadline expired.", {
+              safeMessage: "The build worker lost its lease or reached the build deadline.",
+            });
           signal?.throwIfAborted();
           if (next === "builder") safeToRelease = false;
         });
@@ -784,37 +816,25 @@ export class GoldenBuildJobs {
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [job.id])
         ).rows[0];
         if (!current || current.fence !== job.fence) return;
+        const reason = receiptFailureReason(error, current.phase, safeToRelease);
         if (current.state === "recovery_required") {
-          // Preserve late evidence for recovery under the original attempt fence.
-          if (unpublished && current.snapshot === null)
-            await sql.query("update public.golden_build_jobs set snapshot=$2,updated_at=now() where id=$1", [
-              job.id,
-              unpublished,
-            ]);
+          // Preserve late evidence under the original attempt fence. Recovery still owns the phase.
+          await sql.query(
+            `update public.golden_build_jobs
+             set snapshot=coalesce(snapshot,$2),
+                 failure_reason=case when failure_reason is null or failure_reason=$3 then $4 else failure_reason end,
+                 updated_at=now() where id=$1`,
+            [job.id, unpublished, INTERRUPTED_BUILD, reason === FAILED_BUILD ? INTERRUPTED_BUILD : reason],
+          );
           return;
         }
         if (current.state !== "running") return;
+        const subphase = error instanceof GoldenError ? error.safePhase : undefined;
+        const phase = (subphase && GOLDEN_SSH_RECEIPT_PHASES[subphase]) ?? current.phase;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(
           "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
-          [
-            job.id,
-            safeToRelease ? "failed" : "recovery_required",
-            error instanceof GoldenError
-              ? (error.safeReason ?? (error.safeMessage ? `detail:${error.safeMessage.slice(0, 1017)}` : null))
-              : safeToRelease && error instanceof ProviderError && error.code === "payment_required"
-                ? "provider_payment_required"
-                : safeToRelease &&
-                    error instanceof ProviderError &&
-                    error.code === "invalid_request" &&
-                    error.status === 400 &&
-                    current.phase === "snapshot"
-                  ? "provider_snapshot_rejected"
-                  : null,
-            error instanceof GoldenError ? (error.safePhase ?? current.phase) : current.phase,
-            safeToRelease,
-            unpublished,
-          ],
+          [job.id, safeToRelease ? "failed" : "recovery_required", reason, phase, safeToRelease, unpublished],
         );
       });
     }

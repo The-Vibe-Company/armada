@@ -328,7 +328,7 @@ test.each(["boat", "modal"] as const)(
 );
 
 // Fixed protocol records are the only guest metadata admitted to build results.
-test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries closed build outcome %s", async (mode) => {
+test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout reports %s", async (mode) => {
   const warnings: string[] = [];
   const spawn: any = (file: string) => {
     const c: any = new EventEmitter();
@@ -346,7 +346,9 @@ test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries close
                   ? "ING skillpack unknown\nARMADA_BUILD_FAILURE init 17 2\n"
                   : mode === "clone"
                     ? "ING skillpack unknown\nARMADA_BUILD_FAILURE checkout 128 0\n"
-                    : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
+                    : mode === "helper"
+                      ? "ING skillpack unknown\nARMADA_BUILD_FAILURE helper 98\n"
+                      : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
             );
           }
           c.emit("close", file === "ssh" && mode !== "warning" ? 98 : 0);
@@ -367,6 +369,11 @@ test.each(["warning", "integrity", "init", "clone"])("SSH checkout carries close
   );
   if (mode === "integrity")
     await expect(run).rejects.toMatchObject({ code: "build_failed", safeReason: "skillpack_integrity_failed" });
+  else if (mode === "helper")
+    await expect(run).rejects.toMatchObject({
+      safePhase: "helper",
+      safeMessage: "Build failed during helper (exit_98). Check connectivity, permissions and package availability.",
+    });
   else if (mode === "init" || mode === "clone")
     await expect(run).rejects.toMatchObject({
       safePhase: mode === "init" ? "init" : "checkout",
