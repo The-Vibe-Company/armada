@@ -421,6 +421,7 @@ test.each([
   ["the managed collector answers", "probe", 0],
   ["the image already ships the managed Bun", "preinstalled", 0],
   ["the pinned Bun has an unprotected parent", "writable-parent", 0],
+  ["the pinned Bun parent is searchable only by root", "root-only-parent", 0],
   ["the pinned Bun has a symlinked parent", "symlink-parent", 86],
   ["an incompatible Bun exits 0 without answering", "help", 96],
 ])("the golden build provisions its own collector Bun and requires the probe answer: %s", (_, mode, status) => {
@@ -470,9 +471,10 @@ chmod +x "$4/bin/bun"
       { mode: 0o755 },
     );
     if (mode === "symlink-parent") symlinkSync(bin, opt);
-    if (mode === "preinstalled" || mode === "writable-parent") {
+    if (mode === "preinstalled" || mode === "writable-parent" || mode === "root-only-parent") {
       mkdirSync(join(opt, "runtime-bun"), { recursive: true });
       if (mode === "writable-parent") chmodSync(opt, 0o775);
+      if (mode === "root-only-parent") chmodSync(opt, 0o700);
       writeFileSync(
         join(opt, "runtime-bun", "bun"),
         '#!/bin/sh\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready # image\n',
@@ -496,7 +498,7 @@ chmod +x "$4/bin/bun"
       expect(existsSync(join(bin, "runtime-bun"))).toBe(false);
       return;
     }
-    if (mode === "writable-parent") expect(statSync(opt).mode & 0o022).toBe(0);
+    if (mode === "writable-parent" || mode === "root-only-parent") expect(statSync(opt).mode & 0o777).toBe(0o755);
     expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
     expect(existsSync(join(base, "npm-called"))).toBe(mode === "probe" || mode === "help");
   } finally {

@@ -41,7 +41,7 @@ export interface OutputFile {
 const FAILURE_RECORD = "ARMADA_OUTPUT_COLLECTOR_FAILURE";
 const failureDetails: Readonly<Record<string, string>> = {
   missing: "the managed Bun file or a parent directory is missing",
-  mode: "the managed Bun is not executable or its path is group- or other-writable",
+  mode: "the managed Bun is not executable, its directories are not traversable, or its path is group- or other-writable",
   owner: "the managed Bun path is not root-owned",
   symlink: "the managed Bun path contains a symlink",
   ffi: "Bun could not load Linux glibc through FFI",
@@ -61,12 +61,16 @@ protected_path() {
     [ ! -L "$armada_path" ] || { collector_failure symlink; return 86; }
     metadata=$(/usr/bin/stat -c '%u %a' -- "$armada_path" 2>/dev/null) || { collector_failure missing; return 86; }
     [ "\${metadata%% *}" = 0 ] || { collector_failure owner; return 86; }
-    [ "$((0\${metadata#* } & 022))" = 0 ] || { collector_failure mode; return 86; }
+    armada_mode=0\${metadata#* }
+    [ "$((armada_mode & 022))" = 0 ] || { collector_failure mode; return 86; }
+    if [ "\${2:-}" = image-user ]; then
+      [ "$((armada_mode & 001))" != 0 ] || { collector_failure mode; return 86; }
+    fi
     armada_path=\${armada_path%/*}
   done
 }
 managed_bun_path() {
-  protected_path /opt/armada/runtime-bun/bun || return 86
+  protected_path /opt/armada/runtime-bun/bun "\${1:-}" || return 86
   [ -f /opt/armada/runtime-bun/bun ] || { collector_failure missing; return 86; }
   [ -x /opt/armada/runtime-bun/bun ] || collector_failure mode
 }

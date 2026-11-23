@@ -390,7 +390,10 @@ test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout rep
 
 test.each([
   ["missing", "the managed Bun file or a parent directory is missing"],
-  ["mode", "the managed Bun is not executable or its path is group- or other-writable"],
+  [
+    "mode",
+    "the managed Bun is not executable, its directories are not traversable, or its path is group- or other-writable",
+  ],
   ["owner", "the managed Bun path is not root-owned"],
   ["symlink", "the managed Bun path contains a symlink"],
   ["ffi", "Bun could not load Linux glibc through FFI"],

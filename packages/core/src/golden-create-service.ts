@@ -775,22 +775,22 @@ export function goldenScript(
     // repository's Bun pin: Armada provisions its own pinned collector Bun.
     MANAGED_BUN_PATH_CHECK,
     'armada_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n -- "$@"; fi; }',
-    "protected_path /opt",
+    "protected_path /opt image-user",
     "[ -x /opt ] || collector_failure mode",
     `for armada_dir in /opt/armada /opt/armada/runtime-bun; do
-  if [ ! -d "$armada_dir" ] || [ ! -x "$armada_dir" ] || ! protected_path "$armada_dir" 2>/dev/null; then
+  if [ ! -d "$armada_dir" ] || [ ! -x "$armada_dir" ] || ! protected_path "$armada_dir" image-user 2>/dev/null; then
     [ ! -L "$armada_dir" ] || collector_failure symlink
     armada_root /usr/bin/install -d -o root -g root -m 755 "$armada_dir"
-    protected_path "$armada_dir"
+    protected_path "$armada_dir" image-user
   fi
 done`,
-    `if ! managed_bun_path 2>/dev/null || [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then
+    `if ! managed_bun_path image-user 2>/dev/null || [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then
   armada_bun_prefix=$(mktemp -d)
   npm install --global --prefix "$armada_bun_prefix" bun@${OUTPUT_COLLECTOR_BUN_VERSION}
   armada_root /usr/bin/install -o root -g root -m 555 -T "$armada_bun_prefix/bin/bun" /opt/armada/runtime-bun/bun
   rm -rf "$armada_bun_prefix"
 fi`,
-    "managed_bun_path",
+    "managed_bun_path image-user",
     `[ "$(/opt/armada/runtime-bun/bun --version)" = ${OUTPUT_COLLECTOR_BUN_VERSION} ] || { printf "%s\\n" "The output collector Bun does not match the managed pin." >&2; exit 96; }`,
     // Exit 0 alone is not proof: an incompatible Bun can print help and succeed.
     `armada_probe=$(armada_root /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)})`,
