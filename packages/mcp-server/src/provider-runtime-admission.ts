@@ -3,7 +3,7 @@ import { capabilities } from "@armada/core/server";
 
 export const runtimeBridgeProfiles = {
   boat: {
-    placement: "boot-marker",
+    placement: "boat-runtime",
     launchDefault: "boatRuntimeDefault",
     endpointDefault: "boatEndpointRuntime",
     hostPorts: true,

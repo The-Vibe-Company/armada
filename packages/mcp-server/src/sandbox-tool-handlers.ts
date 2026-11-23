@@ -1,4 +1,3 @@
-import { HOST_CAPABILITIES } from "@armada/core";
 import { sandboxOperations } from "@armada/core/contract";
 import {
   LaunchError,
