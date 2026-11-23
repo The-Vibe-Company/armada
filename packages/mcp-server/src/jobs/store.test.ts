@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createMemoryAuthStore } from "@armada/auth";
 import { modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore, decryptSecret, encryptSecret, GoldenError, type Sql } from "@armada/core/server";
 import {
@@ -11,6 +12,7 @@ import {
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { createQueuedSandboxDispatch } from "../control.ts";
 import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
@@ -21,6 +23,7 @@ import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeEvents } from "../runtime-events.ts";
+import { createRuntimeFollowup } from "../runtime-followup.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
@@ -1715,6 +1718,72 @@ test.each(["before", "after"] as const)(
     expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
   },
 );
+
+test("the Modal launch prompt dispatches its own receipt through the account worker", async () => {
+  const admission = await modalAdmissionFixture();
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  const setup = await modalFirstTurnLane(f, queue);
+  expect(await setup.reconcileOne(signal)).toBe(true);
+  await setup.drain();
+  const receipt = async () =>
+    (
+      await f.db.query<{ request_id: string; state: string }>(
+        "select request_id,state from account_turn_queue where sandbox_id=$1",
+        [id],
+      )
+    ).rows[0]!;
+  const { request_id } = await receipt();
+  const { runtimeToken, epoch } = activeRuntime();
+  const authority = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+  const commands = createRuntimeCommands(authority, launchEncryptionKey, {
+    now: () => 0,
+    async wait() {
+      const { command } = await commands.next(runtimeToken, epoch);
+      if (command?.op !== "prompt") throw new Error("Expected the launch prompt.");
+      expect(command.input.text).toBe(admission.input.initialPrompt!);
+      await commands.complete(runtimeToken, epoch, {
+        epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: {
+          version: 1,
+          requestId: command.requestId,
+          result: { promptId: "initial-prompt", conversationId: command.input.conversationId, status: "running" },
+        },
+      });
+    },
+  });
+  const runtimeSend = createRuntimeFollowup(f.sql, launchEncryptionKey, commands);
+  const caller = { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" } as const;
+  const dispatch = createQueuedSandboxDispatch({
+    authStore: createMemoryAuthStore(),
+    supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+    store: createSqlVaultStore(f.sql),
+    encryptionKey: launchEncryptionKey,
+    data: createSqlData(f.sql),
+    providers: {
+      async resolve() {
+        throw new Error("Modal launch prompt must use the runtime.");
+      },
+    },
+    runtimeSend,
+  });
+  queue.setDispatch(async (...args) => {
+    await expect(runtimeSend(caller, { id, request_id, prompt: "Unrelated prompt" })).rejects.toMatchObject({
+      reason: "modal_launch_prompt_pending",
+    });
+    return dispatch(...args);
+  });
+  expect(await queue.reconcileOne(signal)).toBe(true);
+  await queue.drain();
+  expect(await receipt()).toEqual({ request_id, state: "admitted" });
+  expect(await queue.status(caller, id, request_id)).toEqual({ nativePromptId: "initial-prompt" });
+});
 
 test("a replacement Modal setup claimant replays workspace commands before admitting the first turn", async () => {
   const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
