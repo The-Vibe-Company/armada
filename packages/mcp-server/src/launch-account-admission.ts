@@ -4,13 +4,13 @@ import {
   type GoldenActor,
   type GoldenRecord,
   type Harness,
-  HOST_CAPABILITIES,
   type LaunchCredentialResolver,
   type LaunchOptions,
   launchFailureHelp,
   VaultError,
 } from "@armada/core";
 import type { launchCredentials } from "./launch-credentials.ts";
+import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
 
 export type GoldenLaunchCredentials = LaunchCredentialResolver &
   Partial<Pick<ReturnType<typeof launchCredentials>, "resolveModel">>;
@@ -31,9 +31,8 @@ export async function prepareGoldenLaunchAccount(
 ) {
   const { harness, credentialId } = request;
   const explicit = options.runtime ?? options.boatRuntime;
-  const dialout = HOST_CAPABILITIES[golden.provider].templateReceiptTransport === "dialout";
-  const key = dialout ? "modalRuntimeDefault" : "boatRuntimeDefault";
-  const endpoint = dialout ? undefined : options.boatEndpointRuntime;
+  const { launchDefault: key, endpointDefault } = runtimeBridgeProfiles[golden.provider];
+  const endpoint = endpointDefault ? options[endpointDefault] : undefined;
   const runtimeDefault = explicit ? undefined : (options[key] ?? (harness === "opencode" ? endpoint : undefined));
   if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
 

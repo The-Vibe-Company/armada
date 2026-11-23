@@ -1,5 +1,15 @@
-import { HOST_CAPABILITIES, isSandboxPlacementProvider, isSandboxProvider } from "@armada/core";
+import { isSandboxPlacementProvider, isSandboxProvider, type SandboxProviderId } from "@armada/core";
 import { capabilities } from "@armada/core/server";
+
+export const runtimeBridgeProfiles = {
+  boat: {
+    placement: "boot-marker",
+    launchDefault: "boatRuntimeDefault",
+    endpointDefault: "boatEndpointRuntime",
+    hostPorts: true,
+  },
+  modal: { placement: "dialout", launchDefault: "modalRuntimeDefault", endpointDefault: undefined, hostPorts: false },
+} as const satisfies Record<SandboxProviderId, object>;
 
 export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
   return target.runtimeTransport === "dialout";
@@ -20,7 +30,7 @@ export function runtimeBridgeTarget(target: {
 }): boolean {
   return (
     isSandboxProvider(target.provider) &&
-    (HOST_CAPABILITIES[target.provider].templateReceiptTransport === "dialout"
+    (runtimeBridgeProfiles[target.provider].placement === "dialout"
       ? modalDialoutPlacement(target)
       : Boolean(target.boatRuntime)) &&
     runtimeHarnessSupported(target.provider, target.harness)

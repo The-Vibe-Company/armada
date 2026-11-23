@@ -1,4 +1,3 @@
-import { HOST_CAPABILITIES } from "@armada/core";
 import { VaultError } from "@armada/core/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -92,11 +91,7 @@ export function createToolRegistration(
             : await visible(input.id as string);
           if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
           // WARNING: Retained legacy Modal workspaces require explicit account binding before any control.
-          if (
-            HOST_CAPABILITIES[found.provider]?.requiresPinnedGoldenBinding &&
-            !found.credentialId &&
-            !sandboxControlRefusal(found, context.now(), "send")
-          )
+          if (found.provider === "modal" && !found.credentialId && !sandboxControlRefusal(found, context.now(), "send"))
             throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
           const refusal = sandboxControlRefusal(found, context.now(), name);
           if (refusal) throw new ToolError("sandbox_terminal", refusal);

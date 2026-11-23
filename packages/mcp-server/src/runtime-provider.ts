@@ -1,6 +1,6 @@
-import { HOST_CAPABILITIES, isSandboxProvider, mapHarnesses, type Provider, ProviderError } from "@armada/core";
+import { isSandboxProvider, mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import type { ModalRuntimeCapture } from "@armada/provider-modal";
-import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeBridgeProfiles, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 type RuntimeTtlPort = {
   setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
@@ -24,10 +24,10 @@ export function createRuntimeProvider(
   modalCapture?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
   if (!isSandboxProvider(host.id)) throw Error("boat_runtime_host_required");
-  const dialout = HOST_CAPABILITIES[host.id].templateReceiptTransport === "dialout";
-  const setRuntimeTtl = dialout ? undefined : host.setRuntimeTtl;
-  const captureRuntimeWork = dialout ? modalCapture : host.captureRuntimeWork?.bind(host);
-  const observeCaptureBoot = dialout ? undefined : host.observeCaptureBoot?.bind(host);
+  const { hostPorts } = runtimeBridgeProfiles[host.id];
+  const setRuntimeTtl = hostPorts ? host.setRuntimeTtl : undefined;
+  const captureRuntimeWork = hostPorts ? host.captureRuntimeWork?.bind(host) : modalCapture;
+  const observeCaptureBoot = hostPorts ? host.observeCaptureBoot?.bind(host) : undefined;
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
