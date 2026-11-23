@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { GitHubBroker } from "../src/github-broker.ts";
 
 test("late acquisition cannot publish across replacement/scrub and retired values stay registered", async () => {
@@ -62,8 +62,8 @@ test("acquisition failures identify their boundary without exposing upstream tex
   }
 });
 
-test("concurrent broker starts share a live credentials socket", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gh-broker-"));
+test("concurrent runtime broker starts share live sockets outside runtime home", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gh-home-"));
   const broker = new GitHubBroker(
     () => {},
     fetch,
@@ -79,11 +79,16 @@ test("concurrent broker starts share a live credentials socket", async () => {
     expiresAt: 200,
     repositories,
   });
-  const starts = await Promise.allSettled([broker.listen(root), broker.listen(root)]);
+  const starts = await Promise.allSettled([broker.listen(), broker.listen()]);
   try {
     const [first, second] = starts;
     if (first.status === "rejected") throw first.reason;
     if (second.status === "rejected") throw second.reason;
+    for (const socket of [first.value.socket, first.value.redactSocket]) {
+      expect(socket.startsWith(`${home}/`)).toBe(false);
+      expect(dirname(dirname(socket))).toBe("/tmp");
+      expect((await lstat(dirname(socket))).mode & 0o777).toBe(0o700);
+    }
     const activate = await fetch("http://broker/activate", {
       unix: first.value.socket,
       method: "POST",
@@ -96,9 +101,11 @@ test("concurrent broker starts share a live credentials socket", async () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ repositories });
     }
+    await broker.close();
+    await expect(lstat(dirname(first.value.socket))).rejects.toHaveProperty("code", "ENOENT");
   } finally {
     for (const start of starts) if (start.status === "fulfilled") start.value.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 
