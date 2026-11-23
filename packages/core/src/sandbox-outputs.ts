@@ -60,9 +60,8 @@ protected_path() {
   while [ -n "$armada_path" ]; do
     [ ! -L "$armada_path" ] || { collector_failure symlink; return 86; }
     metadata=$(/usr/bin/stat -c '%u %a' -- "$armada_path" 2>/dev/null) || { collector_failure missing; return 86; }
-    set -- $metadata
-    [ "$1" = 0 ] || { collector_failure owner; return 86; }
-    [ "$((0$2 & 022))" = 0 ] || { collector_failure mode; return 86; }
+    [ "\${metadata%% *}" = 0 ] || { collector_failure owner; return 86; }
+    [ "$((0\${metadata#* } & 022))" = 0 ] || { collector_failure mode; return 86; }
     armada_path=\${armada_path%/*}
   done
 }

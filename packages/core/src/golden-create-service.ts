@@ -769,14 +769,16 @@ export function goldenScript(
     "armada_phase=ownership",
     "normalize_armada_build_ownership",
     "armada_phase=output_collector",
+    "set -e",
     // A snapshot can later be read by a privileged provider exec. Never point that reader
     // at the agent-writeable Bun installed by the repository baseline, and never copy the
     // repository's Bun pin: Armada provisions its own pinned collector Bun.
     MANAGED_BUN_PATH_CHECK,
     'armada_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n -- "$@"; fi; }',
     "protected_path /opt",
+    "[ -x /opt ] || collector_failure mode",
     `for armada_dir in /opt/armada /opt/armada/runtime-bun; do
-  if ! protected_path "$armada_dir" 2>/dev/null; then
+  if [ ! -d "$armada_dir" ] || [ ! -x "$armada_dir" ] || ! protected_path "$armada_dir" 2>/dev/null; then
     [ ! -L "$armada_dir" ] || collector_failure symlink
     armada_root /usr/bin/install -d -o root -g root -m 755 "$armada_dir"
     protected_path "$armada_dir"

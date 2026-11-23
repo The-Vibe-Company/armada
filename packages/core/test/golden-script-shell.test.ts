@@ -9,6 +9,7 @@ import {
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -420,6 +421,7 @@ test.each([
   ["the managed collector answers", "probe", 0],
   ["the image already ships the managed Bun", "preinstalled", 0],
   ["the pinned Bun has an unprotected parent", "writable-parent", 0],
+  ["the pinned Bun has a symlinked parent", "symlink-parent", 86],
   ["an incompatible Bun exits 0 without answering", "help", 96],
 ])("the golden build provisions its own collector Bun and requires the probe answer: %s", (_, mode, status) => {
   const base = mkdtempSync(join(tmpdir(), "golden-collector-"));
@@ -467,6 +469,7 @@ chmod +x "$4/bin/bun"
 `,
       { mode: 0o755 },
     );
+    if (mode === "symlink-parent") symlinkSync(bin, opt);
     if (mode === "preinstalled" || mode === "writable-parent") {
       mkdirSync(join(opt, "runtime-bun"), { recursive: true });
       if (mode === "writable-parent") chmodSync(opt, 0o775);
@@ -483,11 +486,16 @@ chmod +x "$4/bin/bun"
       .replaceAll("/opt/armada", opt)
       .replaceAll("/usr/bin/stat", join(bin, "stat"))
       .replaceAll("/usr/bin/install", join(bin, "install"));
-    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
+    const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", `set +e\nIFS=$'\\n\\t'\n${block}`], {
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: base },
       encoding: "utf8",
     });
     expect(result.status).toBe(status);
+    if (mode === "symlink-parent") {
+      expect(result.stderr).toContain("ARMADA_OUTPUT_COLLECTOR_FAILURE symlink");
+      expect(existsSync(join(bin, "runtime-bun"))).toBe(false);
+      return;
+    }
     if (mode === "writable-parent") expect(statSync(opt).mode & 0o022).toBe(0);
     expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
     expect(existsSync(join(base, "npm-called"))).toBe(mode === "probe" || mode === "help");
