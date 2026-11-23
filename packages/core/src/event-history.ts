@@ -53,7 +53,7 @@ export function coalesceEventMessages(events: AgentEvent[]): AgentEvent[] {
 }
 
 /** Entries follow traversal order; emitted events follow chronological order. Cursors always anchor raw entries. */
-export function boundEventEntries<T>(
+function boundEventEntries<T>(
   entries: { cursor: string; event: T }[],
   request: ReadOptions,
   upstreamHasMore: boolean,

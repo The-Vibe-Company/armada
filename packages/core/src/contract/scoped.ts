@@ -69,7 +69,7 @@ export const scopedOperations = {
   },
 } as const satisfies Record<string, { scope: DelegatedScope; description: string; input: z.ZodObject }>;
 
-export type ScopedMethod = keyof typeof scopedOperations;
+type ScopedMethod = keyof typeof scopedOperations;
 export const isScopedMethod = (name: string): name is ScopedMethod => Object.hasOwn(scopedOperations, name);
 
 export const ORCHESTRATOR_SCOPED_PATH = "/api/v1/orchestrator-tools";

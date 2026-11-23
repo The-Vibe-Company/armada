@@ -198,7 +198,7 @@ export function presetModels(preset: ConnectionPreset): readonly CatalogModel[] 
  * The catalog's public prices for the chosen models, keyed by the model ID the agent reports: `armada/<id>` for an
  * OpenCode connection, the bare deployment ID for Codex. A model without both input and output prices is left out.
  */
-export function presetPrices(preset: ConnectionPreset, models: readonly string[]): ModelPriceOverrides | undefined {
+function presetPrices(preset: ConnectionPreset, models: readonly string[]): ModelPriceOverrides | undefined {
   const reported = (id: string) => (preset.kind === "opencode" ? `${OPENCODE_CONNECTION_PROVIDER}/${id}` : id);
   const known = new Map(presetModels(preset).map((model) => [model.id, model]));
   const entries = models.flatMap((id) => {

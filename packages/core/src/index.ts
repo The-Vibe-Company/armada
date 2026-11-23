@@ -1,9 +1,7 @@
 export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
   type AccountCandidate,
-  type AccountChoice,
   type AccountPool,
-  type AccountPoolFacts,
   type AccountRefusal,
   type AccountSkip,
   choose,
@@ -37,7 +35,6 @@ export {
   type PresetConnectionInput,
   presetConnectionValue,
   presetModels,
-  presetPrices,
 } from "./connection-presets.ts";
 export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
@@ -55,7 +52,6 @@ export {
   HARNESS_KINDS,
   type HarnessCredentials,
   listConnectionModels,
-  MAX_AUTH_FILE_LENGTH,
   MAX_SECRET_LENGTH,
   type ModalTokenPair,
   parseCredentialKind,
@@ -139,15 +135,9 @@ export {
 } from "./docker-image.ts";
 export type { DockerResourceOverrides, DockerSandboxLimits } from "./docker-resource-policy.ts";
 export { parseDockerMemory } from "./docker-resource-policy.ts";
-export {
-  DOCKER_RETENTION_ENDED_MESSAGE,
-  type DockerCleanupReason,
-  DockerRetentionEnded,
-  dockerWorkspaceReclaimedMessage,
-} from "./docker-retention.ts";
+export { DockerRetentionEnded, dockerWorkspaceReclaimedMessage } from "./docker-retention.ts";
 export { parseDockerSnapshotRecord } from "./docker-snapshot.ts";
 export {
-  boundEventEntries,
   buildEventPage,
   coalesceEventMessages,
   eventPageOptions,
@@ -165,7 +155,6 @@ export {
   GITHUB_CLIENT_ID_ENV,
   GITHUB_CLIENT_SECRET_ENV,
   GITHUB_NOT_CONNECTED,
-  GITHUB_REFRESH_MODAL_NATIVE,
   GITHUB_REVOKED,
   type GitHubAccess,
   type GitHubApp,
@@ -228,7 +217,6 @@ export {
   pullCommand,
   pushLedgerInstall,
   secretKeyPath,
-  splitRepoArg,
 } from "./golden-config.ts";
 export { createSqlGoldenStore, GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 export {
@@ -252,7 +240,6 @@ export {
   type LaunchResult,
   type LaunchStores,
   launchSandbox,
-  MAX_LAUNCH_TTL_SECONDS,
 } from "./launch.ts";
 export {
   LAUNCH_FAILURE_REASONS,
@@ -264,7 +251,6 @@ export {
 } from "./launch-error.ts";
 export {
   formatLaunchDuration,
-  isLaunchStage,
   isModelOutput,
   LAUNCH_STAGE_LABELS,
   LAUNCH_STAGES,
@@ -278,7 +264,7 @@ export {
   recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
-export { type LaunchWorkdir, resolveLaunchWorkdir, resolveLaunchWorkdirAt } from "./launch-workdir.ts";
+export { type LaunchWorkdir, resolveLaunchWorkdir } from "./launch-workdir.ts";
 export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export * from "./mcp-launch-selection.ts";
@@ -411,7 +397,6 @@ export {
   createSqlSandboxStore,
   isExternalRef,
   MAX_EXTERNAL_REF_LENGTH,
-  MAX_STATUS_REASON_LENGTH,
   mapSandboxRow,
   type ResourceProject,
   type SandboxPatch,
@@ -423,7 +408,6 @@ export {
 export { canAccessSandboxInterior, idlePauseMessage, type SandboxListMetadata } from "./sandbox-access.ts";
 export { sandboxControlRefusal } from "./sandbox-control.ts";
 export {
-  COST_BASIS_LABELS,
   type CostBasis,
   costBasis,
   type SandboxCost,
@@ -446,8 +430,6 @@ export {
   isSandboxProvider,
   type ModalBinding,
   PROVIDER_LIMITS,
-  type ProviderFactory,
-  type ProviderLimits,
   type ProviderRegistry,
   ProviderRoutingError,
   type ProviderRoutingErrorCode,
@@ -479,11 +461,10 @@ export {
   type LaunchTemplate,
   TEMPLATE_REFUSAL_HELP,
   type TemplateDefinition,
-  type TemplateRefusalReason,
   templateRefusalHelp,
 } from "./templates.ts";
 export { redactKnownTokens } from "./token-redaction.ts";
-export { type ModelSelectionReason, type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
+export { type TurnModelEvidence, turnModelEvidence } from "./turn-model.ts";
 export type { PricingInputs, SessionCost, StoredTurnPricing, TurnPriceContext } from "./turn-pricing.ts";
 export type { UsagePricingContext } from "./usage-pricing.ts";
 export {
@@ -498,8 +479,6 @@ export {
   mutateCredentialAccount,
   type OrgCredentials,
   type OrgSummary,
-  parseOrgName,
-  parseRole,
   removeCredential,
   removeMember,
   resolveOrg,

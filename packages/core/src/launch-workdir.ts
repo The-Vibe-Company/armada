@@ -18,7 +18,7 @@ export function resolveLaunchWorkdir(repos: readonly GoldenRepo[], selector: str
 }
 
 /** Resolves the same recorded repository under an explicit root for an isolated launcher host. */
-export function resolveLaunchWorkdirAt(repos: readonly GoldenRepo[], selector: string, root: string): LaunchWorkdir {
+function resolveLaunchWorkdirAt(repos: readonly GoldenRepo[], selector: string, root: string): LaunchWorkdir {
   const wanted = parseSelector(selector);
   const matches = repos.filter((repo) => repositoryIdentity(repo.url) === wanted);
   if (matches.length === 0) throw new GoldenError("not_found", `Golden has no repository '${selector}'.`);

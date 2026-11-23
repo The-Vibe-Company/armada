@@ -176,7 +176,7 @@ export function parseGoldenName(name: string): string {
 }
 
 /** `--repo <url>[@branch]`, repeated. A branch may contain slashes. */
-export function splitRepoArg(arg: string): { url: string; branch?: string } {
+function splitRepoArg(arg: string): { url: string; branch?: string } {
   if (arg.startsWith("git@")) {
     const at = arg.indexOf("@", 4);
     if (at === -1) return { url: arg };
