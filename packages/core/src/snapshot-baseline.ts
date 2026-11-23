@@ -85,7 +85,7 @@ export function snapshotBaselineInstall(
     "set -eu",
     "export PATH=/usr/local/bin:/usr/bin:/bin DEBIAN_FRONTEND=noninteractive",
     "work=",
-    'trap \'if [ -n "${work:-}" ]; then rm -rf -- "$work"; fi\' EXIT',
+    'trap \'if [ -n "$work" ]; then rm -rf -- "$work"; fi\' EXIT',
     ...installSteps(apt).map(
       ([step, command]) =>
         `${command} || { status=$?; echo ${shellQuote(`${installFailure} ${step}`)} >&2; exit "$status"; }`,
