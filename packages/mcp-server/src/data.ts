@@ -1339,9 +1339,10 @@ export function createSqlData(
               rows: [locked],
             } = await tx.query<{
               native_drain_pending: boolean;
+              lease_busy: boolean;
             }>(
               `select s.native_drain_pending,
-                 (coalesce(s.activity_until>=now(),false) or coalesce(s.reconcile_lease_until>=now(),false)) as lease_busy
+                 coalesce(greatest(s.activity_until,s.reconcile_lease_until)>clock_timestamp(),false) as lease_busy
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider='boat' and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
@@ -1395,6 +1396,11 @@ export function createSqlData(
                       [id],
                     )
                   ).rows.length > 0;
+                if (recovery?.outcome === "ineligible")
+                  throw withNativeDrainReason(
+                    new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready"),
+                    locked.lease_busy ? "lease_busy" : "not_eligible",
+                  );
                 if (!withoutReceipt)
                   throw withNativeDrainReason(
                     new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready"),

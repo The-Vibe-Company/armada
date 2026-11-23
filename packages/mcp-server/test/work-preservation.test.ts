@@ -1011,6 +1011,9 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   const row = { id: sandboxId, org_id: people.org, role: "member" as const };
   const drain = (optIn: boolean) => createNativeDrainRemoval(sql, "boat", people.owner, access, providers, optIn)(row);
 
+  await db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [sandboxId]);
+  expect(await drain(true).catch(nativeDrainFailureReason)).toBe("lease_busy");
+  await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
   expect(await drain(false).catch(nativeDrainFailureReason)).toBe("preservation_refused");
   await db.query("insert into sandbox_native_exec_attempts(sandbox_id,generation) values($1,1)", [sandboxId]);
   await expect(drain(true)).rejects.toThrow("work preservation could not be verified");

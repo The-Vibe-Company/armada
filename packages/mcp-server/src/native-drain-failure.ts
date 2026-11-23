@@ -1,3 +1,4 @@
+import { EncryptionKeyError } from "../../core/src/crypto.ts";
 import { GoldenError } from "../../core/src/golden-config.ts";
 import { ProviderError } from "../../core/src/provider.ts";
 import { VaultError } from "../../core/src/vault-error.ts";
@@ -15,7 +16,6 @@ type NativeDrainRefusal =
   | "deletion_fence_lost"
   | "provider_configuration_missing";
 
-// Preserve the existing error contract and keep drain-only reasons out of error serialization.
 const reasons = new WeakMap<Error, NativeDrainRefusal>();
 
 export function withNativeDrainReason(error: Error, reason: NativeDrainRefusal) {
@@ -27,6 +27,7 @@ export type NativeDrainFailureReason =
   | NativeDrainRefusal
   | "authorization_or_missing"
   | "provider_credentials_missing"
+  | "provider_credentials_unreadable"
   | "provider_http_4xx"
   | "provider_http_5xx"
   | "provider_error"
@@ -35,6 +36,7 @@ export type NativeDrainFailureReason =
 export function nativeDrainFailureReason(error: unknown) {
   const reason = error instanceof Error ? reasons.get(error) : undefined;
   if (reason) return reason;
+  if (error instanceof EncryptionKeyError) return "provider_credentials_unreadable";
   if (error instanceof VaultError && error.code === "missing_credential") return "provider_credentials_missing";
   if (error instanceof ProviderError) {
     if (error.status !== undefined && error.status >= 400 && error.status < 500) return "provider_http_4xx";
