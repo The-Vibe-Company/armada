@@ -282,10 +282,11 @@ export async function deleteSandboxWithActivity(
           if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
         }
       }
-      return {
-        result: { id: found.id, status: "deleted" as const, ...(drainProof ? { drainProof } : {}) },
-        patch: { deleteCompleted: true, ...(drainProof ? { nativeDrain: drainProof } : {}) },
+      const patch: ServerSandboxPatch = {
+        deleteCompleted: true,
+        ...(drainProof ? { nativeDrain: drainProof } : {}),
       };
+      return { result: { id: found.id, status: "deleted" as const, ...(drainProof ? { drainProof } : {}) }, patch };
     },
     nativeDrain ? undefined : { failurePatch },
   );

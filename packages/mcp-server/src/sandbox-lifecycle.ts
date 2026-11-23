@@ -1000,7 +1000,6 @@ export async function requestNativeSubscriptionStop(tx: Sql, id: string, generat
   return true;
 }
 
-// Used only while the sandbox row is locked.
 export const NATIVE_DRAIN_MISSING_RECEIPT = `not exists (
   select 1 from public.sandbox_native_preservation_receipts r where r.sandbox_id=s.id
 )`;
