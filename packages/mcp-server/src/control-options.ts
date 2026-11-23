@@ -47,6 +47,7 @@ export interface ControlOptions {
   configureEventStreamRequest?: (request: Request) => void;
   scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
+  sandboxListTurns?: ReturnType<typeof import("./sandbox-list-turns.ts").createSandboxListTurns>;
   sandboxBillingAccount?: (
     caller: Caller,
     id: string,

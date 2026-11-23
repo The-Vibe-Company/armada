@@ -110,6 +110,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/interrupt",
       "POST /sandbox/launch",
       "POST /sandbox/list",
+      "POST /sandbox/list-turns",
       "POST /sandbox/mcp-preflight-v1",
       "POST /sandbox/recovery",
       "POST /sandbox/report",

@@ -3223,25 +3223,21 @@ const server = Bun.serve({
         route.startsWith("creds/accounts/")
       )
         return accounts(route, body, request);
-      if (route === "sandbox/status") {
+      if (route === "sandbox/list-turns") {
         const userId = viewer(request);
         if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
-        const target = state.sandboxes.find((row) => row.id === body.id && canOpenSandbox(row, userId));
-        if (!target) return controlFail(404, "not_found", "Sandbox not found.");
-        const last = state.events.get(String(target.id))?.findLast((event) => event.kind === "prompt");
-        return json({
-          status: target.status,
-          expiresAt: target.expires_at ?? null,
-          settled: target.status === "ready" && last?.status !== "running" && last?.status !== "queued",
-          prompt: last
-            ? {
-                promptId: last.promptId ?? last.id,
-                conversationId: last.conversationId ?? null,
-                state: last.status,
-                reason: last.reason ?? null,
-              }
-            : null,
-        });
+        if (!isMember(body.org, userId)) return controlFail(403, "forbidden", "Organization membership is required.");
+        return json(
+          Object.fromEntries(
+            state.sandboxes.flatMap((row) => {
+              if (row.org_id !== body.org || !canOpenSandbox(row, userId)) return [];
+              const last = state.events.get(String(row.id))?.findLast((event) => event.kind === "prompt");
+              return last?.status && ["queued", "running", "finished"].includes(String(last.status))
+                ? [[row.id, last.status]]
+                : [];
+            }),
+          ),
+        );
       }
       if (route === "sandbox/test-model-connection") {
         const userId = viewer(request);

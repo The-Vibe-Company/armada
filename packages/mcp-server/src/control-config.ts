@@ -31,6 +31,7 @@ import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
+import { createSandboxListTurns } from "./sandbox-list-turns.ts";
 import { bunSql } from "./sql.ts";
 
 /**
@@ -112,6 +113,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   return {
     ...(deviceLogin ? { deviceLogin } : {}),
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
+    sandboxListTurns: createSandboxListTurns(sql, encryptionKey),
     sandboxBillingAccount: createSandboxBillingAccount(sql),
     credentialBindingRecovery: createSandboxAccountChange(
       sql,
