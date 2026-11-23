@@ -385,7 +385,7 @@ export async function drainFinalOutputs(): Promise<void> {
  * fails, that older sample still publishes while it is within its own deadline. Never resumes compute. */
 export async function captureFinalOutputs(
   sql: Sql,
-  provider: OutputReader,
+  provider: OutputReader | (() => Promise<OutputReader>),
   id: string,
   options: { key?: string | undefined; signal?: AbortSignal; onPublish?: (tx: Sql) => Promise<void> } = {},
 ): Promise<void> {
@@ -408,8 +408,9 @@ export async function captureFinalOutputs(
         }>(
           `select provider,provider_sandbox_id,lifecycle_generation::text as generation,clock_timestamp()::text as scan
            from public.sandboxes where id=$1 and stopped_at is null and (${CAN_WRITE_LIVE})
+           and ($2::bigint is null or lifecycle_generation=$2)
            and provider_sandbox_id is not null and ${OUTPUT_COLLECTOR_ELIGIBLE}`,
-          [id],
+          [id, options.expectedGeneration ?? null],
         ),
       )
     ).rows[0];
@@ -421,8 +422,9 @@ export async function captureFinalOutputs(
       throw new OutputCollectionError("output_busy");
     providerKind = row.provider;
     try {
+      const reader = typeof provider === "function" ? await provider() : provider;
       await outputPhase("publish_snapshot", () =>
-        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
+        collect(sql, reader, id, row.provider_sandbox_id, row.scan, key, {
           signal,
           generation: row.generation,
           onPublish: options.onPublish,

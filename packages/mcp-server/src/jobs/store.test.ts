@@ -15,6 +15,7 @@ import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { launchCredentials } from "../launch-credentials.ts";
+import { createModalStopJob } from "../modal-stop-job.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime-checkpoint.ts";
@@ -1391,6 +1392,23 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     id,
     jobId,
     makeRunner,
+    stopJob(providerFor: Parameters<typeof createModalStopJob>[3]) {
+      return createModalStopJob(
+        f.sql,
+        launchEncryptionKey,
+        async ({ binding, appName }) => ({
+          client: modalClient!,
+          binding,
+          appName,
+          deploymentId: "deployment",
+          prepareCheckpoint: async () => {},
+          resolveRuntimeTicket: async () => null,
+          canUseModalCredential: async () => modalCredentialCurrent,
+          close() {},
+        }),
+        providerFor,
+      );
+    },
     hideAllocation: () => {
       visible = false;
     },
@@ -1434,6 +1452,15 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   };
 }
 
+function unusedModalStopJob() {
+  return {
+    concurrency: 1,
+    async run() {
+      throw Error("Unexpected Modal stop.");
+    },
+  };
+}
+
 const fixtureWorkspaceCommands: Pick<ReturnType<typeof createRuntimeCommands>, "call"> = {
   async call(_owner, request, options) {
     const epoch = options?.expectedEpoch ?? "";
@@ -1472,7 +1499,7 @@ async function modalFirstTurnLane(
     langfuse: { exportJob: { concurrency: 1 } },
     webhooks: {},
     outputs: { drain: async () => {}, captureJob: { concurrency: 1 } },
-    modal: { launchCleanupJob: { concurrency: 1 } },
+    modal: { launchCleanupJob: { concurrency: 1 }, stopJob: unusedModalStopJob },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
 
@@ -2292,7 +2319,7 @@ test.each(["deleting", "deleted"] as const)(
 );
 
 test("owner stop retains the original machine after job-owned Modal bootstrap takeover", async () => {
-  const { f, id, jobId, makeRunner, effects, retentionEffects, cleanupEffects, retentionHost } =
+  const { f, id, jobId, makeRunner, effects, retentionEffects, cleanupEffects, retentionHost, stopJob } =
     await modalLaunchFixture(await modalAdmissionFixture());
   const first = makeRunner((step) => {
     if (step === "bootstrap dispatch") throw new Error("Worker lost after issuing the ticket");
@@ -2339,7 +2366,10 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
       "stop",
       { id },
     ),
-  ).toMatchObject({ id, status: "stopped" });
+  ).toMatchObject({ id, status: "stopping" });
+  const stopRunner = createJobsRunner(f.store, { stop: stopJob(async () => ({ id: "modal" }) as Provider) });
+  expect(await stopRunner.reconcileOne(signal)).toBe(true);
+  await stopRunner.drain();
   const statusContext = {
     caller,
     data,
@@ -2906,6 +2936,7 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
     webhooks: {},
     outputs: { enqueueCaptures: async () => {}, drain: async () => {} },
     modal: {
+      stopJob: unusedModalStopJob,
       launchCleanupJob: createModalLaunchCleanupJob(f.sql, async () => {
         throw new Error("Cleanup without an allocation must not open a provider client.");
       }),
@@ -5133,6 +5164,7 @@ test("the registered jobs lane retries a lost seed reply and preserves the sched
     githubApp: null,
     config: {},
     modal: {
+      stopJob: unusedModalStopJob,
       launchCleanupJob: createModalLaunchCleanupJob(sql, async () => {
         throw new Error("Unexpected Modal cleanup.");
       }),

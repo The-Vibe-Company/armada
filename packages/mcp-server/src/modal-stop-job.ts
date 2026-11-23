@@ -27,14 +27,23 @@ export function createModalStopJob(
     async run(job, { signal, canDispatch }) {
       const retry = { status: "retry", after: new Date(Date.now() + 1_000) } as const;
       if (!job.sandbox_id || !job.generation) return { status: "fail", reason: "modal_stop_identity_missing" };
-      const fail = {
-        status: "fail",
-        reason: "modal_stop_unconfirmed",
+      const reconcile = {
+        status: "retry",
+        after: new Date(Date.now() + 60_000),
         commit: (tx: Sql) => recordUnconfirmedModalStop(tx, job.sandbox_id!, job.generation!),
       } as const;
       const sandboxId = job.sandbox_id;
       const generation = Number(job.generation);
       try {
+        const {
+          retain: requestedRetention = false,
+          checkpoint: admittedCheckpoint = null,
+          captured = false,
+        } = (job.outcome as {
+          retain?: boolean;
+          checkpoint?: { epoch: string; watermark: number };
+          captured?: boolean;
+        } | null) ?? {};
         const target = await withJobLease(
           sql,
           job,
@@ -45,21 +54,17 @@ export function createModalStopJob(
                 org_id: string;
                 visibility: "org" | "private";
                 provider_sandbox_id: string;
-                retain: boolean;
                 deadline_at: Date;
                 app_name: string;
                 binding: ModalBinding;
                 authority_scope: "org" | "user";
                 authority_owner_id: string;
-                checkpoint: { epoch: string; watermark: number } | null;
                 record: ModalRecord;
                 scope: string;
               }>(
                 `select s.owner_id,s.org_id,s.visibility,s.provider_sandbox_id,j.deadline_at,
-               $4::boolean as retain,
                a.app_name,a.authority_scope,a.authority_owner_id,
                jsonb_build_object('appId',a.app_id,'environment',a.environment,'workspace',g.modal_workspace) as binding,
-               case when p.epoch is not null then jsonb_build_object('epoch',p.epoch::text,'watermark',p.watermark) end as checkpoint,
                m.record,m.scope
              from public.sandboxes s join public.jobs j on j.id=$3
              join public.goldens g on g.id=s.golden_id
@@ -67,21 +72,18 @@ export function createModalStopJob(
              join public.modal_machines m on m.id=s.provider_sandbox_id and m.org_id=s.org_id and m.owner_id=s.owner_id
                and m.visibility=s.visibility
              join public.members member on member.org_id=s.org_id and member.user_id=s.owner_id
-             left join public.runtime_enrolments r on r.sandbox_id=s.id
-             left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
-               and p.completed_at is not null and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
              where s.id=$1 and s.lifecycle_generation=$2 and s.provider='modal' and s.runtime_transport='dialout'
                and s.deleted_at is null and s.stopped_at is null and s.stop_requested_at is not null
                and (m.lease_until is null or m.lease_until<=clock_timestamp())
                and (s.activity_until is null or s.activity_until<=clock_timestamp())
                and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())`,
-                [sandboxId, generation, job.id, (job.outcome as { retain?: boolean } | null)?.retain === true],
+                [sandboxId, generation, job.id],
               )
             ).rows,
         );
         const [row] = target ?? [];
-        if (!row || target?.length !== 1) return (await canDispatch()) ? retry : fail;
-        const { record, binding, checkpoint } = row;
+        if (!row || target?.length !== 1) return (await canDispatch()) ? retry : reconcile;
+        const { record, binding } = row;
         const machineId = record.physicalId;
         const scope = scopeKey({ binding, orgId: row.org_id, userId: row.owner_id, visibility: row.visibility });
         if (
@@ -94,7 +96,14 @@ export function createModalStopJob(
           record.managementAuthority.credentialScope !== row.authority_scope ||
           record.managementAuthority.credentialOwnerId !== row.authority_owner_id
         )
-          return fail;
+          return reconcile;
+        const prior = record.runtimeCheckpoint;
+        const retainedStop =
+          prior?.physicalId === machineId &&
+          prior.generation === record.generation &&
+          ["snapshot", "terminate", "stopped"].includes(record.phase);
+        const retain = requestedRetention || retainedStop;
+        const checkpoint = retainedStop ? { epoch: prior.epoch, watermark: prior.watermark } : admittedCheckpoint;
         const ports = await open(
           {
             appName: row.app_name,
@@ -107,7 +116,29 @@ export function createModalStopJob(
         try {
           const address = { sandboxId, generation: record.generation, machineId };
           const request = { ...address, signal };
-          const allowed = (tx: Sql) => ports.canUseModalCredential(tx).then((valid) => valid && canDispatch(tx));
+          const allowed = async (tx: Sql) => {
+            const { rows } = await tx.query(
+              `select 1 from public.members member join public.sandboxes s on s.org_id=member.org_id and s.owner_id=member.user_id
+               join public.modal_machines m on m.scope=$2 and m.id=s.provider_sandbox_id
+               where s.id=$1 and s.deleted_at is null and s.stop_requested_at is not null and m.record->>'physicalId'=$3
+                 and m.record->>'generation'=$4 and (m.lease_until is null or m.lease_until<clock_timestamp())
+                 and (not $5::boolean or exists(select 1 from public.runtime_checkpoints p
+                   join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+                   where p.sandbox_id=s.id and p.epoch=$6 and p.watermark=$7 and p.completed_at is not null
+                     and not s.application_secret_tainted
+                     and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)))`,
+              [
+                sandboxId,
+                scope,
+                machineId,
+                String(record.generation),
+                retain,
+                checkpoint?.epoch ?? null,
+                checkpoint?.watermark ?? null,
+              ],
+            );
+            return rows.length === 1 && (await ports.canUseModalCredential(tx)) && (await canDispatch(tx));
+          };
           const authorizeStop = async () => {
             const live = await withJobLease(sql, job, allowed);
             if (!live) throw Error("Modal stop no longer owns dispatch.");
@@ -119,6 +150,14 @@ export function createModalStopJob(
             authorizeStop,
             existing: {
               machine: address,
+              ...(retainedStop
+                ? {
+                    retainedStop:
+                      record.phase === "snapshot" || !record.recoveryImageId
+                        ? { snapshotDispatched: true }
+                        : { recoveryImageId: record.recoveryImageId },
+                  }
+                : {}),
               ...(record.info.name === sandboxId && machineId === row.provider_sandbox_id
                 ? {}
                 : {
@@ -142,19 +181,14 @@ export function createModalStopJob(
               ? observation.receipt.retained
               : null;
           if (observation.kind !== "present" || observation.phase !== "stopped") {
-            if (!(await canDispatch())) return fail;
-            const alreadyCaptured = (job.outcome as { captured?: boolean } | null)?.captured;
+            if (!(await canDispatch())) return reconcile;
             const captureMs = Math.min(12_000, +new Date(row.deadline_at) - Date.now() - 5_000);
-            if (
-              !alreadyCaptured &&
-              observation.kind === "present" &&
-              observation.phase === "running" &&
-              captureMs > 0
-            ) {
+            if (!captured && observation.kind === "present" && observation.phase === "running" && captureMs > 0) {
               const captureSignal = AbortSignal.any([signal, AbortSignal.timeout(captureMs)]);
-              await captureFinalOutputs(sql, await providerFor(sandboxId), sandboxId, {
+              await captureFinalOutputs(sql, () => providerFor(sandboxId), sandboxId, {
                 key,
                 signal: captureSignal,
+                expectedGeneration: job.generation!,
                 async onPublish(tx) {
                   if (!(await allowed(tx)) || !(await jobs.checkpointStopCapture(tx, job)))
                     throw Error("Modal stop capture lost its lease.");
@@ -164,10 +198,10 @@ export function createModalStopJob(
             }
             await authorizeStop();
             const remaining = +new Date(row.deadline_at) - Date.now();
-            if (remaining <= 0) return fail;
+            if (remaining <= 0) return reconcile;
             await machine.stop({
               ...request,
-              retain: row.retain,
+              retain,
               signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
             });
             observation = await machine.observe(request);
@@ -177,12 +211,12 @@ export function createModalStopJob(
                 : null;
           }
           if (observation.kind !== "present" || observation.phase !== "stopped")
-            return (await canDispatch()) ? retry : fail;
-          if (row.retain && (!recovery || !checkpoint)) return fail;
+            return (await canDispatch()) ? retry : reconcile;
+          const retentionLost = retain && (!recovery || !checkpoint);
           return {
             status: "done",
             async commit(tx) {
-              await finishModalStop(tx, job, row, recovery?.ref, checkpoint);
+              await finishModalStop(tx, job, row, recovery?.ref, checkpoint, retentionLost);
             },
           };
         } finally {
@@ -190,7 +224,7 @@ export function createModalStopJob(
         }
       } catch {
         signal.throwIfAborted();
-        return (await canDispatch()) ? retry : fail;
+        return (await canDispatch()) ? retry : reconcile;
       }
     },
   } satisfies JobKind;
@@ -202,6 +236,7 @@ async function finishModalStop(
   target: { scope: string; provider_sandbox_id: string; record: ModalRecord },
   recoveryImageId: string | undefined,
   checkpoint: { epoch: string; watermark: number } | null,
+  retentionLost: boolean,
 ) {
   const { record } = target;
   const stoppedAt = new Date();
@@ -236,5 +271,5 @@ async function finishModalStop(
     ],
   );
   if (!written.rows.length) throw Error("Modal stop recovery handoff lost its incarnation.");
-  await settleModalStop(tx, job.sandbox_id!, job.generation!, stoppedAt);
+  await settleModalStop(tx, job.sandbox_id!, job.generation!, stoppedAt, retentionLost);
 }

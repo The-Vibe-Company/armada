@@ -41,7 +41,11 @@ export interface ModalMachineOptions {
   binding: ModalBinding;
   deploymentId: string;
   journal: ModalMachineJournal;
-  existing?: { machine: MachineIdentity; ownershipTags?: Record<string, string> };
+  existing?: {
+    machine: MachineIdentity;
+    ownershipTags?: Record<string, string>;
+    retainedStop?: Pick<RecordEntry, "recoveryImageId" | "snapshotDispatched">;
+  };
   authorizeStop?(): Promise<void>;
 
   resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket | null>;
@@ -338,7 +342,8 @@ export function createModalMachine(options: ModalMachineOptions) {
         request.signal?.throwIfAborted();
         saved = await save(request, undefined, {
           operation: "stop",
-          phase: "allocated",
+          phase: options.existing.retainedStop ? "stopping" : "allocated",
+          ...(options.existing.retainedStop ? { retain: true, ...options.existing.retainedStop } : {}),
           intent: "bound-stop",
           machineId: request.machineId,
         });
@@ -432,8 +437,9 @@ export function createModalMachine(options: ModalMachineOptions) {
         if (request.machineId && request.machineId !== sb.sandboxId) return { kind: "unknown" };
         const machine = identity(request, entry?.machineId ?? sb.sandboxId);
         const observation = await observeModalCompute(machine, sb, request.signal);
-        if (observation.phase === "stopped" && (entry?.phase === "stopped" || entry?.recoveryImageId)) {
-          const recovery = entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
+        const image = entry ? entry.recoveryImageId : options.existing?.retainedStop?.recoveryImageId;
+        if (observation.phase === "stopped" && (entry?.phase === "stopped" || image)) {
+          const recovery = image ? retained(request, image) : null;
           return { ...observation, receipt: { operation: "stop", retained: recovery } };
         }
         const stopping = entry?.phase === "stopping" || entry?.phase === "deleting";

@@ -1745,13 +1745,23 @@ async function recoverInterruptedRuntimeResume(
 export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boolean, lease?: string) {
   const {
     rows: [target],
-  } = await tx.query<{ org_id: string; generation: string; deadline: Date }>(
+  } = await tx.query<{
+    org_id: string;
+    generation: string;
+    deadline: Date;
+    checkpoint: { epoch: string; watermark: number } | null;
+  }>(
     `update public.sandboxes set reconcile_after='infinity',reconcile_lease=null,reconcile_lease_until=null
      where id=$1 and provider='modal' and runtime_transport='dialout' and deleted_at is null
        and status in ('starting','stopping','failed') and stopped_at is null and stop_requested_at is not null
        and (activity_until is null or activity_until<=clock_timestamp())
        and (reconcile_lease is not distinct from $2::uuid or reconcile_lease_until<=clock_timestamp())
-     returning org_id,lifecycle_generation::text as generation,clock_timestamp()+interval '2 minutes' as deadline`,
+     returning org_id,lifecycle_generation::text as generation,clock_timestamp()+interval '2 minutes' as deadline,
+       (select jsonb_build_object('epoch',p.epoch::text,'watermark',p.watermark)
+        from public.runtime_checkpoints p join public.runtime_enrolments r
+          on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+        where p.sandbox_id=sandboxes.id and p.completed_at is not null
+          and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=sandboxes.id)) as checkpoint`,
     [sandboxId, lease ?? null],
   );
   if (!target) return false;
@@ -1765,7 +1775,7 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boole
       orgId: target.org_id,
       maxAttempts: 40,
       deadline: target.deadline,
-      initialOutcome: { retain },
+      initialOutcome: { retain, ...(retain && target.checkpoint ? { checkpoint: target.checkpoint } : {}) },
     },
     tx,
   );
@@ -1780,7 +1790,13 @@ export async function recordUnconfirmedModalStop(tx: Sql, sandboxId: string, gen
   );
 }
 
-export async function settleModalStop(tx: Sql, sandboxId: string, generation: string, stoppedAt: Date) {
+export async function settleModalStop(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  stoppedAt: Date,
+  retentionLost: boolean,
+) {
   const {
     rows: [row],
   } = await tx.query<{ status: "starting" | "stopping" | "failed" }>(
@@ -1795,7 +1811,7 @@ export async function settleModalStop(tx: Sql, sandboxId: string, generation: st
       sandboxId,
       expectedGeneration: generation,
       fromStates: [row.status],
-      toState: row.status === "starting" ? "failed" : "stopped",
+      toState: row.status === "starting" || retentionLost ? "failed" : "stopped",
       actor: "lifecycle_runner",
       code: row.status === "starting" ? "launch_interrupted" : "owner_stop_settled",
       effects: [],
@@ -1804,9 +1820,10 @@ export async function settleModalStop(tx: Sql, sandboxId: string, generation: st
   }
   await tx.query(
     `update public.sandboxes set stopped_at=$2,stop_requested_at=null,lifecycle_error=null,
-      last_observed_at=clock_timestamp(),reconcile_after=clock_timestamp(),activity_lease_id=null,activity_until=null
+      last_observed_at=clock_timestamp(),reconcile_after=clock_timestamp(),activity_lease_id=null,activity_until=null,
+      status_reason=case when $3 and $4 then 'modal_retention_unavailable' else status_reason end
      where id=$1`,
-    [sandboxId, stoppedAt],
+    [sandboxId, stoppedAt, retentionLost, row.status !== "failed"],
   );
   await releaseAccountCapacity(tx, sandboxId);
 }
@@ -2393,7 +2410,7 @@ export function createSandboxLifecycle(
                 where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                   and status in ('starting','ready','running','stopping','failed')
                   and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
-                  and (not $4 or $7 or s.expires_at<=clock_timestamp())
+                  and (not $4 or $7 or expires_at<=clock_timestamp())
                   and (not $7 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
                     and deleted_at is null and provider_sandbox_id=$8 and extract(epoch from expires_at)=$9::numeric))
                   and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
