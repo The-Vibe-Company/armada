@@ -33,15 +33,16 @@ const packages = [
 
 const installFailure = "ARMADA_BASELINE_INSTALL_FAILED";
 
-function installSteps(apt: string) {
+function installSteps(apt: string, reportStep = false) {
   return [
     ["apt-get update", "apt-get update"],
     ["apt-get install", `apt-get install -y --no-install-recommends ${apt}`],
     ["mktemp -d", "work=$(mktemp -d)"],
+    [null, "trap 'rm -rf -- \"$work\"' EXIT"],
     ["cd to the temporary directory", 'cd "$work"'],
     [
       "select Node archive for uname -m",
-      'case "$(uname -m)" in x86_64) arch=x64; node_sha=88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a ;; aarch64|arm64) arch=arm64; node_sha=e9e1930fd321a470e29bb68f30318bf58e3ecb4acb4f1533fb19c58328a091fe ;; *) false ;; esac',
+      `case "$(uname -m)" in x86_64) arch=x64; node_sha=88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a ;; aarch64|arm64) arch=arm64; node_sha=e9e1930fd321a470e29bb68f30318bf58e3ecb4acb4f1533fb19c58328a091fe ;; *) echo "Snapshot baseline: unsupported Node architecture" >&2; ${reportStep ? "false" : "exit 1"} ;; esac`,
     ],
     [
       "curl (Node archive)",
@@ -71,7 +72,7 @@ function installSteps(apt: string) {
       "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
     ],
     ["rm (apt lists)", "rm -rf /var/lib/apt/lists/*"],
-  ] satisfies [string, string][];
+  ] satisfies [string | null, string][];
 }
 
 export function snapshotBaselineInstall(
@@ -92,10 +93,8 @@ function renderInstall(apt: string, reportStep: boolean) {
   return [
     "set -eu",
     "export PATH=/usr/local/bin:/usr/bin:/bin DEBIAN_FRONTEND=noninteractive",
-    "work=",
-    'trap \'if [ -n "$work" ]; then rm -rf -- "$work"; fi\' EXIT',
-    ...installSteps(apt).map(([step, command]) =>
-      reportStep
+    ...installSteps(apt, reportStep).map(([step, command]) =>
+      reportStep && step !== null
         ? `${command} || { status=$?; echo ${shellQuote(`${installFailure} ${step}`)} >&2; exit "$status"; }`
         : command,
     ),

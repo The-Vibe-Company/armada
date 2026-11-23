@@ -551,9 +551,12 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
     };
     for (const stage of ["install", "initial-baseline", "scan", "baseline", "snapshot", "request", "persist"]) {
       failure = stage;
-      await expect(
-        service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before }),
-      ).rejects.toThrow(failureMessages[stage]);
+      const rebuild = service.create(provider, actor, { ...input, setup: "echo new", existingGolden: before });
+      if (stage === "install") {
+        await expect(rebuild).rejects.toMatchObject({ code: "setup_failed", safeMessage: failureMessages.install });
+      } else {
+        await expect(rebuild).rejects.toThrow(failureMessages[stage]);
+      }
       expect(checkoutRan).toBe(stage !== "install" && stage !== "initial-baseline");
       expect((await db.query("select * from goldens")).rows).toEqual(unchanged);
       expect((await db.query("select golden_id,backend_id,org_id,owner_id from golden_backend_slots")).rows).toEqual(
