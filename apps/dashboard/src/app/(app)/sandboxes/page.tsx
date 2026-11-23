@@ -284,7 +284,7 @@ async function SandboxesContent({ searchParams }: Props) {
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
-            const waiting = waitingIds.has(sandbox.id);
+            const readyLabel = waitingIds.has(sandbox.id) ? "Waiting for you" : "Ready";
             return {
               id: sandbox.id,
               content: (
@@ -298,9 +298,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         idlePaused={sandbox.idlePaused}
                         expiresAt={sandbox.expiresAt}
                         statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
-                        readyLabel={
-                          sandbox.taskOutcome?.state === "ready" ? "Finished" : waiting ? "Waiting for you" : "Ready"
-                        }
+                        readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : readyLabel}
                       />
                       <span aria-hidden="true">·</span>
                       <span className="font-mono" title={sandbox.id}>
