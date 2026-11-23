@@ -10,6 +10,7 @@ import {
   type WorkPreservation,
   workPreservationError,
 } from "@armada/core/server";
+import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
 import {
   COMPLETE_PRESERVATION,
@@ -81,7 +82,7 @@ export async function stopAndObserve(
   signal: AbortSignal,
   requireRetention = false,
 ) {
-  if (provider.id === "boat") {
+  if (retainsDiskOnStop(provider.id)) {
     const archived = await provider.get(providerSandboxId);
     signal.throwIfAborted();
     if (archived.state === "stopped") return archived;

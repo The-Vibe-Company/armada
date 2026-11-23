@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core";
 import type { launchCredentials } from "./launch-credentials.ts";
+import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
 
 export type GoldenLaunchCredentials = LaunchCredentialResolver &
   Partial<Pick<ReturnType<typeof launchCredentials>, "resolveModel">>;
@@ -30,12 +31,9 @@ export async function prepareGoldenLaunchAccount(
 ) {
   const { harness, credentialId } = request;
   const explicit = options.runtime ?? options.boatRuntime;
-  const endpoint = golden.provider === "boat" ? options.boatEndpointRuntime : undefined;
-  const runtimeDefault = explicit
-    ? undefined
-    : golden.provider === "modal"
-      ? options.modalRuntimeDefault
-      : (options.boatRuntimeDefault ?? (harness === "opencode" ? endpoint : undefined));
+  const { launchDefault: key, endpointDefault } = runtimeBridgeProfiles[golden.provider];
+  const endpoint = endpointDefault ? options[endpointDefault] : undefined;
+  const runtimeDefault = explicit ? undefined : (options[key] ?? (harness === "opencode" ? endpoint : undefined));
   if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
 
   const probe = async (
@@ -74,14 +72,7 @@ export async function prepareGoldenLaunchAccount(
     const selected = account
       ? { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) }
       : runtimeDefault;
-    return {
-      credentials,
-      runtimeDefault: selected,
-      options:
-        golden.provider === "modal"
-          ? { ...options, modalRuntimeDefault: selected }
-          : { ...options, boatRuntimeDefault: selected },
-    };
+    return { credentials, runtimeDefault: selected, options: { ...options, [key]: selected } };
   }
 
   const account = await probe(credentials);

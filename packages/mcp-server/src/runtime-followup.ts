@@ -1,3 +1,4 @@
+import { isSandboxProvider } from "@armada/core";
 import {
   modalLaunchSetupKeySql,
   ProviderError,
@@ -161,7 +162,7 @@ export function createRuntimeFollowup(
         throw new RuntimeFollowupConflict("runtime_prompt_running", "Wait for the current runtime prompt to finish.");
     }
     const configuredEpoch =
-      previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
+      previous.state === "missing" && isSandboxProvider(found.provider)
         ? await environment.deliver(
             found.provider,
             { userId: caller.userId, orgId: found.orgId },

@@ -18,6 +18,7 @@ import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { configureNativeMcp, type McpBootstrap, normalizeNativeMcpBootstrap } from "./mcp-native.ts";
 import { resolveMcpStdioExecutable } from "./mcp-stdio-bootstrap.ts";
 import { providerPhysicalGeneration } from "./provider-physical-generation.ts";
+import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 
 /** Server-authorized lease reconciliation; no VM or user receives the signing key. */
 export function createMcpLifecycle(options: {
@@ -295,7 +296,8 @@ export function createMcpLifecycle(options: {
         if (["ready", "running", "starting"].includes(physical.state))
           return { sandboxId: sandbox.id, shouldResume: false };
         if (physical.state !== "stopped") throw Error("Sandbox cannot be resumed from its current physical state.");
-        if (provider.id === "boat" && physical.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
+        if (retainsDiskOnStop(provider.id) && physical.retainedSnapshot !== "usable")
+          throw new BoatRetentionUnconfirmed();
         await tx.query(
           `with fenced as (delete from public.github_runtime_capabilities where sandbox_id=$1::uuid returning sandbox_id)
           update public.sandboxes s set mcp_generation=mcp_generation+1 from fenced f where s.id=f.sandbox_id`,
