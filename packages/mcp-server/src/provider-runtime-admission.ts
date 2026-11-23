@@ -1,8 +1,15 @@
-import { isSandboxPlacementProvider } from "@armada/core";
+import { HOST_CAPABILITIES, isSandboxPlacementProvider, isSandboxProvider } from "@armada/core";
+import { capabilities } from "@armada/core/server";
 
 export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
   return target.runtimeTransport === "dialout";
 }
+
+export const usesHostLaunch = (provider: unknown) =>
+  isSandboxPlacementProvider(provider) && capabilities(provider).launchSource === "host";
+
+export const retainsDiskOnStop = (provider: unknown) =>
+  isSandboxPlacementProvider(provider) && capabilities(provider).stopRetention === "disk";
 
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
@@ -12,8 +19,10 @@ export function runtimeBridgeTarget(target: {
   runtimeTransport?: string;
 }): boolean {
   return (
-    ((target.provider === "boat" && Boolean(target.boatRuntime)) ||
-      (target.provider === "modal" && modalDialoutPlacement(target))) &&
+    isSandboxProvider(target.provider) &&
+    (HOST_CAPABILITIES[target.provider].templateReceiptTransport === "dialout"
+      ? modalDialoutPlacement(target)
+      : Boolean(target.boatRuntime)) &&
     runtimeHarnessSupported(target.provider, target.harness)
   );
 }

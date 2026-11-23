@@ -4,6 +4,7 @@ import {
   type GoldenActor,
   type GoldenRecord,
   type Harness,
+  HOST_CAPABILITIES,
   type LaunchCredentialResolver,
   type LaunchOptions,
   launchFailureHelp,
@@ -30,12 +31,10 @@ export async function prepareGoldenLaunchAccount(
 ) {
   const { harness, credentialId } = request;
   const explicit = options.runtime ?? options.boatRuntime;
-  const endpoint = golden.provider === "boat" ? options.boatEndpointRuntime : undefined;
-  const runtimeDefault = explicit
-    ? undefined
-    : golden.provider === "modal"
-      ? options.modalRuntimeDefault
-      : (options.boatRuntimeDefault ?? (harness === "opencode" ? endpoint : undefined));
+  const dialout = HOST_CAPABILITIES[golden.provider].templateReceiptTransport === "dialout";
+  const key = dialout ? "modalRuntimeDefault" : "boatRuntimeDefault";
+  const endpoint = dialout ? undefined : options.boatEndpointRuntime;
+  const runtimeDefault = explicit ? undefined : (options[key] ?? (harness === "opencode" ? endpoint : undefined));
   if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
 
   const probe = async (
@@ -74,14 +73,7 @@ export async function prepareGoldenLaunchAccount(
     const selected = account
       ? { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) }
       : runtimeDefault;
-    return {
-      credentials,
-      runtimeDefault: selected,
-      options:
-        golden.provider === "modal"
-          ? { ...options, modalRuntimeDefault: selected }
-          : { ...options, boatRuntimeDefault: selected },
-    };
+    return { credentials, runtimeDefault: selected, options: { ...options, [key]: selected } };
   }
 
   const account = await probe(credentials);

@@ -1,3 +1,4 @@
+import { HOST_CAPABILITIES } from "@armada/core";
 import { sandboxOperations } from "@armada/core/contract";
 import {
   LaunchError,
@@ -16,7 +17,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import {
@@ -67,7 +68,7 @@ export function configureTools(
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
       );
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+    if (!allowUnbound && HOST_CAPABILITIES[found.provider].requiresPinnedGoldenBinding && !found.credentialId)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
@@ -178,7 +179,7 @@ export function configureTools(
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
     const conversation = found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
-    if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
+    if (retainsDiskOnStop(provider.id) && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
       throw new ToolError("conflict", "Boat retained data has not been verified.");
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
@@ -414,7 +415,7 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const fencedExec = !enrolled && found.provider === "boat";
+    const fencedExec = !enrolled && !HOST_CAPABILITIES[found.provider].requiresPinnedGoldenBinding;
     const managedNative =
       !enrolled &&
       (await context.launchCredentials.assertExec?.(
@@ -604,7 +605,7 @@ export function configureTools(
             );
             terminal =
               observed.state === "stopped" &&
-              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
+              (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote ?? preservationNote;
           } catch (error) {

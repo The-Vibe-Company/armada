@@ -1,4 +1,4 @@
-import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
+import { HOST_CAPABILITIES, isSandboxProvider, mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
@@ -23,21 +23,11 @@ export function createRuntimeProvider(
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
   modalCapture?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
-  let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
-  let captureRuntimeWork: RuntimeWorkPort["captureRuntimeWork"];
-  let observeCaptureBoot: RuntimeWorkPort["observeCaptureBoot"];
-  switch (host.id) {
-    case "boat":
-      setRuntimeTtl = host.setRuntimeTtl;
-      captureRuntimeWork = host.captureRuntimeWork?.bind(host);
-      observeCaptureBoot = host.observeCaptureBoot?.bind(host);
-      break;
-    case "modal":
-      captureRuntimeWork = modalCapture;
-      break;
-    default:
-      throw Error("boat_runtime_host_required");
-  }
+  if (!isSandboxProvider(host.id)) throw Error("boat_runtime_host_required");
+  const dialout = HOST_CAPABILITIES[host.id].templateReceiptTransport === "dialout";
+  const setRuntimeTtl = dialout ? undefined : host.setRuntimeTtl;
+  const captureRuntimeWork = dialout ? modalCapture : host.captureRuntimeWork?.bind(host);
+  const observeCaptureBoot = dialout ? undefined : host.observeCaptureBoot?.bind(host);
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
@@ -55,6 +45,16 @@ export function createRuntimeProvider(
         retryable: false,
       });
   };
+  const outputPort = <Request extends { sandboxId: string }, Result>(
+    name: "openRetainedOutputs" | "probeOutputs" | "readOutputs" | "readOutputChunk" | "listOutputEntries",
+    method: ((request: Request) => Promise<Result>) | undefined,
+  ) =>
+    method && {
+      [name]: async (request: Request) => {
+        target(request.sandboxId);
+        return method.call(host, request);
+      },
+    };
   const capabilities = mapHarnesses(({ capabilities: capability }) => ({
     ...capability,
     steer: operations ? capability.steer : ("none" as const),
@@ -109,48 +109,13 @@ export function createRuntimeProvider(
       : {}),
     // Declared outputs are a fixed host read (Boat command API, Modal container),
     // never a runner operation, so enrolled runtimes publish outputs like native sandboxes.
-    ...(host.openRetainedOutputs
-      ? {
-          async openRetainedOutputs(request: Parameters<NonNullable<Provider["openRetainedOutputs"]>>[0]) {
-            target(request.sandboxId);
-            return host.openRetainedOutputs!(request);
-          },
-        }
-      : {}),
-    ...(host.probeOutputs
-      ? {
-          async probeOutputs(request: Parameters<NonNullable<Provider["probeOutputs"]>>[0]) {
-            target(request.sandboxId);
-            return host.probeOutputs!(request);
-          },
-        }
-      : {}),
-    ...(host.readOutputs
-      ? {
-          async readOutputs(request: Parameters<NonNullable<Provider["readOutputs"]>>[0]) {
-            target(request.sandboxId);
-            return host.readOutputs!(request);
-          },
-        }
-      : {}),
+    ...outputPort("openRetainedOutputs", host.openRetainedOutputs),
+    ...outputPort("probeOutputs", host.probeOutputs),
+    ...outputPort("readOutputs", host.readOutputs),
+    ...outputPort("readOutputChunk", host.readOutputChunk),
+    ...outputPort("listOutputEntries", host.listOutputEntries),
     ...(host.outputReadConcurrency !== undefined ? { outputReadConcurrency: host.outputReadConcurrency } : {}),
     ...(host.outputReadBytes !== undefined ? { outputReadBytes: host.outputReadBytes } : {}),
-    ...(host.readOutputChunk
-      ? {
-          async readOutputChunk(request: Parameters<NonNullable<Provider["readOutputChunk"]>>[0]) {
-            target(request.sandboxId);
-            return host.readOutputChunk!(request);
-          },
-        }
-      : {}),
-    ...(host.listOutputEntries
-      ? {
-          async listOutputEntries(request: Parameters<NonNullable<Provider["listOutputEntries"]>>[0]) {
-            target(request.sandboxId);
-            return host.listOutputEntries!(request);
-          },
-        }
-      : {}),
     ...(observeCaptureBoot
       ? {
           observeCaptureBoot(id: string, signal: AbortSignal) {

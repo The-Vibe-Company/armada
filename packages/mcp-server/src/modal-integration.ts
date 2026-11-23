@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { HOST_CAPABILITIES } from "@armada/core";
 import {
   type CredentialReader,
   createSqlVaultStore,
@@ -213,7 +214,7 @@ export function createModalIntegration(options: {
     target: Omit<ProviderTarget, "modal">,
     caller: { userId: string },
   ): Promise<ProviderTarget> {
-    if (target.provider === "boat") return { ...target, modal: null };
+    if (!HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding) return { ...target, modal: null };
     const resolved = await resolveModalTokens(options.vault, options.encryptionKey, {
       ...caller,
       orgId: target.orgId,
@@ -368,7 +369,8 @@ export function createModalIntegration(options: {
     };
   };
   async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
-    if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
+    if (!HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding || !target.modal)
+      throw new VaultError("invalid", "Expected Modal binding.");
     const tokens = await modalTokensFor(target, caller);
     const { provider } = await modalProviderFor(
       // The resolver's scope label is not the structured machine Scope.

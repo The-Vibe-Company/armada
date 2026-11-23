@@ -3,6 +3,7 @@ import { DelegatedAuthorityDenied, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { transitionSandbox } from "./sandbox-lifecycle.ts";
 import { runtimePreservationNote } from "./work-preservation.ts";
@@ -58,7 +59,7 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   };
 
   const result = { id: row.id, status: "stopping" };
-  if (row.provider !== "docker") {
+  if (!usesHostLaunch(row.provider)) {
     await admit();
     return result;
   }
