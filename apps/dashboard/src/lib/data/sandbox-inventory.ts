@@ -12,7 +12,10 @@ export async function loadSandboxInventory(
   requestedActivity: string | string[] | undefined,
   control: ControlClient | null,
 ) {
-  const turnsRead = control?.post<Record<string, RecordedTurn>>("sandbox/list-turns", { org: orgId });
+  const turnsRead = control?.post<Record<string, RecordedTurn>>("sandbox/list-turns", { org: orgId }).catch(() => {
+    console.error("Recorded sandbox activity is unavailable.");
+    return {};
+  });
   const [{ inventory, skipped }, turns] = await Promise.all([readInventory(supabase, orgId), turnsRead ?? {}]);
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
   const now = new Date();

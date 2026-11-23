@@ -10,6 +10,7 @@ export function createSandboxListTurns(sql: Sql, key: string) {
       id: string;
       queued: boolean;
       active: boolean;
+      awaiting_receipt: boolean;
       prompt_id: string | null;
       latest_prompt_enc: Uint8Array<ArrayBuffer> | null;
       finished: boolean;
@@ -25,6 +26,7 @@ export function createSandboxListTurns(sql: Sql, key: string) {
         (s.status in ('ready','running') and current_turn.id is not null
           and not coalesce(t.settled,false) and f.terminal_status is null
           and (s.boat_runtime or s.runtime_transport='dialout' or s.provider='docker' or s.status='running')) as active,
+        coalesce(docker_turn.awaiting_receipt,false) as awaiting_receipt,
         current_turn.id as prompt_id,
         e.latest_prompt_enc,
         (s.status='ready' and f.terminal_status='finished') as finished
@@ -32,10 +34,12 @@ export function createSandboxListTurns(sql: Sql, key: string) {
        join public.members m on m.org_id=s.org_id and m.user_id=$2
        left join public.runtime_idle_evidence e on e.sandbox_id=s.id
        left join lateral (
-         select c.accepted_prompt_id from public.runtime_enrolments r
+         select c.accepted_prompt_id,c.result_enc is null as awaiting_receipt
+         from public.runtime_enrolments r
          join public.runtime_commands c on c.sandbox_id=r.sandbox_id and c.epoch=r.epoch
          where s.provider='docker' and r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation
-           and starts_with(c.request_id,'docker_prompt_') and c.accepted_prompt_id is not null
+           and starts_with(c.request_id,'docker_prompt_')
+           and (c.result_enc is null or c.accepted_prompt_id is not null)
          order by c.sequence desc limit 1
        ) docker_turn on true
        cross join lateral (select coalesce(docker_turn.accepted_prompt_id::text,nullif(s.task_prompt_id,'')) as id) current_turn
@@ -47,9 +51,10 @@ export function createSandboxListTurns(sql: Sql, key: string) {
       [orgId, caller.userId],
     );
     const turns = await Promise.all(
-      rows.map(async ({ id, queued, active, prompt_id, latest_prompt_enc, finished }) => {
+      rows.map(async ({ id, queued, active, awaiting_receipt, prompt_id, latest_prompt_enc, finished }) => {
         let state: RecordedTurn | null = null;
         if (queued) state = "queued";
+        else if (awaiting_receipt) return [id, null] as const;
         else if (active) state = "running";
         else if (latest_prompt_enc) {
           const prompt = JSON.parse(await decryptSecret(latest_prompt_enc, key)) as AgentEvent;
