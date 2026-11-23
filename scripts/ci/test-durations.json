@@ -420,15 +420,6 @@
     },
     {
       "files": [
-        "packages/mcp-server/test/runtime-checkpoint.test.ts",
-        "packages/mcp-server/test/sandbox-access.test.ts",
-        "packages/mcp-server/test/sandbox-activity.test.ts",
-        "packages/mcp-server/test/skill-defaults.test.ts"
-      ],
-      "seconds": 6.709
-    },
-    {
-      "files": [
         "packages/mcp-server/test/boat-usage-diagnostics.test.ts",
         "packages/mcp-server/test/connections.test.ts",
         "packages/mcp-server/test/exec-selected-org-api.test.ts",

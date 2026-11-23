@@ -220,8 +220,7 @@ test("real native state publication seals rotation without replacing binding, fe
   );
   eventRevision = 2;
   provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
-  // Storage policy accepts only the server's quiesced-capture purpose. The
-  // real SSH lock/process receipt is independently exercised by native-cwd.
+  // Storage policy accepts only the server's quiesced-capture purpose.
   await auth.capture(provider, "native", actor, true);
   provider.get = async (id) => ({ id, name: id, state: "stopped", providerState: "archived", labels: {} });
   expect(JSON.stringify(await publicProvider.events({ sandboxId: "native" }))).not.toContain("synthetic-refresh-");
