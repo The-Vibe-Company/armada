@@ -193,15 +193,6 @@ export interface Provider {
   interrupt(request: InterruptRequest): Promise<void>;
   readonly supportsExecPhysicalGeneration?: true;
   exec(request: ExecRequest): Promise<ExecResult>;
-  /** Optional one-shot native usage observation. Empty or an all-null diagnostic
-   * row means unavailable, never zero tokens.
-   * Rows are final per-prompt/model snapshots; retries replace rather than add counters. */
-  collectTurnUsage?(request: {
-    sandboxId: string;
-    promptId: string;
-    conversationId?: string;
-    harness: Harness;
-  }): Promise<import("./sandbox-usage.ts").TurnTokenUsage[]>;
   /** Prepares a forked VM's native harness executable to start in a recorded working directory. */
   prepareNativeHarnessCwd?(request: PrepareNativeHarnessCwdRequest): Promise<void>;
   /** Registers a transient public key and returns a pinned SSH endpoint. */

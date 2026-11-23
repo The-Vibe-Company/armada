@@ -1052,7 +1052,7 @@ describe("tools", () => {
       });
     }
     const saved = await readSandbox();
-    // Stored status must not collect native usage or publish a stale lifecycle observation.
+    // Stored status must not publish a stale lifecycle observation.
     const writes: string[] = [];
     const observedStore = {
       ...store,
@@ -1062,7 +1062,7 @@ describe("tools", () => {
       },
       recordUsage: async () => {
         writes.push("usage");
-        // Stored journal projection is allowed; native collection is not.
+        // Stored journal projection is allowed.
       },
       recordTurnModelEvidence: async () => {
         writes.push("telemetry");
@@ -1070,12 +1070,7 @@ describe("tools", () => {
       },
     };
     const stored = await readStatus(
-      {
-        ...boat.provider,
-        collectTurnUsage: async () => {
-          throw new Error("No live native usage");
-        },
-      },
+      boat.provider,
       observedStore,
       { ...saved, status: "running" },
       { now: new Date(), stored: true },

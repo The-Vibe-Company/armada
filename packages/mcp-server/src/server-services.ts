@@ -52,7 +52,6 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
-import { withNativeLogJournal } from "./native-log-journal.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
@@ -181,10 +180,6 @@ export async function createServerServices(env: Record<string, string | undefine
       {
         apiKey,
         ...boatInventory,
-        sanitizeEvents: async (provider, id, events) => {
-          if (!caller) throw Error("Native events require trusted Armada caller scope.");
-          return modelAuth.redactBoatEvents(provider, id, caller, events);
-        },
         beforeStop: async (provider, id) => {
           if (caller) await modelAuth.beforeStop(provider, id, caller);
         },
@@ -453,24 +448,9 @@ export async function createServerServices(env: Record<string, string | undefine
         })
       : undefined;
   const modalJobReader = createModalJobReader(sql, config.encryptionKey);
-  const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
-  const journalLogProviders = {
-    modal: createModalLogReader(sql, config.encryptionKey, logProviders.modal),
-    boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
-      const provider = await logProviders.boat(sandbox, caller);
-      return sandbox.id && !sandbox.boatRuntime && !sandbox.runtimeTransport && config.encryptionKey
-        ? withNativeLogJournal(
-            sql,
-            config.encryptionKey,
-            provider,
-            { id: sandbox.id, orgId: sandbox.orgId, userId: caller.userId },
-            options.logError,
-          )
-        : provider;
-    },
-  };
+  const modalLogs = createModalLogReader(sql, config.encryptionKey, modal.storedProviderFor);
   const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
-    journalLogProviders[sandbox.provider](sandbox, caller);
+    sandbox.provider === "modal" ? modalLogs(sandbox, caller) : providers.resolve(sandbox, caller);
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
@@ -571,9 +551,7 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
-  const nativeHistoryFor = createHistoricalSandboxProviderResolver({
-    resolve: (target, caller) => logProviders[target.provider](target, caller),
-  });
+  const nativeHistoryFor = createHistoricalSandboxProviderResolver(providers);
   const langfuse = createLangfuse(sql, config.encryptionKey, (id, generation) => nativeHistoryFor(sql, id, generation));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,

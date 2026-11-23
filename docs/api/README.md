@@ -181,6 +181,8 @@ See [sandbox viewers](sandbox-viewer.md) for proxy and cursor handling.
 
 ## Stream sandbox events
 
+Boat sandboxes report events and token usage through the enrolled Armada runtime.
+
 Fetch `GET /api/v1/events?sandbox=<UUID>` with an `Authorization: Bearer ...` header. The sandbox owner, an organization admin, and a bearer scoped to read that child or view that sandbox can subscribe. A refusal returns HTTP 403 before streaming.
 
 Each frame carries the global decimal-string SSE `id` and an event-log reference. Runtime entries include the per-sandbox `sequence`. Transition entries have a null sequence. Fetch logs or status for content.

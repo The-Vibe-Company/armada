@@ -255,7 +255,7 @@ test("real SQL runtime includes open and completed intervals and usage follows i
   expect((await store(p.owner).get(id))?.usage?.turnCount).toBe(2);
 });
 
-test("native collection persists retry-safe rows and preserves measurements when files disappear", async () => {
+test("journal usage persists retry-safe rows and preserves measurements when history is unavailable", async () => {
   const { db, people: p } = await sharedDatabase();
 
   const golden = (await db.query<{ id: string }>("select id from goldens where name='mine'")).rows[0]!.id;
@@ -274,14 +274,27 @@ test("native collection persists retry-safe rows and preserves measurements when
     via: "service",
     orgs: [{ orgId: p.org, role: "member" }],
   }).sandboxes;
-  const row = { promptId: receipt.promptId, model: "gpt", inputTokens: 42, outputTokens: 7, cachedTokens: 8 };
-  let available = false;
-  provider.collectTurnUsage = async () => (available ? [row] : []);
+  const row = {
+    promptId: receipt.promptId,
+    model: "gpt",
+    inputTokens: 42,
+    outputTokens: 7,
+    cachedTokens: 8,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
   boat.finish(native.id, receipt.promptId, "finished");
   const early = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
   expect(early.status).toBe("ready");
   expect(early.usage?.tokenTotals?.inputTokens).toBeNull();
-  available = true;
+  boat.sandbox(native.id).events.push({
+    id: "runtime-usage",
+    at: 3,
+    promptId: receipt.promptId,
+    kind: "other",
+    type: "armada/turnUsage",
+    data: row,
+  });
   const delayed = await readStatus(provider, store, (await store.get(id))!, { now: new Date("2026-01-01") });
   expect(delayed.status).toBe("ready");
   expect(delayed.usage?.tokenTotals?.inputTokens).toBe(42);
@@ -289,11 +302,11 @@ test("native collection persists retry-safe rows and preserves measurements when
   for (const retry of [false, true]) {
     await collectSandboxUsage(provider, store, (await store.get(id))!);
     expect((await store.get(id))?.usage).toMatchObject({ turnCount: 1, turns: [row] });
-    if (retry) available = false;
+    if (retry) boat.sandbox(native.id).events.pop();
   }
   await collectSandboxUsage(provider, store, (await store.get(id))!);
   expect((await store.get(id))?.usage?.turns).toEqual([{ ...row, pricing: null }]);
-  // Stop still knows its target when provider history and native files are unavailable.
+  // Stop still knows its target when provider history is unavailable.
   provider.events = async () => {
     throw new Error("history unavailable");
   };
@@ -355,7 +368,7 @@ test("native collection persists retry-safe rows and preserves measurements when
 });
 
 test.each(["codex", "claude"] as const)(
-  "stored Modal status projects %s journal usage into SQL and totals without native calls",
+  "stored Modal status projects %s journal usage into SQL and totals",
   async (harness) => {
     const { db, people: p } = await sharedDatabase();
 
@@ -378,11 +391,6 @@ test.each(["codex", "claude"] as const)(
           : { modelUsage: { sonnet: { inputTokens: 42, outputTokens: 7, cacheReadInputTokens: 0 } } },
     };
     provider.events = async () => ({ events: [...journal.events, usageEvent], hasMore: false, cursor: "end" });
-    let nativeCalls = 0;
-    provider.collectTurnUsage = async () => {
-      nativeCalls++;
-      return [];
-    };
     const id = crypto.randomUUID();
     await db.query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
@@ -397,7 +405,6 @@ test.each(["codex", "claude"] as const)(
     // The server-selected stored Modal adapter exposes the same Provider event contract.
     const found = { ...(await store.get(id))!, provider: "modal" as const };
     const report = await readStatus(provider, store, found, { stored: true, now: new Date("2026-01-01") });
-    expect(nativeCalls).toBe(0);
     expect(report.usage?.tokenTotals).toMatchObject({ inputTokens: 42, outputTokens: 7, cachedTokens: 0 });
     expect((await store.get(id))?.usage).toMatchObject({
       turnCount: 1,

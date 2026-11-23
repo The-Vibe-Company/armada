@@ -27,8 +27,6 @@ packages/mcp-server/test/managed-inspection.test.ts
 packages/mcp-server/test/mcp-native.test.ts
 packages/mcp-server/test/orchestrator-bootstrap.test.ts
 packages/mcp-server/test/serve-database-boot.test.ts
-packages/provider-boat/test/native-usage.test.ts
-packages/provider-boat/test/usage-probe.test.ts
 packages/provider-modal/test/security.test.ts
 scripts/build.test.ts
 scripts/check-boat-runtime.test.ts

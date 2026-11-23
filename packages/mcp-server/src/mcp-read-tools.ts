@@ -294,7 +294,6 @@ async function readLogs(
       }),
     args.since_cursor,
     args.all === true,
-    { pauseOnNativeLease: args.direction !== "backward" },
   );
   return {
     ...(olderCursor ? { olderCursor } : {}),

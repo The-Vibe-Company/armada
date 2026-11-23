@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 import type {
   CreateGoldenRequest,
   DeleteReceipt,
-  EventPage,
-  EventsRequest,
   ExecRequest,
   ExecResult,
   ForkRequest,
@@ -23,14 +21,14 @@ import type {
   SteerRequest,
 } from "@armada/core";
 import {
-  buildEventPage,
-  eventPageOptions,
   HARNESS_CAPABILITIES,
   HARNESS_CATALOG,
   HARNESSES,
   MACHINE_SIZE_CATALOG,
   mapHarnesses,
   OUTPUT_MAX_BYTES,
+  PROMPT_STATUSES,
+  type PromptStatus,
   ProviderError,
   parseMachineSize,
   providerRateLimitDetails,
@@ -70,10 +68,13 @@ import {
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
 import { BoatRetentionUnconfirmed, invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
-import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
-import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
-import { collectNativeUsage } from "./native-usage.ts";
 import { RETAINED_OUTPUT_PATH, readRetainedOutputArchive } from "./retained-outputs.ts";
+
+/** Boat calls a prompt that is waiting for admission "sending". */
+function promptStatus(value: unknown): PromptStatus | undefined {
+  if (value === "sending") return "queued";
+  return (PROMPT_STATUSES as readonly unknown[]).includes(value) ? (value as PromptStatus) : undefined;
+}
 
 const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -184,9 +185,6 @@ function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
 }
 
 export interface BoatProviderOptions {
-  /** Server-owned output boundary; rejection releases no provider event bodies. */
-  sanitizeEvents?: (provider: Provider, sandboxId: string, events: EventPage["events"]) => Promise<EventPage["events"]>;
-
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
   /** Stable, nonsecret environment + server identity. Omit to leave inventory unbound. */
@@ -880,10 +878,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       };
     },
 
-    async collectTurnUsage(request) {
-      return collectNativeUsage(provider, request.sandboxId, request.promptId, request.harness);
-    },
-
     async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {
       request.signal?.throwIfAborted();
       const deadline = AbortSignal.timeout(10_000);
@@ -944,7 +938,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             event: "boat_preservation_exec",
             providerSandboxId: request.sandboxId,
             stage,
-            purpose: stage === "exec" ? "native_usage" : "work_preservation",
+            purpose: "work_preservation",
             execId,
             caller: request.preservationContext?.source ?? "unspecified",
             captureId: request.preservationContext?.captureId ?? null,
@@ -1057,99 +1051,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       }
     },
 
-    async events(request: EventsRequest): Promise<EventPage> {
-      request.signal?.throwIfAborted();
-      const { limit, backward } = eventPageOptions(request, "boat");
-      const continuation = readEventCursor(request.cursor);
-      const pending = new Map(continuation.pending.map((p) => [p.id, p]));
-      const entries: { cursor: string; event: EventPage["events"][number] }[] = [];
-      let native = continuation.native;
-      const fingerprint = (event: EventPage["events"][number]) =>
-        createHash("sha256").update(JSON.stringify(event)).digest("hex");
-      const mutable = (event: EventPage["events"][number]) =>
-        (event.kind === "prompt" && (event.status === "queued" || event.status === "running")) ||
-        (event.kind === "message" && event.partial === true);
-      // Boat mutates prompt and partial response rows behind the physical
-      // timestamp cursor. Re-read only unfinished rows; never rewind the raw frontier.
-      if (!backward)
-        for (const saved of continuation.pending) {
-          const updated = await call(() =>
-            api.events(
-              {
-                sandboxId: request.sandboxId,
-                sort: "asc",
-                limit: 1,
-                ...(saved.before ? { cursor: saved.before } : {}),
-                ...(request.conversationId ? { conversation: request.conversationId } : {}),
-              },
-              request.signal ? { signal: request.signal } : undefined,
-            ),
-          );
-          const raw = updated.events?.[0];
-          // A row moved by the source will appear at the forward frontier.
-          // Keep tracking it until then rather than fabricating a terminal state.
-          if (!raw || raw.id !== saved.id || (raw.type !== "prompt" && raw.type !== "response")) continue;
-          const event = normalizeEvent(raw);
-          if (event.kind !== "prompt" && event.kind !== "message") throw unexpectedAnswer("mutable event snapshot");
-          const currentFingerprint = fingerprint(event);
-          if (currentFingerprint === saved.fingerprint) continue;
-          if (mutable(event)) pending.set(saved.id, { ...saved, fingerprint: currentFingerprint });
-          else pending.delete(saved.id);
-          entries.push({ cursor: writeEventCursor(native, [...pending.values()]), event });
-        }
-      const response = await call(() =>
-        api.events(
-          {
-            sandboxId: request.sandboxId,
-            sort: backward ? "desc" : "asc",
-            ...(native ? { cursor: native } : {}),
-            ...(request.conversationId ? { conversation: request.conversationId } : {}),
-            limit: Math.min(limit, 200),
-          },
-          request.signal ? { signal: request.signal } : undefined,
-        ),
-      );
-      request.signal?.throwIfAborted();
-      const raw = response.events ?? [];
-      for (const row of raw) {
-        const event = normalizeEvent(row);
-        const before = native;
-        native = eventCursor(row) ?? response.pageInfo?.nextCursor ?? native;
-        if (!backward) {
-          if (mutable(event)) pending.set(event.id, { id: event.id, before, fingerprint: fingerprint(event) });
-          else pending.delete(event.id);
-        }
-        entries.push({
-          cursor: backward ? (native ?? "") : writeEventCursor(native, [...pending.values()]),
-          event,
-        });
-      }
-      const normalized = options.sanitizeEvents
-        ? await options.sanitizeEvents(
-            provider,
-            request.sandboxId,
-            entries.map((e) => e.event),
-          )
-        : entries.map((e) => e.event);
-      const page = buildEventPage(
-        entries.map((entry, index) => ({ ...entry, event: normalized[index]! })),
-        request,
-        response.pageInfo?.hasMore === true,
-        "boat",
-      );
-      if ((backward || page.hasMore) && raw.some((event) => !eventCursor(event))) {
-        throw new ProviderError({
-          provider: "boat",
-          code: "invalid_request",
-          retryable: false,
-          message: "Boat events lack a stable pagination boundary.",
-        });
-      }
-      // An empty physical page may advance over filtered records, but must not
-      // acknowledge updates/rows excluded by the logical byte/count budget.
-      if (!entries.length && !backward && response.pageInfo?.nextCursor)
-        page.cursor = writeEventCursor(response.pageInfo.nextCursor, [...pending.values()]);
-      return page;
+    async events() {
+      throw invalidRequest("Boat events require an enrolled Armada runtime.");
     },
 
     async quiesce(request) {

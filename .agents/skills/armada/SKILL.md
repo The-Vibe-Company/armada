@@ -198,7 +198,8 @@ Fetch message content with `POST /api/v1/viewer/logs` and its separate log curso
 Use `armada api sandbox/extend '{"id":"SANDBOX","ttlSeconds":3600}'` before
 expiry if more time is justified. Include `org` in the body when targeting an
 organization. Confirm the returned expiry. New Boat launches use the Armada
-runtime by default. For enrolled Boat, choose the needed lifetime at launch
+runtime by default. Boat logs and token usage require runtime enrollment. For
+enrolled Boat, choose the needed lifetime at launch
 because extension returns `extension_state`. Use `armada stop SANDBOX --after`
 to wait for the turn to settle before requesting an idle-only stop.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently

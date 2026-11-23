@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as wait } from "node:timers/promises";
-import { type AgentEvent, isFinalPromptStatus, type Provider } from "@armada/core";
+import type { Provider } from "@armada/core";
 import { createBoatProvider } from "../src/provider.ts";
 
 const apiKey = process.env.BOAT_API_KEY;
@@ -93,42 +93,6 @@ try {
   const echoed = await provider.exec({ sandboxId: sandbox.id, command: "echo armada" });
   assert.equal(echoed.detached, false);
   assert.equal(echoed.exitCode, 0);
-
-  const receipt = await provider.prompt({
-    sandboxId: sandbox.id,
-    harness: "claude",
-    text: "Reply with exactly the word: pong. Do not use any tool.",
-  });
-  assert.ok(receipt.conversationId, "Expected a conversation ID");
-
-  const seen: AgentEvent[] = [];
-  let cursor: string | undefined;
-  await until(
-    "the prompt to end",
-    async () => {
-      const page = await provider.events({
-        sandboxId: sandbox.id,
-        conversationId: receipt.conversationId,
-        ...(cursor ? { cursor } : {}),
-      });
-      seen.push(...page.events);
-      cursor = page.cursor ?? cursor;
-      const state = await provider.getPrompt({ sandboxId: sandbox.id, promptId: receipt.promptId });
-      return isFinalPromptStatus(state.status) && !page.hasMore ? state : undefined;
-    },
-    300_000,
-  );
-  assert.ok(
-    seen.some((event) => event.kind === "prompt"),
-    "Expected a prompt event",
-  );
-  assert.ok(
-    seen.some((event) => event.kind === "message" && !event.partial && /pong/i.test(event.text)),
-    "Expected a complete pong message",
-  );
-
-  const again = await provider.events({ sandboxId: sandbox.id, ...(cursor ? { cursor } : {}) });
-  assert.deepEqual(again.events, []);
 
   await provider.stop({ sandboxId: sandbox.id });
   await until(

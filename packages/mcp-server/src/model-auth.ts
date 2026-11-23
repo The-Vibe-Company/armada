@@ -1,17 +1,13 @@
 import type { CredentialBinding, GoldenActor, Harness, Provider, Sql } from "@armada/core/server";
 import {
-  createSqlVaultStore,
   failureDiagnostic,
   ProviderError,
-  redact,
   sshNativeAuthAdmission,
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
 import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
-import { NativeOutputPending } from "./event-pagination.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
-import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore, NativeObservationSuperseded } from "./model-auth-state.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
@@ -25,7 +21,7 @@ class StoppedBoatAuthProofMissing extends ProviderError {
   }
 }
 
-function recordNativeReadFailure(operation: "events" | "getPrompt", error: unknown): void {
+function recordNativeReadFailure(operation: "getPrompt", error: unknown): void {
   recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
     causeCode:
       error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing
@@ -328,58 +324,6 @@ export function createModelAuthOwnership(
         if (!(error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing))
           throw error;
       }
-    },
-    async redactBoatEvents(
-      provider: Provider,
-      providerId: string,
-      caller: { userId: string; orgId: string },
-      events: Awaited<ReturnType<Provider["events"]>>["events"],
-    ) {
-      const pendingCommand = async () => {
-        const pending = await sql.query(
-          `select 1 from public.sandboxes s join public.model_auth_state state
-           on state.account_id=s.credential_id and state.account_version=s.credential_version
-           where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
-           and s.deleted_at is null
-           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
-           and (coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org' or s.owner_id=$4::uuid)
-           and s.activity_lease_id is not null and s.activity_until>now()`,
-          [provider.id, providerId, caller.orgId, caller.userId],
-        );
-        if (pending.rows.length) throw new NativeOutputPending(provider.id);
-      };
-      await pendingCommand();
-      const secrets = await this.capture(provider, providerId, caller).catch((error: unknown) => {
-        recordNativeReadFailure("events", error);
-        if (error instanceof NativeObservationSuperseded) throw new NativeOutputPending(provider.id);
-        throw error;
-      });
-      // Native renewal state only covers Codex. Match exec's static credential
-      // redaction using the stored sandbox owner, never the viewing member.
-      const owners = await sql.query<{ owner_id: string; org_id: string }>(
-        `select s.owner_id,s.org_id from public.sandboxes s where s.provider=$1::public.sandbox_provider
-         and s.provider_sandbox_id=$2 and s.org_id=$3::uuid and s.deleted_at is null
-         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
-         and (coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org' or s.owner_id=$4::uuid)`,
-        [provider.id, providerId, caller.orgId, caller.userId],
-      );
-      if (owners.rows.length !== 1) throw new VaultError("not_found", "No authorized event owner.");
-      const owner = owners.rows[0]!;
-      secrets.push(
-        ...(await exposedSecrets(createSqlVaultStore(sql), encryptionKey, {
-          userId: owner.owner_id,
-          orgId: owner.org_id,
-        })),
-      );
-      await pendingCommand();
-      const safe = (value: unknown): unknown => {
-        if (typeof value === "string") return redact(value, secrets);
-        if (Array.isArray(value)) return value.map(safe);
-        if (value && typeof value === "object")
-          return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key, secrets), safe(item)]));
-        return value;
-      };
-      return events.map((event) => safe(event) as typeof event);
     },
     async beforeStop(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
       if ((await provider.get(providerId)).state === "stopped") return;
