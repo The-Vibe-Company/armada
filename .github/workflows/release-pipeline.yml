@@ -234,7 +234,6 @@ jobs:
           ./packages/core/test/private-skill.probe.ts
           ./packages/core/test/golden-scan.probe.ts
           ./packages/core/test/work-preservation.probe.ts
-          ./packages/provider-boat/test/native-cwd.test.ts
           --reporter=junit --reporter-outfile=/tmp/release-native-tests.xml
       - name: Migrate disposable release contract database
         env:

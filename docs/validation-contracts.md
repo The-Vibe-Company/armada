@@ -29,16 +29,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 `scripts/build-migration.release.ts` retains the standalone compiled migration
 contract in the same gate. Mixed core and SQL files retain their deterministic
 unit declarations in sibling `.test.ts` files; only real PostgreSQL cases moved.
-The Boat cwd sentinel in the unit JUnit report uses a synthetic Codex
-protocol peer. It verifies that the wrapper rewrites explicit thread and turn
-cwd parameters and starts the peer inside the selected repository. The
-pinned Codex credential-rotation contract runs once in the explicit release
-runner, verifies that the pinned Codex process holds its managed writer lock,
-and fails if the native binary is missing. The Claude MCP refresh test in
-`packages/provider-boat/test/native-claude-mcp.test.ts` stays in the unit suite:
-it runs the wrapper against a synthetic stream-JSON peer, starts no pinned
-harness and finishes in about 0.1 s.
-
 ## Local process conformance
 
 These Linux guest-process checks run only when explicitly invoked with
@@ -50,10 +40,6 @@ These Linux guest-process checks run only when explicitly invoked with
   and root or passwordless sudo.
 - `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
   checks SSH authorization cleanup on guest-script success and conflict.
-- `packages/provider-boat/test/native-install-race.conformance.ts` checks
-  concurrent native installation with real lock and rename primitives.
-- `packages/provider-boat/test/native-writer.conformance.ts` checks
-  managed writer serialization, guest admission and orphan recovery.
 - `packages/provider-boat/test/runtime-bootstrap.conformance.ts` checks
   artifact verification and detached boot in a local Linux mount namespace
   (requires sudo and mount namespace support).
@@ -67,7 +53,6 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 
 - Linux platform skips remain in core `golden-helper`, `golden-scan`,
   `golden-script-shell`; provider-modal `distribution`;
-  provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
   `enrolled-harness`, `messages`, `cwd`, `codex`, `claude`.
@@ -91,12 +76,9 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   `BOAT_BASE_URL` can select a different Boat API. The probe is outside unit
   discovery, CI, staging acceptance, and the release gate.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
-  explicit release prerequisites. The native `mcp-codex-bridge` release
-  probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
-  the pinned binary and a successful process exit. The Modal artifact probe
+  explicit release prerequisites. The Modal artifact probe
   (`bun packages/provider-modal/test/artifact.release.probe.ts`) requires the
   Linux runtime distribution and checks the versions of the bundled harness binaries.
-  The publishing validator requires both probes to exit successfully.
 
 ## Process-spawning unit cases in the Agent Runtime allowlist
 
@@ -384,26 +366,6 @@ main at `c9bf4fcf`. Both runs used local fixtures.
 
 | File under `packages/provider-boat/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
-| `native-claude-mcp.test.ts` | ordinary Claude needs no Python bridge and managed installation refuses a missing interpreter before mutation | Bash runs the ordinary wrapper and the managed installer with Python absent from PATH. | 5.79 ms |
-| `native-claude-mcp.test.ts` | Claude refresh ACK gates turns, removes tools and preserves the process/session and internal MCP | Bash starts the managed Python bridge with a local Claude stream-JSON peer. | 108.85 ms |
-| `native-cwd.test.ts` | installs the codex VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 59.92 ms |
-| `native-cwd.test.ts` | installs the claude VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 36.38 ms |
-| `native-cwd.test.ts` | Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd | Bash runs the relocated installer on Linux. The installed wrapper and a local Codex peer exercise transport refusal and stdio. | 361.22 ms |
-| `native-cwd.test.ts` | generic GitHub preparation preserves the managed Claude MCP bridge and rejects a tampered wrapper | Bash runs both Linux installer variants. The installed wrapper starts the managed Python bridge and a local Claude peer. | 123.53 ms |
-| `native-cwd.test.ts` | Codex bridge refuses a second message until the first turn/start replies, then recovers | The installed wrapper starts the Python bridge and a local Codex peer over stdio after Linux shell setup. | 95.99 ms |
-| `native-cwd.test.ts` | Codex lone startup abort returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts by signal. | 83.05 ms |
-| `native-cwd.test.ts` | Codex lone startup exit returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that exits nonzero. | 90.81 ms |
-| `native-cwd.test.ts` | Codex boot abort before initialize still answers the later first request | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts before reading stdin. | 86.15 ms |
-| `native-cwd.test.ts` | Boat-framed Codex input reaches admitted native usage through the real bridge | A stubbed guest exec runs usage commands in a local shell. Python drives the wrapper and a local Codex peer. | 179.37 ms |
-| `native-cwd.test.ts` | Boat external subscription bridge consumes refresh RPC privately and completes the same native turn | OpenSSL creates a temporary certificate. The wrapper starts a local Codex peer and the bridge calls a loopback HTTPS fixture. | 332.25 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 77.39 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 72.78 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 70.69 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 71.01 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 69.96 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 74.88 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unauthorized, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 75.26 ms |
-| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unknown, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 73.14 ms |
 | `native-usage.test.ts` | multi-turn Codex cumulative counters yield deltas, retries do not add | Python executes the embedded guest usage code with temporary state. | 28.51 ms |
 | `native-usage.test.ts` | a valid stale flush is never frozen at admission or attributed to the next turn | Python executes the embedded guest usage code with temporary state. | 28.02 ms |
 | `native-usage.test.ts` | missing resume baseline, symlink, mismatched session identity fail closed | Python executes the embedded guest usage code with temporary state. | 27.39 ms |
@@ -530,7 +492,6 @@ inspection identify process boundaries.
 | `github-boat.test.ts` | generated GitHub broker fits the private transport before SSH registration | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 91.77 ms |
 | `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
 | `managed-inspection.test.ts` | native argv sentinel inspection excludes its exec command and ancestors, but catches an actual native-looking child leak | A local Node wrapper invokes Bash to install the sentinel and inspect Linux procfs while fixture Node CLI processes supply argv. | 301.53 ms |
-| `mcp-codex-bridge.test.ts` | Codex reload control is private, preserves unmanaged params, and rejects unsafe config without killing the app-server | Bash installs the wrapper and managed MCP configuration. The installed wrapper runs the Python bridge and a local Python app-server peer over stdio. | 170.77 ms |
 | `mcp-native.test.ts` | an untouched golden snapshot does not require Node or modify public native configuration | Bash evaluates the scrub script with no Node on PATH and untouched public configuration. | 2.15 ms |
 | `orchestrator-bootstrap.test.ts` | built-in reference preserves conflicting files | An injected provider exec runs the built-in reference script in POSIX sh against temporary files. | 9.61 ms |
 | `serve-database-boot.test.ts` | startServer retries real Supavisor admission errors before serving and closes both pools on exhaustion | A fresh Bun fixture isolates the SQL and clock doubles and makes loopback HTTP requests against the composed server. | 701.26 ms |

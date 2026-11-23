@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { nativeCwdCommand } from "../../provider-boat/src/native-cwd.ts";
 import { GitHubBroker } from "../src/github-broker.ts";
 import { processIdentity } from "../src/processes.ts";
 
@@ -55,32 +54,6 @@ async function withParents(
     await rm(base, { recursive: true, force: true });
   }
 }
-
-test("actual Boat Claude and Codex parent pipes redact arbitrary current and retired leaves before forwarding", () =>
-  withParents(async ({ base, home, old, current }) => {
-    for (const harness of ["claude", "codex"] as const) {
-      const path = join(base, harness);
-      await writeFile(
-        `${path}.armada-original`,
-        `#!/usr/bin/python3\nimport os,json,sys\nif ${JSON.stringify(harness)}=='codex': sys.stdin.readline()\nprint(json.dumps({'id':'probe','result':{'text':os.environ['SAMPLE']}}),flush=True)\nprint(os.environ['SAMPLE'],file=sys.stderr,flush=True)\n`,
-        { mode: 0o700 },
-      );
-      const command = nativeCwdCommand(path, harness, home);
-      const child = Bun.spawn(["bash", "-c", command, "--", ...(harness === "codex" ? ["app-server"] : [])], {
-        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, SAMPLE: `${old} ${current}` },
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      child.stdin.write('{"id":"probe","method":"initialize"}\n');
-      child.stdin.end();
-      const output = await new Response(child.stdout).text(),
-        error = await new Response(child.stderr).text();
-      expect(await child.exited).toBe(0);
-      expect(JSON.parse(output)).toEqual({ id: "probe", result: { text: "*** ***" } });
-      expect(error).toBe("*** ***\n");
-    }
-  }));
 
 test("native proxy forwards termination signals and reaps its actual original child", () =>
   withParents(async ({ base, home }) => {

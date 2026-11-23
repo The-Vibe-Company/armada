@@ -24,7 +24,6 @@ import { Invitations, invitationMailFromEnv } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
-import { createHistoricalSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
@@ -33,7 +32,6 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { bunSql } from "./sql.ts";
-import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 /**
  * Wires the control API from the environment: `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
@@ -96,7 +94,6 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modalTokensFor: async (target, caller) => modalIntegration().modalTokensFor(target, caller),
     modalProviderFor: async (tokens, binding, context) => modalIntegration().modalProviderFor(tokens, binding, context),
   });
-  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(
     sql,
     encryptionKey,
@@ -105,18 +102,9 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     env.ARMADA_PUBLIC_URL
       ? {
           origin: env.ARMADA_PUBLIC_URL,
-          prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
-          prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
         }
       : undefined,
   );
-  if (modelAuth.broker)
-    subscriptionMigration = createSubscriptionMigration(
-      sql,
-      createHistoricalSandboxProviderResolver(providers),
-      (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
-      modelAuth.broker,
-    );
   const deviceLogin = deviceLoginFromConfig(
     sql,
     dashboardOrigin(env.ARMADA_DASHBOARD_URL, env.NODE_ENV === "development"),

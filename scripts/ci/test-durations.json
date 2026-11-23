@@ -260,7 +260,6 @@
     "packages/mcp-server/test/managed-inspection.test.ts": 0.397,
     "packages/mcp-server/test/mcp-before-resume.test.ts": 2.128,
     "packages/mcp-server/test/mcp-client-metadata-ingress.test.ts": 2.339,
-    "packages/mcp-server/test/mcp-codex-bridge.test.ts": 0.224,
     "packages/mcp-server/test/mcp-http-integration.test.ts": 2.431,
     "packages/mcp-server/test/mcp-ingress.test.ts": 1.739,
     "packages/mcp-server/test/mcp-integration.test.ts": 2.294,
@@ -332,7 +331,6 @@
     "packages/mcp-server/test/slack-catalog.test.ts": 2.822,
     "packages/mcp-server/test/sql.test.ts": 0.011,
     "packages/mcp-server/test/subscription-broker.test.ts": 3.292,
-    "packages/mcp-server/test/subscription-migration.test.ts": 2.719,
     "packages/mcp-server/test/task-outcome.test.ts": 3.372,
     "packages/mcp-server/test/templates.test.ts": 3.801,
     "packages/mcp-server/test/token-api-authorization.test.ts": 0.346,
@@ -344,9 +342,6 @@
     "packages/provider-boat/test/errors.test.ts": 0.078,
     "packages/provider-boat/test/events.test.ts": 0.062,
     "packages/provider-boat/test/integration.test.ts": 0.093,
-    "packages/provider-boat/test/native-claude-mcp.test.ts": 0.142,
-    "packages/provider-boat/test/native-cwd.test.ts": 3.32,
-    "packages/provider-boat/test/native-install-race.test.ts": 0.072,
     "packages/provider-boat/test/native-usage.test.ts": 0.419,
     "packages/provider-boat/test/provider.test.ts": 0.264,
     "packages/provider-boat/test/runtime-bootstrap.test.ts": 0.206,
@@ -429,7 +424,6 @@
         "packages/mcp-server/test/sandbox-access.test.ts",
         "packages/mcp-server/test/sandbox-activity.test.ts",
         "packages/mcp-server/test/skill-defaults.test.ts",
-        "packages/mcp-server/test/subscription-migration.test.ts"
       ],
       "seconds": 6.709
     },

@@ -20,7 +20,6 @@ for source in FILES:
         print(f"{source}: {len(cases)} executed, zero skipped", flush=True)
 
 for source in (
-    "packages/mcp-server/test/mcp-codex-bridge.release.probe.ts",
     "packages/provider-modal/test/artifact.release.probe.ts",
 ):
     subprocess.run(["bun", "./" + source], cwd=ROOT, check=True)

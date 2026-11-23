@@ -1,5 +1,7 @@
 # Boat native repository cwd regression
 
+The Boat native cwd wrapper and its tests described below retired in #2745. Boat repository context uses the enrolled runtime.
+
 ## Production evidence
 
 The npm 2.3 production launch with `--repo The-Vibe-Company/armada` installed
