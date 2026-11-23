@@ -136,13 +136,11 @@ export function createModalProvider(options: ModalProviderOptions) {
     if (origin !== scopeKey(source.scope))
       throw refusal("forbidden", "Machine source golden authority does not match this provider connection.");
   }
-  const { sandboxInfo, resourceReceipt, inspection, readResourceReceipts } = createSandboxInspection({
+  const { sandboxInfo, resourceReceipt, inspection } = createSandboxInspection({
     store,
     client,
     bound,
     assertMachineSource,
-    managementAuthority,
-    sourceScope: source.scope,
     scope: options.scope,
     appName: options.appName,
     storedReads: options.storedReads ?? false,
@@ -545,5 +543,5 @@ export function createModalProvider(options: ModalProviderOptions) {
         : value,
     ]),
   ) as unknown as ModalProvider;
-  return { provider: adapter, captureRuntimeWork: createRuntimeCapture(store, physical), readResourceReceipts };
+  return { provider: adapter, captureRuntimeWork: createRuntimeCapture(store, physical) };
 }

@@ -21,7 +21,6 @@ import {
   type Machine,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
-  mergeModalResourceReceipts,
   modalFailureReceipt,
   type RunnerDistribution,
   type RuntimeModalOptions,
@@ -284,7 +283,7 @@ function fixture(
   };
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
-  const { provider, captureRuntimeWork, readResourceReceipts } = createModalProvider({
+  const { provider, captureRuntimeWork } = createModalProvider({
     ...(admissionSleep ? { admissionSleep } : {}),
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
@@ -308,7 +307,6 @@ function fixture(
   });
   return {
     captureRuntimeWork,
-    readResourceReceipts,
     async seedMachine(template: Machine) {
       const id = crypto.randomUUID();
       const physicalName = `fixture-${id}`;
@@ -1373,10 +1371,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("delete reconciles a lost create response under the pinned App before changing creating phase", async () => {
     const f = fixture();
-    const name = crypto.randomUUID();
+    const idempotencyKey = crypto.randomUUID();
     f.failCreate(true);
-    await expect(f.provider.createGolden({ name })).rejects.toMatchObject({ code: "unknown" });
-    const row = (await f.store.list()).find((x) => x.info.name === name);
+    await expect(f.provider.createGolden({ idempotencyKey })).rejects.toMatchObject({ code: "unknown" });
+    const row = await f.store.findByRequestKey(idempotencyKey);
     if (!row) throw Error("missing reservation");
     expect(row.phase).toBe("creating");
     expect(row.physicalId).toBeUndefined();
@@ -1410,9 +1408,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         },
       };
       const f = fixture(scope, sql);
-      const name = crypto.randomUUID();
-      await expect(f.provider.createGolden({ name })).rejects.toMatchObject({ code: "unknown" });
-      const row = (await f.store.list()).find((x) => x.info.name === name);
+      const idempotencyKey = crypto.randomUUID();
+      await expect(f.provider.createGolden({ idempotencyKey })).rejects.toMatchObject({ code: "unknown" });
+      const row = await f.store.findByRequestKey(idempotencyKey);
       if (!row) throw Error("missing reservation");
       expect(row.physicalId).toBeUndefined();
       expect(row.phase).toBe(crashPhase === "creating" ? "reserved" : "creating");
@@ -1428,10 +1426,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("unknown/absent create lookup or foreign ownership preserves creating and never terminates a different machine", async () => {
     const f = fixture();
-    const name = crypto.randomUUID();
+    const idempotencyKey = crypto.randomUUID();
     f.failCreate(true);
-    await expect(f.provider.createGolden({ name })).rejects.toMatchObject({ code: "unknown" });
-    const row = (await f.store.list()).find((x) => x.info.name === name);
+    await expect(f.provider.createGolden({ idempotencyKey })).rejects.toMatchObject({ code: "unknown" });
+    const row = await f.store.findByRequestKey(idempotencyKey);
     if (!row) throw Error("missing reservation");
     for (const error of [
       new Error("lookup offline"),
@@ -1854,7 +1852,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(createSqlModalStore(getDb(), otherScope).get(launched.id)).rejects.toMatchObject({
       code: "not_found",
     });
-    expect((await createSqlModalStore(getDb(), otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
     await expect(createSqlModalStore(getDb(), scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
     const { resolveManagementCredentials: _resolveSource, ...operatorWithSource } = configuration;
     const wrongSource = await createRuntimeModalProvider({ ...operatorWithSource, sourceScope: scope });
@@ -2198,7 +2195,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
     const f = fixture();
-    const { builder, name } = await savedGolden(f);
+    const { name } = await savedGolden(f);
     const sourceImage = (await f.store.image(name)).imageId;
     f.failBoot(true);
     let receipt: ReturnType<typeof modalFailureReceipt>;
@@ -2214,10 +2211,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.imageId).toBe(sourceImage);
     expect(receipt.sourceImage).toMatchObject({ name, imageId: sourceImage });
     expect((await f.store.get(receipt.sandboxId)).phase).toBe("booting");
-    const exported = JSON.parse(JSON.stringify(await f.readResourceReceipts()));
-    expect(exported).toContainEqual(
-      expect.objectContaining({ sandboxId: builder.id, snapshotImages: [{ name, imageId: sourceImage }] }),
-    );
     expect(JSON.stringify(receipt)).not.toContain("synthetic-secret");
     expect(JSON.stringify(receipt)).not.toContain("headers");
     await f.provider.delete({ sandboxId: receipt.sandboxId });
@@ -2258,9 +2251,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.snapshotImages[0]?.imageId).toStartWith("im_");
     expect(receipt.phase).toBe("snapshot");
     expect(f.log).not.toContain("terminate");
-    const persisted = await f.readResourceReceipts();
-    const merged = mergeModalResourceReceipts([receipt, ...persisted]);
-    expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
@@ -2268,7 +2258,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const other = createSqlModalStore(getDb(), { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     const outsider = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
-    await expect(outsider.list()).rejects.toMatchObject({ code: "forbidden" });
+    await expect(outsider.get(row.id)).rejects.toMatchObject({ code: "forbidden" });
     await getDb().exec("set role authenticated");
     try {
       await expect(getDb().query("select * from modal_events")).rejects.toThrow("permission denied");

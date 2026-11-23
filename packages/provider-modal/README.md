@@ -2,7 +2,7 @@
 
 ## Provider composition
 
-`createRuntimeModalProvider(options)` returns `{provider, captureRuntimeWork, readResourceReceipts, close}`.
+`createRuntimeModalProvider(options)` returns `{provider, captureRuntimeWork, close}`.
 The connection takes server SQL, a pinned App binding, the public Armada HTTPS URL
 and the golden image lock. The provider creates compute and submits the Armada
 runtime bootstrap through SDK exec. Model commands travel over the enrolled
@@ -155,11 +155,6 @@ IDs survive in a failure receipt even when their SQL commit failed. New named
 snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 
-The scoped Modal connection’s `readResourceReceipts()` inventories authorized target/context records (including
-deleted history) without requiring a healthy Modal service. Call it **before** closing
-a disposable fixture DB. `mergeModalResourceReceipts` preserves all observed Image IDs
-when later durable reads lack an interrupted commit's metadata. Do not blindly delete
-source/shared Images: retain their provenance and use normal reference-aware cleanup.
 Production operation failures never auto-delete uncertain user data.
 
 ### Delete after an unknown create outcome
