@@ -36,7 +36,7 @@ function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
 
 test("activity counts cover the full filtered inventory while rendering only the requested page", () => {
   const rows = Array.from({ length: 123 }, (_, i) => row(String(i), { ownerId: i < 60 ? "viewer" : "other" }));
-  const turns = new Map(rows.slice(0, 60).map(({ id }) => [id, finished]));
+  const turns = new Map(rows.map(({ id }) => [id, finished]));
   const second = sandboxActivityPage(rows, "viewer", "all", 2, turns, now);
   expect(second.rows.map(({ id }) => id)).toEqual(Array.from({ length: 50 }, (_, i) => String(i + 50)));
   expect(second.counts).toEqual({ all: 123, mine: 60, need: 60, working: 0, stopped: 0, failed: 0 });
@@ -44,11 +44,11 @@ test("activity counts cover the full filtered inventory while rendering only the
   expect(sandboxActivityPage(rows, "viewer", "mine", 2, turns, now).rows).toHaveLength(10);
   const waiting = sandboxActivityPage(rows, "viewer", "need", 99, turns, now);
   expect(waiting.page).toBe(2);
-  expect(waiting.waitingIncomplete).toBe(false);
+  expect(waiting.turnsIncomplete).toBe(false);
   expect(waiting.rows.map(({ id }) => id)).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 50)));
 });
 
-test("Waiting for you counts only owned, live sandboxes with a finished turn and no active work", () => {
+test("activity tabs separate active turns from owned, live sandboxes with a finished turn", () => {
   const deadline = now.toISOString();
   const rows = [
     row("waiting"),
@@ -62,7 +62,8 @@ test("Waiting for you counts only owned, live sandboxes with a finished turn and
     row("stopping", { status: "stopping" }),
     row("stopped-since-list-read"),
     row("unsettled"),
-    row("queued"),
+    row("queued", { ownerId: "other" }),
+    row("restricted", { ownerId: "other", canOpen: false }),
     row("turn-running"),
     row("idle"),
     row("unavailable", { taskOutcome: { state: "ready" } }),
@@ -73,23 +74,25 @@ test("Waiting for you counts only owned, live sandboxes with a finished turn and
   turns.set("stopped-since-list-read", { ...finished, status: "stopped" });
   turns.set("unsettled", { ...finished, settled: false });
   turns.set("queued", { ...finished, prompt: { ...finished.prompt, state: "queued" } });
+  turns.set("restricted", { ...finished, prompt: { ...finished.prompt, state: "running" } });
   turns.set("turn-running", { ...finished, prompt: { ...finished.prompt, state: "running" } });
   turns.set("idle", { ...finished, prompt: null });
   turns.delete("unavailable");
 
   const page = sandboxActivityPage(rows, "viewer", "need", 1, turns, now);
   expect(page.rows.map(({ id }) => id)).toEqual(["waiting"]);
-  expect(page.counts).toEqual({ all: 16, mine: 15, need: 1, working: 2, stopped: 1, failed: 1 });
+  expect(page.counts).toEqual({ all: 17, mine: 14, need: 1, working: 2, stopped: 1, failed: 1 });
+
+  const working = sandboxActivityPage(rows, "viewer", "working", 1, turns, now);
+  expect(working.rows.map(({ id }) => id)).toEqual(["queued", "turn-running"]);
 });
 
 test("Waiting for you reports incomplete evidence for a recorded fallback, but not for an idle machine", () => {
   const rows = [row("idle")];
   const idle = { ...finished, prompt: null };
   const recorded = { ...idle, statusMessage: "Provider observation unavailable; showing recorded state." };
-  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", idle]]), now).waitingIncomplete).toBe(false);
-  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", recorded]]), now).waitingIncomplete).toBe(
-    true,
-  );
+  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", idle]]), now).turnsIncomplete).toBe(false);
+  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", recorded]]), now).turnsIncomplete).toBe(true);
 });
 
 test("attention sort still prioritizes stopped outcomes, preserved work and urgent deadlines", () => {

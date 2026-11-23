@@ -44,7 +44,7 @@ import {
   type SandboxListMetadata,
   skippedRowsNote,
 } from "@/lib/sandbox-access";
-import { isWaitingCandidate, type SandboxTurnObservation, sandboxActivityPage } from "@/lib/sandbox-activity";
+import { isTurnCandidate, type SandboxTurnObservation, sandboxActivityPage } from "@/lib/sandbox-activity";
 import {
   FACETS,
   type Facet,
@@ -130,7 +130,20 @@ async function SandboxesContent({ searchParams }: Props) {
     return snapshots;
   });
   const [
-    { rows, total, inventoryTotal, skipped, facets, activity, counts, page, waitingIds, waitingIncomplete, now },
+    {
+      rows,
+      total,
+      inventoryTotal,
+      skipped,
+      facets,
+      activity,
+      counts,
+      page,
+      workingIds,
+      waitingIds,
+      turnsIncomplete,
+      now,
+    },
     directory,
     setup,
     hostRead,
@@ -232,9 +245,9 @@ async function SandboxesContent({ searchParams }: Props) {
         <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
       </SandboxToolbar>
 
-      {waitingIncomplete && (
+      {turnsIncomplete && (
         <p role="status" className="text-sm text-muted-foreground">
-          Some turn statuses could not be checked. The Waiting for you count may be incomplete.
+          Some turn statuses could not be checked. Working and Waiting for you counts may be incomplete.
         </p>
       )}
 
@@ -280,11 +293,16 @@ async function SandboxesContent({ searchParams }: Props) {
           counts={counts}
           tab={activity}
           page={page}
-          waitingIncomplete={waitingIncomplete}
+          turnsIncomplete={turnsIncomplete}
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
             const readyLabel = waitingIds.has(sandbox.id) ? "Waiting for you" : "Ready";
+            const activityLabel = workingIds.has(sandbox.id)
+              ? "Working"
+              : sandbox.status === "running"
+                ? "Running"
+                : undefined;
             return {
               id: sandbox.id,
               content: (
@@ -298,6 +316,7 @@ async function SandboxesContent({ searchParams }: Props) {
                         idlePaused={sandbox.idlePaused}
                         expiresAt={sandbox.expiresAt}
                         statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
+                        activityLabel={activityLabel}
                         readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : readyLabel}
                       />
                       <span aria-hidden="true">·</span>
@@ -508,7 +527,7 @@ async function loadInventory(
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewer.id), filters.sort);
-  const turns = await readWaitingTurns(rows, viewer);
+  const turns = await readInventoryTurns(rows, viewer);
   const now = new Date();
   const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, now);
   return {
@@ -521,10 +540,9 @@ async function loadInventory(
   };
 }
 
-async function readWaitingTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
+async function readInventoryTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
   const turns = new Map<string, SandboxTurnObservation>();
-  const now = new Date();
-  const candidates = rows.filter((row) => isWaitingCandidate(row, viewer.id, now));
+  const candidates = rows.filter(isTurnCandidate);
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return turns;
 

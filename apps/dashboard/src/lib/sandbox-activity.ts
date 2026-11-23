@@ -28,7 +28,15 @@ function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
 }
 
-export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
+function canHaveActiveTurn(status: SandboxListMetadata["status"]) {
+  return status === "starting" || status === "ready" || status === "running";
+}
+
+export function isTurnCandidate(row: SandboxListMetadata) {
+  return row.canOpen && canHaveActiveTurn(row.status);
+}
+
+function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
   return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
 }
 
@@ -40,17 +48,23 @@ export function sandboxActivityPage(
   turns: ReadonlyMap<string, SandboxTurnObservation>,
   now = new Date(),
 ) {
-  const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
+  const workingIds = new Set<string>();
   const waitingIds = new Set<string>();
-  let waitingIncomplete = false;
+  let turnsIncomplete = false;
   for (const row of rows) {
-    if (!isWaitingCandidate(row, viewerId, now)) continue;
+    if (!isTurnCandidate(row)) continue;
     const turn = turns.get(row.id);
     if (!turn || (turn.status === "ready" && turn.prompt === null && turn.statusMessage)) {
-      waitingIncomplete = true;
+      turnsIncomplete = true;
+      continue;
+    }
+    const state = turn.prompt?.state;
+    if (canHaveActiveTurn(turn.status) && (state === "queued" || state === "running")) {
+      workingIds.add(row.id);
       continue;
     }
     if (
+      isWaitingCandidate(row, viewerId, now) &&
       turn.status === "ready" &&
       turn.settled === true &&
       turn.prompt?.state === "finished" &&
@@ -61,7 +75,7 @@ export function sandboxActivityPage(
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
-    working,
+    working: (row: SandboxListMetadata) => workingIds.has(row.id),
     need: (row: SandboxListMetadata) => waitingIds.has(row.id),
     stopped: (row: SandboxListMetadata) => row.status === "stopped",
     failed: (row: SandboxListMetadata) => row.status === "failed",
@@ -75,5 +89,13 @@ export function sandboxActivityPage(
   ) as Record<keyof typeof predicates, number>;
   const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
-  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page, waitingIds, waitingIncomplete };
+  return {
+    rows: activeRows.slice((page - 1) * 50, page * 50),
+    activity,
+    counts,
+    page,
+    workingIds,
+    waitingIds,
+    turnsIncomplete,
+  };
 }
