@@ -1661,7 +1661,6 @@
     "packages/provider-modal/src/golden-exec.ts": 1,
     "packages/provider-modal/src/process-scope.ts": 4,
     "packages/provider-modal/src/provider.ts": 4,
-    "packages/provider-modal/src/receipts.ts": 1,
     "packages/provider-modal/src/snapshot.ts": 3,
     "packages/provider-modal/src/ssh-probe.ts": 1,
     "packages/provider-modal/src/ssh.ts": 2,

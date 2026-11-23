@@ -1,18 +1,14 @@
 import type { Provider } from "@armada/core";
 import type { ModalClient } from "modal";
-import { matchesManagementAuthority } from "./authority.ts";
-import { modalError, refusal } from "./errors.ts";
+import { refusal } from "./errors.ts";
 import { lookupModalCompute, observeModalCompute } from "./machine.ts";
-import type { Machine, ModalManagementProvenance, ModalResourceReceipt, ModalStore, Scope } from "./ports.ts";
-import { scopeKey } from "./store.ts";
+import type { Machine, ModalResourceReceipt, ModalStore, Scope } from "./ports.ts";
 
 interface SandboxInspectionOptions {
   store: ModalStore;
   client: Pick<ModalClient, "sandboxes">;
   bound(): Promise<unknown>;
   assertMachineSource(row: Machine): void;
-  managementAuthority: ModalManagementProvenance;
-  sourceScope: Scope;
   scope: Scope;
   appName: string;
   storedReads: boolean;
@@ -23,8 +19,6 @@ export function createSandboxInspection({
   client,
   bound,
   assertMachineSource,
-  managementAuthority,
-  sourceScope,
   scope,
   appName,
   storedReads,
@@ -98,17 +92,5 @@ export function createSandboxInspection({
   const inspection = {
     get,
   } satisfies Pick<Provider, "get">;
-  async function readResourceReceipts() {
-    try {
-      const rows = (await store.list()).filter(
-        (row) =>
-          matchesManagementAuthority(row.managementAuthority, managementAuthority) &&
-          (row.sourceImage?.scopeKey ?? scopeKey(scope)) === scopeKey(sourceScope),
-      );
-      return await Promise.all(rows.map(resourceReceipt));
-    } catch (error) {
-      throw modalError(error);
-    }
-  }
-  return { sandboxInfo, resourceReceipt, inspection, readResourceReceipts };
+  return { sandboxInfo, resourceReceipt, inspection };
 }

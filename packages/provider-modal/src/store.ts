@@ -98,14 +98,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       return sql.transaction(reserve);
     },
     get,
-    async list() {
-      await authorize();
-      const result = await sql.query<{ record: Machine }>(
-        `select record from public.modal_machines where scope=$1 and org_id=$2 and (visibility='org' or owner_id=$3)`,
-        [key, scope.orgId, scope.userId],
-      );
-      return result.rows.map((x) => revive(x.record));
-    },
     async lease(id, work) {
       await get(id);
       const token = randomUUID();

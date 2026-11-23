@@ -19,7 +19,6 @@ export {
   type ModalProvider,
   type ModalProviderOptions,
 } from "./provider.ts";
-export { mergeModalResourceReceipts } from "./receipts.ts";
 export type { ModalRuntimeCapture } from "./runtime-work.ts";
 export { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 export { createSshPreparation, SSH_PORT, scrubSsh } from "./ssh.ts";

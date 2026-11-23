@@ -90,7 +90,6 @@ export interface ModalStore {
   reserve(key: string, machine: Machine, sourceId?: string): Promise<Machine>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
-  list(): Promise<Machine[]>;
   lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
   image(name: string): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;
