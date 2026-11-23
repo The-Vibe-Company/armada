@@ -572,8 +572,9 @@ function command(
               safeMessage: timedOut
                 ? `Build timed out during ${phase}.`
                 : phase === "checkout"
-                  ? (gitMessage ??
-                    `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`)
+                  ? gitMessage
+                    ? `${gitMessage} Git exited ${exitCode ?? code ?? "unknown"}.`
+                    : `Clone failed (exit ${exitCode ?? code ?? "unknown"}). Check the requested branches and GitHub access, then rebuild.`
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
                     : phase === "output_collector"

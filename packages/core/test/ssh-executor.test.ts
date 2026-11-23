@@ -440,5 +440,6 @@ test.each([
   }
   expect(failure).toMatchObject({ code: "build_failed", safePhase: "checkout" });
   expect(failure.safeMessage).toContain(expected);
+  expect(failure.safeMessage).toMatch(/(?:Git exited 128|Clone failed \(exit 128\))\./);
   expect(JSON.stringify(failure)).not.toContain("opaque-secret");
 });

@@ -828,8 +828,20 @@ export class GoldenBuildJobs {
           );
           return;
         }
-        if (current.state !== "running") return;
         const subphase = error instanceof GoldenError ? error.safePhase : undefined;
+        if (
+          current.state === "failed" &&
+          current.failure_reason === INTERRUPTED_BUILD &&
+          subphase &&
+          subphase !== "ssh"
+        ) {
+          await sql.query("update public.golden_build_jobs set failure_reason=$2,updated_at=now() where id=$1", [
+            job.id,
+            reason,
+          ]);
+          return;
+        }
+        if (current.state !== "running") return;
         const phase = (subphase && GOLDEN_SSH_RECEIPT_PHASES[subphase]) ?? current.phase;
         if (safeToRelease && job.reservation_id) await sqlGoldenBackendSlots(sql).release(job.reservation_id);
         await sql.query(

@@ -823,6 +823,58 @@ test("collector failure leaves a terminal build receipt with the failing step an
   }
 });
 
+test("a late SSH failure refines the reason after recovery closes the receipt", async () => {
+  const sshStarted = Promise.withResolvers<void>();
+  const sshResponse = Promise.withResolvers<void>();
+  const s = await fixture({
+    buildSsh: async () => {
+      sshStarted.resolve();
+      await sshResponse.promise;
+      throw new GoldenError("build_failed", "Remote command failed.", {
+        safePhase: "init",
+        safeMessage: "Init command 2 exited 17.",
+      });
+    },
+  });
+  const runner = createJobsRunner(
+    createJobsStore(s.db),
+    { golden_build: createGoldenBuildJob(s.builds) },
+    () => {},
+    () => () => {},
+  );
+  try {
+    const job = await s.builds.admit(
+      s.boat.provider,
+      { userId: s.people.admin, orgId: s.people.org, role: "admin" },
+      { name: "late-ssh-failure", visibility: "org", repos: ["acme/web"] },
+      crypto.randomUUID(),
+    );
+    expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+    await sshStarted.promise;
+    runner.stopAdmission();
+    await s.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job.jobId]);
+    await runGoldenBuildJob(s.db, s.builds);
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "checkout_baseline",
+      failureReason: expect.stringContaining("interrupted before recording an outcome"),
+    });
+
+    sshResponse.resolve();
+    await runner.drain();
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "checkout_baseline",
+      failureReason: "detail:Init command 2 exited 17.",
+    });
+  } finally {
+    runner.stopAdmission();
+    sshResponse.resolve();
+    await runner.drain();
+    await s.close();
+  }
+});
+
 test("scan location survives requested-directory mapping, durable status and public failure formatting", async () => {
   const s = await fixture();
   try {
