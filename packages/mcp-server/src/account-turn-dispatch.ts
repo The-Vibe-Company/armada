@@ -17,15 +17,23 @@ import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 
-export const LAUNCH_SETUP_PENDING = `exists(select 1 from public.jobs setup
-  where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state in ('queued','leased'))`;
+function deferredDockerLaunch(sandbox: string, pending = false) {
+  return `exists(select 1 from public.docker_launch_requests launch
+    where launch.sandbox_id=${sandbox}.id and launch.async_launch${pending ? " and launch.result_enc is null" : ""})`;
+}
+
+export const LAUNCH_PENDING = `(exists(select 1 from public.jobs setup
+  where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state in ('queued','leased')) or ${deferredDockerLaunch("s", true)})`;
 
 function launchBlocksTurn(sandbox: string, turn: string) {
-  return `exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
+  return `(exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
     and (setup.state in ('queued','leased','failed') or exists(
       select 1 from public.account_turn_queue initial
       where initial.sandbox_id=${sandbox}.id and initial.request_id=setup.id
-        and initial.state in ('queued','dispatching') and initial.request_id<>${turn}.request_id)))`;
+        and initial.state in ('queued','dispatching') and initial.request_id<>${turn}.request_id)))
+    or ${deferredDockerLaunch(sandbox, true)}
+    or exists(select 1 from public.docker_queued_prompts pending
+      where pending.sandbox_id=${sandbox}.id and pending.status in ('queued','dispatching')))`;
 }
 
 export const TURN_LAUNCH_WAITING = launchBlocksTurn("s", "q");
@@ -122,7 +130,7 @@ export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_g
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
       and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false))))`;
 export const UNSETTLED_TASK = `s.task_prompt_id is not null
-  and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and s.provider<>'docker'))
+  and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and (s.provider<>'docker' or ${deferredDockerLaunch("s")})))
   and not exists(select 1 from public.runtime_idle_turns t
     where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)`;
 
@@ -142,7 +150,7 @@ export const UNCERTAIN_DISPATCH_MESSAGE = "Dispatch outcome uncertain; inspect s
 const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now() or s.stop_requested_at is not null
   or (s.status = 'stopped' and s.lifecycle_generation <> q.queued_generation))`;
 
-export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_SETUP_PENDING}))
+export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_PENDING}))
   or exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state='failed'))`;
 export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status in ('deleted','stopping','failed'))`;
 

@@ -15,7 +15,7 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
-  LAUNCH_SETUP_PENDING,
+  LAUNCH_PENDING,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
@@ -275,7 +275,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
           `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
-           and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_SETUP_PENDING})) for update`,
+           and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];

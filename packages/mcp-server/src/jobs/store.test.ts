@@ -2762,6 +2762,14 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
     statusMessage: "Modal launch setup is still in progress.",
   });
   expect(await callSharedTool(context, "status", { id, recorded: true })).toMatchObject({ status: "starting" });
+  const followup = { id, request_id: crypto.randomUUID(), prompt: "Follow up during setup" };
+  expect(await callSharedTool(context, "send", followup)).toMatchObject({ status: "queued" });
+  expect(await callSharedTool(context, "status", { id, prompt_id: followup.request_id })).toMatchObject({
+    status: "starting",
+    settled: false,
+    prompt: { promptId: followup.request_id, state: "running" },
+  });
+  await f.db.query("delete from account_turn_queue where request_id=$1", [followup.request_id]);
   const { input } = admission;
   const actor = { orgId: input.orgId, userId: input.ownerId, role: "member" as const };
   expect(await replayModalLaunch(f.sql, actor, input.sandbox.goldenId, input.request!)).toEqual({
