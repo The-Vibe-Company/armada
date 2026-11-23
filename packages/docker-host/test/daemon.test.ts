@@ -2319,7 +2319,8 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
 
 test("ambiguous stops yield the mailbox to unrelated work", async () => {
   const { store, api, executor, job } = fixture("stop");
-  const queue = [job, fixture("stop").job, fixture().job];
+  const unrelated = fixture().job;
+  const queue = [job, fixture("stop").job, unrelated];
   let failed = Promise.withResolvers<void>();
   let stopped = false;
   let polls = 0;
@@ -2349,7 +2350,7 @@ test("ambiguous stops yield the mailbox to unrelated work", async () => {
     },
     now: () => 0,
   });
-  expect(completed).toEqual([queue[2]?.requestId]);
+  expect(completed).toEqual([unrelated.requestId]);
 });
 
 test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {
