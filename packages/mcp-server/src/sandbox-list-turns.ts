@@ -28,7 +28,7 @@ export function createSandboxListTurns(sql: Sql, key: string) {
           and (s.boat_runtime or s.runtime_transport='dialout' or s.provider='docker' or s.status='running')) as active,
         coalesce(docker_turn.awaiting_receipt,false) as awaiting_receipt,
         current_turn.id as prompt_id,
-        e.latest_prompt_enc,
+        case when s.status in ('ready','running') then e.latest_prompt_enc end as latest_prompt_enc,
         (s.status='ready' and f.terminal_status='finished') as finished
        from public.sandboxes s
        join public.members m on m.org_id=s.org_id and m.user_id=$2
