@@ -89,9 +89,7 @@ test.each([
           if (body.id === id(5) && scenario === "finished with complete text" && !stopped.has(body.id)) {
             const pending = ++modalSetupReads === 1;
             return Response.json({
-              status: "ready",
-              settled: !pending,
-              statusMessage: pending ? "Modal launch setup is still in progress." : null,
+              status: pending ? "starting" : "ready",
             });
           }
           if (body.id === id(5) && scenario === "finished with complete text" && ++modalStopReads === 1)

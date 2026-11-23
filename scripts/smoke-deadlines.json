@@ -18,6 +18,8 @@
     "expiry_time_to_ready": 154686
   },
   "modal/lifecycle": {
+    "default_skills_opt_out_receipts": 10000,
+    "default_skills_receipts": 10000,
     "extend": 14592,
     "git_remote": 10000,
     "git_status": 10000,

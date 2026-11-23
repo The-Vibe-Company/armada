@@ -1115,7 +1115,6 @@ describe("preservation checks", () => {
             !stopping &&
             skillStatusReads === 2
           ) {
-            fake.advance(11_000);
             return json({
               id: sandboxId,
               status: "ready",
@@ -3041,8 +3040,9 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
             id: sandboxFixtureId,
             harness: selected.harness,
             expiresAt: null,
-            status: stopped ? "stopped" : "ready",
-            providerState: stopped ? "stopped" : "active",
+            status: stopped ? "stopped" : broken === "setup" ? "failed" : "ready",
+            providerState: stopped ? "stopped" : broken === "setup" ? null : "active",
+            statusReason: broken === "setup" ? "modal_initial_turn_workspace_refused" : null,
             prompt: null,
             settled: true,
             statusMessage: broken === "setup" ? "Modal launch setup failed." : null,
@@ -3077,12 +3077,13 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       if (broken === "provider")
         expect(reports).toContainEqual({ case: 0, step: "list_ready", pass: false, code: "list_status_mismatch" });
       if (broken === "setup")
-        expect(reports).toContainEqual({
-          case: 0,
-          step: "launch_setup",
-          pass: false,
-          code: "modal_launch_setup_failed",
-        });
+        expect(reports).toContainEqual(
+          expect.objectContaining({
+            step: "readiness_diagnostic",
+            code: "modal_launch_setup_failed",
+            statusResponse: expect.objectContaining({ statusReason: "modal_initial_turn_workspace_refused" }),
+          }),
+        );
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
       expect(stopped).toBe(true);
       expect(fake.lines.join("\n")).not.toContain("private-output");

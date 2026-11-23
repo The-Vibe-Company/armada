@@ -33,7 +33,7 @@ import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
 import { deadlinesFor, SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
-import { modalSmokeSetupFailed, observeSmokeLaunch } from "./smoke-launch.ts";
+import { modalSmokeSetupFailed, modalSmokeSetupReason, observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -985,7 +985,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id !== observedId || !launch.ready.includes(row.status)) return;
+              if (
+                row.id !== observedId ||
+                (!launch.ready.includes(row.status) && !(recover && row.status === "failed"))
+              )
+                return;
               if (!recover) return { sandbox: row } as T;
               return recover(row.id, requestKey, until).catch((readError: unknown) => {
                 if (readError instanceof SmokeFailure && readError.code === "modal_launch_setup_failed")
@@ -1112,7 +1116,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         describeNativeFailure(reason)?.title === "Authentication failed");
     let id: string | undefined;
     let passed = false;
-    let waitForSetup = false;
     const sandbox = <T>(action: string, body: object = {}, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, id, ...body }, undefined, timeoutMs);
     const status = (timeoutMs?: number) =>
@@ -1120,13 +1123,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         status: string;
         providerState?: string;
         statusReason?: string;
-        settled?: boolean;
-        statusMessage?: string | null;
       }>("status", {}, timeoutMs);
     out(JSON.stringify({ step: "real_model", model: "real", provider: item.provider }));
     try {
       await step("real_model_launch", async () => {
-        const { result, recovered } = await launchWithObservation<{ sandbox: { id: string; status?: string } }>(
+        const { result } = await launchWithObservation<{ sandbox: { id: string } }>(
           item,
           {
             provider: item.provider,
@@ -1145,9 +1146,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           { receipt: "admission" },
         ).catch(refuseModelCredentials);
         id = result.sandbox.id;
-        waitForSetup =
-          !!parseLaunchAdmissionReceipt(item.provider, result) ||
-          (recovered && smokeLaunch[item.provider].waitForRecoveredSetup);
       });
       await step("real_model_ready", () =>
         poll(
@@ -1155,12 +1153,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (result) => {
             if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
             if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
-            if (!smokeLaunch[item.provider].ready.includes(result.status)) return false;
-            if (!waitForSetup) return true;
-            if (modalSmokeSetupFailed(result)) fail("modal_launch_setup_failed");
-            if (result.settled !== true) return false;
-            if (result.statusMessage !== null) fail("invalid_response");
-            return true;
+            return smokeLaunch[item.provider].ready.includes(result.status);
           },
           { step: "real_model_ready" },
         ),
@@ -1534,6 +1527,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status?: unknown;
                 providerState?: unknown;
                 statusReason?: unknown;
+                settled?: boolean;
+                statusMessage?: string | null;
               } | null>("status", { id: sandboxId }, timeoutMs);
               const { status, providerState, statusReason } = result ?? {};
               statusResponse = {
@@ -1541,13 +1536,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   typeof status === "string" && OBSERVED_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
                 providerState:
                   providerState === "active" || providerState === "stopped" ? providerState : jsonShape(providerState),
-                statusReason: jsonShape(statusReason),
+                statusReason: modalSmokeSetupReason(statusReason) ?? jsonShape(statusReason),
               };
               return result;
             },
             (result) => {
               if (result === null) fail("invalid_response");
               const { status } = result;
+              if (modalSmokeSetupFailed(result)) fail("modal_launch_setup_failed");
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },

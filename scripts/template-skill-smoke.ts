@@ -2,7 +2,7 @@ import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launc
 import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
-import { modalSmokeSetupFailed, observeSmokeLaunch } from "./smoke-launch.ts";
+import { modalSmokeSetupFailed, modalSmokeSetupReason, observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
@@ -269,6 +269,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                   status: string;
                   settled?: boolean;
                   statusMessage?: string | null;
+                  statusReason?: string | null;
                   prompt?: { promptId?: string; state?: string } | null;
                 }>("sandbox/status", { id: sandbox.id }, Math.min(5_000, left)).catch((error: unknown) => {
                   if (io.isAmbiguousLaunch(error)) return undefined;
@@ -277,7 +278,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                 if (status?.id !== sandbox.id || status.externalRef !== record.requestKey) return;
                 if (modalSmokeSetupFailed(status)) {
                   record.uncertain = false;
-                  fail("modal_launch_setup_failed");
+                  const reason = modalSmokeSetupReason(status.statusReason);
+                  throw new TemplateSkillSmokeFailure("modal_launch_setup_failed", reason ? { reason } : {});
                 }
                 if (
                   admitted &&

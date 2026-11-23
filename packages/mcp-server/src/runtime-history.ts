@@ -11,6 +11,7 @@ import {
 import { decryptSecret, modalLaunchSetupKeySql, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { modalSetupFailureReason } from "./jobs/modal-launch-setup.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 /** Durable journal reads, never live host/native-agent observations. */
@@ -120,13 +121,14 @@ export function createModalJobReader(sql: Sql, key: string) {
         await sql.query<{
           job_owned: boolean;
           setup_state: string | null;
+          setup_reason: string | null;
           settled: boolean;
           active_prompt: string | null;
         }>(
           `select exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='launch' and j.payload_enc is not null
             and j.generation<=s.lifecycle_generation
             and j.org_id=s.org_id and j.request_owner_id=s.owner_id) as job_owned,
-          setup.state as setup_state,
+          setup.state as setup_state, setup.outcome->>'reason' as setup_reason,
           case
             when s.stop_requested_at is not null or s.status in ('starting','stopping') then false
             when s.status='running' and nullif(s.task_prompt_id,'') is null then false
@@ -162,6 +164,7 @@ export function createModalJobReader(sql: Sql, key: string) {
       id: sandbox.provider,
       events,
       setupState: observed.setup_state,
+      setupFailure: modalSetupFailureReason(observed.setup_reason),
       verify: current,
       async followSettled() {
         const latest = await evidence();
@@ -196,7 +199,7 @@ export function createModalJobReader(sql: Sql, key: string) {
         });
       },
     } satisfies Pick<SandboxLogReader, "events" | "getPrompt" | "followSettled"> &
-      Pick<Provider, "id"> & { setupState: string | null; verify: typeof current };
+      Pick<Provider, "id"> & { setupState: string | null; setupFailure: string; verify: typeof current };
     return reader;
   };
 }

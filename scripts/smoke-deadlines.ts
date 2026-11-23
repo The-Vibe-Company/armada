@@ -13,8 +13,6 @@ export const modalJobStepFallbacks = {
   "modal/expiry": { expiry_ready: UNMEASURED_MODAL_JOB_STEP_MS },
   "modal/lifecycle": {
     ready: UNMEASURED_MODAL_JOB_STEP_MS,
-    default_skills_receipts: UNMEASURED_MODAL_JOB_STEP_MS,
-    default_skills_opt_out_receipts: UNMEASURED_MODAL_JOB_STEP_MS,
   },
   "modal/real-model": { real_model_ready: UNMEASURED_MODAL_JOB_STEP_MS },
 };

@@ -201,7 +201,11 @@ function fixture(
           externalRef: launch.key,
           status: "ready",
           ...(options.jobAdmission === "failed_setup"
-            ? { settled: true, statusMessage: "Modal launch setup failed." }
+            ? {
+                settled: true,
+                statusMessage: "Modal launch setup failed.",
+                statusReason: "modal_initial_turn_environment_refused",
+              }
             : {}),
           prompt: ++launch.statusReads === 1 ? null : { promptId: `prompt-${templateId}`, state: "finished" },
           skills: launch.pin
@@ -546,7 +550,12 @@ test.each([
     } else {
       expect(await runTemplateSkillCase(item, fake.io)).toBe(false);
     }
-    expect(fake.lines).toContainEqual({ step, pass: false, code });
+    expect(fake.lines).toContainEqual({
+      step,
+      pass: false,
+      code,
+      ...(jobAdmission === "failed_setup" ? { reason: "modal_initial_turn_environment_refused" } : {}),
+    });
     if (jobAdmission === "late_ack") expect(fake.calls.some((call) => call.path === "sandbox/status")).toBe(false);
     expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
     expect(fake.stopped).toEqual([fake.reservedId]);

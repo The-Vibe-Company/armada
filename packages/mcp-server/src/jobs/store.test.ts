@@ -1028,6 +1028,10 @@ test("a stale Modal snapshot cannot leave a launch receipt behind", async () => 
 test("Modal keyed replay returns the current status and refuses a changed request", async () => {
   const { sql, db, input } = await modalAdmissionFixture();
   const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);
+  await db.query("update sandboxes set status='ready' where id=$1", [sandbox.id]);
+  expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual({
+    sandbox: { id: sandbox.id, status: "starting" },
+  });
   await db.query("update sandboxes set status='failed' where id=$1", [sandbox.id]);
   expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual({
     sandbox: { id: sandbox.id, status: "failed" },
@@ -2077,7 +2081,38 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
           ])
         ).rows,
       ).toEqual([{ state: "failed", reason: "modal_initial_turn_environment_refused" }]);
-      if (scenario === "secret revoked") await expect(sendFollowUp()).rejects.toThrow("Modal launch setup failed.");
+      if (scenario === "secret revoked") {
+        await expect(sendFollowUp()).rejects.toThrow("Modal launch setup failed.");
+        const caller = {
+          userId: people.owner,
+          orgs: [{ orgId: people.org, role: "member" as const }],
+          via: "service" as const,
+        };
+        const jobReader = createModalJobReader(sql, launchEncryptionKey);
+        expect(
+          await callSharedTool(
+            {
+              caller,
+              data: createSqlData(sql)(caller),
+              modalJobReader: (sandbox) => jobReader(sandbox, caller),
+              launchCredentials: launchCredentials(createSqlVaultStore(sql), launchEncryptionKey),
+              exposedSecrets: async () => [],
+              provider: async () => {
+                throw new Error("Setup failure must use stored job evidence.");
+              },
+              now: () => new Date(),
+              sleep: async () => {},
+            },
+            "status",
+            { id },
+          ),
+        ).toMatchObject({
+          status: "failed",
+          statusReason: "modal_initial_turn_environment_refused",
+          settled: true,
+          providerState: null,
+        });
+      }
       return;
     }
     const { command } = await bridge.next(runtimeToken, epoch);
@@ -2614,10 +2649,16 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       { follow: true, ...(cursor ? { cursor } : {}) },
     );
   expect(await callSharedTool(context, "status", { id })).toMatchObject({
-    status: "ready",
+    status: "starting",
     prompt: null,
     settled: false,
     statusMessage: "Modal launch setup is still in progress.",
+  });
+  expect(await callSharedTool(context, "status", { id, recorded: true })).toMatchObject({ status: "starting" });
+  expect(await data.sandboxes.list({ limit: 10, statuses: ["ready"] })).toMatchObject({ total: 0 });
+  expect(await data.sandboxes.list({ limit: 10, statuses: ["starting"] })).toMatchObject({
+    total: 1,
+    rows: [{ id, status: "starting" }],
   });
   expect(await follow()).toMatchObject({ settled: false });
 
