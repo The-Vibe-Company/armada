@@ -48,6 +48,11 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
   }): Promise<Started> => {
     const { input } = request;
     const { actor, sandbox, signal, activate, restoreCheckpoint } = input;
+    if (
+      input.host.id !== provider ||
+      (provider === "boat" ? sandbox.boatRuntime !== true : sandbox.runtimeTransport !== "dialout")
+    )
+      throw Error("runtime_selection_required");
     const { model, reasoningEffort } = sandbox;
     if (!model || !reasoningEffort) throw Error("runtime_model_required");
     const plan = await request.configure();

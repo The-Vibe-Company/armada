@@ -2,7 +2,17 @@ import { templateLaunchResponse } from "@armada/core/contract";
 import type { Sql } from "@armada/core/server";
 import { scopeKey } from "@armada/provider-modal";
 import { z } from "zod";
-import { isFullModalDrainTombstone } from "./modal-drain-journal.ts";
+
+function hasModalDrainExitProof(record: string) {
+  return `jsonb_typeof(${record}->'generation')='number'
+    and ${record}->'deletePhysicalExitGeneration'=${record}->'generation'`;
+}
+
+function isFullModalDrainTombstone(record: string) {
+  return `${record}->>'phase'='deleted'
+    and ${record}->>'deleteScope' is distinct from 'physical-only'
+    and ${hasModalDrainExitProof(record)}`;
+}
 
 const version = z.string().regex(/^\d+$/);
 const binding = z.strictObject({

@@ -10,7 +10,6 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createBoatOrchestratorProvider } from "./boat-delegated-access-provider.ts";
-import { lockFullModalDrainTombstone } from "./modal-drain-journal.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
@@ -90,10 +89,9 @@ export function createSandboxArmadaAccess(input: {
         enrolled: boolean;
         stop_requested: boolean;
         terminal: boolean;
-        modal_drain_cleaned_placement: string | null;
       }>(
         `select p.id,p.sandbox_id,p.owner_id,p.org_id,s.lifecycle_generation,p.golden_ids,p.credential_ids,
-          p.modal_drain_cleaned_placement,${enrolledPlacement} is true as enrolled,s.stop_requested_at is not null as stop_requested,
+          ${enrolledPlacement} is true as enrolled,s.stop_requested_at is not null as stop_requested,
           s.status in ('stopped','failed','deleted') as terminal from public.armada_access_parents p
        join public.sandboxes s on s.id=p.sandbox_id where p.kind='sandbox' and s.provider=$1 and s.provider_sandbox_id=$2
          and ($3::uuid is null or s.id=$3)`,
@@ -312,62 +310,11 @@ export function createSandboxArmadaAccess(input: {
       }),
     );
   }
-  async function beforeNativeModalDrainDelete(
-    provider: Provider,
-    sandboxId: string,
-    placement: string,
-    generation: number,
-  ) {
-    async function assertOwner(store: Sql, lock = false) {
-      const owned = await store.query(
-        `select id from public.sandboxes where id=$1 and provider='modal' and provider_sandbox_id=$2
-         and runtime_transport is null and native_drain_pending and lifecycle_generation=$3
-         and activity_lease_id is not null and activity_until>clock_timestamp()${lock ? " for update" : ""}`,
-        [sandboxId, placement, generation],
-      );
-      if (!owned.rows.length) throw new VaultError("conflict", "Native drain no longer owns this placement.");
-    }
-    await assertOwner(sql);
-    const parent = await scope(provider, placement, sandboxId);
-    if (parent && parent.modal_drain_cleaned_placement !== placement) {
-      if (!sql.transaction) throw new VaultError("unavailable", "Scoped cleanup requires a transaction.");
-      const recordCleanup = async (tx: Sql) => {
-        const recorded = await tx.query(
-          "update public.armada_access_parents set modal_drain_cleaned_placement=$2 where id=$1 returning id",
-          [parent.id, placement],
-        );
-        if (!recorded.rows.length) throw new VaultError("conflict", "Scoped parent changed during cleanup.");
-      };
-      const tombstoneCleaned = await sql.transaction(async (tx) => {
-        await assertOwner(tx, true);
-        if (!(await lockFullModalDrainTombstone(tx, sandboxId))) return false;
-        const {
-          rows: [current],
-        } = await tx.query<{ modal_drain_cleaned_placement: string | null }>(
-          "select modal_drain_cleaned_placement from public.armada_access_parents where id=$1 for update",
-          [parent.id],
-        );
-        if (!current || current.modal_drain_cleaned_placement === placement) return true;
-        await authorityFor(tx).revoke(parent.id);
-        await recordCleanup(tx);
-        await assertOwner(tx);
-        return true;
-      });
-      if (tombstoneCleaned) return;
-      await scrubParent(provider, placement, parent, "delete");
-      await sql.transaction(async (tx) => {
-        await assertOwner(tx, true);
-        await recordCleanup(tx);
-      });
-    }
-  }
   return {
-    revokeNativeDrainParent: (tx: Sql, parentId: string) => authorityFor(tx).revoke(parentId),
     beforePrompt: install,
     beforeSnapshot: scrub,
     beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>
       scrub(provider, placement, "delete", sandboxId),
-    beforeNativeModalDrainDelete,
     restoreEnrolled,
     prepare,
     wrap(provider: Provider): Provider {

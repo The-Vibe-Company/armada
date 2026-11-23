@@ -18,21 +18,12 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-import {
-  hasModalDrainExitProof,
-  historicalModalDrainCandidate,
-  historicalModalDrainPhase,
-  isFullModalDrainTombstone,
-  lockHistoricalManagedModalTombstone,
-  strictNativeDrainJournals,
-  withdrawExpiredModalDrainLease,
-} from "./modal-drain-journal.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
-import { MANAGED_MODAL_DRAIN_VISIBLE, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
@@ -1014,12 +1005,7 @@ export async function requestNativeSubscriptionStop(
   return true;
 }
 
-export async function requestNativeDrainStop(
-  sql: Sql,
-  sandbox: SandboxRecord,
-  provider: "boat" | "modal",
-  actorId: string,
-) {
+export async function requestNativeDrainStop(sql: Sql, sandbox: SandboxRecord, provider: "boat", actorId: string) {
   if (!sql.transaction) throw new Error("Native drain stop requires a transaction.");
   const { id, lifecycleGeneration, providerSandboxId } = sandbox;
   if (lifecycleGeneration === undefined || !providerSandboxId) return false;
@@ -1027,8 +1013,6 @@ export async function requestNativeDrainStop(
   return sql.transaction(async (tx) => {
     const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
     if (!locked.rows.length) return false;
-    const journal = strictNativeDrainJournals[provider];
-    if (journal && !(await journal.lockActive(tx, id))) return false;
     const token = crypto.randomUUID();
     const {
       rows: [admitted],
@@ -1105,73 +1089,6 @@ export async function fencePreservedBoatDrainReplay(tx: Sql, id: string) {
   return rows[0]?.eligible === true;
 }
 
-export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
-  // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
-  const { rows } = await tx.query<{
-    eligible: boolean;
-    stamped: boolean;
-    scope: string;
-    id: string;
-    lease_id: string | null;
-  }>(
-    `with journal as materialized (
-       select m.scope,m.id,m.owner_id,m.record,m.lease_id,m.lease_until
-       from public.modal_machines m join public.sandboxes s
-         on m.org_id=s.org_id and m.id=s.provider_sandbox_id
-       where s.id=$1
-       for update of m nowait
-     )
-     select j.scope,j.id,j.lease_id,
-       coalesce(r.capture_acknowledgements ? 'drainAdmissionGeneration',false) as stamped,(
-       j.owner_id=s.owner_id
-       and j.record->>'commonRuntime' is distinct from 'true'
-       and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
-       and (not $2 or ${NATIVE_DRAIN_DETACHED_PROOF})
-       and case
-         when $2 and r.capture_acknowledgements ? 'drainAdmissionGeneration' then
-           j.record->>'phase' in ('stopped','deleting','deleted')
-           and r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation'
-         else (
-           j.record->>'phase'='stopped'
-           or ((j.record->>'phase'='deleted' or ($2 and j.record->>'phase'='deleting'))
-             and ${hasModalDrainExitProof("j.record")}
-             and ($2 or (${isFullModalDrainTombstone("j.record")}) or not exists (
-               select 1 from public.armada_access_parents p
-               where p.sandbox_id=s.id and p.kind='sandbox'
-                 and p.modal_drain_cleaned_placement is distinct from s.provider_sandbox_id
-             )))
-           )
-           and (
-             (j.lease_id is null and j.lease_until is null)
-             or (j.lease_id is not null and j.lease_until<=clock_timestamp())
-           )
-           and (not $2 or r.generation=s.lifecycle_generation-1)
-       end
-     ) as eligible
-     from journal j cross join public.sandboxes s
-     left join public.sandbox_native_preservation_receipts r
-       on r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
-       and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
-       and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
-     where s.id=$1`,
-    [id, pending],
-  );
-  const [journal] = rows;
-  if (rows.length !== 1 || journal?.eligible !== true) return false;
-  if (!pending || !journal.stamped) {
-    // WARNING: A save started before expiry can still match unless admission withdraws the token under this lock.
-    if (journal.lease_id && !(await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id))) return false;
-    await tx.query(
-      `update public.sandbox_native_preservation_receipts
-       set capture_acknowledgements=jsonb_set(capture_acknowledgements,
-         '{drainAdmissionGeneration}',capture_acknowledgements->'physicalGeneration')
-       where sandbox_id=$1`,
-      [id],
-    );
-  }
-  return true;
-}
-
 export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
   await tx.query(
     `insert into public.native_drain_unclaimed_dispatches (sandbox_id)
@@ -1188,41 +1105,38 @@ export async function nativeDrainDispatch(
   generation: number,
   activityToken: string,
   action: "inspect" | "claim",
-  allowHistoricalModal: boolean,
-  managed = false,
 ) {
   const {
     rows: [owned],
-  } = await sql.query<{ operation_id: string | null; historical_phase: string | null }>(
+  } = await sql.query<{ operation_id: string | null }>(
     `with locked as materialized (
        select s.*
        from public.sandboxes s
-       where s.id=$3::uuid and ${managed ? MANAGED_MODAL_DRAIN_VISIBLE : SANDBOX_VISIBLE} and s.provider in ('boat','modal')
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider='boat'
          and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
          and s.native_drain_pending and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
          and s.deleted_at is null
        for update of s
      ), evidence as materialized (
-       select s.id,s.provider,s.activity_until,${NATIVE_DRAIN_PENDING_PROOF} as preserved,
-         ${historicalModalDrainPhase("$8::boolean", managed)} as historical_phase
+       select s.id,s.provider,s.activity_until,${NATIVE_DRAIN_PENDING_PROOF} as preserved
        from locked s
      ), owned as materialized (
-       select id,provider,historical_phase from evidence
-       where (case when $8::boolean then historical_phase is not null else preserved end)
+       select id,provider from evidence
+       where preserved
          and activity_until>clock_timestamp()
      ), claimed as (
        delete from public.native_drain_unclaimed_dispatches d using owned
        where d.sandbox_id=owned.id and $7 returning d.sandbox_id
      )
-     select o.operation_id,s.historical_phase from owned s
+     select o.operation_id from owned s
      left join claimed on claimed.sandbox_id=s.id
      left join public.native_drain_delete_operations o on o.sandbox_id=s.id
-     where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null
+     where (claimed.sandbox_id is not null or o.sandbox_id is not null
        or (not $7 and exists (
          select 1 from public.native_drain_unclaimed_dispatches d where d.sandbox_id=s.id
        )))
        and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
-    [...scope, id, placement, generation, activityToken, action === "claim", allowHistoricalModal],
+    [...scope, id, placement, generation, activityToken, action === "claim"],
   );
   return owned;
 }
@@ -1241,7 +1155,7 @@ export async function recordNativeDrainDeleteOperation(
        from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
          and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending
-         and s.provider=$6::public.sandbox_provider and s.provider in ('boat','modal')
+         and s.provider=$6::public.sandbox_provider and s.provider='boat'
          and s.provider_sandbox_id=$7 and not s.boat_runtime
          and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
        for update of s
@@ -1255,97 +1169,6 @@ export async function recordNativeDrainDeleteOperation(
   return rows.length > 0;
 }
 
-export async function lockHistoricalManagedModalParent(
-  tx: Sql,
-  { id, org_id: orgId }: { id: string; org_id: string },
-  actorId: string,
-) {
-  // WARNING: Keep delegated admission's membership -> sandbox -> parent lock order.
-  const {
-    rows: [member],
-  } = await tx.query<{ owner_id: string }>(
-    `select s.owner_id from public.sandboxes s
-       join public.orchestrators o on o.sandbox_id=s.id and o.org_id=s.org_id and o.owner_id=s.owner_id
-       join public.members owner on owner.org_id=s.org_id and owner.user_id=s.owner_id
-       join public.members actor on actor.org_id=s.org_id and actor.user_id=$3
-       where s.id=$1 and s.org_id=$2 and (s.owner_id=actor.user_id or actor.role='admin')
-       for share of owner,actor`,
-    [id, orgId, actorId],
-  );
-  if (!member) return;
-  const {
-    rows: [sandbox],
-  } = await tx.query<{ status: SandboxStatus; idle: boolean; native_drain_pending: boolean }>(
-    `select status, native_drain_pending,
-         (activity_lease_id is null and activity_until is null and reconcile_lease is null
-           and reconcile_lease_until is null) as idle
-       from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3 for update nowait`,
-    [id, orgId, member.owner_id],
-  );
-  if (!sandbox) return;
-  if (sandbox.status === "deleted") return { ...sandbox, parentId: null };
-  // WARNING: The legacy and scoped epoch triggers acquire the other authority row.
-  const {
-    rows: [parent],
-  } = await tx.query<{ id: string }>(
-    `select p.id from public.orchestrators o join public.armada_access_parents p
-       on p.id=o.id and p.kind='orchestrator' and p.sandbox_id=o.sandbox_id
-         and p.org_id=o.org_id and p.owner_id=o.owner_id
-         and p.state=o.state and p.authority_epoch=o.authority_epoch
-       where o.sandbox_id=$1 and o.org_id=$2 and o.owner_id=$3
-       for no key update of o,p nowait`,
-    [id, orgId, member.owner_id],
-  );
-  if (!parent) throw new VaultError("conflict", "Managed native drain requires a matching authority mirror.");
-  const {
-    rows: [eligible],
-  } = await tx.query(
-    `select 1 from public.sandboxes s where s.id=$1
-       and (select outcome from public.native_drain_work_proof(s.id,s.lifecycle_generation))='unverified'
-       and not exists(select 1 from public.sandbox_work_recovery a where a.sandbox_id=s.id)
-       and not exists(select 1 from public.orchestrator_child_operations c
-         where c.orchestrator_id=$2 and c.state in ('pending','uncertain'))`,
-    [id, parent.id],
-  );
-  if (!eligible) throw new VaultError("conflict", "Managed native drain found unresolved work or saved recovery.");
-  return { ...sandbox, parentId: parent.id };
-}
-
-export async function settleHistoricalManagedModalDeletion(
-  sql: Sql,
-  target: { id: string; org_id: string },
-  actorId: string,
-  revoke: (tx: Sql, parentId: string) => Promise<void>,
-) {
-  if (!sql.transaction) throw new Error("Managed Modal drain requires a transaction.");
-  const { id } = target;
-  return sql.transaction(async (tx) => {
-    const parent = await lockHistoricalManagedModalParent(tx, target, actorId);
-    if (!parent) return;
-    if (parent.status === "deleted") return "already-deleted" as const;
-    if (!parent.parentId) throw new Error("Managed native drain authority is unavailable.");
-    if (!parent.idle || !(await lockHistoricalManagedModalTombstone(tx, id))) {
-      const candidate = await tx.query(
-        `select 1 from public.sandboxes s where s.id=$1 and ${historicalModalDrainCandidate(true)}`,
-        [id],
-      );
-      if (candidate.rows.length && (parent.idle || parent.native_drain_pending)) return "with-activity" as const;
-      throw new VaultError("conflict", "Managed native drain requires an idle parent and a valid historical journal.");
-    }
-    await revoke(tx, parent.parentId);
-    const {
-      rows: [receipt],
-    } = await tx.query<{ generation: string }>(
-      `update public.sandboxes set lifecycle_generation=lifecycle_generation+1,preservation_note=null
-       where id=$1 returning lifecycle_generation::text as generation`,
-      [id],
-    );
-    if (!receipt) throw new Error("Locked managed sandbox disappeared.");
-    await finishSandboxDeletion(tx, id, receipt.generation);
-    return "without-proof" as const;
-  });
-}
-
 export async function completeSandboxDeletion(
   tx: Sql,
   scope: [string[], string],
@@ -1353,20 +1176,15 @@ export async function completeSandboxDeletion(
   generation: number,
   activityToken: string,
   nativeDrain: boolean,
-  historicalModalPlacement?: string,
-  managed = false,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
     `with locked as materialized (
        select s.* from public.sandboxes s
-       where s.id=$3 and ${managed ? MANAGED_MODAL_DRAIN_VISIBLE : SANDBOX_VISIBLE} and s.status in ('stopped','failed')
+       where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
          and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending=$6::boolean
        for update of s
      ), owned as materialized (
-       select s.id,s.activity_until from locked s where
-         case when $7::text is not null then
-           s.provider_sandbox_id=$7 and ${historicalModalDrainPhase("$6::boolean", managed)}='deleted'
-         when $6::boolean then ${NATIVE_DRAIN_PENDING_PROOF} else true end
+       select s.id,s.activity_until from locked s where not $6::boolean or (s.provider='boat' and ${NATIVE_DRAIN_PENDING_PROOF})
      ), settled as (update public.sandboxes s set
        lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
@@ -1381,7 +1199,7 @@ export async function completeSandboxDeletion(
        where $6::boolean and o.sandbox_id=settled.id
      )
      select generation from settled`,
-    [...scope, sandboxId, generation, activityToken, nativeDrain, historicalModalPlacement ?? null],
+    [...scope, sandboxId, generation, activityToken, nativeDrain],
   );
   const receipt = rows[0];
   if (!receipt) return false;
@@ -2026,7 +1844,7 @@ export function createSandboxLifecycle(
              and s.status='stopping' and s.stop_requested_at is not null`,
           [row.id, token, row.lifecycle_generation],
         );
-        if (!owned) return true;
+        if (!owned || (owned.strict && providerId !== "boat")) return true;
         strictNativeStop = owned.strict;
       }
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
@@ -2587,14 +2405,8 @@ export function createSandboxLifecycle(
                    and r.stop_generation=s.stop_generation)
                  and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
                    where outcome in ('clean','archived'))
-                 and (s.provider<>'modal' or exists(
-                   select 1 from public.sandbox_native_preservation_receipts r
-                   where r.sandbox_id=s.id and r.generation=s.lifecycle_generation
-                     and r.stop_generation=s.stop_generation
-                     and r.capture_acknowledgements->>'physicalGeneration'=nullif($5::text,'')
-                 ))
                  and s.reconcile_lease_until>clock_timestamp()`,
-              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id, info.physicalGeneration ?? null],
+              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id],
             );
             if (!verified.rows.length) {
               error = "Strict native stop is waiting for verified work preservation.";
@@ -2622,18 +2434,6 @@ export function createSandboxLifecycle(
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
-        const journal = strictNativeStop && strictNativeDrainJournals[providerId];
-        if (journal && (physicalExit || ["stopped", "deleted"].includes(info.state))) {
-          const retained =
-            !physicalExit &&
-            info.state === "stopped" &&
-            (await journal.hasRetainedCheckpoint(sql, row.id, row.lifecycle_generation, info.physicalGeneration));
-          if (!retained) {
-            physicalExit = false;
-            error = "Strict native stop is waiting for a verified retained Modal checkpoint.";
-            return settle();
-          }
-        }
         stoppedAt = info.stoppedAt;
         waitingForRetention =
           providerId === "boat" &&

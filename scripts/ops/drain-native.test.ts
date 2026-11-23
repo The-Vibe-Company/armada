@@ -37,12 +37,6 @@ beforeAll(async () => {
 afterAll(() => db.close());
 
 test("dry-run reports only live records on the selected persisted native route, including stopped rows", async () => {
-  expect(await run("--provider", "modal", "--dry-run")).toEqual({
-    provider: "modal",
-    mode: "dry-run",
-    total: 4,
-    byStatus: { starting: 0, ready: 0, running: 2, stopping: 0, stopped: 1, failed: 1 },
-  });
   expect(await run("--provider", "boat", "--dry-run")).toEqual({
     provider: "boat",
     mode: "dry-run",
@@ -95,10 +89,6 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
   expect(calls).toEqual(["archived-id", "unproven-id", "unproven-id"]);
 });
 
-test("the historical opt-in is explicit and limited to real Modal drains", () => {
-  const flag = "--allow-unpreserved-historical-modal";
-  expect(parseNativeDrainArgs(["--provider", "modal"]).allowHistoricalModal).toBe(false);
-  expect(parseNativeDrainArgs(["--provider", "modal", flag]).allowHistoricalModal).toBe(true);
-  expect(() => parseNativeDrainArgs(["--provider", "boat", flag])).toThrow("Usage:");
-  expect(() => parseNativeDrainArgs(["--provider", "modal", "--dry-run", flag])).toThrow("Usage:");
+test("the retired Modal drain is rejected by the command parser", () => {
+  expect(() => parseNativeDrainArgs(["--provider", "modal"])).toThrow("Usage:");
 });

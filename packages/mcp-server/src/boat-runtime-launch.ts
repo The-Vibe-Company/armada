@@ -18,7 +18,6 @@ export function boatRuntimeLaunch(
     supportsScopedAccess: true,
     async start(input) {
       const { host, actor, sandbox, credentials } = input;
-      if (sandbox.boatRuntime !== true || host.id !== "boat") throw Error("runtime_selection_required");
       return startRuntime({
         input,
         configure: () =>
