@@ -522,9 +522,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // account/model selections and replayed frozen manifests retain their authority.
       reason = "account_defaults";
       const accountActor = { userId: caller.userId, orgId: org, role };
-      const accountDefault = frozen
-        ? undefined
-        : await options.credentials.launchAccountDefault?.(accountActor.userId, input.harness);
+      const accountDefault =
+        frozen || input.credentialId !== undefined
+          ? undefined
+          : await options.credentials.launchAccountDefault?.(accountActor.userId, input.harness);
       const preference = frozen
         ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
         : accountDefault

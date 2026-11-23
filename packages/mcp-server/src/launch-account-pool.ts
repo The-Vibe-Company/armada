@@ -164,9 +164,10 @@ export async function preparePoolCandidates<T>(
   const candidates = await readPoolAccounts(sql, userId, pool.credentialIds);
   const now = Date.now();
   throw poolRefusal(
-    pool.credentialIds.flatMap((credentialId): AccountSkip[] => {
+    pool.credentialIds.flatMap((credentialId) => {
       const decision = choose({ ...pool, credentialIds: [credentialId] }, undefined, { candidates, now });
-      return decision.kind === "account" ? [{ credentialId, reason: { code: "incompatible_model" } }] : decision.skips;
+      const incompatible: AccountSkip = { credentialId, reason: { code: "incompatible_model" } };
+      return decision.kind === "account" ? [incompatible] : decision.skips;
     }),
   );
 }
