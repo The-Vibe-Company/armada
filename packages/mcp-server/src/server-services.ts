@@ -57,6 +57,7 @@ import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
+import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
@@ -542,8 +543,7 @@ export async function createServerServices(env: Record<string, string | undefine
     credentials,
     runtimeSend,
     runtimeCheckpoint,
-    runtimePlacements: { boat: launch.boatRuntimeDefault, modal: launch.modalRuntimeDefault },
-    boatEndpointRuntime: launch.boatEndpointRuntime,
+    runtimePlacements: { boat: goldenRuntimePlacement(launch, "boat"), modal: launch.modalRuntimeDefault },
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,

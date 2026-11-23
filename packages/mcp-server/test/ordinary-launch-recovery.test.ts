@@ -54,7 +54,7 @@ test("MCP allocation before failed registration returns a receipt ID and fences 
     },
     // The raw launch host gains management provenance from the runtime placement.
     launch: {
-      boatRuntimeDefault: {
+      boatEndpointRuntime: {
         policy: enrolledLaunchPolicy(sql),
         provider: async () => withBoatManagementIdentity(boat.provider, "org", people.org),
         connections: { async validate() {}, async bind() {} },

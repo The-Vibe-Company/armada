@@ -35,7 +35,7 @@ import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { withBoatManagementIdentity } from "./observed-boat.ts";
-import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
+import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -288,7 +288,7 @@ export function launchTemplate(
 export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
   const stores = options.data?.(caller);
   if (!stores) return undefined;
-  const boatPlacement = options.launch?.boatRuntimeDefault ?? options.launch?.boatEndpointRuntime;
+  const boatPlacement = goldenRuntimePlacement(options.launch ?? {}, "boat");
   const launch = { ...options.launch, ...(boatPlacement ? { boatRuntimeDefault: boatPlacement } : {}) };
   return {
     stores: {
@@ -320,7 +320,7 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
         }
       : {}),
     provider: (golden: GoldenRecord) => {
-      if (!launch.runtime && !launch.boatRuntime && !launch[runtimeBridgeProfiles[golden.provider].launchDefault])
+      if (!launch.runtime && !launch.boatRuntime && !goldenRuntimePlacement(launch, golden.provider))
         throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
       return providerForGolden(options, caller, golden);
     },

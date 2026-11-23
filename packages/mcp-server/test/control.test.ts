@@ -2527,9 +2527,9 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.execs).toHaveLength(0);
     expect(host.prompts).toHaveLength(0);
     delete options.launch;
-    expect(await (await request("launch/options", {}))?.json()).toMatchObject({
-      boatRuntime: { defaultPath: "runtime", enabled: true },
-    });
+    const explicitOnly = await (await request("launch/options", {}))?.json();
+    expect(explicitOnly).toMatchObject({ boatRuntime: { enabled: true } });
+    expect(explicitOnly.boatRuntime).not.toHaveProperty("defaultPath");
     // Actual startup timeout -> launch failure persistence -> public logs response.
     expectedForks = 2;
     options.boatRuntimeLaunch = {
@@ -2878,7 +2878,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
           },
           encryptionKey: KEY,
           scopedMcpUrl: "https://armada.test",
-          ...(boat ? { boatEndpointRuntime: childPlacement } : { runtimePlacements: { modal: childPlacement } }),
+          runtimePlacements: { [provider]: childPlacement },
         });
         const child = await children.childWorker.launch(token, "enrolled-child", {
           goldenId: parent.goldenId,
