@@ -535,7 +535,11 @@ test.each([
 ] as const)(
   "Modal template admission with %s stops the known allocation without using a prompt",
   async (jobAdmission, step, code) => {
-    const fake = fixture({ jobAdmission, key: "absent" });
+    const fake = fixture({
+      jobAdmission,
+      key: "absent",
+      ...(jobAdmission === "failed_setup" ? { fault: "lost_launch" } : {}),
+    });
     const item = { ...selected, provider: "modal" as const };
     if (jobAdmission === "extra_skill") {
       expect(await runTemplateSkillCase({ ...item, publicSkill: undefined }, fake.io)).toBe(false);

@@ -1,3 +1,7 @@
+export function modalSmokeSetupFailed(status: { settled?: boolean; statusMessage?: string | null }) {
+  return status.settled === true && status.statusMessage === "Modal launch setup failed.";
+}
+
 export async function observeSmokeLaunch<T>(
   until: number,
   io: { now(): number; sleep(ms: number): Promise<void> },

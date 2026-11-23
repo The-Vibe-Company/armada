@@ -2,7 +2,7 @@ import { parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launc
 import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
-import { observeSmokeLaunch } from "./smoke-launch.ts";
+import { modalSmokeSetupFailed, observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
@@ -275,9 +275,15 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                   throw error;
                 });
                 if (status?.id !== sandbox.id || status.externalRef !== record.requestKey) return;
-                if (admitted && status.settled === true && status.statusMessage === "Modal launch setup failed.")
+                if (modalSmokeSetupFailed(status)) {
+                  record.uncertain = false;
                   fail("modal_launch_setup_failed");
-                if (admitted && ["failed", "stopping", "stopped", "deleted"].includes(status.status))
+                }
+                if (
+                  admitted &&
+                  (["failed", "stopping", "stopped", "deleted"].includes(status.status) ||
+                    (status.settled === true && !!status.statusMessage))
+                )
                   fail("turn_failed");
                 const promptId = status.prompt?.promptId;
                 if (

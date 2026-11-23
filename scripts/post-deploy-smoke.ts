@@ -33,7 +33,7 @@ import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
 import { deadlinesFor, SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
-import { observeSmokeLaunch } from "./smoke-launch.ts";
+import { modalSmokeSetupFailed, observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
@@ -988,6 +988,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (row.id !== observedId || !launch.ready.includes(row.status)) return;
               if (!recover) return { sandbox: row } as T;
               return recover(row.id, requestKey, until).catch((readError: unknown) => {
+                if (readError instanceof SmokeFailure && readError.code === "modal_launch_setup_failed")
+                  throw readError;
                 if (readError instanceof SmokeFailure || readError instanceof TemplateSkillSmokeFailure)
                   return undefined;
                 throw readError;
@@ -1154,8 +1156,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
             if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
             if (!smokeLaunch[item.provider].ready.includes(result.status)) return false;
-            if (!waitForSetup || result.settled !== true) return !waitForSetup;
-            if (result.statusMessage !== null) fail("modal_launch_setup_failed");
+            if (!waitForSetup) return true;
+            if (modalSmokeSetupFailed(result)) fail("modal_launch_setup_failed");
+            if (result.settled !== true) return false;
+            if (result.statusMessage !== null) fail("invalid_response");
             return true;
           },
           { step: "real_model_ready" },
@@ -1461,13 +1465,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   statusMessage: string | null;
                 }
               >("status", { id }, Math.min(5_000, remaining));
-              if (
-                status?.id !== id ||
-                status.externalRef !== requestKey ||
-                status.status !== "ready" ||
-                status.prompt !== null
-              )
-                return;
+              if (status?.id !== id || status.externalRef !== requestKey) return;
+              if (modalSmokeSetupFailed(status)) fail("modal_launch_setup_failed");
+              if (status.status !== "ready" || status.prompt !== null) return;
               if (
                 scope &&
                 (!matchesParentConfiguration(status) || status.settled !== true || status.statusMessage !== null)
@@ -1584,7 +1584,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 }
               >("status", { id: sandboxId }, timeoutMs);
             const settled = await poll(read, (status) => status?.settled === true, { until: scopedAdmissionUntil });
-            if (settled.statusMessage !== null) fail("modal_launch_setup_failed");
+            if (modalSmokeSetupFailed(settled)) fail("modal_launch_setup_failed");
+            if (settled.statusMessage !== null) fail("invalid_response");
             const parent = await read(remaining());
             if (remaining() < 0) fail("poll_limit_exceeded");
             if (
@@ -1630,7 +1631,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status?.id !== sandboxId || status.status !== "ready" || status.prompt !== null)
                 fail("invalid_response");
               if (status.settled !== true) return false;
-              if (status.statusMessage !== null) fail("modal_launch_setup_failed");
+              if (modalSmokeSetupFailed(status)) fail("modal_launch_setup_failed");
+              if (status.statusMessage !== null) fail("invalid_response");
               return true;
             },
             { until: setupUntil },
@@ -1665,7 +1667,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               (status) => status?.settled === true,
               until === undefined ? {} : { until },
             );
-            if (settled.statusMessage !== null) fail("modal_launch_setup_failed");
+            if (modalSmokeSetupFailed(settled)) fail("modal_launch_setup_failed");
+            if (settled.statusMessage !== null) fail("invalid_response");
 
             const status = await readSetupStatus();
             if (
@@ -2263,6 +2266,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
+  // Historical receipts did not record provider. Never contact Boat to classify them.
   const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
   rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
   if (deferred.length)

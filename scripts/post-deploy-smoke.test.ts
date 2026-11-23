@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
+import { modalJobStepFallbacks } from "./smoke-deadlines.ts";
 
-const deadlines = deadlineTable["modal/lifecycle"];
+const deadlines = { ...modalJobStepFallbacks["modal/lifecycle"], ...deadlineTable["modal/lifecycle"] };
 const boatNotice = "boat: not part of the release gate";
 
 const selected = {
