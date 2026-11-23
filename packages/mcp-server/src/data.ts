@@ -1365,6 +1365,7 @@ export function createSqlData(
               if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived") {
                 const withoutReceipt =
                   allowUnpreservedBoat &&
+                  recovery?.outcome === "unverified" &&
                   (
                     await tx.query(
                       `select 1 from public.sandboxes s where s.id=$1 and ${NATIVE_DRAIN_MISSING_RECEIPT}`,

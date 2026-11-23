@@ -1011,7 +1011,10 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   const drain = (optIn: boolean) => createNativeDrainRemoval(sql, "boat", people.owner, access, providers, optIn)(row);
 
   await expect(drain(false)).rejects.toThrow("work preservation could not be verified");
+  await db.query("insert into sandbox_native_exec_attempts(sandbox_id,generation) values($1,1)", [sandboxId]);
+  await expect(drain(true)).rejects.toThrow("work preservation could not be verified");
   expect(remove).not.toHaveBeenCalled();
+  await db.query("delete from sandbox_native_exec_attempts where sandbox_id=$1", [sandboxId]);
   await expect(drain(true)).rejects.toThrow("Provider deletion is pending");
   expect(remove).toHaveBeenCalledWith({ sandboxId: placement, generation: 2 });
   await db.query("update sandboxes set activity_until='-infinity' where id=$1", [sandboxId]);
@@ -1156,9 +1159,10 @@ async function nativeToolFixture(provider: Provider, placement: string, onQuery?
   return { db, context, sandboxId, invoke };
 }
 
-test.each(["clean", "failed", "wrong-placement"] as const)(
-  "active native drain requires capture and exact stop evidence (%s)",
+test.each(["clean", "failed", "wrong-placement", "unpreserved"] as const)(
+  "active native drain settles after capture or an explicit opt-in with exact stop evidence (%s)",
   async (capture) => {
+    const allowUnpreserved = capture === "unpreserved";
     const boat = fakeBoat();
     const placement = `bx_active_drain_${capture}`;
     let stopped = false;
@@ -1167,7 +1171,7 @@ test.each(["clean", "failed", "wrong-placement"] as const)(
     });
     boat.setExecOutput({
       stdout: JSON.stringify(
-        capture !== "failed"
+        capture !== "failed" && !allowUnpreserved
           ? { status: "clean" }
           : {
               status: "failed",
@@ -1193,14 +1197,22 @@ test.each(["clean", "failed", "wrong-placement"] as const)(
     const { db, context, sandboxId } = await nativeToolFixture(provider, placement);
     const caller = context.caller;
     const sql = bunLikeSql(db);
-    const drain = configureNativeDrain(sql, "boat", caller.userId, {
-      ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
-      ARMADA_PUBLIC_URL: PUBLIC_URL,
-    });
+    const drain = configureNativeDrain(
+      sql,
+      "boat",
+      caller.userId,
+      {
+        ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+        ARMADA_PUBLIC_URL: PUBLIC_URL,
+      },
+      allowUnpreserved,
+    );
     const candidate = { id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" as const };
     const inventory = () => context.data.sandboxes.get(sandboxId);
 
-    await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
+    await expect(drain.remove(candidate)).rejects.toThrow(
+      allowUnpreserved ? "waiting for the stop to settle" : "before preservation and stop are confirmed",
+    );
     expect((await inventory())?.status).toBe("stopping");
     expect(stop).not.toHaveBeenCalled();
     await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [sandboxId]);
@@ -1210,7 +1222,7 @@ test.each(["clean", "failed", "wrong-placement"] as const)(
       return provider;
     });
     expect(await worker.reconcileOne()).toBe(true);
-    expect((await inventory())?.status).toBe(capture === "clean" ? "stopped" : "stopping");
+    expect((await inventory())?.status).toBe(capture === "clean" || allowUnpreserved ? "stopped" : "stopping");
     expect(stop).toHaveBeenCalledTimes(capture === "failed" ? 0 : 1);
     if (capture === "clean") {
       const row = await inventory();
