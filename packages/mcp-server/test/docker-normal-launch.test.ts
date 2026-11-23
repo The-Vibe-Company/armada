@@ -341,7 +341,7 @@ async function fixture(
       }).authorizeRepositories
     : undefined;
   const resolver: Pick<LaunchCredentialResolver, "resolve" | "authorizeRepositories" | "defaults"> & {
-    launchAccountDefault: typeof credentials.launchAccountDefault;
+    launchAccountDefault: NonNullable<typeof credentials.launchAccountDefault>;
   } = {
     launchAccountDefault: (userId, harness) => readLaunchAccountDefault(sql, userId, harness),
     defaults: async (...args) => credentials.defaults?.(...args),
@@ -3790,42 +3790,56 @@ test("Docker refuses models outside the Morph account and freezes its OpenCode d
   }
 });
 
-test("Docker pool fallback persists the chosen credential in its launch manifest", async () => {
-  const f = await fixture();
-  const db = database();
-  const second = randomUUID();
-  await db.query("update credentials set max_agents=1 where id=$1", [f.body.credentialId]);
-  await db.query(
-    "insert into credentials(id,scope,owner_id,kind,name,value_enc) values($1,'user',$2,'openai','fallback',$3)",
-    [second, f.actor.userId, await encryptSecret("offline-fallback", key)],
-  );
-  await db.query("insert into agent_defaults(user_id,harness,credential_id,credential_ids) values($1,'codex',$2,$3)", [
-    f.actor.userId,
-    f.body.credentialId,
-    [f.body.credentialId, second],
-  ]);
-  await f.seedRunningSandbox();
-  const { credentialId: _explicit, ...implicit } = f.body;
-  const body = { ...implicit, requestId: randomUUID() };
-  const server = f.service(sql, true, 10_000, officialImage, true);
-  try {
-    const admitted = await server.launch(f.caller, body);
-    expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
-    const {
-      rows: [row],
-    } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from docker_launch_requests where sandbox_id=$1",
-      [body.requestId],
+test.each(["account_full", "incompatible_model"] as const)(
+  "Docker pool fallback persists %s in its launch manifest",
+  async (reason) => {
+    const capped = reason === "account_full";
+    const harness = capped ? "codex" : "opencode";
+    const f = await fixture({ harness });
+    const db = database();
+    const second = randomUUID();
+    if (capped) {
+      await db.query("update credentials set max_agents=1 where id=$1", [f.body.credentialId]);
+      await f.seedRunningSandbox();
+    }
+    const value = capped
+      ? "offline-fallback"
+      : JSON.stringify({
+          apiKey: "offline-fallback",
+          endpoint: { version: 1, baseUrl: "https://models.example/v1", models: ["other-model"] },
+        });
+    await db.query(
+      "insert into credentials(id,scope,owner_id,kind,name,value_enc) values($1,'user',$2,$4,'fallback',$3)",
+      [second, f.actor.userId, await encryptSecret(value, key), capped ? "openai" : "opencode"],
     );
-    expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
-      credentialId: second,
-      credentialVersion: 1,
-      accountSkips: [{ credentialId: f.body.credentialId, reason: { code: "account_full" } }],
-    });
-  } finally {
-    await server.close();
-  }
-});
+    await db.query("insert into agent_defaults(user_id,harness,credential_id,credential_ids) values($1,$4,$2,$3)", [
+      f.actor.userId,
+      f.body.credentialId,
+      [f.body.credentialId, second],
+      harness,
+    ]);
+    const { credentialId: _explicit, ...implicit } = f.body;
+    const body = { ...implicit, requestId: randomUUID(), ...(capped ? {} : { model: "armada/other-model" }) };
+    const server = f.service(sql, true, 10_000, officialImage, true);
+    try {
+      const admitted = await server.launch(f.caller, body);
+      expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
+      const {
+        rows: [row],
+      } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_enc from docker_launch_requests where sandbox_id=$1",
+        [body.requestId],
+      );
+      expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
+        credentialId: second,
+        credentialVersion: 1,
+        accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
+      });
+    } finally {
+      await server.close();
+    }
+  },
+);
 
 test("Docker normal launch uses the saved model unless explicitly overridden", async () => {
   for (const explicit of [false, true]) {

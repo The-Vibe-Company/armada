@@ -226,7 +226,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           const credential = await tx.query(
             `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
              and status='active' and (expires_at is null or expires_at>now())
-             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
+             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
             [
               request.credentialId,
               request.credentialVersion,

@@ -48,7 +48,7 @@ import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { resolveDockerLaunchAccount } from "./docker-launch-account.ts";
+import { dockerPoolOpenCodeModel, resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
@@ -568,9 +568,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               { ...request, credentialId },
               { ...selected, model },
             );
+            const choice = entry.modelChoice ?? resolveModelChoice(request.harness, { ...selected, model });
+            const compatibleModel =
+              request.harness === "opencode" ? dockerPoolOpenCodeModel(entry.resolved.env, choice.model) : choice.model;
+            if (!compatibleModel) return;
             return {
               ...entry.binding,
-              ...(entry.modelChoice ?? resolveModelChoice(request.harness, { ...selected, model })),
+              ...choice,
+              model: compatibleModel,
               resolved: entry.resolved,
             };
           })

@@ -140,6 +140,7 @@ function poolCandidateRefused(error: unknown) {
     error instanceof LaunchError &&
     error.code === "invalid_request" &&
     (error.message.startsWith("Choose a Morph plan model") ||
+      error.message.startsWith("An OpenCode key requires an explicit") ||
       error.message.startsWith(`Choose an ${OPENCODE_CONNECTION_PROVIDER}/<model>`))
   );
 }
@@ -148,13 +149,14 @@ export async function preparePoolCandidates<T>(
   sql: Sql,
   userId: string,
   pool: AccountPool,
-  prepare: (credentialId: string, model: string) => Promise<T>,
+  prepare: (credentialId: string, model: string) => Promise<T | undefined>,
 ) {
   const model = pool.model ?? MODEL_CATALOG[pool.harness].defaultModel;
   const prepared = new Map<string, T>();
   for (const credentialId of new Set(pool.credentialIds)) {
     try {
-      prepared.set(credentialId, await prepare(credentialId, model));
+      const candidate = await prepare(credentialId, model);
+      if (candidate) prepared.set(credentialId, candidate);
     } catch (error) {
       if (!poolCandidateRefused(error)) throw error;
     }
