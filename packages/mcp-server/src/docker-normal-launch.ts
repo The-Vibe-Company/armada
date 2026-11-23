@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type AccountSkip,
   type ApplicationSecretBinding,
   DEFAULT_LAUNCH_TTL_SECONDS,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
@@ -56,6 +57,8 @@ import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservat
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { admitAccount, preparePoolCandidates } from "./launch-account-pool.ts";
+import type { launchCredentials } from "./launch-credentials.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import {
   continueRequest,
@@ -95,6 +98,7 @@ type Request = {
   stopWhenWorkMerged?: boolean;
 };
 type Manifest = {
+  accountSkips?: AccountSkip[];
   variables?: Record<string, string>;
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
@@ -159,7 +163,8 @@ type Options = {
   /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "prepareTurn" | "preflightRepositories">;
-  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories" | "defaults">;
+  credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories" | "defaults"> &
+    Pick<ReturnType<typeof launchCredentials>, "launchAccountDefault">;
   mcp?: RuntimeMcp;
   bootstrap?: ReturnType<typeof createDockerBootstrapService>;
   clock?: Clock;
@@ -516,9 +521,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // Resolve personal choices before normalization supplies catalog defaults. Explicit
       // account/model selections and replayed frozen manifests retain their authority.
       reason = "account_defaults";
+      const accountActor = { userId: caller.userId, orgId: org, role };
+      const accountDefault = frozen
+        ? undefined
+        : await options.credentials.launchAccountDefault?.(accountActor.userId, input.harness);
       const preference = frozen
         ? { credentialId: frozen.credentialId ?? null, model: frozen.model }
-        : await options.credentials.defaults?.({ userId: caller.userId, orgId: org, role }, input.harness);
+        : accountDefault
+          ? {
+              credentialId: accountDefault.credentialIds.length ? null : accountDefault.credentialId,
+              model: accountDefault.model,
+            }
+          : await options.credentials.defaults?.(accountActor, input.harness);
       const selected = applyLaunchAccountDefaults(input, preference);
       const request = normalize(selected, org, sourceHost ?? identifier(input.hostId), image);
       const actor = { userId: identifier(caller.userId), orgId: request.org };
@@ -538,15 +552,32 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const needsRepositoryPreflight = Boolean(
         (request.repos && (!options.deferLaunch || admission)) || source?.config.repos.length,
       );
-      // Resolve outside the reservation transaction; only the binding is retained.
+      // Prepare credentials before reservation so the transaction only evaluates frozen candidate revisions.
       reason = "credential_resolution";
-      const { resolved, binding, modelChoice } = await resolveDockerLaunchAccount(
-        options.credentials,
-        { ...actor, role: state.membership.role },
-        request,
-        selected,
-      );
       const launchActor = { ...actor, role: state.membership.role };
+      const pool =
+        request.credentialId === null && request.credentialVersion === null && accountDefault?.credentialIds.length
+          ? { harness: request.harness, credentialIds: accountDefault.credentialIds, model: request.model }
+          : undefined;
+      const accounts = pool
+        ? await preparePoolCandidates(sql, actor.userId, pool, async (credentialId, model) => {
+            const entry = await resolveDockerLaunchAccount(
+              options.credentials,
+              launchActor,
+              { ...request, credentialId },
+              { ...selected, model },
+            );
+            return {
+              ...entry.binding,
+              ...(entry.modelChoice ?? resolveModelChoice(request.harness, { ...selected, model })),
+              resolved: entry.resolved,
+            };
+          })
+        : undefined;
+      const initial = accounts?.values().next().value;
+      const { resolved, binding, modelChoice } = initial
+        ? { resolved: initial.resolved, binding: initial, modelChoice: initial }
+        : await resolveDockerLaunchAccount(options.credentials, launchActor, request, selected);
       if (needsRepositoryPreflight) {
         const repositories = request.repos ?? source?.config.repos ?? [];
         await options.credentials.authorizeRepositories?.(launchActor, resolved, repositories);
@@ -575,7 +606,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest: Manifest = {
         ...(source ? { snapshotConfig: source.config } : {}),
         request,
-        ...(selected.model === undefined && modelChoice && modelChoice.model !== request.model
+        ...(!pool && selected.model === undefined && modelChoice && modelChoice.model !== request.model
           ? { accountModelDefaulted: true }
           : {}),
         credentialId: binding.credentialId,
@@ -587,14 +618,20 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         preparation: { skills, connections },
         ...(correlationId ? { correlationId } : {}),
       };
-      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest, modelChoice } };
+      return {
+        ...plan,
+        kind: "active" as const,
+        bootstrap,
+        fresh: { resolved, binding, manifest, modelChoice, pool, accounts },
+      };
     };
 
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
         const { actor, request, hash, state, explicitModel } = plan;
         if (plan.kind === "retained" || !plan.fresh) return state;
-        const { resolved, binding, manifest, modelChoice } = plan.fresh;
+        let { resolved } = plan.fresh;
+        const { binding, manifest, modelChoice, pool, accounts } = plan.fresh;
         const choice = modelChoice ?? request;
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
@@ -627,6 +664,17 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             },
             launchAdmission?.beforeReserve,
             request.snapshotId,
+            pool && accounts
+              ? async (accountTx) => {
+                  const selected = await admitAccount(accountTx, actor.userId, pool, request.requestId, accounts);
+                  const { resolved: selectedCredentials, ...candidate } = selected.candidate;
+                  resolved = selectedCredentials;
+                  manifest.credentialId = candidate.credentialId;
+                  manifest.credentialVersion = candidate.credentialVersion;
+                  if (selected.skips.length) manifest.accountSkips = selected.skips;
+                  return candidate;
+                }
+              : undefined,
           );
           if (request.externalRef !== undefined)
             await tx.query("update public.sandboxes set external_ref=$2 where id=$1", [

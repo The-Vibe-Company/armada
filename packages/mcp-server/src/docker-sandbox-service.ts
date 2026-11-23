@@ -190,11 +190,19 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     });
   }
   return {
-    reserve(actor: Actor, input: Reservation, authorize?: (tx: Sql) => Promise<void>, snapshotId?: string) {
+    reserve(
+      actor: Actor,
+      input: Reservation,
+      authorize?: (tx: Sql) => Promise<void>,
+      snapshotId?: string,
+      selectAccount?: (
+        tx: Sql,
+      ) => Promise<Pick<Reservation, "credentialId" | "credentialVersion" | "model" | "reasoningEffort">>,
+    ) {
       return transaction(async (tx) => {
         if (options.enabled !== true) deny();
         actorInput(actor);
-        const request = normalize(input);
+        let request = normalize(input);
         const hint =
           (
             await tx.query<{ owner_id: string; installation_id: string }>(
@@ -214,10 +222,11 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
           .rows[0];
         // Revalidate before host/sandbox locks, without consulting account values.
         if (!existing) {
+          if (selectAccount) request = normalize({ ...input, ...(await selectAccount(tx)) });
           const credential = await tx.query(
             `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
              and status='active' and (expires_at is null or expires_at>now())
-             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for update`,
             [
               request.credentialId,
               request.credentialVersion,
