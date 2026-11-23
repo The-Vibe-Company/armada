@@ -7,6 +7,7 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GOLDEN_SSH_RECEIPT_PHASES, GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
+import { outputCollectorFailureDetail } from "./sandbox-outputs.ts";
 import { launchInfrastructure } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 
@@ -429,6 +430,7 @@ function command(
     let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let commandIndex: string | undefined;
+    let collectorFailure: string | undefined;
     let gitFailure: { index: number; reason: keyof typeof GIT_FAILURE_MESSAGES } | undefined;
     let timedOut = false;
     let privateReason: (typeof PRIVATE_SSH_FAILURES)[number] | undefined;
@@ -491,6 +493,7 @@ function command(
           exitCode = match[2];
           commandIndex = match[3];
         }
+        collectorFailure = outputCollectorFailureDetail(line) ?? collectorFailure;
         const git =
           /^ARMADA_GIT_FAILURE ([1-9]|1[0-6]) (auth_denied|repository_not_found|branch_missing|transport_failed|lfs_failed|destination_exists|storage_failed|unknown)$/.exec(
             line,
@@ -578,7 +581,7 @@ function command(
                   : phase === "init" && commandIndex && Number(commandIndex) > 0
                     ? `Init command ${commandIndex} exited ${exitCode ?? code ?? "unknown"}. Correct the command, then rebuild.`
                     : phase === "output_collector"
-                      ? `The sandbox output collector exited ${exitCode ?? code ?? "unknown"}. Verify the managed Bun executable, Linux glibc and /proc/self/fd before rebuilding.`
+                      ? `The sandbox output collector exited ${exitCode ?? code ?? "unknown"}. ${exitCode === "86" && collectorFailure ? `Failed check: ${collectorFailure}.` : "Verify the managed Bun executable, Linux glibc and /proc/self/fd before rebuilding."}`
                       : phase === "inline_scan"
                         ? `Secret scan exited ${exitCode ?? code ?? "unknown"} after finding token-shaped material; remove credentials from the repositories and builder before rebuilding.`
                         : `Build failed during ${phase} (${reason}). Check connectivity, permissions and package availability.`,

@@ -17,6 +17,7 @@ import { GOLDEN_SKILLPACK_SETUP } from "./golden-skillpack.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import {
+  MANAGED_BUN_PATH_CHECK,
   OUTPUT_COLLECTOR_BUN_VERSION,
   OUTPUT_COLLECTOR_MANAGED_PROBE,
   OUTPUT_COLLECTOR_PROBE_MARKER,
@@ -771,10 +772,26 @@ export function goldenScript(
     // A snapshot can later be read by a privileged provider exec. Never point that reader
     // at the agent-writeable Bun installed by the repository baseline, and never copy the
     // repository's Bun pin: Armada provisions its own pinned collector Bun.
-    `if [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then armada_bun_prefix=$(mktemp -d); npm install --global --prefix "$armada_bun_prefix" bun@${OUTPUT_COLLECTOR_BUN_VERSION}; sudo -n install -d -m 755 /opt/armada /opt/armada/runtime-bun; sudo -n install -m 555 "$armada_bun_prefix/bin/bun" /opt/armada/runtime-bun/bun; rm -rf "$armada_bun_prefix"; fi`,
+    MANAGED_BUN_PATH_CHECK,
+    'armada_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n -- "$@"; fi; }',
+    "protected_path /opt",
+    `for armada_dir in /opt/armada /opt/armada/runtime-bun; do
+  if ! protected_path "$armada_dir" 2>/dev/null; then
+    [ ! -L "$armada_dir" ] || collector_failure symlink
+    armada_root /usr/bin/install -d -o root -g root -m 755 "$armada_dir"
+    protected_path "$armada_dir"
+  fi
+done`,
+    `if ! managed_bun_path 2>/dev/null || [ "$(/opt/armada/runtime-bun/bun --version 2>/dev/null || true)" != ${OUTPUT_COLLECTOR_BUN_VERSION} ]; then
+  armada_bun_prefix=$(mktemp -d)
+  npm install --global --prefix "$armada_bun_prefix" bun@${OUTPUT_COLLECTOR_BUN_VERSION}
+  armada_root /usr/bin/install -o root -g root -m 555 -T "$armada_bun_prefix/bin/bun" /opt/armada/runtime-bun/bun
+  rm -rf "$armada_bun_prefix"
+fi`,
+    "managed_bun_path",
     `[ "$(/opt/armada/runtime-bun/bun --version)" = ${OUTPUT_COLLECTOR_BUN_VERSION} ] || { printf "%s\\n" "The output collector Bun does not match the managed pin." >&2; exit 96; }`,
     // Exit 0 alone is not proof: an incompatible Bun can print help and succeed.
-    `armada_probe=$(if [ "$(id -u)" -eq 0 ]; then /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; else sudo -n /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)}; fi)`,
+    `armada_probe=$(armada_root /bin/sh -c ${shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE)})`,
     `[ "$armada_probe" = ${OUTPUT_COLLECTOR_PROBE_MARKER} ] || { printf "%s\\n" "The output collector probe did not answer." >&2; exit 96; }`,
     "armada_phase=credential_cleanup",
     `if [ "$(id -u)" -eq 0 ]; then bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; else sudo -n bash -c ${shellQuote(CREDENTIAL_CLEANUP)}; fi 2>/dev/null`,

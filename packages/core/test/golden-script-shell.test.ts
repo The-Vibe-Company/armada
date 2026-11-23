@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_MANAGED_PROBE, withGoldenDirs } from "../src/server.ts";
@@ -409,6 +419,7 @@ test.each([false, true])(
 test.each([
   ["the managed collector answers", "probe", 0],
   ["the image already ships the managed Bun", "preinstalled", 0],
+  ["the pinned Bun has an unprotected parent", "writable-parent", 0],
   ["an incompatible Bun exits 0 without answering", "help", 96],
 ])("the golden build provisions its own collector Bun and requires the probe answer: %s", (_, mode, status) => {
   const base = mkdtempSync(join(tmpdir(), "golden-collector-"));
@@ -420,7 +431,31 @@ test.each([
     writeFileSync(join(bin, "bun"), "#!/bin/sh\n[ \"$1\" = --version ] && echo 1.0.0 || echo 'Bun CLI help'\n", {
       mode: 0o755,
     });
-    writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] || exit 95\nshift\nexec "$@"\n', { mode: 0o755 });
+    writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1 $2" = "-n --" ] || exit 95\nshift 2\nexec "$@"\n', {
+      mode: 0o755,
+    });
+    // CI runs without root. Keep real fixture modes and virtualize root ownership.
+    writeFileSync(
+      join(bin, "stat"),
+      `#!/bin/sh
+case "$4" in
+  "${opt}"|"${opt}"/*) mode=$(/usr/bin/stat -c %a -- "$4") || exit $?; printf '0 %s\\n' "$mode" ;;
+  *) printf '0 755\\n' ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(bin, "install"),
+      `#!/bin/bash
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac
+done
+exec /usr/bin/install "\${args[@]}"
+`,
+      { mode: 0o755 },
+    );
     writeFileSync(
       join(bin, "npm"),
       `#!/bin/sh
@@ -432,9 +467,10 @@ chmod +x "$4/bin/bun"
 `,
       { mode: 0o755 },
     );
-    if (mode === "preinstalled") {
+    if (mode === "preinstalled" || mode === "writable-parent") {
       // Modal's managed image: the protected Bun is already at the pin, so nothing is installed.
       mkdirSync(join(opt, "runtime-bun"), { recursive: true });
+      if (mode === "writable-parent") chmodSync(opt, 0o775);
       writeFileSync(
         join(opt, "runtime-bun", "bun"),
         '#!/bin/sh\n[ "$1" = --version ] && echo 1.4.2 || echo armada-output-collector-ready # image\n',
@@ -445,14 +481,17 @@ chmod +x "$4/bin/bun"
     const probe = mode !== "help" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
     const block = extract(goldenScript(prepared), "armada_phase=output_collector", "probe did not answer")
       .replaceAll(shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE), shellQuote(probe))
-      .replaceAll("/opt/armada", opt);
+      .replaceAll("/opt/armada", opt)
+      .replaceAll("/usr/bin/stat", join(bin, "stat"))
+      .replaceAll("/usr/bin/install", join(bin, "install"));
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", block], {
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: base },
       encoding: "utf8",
     });
     expect(result.status).toBe(status);
+    if (mode === "writable-parent") expect(statSync(opt).mode & 0o022).toBe(0);
     expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
-    expect(existsSync(join(base, "npm-called"))).toBe(mode !== "preinstalled");
+    expect(existsSync(join(base, "npm-called"))).toBe(mode === "probe" || mode === "help");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

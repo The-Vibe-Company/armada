@@ -38,19 +38,44 @@ export interface OutputFile {
 // A reader that exits 86 (no FFI, no descriptor filesystem) hands over to the next one; it printed
 // nothing. Only fixed paths, a fixed working directory and a cleared environment are used. In a
 // privileged exec context, never fall back to an executable the agent can replace.
-const READERS = `cd / || exit 5
-uid=$(/usr/bin/id -u) || exit 86
+const FAILURE_RECORD = "ARMADA_OUTPUT_COLLECTOR_FAILURE";
+const failureDetails: Readonly<Record<string, string>> = {
+  missing: "the managed Bun file or a parent directory is missing",
+  mode: "the managed Bun is not executable or its path is group- or other-writable",
+  owner: "the managed Bun path is not root-owned",
+  symlink: "the managed Bun path contains a symlink",
+  ffi: "Bun could not load Linux glibc through FFI",
+  proc_fd: "the collector could not open a directory through /proc/self/fd",
+};
+
+export function outputCollectorFailureDetail(line: string): string | undefined {
+  if (!line.startsWith(`${FAILURE_RECORD} `)) return;
+  const reason = line.slice(FAILURE_RECORD.length + 1);
+  if (Object.hasOwn(failureDetails, reason)) return failureDetails[reason];
+}
+
+export const MANAGED_BUN_PATH_CHECK = `collector_failure() { printf '${FAILURE_RECORD} %s\\n' "$1" >&2; return 86; }
 protected_path() {
   armada_path=$1
   while [ -n "$armada_path" ]; do
-    [ ! -L "$armada_path" ] || return 1
-    metadata=$(/usr/bin/stat -c '%u %a' -- "$armada_path") || return 1
+    [ ! -L "$armada_path" ] || { collector_failure symlink; return 86; }
+    metadata=$(/usr/bin/stat -c '%u %a' -- "$armada_path" 2>/dev/null) || { collector_failure missing; return 86; }
     set -- $metadata
-    [ "$1" = 0 ] && [ "$((0$2 & 022))" = 0 ] || return 1
+    [ "$1" = 0 ] || { collector_failure owner; return 86; }
+    [ "$((0$2 & 022))" = 0 ] || { collector_failure mode; return 86; }
     armada_path=\${armada_path%/*}
   done
 }
-isolated() { /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$@"; }
+managed_bun_path() {
+  protected_path /opt/armada/runtime-bun/bun || return 86
+  [ -f /opt/armada/runtime-bun/bun ] || { collector_failure missing; return 86; }
+  [ -x /opt/armada/runtime-bun/bun ] || collector_failure mode
+}
+`;
+
+const READERS = `cd / || exit 5
+uid=$(/usr/bin/id -u) || exit 86
+${MANAGED_BUN_PATH_CHECK}isolated() { /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin "$@"; }
 attempt() {
   isolated "$@"
   armada_status=$?
@@ -58,14 +83,12 @@ attempt() {
 }
 `;
 
-const managedBun = (
-  program: string,
-) => `if [ -f /opt/armada/runtime-bun/bun ] && [ -x /opt/armada/runtime-bun/bun ] && protected_path /opt/armada/runtime-bun/bun 2>/dev/null; then
-  attempt /opt/armada/runtime-bun/bun --no-env-file --no-install -e ${shellQuote(program)}
-fi
-`;
+const managedBun = (program: string) =>
+  `attempt /opt/armada/runtime-bun/bun --no-env-file --no-install -e ${shellQuote(program)}\n`;
 
-const collectorShell = (program: string, python: string) => `${READERS}${managedBun(program)}if [ "$uid" != 0 ]; then
+const collectorShell = (program: string, python: string) => `${READERS}if managed_bun_path 2>/dev/null; then
+  ${managedBun(program)}fi
+if [ "$uid" != 0 ]; then
   for armada_bun in /usr/local/bin/bun /usr/bin/bun /home/user/.bun/bin/bun; do
     [ -f "$armada_bun" ] && [ -x "$armada_bun" ] || continue
     [ "$(isolated "$armada_bun" --no-env-file --no-install -e 'console.log("armada-bun-evaluates")' 2>/dev/null)" = armada-bun-evaluates ] || continue
@@ -82,12 +105,13 @@ done
 exit 86`;
 
 /** The managed Bun alone: what the golden build must prove before a snapshot is taken. */
-const managedShell = (program: string) => `${READERS}${managedBun(program)}exit 86`;
+const managedShell = (program: string) => `${READERS}managed_bun_path || exit 86
+${managedBun(program)}exit 86`;
 
 // Linux glibc and /proc/self/fd are part of the managed VM/container baseline. Read each
 // directory entry incrementally and anchor each path component to an open directory descriptor,
 // so even a concurrent rename cannot redirect an open through a symlink.
-const collectorSetup = String.raw`
+const collectorSetup = (diagnostics = false) => String.raw`
 const fs = require("node:fs");
 let ptr, read, toArrayBuffer;
 const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
@@ -107,6 +131,7 @@ try {
     strlen: { args: [FFIType.ptr], returns: FFIType.u64 },
   }).symbols;
 } catch {
+  ${diagnostics ? `console.error("${FAILURE_RECORD} ffi");` : ""}
   process.exit(86);
 }
 
@@ -122,6 +147,7 @@ function openCollectorRoot() {
   } catch {
     // Descriptor access is unavailable. The shell can try the next reader.
   }
+  ${diagnostics ? `console.error("${FAILURE_RECORD} proc_fd");` : ""}
   process.exit(86);
 }
 `;
@@ -134,13 +160,13 @@ export const OUTPUT_COLLECTOR_PROBE_MARKER = "armada-output-collector-ready";
  * any repository Bun pin. */
 export const OUTPUT_COLLECTOR_BUN_VERSION = SNAPSHOT_BASELINE_BUN;
 
-const probeProgram = `${collectorSetup}
+const collectorProbeProgram = (diagnostics: boolean) => `${collectorSetup(diagnostics)}
 fs.closeSync(openCollectorRoot());
 console.log(${JSON.stringify(OUTPUT_COLLECTOR_PROBE_MARKER)});
 `;
 
 /** Proves the managed Bun reader alone (the golden build's check before a snapshot is taken). */
-export const OUTPUT_COLLECTOR_MANAGED_PROBE = managedShell(probeProgram);
+export const OUTPUT_COLLECTOR_MANAGED_PROBE = managedShell(collectorProbeProgram(true));
 
 // The pre-#2634 reader, kept for sandboxes from goldens built before the managed Bun existed.
 // Same bounds, exclusions, exit codes and name rules as the Bun program (UTF-16 length like JS).
@@ -218,10 +244,10 @@ finally: os.close(directory)
 print(json.dumps(files,separators=(',',':')))
 `;
 
-export const OUTPUT_COLLECTOR_PROBE = collectorShell(probeProgram, pythonProbe);
+export const OUTPUT_COLLECTOR_PROBE = collectorShell(collectorProbeProgram(false), pythonProbe);
 function outputCollector(chunk?: OutputChunkRequest | null): string {
   return collectorShell(
-    collectorSetup +
+    collectorSetup() +
       String.raw`
 const files = [];
 const part = ${JSON.stringify(chunk === undefined ? false : chunk)};
