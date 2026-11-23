@@ -8,11 +8,22 @@ const MIN_STEP_DEADLINE_MS = 10_000;
 export const USAGE_STATUS_MIN_REQUEST_MS = 2_000;
 export const SMOKE_POLL_INTERVAL_MS = 1_000;
 
+const UNMEASURED_MODAL_JOB_STEP_MS = 120_000;
+export const modalJobStepFallbacks = {
+  "modal/expiry": { expiry_ready: UNMEASURED_MODAL_JOB_STEP_MS },
+  "modal/lifecycle": {
+    ready: UNMEASURED_MODAL_JOB_STEP_MS,
+  },
+  "modal/real-model": { real_model_ready: UNMEASURED_MODAL_JOB_STEP_MS },
+};
+
 type DeadlineTable = Readonly<Record<string, Readonly<Partial<Record<string, number>>>>>;
 
 export function deadlinesFor(table: DeadlineTable, provider: string, lane: string) {
   const scope = `${provider}/${lane}`;
-  return Object.hasOwn(table, scope) ? table[scope]! : {};
+  const measured = Object.hasOwn(table, scope) ? table[scope] : undefined;
+  const fallback = (modalJobStepFallbacks as DeadlineTable)[scope];
+  return fallback ? { ...fallback, ...measured } : (measured ?? {});
 }
 
 export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {

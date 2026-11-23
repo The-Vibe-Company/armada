@@ -38,6 +38,8 @@ test.each([
   const launches: { provider: string; credentialId: string }[] = [];
   let dockerAllocation: { id: string; externalRef: string } | undefined;
   const sent: string[] = [];
+  let modalSetupReads = 0;
+  let modalStopReads = 0;
   const stopped = new Set<string>();
   const receipts: Record<string, unknown>[] = [];
   const passed = await postDeploySmoke(env, ["--real-model"], {
@@ -84,10 +86,20 @@ test.each([
           expect(body.externalRef).toBe(dockerAllocation?.externalRef);
           return Response.json({ sandboxes: [{ ...dockerAllocation, provider: "docker", status: "ready" }] });
         case "/api/v1/sandbox/status":
+          if (body.id === id(5) && scenario === "finished with complete text" && !stopped.has(body.id)) {
+            const pending = ++modalSetupReads === 1;
+            return Response.json({
+              status: pending ? "starting" : "ready",
+            });
+          }
+          if (body.id === id(5) && scenario === "finished with complete text" && ++modalStopReads === 1)
+            return Response.json({ status: "failed", providerState: null });
           return Response.json(
             stopped.has(body.id) ? { status: "stopped", providerState: "stopped" } : { status: "ready" },
           );
         case "/api/v1/sandbox/send":
+          if (body.id === id(5) && modalSetupReads === 1)
+            return Response.json({ error: { code: "conflict" } }, { status: 409 });
           sent.push(body.id);
           return Response.json({ promptId: body.id });
         case "/api/v1/sandbox/wait":
@@ -131,15 +143,22 @@ test.each([
     const providers = ["modal", "docker"];
     for (const [request, step, fallback] of [
       ["launch", "real_model_launch", 600_000],
-      ["status", "real_model_ready", 120_000],
       ["send", "real_model_send", 120_000],
       ["wait", "real_model_wait", 120_000],
       ["stop", "real_model_stop", 120_000],
     ] as const) {
-      expect(timeouts.get(request)).toEqual(providers.map((provider) => budgets(provider)[step] ?? fallback));
+      expect(timeouts.get(request)?.toSorted()).toEqual(
+        providers.map((provider) => budgets(provider)[step] ?? fallback).toSorted(),
+      );
     }
     const confirmations = timeouts.get("stop-confirmation")!;
-    expect(confirmations).toHaveLength(1);
+    expect(modalSetupReads).toBe(2);
+    const readyBudget = budgets("modal").real_model_ready!;
+    expect(timeouts.get("status")?.toSorted()).toEqual(
+      [readyBudget, readyBudget - 1000, budgets("docker").real_model_ready ?? 120_000].toSorted(),
+    );
+    expect(confirmations).toHaveLength(2);
+    expect(confirmations[1]).toBe(confirmations[0]! - 1000);
     const stopBudget = budgets("modal").real_model_stop;
     if (stopBudget === undefined) expect(confirmations[0]).toBe(120_000);
     else {

@@ -1,3 +1,17 @@
+export function modalSmokeSetupFailed(status: { settled?: boolean; statusMessage?: string | null }) {
+  return status.settled === true && status.statusMessage === "Modal launch setup failed.";
+}
+
+export function modalSmokeSetupReason(reason: unknown) {
+  if (
+    typeof reason === "string" &&
+    /^(?:invalid_modal_initial_turn|modal_initial_turn_(?:unavailable|budget_exhausted|environment_refused|workspace_refused|skills_refused|mcp_refused|scoped_access_unavailable|scoped_reference_refused|refused|unclassified))$/.test(
+      reason,
+    )
+  )
+    return reason;
+}
+
 export async function observeSmokeLaunch<T>(
   until: number,
   io: { now(): number; sleep(ms: number): Promise<void> },

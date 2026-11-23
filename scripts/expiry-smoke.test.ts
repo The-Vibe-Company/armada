@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
+import { modalJobStepFallbacks } from "./smoke-deadlines.ts";
 
-const deadlines = deadlineTable["modal/expiry"];
+const deadlines = { ...modalJobStepFallbacks["modal/expiry"], ...deadlineTable["modal/expiry"] };
 const ownedWorker = "12345678-1234-1234-8234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =

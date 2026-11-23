@@ -199,7 +199,14 @@ function fixture(
         output = {
           id: launch.id,
           externalRef: launch.key,
-          status: options.jobAdmission === "failed_setup" ? "failed" : "ready",
+          status: "ready",
+          ...(options.jobAdmission === "failed_setup"
+            ? {
+                settled: true,
+                statusMessage: "Modal launch setup failed.",
+                statusReason: "modal_initial_turn_environment_refused",
+              }
+            : {}),
           prompt: ++launch.statusReads === 1 ? null : { promptId: `prompt-${templateId}`, state: "finished" },
           skills: launch.pin
             ? [receipt(launch.pin)]
@@ -526,20 +533,29 @@ test("Modal template admission resolves the original public prompt before provin
 
 test.each([
   ["wrong_pin", "template_launch", "invalid_receipt"],
-  ["failed_setup", "template_launch", "turn_failed"],
+  ["failed_setup", "template_launch", "modal_launch_setup_failed"],
   ["late_ack", "template_launch", "launch_observation_timeout"],
   ["extra_skill", "public_skill_receipt", "invalid_receipt"],
 ] as const)(
   "Modal template admission with %s stops the known allocation without using a prompt",
   async (jobAdmission, step, code) => {
-    const fake = fixture({ jobAdmission, key: "absent" });
+    const fake = fixture({
+      jobAdmission,
+      key: "absent",
+      ...(jobAdmission === "failed_setup" ? { fault: "lost_launch" } : {}),
+    });
     const item = { ...selected, provider: "modal" as const };
     if (jobAdmission === "extra_skill") {
       expect(await runTemplateSkillCase({ ...item, publicSkill: undefined }, fake.io)).toBe(false);
     } else {
       expect(await runTemplateSkillCase(item, fake.io)).toBe(false);
     }
-    expect(fake.lines).toContainEqual({ step, pass: false, code });
+    expect(fake.lines).toContainEqual({
+      step,
+      pass: false,
+      code,
+      ...(jobAdmission === "failed_setup" ? { reason: "modal_initial_turn_environment_refused" } : {}),
+    });
     if (jobAdmission === "late_ack") expect(fake.calls.some((call) => call.path === "sandbox/status")).toBe(false);
     expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
     expect(fake.stopped).toEqual([fake.reservedId]);

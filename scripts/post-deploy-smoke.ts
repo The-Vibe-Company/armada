@@ -33,13 +33,14 @@ import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
 import { deadlinesFor, SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
-import { observeSmokeLaunch } from "./smoke-launch.ts";
+import { modalSmokeSetupFailed, modalSmokeSetupReason, observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
   | ApiFailureCode
   | "sandbox_not_ready"
+  | "modal_launch_setup_failed"
   | "invalid_configuration"
   | "compute_opt_in_required"
   | "request_failed"
@@ -862,6 +863,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       io: { ...io, out } satisfies SmokeIo,
     };
   }
+  function stopObserved(result: { status: string; providerState?: string | null }) {
+    if (result.status !== "stopped" && result.status !== "failed") return false;
+    if (result.status === "failed" && result.providerState == null) return false;
+    if (result.providerState !== "stopped") fail("provider_not_stopped");
+    return true;
+  }
   function templateUnit(index: number, item: SmokeCase): Promise<boolean> {
     const { request, withCleanup, withStepDeadline, out, step, budgets, poll } = unit(
       index,
@@ -902,11 +909,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
           await poll(
             () => request<{ status: string; providerState: string }>("sandbox/status", { org: item.org, id }),
-            (result) => {
-              if (result.status !== "stopped" && result.status !== "failed") return false;
-              if (result.providerState !== "stopped") fail("provider_not_stopped");
-              return true;
-            },
+            stopObserved,
           );
         },
       },
@@ -982,9 +985,15 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id !== observedId || !launch.ready.includes(row.status)) return;
+              if (
+                row.id !== observedId ||
+                (!launch.ready.includes(row.status) && !(recover && row.status === "failed"))
+              )
+                return;
               if (!recover) return { sandbox: row } as T;
               return recover(row.id, requestKey, until).catch((readError: unknown) => {
+                if (readError instanceof SmokeFailure && readError.code === "modal_launch_setup_failed")
+                  throw readError;
                 if (readError instanceof SmokeFailure || readError instanceof TemplateSkillSmokeFailure)
                   return undefined;
                 throw readError;
@@ -1110,7 +1119,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const sandbox = <T>(action: string, body: object = {}, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, id, ...body }, undefined, timeoutMs);
     const status = (timeoutMs?: number) =>
-      sandbox<{ status: string; providerState?: string; statusReason?: string }>("status", {}, timeoutMs);
+      sandbox<{
+        status: string;
+        providerState?: string;
+        statusReason?: string;
+      }>("status", {}, timeoutMs);
     out(JSON.stringify({ step: "real_model", model: "real", provider: item.provider }));
     try {
       await step("real_model_launch", async () => {
@@ -1228,15 +1241,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   } catch (error) {
                     if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
                   }
-                  await poll(
-                    status,
-                    (result) => {
-                      if (!["stopped", "failed"].includes(result.status)) return false;
-                      if (result.providerState !== "stopped") fail("provider_not_stopped");
-                      return true;
-                    },
-                    until === undefined ? undefined : { until },
-                  );
+                  await poll(status, stopObserved, until === undefined ? undefined : { until });
                 },
                 { measureCleanup: true },
               ),
@@ -1368,11 +1373,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const status = await poll(
           () =>
             sandbox<{ status: string; providerState: string; preservationNote?: string }>("status", { id: sandboxId }),
-          (status) => {
-            if (status.status !== "stopped" && status.status !== "failed") return false;
-            if (status.providerState !== "stopped") fail("provider_not_stopped");
-            return true;
-          },
+          stopObserved,
           until === undefined ? undefined : { until },
         );
         stopWarning ||= status.preservationNote?.includes("checkpoint_failed_disk_not_retained");
@@ -1455,15 +1456,21 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   prompt: unknown;
                   settled: boolean;
                   statusMessage: string | null;
+                  statusReason?: string | null;
                 }
               >("status", { id }, Math.min(5_000, remaining));
-              if (
-                status?.id !== id ||
-                status.externalRef !== requestKey ||
-                status.status !== "ready" ||
-                status.prompt !== null
-              )
-                return;
+              if (status?.id !== id || status.externalRef !== requestKey) return;
+              if (modalSmokeSetupFailed(status)) {
+                io.out(
+                  JSON.stringify({
+                    step: "launch_setup_diagnostic",
+                    sandboxId: id,
+                    reason: modalSmokeSetupReason(status.statusReason),
+                  }),
+                );
+                fail("modal_launch_setup_failed");
+              }
+              if (status.status !== "ready" || status.prompt !== null) return;
               if (
                 scope &&
                 (!matchesParentConfiguration(status) || status.settled !== true || status.statusMessage !== null)
@@ -1530,6 +1537,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status?: unknown;
                 providerState?: unknown;
                 statusReason?: unknown;
+                settled?: boolean;
+                statusMessage?: string | null;
               } | null>("status", { id: sandboxId }, timeoutMs);
               const { status, providerState, statusReason } = result ?? {};
               statusResponse = {
@@ -1537,13 +1546,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   typeof status === "string" && OBSERVED_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
                 providerState:
                   providerState === "active" || providerState === "stopped" ? providerState : jsonShape(providerState),
-                statusReason: jsonShape(statusReason),
+                statusReason: modalSmokeSetupReason(statusReason) ?? jsonShape(statusReason),
               };
               return result;
             },
             (result) => {
               if (result === null) fail("invalid_response");
               const { status } = result;
+              if (modalSmokeSetupFailed(result)) fail("modal_launch_setup_failed");
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
@@ -1580,6 +1590,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 }
               >("status", { id: sandboxId }, timeoutMs);
             const settled = await poll(read, (status) => status?.settled === true, { until: scopedAdmissionUntil });
+            if (modalSmokeSetupFailed(settled)) fail("modal_launch_setup_failed");
             if (settled.statusMessage !== null) fail("invalid_response");
             const parent = await read(remaining());
             if (remaining() < 0) fail("poll_limit_exceeded");
@@ -1626,6 +1637,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status?.id !== sandboxId || status.status !== "ready" || status.prompt !== null)
                 fail("invalid_response");
               if (status.settled !== true) return false;
+              if (modalSmokeSetupFailed(status)) fail("modal_launch_setup_failed");
               if (status.statusMessage !== null) fail("invalid_response");
               return true;
             },
@@ -1661,6 +1673,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               (status) => status?.settled === true,
               until === undefined ? {} : { until },
             );
+            if (modalSmokeSetupFailed(settled)) fail("modal_launch_setup_failed");
             if (settled.statusMessage !== null) fail("invalid_response");
 
             const status = await readSetupStatus();

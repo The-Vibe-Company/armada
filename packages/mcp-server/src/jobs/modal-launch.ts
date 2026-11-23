@@ -46,6 +46,7 @@ import {
   ordinaryLaunchFingerprint,
   replayOrdinaryLaunchFailure,
 } from "../ordinary-launch-receipts.ts";
+import { recordOperatorFailure } from "../request-observability.ts";
 import { recordModalLaunchAdmission } from "../request-timing.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
@@ -75,6 +76,7 @@ import {
   taintStartingModalSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
+import { publicSandboxStatusSql } from "../sandbox-readiness.ts";
 import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
 import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
@@ -141,7 +143,7 @@ export async function replayModalLaunch(
   const {
     rows: [receipt],
   } = await sql.query<LaunchReceiptRow & { request_digest: string }>(
-    `select j.sandbox_id,s.status,s.golden_id,j.outcome,j.request_digest
+    `select j.sandbox_id,${publicSandboxStatusSql} as status,s.golden_id,j.outcome,j.request_digest
      from public.jobs j
      join public.members m on m.org_id=j.org_id and m.user_id=j.request_owner_id
      join public.goldens g on g.id=$4 and g.org_id=j.org_id and g.provider='modal' and g.removed_at is null
@@ -222,7 +224,7 @@ export async function admitModalLaunch(
           request_digest: string;
           status: SandboxStatus | null;
         }>(
-          `select j.sandbox_id,j.request_digest,s.status
+          `select j.sandbox_id,j.request_digest,${publicSandboxStatusSql} as status
            from public.jobs j left join public.sandboxes s
              on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
            where j.idem_key=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
@@ -309,7 +311,7 @@ export async function admitModalLaunch(
       const {
         rows: [receipt],
       } = await tx.query<LaunchReceiptRow>(
-        `select j.sandbox_id, s.status, s.golden_id, j.outcome from public.jobs j
+        `select j.sandbox_id, ${publicSandboxStatusSql} as status, s.golden_id, j.outcome from public.jobs j
          left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
          where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
         [jobId, orgId, ownerId],
@@ -512,6 +514,7 @@ export function createModalInitialTurnJob(
       } catch (error) {
         if (error instanceof RuntimeCommandRefused || (error instanceof VaultError && error.code === "conflict"))
           return { status: "fail", reason: "modal_initial_turn_environment_refused" };
+        recordOperatorFailure("modal.launch_setup.environment", error, { sandboxId });
         throw error;
       }
 
@@ -591,6 +594,7 @@ export function createModalInitialTurnJob(
           (error instanceof ProviderError && !error.details?.runtimeRequestId)
         )
           return { status: "fail", reason: "modal_initial_turn_workspace_refused" };
+        recordOperatorFailure("modal.launch_setup.workspace", error, { sandboxId });
         throw error;
       }
 
@@ -613,6 +617,7 @@ export function createModalInitialTurnJob(
             (error instanceof ProviderError && !error.details?.runtimeRequestId)
           )
             return { status: "fail", reason: "modal_initial_turn_skills_refused" };
+          recordOperatorFailure("modal.launch_setup.skills", error, { sandboxId });
           throw error;
         }
       }
@@ -627,34 +632,40 @@ export function createModalInitialTurnJob(
       } catch (error) {
         if (error instanceof VaultError || error instanceof RuntimeCommandRefused || error instanceof GoldenError)
           return { status: "fail", reason: "modal_initial_turn_mcp_refused" };
+        recordOperatorFailure("modal.launch_setup.mcp", error, { sandboxId });
         throw error;
       }
 
       if (payload.data.scopedAccess) {
         if (!restoreScopedAccess) return { status: "fail", reason: "modal_initial_turn_scoped_access_unavailable" };
         const projectDir = target.repository_dir ? `${GOLDEN_ROOT}/${target.repository_dir}` : GOLDEN_ROOT;
-        const installed = await agent.workspaceExec(
-          {
-            sandboxId: target.provider_sandbox_id,
-            cwd: projectDir,
-            command: sandboxAccessReferenceCommand(projectDir, target.harness),
-            timeoutSeconds: 300,
-          },
-          SCOPED_REFERENCE_STEP,
-          epoch,
-          context.signal,
-        );
-        if (installed.detached || installed.timedOut || installed.truncated || installed.exitCode !== 0)
-          return { status: "fail", reason: "modal_initial_turn_scoped_reference_refused" };
-        await restoreScopedAccess(
-          actor.userId,
-          sandboxId,
-          epoch,
-          String(generation),
-          context.signal,
-          assertRuntimeClaim,
-          true,
-        );
+        try {
+          const installed = await agent.workspaceExec(
+            {
+              sandboxId: target.provider_sandbox_id,
+              cwd: projectDir,
+              command: sandboxAccessReferenceCommand(projectDir, target.harness),
+              timeoutSeconds: 300,
+            },
+            SCOPED_REFERENCE_STEP,
+            epoch,
+            context.signal,
+          );
+          if (installed.detached || installed.timedOut || installed.truncated || installed.exitCode !== 0)
+            return { status: "fail", reason: "modal_initial_turn_scoped_reference_refused" };
+          await restoreScopedAccess(
+            actor.userId,
+            sandboxId,
+            epoch,
+            String(generation),
+            context.signal,
+            assertRuntimeClaim,
+            true,
+          );
+        } catch (error) {
+          recordOperatorFailure("modal.launch_setup.scoped_access", error, { sandboxId });
+          throw error;
+        }
       }
 
       const { prompt } = payload.data;
@@ -676,7 +687,10 @@ export function createModalInitialTurnJob(
         );
         if (accepted) return { status: "done" };
       } catch (error) {
-        if (!(error instanceof VaultError) || !["conflict", "not_found", "invalid"].includes(error.code)) throw error;
+        if (!(error instanceof VaultError) || !["conflict", "not_found", "invalid"].includes(error.code)) {
+          recordOperatorFailure("modal.launch_setup.first_prompt", error, { sandboxId });
+          throw error;
+        }
       }
       return { status: "fail", reason: "modal_initial_turn_refused" };
     },

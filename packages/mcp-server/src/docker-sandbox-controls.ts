@@ -45,6 +45,7 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
+import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
 import { ToolError } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
@@ -147,9 +148,7 @@ export function createDockerSandboxControls(
     const row = (
       await sql.query<Row>(
         `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,
-        case when s.provider='docker' and s.status in ('ready','running')
-          and exists(select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null)
-          then 'starting' else s.status end as status,
+        ${publicSandboxStatusSql} as status,
         s.status_reason,s.external_ref,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,e.prompt_projection_sequence::text,e.latest_prompt_enc,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,

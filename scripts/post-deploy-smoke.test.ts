@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
+import { modalJobStepFallbacks } from "./smoke-deadlines.ts";
 
-const deadlines = deadlineTable["modal/lifecycle"];
+const deadlines = { ...modalJobStepFallbacks["modal/lifecycle"], ...deadlineTable["modal/lifecycle"] };
 const boatNotice = "boat: not part of the release gate";
 
 const selected = {
@@ -722,6 +723,7 @@ describe("preservation checks", () => {
       "default_wrong_golden",
       "default_recovery_wrong_golden",
       "default_recovery_expired",
+      "default_recovery_setup_failed",
       "scoped_pair",
       "scoped_admission",
       "scoped_admission_wrong_account",
@@ -1022,10 +1024,7 @@ describe("preservation checks", () => {
               if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
               else expect(call.body).not.toHaveProperty("skipSkillDefaults");
             }
-            if (
-              fault === "default_policy" ||
-              (launches === 1 && (fault === "default_recovery_wrong_golden" || fault === "default_recovery_expired"))
-            ) {
+            if (fault === "default_policy" || (launches === 1 && fault.startsWith("default_recovery_"))) {
               expect(call.body.externalRef).toBe(call.body.idempotencyKey);
               recoveryKey = String(call.body.externalRef);
               recoverySandboxId = sandboxId;
@@ -1079,6 +1078,16 @@ describe("preservation checks", () => {
           if (call.path === "sandbox/stop") stopping = true;
           if (call.path === "sandbox/status" && call.body.id === recoverySandboxId && !statusReady && !stopping) {
             statusReady = true;
+            if (fault === "default_recovery_setup_failed")
+              return json({
+                id: sandboxId,
+                externalRef: recoveryKey,
+                status: "failed",
+                prompt: null,
+                settled: true,
+                statusMessage: "Modal launch setup failed.",
+                statusReason: "modal_initial_turn_workspace_refused",
+              });
             return json({ id: sandboxId, externalRef: recoveryKey, status: "starting", prompt: null, skills: [] });
           }
           if (
@@ -1113,7 +1122,7 @@ describe("preservation checks", () => {
             observedDefaultGolden &&
             !stopping &&
             skillStatusReads === 2
-          )
+          ) {
             return json({
               id: sandboxId,
               status: "ready",
@@ -1122,6 +1131,7 @@ describe("preservation checks", () => {
               settled: true,
               statusMessage: null,
             });
+          }
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
@@ -1249,7 +1259,16 @@ describe("preservation checks", () => {
             expect(launch).toEqual(
               Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 2_000 })),
             );
-          else
+          else if (fault === "default_recovery_setup_failed") {
+            expect(launch[0]).toMatchObject({ pass: false, code: "modal_launch_setup_failed" });
+            expect(fake.receipts()).toContainEqual(
+              expect.objectContaining({
+                step: "launch_setup_diagnostic",
+                sandboxId: recoverySandboxId,
+                reason: "modal_initial_turn_workspace_refused",
+              }),
+            );
+          } else
             expect(launch[0]).toMatchObject({
               pass: false,
               code: "outcome_unknown",
@@ -1359,13 +1378,15 @@ describe("preservation checks", () => {
               code:
                 fault === "recovery_wakes"
                   ? "provider_not_stopped"
-                  : fault === "default_wrong_golden" || fault === "default_admission_setup_failed"
-                    ? "invalid_response"
-                    : fault === "default_admission_wrong_golden"
-                      ? "list_status_mismatch"
-                      : fault.startsWith("default_")
-                        ? "invalid_receipt"
-                        : "preservation_failed",
+                  : fault === "default_admission_setup_failed"
+                    ? "modal_launch_setup_failed"
+                    : fault === "default_wrong_golden"
+                      ? "invalid_response"
+                      : fault === "default_admission_wrong_golden"
+                        ? "list_status_mismatch"
+                        : fault.startsWith("default_")
+                          ? "invalid_receipt"
+                          : "preservation_failed",
             }),
           );
       });
@@ -3036,8 +3057,9 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
             id: sandboxFixtureId,
             harness: selected.harness,
             expiresAt: null,
-            status: stopped ? "stopped" : "ready",
-            providerState: stopped ? "stopped" : "active",
+            status: stopped ? "stopped" : broken === "setup" ? "failed" : "ready",
+            providerState: stopped ? "stopped" : broken === "setup" ? null : "active",
+            statusReason: broken === "setup" ? "modal_initial_turn_workspace_refused" : null,
             prompt: null,
             settled: true,
             statusMessage: broken === "setup" ? "Modal launch setup failed." : null,
@@ -3072,7 +3094,13 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       if (broken === "provider")
         expect(reports).toContainEqual({ case: 0, step: "list_ready", pass: false, code: "list_status_mismatch" });
       if (broken === "setup")
-        expect(reports).toContainEqual({ case: 0, step: "launch_setup", pass: false, code: "invalid_response" });
+        expect(reports).toContainEqual(
+          expect.objectContaining({
+            step: "readiness_diagnostic",
+            code: "modal_launch_setup_failed",
+            statusResponse: expect.objectContaining({ statusReason: "modal_initial_turn_workspace_refused" }),
+          }),
+        );
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
       expect(stopped).toBe(true);
       expect(fake.lines.join("\n")).not.toContain("private-output");

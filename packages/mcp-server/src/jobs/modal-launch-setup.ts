@@ -21,3 +21,20 @@ export function assertModalLaunchSetup(state: string | null | undefined) {
   if (state === "queued" || state === "leased") throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
   if (state === "failed") throw new ModalLaunchSetupConflict("modal_launch_setup_failed");
 }
+
+export function modalSetupFailureReason(reason: string | null) {
+  return reason !== null && setupFailureReasons.has(reason) ? reason : "modal_initial_turn_unclassified";
+}
+
+const setupFailureReasons = new Set([
+  "invalid_modal_initial_turn",
+  "modal_initial_turn_unavailable",
+  "modal_initial_turn_budget_exhausted",
+  "modal_initial_turn_environment_refused",
+  "modal_initial_turn_workspace_refused",
+  "modal_initial_turn_skills_refused",
+  "modal_initial_turn_mcp_refused",
+  "modal_initial_turn_scoped_access_unavailable",
+  "modal_initial_turn_scoped_reference_refused",
+  "modal_initial_turn_refused",
+]);

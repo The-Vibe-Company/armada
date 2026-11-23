@@ -130,8 +130,22 @@ export function registerStatusTools(
     const found = await measure("sandbox_read", () => visible(sandboxId));
     const confirmedStop = hasConfirmedStop(found);
     const fenced = found.status === "deleted" || isStatusReadFenced(found);
+    const enrolled = found.status === "ready" || found.status === "running";
     const jobReader =
-      !recorded && (confirmedStop || (!waiting && !fenced)) ? await context.modalJobReader?.(found) : null;
+      enrolled || (!recorded && (confirmedStop || (!waiting && !fenced)))
+        ? await context.modalJobReader?.(found)
+        : null;
+    const setupState = enrolled ? jobReader?.setupState : undefined;
+    const setupPending = setupState === "queued" || setupState === "leased";
+    if (setupPending || setupState === "failed")
+      return {
+        ...recordedStatus(found),
+        ...logicalExpiry(found.expiresAt, context.now()),
+        status: setupPending ? ("starting" as const) : ("failed" as const),
+        statusReason: setupPending ? null : jobReader!.setupFailure,
+        settled: !setupPending,
+        statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
+      };
     const stopEvidence = async (status: SandboxStatus) => {
       const latest = await jobReader?.verify();
       return latest && latest.status === status && hasConfirmedStop(latest) ? { providerState: "stopped" } : {};
@@ -151,15 +165,6 @@ export function registerStatusTools(
       };
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const setupState = fenced || confirmedStop ? undefined : jobReader?.setupState;
-      const setupPending = setupState === "queued" || setupState === "leased";
-      if (setupPending || setupState === "failed")
-        return {
-          ...recordedStatus(found),
-          ...logicalExpiry(found.expiresAt, context.now()),
-          settled: !setupPending,
-          statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
-        };
       const provider = fenced
         ? null
         : (jobReader ?? (storedProvider ? await storedProvider(found) : await context.provider(found)));

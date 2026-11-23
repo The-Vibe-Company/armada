@@ -73,6 +73,7 @@ import {
   STRICT_NATIVE_DRAIN_STOP,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
+import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
@@ -268,7 +269,7 @@ const SANDBOX_INTERIOR = `(s.owner_id=$2::uuid or exists(select 1 from public.me
 const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
-  coalesce(s.status='stopped' and s.status_reason='idle_paused',false) as "idlePaused", s.status::text as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
+  coalesce(s.status='stopped' and s.status_reason='idle_paused',false) as "idlePaused", ${publicSandboxStatusSql} as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
   s.effective_ttl_seconds as "effectiveTtlSeconds",
   case when s.machine_size->>'effective' in ('small','medium','large','xlarge') then s.machine_size->>'effective' else null end as "machineSize",
   'Sandbox ' || s.id::text as "displayLabel",
@@ -282,7 +283,7 @@ const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 
 const sandboxListMatch = (externalRef: number) => `${SANDBOX_MEMBER}
                and ($${externalRef}::text is null or (s.external_ref = $${externalRef}::text and ${SANDBOX_INTERIOR}))
                and ($9::uuid is null or s.org_id=$9::uuid)
-               and (($3::text[] is null and s.status <> 'deleted') or s.status::text = any($3::text[]))
+               and (($3::text[] is null and s.status <> 'deleted') or ${publicSandboxStatusSql} = any($3::text[]))
                and ($4::text is null or s.harness::text = $4)
                and ($5::uuid is null or s.golden_id = $5 and exists(select 1 from public.goldens g where g.id=s.golden_id
                  and g.org_id=s.org_id and g.removed_at is null and (g.visibility='org' or g.owner_id=$2::uuid)))
