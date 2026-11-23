@@ -3,6 +3,10 @@ import { Writable } from "node:stream";
 import type { MemberRole } from "../../packages/core/src/database.types.ts";
 import type { Sql } from "../../packages/core/src/golden-store.ts";
 import { SANDBOX_STATES, type SandboxState } from "../../packages/core/src/provider.ts";
+import {
+  type NativeDrainFailureReason,
+  nativeDrainFailureReason,
+} from "../../packages/mcp-server/src/native-drain-failure.ts";
 import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 
 type StatusCount = { status: SandboxState; count: number };
@@ -78,13 +82,16 @@ export async function runNativeDrain(
   let deletedWithoutProof = 0;
   let alreadyDeleted = 0;
   let failed = 0;
+  const failuresByReason: Partial<Record<NativeDrainFailureReason, number>> = {};
   for (const row of rows) {
     try {
       const proof = await operation.remove(row);
       if (proof === "with-proof") deletedWithProof++;
       else if (proof === "without-proof") deletedWithoutProof++;
       else alreadyDeleted++;
-    } catch {
+    } catch (error) {
+      const reason = nativeDrainFailureReason(error);
+      failuresByReason[reason] = (failuresByReason[reason] ?? 0) + 1;
       failed++;
     }
   }
@@ -97,6 +104,7 @@ export async function runNativeDrain(
     ...(allowUnpreservedBoat ? { deletedWithoutProof } : {}),
     alreadyDeleted,
     failed,
+    failuresByReason,
   };
 }
 
@@ -147,8 +155,11 @@ if (import.meta.main) {
   if (request) {
     try {
       process.exitCode = await execute(request);
-    } catch {
-      process.stderr.write("Native drain could not finish. Check configuration and unfiltered database access.\n");
+    } catch (error) {
+      const reason = nativeDrainFailureReason(error);
+      process.stderr.write(
+        `Native drain could not finish (${reason}). Check configuration and unfiltered database access.\n`,
+      );
       process.exitCode = 1;
     }
   }
