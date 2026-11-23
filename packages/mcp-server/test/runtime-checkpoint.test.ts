@@ -304,7 +304,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
-test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls back when %s fails", async (code) => {
+test.each(["runtime_retained_stop", "job enqueue"])("shared stop rolls back when %s fails", async (code) => {
   const f = await checkpointFixture("modal");
   try {
     const stop = stopPort(f);
@@ -317,7 +317,11 @@ test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls ba
             ...tx,
             async query<T>(statement: string, args?: unknown[]) {
               const result = await tx.query<T>(statement, args);
-              if (statement.includes("public.sandbox_transition(") && args?.[5] === code) {
+              if (
+                code === "job enqueue"
+                  ? statement.includes("insert into public.jobs")
+                  : statement.includes("public.sandbox_transition(") && args?.[5] === code
+              ) {
                 interrupted = true;
                 throw new Error("stop transaction interrupted");
               }
@@ -331,22 +335,21 @@ test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls ba
     await expect(callSharedTool({ ...stop.context, data }, "stop", { id: f.row.id })).rejects.toThrow();
     expect(interrupted).toBe(true);
 
-    const admitted = code === "owner_stop_settled";
-    expect(stop.calls()).toBe(Number(admitted));
+    expect(stop.calls()).toBe(0);
     expect(await data.sandboxes.get(f.row.id)).toMatchObject({
-      status: admitted ? "stopping" : initial.status,
-      lifecycleGeneration: initial.lifecycleGeneration! + Number(admitted),
+      status: initial.status,
+      lifecycleGeneration: initial.lifecycleGeneration,
       stoppedAt: null,
-      stopRequestedAt: admitted ? expect.any(String) : null,
+      stopRequestedAt: null,
     });
     expect(
       (
-        await f.db.query(
-          "select code from sandbox_transitions where sandbox_id=$1 and to_status in ('stopping','stopped')",
-          [f.row.id],
-        )
+        await f.db.query("select code from sandbox_transitions where sandbox_id=$1 and to_status='stopping'", [
+          f.row.id,
+        ])
       ).rows,
-    ).toEqual(admitted ? [{ code: "runtime_retained_stop" }] : []);
+    ).toEqual([]);
+    expect((await f.db.query("select 1 from jobs where sandbox_id=$1 and kind='stop'", [f.row.id])).rows).toEqual([]);
   } finally {
     await f.close();
   }
@@ -371,10 +374,17 @@ test("a definite runtime checkpoint refusal still allows compute cleanup", async
     });
     const stop = stopPort(f, commands);
     await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).resolves.toMatchObject({
-      status: "stopped",
+      status: "stopping",
       preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded.",
     });
-    expect(stop.calls()).toBe(1);
+    expect(stop.calls()).toBe(0);
+    expect(
+      (
+        await f.db.query("select outcome->>'retain' as retain from jobs where sandbox_id=$1 and kind='stop'", [
+          f.row.id,
+        ])
+      ).rows,
+    ).toEqual([{ retain: "false" }]);
     expect(
       (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
     ).toEqual([{ watermark: null }]);
@@ -484,8 +494,8 @@ test.each(["resume", "reconciliation", "late generation change", "scoped parent 
         );
         blocked = false;
         runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
-        expect(await stopping).toMatchObject({ id, status: "stopped" });
-        expect(stop.calls()).toBe(1);
+        expect(await stopping).toMatchObject({ id, status: "stopping" });
+        expect(stop.calls()).toBe(0);
         expect(
           (await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1 and completed_at is not null", [id]))
             .rows,
@@ -643,8 +653,8 @@ test("an organization admin can still stop another member's runtime compute", as
     const stop = stopPort(f);
     await expect(
       callSharedTool({ ...stop.context, caller: admin, data: createSqlData(f.sql)(admin) }, "stop", { id: f.row.id }),
-    ).resolves.toMatchObject({ status: "stopped" });
-    expect(stop.calls()).toBe(1);
+    ).resolves.toMatchObject({ status: "stopping" });
+    expect(stop.calls()).toBe(0);
     expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
       0,
     );
@@ -781,18 +791,17 @@ test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint 
     const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
     else {
-      expect(final?.status).toBe("stopped");
+      expect(final?.status).toBe("stopping");
       expect(final?.preservationNote).toBeNull();
       expect(
         (
-          await f.db.query(
-            "select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1",
-            [f.row.id],
-          )
+          await f.db.query("select outcome->>'retain' as retain from jobs where sandbox_id=$1 and kind='stop'", [
+            f.row.id,
+          ])
         ).rows,
-      ).toEqual([{ captured: true }]);
+      ).toEqual([{ retain: "true" }]);
     }
-    expect(stop.calls()).toBe(1);
+    expect(stop.calls()).toBe(provider === "boat" ? 1 : 0);
     expect(f.starts).toHaveLength(1);
   } finally {
     await f.close();

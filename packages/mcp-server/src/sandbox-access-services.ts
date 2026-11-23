@@ -387,7 +387,7 @@ export function createSandboxAccessServices(input: {
       if (operation.action === "stop" && saved.provider === "modal" && saved.runtimeTransport === "dialout") {
         const { rows } = await sql.query(
           `select 1 from public.jobs where sandbox_id=$1 and org_id=$2 and kind='stop'
-           and outcome->>'childOperation'=$3 and state in ('queued','leased','done')`,
+           and coalesce(outcome->>'childOperation',outcome#>>'{evidence,childOperation}')=$3`,
           [saved.id, operation.orgId, operation.id],
         );
         return { operationId: operation.id, sandboxId: saved.id, state: rows.length ? "succeeded" : "unknown" };

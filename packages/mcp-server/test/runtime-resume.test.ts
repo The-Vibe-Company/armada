@@ -31,7 +31,7 @@ import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runti
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
-import { createStagedOutputJob, OUTPUTS_PUBLISH } from "../src/sandbox-outputs.ts";
+import { captureFinalOutputs, createStagedOutputJob, OUTPUTS_PUBLISH } from "../src/sandbox-outputs.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
@@ -107,6 +107,7 @@ describe("Modal user stop and wake-on-send", () => {
         }),
       ],
     );
+    const output = new TextEncoder().encode("last write");
     const host = {
       id: "modal",
       async get() {
@@ -117,8 +118,19 @@ describe("Modal user stop and wake-on-send", () => {
       },
       async readOutputs() {
         captures++;
-        return [{ name: "final.txt", bytes: new TextEncoder().encode("last write") }];
+        return [{ name: "final.txt", bytes: output }];
       },
+      ...(recover
+        ? {
+            async listOutputEntries() {
+              captures++;
+              return [{ name: "final.txt", size: output.length, revision: "1:2:3:4" }];
+            },
+            async readOutputChunk() {
+              return output;
+            },
+          }
+        : {}),
     };
     const physical = {
       sandboxId: physicalId,
@@ -286,6 +298,21 @@ describe("Modal user stop and wake-on-send", () => {
     expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
     expect(f.starts).toEqual([undefined, "native-thread"]);
     if (recover) {
+      await expect(
+        captureFinalOutputs(
+          f.sql,
+          {
+            async listOutputEntries() {
+              return [{ name: "final.txt", size: output.length, revision: "1:2:3:5" }];
+            },
+            async readOutputChunk() {
+              throw Error("new revision could not be read");
+            },
+          },
+          id,
+          { key: ENCRYPTION_KEY },
+        ),
+      ).rejects.toThrow("new revision could not be read");
       expect(await publisher.reconcileOne(signal)).toBe(true);
       await publisher.drain();
     }

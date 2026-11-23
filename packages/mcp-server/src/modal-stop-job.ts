@@ -217,6 +217,15 @@ export function createModalStopJob(
                       orgId: row.org_id,
                       maxAttempts: 600,
                       deadline: new Date(+new Date(row.deadline_at) + 8 * 60_000),
+                      ...(snapshot.kind === "transfers"
+                        ? {
+                            initialOutcome: {
+                              transferIds: snapshot.files.flatMap((file) =>
+                                file.transfer_id ? [file.transfer_id] : [],
+                              ),
+                            },
+                          }
+                        : {}),
                     },
                     tx,
                   );
