@@ -146,8 +146,8 @@ export class GitHubBroker {
     listener?.close();
   }
 
-  private async bindRuntime(): Promise<BrokerListener> {
-    // Boat can remount /home after the runtime has already started.
+  private async bindRuntime() {
+    // WARNING: Boat can remount /home after the runtime has already started.
     const root = await mkdtemp("/tmp/armada-github-");
     try {
       const listener = await this.bind(root, process.getuid?.());
@@ -177,7 +177,7 @@ export class GitHubBroker {
     const activation = randomBytes(32).toString("hex");
     this.remember([activation]);
     let active = false;
-    async function body(request: Request, limit: number): Promise<Buffer> {
+    async function body(request: Request, limit: number) {
       const chunks: Uint8Array[] = [];
       let bytes = 0;
       if (request.body)
@@ -225,7 +225,7 @@ export class GitHubBroker {
           const output: string[] = [];
           while (consumed < value.length) {
             const tail = value.slice(consumed);
-            // Prefer waiting for a longer possible leaf over publishing its shorter prefix.
+            // WARNING: Publishing a partial secret would bypass redaction.
             if (streaming && secrets.some((secret) => secret.length > tail.length && secret.startsWith(tail))) break;
             const match = secrets.find((secret) => value.startsWith(secret, consumed));
             if (match) {
