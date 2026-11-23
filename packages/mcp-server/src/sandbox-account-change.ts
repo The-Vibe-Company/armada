@@ -92,6 +92,8 @@ export function createSandboxAccountChange(
       throw new VaultError("conflict", "Native sandbox preservation is pending.");
     if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
+    if (row.provider === "modal" && row.runtime_transport !== "dialout")
+      throw new VaultError("credential_binding_unsupported", "Modal account changes require Armada runtime enrolment.");
     return row;
   }
   return async (caller, input, quiesce) => {

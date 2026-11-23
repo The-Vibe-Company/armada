@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Harness, HarnessCredentials, Sql } from "@armada/core";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 
-function fixture(status = "stopped", provider = "boat") {
+function fixture(status = "stopped", provider = "boat", runtimeTransport: string | null = "dialout") {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID(),
     id = crypto.randomUUID();
@@ -14,7 +14,7 @@ function fixture(status = "stopped", provider = "boat") {
     org_id: org,
     provider,
     harness: "codex" as Harness,
-    runtime_transport: "dialout",
+    runtime_transport: runtimeTransport,
     boat_runtime: provider === "boat",
     model: "gpt-test",
     status,
@@ -117,6 +117,15 @@ test("an account change rechecks strict-stop ownership after quiescing", async (
 test("native Boat cannot falsely report an account switch without refreshing its retained environment", async () => {
   const f = fixture();
   f.row.boat_runtime = false;
+  await expect(f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce)).rejects.toMatchObject({
+    code: "credential_binding_unsupported",
+  });
+  expect(f.stopped()).toBe(0);
+  expect(f.writes).toHaveLength(0);
+});
+
+test("Modal account binding requires an enrolled runtime before changing a stopped pin", async () => {
+  const f = fixture("stopped", "modal", null);
   await expect(f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce)).rejects.toMatchObject({
     code: "credential_binding_unsupported",
   });
