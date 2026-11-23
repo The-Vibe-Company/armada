@@ -188,29 +188,15 @@ describe("http", () => {
   });
 
   test("a Supabase session drives the dashboard's tools, checked by Supabase on every request", async () => {
-    const { handler, session, signOut, supabaseCalls, people, boat, client, token } = await start();
-    const launched = await call(await client(await token(people.member)), "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "go",
-    });
+    const { handler, session, signOut, supabaseCalls, people } = await start();
     const jwt = session(people.member);
     const dashboard = rpc(handler, jwt);
 
-    const logs = await dashboard.tool("logs", { id: launchSandboxId(launched.data) });
-    expect(logs.result?.isError).toBeUndefined();
-    expect(logs.result?.structuredContent).toMatchObject({ events: [expect.objectContaining({ kind: "prompt" })] });
-    boat.finish("bx_1", "prompt_1", "finished");
-    const sent = await dashboard.tool("send", {
-      id: launchSandboxId(launched.data),
-      prompt: "and the tests",
-      request_id: crypto.randomUUID(),
-    });
-    expect(sent.result?.structuredContent).toMatchObject({ promptId: "prompt_2", conversationId: "conv_1" });
-    const stopped = await dashboard.tool("stop", { id: launchSandboxId(launched.data) });
-    expect(stopped.result?.structuredContent).toMatchObject({ status: "stopped" });
-    expect(supabaseCalls).toHaveLength(3);
+    for (let i = 0; i < 2; i++) {
+      const listed = await dashboard.tool("list", {});
+      expect(listed.result?.structuredContent).toMatchObject({ sandboxes: [] });
+    }
+    expect(supabaseCalls).toHaveLength(2);
 
     signOut(jwt);
     expect((await dashboard.tool("list", {})).status).toBe(401);

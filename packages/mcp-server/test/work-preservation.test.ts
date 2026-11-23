@@ -959,19 +959,19 @@ async function seedNativeDrainReceipt(
       `bx_${sandboxId}`,
     ],
   );
-  if (outcome === "archived")
-    await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
-      archiveId,
-      sandboxId,
-      ciphertext,
-    ]);
   await db.query(
-    `insert into sandbox_native_preservation_receipts
+    `with archive as (
+       insert into sandbox_work_recovery(id,sandbox_id,archive_enc)
+       select $2::uuid,$1::uuid,$3::bytea where $4::boolean returning id
+     )
+     insert into sandbox_native_preservation_receipts
        (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
-     values($1,4,2,4,2,$2,$3::jsonb)`,
+     values($1,4,2,4,2,(select id from archive),$5::jsonb)`,
     [
       sandboxId,
-      outcome === "archived" ? archiveId : null,
+      archiveId,
+      ciphertext,
+      outcome === "archived",
       provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null,
     ],
   );
