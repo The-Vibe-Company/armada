@@ -1,3 +1,5 @@
+import { spyOn } from "bun:test";
+import * as nodeCrypto from "node:crypto";
 import { constants, createCipheriv, createHash, pbkdf2Sync, publicEncrypt, randomBytes } from "node:crypto";
 import type { Provider } from "@armada/core";
 
@@ -45,4 +47,34 @@ export function encryptedRecoveryExec(archive: () => string, fallback: Provider[
       }),
     };
   };
+}
+
+/** Lifecycle tests use a real synthetic RSA pair. Core owns the key-generation protocol. */
+export function reuseCollectorKeyPair() {
+  const pair = nodeCrypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const generate = nodeCrypto.generateKeyPairSync;
+  const spy = spyOn(nodeCrypto, "generateKeyPairSync").mockImplementation(((
+    type: string,
+    options: {
+      modulusLength?: number;
+      publicKeyEncoding?: { type: string; format: string };
+      privateKeyEncoding?: { type: string; format: string };
+    },
+  ) => {
+    if (
+      type === "rsa" &&
+      options.modulusLength === 2048 &&
+      options.publicKeyEncoding?.type === "spki" &&
+      options.publicKeyEncoding.format === "pem" &&
+      options.privateKeyEncoding?.type === "pkcs8" &&
+      options.privateKeyEncoding.format === "pem"
+    )
+      return pair;
+    return Reflect.apply(generate, nodeCrypto, [type, options]);
+  }) as typeof generate);
+  return () => spy.mockRestore();
 }

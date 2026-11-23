@@ -1148,72 +1148,91 @@ const competingPromptRefusals = [
 ] as const;
 test.each(competingPromptRefusals)("Docker controls settle after %s", async (_caseName, refusal, versioned) => {
   const f = await fixture();
-  const idempotencyKey = `docker:${f.body.requestId}`;
-  f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
-  const body = dockerLaunchBody({
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    harness: "codex",
-    credentialId: f.body.credentialId,
-    idempotencyKey,
-    model: "normal-http-model",
-    reasoningEffort: "high",
-    prompt: f.body.prompt,
-  });
   const { options, bearer, post } = restControl(f);
-  const malformed = await handleControlRequest(
-    new Request("https://armada.test/api/v1/sandbox/launch", {
-      method: "POST",
-      headers: { authorization: `Bearer ${bearer}` },
-      body: JSON.stringify({ ...body, harness: undefined }),
-    }),
-    options,
-  );
-  expect(malformed?.status).toBe(400);
-  expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
-  // An acknowledged timeout must preserve the dashboard's stable request key.
-  f.setDrive(false);
-  options.dockerLaunch = f.service(sql, true, 250);
-  const pending = await handleControlRequest(
-    new Request("https://armada.example/api/v1/sandbox/launch", {
-      method: "POST",
-      headers: { authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(body),
-    }),
-    options,
-  );
-  expect(pending?.status).toBe(503);
-  expect(await pending?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
-  f.setDrive(true);
-  options.dockerLaunch = f.service();
-  // The published contract describes the dashboard's Docker request and its receipt.
-  publishedRequest("sandbox/launch").parse(body);
-  const launched = (await post("sandbox/launch", body)) as DockerLaunchResult;
-  publishedResponse("sandbox/launch").parse(launched);
-  expect(launchedDockerSandbox(launched)).toBe(f.body.requestId);
-  expect(launched).toMatchObject({
-    sandbox: {
-      provider: "docker",
-      goldenId: null,
+  const throughRest = refusal === "conversation_busy";
+  if (throughRest) {
+    const idempotencyKey = `docker:${f.body.requestId}`;
+    f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
+    const body = dockerLaunchBody({
+      org: f.actor.orgId,
       hostId: f.hostId,
-      image: officialImage,
+      harness: "codex",
+      credentialId: f.body.credentialId,
+      idempotencyKey,
       model: "normal-http-model",
       reasoningEffort: "high",
-      credentialVersion: 2,
-      status: "running",
-    },
-    runtime: { kind: "armada", epoch: "1" },
-    promptId: f.receipt.promptId,
-    conversationId: f.receipt.conversationId,
-  });
-  expect(f.native).toContainEqual(
-    expect.objectContaining({
-      op: "prompt",
-      input: expect.objectContaining({ text: f.body.prompt, model: "normal-http-model", reasoningEffort: "high" }),
-    }),
-  );
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
-  expect(await post("sandbox/launch", body)).toEqual(launched);
+      prompt: f.body.prompt,
+    });
+    const malformed = await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/launch", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}` },
+        body: JSON.stringify({ ...body, harness: undefined }),
+      }),
+      options,
+    );
+    expect(malformed?.status).toBe(400);
+    expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
+    // An acknowledged timeout must preserve the dashboard's stable request key.
+    f.setDrive(false);
+    options.dockerLaunch = f.service(sql, true, 250);
+    const pending = await handleControlRequest(
+      new Request("https://armada.example/api/v1/sandbox/launch", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}` },
+        body: JSON.stringify(body),
+      }),
+      options,
+    );
+    expect(pending?.status).toBe(503);
+    expect(await pending?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
+    f.setDrive(true);
+    options.dockerLaunch = f.service();
+    // The published contract describes the dashboard's Docker request and its receipt.
+    publishedRequest("sandbox/launch").parse(body);
+    const launched = (await post("sandbox/launch", body)) as DockerLaunchResult;
+    publishedResponse("sandbox/launch").parse(launched);
+    expect(launchedDockerSandbox(launched)).toBe(f.body.requestId);
+    expect(launched).toMatchObject({
+      sandbox: {
+        provider: "docker",
+        goldenId: null,
+        hostId: f.hostId,
+        image: officialImage,
+        model: "normal-http-model",
+        reasoningEffort: "high",
+        credentialVersion: 2,
+        status: "running",
+      },
+      runtime: { kind: "armada", epoch: "1" },
+      promptId: f.receipt.promptId,
+      conversationId: f.receipt.conversationId,
+    });
+    expect(f.native).toContainEqual(
+      expect.objectContaining({
+        op: "prompt",
+        input: expect.objectContaining({ text: f.body.prompt, model: "normal-http-model", reasoningEffort: "high" }),
+      }),
+    );
+    expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
+    expect(await post("sandbox/launch", body)).toEqual(launched);
+  } else {
+    // The refusal encodings need an enrolled sandbox and an admitted prompt,
+    // which can be prepared without repeating machine creation and bootstrap.
+    await f.seedRunningSandbox();
+    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    const prompt = {
+      requestId: randomUUID(),
+      text: f.body.prompt,
+      conversationId: f.receipt.conversationId,
+    };
+    expect(await runtime.prompt(f.actor, f.body.requestId, prompt)).toMatchObject({ state: "pending" });
+    await f.clock.wait(0);
+    expect(await runtime.prompt(f.actor, f.body.requestId, prompt)).toMatchObject({
+      state: "admitted",
+      receipt: { promptId: f.receipt.promptId, conversationId: f.receipt.conversationId },
+    });
+  }
   const session = f.session();
   if (!session) throw Error("Normal launch did not enrol a runtime");
   const events: AgentEvent[] = [
@@ -1297,15 +1316,6 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     }
   }
   await rejectBusy();
-  const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
-    sandboxes: SandboxListMetadata[];
-  };
-  expect(listed.sandboxes).toHaveLength(1);
-  expect(listed.sandboxes[0]).toMatchObject({
-    id: f.body.requestId,
-    provider: "docker",
-    status: "ready",
-  });
   const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
@@ -1314,6 +1324,16 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     status: "ready",
     settled: true,
     prompt: { promptId: f.receipt.promptId, state: "finished" },
+  });
+  if (!throughRest) return;
+  const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
+    sandboxes: SandboxListMetadata[];
+  };
+  expect(listed.sandboxes).toHaveLength(1);
+  expect(listed.sandboxes[0]).toMatchObject({
+    id: f.body.requestId,
+    provider: "docker",
+    status: "ready",
   });
   const logs = (await post("logs/read", { ...scope, id: f.body.requestId })) as { events: AgentEvent[] };
   expect(logs.events).toEqual(events);
