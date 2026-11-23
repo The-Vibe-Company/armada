@@ -33,6 +33,7 @@ describe("summarizeEvents", () => {
       reason: "usage_limit",
       promptId: "p2",
       prompt: "Second",
+      hasFinalReply: false,
     });
   });
 
@@ -225,6 +226,42 @@ describe("attentionOf", () => {
 
 describe("sandbox attention projection", () => {
   const sandbox = { id: "00000000-0000-4000-8000-000000000030", status: "ready" as const };
+  test("a finished turn with a final assistant report does not ask the agent to continue", () => {
+    const events: ChatEvent[] = [
+      { id: "1", at: 1, kind: "prompt", text: "Ship the fix", status: "running", promptId: "p1" },
+      {
+        id: "2",
+        at: 2,
+        kind: "message",
+        text: "The fix is committed and checks passed. I need GitHub credentials to push.",
+        partial: false,
+        tools: [],
+        promptId: "p1",
+      },
+      { id: "3", at: 3, kind: "prompt", text: "", status: "finished", promptId: "p1" },
+    ];
+    expect(sandboxAttention(sandbox, summarizeEvents(events), NOW).attention).toBeNull();
+  });
+  test.each<ChatEvent>([
+    { id: "3", at: 3, kind: "message", text: "", partial: false, tools: [{ id: "t", name: "Bash" }], promptId: "p1" },
+    { id: "3", at: 3, kind: "steer", text: "Check the tests too.", promptId: "p1" },
+  ])("a finished turn still asks the agent to continue after unanswered $kind activity", (laterActivity) => {
+    const events: ChatEvent[] = [
+      { id: "1", at: 1, kind: "prompt", text: "Ship the fix", status: "running", promptId: "p1" },
+      {
+        id: "2",
+        at: 2,
+        kind: "message",
+        text: "I will check the branch.",
+        partial: false,
+        tools: [],
+        promptId: "p1",
+      },
+      laterActivity,
+      { id: "4", at: 4, kind: "prompt", text: "", status: "finished", promptId: "p1" },
+    ];
+    expect(sandboxAttention(sandbox, summarizeEvents(events), NOW).attention).toBe("unconcluded");
+  });
   test("keeps legacy acknowledgement keys but a new turn needs acknowledgement again", () => {
     const first = sandboxAttention(sandbox, { ...turn("finished"), promptId: "p1" }, NOW);
     expect(first.ackKey).toBe(`${sandbox.id}.382207ad`);
