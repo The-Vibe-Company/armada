@@ -541,7 +541,7 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
 
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
   const db = database();
-  const f = await fixture();
+  const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
   const vault = createSqlVaultStore(sql);
   await vault.setAgentDefault!(f.actor.userId, {
     harness: "codex",
@@ -576,11 +576,20 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
       status: "unavailable",
       message: "GitHub access requires repositories in the Docker launch or snapshot configuration.",
     },
-    runtime: { kind: "armada", epoch: f.session()?.epoch },
+    runtime: { kind: "armada", epoch: "1" },
     ttlSeconds: 14400,
     promptId: f.receipt.promptId,
     conversationId: f.receipt.conversationId,
   });
+  expect(
+    (
+      await db.query<{ generation: string; epoch: string; runtime_generation: string }>(
+        `select s.lifecycle_generation::text as generation,r.epoch::text,r.lifecycle_generation::text as runtime_generation
+     from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
+        [f.body.requestId],
+      )
+    ).rows[0],
+  ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
   expect(result.sandbox.createdAt).toMatch(/^\d{4}-/);
   expect(result.expiresAt).toBe(result.sandbox.expiresAt as string);
   expect(result.sandbox.model).toBe("gpt-6-astra");
@@ -920,23 +929,6 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
     ).rows,
   ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
-});
-
-test("normal publication uses the runtime epoch rather than the independent lifecycle generation", async () => {
-  const db = database();
-  const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
-  const result = await f.service().launch(f.caller, f.body);
-  expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-  expect(result.promptId).toBe(f.receipt.promptId);
-  expect(
-    (
-      await db.query<{ generation: string; epoch: string; runtime_generation: string }>(
-        `select s.lifecycle_generation::text as generation,r.epoch::text,r.lifecycle_generation::text as runtime_generation
-     from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id where s.id=$1`,
-        [f.body.requestId],
-      )
-    ).rows[0],
-  ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
 });
 
 /** The public REST control surface over a fixture's Docker services, authenticated as its owner. */
