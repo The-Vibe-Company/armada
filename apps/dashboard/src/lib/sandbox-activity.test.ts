@@ -52,6 +52,7 @@ test("activity tabs separate active turns from owned, live sandboxes with a fini
   const deadline = now.toISOString();
   const rows = [
     row("waiting"),
+    row("stopped-with-queued-turn", { status: "stopped", expiresAt: "2026-11-16T00:10:00Z" }),
     row("stopped", { status: "stopped", taskOutcome: { state: "ready" } }),
     row("deleted", { status: "deleted", taskOutcome: { state: "blocked", reason: "Need a decision" } }),
     row("expired", { expiresAt: deadline }),
@@ -70,6 +71,12 @@ test("activity tabs separate active turns from owned, live sandboxes with a fini
     row("other", { ownerId: "other" }),
   ];
   const turns = new Map<string, SandboxTurnObservation>(rows.map(({ id }) => [id, finished]));
+  turns.set("stopped-with-queued-turn", {
+    ...finished,
+    status: "stopped",
+    expiresAt: "2026-11-16T00:10:00Z",
+    prompt: { ...finished.prompt, state: "queued" },
+  });
   turns.set("expired-since-list-read", { ...finished, expiresAt: deadline });
   turns.set("stopped-since-list-read", { ...finished, status: "stopped" });
   turns.set("unsettled", { ...finished, settled: false });
@@ -81,18 +88,24 @@ test("activity tabs separate active turns from owned, live sandboxes with a fini
 
   const page = sandboxActivityPage(rows, "viewer", "need", 1, turns, now);
   expect(page.rows.map(({ id }) => id)).toEqual(["waiting"]);
-  expect(page.counts).toEqual({ all: 17, mine: 14, need: 1, working: 2, stopped: 1, failed: 1 });
-
   const working = sandboxActivityPage(rows, "viewer", "working", 1, turns, now);
-  expect(working.rows.map(({ id }) => id)).toEqual(["queued", "turn-running"]);
+  expect(working.rows.map(({ id }) => id)).toEqual(["stopped-with-queued-turn", "queued", "turn-running"]);
+  expect(working.counts).toEqual({ all: 18, mine: 15, need: 1, working: 3, stopped: 1, failed: 1 });
 });
 
-test("Waiting for you reports incomplete evidence for a recorded fallback, but not for an idle machine", () => {
-  const rows = [row("idle")];
+test("activity reports unavailable turn observations while accepting a successful idle read", () => {
   const idle = { ...finished, prompt: null };
   const recorded = { ...idle, statusMessage: "Provider observation unavailable; showing recorded state." };
-  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", idle]]), now).turnsIncomplete).toBe(false);
-  expect(sandboxActivityPage(rows, "viewer", "need", 1, new Map([["idle", recorded]]), now).turnsIncomplete).toBe(true);
+  const stale = { ...finished, statusMessage: "Stored prompt state is incomplete; live data may be stale." };
+  for (const [observation, incomplete] of [
+    [idle, false],
+    [recorded, true],
+    [stale, true],
+  ] as const) {
+    const turns = new Map<string, SandboxTurnObservation>([["sandbox", { ...observation, status: "running" }]]);
+    const activity = sandboxActivityPage([row("sandbox", { status: "running" })], "viewer", "working", 1, turns, now);
+    expect(activity.turnsIncomplete).toBe(incomplete);
+  }
 });
 
 test("attention sort still prioritizes stopped outcomes, preserved work and urgent deadlines", () => {

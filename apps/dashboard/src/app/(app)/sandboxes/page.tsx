@@ -542,7 +542,12 @@ async function loadInventory(
 
 async function readInventoryTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
   const turns = new Map<string, SandboxTurnObservation>();
-  const candidates = rows.filter(isTurnCandidate);
+  const now = new Date();
+  const readable = rows.filter((row) => isTurnCandidate(row, now));
+  const candidates = [
+    ...readable.filter((row) => row.status !== "stopped"),
+    ...readable.filter((row) => row.status === "stopped"),
+  ];
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return turns;
 

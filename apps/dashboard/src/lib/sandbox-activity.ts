@@ -28,16 +28,26 @@ function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
 }
 
-function canHaveActiveTurn(status: SandboxListMetadata["status"]) {
-  return status === "starting" || status === "ready" || status === "running";
+function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: string | null, now: Date) {
+  return (
+    status === "starting" ||
+    status === "ready" ||
+    status === "running" ||
+    // A retained stop can have a queued wake-on-send turn before the machine resumes.
+    (status === "stopped" && expiresAt !== null && beforeDeadline(expiresAt, now))
+  );
 }
 
-export function isTurnCandidate(row: SandboxListMetadata) {
-  return row.canOpen && canHaveActiveTurn(row.status);
+export function isTurnCandidate(row: SandboxListMetadata, now: Date) {
+  return row.canOpen && canHaveActiveTurn(row.status, row.expiresAt, now);
 }
 
-function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
-  return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
+function incompleteTurnObservation(turn: SandboxTurnObservation) {
+  return (
+    (turn.status === "ready" && turn.prompt === null && Boolean(turn.statusMessage)) ||
+    turn.statusMessage === "Provider observation unavailable; showing recorded state." ||
+    turn.statusMessage === "Stored prompt state is incomplete; live data may be stale."
+  );
 }
 
 export function sandboxActivityPage(
@@ -52,22 +62,24 @@ export function sandboxActivityPage(
   const waitingIds = new Set<string>();
   let turnsIncomplete = false;
   for (const row of rows) {
-    if (!isTurnCandidate(row)) continue;
+    if (!isTurnCandidate(row, now)) continue;
     const turn = turns.get(row.id);
-    if (!turn || (turn.status === "ready" && turn.prompt === null && turn.statusMessage)) {
+    if (!turn || incompleteTurnObservation(turn)) {
       turnsIncomplete = true;
       continue;
     }
     const state = turn.prompt?.state;
-    if (canHaveActiveTurn(turn.status) && (state === "queued" || state === "running")) {
+    if (canHaveActiveTurn(turn.status, turn.expiresAt, now) && (state === "queued" || state === "running")) {
       workingIds.add(row.id);
       continue;
     }
     if (
-      isWaitingCandidate(row, viewerId, now) &&
+      row.ownerId === viewerId &&
+      row.status === "ready" &&
+      beforeDeadline(row.expiresAt, now) &&
       turn.status === "ready" &&
       turn.settled === true &&
-      turn.prompt?.state === "finished" &&
+      state === "finished" &&
       beforeDeadline(turn.expiresAt, now)
     )
       waitingIds.add(row.id);
@@ -77,7 +89,7 @@ export function sandboxActivityPage(
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
     working: (row: SandboxListMetadata) => workingIds.has(row.id),
     need: (row: SandboxListMetadata) => waitingIds.has(row.id),
-    stopped: (row: SandboxListMetadata) => row.status === "stopped",
+    stopped: (row: SandboxListMetadata) => row.status === "stopped" && !workingIds.has(row.id),
     failed: (row: SandboxListMetadata) => row.status === "failed",
   };
   const activity =
