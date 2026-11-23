@@ -31,12 +31,11 @@ export type RuntimeConfigurationTarget = Pick<
   | "status"
   | "deletedAt"
   | "stopRequestedAt"
-  | "expiresAt"
   | "credentialId"
   | "credentialVersion"
   | "repositoryDir"
   | "visibility"
-> & { provider: string };
+> & { provider: string; expiresAt?: string | Date };
 
 export interface RuntimeConfigurationInput {
   actor: GoldenActor;
@@ -65,7 +64,7 @@ export async function runtimeConfiguration(
     const credentials = { ...input.credentials, env: { ...input.credentials.env } };
     const modelAuth = input.modelAuth;
     const binding = input.credentials.binding ? { ...input.credentials.binding } : undefined;
-    const expiresAt = Date.parse(sandbox.expiresAt ?? "");
+    const expiresAt = new Date(sandbox.expiresAt ?? "").getTime();
     if (
       sandbox.provider !== expectedProvider ||
       (expectedProvider === "docker" && (sandbox.visibility !== "private" || sandbox.repositoryDir !== null)) ||
