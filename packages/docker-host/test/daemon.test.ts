@@ -126,13 +126,13 @@ test.each(["create", "stop", "delete"] as const)(
   },
 );
 
-test.each(["create", "restore"] as const)(
-  "%s replays the verified allocation ID after a lost acknowledgement and ledger compaction",
+test.each(["create", "restore", "stop"] as const)(
+  "%s replays the verified container ID after a lost acknowledgement and ledger compaction",
   async (operation) => {
-    const { job, store, api, executor, state } = fixture();
+    const { job, store, api, executor, state } = fixture(operation === "stop" ? "stop" : "create");
     const machineId = "b".repeat(64);
     const allocation: Job =
-      operation === "create"
+      operation !== "restore"
         ? job
         : {
             ...job,
@@ -140,18 +140,21 @@ test.each(["create", "restore"] as const)(
             request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
             predecessor: { request: job.request, machineId: "a".repeat(64) },
           };
-    api.poll = async () => ({ job: allocation });
-    let allocations = 0;
+    let executions = 0;
     executor[operation] = async () => {
-      allocations++;
+      executions++;
       return { machineId };
     };
     const reported: unknown[] = [];
-    api.result = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+    const transport = httpApi((async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/poll"))
+        return Response.json({ job: allocation }, { headers: { "x-armada-docker-stop-identity": "1" } });
       reported.push(JSON.parse(String(init?.body)));
       if (reported.length === 1) throw new Error("acknowledgement lost");
       return new Response(null, { status: 204 });
-    }) as typeof fetch).result;
+    }) as typeof fetch);
+    api.poll = transport.poll;
+    api.result = transport.result;
     const run = () => tick(store, api, executor, false, () => 100_000);
 
     await expect(run()).rejects.toThrow("acknowledgement lost");
@@ -180,7 +183,7 @@ test.each(["create", "restore"] as const)(
       machineId,
     };
     expect(reported).toEqual([body, body, body]);
-    expect(allocations).toBe(1);
+    expect(executions).toBe(1);
   },
 );
 

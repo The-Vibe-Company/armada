@@ -30,8 +30,8 @@ export type Receipt = {
   expiryReported?: true;
   expiryOutputsPending?: true;
 } & (
-  | { operation: "stop" | "delete" }
-  | { operation: "create"; machineId?: string }
+  | { operation: "delete" }
+  | { operation: "create" | "stop"; machineId?: string }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
   | { operation: "restore"; inputHash: string; predecessorKey: string; machineId?: string }
   | {
@@ -887,8 +887,8 @@ async function admitLocked(
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
         const machineId = allocationMachineId(await executor.restore(receipt.request, job.predecessor));
         if (machineId !== undefined) receipt.machineId = machineId;
-      } else if (receipt.operation === "create") {
-        const machineId = allocationMachineId(await executor.create(receipt.request));
+      } else if (receipt.operation === "create" || receipt.operation === "stop") {
+        const machineId = allocationMachineId(await executor[receipt.operation](receipt.request));
         if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
@@ -1162,7 +1162,10 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
     ];
-    if ((receipt.operation === "create" || receipt.operation === "restore") && receipt.machineId)
+    if (
+      (receipt.operation === "create" || receipt.operation === "restore" || receipt.operation === "stop") &&
+      receipt.machineId
+    )
       compacted[11] = receipt.machineId;
     retired.push(compacted);
     return false;

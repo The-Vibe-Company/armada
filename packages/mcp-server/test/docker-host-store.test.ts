@@ -437,6 +437,87 @@ test("Machine create replays one intent and recovers the authenticated container
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
+async function machineStopFixture() {
+  const a = await machineCreateFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  const machineId = "d".repeat(64);
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: a.generation,
+    outcome: "completed",
+    machineId,
+  });
+  return { ...a, machine: { sandboxId: a.sandboxId, generation: a.request.generation, machineId } };
+}
+
+test("Machine stop recovers the authenticated retained ID after worker takeover", async () => {
+  const a = await machineStopFixture();
+  const request = { ...a.machine, retain: true };
+  const first = store.machineCleanup(a.owner);
+  await denied(first.stop({ ...request, generation: 2 }));
+  await denied(first.stop({ ...request, machineId: "e".repeat(64) }));
+  const interrupted = interruptDockerCommit(
+    async (tx) =>
+      (
+        await tx.query("select 1 from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='stop'", [
+          a.sandboxId,
+        ])
+      ).rows.length > 0,
+  );
+  await expect(interrupted.faultingStore.machineCleanup(a.owner).stop(request)).rejects.toMatchObject({
+    cause: interrupted.failure,
+  });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+
+  await expect(first.stop(request)).rejects.toThrow("outcome is unknown");
+  const pending = await store.poll(a.hostToken, a.installationId);
+  expect(pending).toMatchObject({ operation: "stop", request: { sandboxId: a.sandboxId, generation: a.generation } });
+  const requestId = pending!.requestId;
+  const successor = createDockerHostStore(sql, key).machineCleanup(a.owner);
+  expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
+  await expect(successor.stop(request)).rejects.toThrow("outcome is unknown");
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(requestId);
+
+  const result = { requestId, outcome: "completed" as const, machineId: a.machine.machineId };
+  await denied(store.complete(a.hostToken, randomUUID(), result));
+  await denied(store.complete(a.hostToken, a.installationId, { ...result, machineId: "e".repeat(64) }));
+  const interruptedReceipt = failDockerJobCommit(requestId, "completed");
+  await expect(interruptedReceipt.faultingStore.complete(a.hostToken, a.installationId, result)).rejects.toMatchObject({
+    cause: interruptedReceipt.failure,
+  });
+  expect(await successor.observe(a.machine)).toEqual({ kind: "unknown" });
+  await store.complete(a.hostToken, a.installationId, result);
+  const retained = {
+    sandboxId: a.sandboxId,
+    generation: a.machine.generation,
+    kind: "container",
+    ref: result.machineId,
+  };
+  expect(await successor.stop(request)).toEqual(retained);
+  expect(await successor.observe(a.machine)).toEqual({
+    kind: "present",
+    machine: a.machine,
+    phase: "stopped",
+    receipt: { operation: "stop", retained },
+  });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});
+
+test("Machine non-retaining stop confirms removal after an ID-less stop acknowledgement", async () => {
+  const a = await machineStopFixture();
+  const adapter = store.machineCleanup(a.owner);
+  const request = { ...a.machine, retain: false };
+  await expect(adapter.stop(request)).rejects.toThrow("outcome is unknown");
+  const stop = await store.poll(a.hostToken, a.installationId);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop!.requestId, outcome: "completed" });
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "unknown" });
+  await expect(adapter.stop(request)).rejects.toThrow("outcome is unknown");
+  const removal = await store.poll(a.hostToken, a.installationId);
+  expect(removal?.operation).toBe("delete");
+  await store.complete(a.hostToken, a.installationId, { requestId: removal!.requestId, outcome: "completed" });
+  expect(await adapter.stop(request)).toBeNull();
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
+});
+
 test("Machine create freezes a snapshot from the admitted host installation", async () => {
   const host = await fixture();
   const db = database();
