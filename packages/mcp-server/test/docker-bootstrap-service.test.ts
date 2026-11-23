@@ -563,7 +563,9 @@ test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof 
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
 
-test.each([false, true])("Docker stays ready after inactivity and retains merged work (merged=%s)", async (merged) => {
+const dockerIdleCases = ["idle", "checkpointed", "merged", "opted out"] as const;
+test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) => {
+  const merged = scenario === "merged";
   const db = database();
   const f = await fixture();
   const authority = createRuntimeEnrolments(sql, key);
@@ -590,7 +592,11 @@ test.each([false, true])("Docker stays ready after inactivity and retains merged
     epoch: session.epoch,
     requestId: queued.command.requestId,
     status: 200,
-    body: { version: 1, requestId: queued.command.requestId, result: { promptId, conversationId, status: "finished" } },
+    body: {
+      version: 1,
+      requestId: queued.command.requestId,
+      result: { promptId, conversationId, status: "finished" },
+    },
   });
   await runtime.prompt(f.actor, f.sandbox.id, turn);
   const event = {
@@ -607,7 +613,7 @@ test.each([false, true])("Docker stays ready after inactivity and retains merged
     session.epoch,
     await encryptSecret(JSON.stringify(event), key),
   ]);
-  if (merged) {
+  if (merged || scenario === "opted out") {
     await db.query(
       `insert into github_connections(user_id,github_id,login,name,refresh_token_enc)
        values($1,123,'owner','Owner',$2)`,
@@ -621,6 +627,9 @@ test.each([false, true])("Docker stays ready after inactivity and retains merged
        where s.id=$1 and c.user_id=s.owner_id and e.org_id=s.org_id`,
       [f.sandbox.id],
     );
+  }
+  if (scenario === "opted out") {
+    await db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.sandbox.id]);
   }
   let clock = 600_999;
   const bridge = createRuntimeCommands(authority, key, {
@@ -671,8 +680,15 @@ test.each([false, true])("Docker stays ready after inactivity and retains merged
     dockerStop: (actor, id, requestId) =>
       hosts.enqueueSandbox(actor, id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
   });
+  if (scenario === "checkpointed") {
+    await checkpoint(
+      { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
+      { id: f.sandbox.id, request_id: randomUUID(), runtimeVersion: 1 },
+    );
+    clock += 60_000;
+  }
   await idle.reconcileOne(new AbortController().signal);
-  if (!merged) {
+  if (scenario === "idle" || scenario === "opted out") {
     expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
     clock += 60_000;
     await idle.reconcileOne(new AbortController().signal);
@@ -691,7 +707,8 @@ test.each([false, true])("Docker stays ready after inactivity and retains merged
     )
   ).rows[0]!;
   expect(stored.status).toBe("stopped");
-  expect(stored.status_reason).toBe("work_merged");
+  expect(stored.status_reason).toBe(merged ? "work_merged" : "idle_paused");
+  if (!merged) return;
   const detail = await createDockerSandboxControls(sql, key).invoke(
     { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
     "status",

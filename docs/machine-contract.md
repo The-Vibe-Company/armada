@@ -32,6 +32,7 @@ The capability record describes the enrolled runtime path. Availability can stil
 | `extendLifetime` | Yes | Yes, within admitted provider headroom | No |
 | `humanSsh` | Yes | Yes, for supported SSH configuration | No |
 | `resourceSampler` | Yes, attested VM | Yes, attested explicit VM | No |
+| `idleStop` | Yes | Yes | No |
 | `sizes` | small, medium, large, xlarge | small, medium, large, xlarge | Empty, host policy applies |
 
 | Provider | Launch and bootstrap | Retained stop and resume |
