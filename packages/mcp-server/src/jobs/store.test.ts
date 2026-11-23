@@ -1483,22 +1483,23 @@ async function modalFirstTurnLane(
 
 test("fresh Modal launch job batches its lease checks", async () => {
   const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
-  const statements: string[] = [];
-  function record(sql: Sql): Sql {
+  let statements = 0;
+  const record = (sql: Sql): Sql => {
+    const { transaction } = sql;
     return {
       ...sql,
       query<T>(statement: string, params?: unknown[]) {
-        statements.push(statement);
+        statements++;
         return sql.query<T>(statement, params);
       },
-      transaction: sql.transaction && ((work) => sql.transaction!((tx) => work(record(tx)))),
+      ...(transaction ? { transaction: (work) => transaction((tx) => work(record(tx))) } : {}),
     };
-  }
+  };
   const runner = makeRunner(undefined, record(f.sql));
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
-  expect(statements.length).toBeLessThanOrEqual(51);
+  expect(statements).toBeLessThanOrEqual(51);
 });
 
 test.each([

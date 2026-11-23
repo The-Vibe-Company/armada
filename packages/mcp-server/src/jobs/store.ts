@@ -84,7 +84,7 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
 export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Promise<T>) {
   if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
   return sql.transaction(async (tx) => {
-    // The lateral job lock depends on the locked sandbox to preserve lifecycle lock order.
+    // WARNING: Lock the sandbox before evaluating job lease expiry and locking the job.
     const { rows: jobs } = await tx.query(
       `with sandbox as materialized (
          select id,lifecycle_generation from public.sandboxes where id=$1 and lifecycle_generation=$2 for update
