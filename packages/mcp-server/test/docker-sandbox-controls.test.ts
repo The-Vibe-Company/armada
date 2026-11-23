@@ -1081,7 +1081,7 @@ test("Docker mutations reuse the fenced runtime mailbox and reconcile identical 
     (line) => lines.push(line),
   );
   expect(refusal).toMatchObject({ provider: "docker", code: "no_running_turn" });
-  expect(lines.map(([line]) => JSON.parse(String(line))).filter((event) => event.event === "provider_call")).toEqual([
+  expect(lines.map((line) => JSON.parse(line)).filter((event) => event.event === "provider_call")).toEqual([
     expect.objectContaining({
       requestId: refused?.headers.get("x-request-id"),
       provider: "docker",
