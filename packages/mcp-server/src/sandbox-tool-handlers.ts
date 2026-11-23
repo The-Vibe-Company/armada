@@ -25,7 +25,7 @@ import {
   RuntimeReconciliationConflict,
   SandboxStopTargetChanged,
 } from "./runtime-reconciliation-conflict.ts";
-import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
+import { admitModalStop, appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 import { ToolError } from "./tool-error.ts";
@@ -552,105 +552,93 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      return sandboxActivity<{ id: string; status: SandboxStatus; preservationNote?: string }>(
-        data.sandboxes,
-        found,
-        {
-          ...stopAdmission,
-          ...retainedGuard,
-          status: found.status === "failed" ? "failed" : "stopping",
-          stoppedAt: null,
-          stopRequested: true,
-          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-        },
-        async (signal, token) => {
-          if (found.provider === "modal" && found.runtimeTransport === "dialout") {
-            const preservationNote =
-              checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
-            return {
-              result: {
-                id: found.id,
-                status: found.status === "failed" ? "failed" : "stopping",
-                ...(preservationNote ? { preservationNote } : {}),
-              },
-              patch: {
-                ownerStop: true,
-                status: found.status === "failed" ? "failed" : "stopping",
-                ...(preservationNote ? { preservationNote } : {}),
-                stopRequested: true,
-              },
-            };
-          }
-          signal.throwIfAborted();
+      const status = found.status === "failed" ? "failed" : "stopping";
+      const admission: ServerSandboxPatch = {
+        ...stopAdmission,
+        ...retainedGuard,
+        status,
+        stoppedAt: null,
+        stopRequested: true,
+        ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+      };
+      if (found.provider === "modal" && found.runtimeTransport === "dialout") {
+        const note =
+          checkpoint === null
+            ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }
+            : {};
+        await admitModalStop(data.sandboxes, found, { ...admission, ...note });
+        return { id: found.id, status, ...note };
+      }
+      return sandboxActivity(data.sandboxes, found, admission, async (signal, token) => {
+        signal.throwIfAborted();
 
-          const preservation = await data.sandboxes
-            .preserveWork?.(found.id, provider, found.providerSandboxId, {
-              kind: "activity",
-              token,
-              generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
-              signal,
-            })
-            .catch(() => "pending" as const);
-          signal.throwIfAborted();
-          if (preservation === "pending")
-            return {
-              result: {
-                id: found.id,
-                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-              },
-              patch: {
-                ownerStop: true as const,
-                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-                stopRequested: true,
-              },
-            };
-          let terminal = false;
-          let stoppedAt: Date | undefined;
-          let preservationNote =
-            checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
-          try {
-            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
-            signal.throwIfAborted();
-            const observed = await stopAndObserve(
-              provider,
-              found.id,
-              found.providerSandboxId,
-              "user_stop",
-              signal,
-              Boolean(checkpoint),
-            );
-            terminal =
-              observed.state === "stopped" &&
-              (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || found.status === "failed");
-            stoppedAt = observed.stoppedAt;
-            preservationNote = observed.stopNote ?? preservationNote;
-          } catch (error) {
-            if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = provider.id !== "boat";
-          }
-          signal.throwIfAborted();
-          const status: SandboxStatus =
-            found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
-              ? "failed"
-              : terminal
-                ? "stopped"
-                : "stopping";
+        const preservation = await data.sandboxes
+          .preserveWork?.(found.id, provider, found.providerSandboxId, {
+            kind: "activity",
+            token,
+            generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
+            signal,
+          })
+          .catch(() => "pending" as const);
+        signal.throwIfAborted();
+        if (preservation === "pending")
           return {
-            result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
+            result: {
+              id: found.id,
+              status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+            },
             patch: {
               ownerStop: true as const,
-              status,
-              stopRequested: !terminal,
-              ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
-              ...(terminal
-                ? {
-                    stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                  }
-                : {}),
+              status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+              stopRequested: true,
             },
           };
-        },
-      );
+        let terminal = false;
+        let stoppedAt: Date | undefined;
+        let preservationNote =
+          checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
+        try {
+          if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
+          signal.throwIfAborted();
+          const observed = await stopAndObserve(
+            provider,
+            found.id,
+            found.providerSandboxId,
+            "user_stop",
+            signal,
+            Boolean(checkpoint),
+          );
+          terminal =
+            observed.state === "stopped" &&
+            (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || found.status === "failed");
+          stoppedAt = observed.stoppedAt;
+          preservationNote = observed.stopNote ?? preservationNote;
+        } catch (error) {
+          if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
+          terminal = provider.id !== "boat";
+        }
+        signal.throwIfAborted();
+        const status: SandboxStatus =
+          found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
+            ? "failed"
+            : terminal
+              ? "stopped"
+              : "stopping";
+        return {
+          result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
+          patch: {
+            ownerStop: true as const,
+            status,
+            stopRequested: !terminal,
+            ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
+            ...(terminal
+              ? {
+                  stoppedAt: (stoppedAt ?? context.now()).toISOString(),
+                }
+              : {}),
+          },
+        };
+      });
     }
 
     return tool(

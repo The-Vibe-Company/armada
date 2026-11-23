@@ -332,6 +332,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
+         payload_enc=case when kind='outputs_publish' then null else payload_enc end,
          outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
                                  then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
@@ -594,12 +595,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         );
         if (rows[0]?.completed) {
           if (refundAttempt) await db.query("update public.jobs set attempts = attempts - 1 where id = $1", [job.id]);
+          if (job.kind === "outputs_publish" && state !== "queued")
+            await db.query("update public.jobs set payload_enc=null where id=$1", [job.id]);
           await result.commit?.(db);
         }
         return rows[0]?.completed === true;
       };
       if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
-      if (result.commit || refundAttempt) {
+      if (result.commit || refundAttempt || (job.kind === "outputs_publish" && state !== "queued")) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));
       }

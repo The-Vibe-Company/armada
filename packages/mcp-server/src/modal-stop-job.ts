@@ -8,7 +8,7 @@ import {
 import type { Job, JobKind } from "./jobs/runner.ts";
 import { createJobsStore, withJobLease } from "./jobs/store.ts";
 import { recordUnconfirmedModalStop, settleModalStop } from "./sandbox-lifecycle.ts";
-import { captureFinalOutputs } from "./sandbox-outputs.ts";
+import { captureFinalOutputs, OUTPUTS_PUBLISH } from "./sandbox-outputs.ts";
 
 type CleanupMachine = Parameters<typeof import("./jobs/modal-launch.ts").createModalLaunchCleanupJob>[1];
 type OpenMachine = (
@@ -182,16 +182,29 @@ export function createModalStopJob(
               : null;
           if (observation.kind !== "present" || observation.phase !== "stopped") {
             if (!(await canDispatch())) return reconcile;
-            const captureMs = Math.min(12_000, +new Date(row.deadline_at) - Date.now() - 5_000);
+            const captureMs = +new Date(row.deadline_at) - Date.now() - 108_000;
             if (!captured && observation.kind === "present" && observation.phase === "running" && captureMs > 0) {
               const captureSignal = AbortSignal.any([signal, AbortSignal.timeout(captureMs)]);
               await captureFinalOutputs(sql, () => providerFor(sandboxId), sandboxId, {
                 key,
                 signal: captureSignal,
                 expectedGeneration: job.generation!,
-                async onPublish(tx) {
+                async stage(tx, snapshot) {
                   if (!(await allowed(tx)) || !(await jobs.checkpointStopCapture(tx, job)))
                     throw Error("Modal stop capture lost its lease.");
+                  await jobs.enqueue(
+                    OUTPUTS_PUBLISH,
+                    sandboxId,
+                    generation,
+                    "modal-final",
+                    snapshot,
+                    {
+                      orgId: row.org_id,
+                      maxAttempts: 600,
+                      deadline: new Date(+new Date(row.deadline_at) + 8 * 60_000),
+                    },
+                    tx,
+                  );
                 },
               }).catch(() => {});
               await withJobLease(sql, job, async (tx) => jobs.checkpointStopCapture(tx, job));

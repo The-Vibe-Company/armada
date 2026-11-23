@@ -138,6 +138,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement?: boolean };
   ownerStop?: true;
+  modalStopJob?: true;
   ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -1264,6 +1265,7 @@ export function createSqlData(
         if (stopStatus !== undefined) {
           fence += " and s.provider in ('boat','modal') and s.deleted_at is null";
           if (admission) fence += ` and not ${unresolvedModalLaunch("s")}`;
+          if (patch.modalStopJob) fence += " and s.provider='modal' and s.runtime_transport='dialout'";
           fence += patch.finishActivity
             ? stopStatus === "failed"
               ? " and s.status in ('stopping','failed')"
@@ -1454,6 +1456,7 @@ export function createSqlData(
                 fromState: row.status,
                 toState: stopStatus,
                 confirmedStop: patch.stoppedAt != null,
+                ...(patch.modalStopJob && patch.activityToken ? { modalActivity: patch.activityToken } : {}),
                 ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
                 code: patch.finishActivity
                   ? "owner_stop_settled"

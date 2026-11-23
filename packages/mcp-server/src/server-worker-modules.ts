@@ -14,7 +14,7 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
-import { OUTPUTS_CAPTURE } from "./sandbox-outputs.ts";
+import { createStagedOutputJob, OUTPUTS_CAPTURE, OUTPUTS_PUBLISH } from "./sandbox-outputs.ts";
 import { createPullRequestScanJob } from "./sandbox-pull-requests.ts";
 import { dockerMounts, outputMounts, runtimeMounts } from "./server-mounts.ts";
 import type { ServerModule } from "./server-registration.ts";
@@ -124,7 +124,12 @@ const jobsLane: LaneFactory = ({
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
-      ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
+      ...(config.encryptionKey
+        ? {
+            [OUTPUTS_CAPTURE]: outputs.captureJob,
+            [OUTPUTS_PUBLISH]: createStagedOutputJob(sql),
+          }
+        : {}),
       snapshot_retirement: {
         concurrency: 4,
         timeoutMs: 30_000,

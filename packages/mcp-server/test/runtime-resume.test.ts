@@ -31,6 +31,7 @@ import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runti
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
+import { createStagedOutputJob, OUTPUTS_PUBLISH } from "../src/sandbox-outputs.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
@@ -225,6 +226,12 @@ describe("Modal user stop and wake-on-send", () => {
         expect(await runner.reconcileOne(signal)).toBe(true);
         await runner.drain();
       }
+      expect((await f.db.query("select 1 from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([]);
+      const publisher = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), {
+        [OUTPUTS_PUBLISH]: createStagedOutputJob(f.sql),
+      });
+      expect(await publisher.reconcileOne(signal)).toBe(true);
+      await publisher.drain();
       expect(terminations).toBe(1);
       expect(captures).toBe(1);
       const stopped = (

@@ -934,6 +934,7 @@ export async function publishOwnerStop(
     toState: "stopping" | "stopped" | "failed";
     statusReason?: string | null;
     confirmedStop?: boolean;
+    modalActivity?: string;
     code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
   },
 ) {
@@ -959,17 +960,13 @@ export async function publishOwnerStop(
     if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
     generation = result.generation;
   }
-  if (stop.code === "owner_stop_settled" && !stop.confirmedStop) {
-    const {
-      rows: [proof],
-    } = await tx.query<{ retain: boolean }>(
-      `select exists(select 1 from public.sandbox_transitions where sandbox_id=$1
-        and generation between $2::bigint-1 and $2::bigint and code='runtime_retained_stop') as retain
-       from public.sandboxes where id=$1 and provider='modal' and runtime_transport='dialout'`,
-      [stop.sandboxId, generation],
-    );
-    if (proof) await enqueueModalStop(tx, stop.sandboxId, proof.retain);
-  }
+  if (
+    stop.modalActivity &&
+    !(await enqueueModalStop(tx, stop.sandboxId, stop.code === "runtime_retained_stop", {
+      activity: stop.modalActivity,
+    }))
+  )
+    throw Error("Modal owner stop could not commit its job.");
   if (stop.code === "owner_stop_settled" && stop.confirmedStop)
     await detachBoatExtensionAfterStop(tx, stop.sandboxId, generation);
 }
@@ -1742,7 +1739,12 @@ async function recoverInterruptedRuntimeResume(
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 /** Called inside stop admission, after transferring any legacy claim in the same transaction. */
-export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boolean, lease?: string) {
+export async function enqueueModalStop(
+  tx: Sql,
+  sandboxId: string,
+  retain: boolean,
+  handoff?: { activity: string } | { reconcile: string },
+) {
   const {
     rows: [target],
   } = await tx.query<{
@@ -1751,10 +1753,11 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boole
     deadline: Date;
     checkpoint: { epoch: string; watermark: number } | null;
   }>(
-    `update public.sandboxes set reconcile_after='infinity',reconcile_lease=null,reconcile_lease_until=null
+    `update public.sandboxes set reconcile_after='infinity',reconcile_lease=null,reconcile_lease_until=null,
+      activity_lease_id=null,activity_until=null
      where id=$1 and provider='modal' and runtime_transport='dialout' and deleted_at is null
        and status in ('starting','stopping','failed') and stopped_at is null and stop_requested_at is not null
-       and (activity_until is null or activity_until<=clock_timestamp())
+       and (activity_until is null or activity_until<=clock_timestamp() or activity_lease_id=$3::uuid)
        and (reconcile_lease is not distinct from $2::uuid or reconcile_lease_until<=clock_timestamp())
      returning org_id,lifecycle_generation::text as generation,clock_timestamp()+interval '2 minutes' as deadline,
        (select jsonb_build_object('epoch',p.epoch::text,'watermark',p.watermark)
@@ -1763,7 +1766,11 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boole
         where p.sandbox_id=sandboxes.id and p.completed_at is not null
           and sandboxes.status='stopping' and not sandboxes.application_secret_tainted
           and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=sandboxes.id)) as checkpoint`,
-    [sandboxId, lease ?? null],
+    [
+      sandboxId,
+      handoff && "reconcile" in handoff ? handoff.reconcile : null,
+      handoff && "activity" in handoff ? handoff.activity : null,
+    ],
   );
   if (!target) return false;
   await createJobsEnqueue(tx)(
@@ -2465,7 +2472,7 @@ export function createSandboxLifecycle(
                     (row.checkpointed_stop ||
                       retainedResume ||
                       ["idle_paused", "work_merged"].includes(row.status_reason ?? "")),
-                  token,
+                  { reconcile: token },
                 ))
               )
                 throw stopConflict;
