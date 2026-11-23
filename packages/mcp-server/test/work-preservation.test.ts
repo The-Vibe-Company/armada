@@ -1036,6 +1036,20 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   expect(rows).toEqual([{ status: "deleted" }]);
 });
 
+test("Boat drain reports a stored key that cannot be decrypted before claiming deletion", async () => {
+  const { db, people, sandboxId } = await seedNativeDrainReceipt();
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", people.owner, {
+    ARMADA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  const row = { id: sandboxId, org_id: people.org, role: "member" as const };
+
+  expect(await drain.remove(row).catch(nativeDrainFailureReason)).toBe("provider_credentials_unreadable");
+  expect((await db.query("select native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { native_drain_pending: false },
+  ]);
+});
+
 test.each(["Boat unclaimed", "Boat acknowledged"] as const)(
   "%s drain refuses replay after losing its detached archive",
   async (scenario) => {

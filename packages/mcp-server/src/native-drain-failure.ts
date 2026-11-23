@@ -14,7 +14,8 @@ type NativeDrainRefusal =
   | "deletion_outcome_unknown"
   | "deletion_pending"
   | "deletion_fence_lost"
-  | "provider_configuration_missing";
+  | "provider_configuration_missing"
+  | "provider_credentials_unreadable";
 
 const reasons = new WeakMap<Error, NativeDrainRefusal>();
 
@@ -27,7 +28,6 @@ export type NativeDrainFailureReason =
   | NativeDrainRefusal
   | "authorization_or_missing"
   | "provider_credentials_missing"
-  | "provider_credentials_unreadable"
   | "provider_http_4xx"
   | "provider_http_5xx"
   | "provider_error"

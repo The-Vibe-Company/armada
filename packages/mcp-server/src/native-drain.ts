@@ -1,5 +1,5 @@
 import type { MemberRole, ProviderRegistry, Sql } from "@armada/core";
-import { createSqlVaultStore } from "@armada/core/server";
+import { createSqlVaultStore, VaultError } from "@armada/core/server";
 import { createSqlData } from "./data.ts";
 import { providerRegistry } from "./http.ts";
 import { withNativeDrainReason } from "./native-drain-failure.ts";
@@ -71,7 +71,13 @@ export function createNativeDrainRemoval(
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw withNativeDrainReason(new Error("The sandbox route changed after inventory."), "not_eligible");
-          return providers.resolve(target, caller);
+          try {
+            return await providers.resolve(target, caller);
+          } catch (error) {
+            if (error instanceof VaultError && error.code === "unavailable")
+              throw withNativeDrainReason(error, "provider_credentials_unreadable");
+            throw error;
+          }
         },
       },
       row.id,
