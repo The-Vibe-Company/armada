@@ -1,5 +1,13 @@
 # Changelog
 
+## [10.0.1](https://github.com/The-Vibe-Company/armada/compare/v10.0.0...v10.0.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **runtime:** GitHub broker listen race leaves a dead credentials socket ([#4052](https://github.com/The-Vibe-Company/armada/issues/4052)) ([4e8fd27](https://github.com/The-Vibe-Company/armada/commit/4e8fd27161a5a66db662e7a0d4ee0cb1c26a06e3))
+* **runtime:** GitHub broker sockets outside the Boat-remounted home ([#4058](https://github.com/The-Vibe-Company/armada/issues/4058)) ([9c5ae5c](https://github.com/The-Vibe-Company/armada/commit/9c5ae5c6be577e9da7cf9d8e09f67873ce8f9f79))
+
 ## [10.0.0](https://github.com/The-Vibe-Company/armada/compare/v9.0.1...v10.0.0) (2026-11-23)
 
 
