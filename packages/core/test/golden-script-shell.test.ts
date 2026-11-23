@@ -420,6 +420,7 @@ test.each([false, true])(
 test.each([
   ["the managed collector answers", "probe", 0],
   ["the image already ships the managed Bun", "preinstalled", 0],
+  ["the pinned Bun has inherited non-root owners", "inherited-owners", 0],
   ["the pinned Bun has an unprotected parent", "writable-parent", 0],
   ["the pinned Bun parent is searchable only by root", "root-only-parent", 0],
   ["the pinned Bun has a symlinked parent", "symlink-parent", 86],
@@ -428,8 +429,10 @@ test.each([
   const base = mkdtempSync(join(tmpdir(), "golden-collector-"));
   try {
     const bin = join(base, "bin");
-    const opt = join(base, "opt");
+    const optRoot = join(base, "opt");
+    const opt = join(optRoot, "armada");
     mkdirSync(bin);
+    mkdirSync(optRoot);
     // The repository pinned an old Bun first on PATH: it must never become the collector.
     writeFileSync(join(bin, "bun"), "#!/bin/sh\n[ \"$1\" = --version ] && echo 1.0.0 || echo 'Bun CLI help'\n", {
       mode: 0o755,
@@ -442,7 +445,12 @@ test.each([
       join(bin, "stat"),
       `#!/bin/sh
 case "$4" in
-  "${opt}"|"${opt}"/*) mode=$(/usr/bin/stat -c %a -- "$4") || exit $?; printf '0 %s\\n' "$mode" ;;
+  "${optRoot}"|"${optRoot}"/*)
+    mode=$(/usr/bin/stat -c %a -- "$4") || exit $?
+    owner=0
+    [ ! -f "$4.fixture-owner" ] || owner=$(cat "$4.fixture-owner")
+    printf '%s %s\\n' "$owner" "$mode"
+    ;;
   *) printf '0 755\\n' ;;
 esac
 `,
@@ -470,6 +478,12 @@ chmod +x "$4/bin/bun"
 `,
       { mode: 0o755 },
     );
+    writeFileSync(join(bin, "chown"), '#!/bin/sh\nrm -f -- "$4.fixture-owner"\n', { mode: 0o755 });
+    if (mode === "inherited-owners") {
+      mkdirSync(opt);
+      writeFileSync(`${optRoot}.fixture-owner`, "1000");
+      writeFileSync(`${opt}.fixture-owner`, "1000");
+    }
     if (mode === "symlink-parent") symlinkSync(bin, opt);
     if (mode === "preinstalled" || mode === "writable-parent" || mode === "root-only-parent") {
       mkdirSync(join(opt, "runtime-bun"), { recursive: true });
@@ -484,15 +498,20 @@ chmod +x "$4/bin/bun"
     const prepared = withGoldenDirs([{ owner: "acme", repo: "web", id: 1, installationId: 2 }]);
     const probe = mode !== "help" ? `${opt}/runtime-bun/bun probe` : `${bin}/bun probe`;
     const block = extract(goldenScript(prepared), "armada_phase=output_collector", "probe did not answer")
-      .replaceAll(shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE), shellQuote(probe))
-      .replaceAll("/opt/armada", opt)
+      .replaceAll("/opt", optRoot)
+      .replaceAll(shellQuote(OUTPUT_COLLECTOR_MANAGED_PROBE.replaceAll("/opt", optRoot)), shellQuote(probe))
       .replaceAll("/usr/bin/stat", join(bin, "stat"))
-      .replaceAll("/usr/bin/install", join(bin, "install"));
+      .replaceAll("/usr/bin/install", join(bin, "install"))
+      .replaceAll("/usr/bin/chown", join(bin, "chown"));
     const result = spawnSync("/bin/bash", ["-euo", "pipefail", "-c", `set +e\nIFS=$'\\n\\t'\n${block}`], {
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: base },
       encoding: "utf8",
     });
     expect(result.status).toBe(status);
+    if (mode === "inherited-owners") {
+      expect(existsSync(`${optRoot}.fixture-owner`)).toBe(false);
+      expect(existsSync(`${opt}.fixture-owner`)).toBe(false);
+    }
     if (mode === "symlink-parent") {
       expect(result.stderr).toContain("ARMADA_OUTPUT_COLLECTOR_FAILURE symlink");
       expect(existsSync(join(bin, "runtime-bun"))).toBe(false);
@@ -500,7 +519,9 @@ chmod +x "$4/bin/bun"
     }
     if (mode === "writable-parent" || mode === "root-only-parent") expect(statSync(opt).mode & 0o777).toBe(0o755);
     expect(readFileSync(join(opt, "runtime-bun", "bun"), "utf8")).toContain("armada-output-collector-ready");
-    expect(existsSync(join(base, "npm-called"))).toBe(mode === "probe" || mode === "help");
+    expect(existsSync(join(base, "npm-called"))).toBe(
+      mode === "probe" || mode === "help" || mode === "inherited-owners",
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
