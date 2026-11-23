@@ -9,17 +9,17 @@ import {
   type Provider,
   ProviderError,
   SANDBOX_STOP_MARGIN_SECONDS,
+  type SandboxInfo,
   type SandboxStore,
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import type { BoatProvider } from "@armada/provider-boat";
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
-import { mergedWorkProof } from "./merged-work.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
-import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
@@ -1726,16 +1726,36 @@ async function recoverInterruptedRuntimeResume(
   return true;
 }
 
+async function nativeQuiescent(provider: Provider, info: SandboxInfo, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  if (provider.id === "boat") {
+    const native = provider as Provider & Partial<Pick<BoatProvider, "conversations">>;
+    if (!native.conversations) return false;
+    const conversations = await native.conversations(info.id);
+    signal?.throwIfAborted();
+    return conversations.every((conversation) => conversation.running === false);
+  }
+  if (provider.id !== "modal" || !info.physicalGeneration || !provider.observeOrchestrator) return false;
+  const observed = await provider.observeOrchestrator({
+    sandboxId: info.id,
+    physicalGeneration: info.physicalGeneration,
+  });
+  signal?.throwIfAborted();
+  return (
+    observed.physicalGeneration === info.physicalGeneration &&
+    observed.state === "quiescent" &&
+    observed.eventWatermark === observed.acknowledgedSequence
+  );
+}
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
   sql: Sql,
   providerFor: (id: string) => Promise<Provider>,
-  options: { now?: () => number; delayMs?: number } = {},
+  options: { now?: () => number } = {},
 ) {
   const now = options.now ?? Date.now;
-  const delay = options.delayMs ?? 600_000;
-  if (!Number.isSafeInteger(delay) || delay < 1) throw Error("Invalid native idle delay.");
   const pending = new Set<Promise<unknown>>();
   // Four slots per authority (eight total). Reserve before SQL so concurrent
   // callers cannot over-admit; keep a reservation until every raw SDK call settles.
@@ -1776,14 +1796,11 @@ export function createSandboxLifecycle(
           task_prompt_id: string | null;
           activity_lease_id: string | null;
           application_secret_tainted: boolean;
-          credential_id: string | null;
-          credential_version: number | null;
           owner_is_member: boolean;
           retained_resume: boolean;
           checkpointed_stop: boolean;
           interrupted_resume: boolean;
           protected_resume: boolean;
-          work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
@@ -1830,8 +1847,8 @@ export function createSandboxLifecycle(
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
-        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
-          ${mergedWorkProof("s")} as work_merged,due.retained_resume,
+        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
+          due.retained_resume,
           due.modal_resume as protected_resume,
           ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
             and s.status='stopping' and s.stop_requested_at is not null and exists(
@@ -2256,21 +2273,6 @@ export function createSandboxLifecycle(
         }
         const shortBoatDeadline =
           observedBoatDeadline && physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
-        const workMerged = row.work_merged === true && !row.stop_requested_at;
-        const idleStop =
-          native &&
-          !strictNativeStop &&
-          !expired &&
-          (["idle_paused", "work_merged"].includes(row.status_reason ?? "") ||
-            (!row.stop_requested_at &&
-              row.activity_lease_id === null &&
-              !row.application_secret_tainted &&
-              row.credential_id !== null &&
-              row.credential_version !== null &&
-              ["ready", "running"].includes(row.status) &&
-              (await operation(signal, () =>
-                nativeIdleDue(provider, info, row.task_prompt_id, now(), workMerged ? 0 : delay, signal),
-              ))));
         if (
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
@@ -2279,8 +2281,7 @@ export function createSandboxLifecycle(
             row.status === "stopping" ||
             row.status === "starting" ||
             expired ||
-            shortBoatDeadline ||
-            idleStop)
+            shortBoatDeadline)
         ) {
           signal?.throwIfAborted();
           if (!sql.transaction) throw new Error("Reconciler stop admission requires a transaction.");
@@ -2304,30 +2305,23 @@ export function createSandboxLifecycle(
                     then coalesce(stop_requested_at,clock_timestamp()) else stop_requested_at end,
                   status_reason=case when status in ('ready','running') then status_reason
                     when $4 and status='stopping' and status_reason is distinct from 'work_merged' then 'expired'
-                    when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
                     else status_reason end
                 where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                   and status in ('starting','ready','running','stopping','failed')
                   and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
-                  and (not $7 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
-                    and deleted_at is null and provider_sandbox_id=$8 and extract(epoch from expires_at)=$9::numeric))
-                  and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
-                    and ${mergedWorkProof("sandboxes")}))
+                  and (not $5 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
+                    and deleted_at is null and provider_sandbox_id=$6 and extract(epoch from expires_at)=$7::numeric))
                   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
                 returning status, stopped_at::text, coalesce(stop_requested_at,clock_timestamp())::text as stop_requested_at,
                   case when $4 and status_reason is distinct from 'work_merged' then 'expired'
-                    when $5 and ($6 or status_reason='work_merged') then 'work_merged'
-                    when $5 then 'idle_paused' else 'stop_requested' end as code,
+                    else 'stop_requested' end as code,
                   case when $4 and status_reason is distinct from 'work_merged' then 'expired'
-                    when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
                     else status_reason end as status_reason`,
                 [
                   row.id,
                   token,
                   row.lifecycle_generation,
                   expired || shortBoatDeadline,
-                  idleStop,
-                  workMerged && idleStop,
                   shortBoatDeadline,
                   row.provider_sandbox_id,
                   row.expiry_epoch,
@@ -2359,10 +2353,16 @@ export function createSandboxLifecycle(
             });
           if (!owned) return true;
           signal?.throwIfAborted();
-          // These durable phases already fence native admission. Active-only
-          // observation or recapture would prevent the owning reconciler from retrying.
+          const continuingIdleStop =
+            native &&
+            !strictNativeStop &&
+            !expired &&
+            row.status === "stopping" &&
+            ["idle_paused", "work_merged"].includes(row.status_reason ?? "");
           const reconcilingStop =
-            idleStop && info.state === "stopping" && host?.fencedStopPhases.includes(info.providerState) === true;
+            continuingIdleStop &&
+            info.state === "stopping" &&
+            host?.fencedStopPhases.includes(info.providerState) === true;
           const requireIdle = async () => {
             if (!(await nativeQuiescent(provider, info, signal)))
               throw new ProviderError({
@@ -2372,8 +2372,8 @@ export function createSandboxLifecycle(
                 message: "Native work is active or unknown; idle stop waits without interruption.",
               });
           };
-          if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
-          const preservationProvider = idleStop
+          if (continuingIdleStop && !reconcilingStop) await operation(signal, requireIdle);
+          const preservationProvider = continuingIdleStop
             ? new Proxy(provider, {
                 get(target, property) {
                   if (property === "quiesce") return requireIdle;
@@ -2382,9 +2382,8 @@ export function createSandboxLifecycle(
                 },
               })
             : provider;
-          // Automatic idle stop may observe quiescence, never interrupt a turn.
           if (
-            !idleStop &&
+            !continuingIdleStop &&
             !strictNativeStop &&
             !row.boat_runtime &&
             row.runtime_transport !== "dialout" &&
@@ -2410,7 +2409,7 @@ export function createSandboxLifecycle(
               message: "Interruption is pending; retry stop after turns settle.",
             });
           signal?.throwIfAborted();
-          if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
+          if (continuingIdleStop && !reconcilingStop) await operation(signal, requireIdle);
           if (strictNativeStop) {
             const verified = await sql.query(
               `select 1 from public.sandboxes s
@@ -2436,7 +2435,6 @@ export function createSandboxLifecycle(
             (!expired &&
               (row.checkpointed_stop ||
                 retainedResume ||
-                idleStop ||
                 ["idle_paused", "work_merged"].includes(row.status_reason ?? "")));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>

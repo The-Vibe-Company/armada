@@ -1,5 +1,5 @@
 import { capabilities } from "@armada/core/machine-capabilities";
-import { type AgentEvent, isFinalPromptStatus, isSandboxPlacementProvider, type Sql } from "@armada/core/server";
+import { isSandboxPlacementProvider, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
@@ -10,21 +10,6 @@ import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import { admitCheckpointedIdleStop, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
-
-/** Unknown/truncated history cannot prove idle. Detached processes follow the timer,
- * not process inspection: only an active turn or admitted command blocks pause. */
-export function runtimeIdle(events: readonly AgentEvent[], now: number, delay: number): boolean {
-  const turns = new Map<string, boolean>();
-  let last = 0;
-  for (const event of events) {
-    last = Math.max(last, event.at);
-    if (event.kind === "prompt") {
-      if (!event.promptId) return false;
-      turns.set(event.promptId, isFinalPromptStatus(event.status));
-    }
-  }
-  return turns.size > 0 && [...turns.values()].every(Boolean) && last > 0 && now - last >= delay;
-}
 
 /** The checkpoint transaction owns the sandbox row before rechecking idle. Its durable
  * intent fences sends before any RPC; uncertainty never dispatches a compute stop. */
