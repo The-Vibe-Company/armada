@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { codexPlanLimit, planLimitFromMessage, planLimitMessage } from "@armada/core";
 import { ChildOwner } from "./children.ts";
@@ -206,6 +207,7 @@ export class CodexDriver implements Driver {
       }
     });
     let nativeWorkObserved = false;
+    const usageTurnIds = new Set<string>();
     const handleLine = (line: string) => {
       if (closed) return;
       try {
@@ -297,7 +299,10 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.params?.threadId !== threadId) return;
-        if (resumeUsage.started && m.method.startsWith("item/") && m.params.item?.type !== "userMessage")
+        if (
+          resumeUsage.started &&
+          (m.method === "hook/started" || (m.method.startsWith("item/") && m.params.item?.type !== "userMessage"))
+        )
           nativeWorkObserved = true;
         if (m.method === "model/rerouted") {
           // Totals cannot allocate tokens between models, including pre-steer native turns.
@@ -310,6 +315,11 @@ export class CodexDriver implements Driver {
           const total = m.params?.tokenUsage?.total;
           const delta = codexTurnUsage(total, baseline);
           if (delta) {
+            if (
+              typeof m.params.turnId === "string" &&
+              Object.values(delta).some((value) => typeof value === "number" && value > 0)
+            )
+              usageTurnIds.add(m.params.turnId);
             usage.latest = delta;
             this.tokenTotals.set(threadId, { ...total });
           }
@@ -615,7 +625,13 @@ export class CodexDriver implements Driver {
           }
           if (active !== current) continue;
           if (result.turn.status === "completed" && !result.turn.error) {
-            if (c.sessionId && threadId !== c.sessionId) c.session(threadId, c.sessionId);
+            if (c.sessionId && threadId !== c.sessionId) {
+              recovering = true;
+              const { thread } = await rpc<{ thread: Thread }>("thread/read", { threadId, includeTurns: false });
+              const rollout = thread?.id === threadId && thread.path ? await stat(thread.path).catch(() => null) : null;
+              if (!rollout?.isFile() || !rollout.size) throw new HarnessError("session_restore_failed");
+              c.session(threadId, c.sessionId);
+            }
             return "finished" as const;
           }
           if (result.turn.status === "interrupted" && stopping && !result.turn.error) return "interrupted" as const;
@@ -658,7 +674,7 @@ export class CodexDriver implements Driver {
             c.sessionId === threadId &&
             nativeTurnsStarted === 1 &&
             !nativeWorkObserved &&
-            !usage.latest &&
+            !usageTurnIds.has(turnId) &&
             !stopping &&
             !c.signal.aborted &&
             result.turn.status === "failed" &&
