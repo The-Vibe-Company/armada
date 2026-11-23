@@ -161,9 +161,6 @@ Counts are physical lines, including comments and blanks, at baseline commit `4c
 | Path | Lines |
 | --- | ---: |
 | [`packages/core/src/launch-native.ts`](../packages/core/src/launch-native.ts) | 176 |
-| [`packages/provider-boat/src/native-usage.ts`](../packages/provider-boat/src/native-usage.ts) | 396 |
-| [`packages/provider-boat/src/event-cursor.ts`](../packages/provider-boat/src/event-cursor.ts) | 50 |
-| [`packages/provider-boat/src/events.ts`](../packages/provider-boat/src/events.ts) | 111 |
 | `packages/provider-modal/src/grants.ts` | 42 |
 | `packages/provider-modal/src/ingest.ts` | 91 |
 | `packages/provider-modal/src/transport.ts` | 107 |

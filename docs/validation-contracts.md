@@ -67,9 +67,8 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- The Boat integration probe is coordinator-only and spends sandbox and model
-  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
-  account, run
+- The Boat integration probe is coordinator-only and uses Boat compute.
+  With `BOAT_API_KEY` exported, run
   `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
   Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
   build a disposable one (snapshot creation requires a paid account).

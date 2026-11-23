@@ -233,7 +233,6 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const runtimeProviderFor = createRuntimeServing(sql, config.encryptionKey);
   const providers = providerRegistry({
-    launchStageSql: sql,
     runtimeProviderFor,
     vault: store,
     encryptionKey: config.encryptionKey,
@@ -551,7 +550,10 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
-  const nativeHistoryFor = createHistoricalSandboxProviderResolver(providers);
+  const nativeHistoryFor = createHistoricalSandboxProviderResolver({
+    resolve: (target, caller) =>
+      target.provider === "modal" ? modal.storedProviderFor(target, caller) : providers.resolve(target, caller),
+  });
   const langfuse = createLangfuse(sql, config.encryptionKey, (id, generation) => nativeHistoryFor(sql, id, generation));
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
@@ -581,7 +583,6 @@ export async function createServerServices(env: Record<string, string | undefine
     accountTurns,
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
-    launchStageSql: sql,
     idlePauseDelayMs: idleDelayMs,
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
