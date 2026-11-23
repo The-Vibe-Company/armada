@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { modalLaunchReceipt } from "@armada/core/contract";
-import { createSqlVaultStore, decryptSecret, encryptSecret, GoldenError, type Sql } from "@armada/core/server";
+import {
+  createSqlVaultStore,
+  decryptSecret,
+  encryptSecret,
+  GoldenError,
+  type Provider,
+  type Sql,
+} from "@armada/core/server";
 import {
   createModalProvider,
   createSqlModalStore,

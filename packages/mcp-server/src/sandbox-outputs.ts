@@ -387,7 +387,12 @@ export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader | (() => Promise<OutputReader>),
   id: string,
-  options: { key?: string | undefined; signal?: AbortSignal; onPublish?: (tx: Sql) => Promise<void> } = {},
+  options: {
+    key?: string | undefined;
+    signal?: AbortSignal;
+    onPublish?: (tx: Sql) => Promise<void>;
+    expectedGeneration?: string;
+  } = {},
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;

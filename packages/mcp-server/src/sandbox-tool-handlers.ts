@@ -564,15 +564,23 @@ export function configureTools(
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         },
         async (signal, token) => {
-          if (found.provider === "modal" && found.runtimeTransport === "dialout")
+          if (found.provider === "modal" && found.runtimeTransport === "dialout") {
+            const preservationNote =
+              checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
             return {
-              result: { id: found.id, status: found.status === "failed" ? ("failed" as const) : ("stopping" as const) },
+              result: {
+                id: found.id,
+                status: found.status === "failed" ? "failed" : "stopping",
+                ...(preservationNote ? { preservationNote } : {}),
+              },
               patch: {
                 ownerStop: true,
                 status: found.status === "failed" ? "failed" : "stopping",
+                ...(preservationNote ? { preservationNote } : {}),
                 stopRequested: true,
               },
             };
+          }
           signal.throwIfAborted();
 
           const preservation = await data.sandboxes

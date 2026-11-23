@@ -1761,6 +1761,7 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boole
         from public.runtime_checkpoints p join public.runtime_enrolments r
           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
         where p.sandbox_id=sandboxes.id and p.completed_at is not null
+          and sandboxes.status='stopping' and not sandboxes.application_secret_tainted
           and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=sandboxes.id)) as checkpoint`,
     [sandboxId, lease ?? null],
   );
@@ -1775,7 +1776,7 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, retain: boole
       orgId: target.org_id,
       maxAttempts: 40,
       deadline: target.deadline,
-      initialOutcome: { retain, ...(retain && target.checkpoint ? { checkpoint: target.checkpoint } : {}) },
+      initialOutcome: { retain: retain || Boolean(target.checkpoint), checkpoint: target.checkpoint },
     },
     tx,
   );
@@ -1903,8 +1904,8 @@ export function createSandboxLifecycle(
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")}
-          and not exists(select 1 from public.jobs stop where stop.sandbox_id=candidate.id
-            and stop.generation=candidate.lifecycle_generation and stop.kind='stop')
+          and not (candidate.provider='modal' and exists(select 1 from public.jobs stop where stop.sandbox_id=candidate.id
+            and stop.generation=candidate.lifecycle_generation and stop.kind='stop'))
           -- This transition and the cleanup job commit together.
           and not (candidate.provider='modal' and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure
