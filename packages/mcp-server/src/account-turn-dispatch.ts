@@ -27,7 +27,8 @@ export const LAUNCH_PENDING = `(exists(select 1 from public.jobs setup
 
 function launchBlocksTurn(sandbox: string, turn: string) {
   return `(exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
-    and (setup.state in ('queued','leased','failed') or exists(
+    and (setup.state='failed' or (setup.state in ('queued','leased') and setup.id<>${turn}.request_id)
+      or exists(
       select 1 from public.account_turn_queue initial
       where initial.sandbox_id=${sandbox}.id and initial.request_id=setup.id
         and initial.state in ('queued','dispatching') and initial.request_id<>${turn}.request_id)))
