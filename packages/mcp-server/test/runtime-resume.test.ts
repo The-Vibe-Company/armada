@@ -298,6 +298,11 @@ describe("Modal user stop and wake-on-send", () => {
     expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
     expect(f.starts).toEqual([undefined, "native-thread"]);
     if (recover) {
+      await f.db.query(
+        `delete from sandbox_output_transfers t where t.sandbox_id=$1
+         and not exists(select 1 from sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
+        [id],
+      );
       await expect(
         captureFinalOutputs(
           f.sql,

@@ -62,14 +62,6 @@ const WRITE_ELIGIBILITY = {
 };
 
 type Transfer = { id: string; received: number; digest: string | null };
-const TRANSFER_UNREFERENCED = `not exists(
-  select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id
-) and not exists(
-  select 1 from public.jobs j where j.sandbox_id=t.sandbox_id
-    and j.kind='outputs_publish' and j.state in ('queued','leased')
-    and j.deadline_at>clock_timestamp() and j.outcome->'transferIds' ? t.id::text
-)`;
-
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
 export type PublishedFile = { name: string; size: number; skipped?: Skipped; digest?: string; transfer_id?: string };
 
@@ -122,7 +114,7 @@ export async function collectOutputTransfers(
   const planned = await update(async (tx, orgId) => {
     await tx.query(
       `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<$2::timestamptz
-        and ${TRANSFER_UNREFERENCED}
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
         and not exists(select 1 from jsonb_to_recordset($3::jsonb) as e(name text,revision text,size bigint)
           where (e.name,e.revision,e.size)=(t.name,t.revision,t.size))`,
       [id, scan, JSON.stringify(entries)],
@@ -308,7 +300,7 @@ export async function publishOutputTransfers(
   );
   await tx.query(
     `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz
-        and ${TRANSFER_UNREFERENCED}`,
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
     [id, scan],
   );
   await recordOutputPublication(tx, id, scan, retainedGeneration);
@@ -323,7 +315,7 @@ export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<n
     `select t.id from public.sandbox_output_transfers t
       join public.sandboxes s on s.id=t.sandbox_id
       where s.org_id=$1 and t.progress_at<now()-interval '15 minutes'
-      and ${TRANSFER_UNREFERENCED}
+      and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
       for update of t skip locked`,
     [orgId],
   );
@@ -331,7 +323,7 @@ export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<n
     // Recheck published references with the locks held and a fresh PostgreSQL snapshot.
     await tx.query(
       `delete from public.sandbox_output_transfers t where t.id=any($1::uuid[])
-        and ${TRANSFER_UNREFERENCED}`,
+        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
       [stale.rows.map(({ id }) => id)],
     );
   }
