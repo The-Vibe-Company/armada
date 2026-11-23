@@ -24,6 +24,7 @@ import {
   snapshotBaselineFailure,
   snapshotBaselineFailureMessage,
   snapshotBaselineInstall,
+  snapshotBaselineInstallFailure,
   snapshotBaselineVerify,
 } from "./snapshot-baseline.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
@@ -129,8 +130,7 @@ export function createGoldenCreateService(options: GoldenCreateOptions): GoldenC
         command: `if [ "$(id -u)" = 0 ]; then bash -c ${shellQuote(script)}; else sudo -n bash -c ${shellQuote(script)}; fi`,
       });
       if (result.detached || result.exitCode !== 0 || result.timedOut) {
-        const message =
-          "Boat snapshot baseline installation failed. The builder needs root or passwordless sudo, apt, and download access.";
+        const message = snapshotBaselineInstallFailure(result);
         throw new GoldenError("setup_failed", message, { safeMessage: message });
       }
     },
