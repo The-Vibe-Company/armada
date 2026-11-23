@@ -21,6 +21,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
+import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -1001,7 +1002,7 @@ export async function requestNativeSubscriptionStop(tx: Sql, id: string, generat
   return true;
 }
 
-export const NATIVE_DRAIN_MISSING_RECEIPT = `not exists (
+const NATIVE_DRAIN_MISSING_RECEIPT = `not exists (
   select 1 from public.sandbox_native_preservation_receipts r where r.sandbox_id=s.id
 )`;
 
@@ -1088,9 +1089,9 @@ const NATIVE_DRAIN_PENDING_PROOF = `(not s.application_secret_tainted and exists
     and ${NATIVE_DRAIN_DETACHED_PROOF}
 ))`;
 
-const NATIVE_DRAIN_WITHOUT_PROOF = `(not s.application_secret_tainted and ${NATIVE_DRAIN_MISSING_RECEIPT}
+export const NATIVE_DRAIN_WITHOUT_PROOF = `(not s.application_secret_tainted and ${NATIVE_DRAIN_MISSING_RECEIPT}
   and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
-    where outcome='unverified'))`;
+    where outcome in ('unverified','ineligible')))`;
 
 export async function fenceBoatDrainReplay(tx: Sql, id: string, allowUnpreservedBoat: boolean) {
   const { rows } = await tx.query<{ eligible: boolean }>(
@@ -1926,6 +1927,7 @@ export function createSandboxLifecycle(
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let observedNativeReady = false;
+      const requireMissingObservation = requiresMissingMachineObservation(providerId);
       let stoppedAt: Date | undefined;
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
       const expired = logicalDeadline <= now();
@@ -2451,7 +2453,7 @@ export function createSandboxLifecycle(
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
         waitingForRetention =
-          providerId === "boat" &&
+          retainsDiskOnStop(providerId) &&
           info.state === "stopped" &&
           info.retainedSnapshot !== "usable" &&
           !physicalExit &&
@@ -2498,12 +2500,12 @@ export function createSandboxLifecycle(
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
-          (providerId !== "boat" || observing) &&
+          (!requireMissingObservation || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"
         ) {
           terminal = true;
-          if (providerId === "boat") physicalExit = true;
+          if (requireMissingObservation) physicalExit = true;
         } else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       return settle();

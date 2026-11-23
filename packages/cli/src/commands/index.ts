@@ -1,6 +1,6 @@
-import { bindCredential, mcp } from "../operation-commands.ts";
 import account from "./account.ts";
 import api from "./api.ts";
+import bindCredential from "./bind-credential.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import host from "./host.ts";
@@ -37,7 +37,6 @@ export const commands: readonly Command[] = [
   org,
   host,
   template,
-  mcp,
   bindCredential,
   snapshot,
 ];

@@ -75,6 +75,7 @@ export interface GoldenCreateDeps {
     provider: Provider,
     input: {
       sandboxId: string;
+      buildId: string;
       token: string;
       script: string;
       repositories?: readonly string[];
@@ -267,6 +268,7 @@ export class GoldenCreateService {
         await this.deps.execution?.phase("checkout_baseline");
         await this.deps.ssh(provider, {
           sandboxId: builder.id,
+          buildId,
           token: group.token,
           repositories: group.repos.map((repo) => `${repo.owner}/${repo.repo}`),
           refs: group.repos.map((repo) => repo.branch ?? "main"),
@@ -278,6 +280,7 @@ export class GoldenCreateService {
         await this.deps.execution?.phase("checkout_baseline");
         await this.deps.ssh(provider, {
           sandboxId: builder.id,
+          buildId,
           token: "",
           repositories: prepared.map((repo) => `${repo.owner}/${repo.repo}`),
           onWarning,

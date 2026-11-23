@@ -712,7 +712,7 @@ export class Journal {
       this.db.query("SELECT session FROM sessions WHERE conversation=?").get(conversation) as { session: string } | null
     )?.session;
   }
-  saveSession(conversation: string, harness: string, session: string) {
+  saveSession(conversation: string, harness: string, session: string, previousId?: string) {
     if (
       !conversation ||
       conversation.length > 256 ||
@@ -723,6 +723,16 @@ export class Journal {
       this.redactProtocol(session) !== session
     )
       throw Error("invalid_native_session_identity");
+    if (previousId !== undefined) {
+      // Only Codex hydration recovery can replace the native thread of a conversation.
+      const updated =
+        harness === "codex" &&
+        this.db
+          .query("UPDATE sessions SET session=? WHERE conversation=? AND harness=? AND session=? RETURNING session")
+          .get(session, conversation, harness, previousId);
+      if (!updated) throw Error("native_session_identity_changed");
+      return;
+    }
     const saved = this.db
       .query(`INSERT INTO sessions VALUES(?,?,?) ON CONFLICT(conversation) DO UPDATE SET
       harness=excluded.harness,session=excluded.session
@@ -858,8 +868,6 @@ export class Journal {
         }
       }
     })();
-    // The full scan, WAL truncation and VACUUM still require cumulative I/O;
-    // bounded retained bodies do not imply bounded latency or SQLite disk/cache use.
     this.flush();
     this.db.exec("VACUUM");
     this.flush();

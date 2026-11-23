@@ -4,6 +4,8 @@ import {
   createSqlVaultStore,
   GoldenBuildJobs,
   type GoldenBuildStatus,
+  type GoldenCreateOptions,
+  GoldenError,
   goldenBuildFailureText,
   ProviderError,
 } from "@armada/core/server";
@@ -20,8 +22,14 @@ import { ENCRYPTION_KEY, GITHUB_APP, harness, PUBLIC_URL, type TestServer } from
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({ repositoryFetch }: { repositoryFetch?: typeof fetch } = {}) {
-  const server = await harness({}, await sharedDatabase());
+async function fixture({
+  repositoryFetch,
+  buildSsh,
+}: {
+  repositoryFetch?: typeof fetch;
+  buildSsh?: GoldenCreateOptions["ssh"];
+} = {}) {
+  const server = await harness({ buildSsh }, await sharedDatabase());
   const { boat, people } = server;
   const exec = boat.provider.exec;
   boat.provider.exec = async (request) => {
@@ -632,7 +640,7 @@ test.each([false, true])(
       const status = await s.http(token, "golden/build/status", { jobId: job.jobId });
       expect(await status.json()).toMatchObject({
         state: keepSource ? "recovery_required" : "failed",
-        failureReason: keepSource ? null : "provider_payment_required",
+        failureReason: keepSource ? expect.stringMatching(/^detail:/) : "provider_payment_required",
         result: null,
       });
       expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(keepSource ? 1 : 0);
@@ -681,7 +689,8 @@ test.each([
       expect(status).toMatchObject({
         state: keepSource ? "recovery_required" : "failed",
         phase: "snapshot",
-        failureReason: keepSource || httpStatus !== 400 ? null : "provider_snapshot_rejected",
+        failureReason:
+          keepSource || httpStatus !== 400 ? expect.stringMatching(/^detail:/) : "provider_snapshot_rejected",
         result: null,
       });
       expect(s.boat.stops).toHaveLength(1);
@@ -724,7 +733,7 @@ test("an accepted renamed save with missing provenance retains capacity for reco
     expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
       state: "recovery_required",
       phase: "snapshot",
-      failureReason: null,
+      failureReason: expect.stringMatching(/^detail:/),
       result: null,
     });
     expect((await s.db.query("select 1 from golden_backend_slots")).rows).toHaveLength(1);
@@ -786,6 +795,85 @@ test.each(["create", "rebuild", "builder-evidence", "builder-phase", "live-lease
     }
   },
 );
+
+test("collector failure leaves a terminal build receipt with the failing step and exit code", async () => {
+  const s = await fixture({
+    buildSsh: async () => {
+      throw new GoldenError("build_failed", "Remote command failed.", {
+        safePhase: "output_collector",
+        safeMessage: "Output collector failed (exit 96).",
+      });
+    },
+  });
+  try {
+    const job = await s.builds.admit(
+      s.boat.provider,
+      { userId: s.people.admin, orgId: s.people.org, role: "admin" },
+      { name: "collector-failure", visibility: "org", repos: ["acme/web"] },
+      crypto.randomUUID(),
+    );
+    await runGoldenBuildJob(s.db, s.builds);
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "checkout_baseline",
+      failureReason: "detail:Output collector failed (exit 96).",
+    });
+  } finally {
+    await s.close();
+  }
+});
+
+test("a late SSH failure refines the reason after recovery closes the receipt", async () => {
+  const sshStarted = Promise.withResolvers<void>();
+  const sshResponse = Promise.withResolvers<void>();
+  const s = await fixture({
+    buildSsh: async () => {
+      sshStarted.resolve();
+      await sshResponse.promise;
+      throw new GoldenError("build_failed", "Remote command failed.", {
+        safePhase: "init",
+        safeMessage: "Init command 2 exited 17.",
+      });
+    },
+  });
+  const runner = createJobsRunner(
+    createJobsStore(s.db),
+    { golden_build: createGoldenBuildJob(s.builds) },
+    () => {},
+    () => () => {},
+  );
+  try {
+    const job = await s.builds.admit(
+      s.boat.provider,
+      { userId: s.people.admin, orgId: s.people.org, role: "admin" },
+      { name: "late-ssh-failure", visibility: "org", repos: ["acme/web"] },
+      crypto.randomUUID(),
+    );
+    expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+    await sshStarted.promise;
+    runner.stopAdmission();
+    await s.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job.jobId]);
+    await runGoldenBuildJob(s.db, s.builds);
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "checkout_baseline",
+      failureReason: expect.stringContaining("interrupted before recording an outcome"),
+    });
+
+    sshResponse.resolve();
+    await runner.drain();
+    expect(await s.builds.status(s.people.admin, job.jobId)).toMatchObject({
+      state: "failed",
+      phase: "checkout_baseline",
+      failureReason: "detail:Init command 2 exited 17.",
+    });
+  } finally {
+    runner.stopAdmission();
+    sshResponse.resolve();
+    await runner.drain();
+    await s.close();
+  }
+});
 
 test("scan location survives requested-directory mapping, durable status and public failure formatting", async () => {
   const s = await fixture();

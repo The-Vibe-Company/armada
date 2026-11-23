@@ -46,10 +46,8 @@ ${sandboxUsage("setup")}
 ${sandboxUsage("snapshots")}
 ${sandboxUsage("new")}
 ${sandboxUsage("ls")}
-${sandboxUsage("mcp-bindings")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
-${sandboxUsage("mcp")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}

@@ -1,4 +1,5 @@
 import { sha256Hex } from "@armada/auth";
+import type { AccountPool, AccountSkip } from "@armada/core";
 import {
   EncryptionKeyError,
   type GoldenActor,
@@ -36,6 +37,7 @@ import { lockAndCheckStartingLaunchAccount } from "../account-capacity.ts";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
+import { admitAccount } from "../launch-account-pool.ts";
 import { launchCredentials } from "../launch-credentials.ts";
 import {
   type ModalLaunchHandoff,
@@ -98,6 +100,10 @@ export interface ModalLaunchAdmission {
   templateReceiptId?: string;
   revalidateTemplate?(tx: Sql): Promise<void>;
   sandbox: ModalLaunchSandbox;
+  accountPool?: {
+    pool: AccountPool;
+    prepared: ReadonlyMap<string, { credentialVersion: number; model: string; reasoningEffort: string }>;
+  };
   allocation: Omit<ModalLaunchAllocation, "size"> & { source: { kind: "snapshot" } };
   initialPrompt?: string;
   armadaAccess?: SandboxArmadaAccessOptions;
@@ -198,7 +204,7 @@ export async function admitModalLaunch(
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
 ) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
-  const { orgId, ownerId, sandbox, allocation, request, templateReceiptId, armadaAccess } = input;
+  const { orgId, ownerId, sandbox: plannedSandbox, allocation, request, templateReceiptId, armadaAccess } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
@@ -254,7 +260,7 @@ export async function admitModalLaunch(
          where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
          for update of g for share of m`,
-        [sandbox.goldenId, orgId, ownerId],
+        [plannedSandbox.goldenId, orgId, ownerId],
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
@@ -267,7 +273,7 @@ export async function admitModalLaunch(
       if (reservation) {
         const frozen = reservation.frozen_golden;
         if (
-          frozen?.id !== sandbox.goldenId ||
+          frozen?.id !== plannedSandbox.goldenId ||
           frozen.providerSnapshotId !== snapshot ||
           frozen.modal?.workspace !== modal.workspace ||
           frozen.modal.environment !== modal.environment ||
@@ -299,7 +305,7 @@ export async function admitModalLaunch(
         {
           allocation: {
             ...allocation,
-            size: sandbox.machineSize.effective,
+            size: plannedSandbox.machineSize.effective,
             source: { kind: "snapshot", ref: source?.image_id ?? undefined },
           },
           snapshot,
@@ -322,13 +328,21 @@ export async function admitModalLaunch(
         [jobId, orgId, ownerId],
       );
       if (!receipt) throw new Error("Modal launch receipt is missing.");
-      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, sandbox.goldenId);
+      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, plannedSandbox.goldenId);
 
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
       if (source?.sealed) throw new GoldenError("conflict", "Golden snapshot is being retired.");
       if (!source?.image_id) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
+      let sandbox = plannedSandbox;
+      let accountSkips: AccountSkip[] = [];
+      if (input.accountPool) {
+        const { pool, prepared } = input.accountPool;
+        const { credentialId, candidate, skips } = await admitAccount(tx, ownerId, pool, sandboxId, prepared);
+        sandbox = { ...sandbox, ...candidate, credentialId };
+        accountSkips = skips;
+      }
       const visibility = armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
       const scopedCredential = sandbox.credentialId;
       if (armadaAccess) {
@@ -343,7 +357,7 @@ export async function admitModalLaunch(
       }
       const actor = { userId: ownerId, orgId };
       const { credentialId, credentialVersion } = sandbox;
-      if (credentialId != null && credentialVersion != null)
+      if (!input.accountPool && credentialId != null && credentialVersion != null)
         await lockAndCheckStartingLaunchAccount(tx, { credentialId, credentialVersion }, sandboxId, sandbox.model);
       await input.revalidateTemplate?.(tx);
       await insertStartingModalSandbox(
@@ -387,6 +401,7 @@ export async function admitModalLaunch(
         sandboxId,
         {
           launchJobId: jobId,
+          ...(accountSkips.length ? { accountSkips } : {}),
           prompt: input.initialPrompt,
           workspace,
           skills,

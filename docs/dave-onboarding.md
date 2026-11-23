@@ -24,7 +24,7 @@ The sidebar groups match the task:
 
 Connect organization compute in **Machines** (cloud accounts or **Docker hosts**);
 connect your personal GitHub account in **Your connections**. **Tools** is where you
-connect MCP servers; CLI commands still use `armada mcp` and connection IDs.
+connect MCP servers; CLI launches take connection IDs.
 
 In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot**
 to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
@@ -218,10 +218,9 @@ shown again. They do not belong in a snapshot, setup script, command argument or
 ### Morph and per-account agent limits
 
 Morph is a model account, not a sandbox provider. In the dashboard use
-**What agents have → Models → Add account → Morph**, or store its API key from a private file:
+**What agents have → Models → Add account → Morph**. Then list the account and set its limit:
 
 ```sh
-armada account add --preset morph --name shared --file ~/.config/armada/morph-key
 armada account ls
 armada account limits ACCOUNT_UUID --max-agents 2
 ```
@@ -512,14 +511,10 @@ Keep inputs in stdin/hidden input or private files, never command arguments.
 For organization creation, membership and invitations, use the dashboard or
 [the organization administration routes](cli-admin.md#organizations-and-membership).
 
-### MCP command discovery
+### MCP connections
 
-`armada mcp --help` (or `-h`) shows a focused index of registry,
-authorization and sandbox-binding commands. Use leaf help for flags and
-secure-input instructions. Connection IDs select registry entries;
-sandbox-connections takes a sandbox UUID. Launch-default selection is separate
-from authorization; reconnect revokes first. Family help makes no MCP/API
-request and leaves bare no-argument invocation unchanged.
+Configure and authorize connections in the dashboard or use the
+[MCP administration routes](cli-admin.md#mcp-connections).
 
 ### Service-token routes
 

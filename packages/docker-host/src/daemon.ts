@@ -30,8 +30,8 @@ export type Receipt = {
   expiryReported?: true;
   expiryOutputsPending?: true;
 } & (
-  | { operation: "stop" | "delete" }
-  | { operation: "create"; machineId?: string }
+  | { operation: "delete" }
+  | { operation: "create" | "stop"; machineId?: string }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
   | { operation: "restore"; inputHash: string; predecessorKey: string; machineId?: string }
   | {
@@ -287,7 +287,7 @@ export type TickOptions = {
   running?: ReadonlySet<string>;
   sandboxes?: ReadonlySet<string>;
   snapshots?: ReadonlySet<string>;
-  deferRestores?: ReadonlySet<string>;
+  deferUncertain?: ReadonlySet<string>;
   restoreConflicts?: Map<string, string>;
   dispatch?: (job: Job, work: Promise<void>) => void;
 };
@@ -353,7 +353,7 @@ export async function runJobs(
   const running = new Map<string, Promise<void>>();
   const live = { running: new Set<string>(), sandboxes: new Set<string>(), snapshots: new Set<string>() };
   let finished = 0;
-  let deferRestores = new Set<string>();
+  const deferUncertain = new Map<string, boolean>();
   const restoreConflicts = new Map<string, string>();
   const settled = () => Promise.race(running.values());
   try {
@@ -364,19 +364,23 @@ export async function runJobs(
         continue;
       }
       const finishedBefore = finished;
-      const deferred = deferRestores;
-      deferRestores = new Set();
+      const excluded = new Set(deferUncertain.keys());
+      for (const [id, isCleanup] of deferUncertain) if (!isCleanup) deferUncertain.delete(id);
       let outcome: TickOutcome;
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
-          deferRestores: deferred,
+          deferUncertain: excluded,
           restoreConflicts,
           dispatch(job, work) {
             const done = work
               .catch((error) => {
-                if (job.operation === "restore" && isUncertainDockerFailure(error)) deferRestores.add(job.requestId);
+                if (
+                  isUncertainDockerFailure(job.operation, error) &&
+                  deferUncertain.size < MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS
+                )
+                  deferUncertain.set(job.requestId, job.operation !== "restore");
                 loop.failed?.("job");
               })
               .finally(() => {
@@ -397,6 +401,7 @@ export async function runJobs(
         outcome = "idle";
       }
       if (loop.stopping()) break;
+      if (outcome === "held" || outcome === "idle") deferUncertain.clear();
       if (outcome === "busy" && finished !== finishedBefore) continue;
       if (outcome === "busy" && running.size) await Promise.race([settled(), loop.sleep(DOCKER_HOST_IDLE_MS)]);
       else if (outcome === "busy" || outcome === "idle") await loop.sleep(DOCKER_HOST_IDLE_MS);
@@ -510,7 +515,7 @@ async function admitLocked(
     }
   }
   const exclusions = new Set(options.running);
-  for (const requestId of options.deferRestores ?? []) exclusions.add(requestId);
+  for (const requestId of options.deferUncertain ?? []) exclusions.add(requestId);
   if (options.restoreConflicts?.size) {
     const pending = new Set(
       state.receipts
@@ -774,10 +779,13 @@ async function admitLocked(
   if (cleaned && api.cleaned) {
     try {
       state.retentionReportAfter = cleaned.requestId;
+      const key = generationKey(cleaned.request);
+      state.cleanupGenerations ??= [];
+      if (!state.cleanupGenerations.includes(key)) state.cleanupGenerations.push(key);
       await store.save(state);
       await api.cleaned(state, cleaned.requestId, cleaned.cleanupReason);
       for (const receipt of state.receipts) {
-        if (generationKey(receipt.request) === generationKey(cleaned.request)) receipt.cleaned = true;
+        if (generationKey(receipt.request) === key) receipt.cleaned = true;
       }
       state.activeTtl = state.activeTtl?.filter(
         (id) => !state.receipts.some((receipt) => receipt.requestId === id && receipt.cleaned),
@@ -800,17 +808,35 @@ async function admitLocked(
       await store.save(state);
     } catch {}
   }
+  function retentionRemoved(ledger: State, receipt: Receipt) {
+    const key = generationKey(receipt.request);
+    return (
+      receipt.cleaned ||
+      ledger.cleanupGenerations?.includes(key) ||
+      ledger.retention?.some(
+        (entry) => (entry.deleted || entry.cleanupAuthorized) && generationKey(entry.request) === key,
+      ) ||
+      ledger.receipts.some(
+        (entry) =>
+          entry.operation === "deletePhysical" && entry.outcome === "completed" && generationKey(entry.request) === key,
+      ) ||
+      ledger.retired?.some((entry) => entry[2] === key && entry[4] === "deletePhysical" && entry[5] === "completed")
+    );
+  }
+  function reportReceipt(ledger: State, receipt: Receipt) {
+    if (receipt.operation === "stop" && receipt.machineId && retentionRemoved(ledger, receipt)) {
+      const { machineId: _removed, ...exit } = receipt;
+      return api.result(ledger, exit);
+    }
+    return api.result(ledger, receipt);
+  }
   async function reportRetainedStop(ledger: State, receipt: Receipt) {
     const key = generationKey(receipt.request);
     const eligible =
-      !receipt.cleaned &&
+      !retentionRemoved(ledger, receipt) &&
       !receipt.expired &&
       !expired(ledger).has(key) &&
       !claimed.has(key) &&
-      !ledger.cleanupGenerations?.includes(key) &&
-      !ledger.retention?.some(
-        (entry) => generationKey(entry.request) === key && (entry.deleted || entry.cleanupAuthorized),
-      ) &&
       !ledger.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key);
     const retained = eligible && (await executor.isRetainedStop?.(receipt.request).catch(() => false));
     await api.result(ledger, receipt, undefined, retained ? true : undefined);
@@ -844,8 +870,11 @@ async function admitLocked(
         throw new Error("Generation claimed for resume");
       if (receipt.operation === "delete") {
         state.cleanupGenerations ??= [];
-        state.cleanupGenerations.push(generationKey(receipt.request));
-        await store.save(state);
+        const key = generationKey(receipt.request);
+        if (!state.cleanupGenerations.includes(key)) {
+          state.cleanupGenerations.push(key);
+          await store.save(state);
+        }
       }
       return undefined;
     } catch (error) {
@@ -887,8 +916,8 @@ async function admitLocked(
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
         const machineId = allocationMachineId(await executor.restore(receipt.request, job.predecessor));
         if (machineId !== undefined) receipt.machineId = machineId;
-      } else if (receipt.operation === "create") {
-        const machineId = allocationMachineId(await executor.create(receipt.request));
+      } else if (receipt.operation === "create" || receipt.operation === "stop") {
+        const machineId = allocationMachineId(await executor[receipt.operation](receipt.request));
         if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
@@ -898,7 +927,7 @@ async function admitLocked(
       }
       receipt.outcome = "completed";
     } catch (error) {
-      if (receipt.operation === "restore" && isUncertainDockerFailure(error)) throw error;
+      if (isUncertainDockerFailure(receipt.operation, error)) throw error;
       receipt.outcome = "failed";
       if (receipt.operation === "stop" && !refusal && polled?.retainedStopProof && executor.isRetainedStop)
         receipt.retentionProofPending = true;
@@ -965,7 +994,7 @@ async function admitLocked(
   }
   if (
     pendingOwner !== undefined ||
-    options.deferRestores?.has(job.requestId) ||
+    options.deferUncertain?.has(job.requestId) ||
     options.running?.has(job.requestId) ||
     (options.running?.size && !polled.held) ||
     options.sandboxes?.has(job.request.sandboxId) ||
@@ -1012,7 +1041,7 @@ async function admitLocked(
         ...(old[10] ? { missingRefIndex: old[10] } : {}),
         ...(old[11] ? { machineId: old[11] } : {}),
       } as Receipt;
-      await api.result(state, replay);
+      await reportReceipt(state, replay);
       return "worked";
     }
     const oldGeneration = retired.filter((r) => r[2] === generationKey(job.request));
@@ -1096,6 +1125,12 @@ async function admitLocked(
           const saved = latest.receipts.find((item) => item.requestId === accepted.requestId);
           if (saved?.retentionProofPending) await reportRetainedStop(latest, saved);
         });
+      } else if (accepted.operation === "stop") {
+        await exclusive(store, async () => {
+          const latest = await store.load();
+          const saved = latest.receipts.find((item) => item.requestId === accepted.requestId) ?? accepted;
+          await reportReceipt(latest, saved);
+        });
       } else {
         await api.result(state, accepted);
       }
@@ -1109,8 +1144,12 @@ function allocationMachineId(result: unknown) {
   return typeof machineId === "string" && /^[a-f0-9]{64}$/.test(machineId) ? machineId : undefined;
 }
 
-function isUncertainDockerFailure(error: unknown) {
-  return error instanceof DockerMachineError && error.code === "docker_failed";
+function isUncertainDockerFailure(operation: Job["operation"], error: unknown) {
+  return (
+    (operation === "restore" || operation === "stop" || operation === "delete") &&
+    error instanceof DockerMachineError &&
+    error.code === "docker_failed"
+  );
 }
 
 function digest(value: string): string {
@@ -1162,7 +1201,10 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
     ];
-    if ((receipt.operation === "create" || receipt.operation === "restore") && receipt.machineId)
+    if (
+      (receipt.operation === "create" || receipt.operation === "restore" || receipt.operation === "stop") &&
+      receipt.machineId
+    )
       compacted[11] = receipt.machineId;
     retired.push(compacted);
     return false;

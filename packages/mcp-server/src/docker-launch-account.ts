@@ -4,6 +4,8 @@ import {
   type LaunchCredentialResolver,
   LaunchError,
   OPENCODE_CONNECTION_PROVIDER,
+  OPENCODE_ENDPOINT_ENV,
+  parseOpenCodeEndpoint,
   resolveModelChoice,
 } from "@armada/core";
 import { VaultError } from "@armada/core/server";
@@ -44,4 +46,13 @@ export async function resolveDockerLaunchAccount(
     binding,
     modelChoice: resolveModelChoice(request.harness, { ...selection, model: `${prefix}${model}` }),
   };
+}
+
+export function dockerPoolOpenCodeModel(env: Record<string, string>, model: string) {
+  const configured = env[OPENCODE_ENDPOINT_ENV];
+  if (!configured) return model.startsWith("opencode/") || model.startsWith("opencode-go/") ? model : undefined;
+  const prefix = `${OPENCODE_CONNECTION_PROVIDER}/`;
+  const models = parseOpenCodeEndpoint(JSON.parse(configured)).models;
+  const upstream = model.startsWith(prefix) ? model.slice(prefix.length) : model;
+  return models.includes(upstream) ? `${prefix}${upstream}` : undefined;
 }

@@ -48,19 +48,11 @@ The authenticated HTTP `sandbox/list` endpoint and read-only MCP `list` operatio
 ## Read existing connection bindings
 
 ```sh
-armada mcp sandbox-connections SANDBOX_UUID --org ORG_UUID --json
+armada api mcp/sandbox-connections '{"id":"SANDBOX_UUID","org":"ORG_UUID"}'
 ```
 
-The response is the authorized `{connections:[...]}` metadata for that sandbox. This command does not bind, connect, revoke or otherwise mutate a grant. Select an org first or pass `--org`; a sandbox UUID does not determine authorization scope.
-
-For full MCP definitions or authentication headers, use a file or stdin rather than arguments:
-
-```sh
-armada mcp add --file /secure/connection.json --org ORG_UUID
-armada mcp update CONNECTION_UUID --file /secure/replacement.json --org ORG_UUID
-```
-
-The simple public/OAuth shortcut is `armada mcp add NAME URL`. It defaults to personal scope and HTTP automatic discovery; `--scope org` requests sharing, subject to server permissions. Do not put bearer values, headers or credentials in URL parameters.
+The read-only response contains the authorized connection metadata for the sandbox.
+See [MCP administration routes](cli-admin.md#mcp-connections) for registry changes.
 
 ## Snapshot IDs and sandbox privacy
 

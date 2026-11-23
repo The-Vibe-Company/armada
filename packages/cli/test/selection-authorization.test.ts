@@ -143,48 +143,6 @@ test.each(["current", "use"])("org %s is rejected before an API request", async 
   expect(h.output().err).toContain(`unknown command 'org ${verb}'. Run 'armada --help'.`);
 });
 
-test("MCP connect opens once and polls authenticated canonical status until actually connected", async () => {
-  let polls = 0;
-  const requests: { path: string; body: unknown }[] = [];
-  const h = harness(async (input, init) => {
-    const request = new Request(String(input), init);
-    expect(request.headers.get("authorization")).toBe("Bearer test-bearer");
-    const path = new URL(request.url).pathname;
-    requests.push({ path, body: await request.json() });
-    if (path.endsWith("connect"))
-      return Response.json({
-        connection: { id: "connection", status: "not_connected" },
-        authorizationUrl: "https://issuer.test/authorize?state=opaque",
-      });
-    return Response.json({ connection: { id: "connection", status: ++polls === 2 ? "connected" : "not_connected" } });
-  });
-  expect(await h.run(["mcp", "connect", "connection", "--org", org])).toBe(0);
-  expect(h.opened).toHaveLength(1);
-  expect(polls).toBe(2);
-  expect(requests.map((r) => r.path)).toEqual(["/api/v1/mcp/connect", "/api/v1/mcp/status", "/api/v1/mcp/status"]);
-  expect(requests.every((r) => JSON.stringify(r.body) === JSON.stringify({ org, id: "connection" }))).toBe(true);
-  expect(JSON.parse(h.output().out).connection.status).toBe("connected");
-});
-
-test("MCP no-browser timeout never prints connected and enable/disable uses set-enabled", async () => {
-  const bodies: unknown[] = [];
-  const h = harness(async (input, init) => {
-    const request = new Request(String(input), init);
-    bodies.push(await request.json());
-    if (request.url.endsWith("set-enabled")) return Response.json({ ok: true });
-    return Response.json({
-      connection: { id: "connection", status: "not_connected" },
-      authorizationUrl: "https://issuer.test/authorize",
-    });
-  });
-  expect(await h.run(["mcp", "connect", "connection", "--org", org, "--no-browser", "--timeout", "0"])).toBe(1);
-  expect(h.opened).toEqual([]);
-  expect(h.output().out).toBe("");
-  expect(h.output().err).toContain("https://issuer.test/authorize");
-  expect(await h.run(["mcp", "disable", "connection", "--org", org])).toBe(0);
-  expect(bodies.at(-1)).toEqual({ org, id: "connection", enabled: false });
-});
-
 test("GitHub connect waits for its own completed authorization, not a pre-existing connected account", async () => {
   let polls = 0;
   const h = harness(async (input, init) => {
@@ -237,20 +195,6 @@ test("account add github waits for a new installation", async () => {
   expect(h.opened).toEqual([]);
   expect(h.output().err).toContain("https://github.com/apps/armada/installations/new");
   expect(JSON.parse(h.output().out).connection.installations).toHaveLength(2);
-});
-
-test("MCP reconnect revokes through the backend before starting a new authorization", async () => {
-  const paths: string[] = [];
-  const h = harness(async (input) => {
-    const path = new URL(String(input)).pathname;
-    paths.push(path);
-    if (path.endsWith("revoke")) return Response.json({ ok: true });
-    if (path.endsWith("connect")) return Response.json({ connection: { id: "connection", status: "connected" } });
-    return Response.json({ connection: { id: "connection", status: "connected" } });
-  });
-  expect(await h.run(["mcp", "reconnect", "connection", "--org", org])).toBe(0);
-  expect(paths).toEqual(["/api/v1/mcp/revoke", "/api/v1/mcp/connect", "/api/v1/mcp/status"]);
-  expect(h.opened).toEqual([]);
 });
 
 test("structured Modal and Codex credentials accept file whitespace and stay write-only", async () => {

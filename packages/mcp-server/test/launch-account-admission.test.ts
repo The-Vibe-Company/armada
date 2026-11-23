@@ -53,6 +53,7 @@ test("new launch resolution skips a pooled account until its current revision re
     await db.exec(`
       create table public.agent_defaults(user_id text,harness text,credential_id uuid,credential_ids uuid[],model text);
       create table public.credentials(id uuid,owner_id text,scope text,kind text,version int,status text,expires_at timestamptz);
+      alter table public.credentials add column name text, add column max_agents int, add column model_limits jsonb;
       create table public.account_exhaustion(account_id uuid,account_version int,code text,resets_at timestamptz);
     `);
     await db.query("insert into public.agent_defaults values($1,'codex',$2,$3,null)", [
@@ -61,7 +62,7 @@ test("new launch resolution skips a pooled account until its current revision re
       [first, second],
     ]);
     await db.query(
-      `insert into public.credentials values
+      `insert into public.credentials(id,owner_id,scope,kind,version,status,expires_at) values
        ($1,$3,'user','openai',2,'active',null),($2,$3,'user','openai',1,'active',null)`,
       [first, second, actor.userId],
     );

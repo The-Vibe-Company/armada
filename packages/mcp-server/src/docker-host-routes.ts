@@ -448,7 +448,7 @@ export function createDockerHostRoutes(
             pendingStarts,
             ...(limits === undefined ? {} : { limits }),
           } satisfies DockerHostPollResponse,
-          { headers: { ...headers, "x-armada-docker-retained-stop": "1" } },
+          { headers: { ...headers, "x-armada-docker-retained-stop": "1", "x-armada-docker-stop-identity": "1" } },
         );
       }
       if ("claimed" in body) {

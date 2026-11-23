@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
 import { codexTurnUsage, settleCodexTurnUsage } from "../src/codex-turn-usage.ts";
 import { RequestRefused } from "../src/errors.ts";
-import { CodexDriver, createRedactor, type DriverEvent, type Turn } from "../src/index.ts";
+import { CodexDriver, createRedactor, type DriverEvent, Journal, type Turn } from "../src/index.ts";
 import { removeNativeCodexAuth } from "../src/native-auth.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
@@ -889,5 +889,66 @@ nativeTest("Codex refuses a steer after its turn closed with a replayable refusa
     await expect(turn.steer("too-late")).rejects.toBeInstanceOf(RequestRefused);
   } finally {
     await driver.close();
+  }
+});
+
+nativeTest("Codex recovers a poisoned thread with visible context and resumes the saved replacement", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "armada-codex-recovery-"));
+  const journal = new Journal(":memory:", (value) => value);
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_HYDRATION_FAILURE: "1", ARMADA_CWD_PROOF: "1" },
+  });
+  journal.saveSession("conversation", "codex", "poisoned-thread");
+  const start = (text: string) => {
+    const sessionId = journal.session("conversation");
+    return driver.start({
+      request: { sandboxId: "s", harness: "codex", text },
+      ...(sessionId ? { sessionId } : {}),
+      signal: new AbortController().signal,
+      session: (...session) => journal.saveSession("conversation", "codex", ...session),
+      emit: () => {},
+    });
+  };
+  try {
+    expect(await start("Review the migration").done).toBe("finished");
+    expect(journal.session("conversation")).toBe("recovered-thread");
+    expect(await start("Check the diff").done).toBe("finished");
+    const records = JSON.parse(await readFile(join(cwd, "native-cwd-proof.json"), "utf8"));
+    const prompts = records.filter((record: { method: string }) => record.method === "turn/start");
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1].text).toContain("The migration is already committed.");
+    expect(prompts[1].text).toContain("Review the migration");
+    expect(prompts[1].text).not.toContain("opaque-history-must-stay-behind");
+    expect(prompts[2].text).toBe("Check the diff");
+  } finally {
+    await driver.close();
+    journal.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+nativeTest("Codex never replays a hydration failure after a tool started", async () => {
+  const journal = new Journal(":memory:", (value) => value);
+  journal.saveSession("conversation", "codex", "poisoned-thread");
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_HYDRATION_FAILURE: "after-tool" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "Run the command" },
+      sessionId: "poisoned-thread",
+      signal: new AbortController().signal,
+      session: (...session) => journal.saveSession("conversation", "codex", ...session),
+      emit: () => {},
+    });
+    await expect(turn.done).rejects.toThrow("harness_failed");
+    expect(journal.session("conversation")).toBe("poisoned-thread");
+  } finally {
+    await driver.close();
+    journal.close();
   }
 });

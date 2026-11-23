@@ -130,3 +130,32 @@ test("allows spreading assembled mounts without adding a central registration", 
     added: [],
   });
 });
+
+test("reports native-path growth in a new server file", () => {
+  const path = server + "launch-provider.ts";
+  const head = new Map([[path, 'const agentPath = "runtime";']]);
+  expect(compare(new Map(), head).find(({ name }) => name === "native-path")).toEqual({
+    name: "native-path",
+    before: 0,
+    after: 1,
+    added: [{ path, line: 1, text: "agentPath" }],
+  });
+});
+
+test("allows native-path deletions and uses the architecture metric's scope", () => {
+  const source = 'const options = { agentPath: "native", nativeRuntime, nativeCli, runtimeTransport };';
+  const retained = new Map([
+    ["apps/dashboard/src/launch.tsx", source],
+    ["packages/agent-runtime/src/harness.ts", source],
+    ["scripts/metrics/example.ts", source],
+    [server + "launch.test.ts", source],
+    [server + "launch.generated.ts", source],
+  ]);
+  const base = new Map([...retained, [server + "launch-provider.ts", source]]);
+  expect(compare(base, retained).find(({ name }) => name === "native-path")).toEqual({
+    name: "native-path",
+    before: 10,
+    after: 5,
+    added: [],
+  });
+});

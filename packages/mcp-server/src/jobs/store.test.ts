@@ -680,6 +680,50 @@ test.each([
   expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
+test("two Modal pool launches at cap minus one bind different accounts", async () => {
+  const { db, sql, input } = await modalAdmissionFixture();
+  const first = crypto.randomUUID();
+  const second = crypto.randomUUID();
+  await db.query(
+    `insert into credentials(id,scope,owner_id,kind,name,value_enc,max_agents)
+     values($1,'user',$3,'openai','first',$4,2),($2,'user',$3,'openai','second',$4,1)`,
+    [first, second, input.ownerId, await encryptSecret("offline-pool-account", launchEncryptionKey)],
+  );
+  const sandbox = { ...input.sandbox, credentialId: first, credentialVersion: 1 };
+  await admitModalLaunch(sql, launchEncryptionKey, { ...input, sandbox });
+  const accountPool = {
+    pool: { harness: "codex" as const, credentialIds: [first, second], model: sandbox.model },
+    prepared: new Map(
+      [first, second].map((id) => [
+        id,
+        {
+          model: sandbox.model,
+          reasoningEffort: sandbox.reasoningEffort,
+          credentialVersion: 1,
+        },
+      ]),
+    ),
+  };
+  const launch = (key: string) =>
+    admitModalLaunch(sql, launchEncryptionKey, {
+      ...input,
+      sandbox,
+      accountPool,
+      request: { key, payload: key },
+    });
+  const receipts = await Promise.all([launch("pool-first"), launch("pool-second")]);
+  const { rows } = await db.query(
+    `select s.credential_id,s.model
+     from unnest($1::uuid[]) with ordinality requested(id,position) join sandboxes s on s.id=requested.id
+     order by requested.position`,
+    [receipts.map(({ sandbox }) => sandbox.id)],
+  );
+  expect(rows).toEqual([
+    { credential_id: first, model: sandbox.model },
+    { credential_id: second, model: sandbox.model },
+  ]);
+});
+
 test("Modal admission refuses a fresh launch on an exhausted bound account", async () => {
   const { db, sql, input, openaiCredentialId } = await modalAdmissionFixture();
   await db.query(

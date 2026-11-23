@@ -1,4 +1,9 @@
-import { isSandboxPlacementProvider, isSandboxProvider, type SandboxProviderId } from "@armada/core";
+import {
+  isSandboxPlacementProvider,
+  isSandboxProvider,
+  type SandboxPlacementProviderId,
+  type SandboxProviderId,
+} from "@armada/core";
 import { capabilities } from "@armada/core/server";
 
 export const runtimeBridgeProfiles = {
@@ -7,9 +12,29 @@ export const runtimeBridgeProfiles = {
     launchDefault: "boatRuntimeDefault",
     endpointDefault: "boatEndpointRuntime",
     hostPorts: true,
+    repeatPinnedSettings: true,
   },
-  modal: { placement: "dialout", launchDefault: "modalRuntimeDefault", endpointDefault: undefined, hostPorts: false },
+  modal: {
+    placement: "dialout",
+    launchDefault: "modalRuntimeDefault",
+    endpointDefault: undefined,
+    hostPorts: false,
+    repeatPinnedSettings: false,
+  },
 } as const satisfies Record<SandboxProviderId, object>;
+
+const missingMachineStopPolicy = {
+  boat: "observe-exit",
+  modal: "settle",
+  docker: "settle",
+} as const satisfies Record<SandboxPlacementProviderId, "observe-exit" | "settle">;
+
+/** A stop refusal alone is ambiguous for adapters that require an absence observation. */
+export const requiresMissingMachineObservation = (provider: unknown) =>
+  isSandboxPlacementProvider(provider) && missingMachineStopPolicy[provider] === "observe-exit";
+
+export const canRepeatPinnedRuntimeSettings = (provider: unknown) =>
+  isSandboxProvider(provider) && runtimeBridgeProfiles[provider].repeatPinnedSettings;
 
 export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
   return target.runtimeTransport === "dialout";
@@ -40,7 +65,6 @@ export function runtimeBridgeTarget(target: {
 export const runtimeHarnessSupported = (provider: string, harness: string): boolean =>
   ["codex", "claude"].includes(harness) || (isSandboxPlacementProvider(provider) && harness === "opencode");
 
-/** Closed provider refusal names; unrecognized identities retain the generic diagnostic. */
 export function runtimeConfigurationFailure(id: unknown) {
   const names: Record<string, string> = { boat: "Boat runtime", docker: "Docker runtime" };
   return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;

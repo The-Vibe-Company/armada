@@ -25,9 +25,9 @@ Rename accounts from Models in the dashboard.
 Each supports `--org <org>` where applicable. `launch --credential-id <uuid>`
 selects an explicit account (`credentialId` in the control API and MCP launch).
 
-Morph accounts support Claude Code, Codex and OpenCode. Connect with
-`armada account add --preset morph --name shared --file /private/morph-key`;
-select the account ID and a supported Morph model at launch. Morph defaults to
+Morph accounts support Claude Code, Codex and OpenCode. Create a Morph account in the dashboard or through
+[`armada api creds/accounts/set`](cli-admin.md#model-account-presets).
+Select the account ID and a supported Morph model at launch. Morph defaults to
 2 simultaneous agents per account; other kinds default to unlimited. Creation/
 replacement accepts `--max-agents N` or `--unlimited`. Update capacity with:
 

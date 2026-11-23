@@ -11,7 +11,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { canRepeatPinnedRuntimeSettings, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -71,8 +71,8 @@ export function createRuntimeFollowup(
     const found = await store.get(input.id);
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found))
       throw new VaultError("not_found", "No owned runtime sandbox.");
-    // Only Boat may repeat pinned settings; redundant fields stay out of durable command/resume identity.
-    const repeatPinned = found.provider === "boat";
+    // Redundant pinned settings stay out of durable command/resume identity.
+    const repeatPinned = canRepeatPinnedRuntimeSettings(found.provider);
     if (
       (input.model !== undefined && (!repeatPinned || input.model !== found.model)) ||
       (input.reasoning_effort !== undefined && (!repeatPinned || input.reasoning_effort !== found.reasoningEffort))

@@ -1,11 +1,7 @@
 import { AuthError } from "@armada/auth";
 import {
-  CONNECTION_PRESETS,
   type CredentialInfo,
-  connectionPreset,
   credentialName,
-  harnessesForCredential,
-  harnessForCredential,
   isModelConnectionTestResult,
   type OrgCredentials,
   type OrgSummary,
@@ -16,7 +12,6 @@ import {
   parseCredentialValue,
   parseModelPriceOverrides,
   parseOpenCodeEndpoint,
-  presetConnectionValue,
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
@@ -94,7 +89,6 @@ export function parseAccountArgs(argv: readonly string[]) {
   return parseArgs(
     argv,
     [
-      "--preset",
       "--kind",
       "--max-agents",
       "--id",
@@ -105,7 +99,7 @@ export function parseAccountArgs(argv: readonly string[]) {
       "--endpoint-auth",
       ...priceOptions,
     ],
-    ["--unlimited", "--presets"],
+    ["--unlimited"],
   );
 }
 
@@ -117,8 +111,6 @@ export async function modelAccountCommand(
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
   const maxAgents = agentLimit(args);
-  if (flag(args, "--presets") && sub !== "ls") throw usage("--presets requires account ls.");
-  if (args.options.has("--preset") && sub !== "add") throw usage("--preset requires account add.");
   if (args.options.has("--kind") && sub !== "rm") throw usage("--kind requires account rm.");
   if (
     sub !== "add" &&
@@ -129,86 +121,7 @@ export async function modelAccountCommand(
       priceOptions.some((name) => args.options.has(name)))
   )
     throw usage("Endpoint options are only supported by account add openai, anthropic or opencode.");
-  const presetId = single(args, "--preset");
   switch (true) {
-    case sub === "ls" && flag(args, "--presets"): {
-      expect(args.positionals, 0, "armada account ls --presets [--json]");
-      if ([...args.options.keys()].some((key) => key !== "--json" && key !== "--presets"))
-        throw usage("Account preset discovery accepts only --presets and --json.");
-      const presets = CONNECTION_PRESETS.map((preset) => ({
-        ...preset,
-        harness: harnessForCredential(preset.kind),
-        harnesses: harnessesForCredential(preset.kind),
-      }));
-      io.auth.out(
-        flag(args, "--json")
-          ? `${JSON.stringify({ presets })}\n`
-          : `${presets.map((p) => `${p.id}: ${p.label} (${p.harnesses.join(" and ")})`).join("\n")}\n`,
-      );
-      return 0;
-    }
-    case sub === "add" && presetId !== undefined: {
-      expect(args.positionals, 0, "armada account add --preset <id> --name NAME [--file PATH] [--org NAME]");
-      const preset = connectionPreset(presetId);
-      if (!preset) throw usage("Choose a provider from armada account ls --presets.");
-      const allowed = [
-        "--preset",
-        "--name",
-        "--org",
-        "--file",
-        "--json",
-        "--models",
-        "--base-url",
-        "--api-version",
-        "--max-agents",
-        "--unlimited",
-      ];
-      if ([...args.options.keys()].some((key) => !allowed.includes(key)))
-        throw usage(
-          "Account add with --preset accepts a provider preset, name, key file, org, models and address options only.",
-        );
-      const name = single(args, "--name");
-      if (!name?.trim()) throw usage("Give this account a --name.");
-      const baseUrl = single(args, "--base-url");
-      const models = single(args, "--models");
-      const apiVersion = single(args, "--api-version");
-      if (preset.models === "harness" && (baseUrl !== undefined || models !== undefined || apiVersion !== undefined))
-        throw usage("This provider uses its agent's model list; omit address and model options.");
-      if (preset.baseUrl && baseUrl !== undefined) throw usage("This provider has a fixed address; omit --base-url.");
-      if (apiVersion !== undefined && !preset.apiVersion) throw usage("This provider does not take an API version.");
-      if (preset.models === "choose" && (!models?.trim() || (!preset.baseUrl && !baseUrl?.trim())))
-        throw usage("Choose --models and supply --base-url when the provider has no fixed address.");
-      const raw = (await readValue(args, io)).trim();
-      if (!raw || raw.startsWith("{"))
-        throw usage("Supply only the API key through stdin or --file, not connection JSON.");
-      const value =
-        preset.models === "choose"
-          ? presetConnectionValue(preset, {
-              apiKey: raw,
-              baseUrl: baseUrl ?? "",
-              models: (models ?? "").split(","),
-              ...(apiVersion !== undefined ? { apiVersion } : {}),
-            })
-          : parseCredentialValue(preset.kind, raw);
-      if (preset.deploymentNames && !flag(args, "--json"))
-        io.auth.err(
-          "Official Azure addresses are tested with a tiny billable request per deployment before saving. A failed check saves nothing.\n",
-        );
-      await control(io.auth, "creds/accounts/set", {
-        scope,
-        org,
-        kind: credentialName(preset.kind),
-        name,
-        value,
-        ...(maxAgents !== undefined ? { maxAgents } : {}),
-      });
-      io.auth.out(
-        flag(args, "--json")
-          ? `${JSON.stringify({ ok: true })}\n`
-          : `Stored ${preset.label} for ${harnessesForCredential(preset.kind).join(" and ")}, encrypted. It is never shown again.\n`,
-      );
-      return 0;
-    }
     case sub === "login":
     case sub === "import": {
       const [harness] = expect(
