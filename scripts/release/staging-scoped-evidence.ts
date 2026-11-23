@@ -24,8 +24,6 @@ function correlationKeys(smoke: string) {
       record.code === "modal_launch_setup_failed",
   );
   for (const record of rows) {
-    // Parent readiness precedes scoped tool calls. The setup worker logs the
-    // sandbox ID, which the cleanup summary carries even after a successful cleanup.
     if (
       modalSetupFailed &&
       record.step === "scoped_cleanup_summary" &&
