@@ -1,5 +1,22 @@
 # Changelog
 
+## [10.0.0](https://github.com/The-Vibe-Company/armada/compare/v9.0.1...v10.0.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#4017](https://github.com/The-Vibe-Company/armada/issues/4017))
+
+### Features
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#4017](https://github.com/The-Vibe-Company/armada/issues/4017)) ([2e73baf](https://github.com/The-Vibe-Company/armada/commit/2e73baf67000f9fbc6b0f1a1e78ba3ec4a4b2bb9))
+
+
+### Bug Fixes
+
+* **boat:** runtime launch fails no_credentials refreshing a golden repository (9.0.0 regression) ([#4021](https://github.com/The-Vibe-Company/armada/issues/4021)) ([d39717a](https://github.com/The-Vibe-Company/armada/commit/d39717a51c8ded9eeeab2dea9111f605f594d621))
+* **boat:** runtime launch fails no_credentials refreshing a golden repository (9.0.0 regression) ([#4025](https://github.com/The-Vibe-Company/armada/issues/4025)) ([af435bb](https://github.com/The-Vibe-Company/armada/commit/af435bb48c4d9b131e6788f6eba0ba123abe93b8))
+
 ## [9.0.1](https://github.com/The-Vibe-Company/armada/compare/v9.0.0...v9.0.1) (2026-11-22)
 
 
