@@ -94,7 +94,6 @@ test("explicit report validates the latest finished turn and persists through AP
           return response ?? new Response(null, { status: 404 });
         },
       },
-      async () => "",
     );
     expect(code).toBe(0);
     expect((await call(mcp, "status", { id })).data.taskOutcome).toEqual(outcome);

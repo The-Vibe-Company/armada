@@ -116,9 +116,7 @@ export async function createParityClients(
     async command(argv: string[]) {
       output = "";
       const result =
-        action === "send"
-          ? await prompt.run(argv, { io: auth, auth, deps: {} })
-          : await operation(action, argv, auth, async () => fail(`client_${action}_file_read`));
+        action === "send" ? await prompt.run(argv, { io: auth, auth, deps: {} }) : await operation(action, argv, auth);
       if (result !== 0) fail(`invalid_client_${action}_receipt`);
       try {
         return JSON.parse(output) as unknown;
