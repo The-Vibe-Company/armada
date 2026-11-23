@@ -153,7 +153,7 @@ the list response except when inspecting a sandbox, which takes its sandbox ID.
 | `mcp sandbox-connections` | `armada api mcp/sandbox-connections -` | Sandbox UUID in `id` |
 
 For a catalog service, supply `serviceId` in the create definition. For a
-public HTTP URL, supply `url`, `transport: "http"`, and `authType: "auto"`.
+public HTTPS URL, supply `url`, `transport: "http"`, and `authType: "auto"`.
 Use the dashboard for browser authorization, or open the server's
 `authorizationUrl` when supplied and check `mcp/status` for completion.
 See [MCP registry](mcp-registry.md) for the definition and authorization flow.

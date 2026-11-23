@@ -1154,7 +1154,14 @@ optional browser-only check.
 For automated setup, submit separate personal accounts using
 `armada api creds/accounts/set -` with JSON on stdin. Use `kind: "openai"` for
 Azure Codex and `kind: "opencode"` for Azure OpenCode. Set `value` to the
-serialized connection definition with the v1 endpoint, deployment names and key.
+serialized JSON string for the selected account kind. The inner objects have
+different shapes (placeholders only):
+
+- Codex: `{"endpoint":{"version":1,"baseUrl":"AZURE_V1_URL"},"apiKey":"KEY","models":["DEPLOYMENT"]}`
+- OpenCode: `{"endpoint":{"version":1,"baseUrl":"AZURE_V1_URL","protocol":"azure","models":["DEPLOYMENT"]},"apiKey":"KEY"}`
+
+Build the outer request with `scope: "user"`, the account `name`, `kind` and
+the serialized `value`. Pass it through stdin from your secret source.
 See [model-account administration](cli-admin.md#model-account-presets).
 OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by

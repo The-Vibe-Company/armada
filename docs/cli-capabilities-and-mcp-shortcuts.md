@@ -13,7 +13,7 @@ This calls authenticated `POST /api/v1/golden/capabilities` with optional `provi
 
 ## MCP connection definitions
 
-Create a public HTTP connection with automatic OAuth discovery:
+Create a public HTTPS connection with automatic OAuth discovery:
 
 ```sh
 armada api mcp/create '{"org":"ORG_UUID","name":"Docs","url":"https://mcp.example.com/mcp","scope":"personal","transport":"http","authType":"auto"}'
