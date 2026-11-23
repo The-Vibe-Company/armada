@@ -1,4 +1,3 @@
-import type { SandboxStatus } from "@armada/core/contract";
 import type { SandboxListMetadata } from "./sandbox-access.ts";
 import { sandboxAttention } from "./sandbox-attention";
 
@@ -19,10 +18,7 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
   ).attention;
 }
 
-export type SandboxTurnObservation = Pick<
-  SandboxStatus,
-  "status" | "settled" | "prompt" | "expiresAt" | "statusMessage"
->;
+export type RecordedTurn = "queued" | "running" | "finished";
 
 function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
@@ -37,57 +33,29 @@ function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: str
   );
 }
 
-export function isTurnCandidate(row: SandboxListMetadata, now: Date) {
-  return row.canOpen && canHaveActiveTurn(row.status, row.expiresAt, now);
-}
-
-function incompleteTurnObservation(turn: SandboxTurnObservation) {
-  return (
-    (turn.status === "ready" && turn.prompt === null && Boolean(turn.statusMessage)) ||
-    turn.statusMessage === "Provider observation unavailable; showing recorded state." ||
-    turn.statusMessage === "Stored prompt state is incomplete; live data may be stale."
-  );
-}
-
 export function sandboxActivityPage(
   rows: SandboxListMetadata[],
   viewerId: string,
   requestedActivity: string | string[] | undefined,
   requestedPage: number,
-  turns: ReadonlyMap<string, SandboxTurnObservation>,
+  turns: Readonly<Record<string, RecordedTurn>>,
   now = new Date(),
 ) {
   const workingIds = new Set<string>();
   const waitingIds = new Set<string>();
-  let turnsIncomplete = false;
   for (const row of rows) {
-    if (!isTurnCandidate(row, now)) continue;
-    const turn = turns.get(row.id);
-    if (!turn) {
-      turnsIncomplete = true;
-      continue;
-    }
-    const incomplete = incompleteTurnObservation(turn);
-    turnsIncomplete ||= incomplete;
-    const state = turn.prompt?.state;
-    if (
-      canHaveActiveTurn(turn.status, turn.expiresAt, now) &&
-      (state === "queued" || (!incomplete && state === "running"))
-    ) {
+    if (!row.canOpen || !canHaveActiveTurn(row.status, row.expiresAt, now)) continue;
+    const state = turns[row.id];
+    if (state === "queued" || (state === "running" && row.status !== "stopped")) {
       workingIds.add(row.id);
-      continue;
-    }
-    if (
-      !incomplete &&
+    } else if (
+      state === "finished" &&
       row.ownerId === viewerId &&
       row.status === "ready" &&
-      beforeDeadline(row.expiresAt, now) &&
-      turn.status === "ready" &&
-      turn.settled === true &&
-      state === "finished" &&
-      beforeDeadline(turn.expiresAt, now)
-    )
+      beforeDeadline(row.expiresAt, now)
+    ) {
       waitingIds.add(row.id);
+    }
   }
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
@@ -113,6 +81,5 @@ export function sandboxActivityPage(
     page,
     workingIds,
     waitingIds,
-    turnsIncomplete,
   };
 }

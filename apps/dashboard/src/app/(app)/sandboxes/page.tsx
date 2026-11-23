@@ -26,39 +26,31 @@ import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
-import { CONTROL_TIMEOUT_MS, createControlClient } from "@/lib/control";
+import { createControlClient } from "@/lib/control";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
+import { loadSandboxInventory } from "@/lib/data/sandbox-inventory";
 import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { displayUser, listMemberships, memberDirectory, requireViewer, type Viewer } from "@/lib/data/viewer";
+import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
-import {
-  machineSizeLabel,
-  parseSandboxListMetadata,
-  type SandboxListMetadata,
-  skippedRowsNote,
-} from "@/lib/sandbox-access";
-import { isTurnCandidate, type SandboxTurnObservation, sandboxActivityPage } from "@/lib/sandbox-activity";
+import { machineSizeLabel, type SandboxListMetadata, skippedRowsNote } from "@/lib/sandbox-access";
 import {
   FACETS,
   type Facet,
   type FacetOption,
-  filterSandboxes,
   filtersToSearch,
   hasSandboxFilters,
   parseSandboxFilters,
   SANDBOX_STATUSES,
-  sandboxFacetCounts,
-  sortSandboxes,
 } from "@/lib/sandbox-filters";
 import { sandboxListName } from "@/lib/sandbox-list-name";
-import { createClient, type Supabase } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Sandboxes" };
 export const dynamic = "force-dynamic";
@@ -100,7 +92,9 @@ async function SandboxesContent({ searchParams }: Props) {
         </Empty>
       </>
     );
-  const inventory = loadInventory(supabase, selected.org.id, filters, viewer, query.activity);
+  const serverUrl = mcpUrl();
+  const control = serverUrl && viewer.token ? createControlClient({ serverUrl, token: viewer.token }) : null;
+  const inventory = loadSandboxInventory(supabase, selected.org.id, filters, viewer.id, query.activity, control);
   const hosts = readSelectedDockerHosts();
   // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
   const costsRead = inventory.then(({ rows }) => listSandboxCosts(supabase, rows));
@@ -130,20 +124,7 @@ async function SandboxesContent({ searchParams }: Props) {
     return snapshots;
   });
   const [
-    {
-      rows,
-      total,
-      inventoryTotal,
-      skipped,
-      facets,
-      activity,
-      counts,
-      page,
-      workingIds,
-      waitingIds,
-      turnsIncomplete,
-      now,
-    },
+    { rows, total, inventoryTotal, skipped, facets, activity, counts, page, workingIds, waitingIds, now },
     directory,
     setup,
     hostRead,
@@ -245,12 +226,6 @@ async function SandboxesContent({ searchParams }: Props) {
         <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
       </SandboxToolbar>
 
-      {turnsIncomplete && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Some turn statuses could not be checked. Working and Waiting for you counts may be incomplete.
-        </p>
-      )}
-
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
           {skippedRowsNote(skipped)}
@@ -293,7 +268,6 @@ async function SandboxesContent({ searchParams }: Props) {
           counts={counts}
           tab={activity}
           page={page}
-          turnsIncomplete={turnsIncomplete}
           search={filtersToSearch(filters)}
           rows={rows.map((sandbox) => {
             const life = lifecycleView(sandbox.status, readLifecycle(sandbox), now);
@@ -498,67 +472,4 @@ function ConversationHint({ sandbox, now }: { sandbox: SandboxListMetadata; now:
       ? "Only its owner and admins can open it"
       : null;
   return text ? <p className="mt-1 max-w-48 text-xs whitespace-normal text-muted-foreground">{text}</p> : null;
-}
-
-/** Read the authorized metadata once; activity tabs must see the entire loaded inventory, not one page. */
-async function loadInventory(
-  supabase: Supabase,
-  orgId: string,
-  filters: ReturnType<typeof parseSandboxFilters>,
-  viewer: Viewer,
-  requestedActivity: string | string[] | undefined,
-) {
-  const inventory: SandboxListMetadata[] = [];
-  let skipped = 0;
-  for (let from = 0; ; from += 500) {
-    const { data, error } = await supabase
-      .rpc("sandbox_list_metadata")
-      .eq("orgId", orgId)
-      .order("id")
-      .range(from, from + 499);
-    if (error?.code === "PGRST103") break;
-    if (error) throw new Error(error.message);
-    const parsed = parseSandboxListMetadata(data);
-    inventory.push(...parsed.rows);
-    skipped += parsed.skipped.length;
-    if (parsed.rows.length + parsed.skipped.length < 500) break;
-  }
-  const rows = sortSandboxes(filterSandboxes(inventory, filters, viewer.id), filters.sort);
-  const turns = await readInventoryTurns(rows, viewer);
-  const now = new Date();
-  const activityPage = sandboxActivityPage(rows, viewer.id, requestedActivity, filters.page, turns, now);
-  return {
-    ...activityPage,
-    now,
-    total: rows.length,
-    inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
-    skipped,
-    facets: sandboxFacetCounts(inventory, filters, viewer.id),
-  };
-}
-
-async function readInventoryTurns(rows: readonly SandboxListMetadata[], viewer: Viewer) {
-  const turns = new Map<string, SandboxTurnObservation>();
-  const now = new Date();
-  const readable = rows.filter((row) => isTurnCandidate(row, now));
-  const candidates = [
-    ...readable.filter((row) => row.status !== "stopped"),
-    ...readable.filter((row) => row.status === "stopped"),
-  ];
-  const serverUrl = mcpUrl();
-  if (!serverUrl || !viewer.token) return turns;
-
-  const deadline = performance.now() + CONTROL_TIMEOUT_MS;
-  for (let offset = 0; offset < candidates.length; offset += 8) {
-    const timeoutMs = Math.floor(deadline - performance.now());
-    if (timeoutMs < 1) break;
-    const client = createControlClient({ serverUrl, token: viewer.token, timeoutMs });
-    await Promise.all(
-      candidates.slice(offset, offset + 8).map(async ({ id }) => {
-        const observation = await client.post<SandboxTurnObservation>("sandbox/status", { id }).catch(() => null);
-        if (observation) turns.set(id, observation);
-      }),
-    );
-  }
-  return turns;
 }
