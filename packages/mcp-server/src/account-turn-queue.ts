@@ -28,7 +28,7 @@ import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-
 import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
-import { usesHostLaunch } from "./provider-runtime-admission.ts";
+import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
@@ -207,10 +207,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
       if (!target.credential_id) return null;
       if (enrolled) {
+        const repeatPinned = canRepeatPinnedRuntimeSettings(target.provider);
         if (
-          (input.model !== undefined && (target.provider !== "boat" || input.model !== target.model)) ||
+          (input.model !== undefined && (!repeatPinned || input.model !== target.model)) ||
           (input.reasoning_effort !== undefined &&
-            (target.provider !== "boat" || input.reasoning_effort !== target.reasoning_effort))
+            (!repeatPinned || input.reasoning_effort !== target.reasoning_effort))
         )
           throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
         if (Buffer.byteLength(input.prompt) > 262144) throw new VaultError("invalid", "The prompt is too large.");

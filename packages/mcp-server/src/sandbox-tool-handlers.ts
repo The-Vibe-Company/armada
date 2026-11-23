@@ -16,7 +16,11 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import {
+  requiresMissingMachineObservation,
+  retainsDiskOnStop,
+  runtimeBridgeTarget,
+} from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import {
@@ -609,7 +613,7 @@ export function configureTools(
             preservationNote = observed.stopNote ?? preservationNote;
           } catch (error) {
             if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
-            terminal = provider.id !== "boat";
+            terminal = !requiresMissingMachineObservation(provider.id);
           }
           signal.throwIfAborted();
           const status: SandboxStatus =
