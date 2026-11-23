@@ -37,7 +37,7 @@ import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import { observeProviderCall } from "./request-observability.ts";
+import { currentRequestId, observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -579,6 +579,45 @@ export function createDockerSandboxControls(
       throw error;
     }
   }
+  async function logStopReceiptTimeout(sandboxId: string, stopRequestId: string) {
+    try {
+      // Read the initial launch and the exact stop together before journal cleanup can remove them.
+      const evidence = (
+        await sql.query(
+          `select s.docker_host_id as "hostId", h.last_seen_at as "hostLastSeenAt",
+                  s.lifecycle_generation::text as "generation", s.status,
+                  d.worker_expires_at as "launchWorkerExpiresAt", d.result_enc is not null as "launchReceiptPublished",
+                  (select jsonb_object_agg(l.stage,l.at) from public.sandbox_launch_stages l
+                   where l.sandbox_id=s.id and l.activation=1) as "launchStages",
+                  (select jsonb_agg(jsonb_build_object(
+                     'requestId',j.request_id,'operation',j.bound_operation,'outcome',j.outcome,
+                     'createdAt',j.created_at,'completedAt',j.completed_at,'cancelledAt',j.cancelled_at
+                   ) order by j.position)
+                   from public.docker_host_jobs j
+                   where j.bound_sandbox_id=s.id
+                     and ((j.request_id=s.id and j.bound_operation='create')
+                       or j.bound_operation='bootstrap'
+                       or (j.request_id=$2 and j.bound_operation='stop'))) as "hostJobs"
+           from public.sandboxes s
+           left join public.docker_hosts h on h.id=s.docker_host_id
+           left join public.docker_launch_requests d on d.sandbox_id=s.id
+           where s.id=$1 and s.provider='docker'`,
+          [sandboxId, stopRequestId],
+        )
+      ).rows[0];
+      console.warn(
+        JSON.stringify({
+          event: "docker_stop_receipt_timeout",
+          requestId: currentRequestId(),
+          sandboxId,
+          stopRequestId,
+          evidence: evidence ?? null,
+        }),
+      );
+    } catch {
+      // Evidence collection must preserve the existing stop response.
+    }
+  }
   async function cleanup(
     caller: Caller,
     row: Row,
@@ -645,8 +684,10 @@ export function createDockerSandboxControls(
       if (job?.outcome === "completed" && done(current)) return result(current);
       if (job?.outcome === "failed")
         throw failure("conflict", "Docker sandbox cleanup failed. Use a new request ID to retry.");
-      if (clock.now() >= deadline)
+      if (clock.now() >= deadline) {
+        if (operation === "stop") await logStopReceiptTimeout(row.id, selected);
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
+      }
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }
