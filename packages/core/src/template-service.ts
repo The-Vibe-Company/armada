@@ -790,8 +790,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             const g = m.golden;
             if (!g) unavailable("environment_admission_unavailable");
             const provider = await runtime.provider(g);
-            if ((def.variables.length || def.secrets?.length) && !provider.configureReadableVariables)
-              unavailable(def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
             return launchSandbox(
               provider,
               {
@@ -822,6 +820,16 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   await runtime.options?.beforeFork?.(sandboxId);
                 },
                 templateSnapshotAdmission: {
+                  validatePlacement: (selectedProvider, enrolled) => {
+                    if (
+                      !enrolled &&
+                      (def.variables.length || def.secrets?.length) &&
+                      !selectedProvider.configureReadableVariables
+                    )
+                      unavailable(
+                        def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable",
+                      );
+                  },
                   admit: async () => {
                     await transaction(async (tx) => {
                       const current = await revalidateInTransaction(tx, actor, org, m);

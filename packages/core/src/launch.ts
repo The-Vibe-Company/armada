@@ -226,6 +226,7 @@ export interface LaunchOptions extends GoldenLimits {
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** A durable template request supplies the snapshot reference for this launch. */
   templateSnapshotAdmission?: {
+    validatePlacement: (provider: Provider, enrolled: boolean) => void;
     admit: () => Promise<void>;
     confirmAbsence: () => void;
   };
@@ -560,9 +561,10 @@ export async function launchSandbox(
     credentials,
     secrets,
   } = plan;
+  const templateAdmission = options.templateSnapshotAdmission;
+  templateAdmission?.validatePlacement(provider, Boolean(plan.runtime));
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const templateAdmission = options.templateSnapshotAdmission;
   let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
   try {

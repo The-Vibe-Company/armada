@@ -23,7 +23,9 @@ read `providerSandboxId` for provider display metadata and `providerSnapshotId`
 for a golden's provider snapshot. Use the Armada `id` for sandbox commands.
 
 The coordinator drain command `bun scripts/ops/drain-native.ts --provider boat`
-serves the Boat cohort. The production Modal drain is complete.
+serves the Boat cohort. Confirm zero native Boat rows before merging retirement
+of the native cwd and Claude MCP wrappers. Boat repository context and Claude
+MCP require the enrolled runtime.
 
 ## 1. Establish identity and scope
 

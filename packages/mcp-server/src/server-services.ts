@@ -81,7 +81,6 @@ import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import sourceIdentity from "./source-identity.json";
 import { readStartupConfiguration } from "./startup-configuration.ts";
-import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 export interface ServerOptions {
   routes?: readonly Route[];
@@ -115,11 +114,8 @@ export async function createServerServices(env: Record<string, string | undefine
     docker: dockerEnabled,
   });
   const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
-  let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
-    prepareAccount: (actor, id, version) => subscriptionMigration.prepareAccount(actor, id, version),
-    prepareTurn: (provider, id, caller) => subscriptionMigration.prepareTurn(provider, id, caller),
   });
   const store = createSqlVaultStore(sql);
   const authStore = createSqlAuthStore(sql);
@@ -250,12 +246,6 @@ export async function createServerServices(env: Record<string, string | undefine
     modalProviderFor,
     modalTokensFor: modal.modalTokensFor,
   });
-  subscriptionMigration = createSubscriptionMigration(
-    sql,
-    createHistoricalSandboxProviderResolver(providers),
-    (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
-    modelAuth.broker!,
-  );
   const goldenAdoption = createGoldenAdoption(sql);
 
   const goldenBuilds = new GoldenBuildJobs({

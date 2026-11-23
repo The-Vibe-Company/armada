@@ -1,5 +1,4 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { ProviderError } from "@armada/core";
 import {
   GoldenCreateService,
@@ -196,40 +195,6 @@ describe("golden and snapshots", () => {
     expect(error).toBeInstanceOf(ProviderError);
     expect(error).toMatchObject({ code: "invalid_request", retryable: false });
     expect(boat.requests).toHaveLength(0);
-  });
-});
-
-describe("native harness cwd preparation", () => {
-  test("installs the harness wrapper in the forked VM", async () => {
-    const boat = fakeBoat({
-      body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout: "", stderr: "", timedOut: false },
-    });
-    await boat.provider.prepareNativeHarnessCwd?.({ sandboxId: ID, harness: "codex", cwd: "/work/repo" });
-    expect(boat.requests).toHaveLength(1);
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/commands` });
-    expect(boat.requests[0]?.body).toMatchObject({ timeoutSeconds: 60 });
-    const command = (boat.requests[0]?.body as { command?: string } | undefined)?.command;
-    expect(command).toContain("/usr/local/bin/codex");
-    expect(command).toContain("/work/repo");
-  });
-
-  test("propagates VM preparation failures", async () => {
-    const boat = fakeBoat({
-      body: {
-        ok: true,
-        type: "command.finished",
-        success: false,
-        exitCode: 1,
-        stdout: "",
-        stderr: "wrapper failed",
-        timedOut: false,
-      },
-    });
-    await expect(
-      boat.provider.prepareNativeHarnessCwd?.({ sandboxId: ID, harness: "claude", cwd: "/work/repo" }),
-    ).rejects.toMatchObject({
-      message: "wrapper failed",
-    });
   });
 });
 
@@ -533,20 +498,7 @@ describe("agent turns", () => {
   });
 
   test("a prompt without a conversation opens a new one on the right harness, with its options", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: true,
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-        },
-      },
-      queued("conv_new"),
-    );
+    const boat = fakeBoat(queued("conv_new"));
     const receipt = await boat.provider.prompt({
       sandboxId: ID,
       harness: "claude",
@@ -556,8 +508,8 @@ describe("agent turns", () => {
       fast: true,
     });
     expect(receipt).toEqual({ promptId: "prompt_1", conversationId: "conv_new", status: "queued" });
-    expect(boat.requests[1]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
-    expect(boat.requests[1]?.body).toEqual({
+    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
+    expect(boat.requests[0]?.body).toEqual({
       provider: "claude-code",
       prompt: "Fix the tests",
       new: true,
@@ -568,58 +520,9 @@ describe("agent turns", () => {
   });
 
   test("a prompt with a conversation continues it, and codex maps to boat's codex", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: true,
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-        },
-      },
-      { body: { sandbox: sandbox({ state: "ready" }) } },
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: true,
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-        },
-      },
-      queued("conv_1"),
-    );
+    const boat = fakeBoat(queued("conv_1"));
     await boat.provider.prompt({ sandboxId: ID, harness: "codex", text: "Go on", conversationId: "conv_1" });
-    expect(boat.requests[3]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
-  });
-
-  test("optional usage bridge installation failure cannot block an ordinary prompt", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: false,
-          exitCode: 1,
-          stdout: "",
-          stderr: "unavailable",
-          timedOut: false,
-        },
-      },
-      queued("conv_new"),
-    );
-    await expect(boat.provider.prompt({ sandboxId: ID, harness: "claude", text: "Continue" })).resolves.toMatchObject({
-      promptId: "prompt_1",
-    });
-    expect(boat.requests.map((request) => request.path)).toEqual([
-      `/api/v1/sandboxes/${ID}/commands`,
-      `/api/v1/sandboxes/${ID}/prompt`,
-    ]);
+    expect(boat.requests[0]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
   });
 
   test("Boat refuses known unhonoured Fable selection before any provider work", async () => {
@@ -825,18 +728,6 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
           events.push(state);
           return Response.json({ sandbox: state === "archived" ? retainedSandbox() : sandbox({ state }) });
         }
-        if (path.endsWith("/commands")) {
-          events.push("bridge");
-          return Response.json({
-            ok: true,
-            type: "command.finished",
-            success: true,
-            exitCode: 0,
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-          });
-        }
         if (path.endsWith("/resume")) {
           events.push("resume");
           return Response.json({ ok: true });
@@ -881,7 +772,7 @@ test("native bootstrap follows actual resume readiness and precedes prompt; I/O 
       "ready",
       "machine_started",
       "configure",
-      ...(fail ? [] : ["bridge", "ready", "bridge", "harness_ready", "prompt"]),
+      ...(fail ? [] : ["harness_ready", "prompt"]),
     ]);
     await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
   }
@@ -1321,55 +1212,6 @@ test("capture cancellation during a readiness wait cannot admit a later command"
   expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
 });
 
-test("matching live readable-variable receipt skips Boat wrapper installation and SSH", async () => {
-  const variables = { APP_REGION: "europe\n$(literal)", APP_EMPTY: "" };
-  const digest = createHash("sha256")
-    .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
-    .digest("hex");
-  const boat = fakeBoat({
-    body: {
-      ok: true,
-      type: "command.finished",
-      success: true,
-      exitCode: 0,
-      stdout: digest + "\n",
-      stderr: "",
-      timedOut: false,
-      truncated: false,
-    },
-  });
-  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
-  expect(boat.requests).toHaveLength(1);
-  expect(boat.requests[0]?.path).toBe(`/api/v1/sandboxes/${ID}/commands`);
-  expect(JSON.stringify(boat.requests[0]?.body)).not.toContain("literal");
-});
-
-test("cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery", async () => {
-  const variables = { APP_REGION: "frozen" };
-  const digest = createHash("sha256")
-    .update(JSON.stringify(Object.entries(variables)))
-    .digest("hex");
-  const completed = (stdout: string) => ({
-    body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout, stderr: "", timedOut: false },
-  });
-  const boat = fakeBoat(completed(digest), completed("missing"), completed(""), {
-    status: 403,
-    body: errorBody(403, "FORBIDDEN", "Synthetic SSH authorization refused"),
-  });
-  await boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables });
-  // The VM has now lost /run state. Actual SSH authorization is deliberately refused,
-  // proving the owner re-enters hydration (and fails closed) without network transport.
-  await expect(
-    boat.provider.configureReadableVariables!({ sandboxId: ID, harness: "codex", variables }),
-  ).rejects.toThrow();
-  expect(boat.requests.map((request) => request.path)).toEqual([
-    `/api/v1/sandboxes/${ID}/commands`,
-    `/api/v1/sandboxes/${ID}/commands`,
-    `/api/v1/sandboxes/${ID}/commands`,
-    `/api/v1/sandboxes/${ID}/sshkey`,
-  ]);
-  expect(JSON.stringify(boat.requests.map((request) => request.body))).not.toContain("frozen");
-});
 // Preserve enough evidence to distinguish Armada admission from Boat rejection,
 // without exposing error bodies, labels, output, or new free-form state values.
 test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(

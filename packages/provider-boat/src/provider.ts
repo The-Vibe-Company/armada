@@ -9,7 +9,6 @@ import type {
   ForkRequest,
   InterruptRequest,
   Page,
-  PrepareNativeHarnessCwdRequest,
   PromptReceipt,
   PromptRequest,
   PromptState,
@@ -37,7 +36,6 @@ import {
   providerRateLimitDetails,
   providerRateLimitMessage,
   redact,
-  validateReadableVariables,
 } from "@armada/core";
 import {
   isNonMutatingProviderRefusal,
@@ -49,7 +47,6 @@ import {
   readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
-  sshReadableVariables,
 } from "@armada/core/server";
 import {
   BoatApi,
@@ -75,8 +72,7 @@ import {
 import { BoatRetentionUnconfirmed, invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { readEventCursor, writeEventCursor } from "./event-cursor.ts";
 import { eventCursor, normalizeEvent, promptStatus } from "./events.ts";
-import { installNativeCwdWrapper, type NATIVE_HARNESS_PATHS } from "./native-cwd.ts";
-import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "./native-usage.ts";
+import { collectNativeUsage } from "./native-usage.ts";
 import { RETAINED_OUTPUT_PATH, readRetainedOutputArchive } from "./retained-outputs.ts";
 
 const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
@@ -88,7 +84,7 @@ const MAX_TTL_SECONDS = 2_592_000;
 /** Native Boat and the runtime currently expose the same harness capabilities. */
 export const BOAT_CAPABILITIES = Object.fromEntries(
   HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null).map((id) => [id, HARNESS_CAPABILITIES[id]]),
-) as Pick<typeof HARNESS_CAPABILITIES, keyof typeof NATIVE_HARNESS_PATHS>;
+) as Pick<typeof HARNESS_CAPABILITIES, "claude" | "codex">;
 const BOAT_PROVIDER_NAME = mapHarnesses<PromptRequestProviderEnum | null>((descriptor) => descriptor.boatProvider);
 
 const BOAT_STATES: Record<SandboxState, readonly string[]> = {
@@ -510,36 +506,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
     },
 
-    async prepareNativeHarnessCwd(request: PrepareNativeHarnessCwdRequest): Promise<void> {
-      if (request.harness !== "claude" && request.harness !== "codex")
-        throw invalidRequest("This harness is not supported on Boat.");
-      await installNativeCwdWrapper(
-        async (execRequest) => {
-          const response = await call(() =>
-            api.command({
-              sandboxId: execRequest.sandboxId,
-              commandRequest: {
-                command: execRequest.command,
-                ...(execRequest.timeoutSeconds === undefined ? {} : { timeoutSeconds: execRequest.timeoutSeconds }),
-              },
-            }),
-          );
-          if ("processId" in response || !("exitCode" in response)) throw unexpectedAnswer("command result");
-          if (response.timedOut || response.exitCode !== 0) {
-            throw new ProviderError({
-              provider: PROVIDER_ID,
-              code: "unknown",
-              message: response.stderr || "Native harness preparation failed.",
-              retryable: false,
-            });
-          }
-        },
-        request.sandboxId,
-        request.harness,
-        request.cwd,
-      );
-    },
-
     async sshKey(request: SshKeyRequest): Promise<SshConnection> {
       const response = await call(() =>
         api.sshKey({ sandboxId: request.sandboxId, sshKeyRequest: { key: request.key } }),
@@ -835,32 +801,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return page(items, response.pageInfo);
     },
 
-    async configureReadableVariables({ sandboxId, harness, variables }) {
-      variables = validateReadableVariables(variables);
-      if (harness !== "claude" && harness !== "codex") throw invalidRequest("Invalid readable variable harness.");
-      const digest = createHash("sha256")
-        .update(JSON.stringify(Object.entries(variables).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
-        .digest("hex");
-      // Live VM receipt, not a process-local cache: missing /run state always rehydrates.
-      const present = await provider.exec({
-        sandboxId,
-        timeoutSeconds: 30,
-        command: `/usr/bin/python3 -I -c '${READABLE_VARIABLE_PROBE}' ${harness}`,
-      });
-      if (!present.detached && !present.timedOut && present.exitCode === 0 && present.stdout.trim() === digest) return;
-      await installNativeCwdWrapper(
-        async (request) => {
-          const result = await provider.exec(request);
-          if (result.detached || result.exitCode !== 0 || result.timedOut)
-            throw invalidRequest("Native variable wrapper unavailable.");
-        },
-        sandboxId,
-        harness,
-        undefined,
-        { readableVariables: true },
-      );
-      await sshReadableVariables(provider, sandboxId, harness, variables);
-    },
     async prompt(request: PromptRequest): Promise<PromptReceipt> {
       if (request.harness !== "claude" && request.harness !== "codex")
         throw invalidRequest("This harness is not supported on Boat.");
@@ -904,33 +844,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           info = await provider.get(request.sandboxId, { signal });
         }
         if (info.state !== "ready" && info.state !== "running")
-          throw invalidRequest("Sandbox is not ready for native MCP configuration.");
+          throw invalidRequest("Sandbox is not ready for a Boat prompt.");
         if (resumed) await request.onResumeStage?.("machine_started");
         signal.throwIfAborted();
         await options.beforePrompt?.(provider, request.sandboxId);
       }
-      const bridgeRequired = options.beforePrompt && (request.harness === "codex" || provider.configureGitHub);
-      let usageBridgeReady = false;
-      try {
-        await installNativeCwdWrapper(
-          async (r) => {
-            const result = await provider.exec(r);
-            if (result.detached || result.timedOut || result.exitCode !== 0)
-              throw invalidRequest("Native MCP bridge installation failed.");
-          },
-          request.sandboxId,
-          request.harness,
-        );
-        usageBridgeReady = true;
-      } catch (error) {
-        if (bridgeRequired) throw error;
-        // Optional usage must not make an otherwise usable native harness unavailable.
-      }
-      signal.throwIfAborted();
-      const usageTicket =
-        usageBridgeReady && request.harness === "codex"
-          ? await admitNativeUsage(provider, request.sandboxId, request.text)
-          : null;
       if (resumed) await request.onResumeStage?.("harness_ready");
       const response = await call(() =>
         api.prompt(
@@ -954,7 +872,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       );
       const conversationId = response.conversationId ?? response.promptRun?.conversationId;
       if (!response.promptId || !conversationId) throw unexpectedAnswer("prompt receipt");
-      if (usageTicket) await bindNativeUsage(provider, request.sandboxId, usageTicket, response.promptId);
       return {
         promptId: response.promptId,
         conversationId,
@@ -1324,24 +1241,3 @@ function isRestoring(details: unknown): boolean {
     (details as Record<string, unknown>).message === RESTORING
   );
 }
-
-// Fixed read-only probe. No values/desired digest enter exec arguments or command journals.
-const READABLE_VARIABLE_PROBE = `import os,sys,json,stat,hashlib
-try:
- h=sys.argv[1]
- assert h in ("claude","codex")
- root="/run/armada-readable-variables"
- d=os.lstat(root)
- assert stat.S_ISDIR(d.st_mode) and d.st_uid==0 and not d.st_mode&0o022
- wrapper="/usr/local/bin/"+h+".armada-wrapper"
- assert os.path.realpath("/usr/local/bin/"+h)==wrapper
- w=os.lstat(wrapper)
- assert stat.S_ISREG(w.st_mode) and w.st_uid==0 and not w.st_mode&0o022
- with open(wrapper) as f: assert "/run/armada-readable-variables/" in f.read()
- fd=os.open(root+"/"+h+".json",os.O_RDONLY|os.O_NOFOLLOW)
- with os.fdopen(fd) as f:
-  s=os.fstat(f.fileno())
-  assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not s.st_mode&0o022 and s.st_size<=1048576
-  values=json.load(f)
- print(hashlib.sha256(json.dumps(sorted(values.items()),ensure_ascii=False,separators=(",",":")).encode()).hexdigest())
-except Exception: print("missing")`;

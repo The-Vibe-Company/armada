@@ -32,7 +32,6 @@ import {
 import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { currentRequestId } from "./request-observability.ts";
-import { configureBoatSubscription } from "./subscription-boat.ts";
 
 /** The stored kinds whose value must never reach a command's output. */
 const SECRET_KINDS: readonly CredentialKind[] = MODEL_CREDENTIAL_KINDS;
@@ -266,11 +265,7 @@ export function launchCredentials(
         (await ownership.broker.enrolled(binding.credentialId, binding.credentialVersion))
       ) {
         if (provider.id === "boat")
-          await configureBoatSubscription(
-            provider,
-            providerSandboxId,
-            ownership.broker.configuration(actor, binding.credentialId, binding.credentialVersion, sandboxId),
-          );
+          throw new VaultError("unavailable", "Boat subscriptions require Armada runtime enrolment.");
         return true;
       }
       if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;

@@ -309,26 +309,19 @@ This procedure is not evidence of deployed acceptance or permission to flip defa
 
 ## Environment-wide Boat default
 
-Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
-ordinary Boat launch path. Unset means `runtime`. Invalid values fail startup.
-The coordinator controls this setting through the server deployment process. The
-smoke client does not select the default. Ordinary API, CLI, dashboard, MCP
-`sandbox_launch`, template and routine launches share the same Core launch
-selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
-Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
-(or the existing trusted manifest override). In runtime mode, startup requires the manifest
-and its published runtime and harness artifacts in `ARMADA_RUNTIME_ARTIFACT_DIR`. Each published artifact must be a regular file
-named by its manifest digest, with the declared byte count. Valid
-image-installed artifacts keep the explicit runtime route/retained sessions
-available during rollback. Missing/corrupt runtime-only metadata does not prevent
-native rollback from booting; explicit runtime bootstrap remains unavailable
-until artifacts are fixed (never converted to native). `launch/options.boatRuntime.defaultPath` reports the ordinary selection.
+Use the trusted server setting `ARMADA_BOAT_AGENT_PATH=runtime` or leave it
+unset. Ordinary API, CLI, dashboard, MCP `sandbox_launch`, template, and routine
+launches share this server default. Validate the effective value through
+`launch/options.boatRuntime.defaultPath`.
 
-Rollback: set the same server setting to **`native`** and redeploy normally.
-Native code is retained. This changes new ordinary launches only, never converts
-an existing runtime/native session or its conversation, and never retries a
-failed launch on the other path. Existing template request keys retain their
-recorded success/refusal; use the normal new-request policy for new work.
+Startup requires the image's matching
+`/opt/armada/runtime-manifests/<arch>.json` (or the trusted manifest override)
+and the published runtime and harness artifacts in `ARMADA_RUNTIME_ARTIFACT_DIR`.
+Each artifact must be a regular file named by its manifest digest with the
+declared byte count.
+
+For rollback, follow the [release rollback procedure](releasing.md). The
+native setting on this release cannot restore the retired cwd and MCP wrappers.
 
 ### Workspace preparation and launch limits
 

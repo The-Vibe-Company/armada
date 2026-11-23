@@ -12,14 +12,12 @@ const sourceExtension = /\.[cm]?[jt]sx?$/;
 const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
 
 const existingProviderImports = new Set([
-  "packages/agent-runtime/test/github-parent.test.ts -> ../../provider-boat/src/native-cwd.ts",
   "packages/core/test/golden-os.probe.ts -> ../../provider-modal/src/ssh.ts",
   "packages/core/test/golden-snapshot-retirement.release.ts -> ../../provider-modal/src/store.ts",
   "packages/mcp-server/test/exec-selected-org-api.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/lifecycle-driver-postgres.release.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/lifecycle-review.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/mcp-before-resume.test.ts -> ../../provider-boat/test/support.ts",
-  "packages/mcp-server/test/mcp-codex-bridge.fixture.ts -> ../../provider-boat/src/native-cwd.ts",
   "packages/mcp-server/test/runtime-resume.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/sandbox-activity.test.ts -> ../../provider-boat/test/support.ts",
   "packages/mcp-server/test/sandbox-lifecycle.test.ts -> ../../provider-boat/test/support.ts",

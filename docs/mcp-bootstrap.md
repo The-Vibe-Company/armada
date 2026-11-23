@@ -1,5 +1,7 @@
 # MCP bootstrap and gateway integration (#523)
 
+The Boat wrapper-based native MCP behavior and probes described below retired in #2745. Enrolled MCP is delivered through the runtime.
+
 ## Production wiring
 
 `LaunchStores.connections.prepare(provider, sandboxRecord, actor)` runs after

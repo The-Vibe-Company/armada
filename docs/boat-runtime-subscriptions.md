@@ -17,17 +17,10 @@ epoch. The server checks the sandbox/account/version and membership both before
 and after broker refresh. Account renewal is persisted once server-side and
 shared across guests. Replaced epochs cannot obtain new access material.
 
-Native-writer migration must exclude `boat_runtime` guests during account
-admission, turn repair and its final source recheck. Those guests are not legacy
-refresh writers: probing or draining them through native SSH can interfere with
-an active runtime and must not install the native stable-capability facade.
-Native Boat and Modal migration remains unchanged.
+Boat subscription configuration requires an enrolled runtime. Native Boat
+subscription installation retired with the wrapper it depended on (#2745).
 
 ## Offline evidence
-
-`packages/mcp-server/test/subscription-migration.test.ts` reproduces the native
-migration leak on the previous code and checks that runtime guests never reach
-provider resolution/inspection, while the native migration cases still pass.
 
 `packages/mcp-server/test/runtime-native-auth.test.ts` exercises the real SQL
 broker, runtime access route and guest access callback together: two live guests

@@ -43,7 +43,7 @@ prepareNativeHarnessCwd({ sandboxId, harness, cwd: `${GOLDEN_ROOT}/${repositoryD
 
 A selected repository requires that real preparation capability. An unavailable capability is rejected before fork; failed preparation fails/stops the launch rather than pretending the cwd was changed. Omitted selection retains legacy provider behavior and makes no preparation call.
 
-Boat retains PR535/PR540's native executable wrappers. The Codex stdin app-server bridge also rewrites thread/start, thread/resume and turn/start cwd, because Boat's explicit JSON-RPC cwd overrides process cwd. The wrapper filesystem persists across stop/resume, subsequent sends, new conversations and steer. Prompts and steer instructions are **not prefixed with repository guidance**; model/effort/config fields remain independent and unchanged. See [native-repo-cwd.md](native-repo-cwd.md) for the upstream native regression and real-driver evidence.
+Boat repository context uses the enrolled runtime. The native cwd wrappers retired in #2745.
 
 Use the provider that owns the snapshot.
 
@@ -51,7 +51,7 @@ Use the provider that owns the snapshot.
 
 The former cross-transport test `repository-context-api.test.ts` was removed in #2622: its single five-second test started PGlite and replayed CLI, HTTP, MCP and SQL, and failed the merge queue intermittently. Its behaviours are owned at cheaper boundaries: `packages/core/test/launch.test.ts` (idle launch persists the selected repository and prepares cwd before returning; explicit repo prepares each harness before its first prompt; explicit selectors are validated after authorization and before allocation; preparation failure stops the sandbox and never prompts), `packages/core/test/database.test.ts` (repository context must name a configured repo and stays immutable after a golden edit), and `packages/mcp-server/test/server.test.ts` (an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn).
 
-Upstream `launch-workdir.test.ts` owns legacy owner/repo resolution and ambiguity. Upstream `provider-boat/test/native-cwd.test.ts` owns the actual native wrapper/SDK-serialized script and Codex stdio bridge; the real-binary cwd test was removed from unit CI (#2622); a synthetic stdio peer proves the wrapper half of that contract (the peer's process cwd and the rewritten thread/turn cwd). No test now checks that real Codex reports the selected thread cwd. No duplicate pretend-cwd driver was added.
+Upstream `launch-workdir.test.ts` owns legacy owner/repo resolution and ambiguity.
 
 PR541's golden-capabilities operation and scoped read-only metadata contract are preserved alongside the union.
 
