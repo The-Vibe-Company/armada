@@ -107,6 +107,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (m.method === "thread/start" || m.method === "thread/resume") {
     if (process.env.OPENAI_API_KEY && !loggedIn) throw Error("API-key login must precede thread operations");
     if (m.method === "thread/resume") thread = m.params.threadId;
+    if (process.env.ARMADA_HYDRATION_FAILURE && m.method === "thread/start") thread = "recovered-thread";
     if (process.env.ARMADA_READABLE_INSPECTION)
       writeFileSync(
         process.env.ARMADA_READABLE_INSPECTION,
@@ -158,6 +159,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         },
       });
     if (baselineMode && baselineMode !== "after" && baselineMode !== "late") baseline();
+    if (process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread")
+      notify("thread/tokenUsage/updated", {
+        threadId: thread,
+        turnId: "prior-turn",
+        tokenUsage: { total: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 30 } },
+      });
     if (baselineMode === "regressed") {
       baseline(0.5);
       baseline();
@@ -167,7 +174,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       baseline();
     }
     reply({
-      thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
+      thread: {
+        id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread,
+        turns:
+          process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread"
+            ? [
+                {
+                  status: "completed",
+                  items: [
+                    { type: "agentMessage", text: "The migration is already committed." },
+                    { type: "reasoning", content: ["opaque-history-must-stay-behind"] },
+                  ],
+                },
+              ]
+            : [],
+      },
       model:
         process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model"
           ? "replacement-model"
@@ -176,11 +197,63 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.2-sol"),
     });
     if (baselineMode === "after") pendingResumeBaseline = baseline;
+  } else if (m.method === "thread/read" && process.env.ARMADA_HYDRATION_FAILURE) {
+    if (thread !== "recovered-thread" || !turn || m.params.threadId !== thread)
+      throw Error("replacement verification must follow a native turn");
+    reply({ thread: { id: thread, path: `${process.cwd()}/recovered-rollout.jsonl` } });
   } else if (m.method === "turn/start") {
     const params = m.params as TurnStartParams;
     turn++;
     if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
     reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    if (process.env.ARMADA_HYDRATION_FAILURE && thread === "recovered-thread") {
+      writeFileSync("recovered-rollout.jsonl", JSON.stringify({ type: "session_meta", payload: { id: thread } }));
+      notify("turn/completed", {
+        threadId: thread,
+        turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+      });
+      return;
+    }
+    if (process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread") {
+      notify("thread/tokenUsage/updated", {
+        threadId: thread,
+        turnId: `turn-${turn}`,
+        tokenUsage: { total: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 30 } },
+      });
+      if (process.env.ARMADA_HYDRATION_FAILURE === "after-tool") {
+        notify("item/started", {
+          threadId: thread,
+          turnId: `turn-${turn}`,
+          item: {
+            type: "commandExecution",
+            id: "write",
+            command: "touch artifact",
+            cwd: ".",
+          },
+        });
+      }
+      notify("turn/completed", {
+        threadId: thread,
+        turn: {
+          id: `turn-${turn}`,
+          status: "failed",
+          items: [],
+          error: {
+            message: JSON.stringify({
+              error: {
+                code: "invalid_encrypted_content",
+                type: "invalid_request_error",
+                message:
+                  "The encrypted content for item sample could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed.",
+              },
+            }),
+            codexErrorInfo: "other",
+            additionalDetails: null,
+          },
+        },
+      });
+      return;
+    }
     if (process.env.ARMADA_EXTERNAL_AUTH) {
       if (!loggedIn) throw Error("missing external login");
       send({
