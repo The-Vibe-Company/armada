@@ -992,7 +992,7 @@ async function seedNativeDrainReceipt(
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-test("Boat drain without a preservation receipt requires opt-in through provider confirmation", async () => {
+test("Boat drain with activity but no preservation receipt requires opt-in through provider confirmation", async () => {
   const { db, people, sharedGoldenId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   const placement = `bx_${sandboxId}`;
@@ -1016,9 +1016,8 @@ test("Boat drain without a preservation receipt requires opt-in through provider
   await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [sandboxId]);
   expect(await drain(false).catch(nativeDrainFailureReason)).toBe("preservation_refused");
   await db.query("insert into sandbox_native_exec_attempts(sandbox_id,generation) values($1,1)", [sandboxId]);
-  await expect(drain(true)).rejects.toThrow("work preservation could not be verified");
+  expect(await drain(false).catch(nativeDrainFailureReason)).toBe("not_eligible");
   expect(remove).not.toHaveBeenCalled();
-  await db.query("delete from sandbox_native_exec_attempts where sandbox_id=$1", [sandboxId]);
   expect(await drain(true).catch(nativeDrainFailureReason)).toBe("deletion_pending");
   expect(remove).toHaveBeenCalledWith({ sandboxId: placement, generation: 2 });
   expect(await drain(true).catch(nativeDrainFailureReason)).toBe("lease_busy");
