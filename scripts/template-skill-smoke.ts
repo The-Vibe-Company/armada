@@ -25,6 +25,7 @@ type TemplateSkillCode =
   | "template_exec_inherited"
   | "invalid_receipt"
   | "turn_failed"
+  | "modal_launch_setup_failed"
   | "cleanup_unconfirmed";
 export class TemplateSkillSmokeFailure extends Error {
   constructor(
@@ -274,11 +275,9 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                   throw error;
                 });
                 if (status?.id !== sandbox.id || status.externalRef !== record.requestKey) return;
-                if (
-                  admitted &&
-                  (["failed", "stopping", "stopped", "deleted"].includes(status.status) ||
-                    (status.settled === true && !!status.statusMessage))
-                )
+                if (admitted && status.settled === true && status.statusMessage === "Modal launch setup failed.")
+                  fail("modal_launch_setup_failed");
+                if (admitted && ["failed", "stopping", "stopped", "deleted"].includes(status.status))
                   fail("turn_failed");
                 const promptId = status.prompt?.promptId;
                 if (

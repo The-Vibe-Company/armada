@@ -1113,7 +1113,8 @@ describe("preservation checks", () => {
             observedDefaultGolden &&
             !stopping &&
             skillStatusReads === 2
-          )
+          ) {
+            fake.advance(11_000);
             return json({
               id: sandboxId,
               status: "ready",
@@ -1122,6 +1123,7 @@ describe("preservation checks", () => {
               settled: true,
               statusMessage: null,
             });
+          }
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
@@ -1359,13 +1361,15 @@ describe("preservation checks", () => {
               code:
                 fault === "recovery_wakes"
                   ? "provider_not_stopped"
-                  : fault === "default_wrong_golden" || fault === "default_admission_setup_failed"
-                    ? "invalid_response"
-                    : fault === "default_admission_wrong_golden"
-                      ? "list_status_mismatch"
-                      : fault.startsWith("default_")
-                        ? "invalid_receipt"
-                        : "preservation_failed",
+                  : fault === "default_admission_setup_failed"
+                    ? "modal_launch_setup_failed"
+                    : fault === "default_wrong_golden"
+                      ? "invalid_response"
+                      : fault === "default_admission_wrong_golden"
+                        ? "list_status_mismatch"
+                        : fault.startsWith("default_")
+                          ? "invalid_receipt"
+                          : "preservation_failed",
             }),
           );
       });
@@ -3072,7 +3076,12 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
       if (broken === "provider")
         expect(reports).toContainEqual({ case: 0, step: "list_ready", pass: false, code: "list_status_mismatch" });
       if (broken === "setup")
-        expect(reports).toContainEqual({ case: 0, step: "launch_setup", pass: false, code: "invalid_response" });
+        expect(reports).toContainEqual({
+          case: 0,
+          step: "launch_setup",
+          pass: false,
+          code: "modal_launch_setup_failed",
+        });
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
       expect(stopped).toBe(true);
       expect(fake.lines.join("\n")).not.toContain("private-output");

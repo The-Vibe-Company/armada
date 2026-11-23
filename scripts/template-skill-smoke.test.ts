@@ -199,7 +199,10 @@ function fixture(
         output = {
           id: launch.id,
           externalRef: launch.key,
-          status: options.jobAdmission === "failed_setup" ? "failed" : "ready",
+          status: "ready",
+          ...(options.jobAdmission === "failed_setup"
+            ? { settled: true, statusMessage: "Modal launch setup failed." }
+            : {}),
           prompt: ++launch.statusReads === 1 ? null : { promptId: `prompt-${templateId}`, state: "finished" },
           skills: launch.pin
             ? [receipt(launch.pin)]
@@ -526,7 +529,7 @@ test("Modal template admission resolves the original public prompt before provin
 
 test.each([
   ["wrong_pin", "template_launch", "invalid_receipt"],
-  ["failed_setup", "template_launch", "turn_failed"],
+  ["failed_setup", "template_launch", "modal_launch_setup_failed"],
   ["late_ack", "template_launch", "launch_observation_timeout"],
   ["extra_skill", "public_skill_receipt", "invalid_receipt"],
 ] as const)(

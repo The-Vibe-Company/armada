@@ -15,12 +15,12 @@
     "expiry_as_stop": 592977,
     "expiry_deadline": 10000,
     "expiry_launch": 152262,
-    "expiry_ready": 10000,
+    "expiry_ready": 154686,
     "expiry_time_to_ready": 154686
   },
   "modal/lifecycle": {
-    "default_skills_opt_out_receipts": 10000,
-    "default_skills_receipts": 10000,
+    "default_skills_opt_out_receipts": 117096,
+    "default_skills_receipts": 117096,
     "extend": 14592,
     "git_remote": 10000,
     "git_status": 10000,
@@ -40,7 +40,7 @@
     "preservation_recovery_handle": 10000,
     "preservation_recovery_read_only": 10000,
     "preservation_unknown_handle_refused": 10000,
-    "ready": 10000,
+    "ready": 119292,
     "resume_send": 10000,
     "resume_usage": 10000,
     "resume_wait": 78783,
@@ -54,7 +54,7 @@
   },
   "modal/real-model": {
     "real_model_launch": 91782,
-    "real_model_ready": 10000,
+    "real_model_ready": 91782,
     "real_model_send": 10000,
     "real_model_stop": 44103,
     "real_model_wait": 42981
