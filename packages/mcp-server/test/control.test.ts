@@ -2448,12 +2448,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
     // An ordinary, unchanged client request obeys the deployment default too.
-    const priorLaunch = options.launch;
     const noNative = async (): Promise<never> => {
       throw Error("No native fallback");
     };
     options.launch = {
-      ...priorLaunch,
       boatRuntimeDefault: {
         policy: options.boatRuntimeLaunch!,
         provider: async () => host.provider,
@@ -2525,8 +2523,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.forks[1]?.env).toEqual({});
     expect(host.execs).toHaveLength(0);
     expect(host.prompts).toHaveLength(0);
-    if (priorLaunch) options.launch = priorLaunch;
-    else delete options.launch;
+    delete options.launch;
     expect(await (await request("launch/options", {}))?.json()).toMatchObject({
       boatRuntime: { defaultPath: "native" },
     });
