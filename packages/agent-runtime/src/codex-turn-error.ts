@@ -16,3 +16,12 @@ export function codexTurnFailureCode(code: string | undefined, message: string |
   if (code === "other" && message === OUTPUT_LIMIT_MESSAGE) return "output_limit_exceeded";
   return "harness_failed";
 }
+
+export function codexEncryptedHistoryRejected(message: string | undefined) {
+  return (
+    /\binvalid_encrypted_content\b/.test(message ?? "") ||
+    /^The encrypted content for item [^\s]+ could not be verified\. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed\.?$/.test(
+      message ?? "",
+    )
+  );
+}

@@ -6,19 +6,40 @@ import { codexResumeUsage } from "./codex-resume-usage.ts";
 import type { ReasoningEffort } from "./codex-schema/ReasoningEffort.ts";
 import type { LoginAccountParams } from "./codex-schema/v2/LoginAccountParams.ts";
 import type { LoginAccountResponse } from "./codex-schema/v2/LoginAccountResponse.ts";
+import type { Thread } from "./codex-schema/v2/Thread.ts";
 import type { ThreadItem } from "./codex-schema/v2/ThreadItem.ts";
 import type { ThreadStartParams } from "./codex-schema/v2/ThreadStartParams.ts";
 import type { ThreadStartResponse } from "./codex-schema/v2/ThreadStartResponse.ts";
 import type { TurnCompletedNotification } from "./codex-schema/v2/TurnCompletedNotification.ts";
 import type { TurnStartParams } from "./codex-schema/v2/TurnStartParams.ts";
 import type { TurnStartResponse } from "./codex-schema/v2/TurnStartResponse.ts";
-import { codexTurnFailureCode } from "./codex-turn-error.ts";
+import { codexEncryptedHistoryRejected, codexTurnFailureCode } from "./codex-turn-error.ts";
 import { codexTurnUsage, settleCodexTurnUsage } from "./codex-turn-usage.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
-/** One app-server per conversation isolates credentials, process failure and notifications. */
+
+function recoverySummary(thread: Thread): string {
+  return (thread.turns ?? [])
+    .filter((turn) => turn.status === "completed")
+    .slice(-4)
+    .map((turn) => {
+      const request = turn.items.findLast((item) => item.type === "userMessage");
+      const reply = turn.items.findLast((item) => item.type === "agentMessage");
+      const text = request?.content.findLast((item) => item.type === "text")?.text;
+      return [
+        text && `User request excerpt: ${text.slice(0, 600)}`,
+        reply?.text && `Assistant reply excerpt: ${reply.text.slice(-1200)}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** One app-server per prompt isolates credentials, process failure and notifications. */
 export class CodexDriver implements Driver {
   private children = new ChildOwner();
   private nativeWriter = false;
@@ -103,9 +124,16 @@ export class CodexDriver implements Driver {
       closed = false,
       stopping = false,
       steering = false;
+    const emptyUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      reasoningOutputTokens: 0,
+    };
     let baseline: Record<string, number> | null = c.sessionId
       ? (this.tokenTotals.get(c.sessionId) ?? null)
-      : { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0 };
+      : emptyUsage;
     const resumeUsage: {
       requested: boolean;
       verified: boolean;
@@ -136,8 +164,8 @@ export class CodexDriver implements Driver {
     let terminalReject: ((error: Error) => void) | undefined;
     let failure: Error | undefined;
     let lineFailure: Error | undefined;
-    const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true): Promise<T> =>
-      new Promise((resolve, reject) => {
+    const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true) =>
+      new Promise<T>((resolve, reject) => {
         if (failure) {
           reject(failure);
           return;
@@ -394,6 +422,7 @@ export class CodexDriver implements Driver {
       fail(new HarnessError("harness_process_lost", undefined, { cause: error }));
       child.kill("SIGKILL");
     });
+    let currentRequest = c.request.text;
     const begin = async (text: string) => {
       c.signal.throwIfAborted();
       turnId = "";
@@ -424,6 +453,28 @@ export class CodexDriver implements Driver {
       return { terminal };
     };
     let current!: Promise<{ terminal: Promise<TurnCompletedNotification> }>;
+    const config: ThreadStartParams = {
+      cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ...(c.request.model ? { model: c.request.model } : {}),
+      ...(c.mcp
+        ? {
+            config: {
+              mcp_servers: Object.fromEntries(
+                Object.entries(c.mcp.servers).map(([name, v]) => [
+                  name,
+                  v.type === "http"
+                    ? { url: v.url, http_headers: v.headers ?? {} }
+                    : { command: v.command, args: v.args ?? [], env: v.env ?? {} },
+                ]),
+              ),
+            },
+          }
+        : {}),
+    };
+    let historySummary = "";
+    let recovering = false;
     const initialized = (async () => {
       await rpc("initialize", {
         clientInfo: { name: "armada-runner", version: "1.0.0" },
@@ -450,26 +501,6 @@ export class CodexDriver implements Driver {
         const result = await rpc<LoginAccountResponse>("account/login/start", login);
         if (result.type !== "apiKey") throw new HarnessError("authentication_failed");
       }
-      const config: ThreadStartParams = {
-        cwd,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        ...(c.request.model ? { model: c.request.model } : {}),
-        ...(c.mcp
-          ? {
-              config: {
-                mcp_servers: Object.fromEntries(
-                  Object.entries(c.mcp.servers).map(([name, v]) => [
-                    name,
-                    v.type === "http"
-                      ? { url: v.url, http_headers: v.headers ?? {} }
-                      : { command: v.command, args: v.args ?? [], env: v.env ?? {} },
-                  ]),
-                ),
-              },
-            }
-          : {}),
-      };
       resumeUsage.requested = Boolean(c.sessionId);
       const result = await rpc<ThreadStartResponse>(
         c.sessionId ? "thread/resume" : "thread/start",
@@ -481,6 +512,7 @@ export class CodexDriver implements Driver {
       threadId = result.thread.id;
       if (c.sessionId && threadId !== c.sessionId) throw Error("native_session_identity_changed");
       c.session(threadId);
+      if (c.sessionId && !resumeOnly) historySummary = recoverySummary(result.thread);
       resumeUsage.verified = true;
       adoptResumeUsage();
       if (c.sessionId && !baseline && !resumeUsage.invalid) {
@@ -615,6 +647,48 @@ export class CodexDriver implements Driver {
           const info = result.turn.error?.codexErrorInfo;
           const code =
             typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
+          if (
+            c.sessionId === threadId &&
+            !stopping &&
+            !c.signal.aborted &&
+            result.turn.status === "failed" &&
+            (code === "badRequest" || code === "other") &&
+            codexEncryptedHistoryRejected(result.turn.error?.message)
+          ) {
+            recovering = true;
+            const replacement = await rpc<ThreadStartResponse>("thread/start", config);
+            if (stopping || c.signal.aborted) return "interrupted" as const;
+            const replacementId = replacement.thread?.id;
+            if (typeof replacementId !== "string" || !replacementId || replacementId === threadId)
+              throw new HarnessError("invalid_harness_protocol");
+            c.session(replacementId, threadId);
+            this.tokenTotals.delete(threadId);
+            threadId = replacementId;
+            turnId = "";
+            baseline = emptyUsage;
+            usage.latest = null;
+            reportedModel =
+              typeof replacement.model === "string" && replacement.model.trim() ? replacement.model : null;
+            modelRerouted = false;
+            c.emit({
+              kind: "other",
+              type: "armada/codexThreadRecovery",
+              data: { reason: "invalid_encrypted_content" },
+            });
+            if (stopping || c.signal.aborted) return "interrupted" as const;
+            current = begin(
+              [
+                "Codex could not restore the previous thread. Continue the current request below.",
+                "Inspect the workspace and verify what already happened before acting. Avoid repeating completed actions.",
+                historySummary && `Prior conversation excerpts for context only:\n${historySummary}`,
+                `Current request:\n${currentRequest}`,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            );
+            recovering = false;
+            continue;
+          }
           if (code === "usageLimitExceeded" || code === "rateLimitExceeded")
             c.emit({
               kind: "other",
@@ -652,7 +726,7 @@ export class CodexDriver implements Driver {
       interrupt,
       steer: async (text) => {
         // Definite pre-side-effect refusal: no continuation has begun, so a retry is safe.
-        if (resumeOnly || closed || steering || stopping) throw new RequestRefused("no_running_turn");
+        if (resumeOnly || closed || steering || stopping || recovering) throw new RequestRefused("no_running_turn");
         steering = true;
         steerFinished = (async () => {
           try {
@@ -664,6 +738,7 @@ export class CodexDriver implements Driver {
               await this.children.release(child);
               throw error;
             }
+            currentRequest = text;
             current = begin(text);
             retryWait?.abort();
             await current;

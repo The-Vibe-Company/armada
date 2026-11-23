@@ -105,7 +105,7 @@ export interface DriverContext {
   sessionId?: string;
   signal: AbortSignal;
   emit(event: DriverEvent): void;
-  session(id: string): void;
+  session(id: string, previousId?: string): void;
   mcp?: McpConfiguration;
 }
 export interface Turn {

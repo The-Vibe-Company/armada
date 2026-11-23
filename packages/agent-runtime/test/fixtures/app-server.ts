@@ -107,6 +107,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (m.method === "thread/start" || m.method === "thread/resume") {
     if (process.env.OPENAI_API_KEY && !loggedIn) throw Error("API-key login must precede thread operations");
     if (m.method === "thread/resume") thread = m.params.threadId;
+    if (process.env.ARMADA_HYDRATION_FAILURE && m.method === "thread/start") thread = "recovered-thread";
     if (process.env.ARMADA_READABLE_INSPECTION)
       writeFileSync(
         process.env.ARMADA_READABLE_INSPECTION,
@@ -167,7 +168,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       baseline();
     }
     reply({
-      thread: { id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread },
+      thread: {
+        id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread,
+        turns:
+          process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread"
+            ? [
+                {
+                  status: "completed",
+                  items: [
+                    { type: "agentMessage", text: "The migration is already committed." },
+                    { type: "reasoning", content: ["opaque-history-must-stay-behind"] },
+                  ],
+                },
+              ]
+            : [],
+      },
       model:
         process.env.ARMADA_NATIVE_RESUME_MISMATCH === "model"
           ? "replacement-model"
@@ -181,6 +196,30 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     turn++;
     if (params.threadId !== thread || params.approvalPolicy !== "never") throw Error("incorrect turn parameters");
     reply({ turn: { id: `turn-${turn}`, status: "inProgress" } });
+    if (process.env.ARMADA_HYDRATION_FAILURE && thread === "recovered-thread") {
+      notify("turn/completed", {
+        threadId: thread,
+        turn: { id: `turn-${turn}`, status: "completed", items: [], error: null },
+      });
+      return;
+    }
+    if (process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread") {
+      notify("turn/completed", {
+        threadId: thread,
+        turn: {
+          id: `turn-${turn}`,
+          status: "failed",
+          items: [],
+          error: {
+            message:
+              "The encrypted content for item sample could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed.",
+            codexErrorInfo: "badRequest",
+            additionalDetails: null,
+          },
+        },
+      });
+      return;
+    }
     if (process.env.ARMADA_EXTERNAL_AUTH) {
       if (!loggedIn) throw Error("missing external login");
       send({
