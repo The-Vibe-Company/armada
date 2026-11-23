@@ -142,6 +142,7 @@ async function fixture() {
     vault,
     definition,
     variableId,
+    credential,
     goldenId,
     boat,
     provider,
@@ -564,10 +565,13 @@ test("Template REST validates authoring and launch requests", async () => {
         ["model_account_refused", 1, "revoked"],
       ] as const) {
         await f.db.query("delete from credentials where kind='anthropic'");
-        for (let i = 0; i < accounts; i++)
+        if (accounts > 0)
           await f.db.query(
-            "insert into credentials(scope,owner_id,kind,value_enc,status) select 'user',$1,'anthropic',value_enc,$2 from credentials where kind='openai' limit 1",
-            [f.people.owner, status],
+            `insert into credentials(scope,owner_id,kind,value_enc,status)
+             select 'user',$1,'anthropic',value_enc,$2
+             from credentials cross join generate_series(1,$3::integer)
+             where id=$4 and version=1`,
+            [f.people.owner, status, accounts, f.credential],
           );
         warning.mockClear();
         const refused = await api("launch", { org: f.people.org, id: claude.id, requestKey: reason });

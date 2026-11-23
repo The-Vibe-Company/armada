@@ -1,8 +1,25 @@
-import { isSandboxPlacementProvider } from "@armada/core";
+import { isSandboxPlacementProvider, isSandboxProvider, type SandboxProviderId } from "@armada/core";
+import { capabilities } from "@armada/core/server";
+
+export const runtimeBridgeProfiles = {
+  boat: {
+    placement: "boat-runtime",
+    launchDefault: "boatRuntimeDefault",
+    endpointDefault: "boatEndpointRuntime",
+    hostPorts: true,
+  },
+  modal: { placement: "dialout", launchDefault: "modalRuntimeDefault", endpointDefault: undefined, hostPorts: false },
+} as const satisfies Record<SandboxProviderId, object>;
 
 export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
   return target.runtimeTransport === "dialout";
 }
+
+export const usesHostLaunch = (provider: unknown) =>
+  isSandboxPlacementProvider(provider) && capabilities(provider).launchSource === "host";
+
+export const retainsDiskOnStop = (provider: unknown) =>
+  isSandboxPlacementProvider(provider) && capabilities(provider).stopRetention === "disk";
 
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
@@ -12,8 +29,10 @@ export function runtimeBridgeTarget(target: {
   runtimeTransport?: string;
 }): boolean {
   return (
-    ((target.provider === "boat" && Boolean(target.boatRuntime)) ||
-      (target.provider === "modal" && modalDialoutPlacement(target))) &&
+    isSandboxProvider(target.provider) &&
+    (runtimeBridgeProfiles[target.provider].placement === "dialout"
+      ? modalDialoutPlacement(target)
+      : Boolean(target.boatRuntime)) &&
     runtimeHarnessSupported(target.provider, target.harness)
   );
 }

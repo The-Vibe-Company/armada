@@ -16,7 +16,23 @@ function records(jsonl: string, strict = false) {
 
 function correlationKeys(smoke: string) {
   const keys = new Set<string>();
+  const failedSetupCases = new Set<number>();
   for (const record of records(smoke)) {
+    if (typeof record.case === "number") {
+      if (
+        record.step === "readiness_diagnostic" &&
+        record.readinessStep === "scoped_parent_ready" &&
+        record.code === "modal_launch_setup_failed"
+      )
+        failedSetupCases.add(record.case);
+      if (
+        record.step === "scoped_cleanup_summary" &&
+        failedSetupCases.delete(record.case) &&
+        typeof record.parentId === "string" &&
+        uuid.test(record.parentId)
+      )
+        keys.add(`sandboxId:${record.parentId}`);
+    }
     if (typeof record.step !== "string" || !diagnosticSteps.has(record.step)) continue;
     if (typeof record.operationId === "string" && uuid.test(record.operationId))
       keys.add(`operationId:${record.operationId}`);
@@ -42,7 +58,7 @@ export function scopedEvidence(smoke: string, logs: string) {
         return typeof value === "string" && uuid.test(value) ? [[field, value]] : [];
       }),
     );
-    const matches = (["operationId", "requestId"] as const)
+    const matches = (["operationId", "requestId", "sandboxId"] as const)
       .map((field) => `${field}:${ids[field]}`)
       .filter((key) => keys.has(key));
     if (!matches.length) return [];
@@ -72,6 +88,7 @@ export function scopedEvidence(smoke: string, logs: string) {
     diagnostics,
     unmatchedOperationIds: [...unmatched].filter((key) => key.startsWith("operationId:")).map((key) => key.slice(12)),
     unmatchedRequestIds: [...unmatched].filter((key) => key.startsWith("requestId:")).map((key) => key.slice(10)),
+    unmatchedSandboxIds: [...unmatched].filter((key) => key.startsWith("sandboxId:")).map((key) => key.slice(10)),
   };
 }
 

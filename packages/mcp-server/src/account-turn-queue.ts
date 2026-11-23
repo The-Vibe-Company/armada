@@ -28,6 +28,7 @@ import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-
 import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
@@ -199,11 +200,13 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       assertModalLaunchSetup(target.launch_setup_state);
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
-      if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
+      const hostLaunch = usesHostLaunch(target.provider);
+      const enrolled = target.boat_runtime || target.runtime_transport === "dialout" || hostLaunch;
+      if (hostLaunch && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
         throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
       if (!input.prompt.trim()) throw new VaultError("invalid", "The prompt is empty.");
       if (!target.credential_id) return null;
-      if (target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") {
+      if (enrolled) {
         if (
           (input.model !== undefined && (target.provider !== "boat" || input.model !== target.model)) ||
           (input.reasoning_effort !== undefined &&
@@ -212,10 +215,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
         if (Buffer.byteLength(input.prompt) > 262144) throw new VaultError("invalid", "The prompt is too large.");
       }
-      if (
-        !(target.boat_runtime || target.runtime_transport === "dialout" || target.provider === "docker") &&
-        (input.model !== undefined || input.reasoning_effort !== undefined)
-      ) {
+      if (!enrolled && (input.model !== undefined || input.reasoning_effort !== undefined)) {
         resolveModelChoice(
           target.harness,
           { model: input.model, reasoningEffort: input.reasoning_effort },

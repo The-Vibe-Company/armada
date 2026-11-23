@@ -45,9 +45,29 @@ test("joins scoped smoke failures to candidate operator diagnostics without copy
     ],
     unmatchedOperationIds: [missingId],
     unmatchedRequestIds: [],
+    unmatchedSandboxIds: [],
   });
 });
 
 test("malformed candidate logs fail collection instead of reporting missing matches", () => {
   expect(() => scopedEvidence("", "{malformed")).toThrow("Invalid candidate log record.");
+});
+
+test("collects Modal parent setup failures before any scoped tool call", () => {
+  const parentId = "00000000-0000-4000-8000-000000000001";
+  const unrelatedId = "00000000-0000-4000-8000-000000000002";
+  const jsonl = (rows: Record<string, unknown>[]) => rows.map((row) => JSON.stringify(row)).join("\n");
+  const smoke = jsonl([
+    { case: 0, step: "readiness_diagnostic", readinessStep: "scoped_parent_ready", code: "modal_launch_setup_failed" },
+    { case: 1, step: "scoped_cleanup_summary", provider: "modal", parentId: unrelatedId },
+    { case: 0, step: "scoped_cleanup_summary", provider: "modal", parentId, pass: true },
+    { case: 0, step: "scoped_cleanup_summary", provider: "modal", parentId: unrelatedId },
+  ]);
+  const phase = "modal.launch_setup.workspace";
+  const logs = jsonl([
+    { event: "operator_failure", phase, sandboxId: parentId, message: "withheld" },
+    { event: "operator_failure", phase, sandboxId: unrelatedId },
+  ]);
+  expect(scopedEvidenceFilter(smoke)).toBe(`@event:operator_failure AND (@sandboxId:${parentId})`);
+  expect(scopedEvidence(smoke, logs).diagnostics).toEqual([{ phase, sandboxId: parentId }]);
 });

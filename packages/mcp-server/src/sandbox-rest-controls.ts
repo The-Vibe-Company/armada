@@ -15,6 +15,7 @@ import type { ControlOptions } from "./control.ts";
 import { selectedCaller } from "./control-caller.ts";
 import { optional } from "./control-input.ts";
 import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { withNativeDrainReason } from "./native-drain-failure.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -197,9 +198,15 @@ export async function deleteSandboxWithActivity(
   if (!found) throw new ToolError("not_found", `No sandbox with id '${id}' that you can see.`);
   if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
   if (nativeDrain && !found.providerSandboxId)
-    throw new ToolError("conflict", "Native drain requires an exact provider placement.");
+    throw withNativeDrainReason(
+      new ToolError("conflict", "Native drain requires an exact provider placement."),
+      "not_eligible",
+    );
   if (nativeDrain && found.stopRequestedAt)
-    throw new ToolError("sandbox_not_ready", "Native drain is waiting for the stop to settle.");
+    throw withNativeDrainReason(
+      new ToolError("sandbox_not_ready", "Native drain is waiting for the stop to settle."),
+      "stop_pending",
+    );
   const admission: ServerSandboxPatch = {
     deleteRequested: true,
     ...(nativeDrain
@@ -273,11 +280,12 @@ export async function deleteSandboxWithActivity(
               activityToken,
             });
           }
-          if (!["deleted", "completed"].includes(receipt.status))
-            throw new ToolError(
-              "conflict",
-              "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-            );
+          if (!["deleted", "completed"].includes(receipt.status)) {
+            const message =
+              "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.";
+            const error = new ToolError("conflict", message);
+            throw nativeDrain ? withNativeDrainReason(error, "deletion_pending") : error;
+          }
         } catch (error) {
           if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
         }
