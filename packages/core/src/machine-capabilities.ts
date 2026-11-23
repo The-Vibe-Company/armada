@@ -12,6 +12,7 @@ export interface MachineCapabilities {
   readonly humanSsh: boolean;
   readonly resourceSampler: boolean;
   readonly sizeResources: "instance-type" | "explicit-limits" | "none";
+  readonly idleStop: boolean;
   readonly resumeAfterStop: boolean;
   readonly sizes: readonly MachineSize[];
 }
@@ -27,6 +28,7 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     humanSsh: true,
     resourceSampler: true,
     sizeResources: "instance-type",
+    idleStop: true,
     resumeAfterStop: true,
     sizes: catalogSizes,
   }),
@@ -39,6 +41,7 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     humanSsh: true,
     resourceSampler: true,
     sizeResources: "explicit-limits",
+    idleStop: true,
     resumeAfterStop: true,
     sizes: catalogSizes,
   }),
@@ -51,6 +54,7 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     humanSsh: false,
     resourceSampler: false,
     sizeResources: "none",
+    idleStop: false,
     resumeAfterStop: false,
     sizes: Object.freeze([]),
   }),

@@ -1,6 +1,7 @@
 "use client";
 
 import type { SandboxPlacementProviderId } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, CircleAlertIcon, Loader2Icon, LockIcon } from "lucide-react";
 import Link from "next/link";
 import { createContext, memo, type ReactNode, useContext, useEffect, useRef, useState } from "react";
@@ -301,12 +302,14 @@ export function ComposerStop({
         options={options}
         onChange={setTtl}
       >
-        <p className="border-t p-2 text-sm text-muted-foreground">
-          {idleDelaySeconds === undefined
-            ? "The machine pauses without activity"
-            : `The machine pauses after ${Math.ceil(idleDelaySeconds / 60)} minutes without activity`}{" "}
-          and wakes on your next message, until the time is up.
-        </p>
+        {capabilities(provider).idleStop && (
+          <p className="border-t p-2 text-sm text-muted-foreground">
+            {idleDelaySeconds === undefined
+              ? "The machine pauses without activity"
+              : `The machine pauses after ${Math.ceil(idleDelaySeconds / 60)} minutes without activity`}{" "}
+            and wakes on your next message, until the time is up.
+          </p>
+        )}
       </ChoiceChip>
     </>
   );

@@ -1,6 +1,8 @@
 # Runtime idle pause (first delivery of #1562)
 
-The server checks enrolled Boat and Modal runtimes and eligible Docker hosts once per minute. The default
+The server checks enrolled Boat and Modal runtimes for inactivity once per minute.
+Docker sandboxes keep running during inactivity. Verified merged work can still trigger a
+retained stop on all three providers when stop after merge is enabled. The default
 quiet period is ten minutes, configured globally with
 `ARMADA_RUNTIME_IDLE_MINUTES` (positive whole milliseconds after conversion).
 There is no per-user setting. Native Boat and Modal use the leased lifecycle worker and the same delay, with their own quiescence evidence.

@@ -1,4 +1,5 @@
-import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/server";
+import { capabilities } from "@armada/core/machine-capabilities";
+import { type AgentEvent, isFinalPromptStatus, isSandboxPlacementProvider, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
@@ -50,8 +51,8 @@ export function createRuntimeIdle(
     existing: { request_id: string | null; merge_stop: boolean | null },
   ) {
     const target = (
-      await tx.query<{ task_prompt_id: string | null; merge_proof: boolean }>(
-        `select task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
+      await tx.query<{ provider: string; task_prompt_id: string | null; merge_proof: boolean }>(
+        `select provider, task_prompt_id, ${mergedWorkProof("s")} as merge_proof from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
         [id, generation],
       )
     ).rows[0];
@@ -59,6 +60,8 @@ export function createRuntimeIdle(
     // retains its original admission policy on retry.
     const mergeStop = existing.request_id === null ? target?.merge_proof === true : existing.merge_stop === true;
     if (!target?.task_prompt_id) throw Error("No settled task identity.");
+    if (!mergeStop && (!isSandboxPlacementProvider(target.provider) || !capabilities(target.provider).idleStop))
+      throw Error("Machine does not stop for inactivity.");
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
