@@ -99,11 +99,18 @@ lifecycle workers before issuing strict stops. Prepare the checkout with
 `bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
 `ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
 `ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
-Run `bun scripts/ops/drain-native.ts --provider boat`.
+Run `bun scripts/ops/drain-native.ts --provider boat` to require verified
+preservation. For the owner-approved drain of native Boat rows without a
+preservation receipt, run
+`bun scripts/ops/drain-native.ts --provider boat --allow-unpreserved-boat`.
+The opt-in can discard unpushed work and reports confirmed deletions without
+receipts in the aggregate `deletedWithoutProof` count. The same authorization,
+stop, placement, and provider confirmation checks apply.
+[Owner decision](https://github.com/The-Vibe-Company/armada/issues/2742#issuecomment-7096183771)
 
 The command reports eligible running rows as incomplete while the lifecycle worker
-verifies work preservation and requests a retained stop. Rerun after the stop
-settles to delete through the recovery handoff. A nonzero failed count returns a
+verifies work preservation and requests a retained stop. The opt-in requests an ordinary stop if the row has no receipt. Rerun after
+the stop settles. Rows with valid archived proof use the recovery handoff. A nonzero failed count returns a
 failing exit status. A complete inventory rerun reports zero candidates.
 
 ### Coordinator ledger

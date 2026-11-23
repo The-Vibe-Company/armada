@@ -5,7 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
-import { configureNativeDrain } from "../src/native-drain.ts";
+import { configureNativeDrain, createNativeDrainRemoval } from "../src/native-drain.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
@@ -990,6 +990,43 @@ async function seedNativeDrainReceipt(
   }
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
+
+test("Boat drain without a preservation receipt requires opt-in through provider confirmation", async () => {
+  const { db, people, sharedGoldenId } = sharedDatabase();
+  const sandboxId = crypto.randomUUID();
+  const placement = `bx_${sandboxId}`;
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,stopped_at)
+     values($1,$2,$3,$4,'boat',$5,'claude','stopped',now())`,
+    [sandboxId, sharedGoldenId, people.org, people.owner, placement],
+  );
+  const remove = mock(async () => ({ status: "pending" as const, operationId: "boat-deletion" }));
+  const observe = mock(async () => ({ status: "completed" as const }));
+  const providers = {
+    resolve: async () => ({ ...fakeBoat().provider, delete: remove, observeSandboxDeletion: observe }),
+  };
+  const sql = bunLikeSql(db);
+  const access = { beforeNativeDrainDelete: async () => {} };
+  const row = { id: sandboxId, org_id: people.org, role: "member" as const };
+  const drain = (optIn: boolean) => createNativeDrainRemoval(sql, "boat", people.owner, access, providers, optIn)(row);
+
+  await expect(drain(false)).rejects.toThrow("work preservation could not be verified");
+  expect(remove).not.toHaveBeenCalled();
+  await expect(drain(true)).rejects.toThrow("Provider deletion is pending");
+  expect(remove).toHaveBeenCalledWith({ sandboxId: placement, generation: 2 });
+  await db.query("update sandboxes set activity_until='-infinity' where id=$1", [sandboxId]);
+  await expect(drain(false)).rejects.toThrow("requires verified work preservation");
+  await expect(drain(true)).resolves.toBe("without-proof");
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledWith({
+    sandboxId: placement,
+    generation: 3,
+    operationId: "boat-deletion",
+    signal: expect.any(AbortSignal),
+  });
+  const { rows } = await db.query("select status from sandboxes where id=$1", [sandboxId]);
+  expect(rows).toEqual([{ status: "deleted" }]);
+});
 
 test.each(["Boat unclaimed", "Boat acknowledged"] as const)(
   "%s drain refuses replay after losing its detached archive",

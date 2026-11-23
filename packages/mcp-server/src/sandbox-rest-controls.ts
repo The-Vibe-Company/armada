@@ -187,9 +187,10 @@ export async function deleteSandboxWithActivity(
     ): Promise<void>;
   },
   id: string,
-  mode?: "native-drain",
+  mode?: "native-drain" | "native-drain-allow-unpreserved",
 ) {
-  const nativeDrain = mode === "native-drain";
+  const nativeDrain = mode !== undefined;
+  const allowUnpreservedBoat = mode === "native-drain-allow-unpreserved";
   if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
   await sandboxes.assertDeletionAllowed(id);
   const found = await sandboxes.get(id);
@@ -206,6 +207,7 @@ export async function deleteSandboxWithActivity(
           nativeDrainAdmission: {
             provider: found.provider,
             placement: found.providerSandboxId,
+            allowUnpreservedBoat,
           },
         }
       : {}),
@@ -232,23 +234,13 @@ export async function deleteSandboxWithActivity(
       const inspect = async (action: "inspect" | "claim") => {
         if (!dispatch || generation === undefined)
           throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
-        return dispatch(id, target.sandboxId, generation, activityToken, action);
+        return dispatch(id, target.sandboxId, generation, activityToken, action, allowUnpreservedBoat);
       };
       const prepare = providers.beforeNativeDrainDelete;
       const evidence = nativeDrain && prepare ? await inspect("inspect") : undefined;
       signal.throwIfAborted();
-      const patch: ServerSandboxPatch = {
-        deleteCompleted: true,
-        ...(nativeDrain ? { nativeDrain: true } : {}),
-      };
-      const settled = {
-        result: {
-          id: found.id,
-          status: "deleted" as const,
-          ...(nativeDrain ? { drainProof: "with-proof" as const } : {}),
-        },
-        patch,
-      };
+      let drainProof: ServerSandboxPatch["nativeDrain"];
+      if (evidence) drainProof = evidence.preserved ? "with-proof" : "without-proof";
       if (provider) {
         try {
           let operationId = evidence?.operation_id ?? null;
@@ -260,6 +252,7 @@ export async function deleteSandboxWithActivity(
               }
               const claimed = await inspect("claim");
               operationId = claimed.operation_id;
+              drainProof = claimed.preserved ? "with-proof" : "without-proof";
             }
             signal.throwIfAborted();
           }
@@ -289,7 +282,10 @@ export async function deleteSandboxWithActivity(
           if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
         }
       }
-      return settled;
+      return {
+        result: { id: found.id, status: "deleted" as const, ...(drainProof ? { drainProof } : {}) },
+        patch: { deleteCompleted: true, ...(drainProof ? { nativeDrain: drainProof } : {}) },
+      };
     },
     nativeDrain ? undefined : { failurePatch },
   );
