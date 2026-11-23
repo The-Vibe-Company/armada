@@ -1,3 +1,4 @@
+import type { ExecResult } from "./provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 
 export const SNAPSHOT_BASELINE_VERSION = 1;
@@ -30,6 +31,50 @@ const packages = [
   "zlib1g-dev",
 ] as const;
 
+const installFailure = "ARMADA_BASELINE_INSTALL_FAILED";
+
+function installSteps(apt: string, reportStep = false) {
+  return [
+    ["apt-get update", "apt-get update"],
+    ["apt-get install", `apt-get install -y --no-install-recommends ${apt}`],
+    ["mktemp -d", "work=$(mktemp -d)"],
+    [null, "trap 'rm -rf -- \"$work\"' EXIT"],
+    ["cd to the temporary directory", 'cd "$work"'],
+    [
+      "select Node archive for uname -m",
+      `case "$(uname -m)" in x86_64) arch=x64; node_sha=88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a ;; aarch64|arm64) arch=arm64; node_sha=e9e1930fd321a470e29bb68f30318bf58e3ecb4acb4f1533fb19c58328a091fe ;; *) echo "Snapshot baseline: unsupported Node architecture" >&2; ${reportStep ? "false" : "exit 1"} ;; esac`,
+    ],
+    [
+      "curl (Node archive)",
+      `curl -fsSL --retry 3 -o node.tar.xz "https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-$arch.tar.xz"`,
+    ],
+    ["sha256sum -c (Node archive)", `printf '%s  node.tar.xz\\n' "$node_sha" | sha256sum -c -`],
+    ["tar (Node archive)", "tar -xJf node.tar.xz --strip-components=1 -C /usr/local"],
+    ["npm install (Bun)", `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}`],
+    ["npm cache clean", "npm cache clean --force"],
+    ["install (Bun directory)", "install -d -m 755 /opt/armada/runtime-bun"],
+    [
+      "install (Bun executable)",
+      "install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun",
+    ],
+    [
+      "curl (Git archive)",
+      `curl -fsSL --retry 3 -o git.tar.xz 'https://www.kernel.org/pub/software/scm/git/git-${GIT}.tar.xz'`,
+    ],
+    [
+      "sha256sum -c (Git archive)",
+      `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -`,
+    ],
+    ["tar (Git archive)", "tar -xJf git.tar.xz"],
+    ["cd to the Git source directory", `cd git-${GIT}`],
+    [
+      "make install (Git)",
+      "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
+    ],
+    ["rm (apt lists)", "rm -rf /var/lib/apt/lists/*"],
+  ] satisfies [string | null, string][];
+}
+
 export function snapshotBaselineInstall(
   locks: Partial<Record<(typeof packages)[number], string>> = {},
   extraPackages: readonly string[] = [],
@@ -37,23 +82,34 @@ export function snapshotBaselineInstall(
   const apt = [...packages.map((name) => (locks[name] ? `${name}=${locks[name]}` : name)), ...extraPackages]
     .map(shellQuote)
     .join(" ");
+  return renderInstall(apt, false);
+}
+
+export function snapshotBaselineBuilderInstall() {
+  return renderInstall(packages.map(shellQuote).join(" "), true);
+}
+
+function renderInstall(apt: string, reportStep: boolean) {
   return [
     "set -eu",
     "export PATH=/usr/local/bin:/usr/bin:/bin DEBIAN_FRONTEND=noninteractive",
-    "apt-get update",
-    `apt-get install -y --no-install-recommends ${apt}`,
-    'work=$(mktemp -d); trap \'rm -rf -- "$work"\' EXIT; cd "$work"',
-    'case "$(uname -m)" in x86_64) arch=x64; node_sha=88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a ;; aarch64|arm64) arch=arm64; node_sha=e9e1930fd321a470e29bb68f30318bf58e3ecb4acb4f1533fb19c58328a091fe ;; *) echo "Snapshot baseline: unsupported Node architecture" >&2; exit 1 ;; esac',
-    `curl -fsSL --retry 3 -o node.tar.xz "https://nodejs.org/dist/v${NODE}/node-v${NODE}-linux-$arch.tar.xz"`,
-    `printf '%s  node.tar.xz\\n' "$node_sha" | sha256sum -c -; tar -xJf node.tar.xz --strip-components=1 -C /usr/local`,
-    `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}; npm cache clean --force`,
-    "install -d -m 755 /opt/armada/runtime-bun",
-    "install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun",
-    `curl -fsSL --retry 3 -o git.tar.xz 'https://www.kernel.org/pub/software/scm/git/git-${GIT}.tar.xz'`,
-    `printf '%s  git.tar.xz\\n' 3cd8fee86f69a949cb610fee8cd9264e6873d07fa58411f6060b3d62729ed7c5 | sha256sum -c -; tar -xJf git.tar.xz; cd git-${GIT}`,
-    "make -s -j2 prefix=/usr NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PYTHON=YesPlease INSTALL_SYMLINKS=YesPlease install",
-    "rm -rf /var/lib/apt/lists/*",
+    ...installSteps(apt, reportStep).map(([step, command]) =>
+      reportStep && step !== null
+        ? `${command} || { status=$?; echo ${shellQuote(`${installFailure} ${step}`)} >&2; exit "$status"; }`
+        : command,
+    ),
   ].join("; ");
+}
+
+export function snapshotBaselineInstallFailure(result: ExecResult) {
+  if (result.detached) return "Snapshot baseline installation returned a detached command.";
+  if (result.timedOut) return "Snapshot baseline installation timed out.";
+  const steps = installSteps("").map(([step]) => step);
+  const marker = result.stderr.split("\n").findLast((line) => line.startsWith(`${installFailure} `));
+  const step = marker?.slice(installFailure.length + 1);
+  const command = step && steps.includes(step) ? step : "builder baseline shell (bash or sudo -n bash)";
+  const status = Number.isInteger(result.exitCode) ? `exited ${result.exitCode}` : "returned no exit code";
+  return `Snapshot baseline installation failed: ${command} ${status}.`;
 }
 
 const checks = {
