@@ -15,10 +15,12 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  LAUNCH_SETUP_PENDING,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   TURN_FIFO_ELIGIBLE,
+  TURN_LAUNCH_WAITING,
   TURN_RECOVERY_ELIGIBLE,
   UNCERTAIN_DISPATCH_MESSAGE,
   UNSETTLED_TASK,
@@ -120,7 +122,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         has_slot: boolean;
       }>(
         `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
-          (s.reconcile_lease_until>now() or s.activity_lease_id is not null
+          (${TURN_LAUNCH_WAITING} or s.reconcile_lease_until>now() or s.activity_lease_id is not null
             or (${UNSETTLED_TASK})
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
@@ -174,7 +176,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         }>(
           `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
                   s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
-                  case when s.provider='modal' and not $3::boolean then (
+                  case when not $3::boolean then (
                     select j.state from public.jobs j where j.idem_key=${modalLaunchSetupKeySql()}
                   ) end as launch_setup_state
            from public.sandboxes s
@@ -197,7 +199,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
-      assertModalLaunchSetup(target.launch_setup_state);
+      if (target.launch_setup_state === "failed") assertModalLaunchSetup(target.launch_setup_state);
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
       const hostLaunch = usesHostLaunch(target.provider);
@@ -271,9 +273,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
-          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
+          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
-           and status in ('ready','running','stopped') for update`,
+           and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_SETUP_PENDING})) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
@@ -469,6 +471,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
              where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
+           and (q.state<>'queued' or not ${TURN_LAUNCH_WAITING})
            and ${TURN_FIFO_ELIGIBLE}
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],

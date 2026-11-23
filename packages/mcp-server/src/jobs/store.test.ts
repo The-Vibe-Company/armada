@@ -2152,8 +2152,6 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
         { userId: people.owner, orgs: [{ orgId: people.org, role: "member" }], via: "service" },
         { id, prompt: "Follow up" },
       );
-    if (scenario === "acknowledgement lost")
-      await expect(sendFollowUp()).rejects.toThrow("Modal launch setup is still in progress.");
     const firstTurn = (wait: () => Promise<void>) =>
       createJobsRunner(
         createJobsStore(sql, launchEncryptionKey),

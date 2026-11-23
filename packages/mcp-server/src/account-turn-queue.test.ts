@@ -50,7 +50,7 @@ beforeAll(async () => {
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
-      conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
+      provider_sandbox_id text,conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,stop_generation bigint not null default 0,reconcile_lease_until timestamptz,
       application_secret_tainted boolean not null default false,native_drain_pending boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
@@ -202,6 +202,53 @@ function sharedDispatcher(send: DispatchTurn) {
     await runner.drain();
   };
 }
+
+test("a send during launch waits for setup and the initial turn before dispatch", async () => {
+  const id = ids[0]!;
+  const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query("update sandboxes set status='starting',provider='modal',runtime_transport='dialout' where id=$1", [
+    id,
+  ]);
+  const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
+    orgId: org,
+    maxAttempts: 3,
+  });
+  expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued", promptId: followup.request_id });
+  const sent: string[] = [];
+  const run = sharedDispatcher(async (_actor, input) => {
+    sent.push(input.prompt);
+    await sql.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [id, "runtime-turn"]);
+    return { promptId: "runtime-turn" };
+  });
+  await run();
+  expect(await queue.status(caller, id, followup.request_id)).toMatchObject({ failed: false });
+  expect(sent).toEqual([]);
+
+  await sql.query("update sandboxes set status='ready',provider_sandbox_id='machine' where id=$1", [id]);
+  await sql.query("insert into runtime_enrolments(sandbox_id,lifecycle_generation,runtime_hash) values($1,1,'bound')", [
+    id,
+  ]);
+  const initial = { id, request_id: setup, prompt: "initial instruction" };
+  expect(await queue.acceptInitialLaunch(caller, initial, "1", async () => true)).toBe(true);
+  await sql.query("update jobs set state='done' where id=$1", [setup]);
+  // Make the earlier follow-up eligible for another job claim. It must yield even though it has the older sequence.
+  await sql.query(
+    "update jobs set run_after='-infinity' where kind='turn_dispatch' and attempts=0 and run_after>now()",
+  );
+  await run();
+  expect(sent).toEqual([]);
+  await run();
+  expect(sent).toEqual([initial.prompt]);
+
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt]);
+  await sql.query("insert into runtime_idle_turns values($1,'runtime-turn',true)", [id]);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt, followup.prompt]);
+  expect(await queue.status(caller, id, followup.request_id)).toEqual({ nativePromptId: "runtime-turn" });
+});
 
 test.each(["provider replies", "provider refuses"])(
   "an expired shared claim cannot settle when the %s",
