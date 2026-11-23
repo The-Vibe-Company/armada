@@ -2653,10 +2653,11 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
     statusMessage: "Modal launch setup is still in progress.",
   });
   expect(await callSharedTool(context, "status", { id, recorded: true })).toMatchObject({ status: "starting" });
-  const pending = { sandbox: { id, status: "starting" } };
   const { input } = admission;
-  const actor = { orgId: input.orgId, userId: input.ownerId };
-  expect(await replayModalLaunch(f.sql, actor, input.sandbox.goldenId, input.request!)).toEqual(pending);
+  const actor = { orgId: input.orgId, userId: input.ownerId, role: "member" as const };
+  expect(await replayModalLaunch(f.sql, actor, input.sandbox.goldenId, input.request!)).toEqual({
+    sandbox: { id, status: "starting" },
+  });
   expect(await data.sandboxes.list({ limit: 10, statuses: ["ready"] })).toMatchObject({ total: 0 });
   expect(await data.sandboxes.list({ limit: 10, statuses: ["starting"] })).toMatchObject({
     total: 1,
