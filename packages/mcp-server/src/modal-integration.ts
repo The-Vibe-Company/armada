@@ -369,8 +369,7 @@ export function createModalIntegration(options: {
     };
   };
   async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
-    if (!HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding || !target.modal)
-      throw new VaultError("invalid", "Expected Modal binding.");
+    if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
     const tokens = await modalTokensFor(target, caller);
     const { provider } = await modalProviderFor(
       // The resolver's scope label is not the structured machine Scope.

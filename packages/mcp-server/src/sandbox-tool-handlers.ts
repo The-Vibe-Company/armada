@@ -68,7 +68,7 @@ export function configureTools(
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
       );
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    if (!allowUnbound && HOST_CAPABILITIES[found.provider].requiresPinnedGoldenBinding && !found.credentialId)
+    if (!allowUnbound && HOST_CAPABILITIES[found.provider]?.requiresPinnedGoldenBinding && !found.credentialId)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,
@@ -415,7 +415,7 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const fencedExec = !enrolled && !HOST_CAPABILITIES[found.provider].requiresPinnedGoldenBinding;
+    const fencedExec = !enrolled && found.provider === "boat";
     const managedNative =
       !enrolled &&
       (await context.launchCredentials.assertExec?.(

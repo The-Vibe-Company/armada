@@ -93,7 +93,7 @@ export function createToolRegistration(
           if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
           // WARNING: Retained legacy Modal workspaces require explicit account binding before any control.
           if (
-            HOST_CAPABILITIES[found.provider].requiresPinnedGoldenBinding &&
+            HOST_CAPABILITIES[found.provider]?.requiresPinnedGoldenBinding &&
             !found.credentialId &&
             !sandboxControlRefusal(found, context.now(), "send")
           )
