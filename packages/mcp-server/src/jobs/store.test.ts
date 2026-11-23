@@ -40,6 +40,7 @@ import {
   MODAL_INITIAL_TURN,
   type ModalLaunchAdmission,
   modalLaunchTicketGuard,
+  replayModalLaunch,
   runModalLaunch,
 } from "./modal-launch.ts";
 import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
@@ -1028,10 +1029,6 @@ test("a stale Modal snapshot cannot leave a launch receipt behind", async () => 
 test("Modal keyed replay returns the current status and refuses a changed request", async () => {
   const { sql, db, input } = await modalAdmissionFixture();
   const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);
-  await db.query("update sandboxes set status='ready' where id=$1", [sandbox.id]);
-  expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual({
-    sandbox: { id: sandbox.id, status: "starting" },
-  });
   await db.query("update sandboxes set status='failed' where id=$1", [sandbox.id]);
   expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual({
     sandbox: { id: sandbox.id, status: "failed" },
@@ -2579,7 +2576,8 @@ test("REST and MCP read job-owned Modal logs from the runtime journal without a 
 });
 
 test("enrolled Modal launch jobs report and settle turns from the runtime journal", async () => {
-  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  const admission = await modalAdmissionFixture();
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
   const runner = makeRunner();
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
@@ -2655,6 +2653,10 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
     statusMessage: "Modal launch setup is still in progress.",
   });
   expect(await callSharedTool(context, "status", { id, recorded: true })).toMatchObject({ status: "starting" });
+  const pending = { sandbox: { id, status: "starting" } };
+  const { input } = admission;
+  const actor = { orgId: input.orgId, userId: input.ownerId };
+  expect(await replayModalLaunch(f.sql, actor, input.sandbox.goldenId, input.request!)).toEqual(pending);
   expect(await data.sandboxes.list({ limit: 10, statuses: ["ready"] })).toMatchObject({ total: 0 });
   expect(await data.sandboxes.list({ limit: 10, statuses: ["starting"] })).toMatchObject({
     total: 1,

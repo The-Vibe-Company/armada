@@ -723,6 +723,7 @@ describe("preservation checks", () => {
       "default_wrong_golden",
       "default_recovery_wrong_golden",
       "default_recovery_expired",
+      "default_recovery_setup_failed",
       "scoped_pair",
       "scoped_admission",
       "scoped_admission_wrong_account",
@@ -1023,10 +1024,7 @@ describe("preservation checks", () => {
               if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
               else expect(call.body).not.toHaveProperty("skipSkillDefaults");
             }
-            if (
-              fault === "default_policy" ||
-              (launches === 1 && (fault === "default_recovery_wrong_golden" || fault === "default_recovery_expired"))
-            ) {
+            if (fault === "default_policy" || (launches === 1 && fault.startsWith("default_recovery_"))) {
               expect(call.body.externalRef).toBe(call.body.idempotencyKey);
               recoveryKey = String(call.body.externalRef);
               recoverySandboxId = sandboxId;
@@ -1080,6 +1078,16 @@ describe("preservation checks", () => {
           if (call.path === "sandbox/stop") stopping = true;
           if (call.path === "sandbox/status" && call.body.id === recoverySandboxId && !statusReady && !stopping) {
             statusReady = true;
+            if (fault === "default_recovery_setup_failed")
+              return json({
+                id: sandboxId,
+                externalRef: recoveryKey,
+                status: "failed",
+                prompt: null,
+                settled: true,
+                statusMessage: "Modal launch setup failed.",
+                statusReason: "modal_initial_turn_workspace_refused",
+              });
             return json({ id: sandboxId, externalRef: recoveryKey, status: "starting", prompt: null, skills: [] });
           }
           if (
@@ -1251,7 +1259,16 @@ describe("preservation checks", () => {
             expect(launch).toEqual(
               Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 2_000 })),
             );
-          else
+          else if (fault === "default_recovery_setup_failed") {
+            expect(launch[0]).toMatchObject({ pass: false, code: "modal_launch_setup_failed" });
+            expect(fake.receipts()).toContainEqual(
+              expect.objectContaining({
+                step: "launch_setup_diagnostic",
+                sandboxId: recoverySandboxId,
+                reason: "modal_initial_turn_workspace_refused",
+              }),
+            );
+          } else
             expect(launch[0]).toMatchObject({
               pass: false,
               code: "outcome_unknown",

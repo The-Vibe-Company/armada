@@ -1456,10 +1456,20 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   prompt: unknown;
                   settled: boolean;
                   statusMessage: string | null;
+                  statusReason?: string | null;
                 }
               >("status", { id }, Math.min(5_000, remaining));
               if (status?.id !== id || status.externalRef !== requestKey) return;
-              if (modalSmokeSetupFailed(status)) fail("modal_launch_setup_failed");
+              if (modalSmokeSetupFailed(status)) {
+                io.out(
+                  JSON.stringify({
+                    step: "launch_setup_diagnostic",
+                    sandboxId: id,
+                    reason: modalSmokeSetupReason(status.statusReason),
+                  }),
+                );
+                fail("modal_launch_setup_failed");
+              }
               if (status.status !== "ready" || status.prompt !== null) return;
               if (
                 scope &&

@@ -20,7 +20,7 @@ observation, never interchangeable with this enum.
 | Delete (`sandbox-rest-controls.ts`, `data.ts`) | Owner/current org admin, terminal unmanaged row only; provider deletion must be confirmed before metadata/archives are deleted. |
 
 For job-based Modal launches, enrolment records machine readiness internally.
-Public status and inventory keep the launch in `starting` during workspace and
+Armada REST and MCP status and inventory keep the launch in `starting` during workspace and
 launch setup. A setup failure reports `failed` and a setup reason. Physical stop
 still requires separate evidence. Docker status and inventory report `starting`
 until the asynchronous launch receipt is committed.
