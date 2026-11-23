@@ -1,3 +1,5 @@
+import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
+
 export const BOAT_STAGING_NOTICE = "boat: not part of the release gate";
 
 /** Filter before validating unused Boat account/model/golden fields. Never infer provider from text. */
@@ -19,8 +21,5 @@ export function smokeReceiptProvider(value: unknown): "boat" | "modal" | "docker
     (provider) => provider !== undefined,
   );
   const provider = providers[0];
-  return (provider === "boat" || provider === "modal" || provider === "docker") &&
-    providers.every((candidate) => candidate === provider)
-    ? provider
-    : undefined;
+  if (isSandboxPlacementProvider(provider) && providers.every((candidate) => candidate === provider)) return provider;
 }
