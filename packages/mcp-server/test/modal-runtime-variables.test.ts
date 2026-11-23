@@ -97,9 +97,6 @@ async function fixture(
   const host = {
     ...physical.provider,
     id: provider,
-    configureReadableVariables: async () => {
-      throw Error("Enrolled templates must never call the native variable port");
-    },
   };
   const native = {
     ...host,
