@@ -5,4 +5,3 @@ const OWNER_OR_ADMIN = `exists(select 1 from public.members m
 const LEGACY_PARENT = `exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`;
 export const SANDBOX_MEMBER = `not ${LEGACY_PARENT} and ${SANDBOX_ORG_MEMBER}`;
 export const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and ${OWNER_OR_ADMIN}`;
-export const MANAGED_MODAL_DRAIN_VISIBLE = `${LEGACY_PARENT} and ${SANDBOX_ORG_MEMBER} and ${OWNER_OR_ADMIN}`;

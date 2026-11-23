@@ -86,40 +86,25 @@ unresolved retained stop blocks rollback to that revision.
 
 ### Coordinator command
 
-Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with
-`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory
-access. Select `boat` for the Boat cohort.
+The Modal drain command has been retired. The [coordinator recorded zero Modal candidates](https://github.com/The-Vibe-Company/armada/issues/2742#issuecomment-7077924142).
 
-For a real pass, wait for the selected provider's release and checklist gate,
-disable new native admissions, and drain every replica that could still admit
-or finish a native launch from before the cutover. Apply the strict-stop migration
-and deploy the strict-stop worker before running the real command. Drain all
-older lifecycle workers and wait for their in-flight work to finish, including
-replicas with native launches disabled. Older workers can claim a native stop
-request without enforcing preservation. For Modal, stop older workers and use
-an operator checkout and workers from the revision with the Modal
-physical-generation and retained-checkpoint checks. Before rolling back to a
-worker that lacks those checks, halt the drain and settle pending strict Modal
-stops with the newer workers. Prepare the checkout with
+Run `bun scripts/ops/drain-native.ts --provider boat --dry-run` with
+`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory access.
+
+For a real pass, wait for Boat's release and checklist gate, disable new native
+admissions, and drain every replica that could still admit or finish a native
+launch from before the cutover. Apply the strict-stop migration, deploy the
+strict-stop worker, and drain older
+lifecycle workers before issuing strict stops. Prepare the checkout with
 `bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
 `ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
 `ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
-Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat`).
+Run `bun scripts/ops/drain-native.ts --provider boat`.
 
-The real command reports the selected, deleted and failed counts. A nonzero
-failed count leaves the drain incomplete and returns a failing exit status.
-For eligible ready or running Boat and Modal rows, the command requests strict preservation
-through the lifecycle worker and reports the row as incomplete on that pass.
-The worker requires current preservation proof and settled work before requesting
-a retained stop. Modal admission also requires an active native journal without
-a lease. The worker matches the captured physical generation and verifies the
-retained checkpoint before settlement. Rerun after the stop settles to delete
-through the existing recovery handoff. Rows with missing or uncertain proof
-require operator reconciliation before deletion. For a
-scoped Modal parent, the drain records scoped cleanup before provider deletion.
-If the delete response is lost, a later pass can use the pinned Modal journal
-after the activity lease expires. Verify the result with a fresh inventory. A
-complete rerun reports zero candidates.
+The command reports eligible running rows as incomplete while the lifecycle worker
+verifies work preservation and requests a retained stop. Rerun after the stop
+settles to delete through the recovery handoff. A nonzero failed count returns a
+failing exit status. A complete inventory rerun reports zero candidates.
 
 ### Coordinator ledger
 
