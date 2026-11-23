@@ -5,7 +5,7 @@ refuses before fork. See [Boat runtime launch](../boat-runtime-first-prompt.md#o
 for the versioned API and deployment prerequisites. The shared
 harness catalog drives validators and generated iOS choices. Codex and Claude
 retain their native drivers; OpenCode uses one ACP v1 transport, not a parallel
-V2 server/SDK integration. Modal retains its existing authenticated tunnel.
+V2 server/SDK integration. Modal uses the enrolled runtime.
 
 ## Model-provider retry visibility
 

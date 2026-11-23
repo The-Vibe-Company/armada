@@ -1,33 +1,6 @@
-import type {
-  AgentEvent,
-  EventPage,
-  EventsRequest,
-  Harness,
-  HarnessCapabilities,
-  MachineSize,
-  ModalBinding,
-  SandboxInfo,
-  SnapshotInfo,
-} from "@armada/core";
+import type { Harness, HarnessCapabilities, MachineSize, ModalBinding, SandboxInfo, SnapshotInfo } from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 
-export type McpConfiguration = {
-  revision: string;
-  servers: Record<
-    string,
-    | { type: "http"; url: string; headers?: Record<string, string> }
-    | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
-  >;
-};
-
-export interface ExecEnvironment {
-  GH_TOKEN?: string;
-  GITHUB_TOKEN?: string;
-  HOME?: string;
-  PATH?: string;
-  GIT_CONFIG_GLOBAL?: string;
-  GIT_TERMINAL_PROMPT?: "0";
-}
 export interface Scope {
   orgId: string;
   userId: string;
@@ -44,8 +17,6 @@ export interface ProcessBaseline {
   generation: number;
   namespace: { pid: string; mount: string };
   processes: { pid: number; start: string }[];
-  admissionState?: "pending" | "sealed" | "legacy";
-  managedRunnerPid?: number;
 }
 
 export interface Machine {
@@ -62,12 +33,7 @@ export interface Machine {
   managementAuthority?: ModalManagementProvenance;
   sourceImage?: { scopeKey: string; name: string; imageId: string };
   grantExpiresAt?: number;
-  eventBase?: number;
-  checkpointWatermark?: number;
   quiesced?: boolean;
-  ordinaryStopAttempted?: boolean;
-  modelDefaults?: Record<Harness, { model: string; reasoningEffort: string }>;
-  harnessCwds?: Partial<Record<Harness, string>>;
   phase:
     | "reserved"
     | "restoring"
@@ -124,7 +90,6 @@ export interface ModalStore {
   reserve(key: string, machine: Machine, sourceId?: string): Promise<Machine>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
-  watermark(id: string, generation: number): Promise<number>;
   list(): Promise<Machine[]>;
   lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
   image(name: string): Promise<SavedImage>;
@@ -137,21 +102,12 @@ export interface ModalStore {
   images(sourceId: string): Promise<SavedImage[]>;
   tombstoneSources(): Promise<string[]>;
   imageReferenced(imageId: string): Promise<boolean>;
-  events(input: EventsRequest): Promise<EventPage>;
-  latestPrompt(sandboxId: string, promptId: string): Promise<Extract<AgentEvent, { kind: "prompt" }> | null>;
-}
-export interface RunnerTransport {
-  call<T>(machine: Machine, op: string, input: object): Promise<T>;
 }
 export interface RunnerDistribution {
   image(client: ModalClient): Promise<Image>;
   readonly capabilities: Readonly<Partial<Record<Harness, HarnessCapabilities>>>;
   prepareFreshMachine?(sandbox: Sandbox, machine: Machine): Promise<void>;
   captureProcessBaseline?(sandbox: Sandbox, machine: Machine): Promise<ProcessBaseline>;
-  sealProcessBaseline?(sandbox: Sandbox, machine: Machine, managedRunnerPid: number): Promise<ProcessBaseline>;
-  prepareRuntime?(sandbox: Sandbox, machine: Machine): Promise<void>;
-  start(sandbox: Sandbox, machine: Machine, env: Readonly<Record<string, string>>): Promise<void>;
-  restoreEnv(machine: Machine): Promise<Readonly<Record<string, string>>>;
   prepareSnapshot(sandbox: Sandbox, machine: Machine): Promise<void>;
 }
 export interface SshPreparation {
@@ -160,15 +116,4 @@ export interface SshPreparation {
     machine: Machine,
     publicKey: string,
   ): Promise<{ endpoint: string; hostPublicKey: string; username: "user" | "root" }>;
-}
-export interface IngestGrantClaims {
-  sandboxId: string;
-  generation: string;
-  expiresAt: number;
-}
-export interface IngestPayload {
-  sandboxId: string;
-  generation: string;
-  sequence: number;
-  event: AgentEvent;
 }

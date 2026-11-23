@@ -567,10 +567,6 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
         client,
         store: createSqlModalStore(db, scope),
         distribution: { capabilities: {}, prepareSnapshot: async () => {} } as unknown as RunnerDistribution,
-        runner: {
-          call: async <T>(_row: Machine, op: string) =>
-            (op === "checkpoint" ? { generation: "1", watermark: 0, acknowledgedSequence: 0 } : {}) as T,
-        },
         cleanupSleep: async (milliseconds) => {
           cleanupDelays.push(milliseconds);
         },
@@ -604,6 +600,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
         physicalId: `physical-${name}`,
         physicalName: `owned-${name}`,
         golden: false,
+        commonRuntime: true,
         ttlSeconds: 3600,
         managementAuthority: { credentialScope: "user", credentialOwnerId: p.owner },
         recoveryImageId: `prior-${name}`,
@@ -656,10 +653,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     expect(await row(first.id)).toEqual({ status: "deleted", leased: false });
     expect(await phase(first.machine)).toBe("deleted");
     expect(sdk.filter((x) => x.startsWith("terminate:"))).toEqual(["terminate:physical-first"]);
-    expect(sdk.filter((x) => x.startsWith("delete:")).toSorted()).toEqual([
-      "delete:prior-first",
-      "delete:recovery-physical-first",
-    ]);
+    expect(sdk.filter((x) => x.startsWith("delete:")).toSorted()).toEqual(["delete:prior-first"]);
 
     const second = await launch("second");
     expect((await control("sandbox/stop", "POST", { id: second.id })).status).toBe(200);
@@ -690,8 +684,6 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     expect(cleanupDelays).toEqual([1_000, 5_000, 1_000]);
     expect(sdk.filter((x) => x.endsWith("-third")).toSorted()).toEqual([
       "delete:prior-third",
-      "delete:recovery-physical-third",
-      "snapshot:physical-third",
       "terminate:physical-third",
     ]);
 

@@ -23,7 +23,7 @@ function fixture(stage: "scrub" | "snapshot" | "missing image", { productionDeta
     phase: "active",
     physicalId: "physical",
     physicalName: "owned-worker",
-    golden: false,
+    golden: true,
     ttlSeconds: 3600,
     managementAuthority: { credentialScope: "user", credentialOwnerId: "owner" },
     recoveryImageId: "prior-recovery",
@@ -130,7 +130,6 @@ function fixture(stage: "scrub" | "snapshot" | "missing image", { productionDeta
     client,
     store,
     distribution,
-    runner: { call: async <T>() => ({ generation: "1", watermark: 1, acknowledgedSequence: 1 }) as T },
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
@@ -262,13 +261,12 @@ test.each(["scrub", "snapshot"] as const)(
   },
 );
 
-test.each(["native", "enrolled"] as const)("a missing Modal image receipt preserves the %s source", async (path) => {
+test("a missing Modal image receipt preserves the enrolled source", async () => {
   const f = fixture("missing image");
-  if (path === "enrolled") f.state().commonRuntime = true;
+  f.state().golden = false;
+  f.state().commonRuntime = true;
   const stop = () =>
-    path === "enrolled"
-      ? f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 })
-      : f.provider.stop({ sandboxId: "logical", requireRetention: true });
+    f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 });
 
   await expect(stop()).rejects.toMatchObject({ code: "unavailable" });
   await expect(stop()).rejects.toMatchObject({ code: "conflict" });
@@ -281,7 +279,10 @@ test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)
   "retention policy refuses compute-only state (%s)",
   async (mode) => {
     const f = fixture("snapshot");
-    if (mode === "common-runtime") f.state().commonRuntime = true;
+    if (mode === "common-runtime") {
+      f.state().golden = false;
+      f.state().commonRuntime = true;
+    }
     if (mode === "lost-workspace") f.state().info.stopNote = "checkpoint_failed_disk_not_retained";
     if (mode === "unretained-terminate") {
       f.state().phase = "terminate";

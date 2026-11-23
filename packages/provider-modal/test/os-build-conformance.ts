@@ -4,15 +4,13 @@ import { join } from "node:path";
 import type { Image, ModalClient, Sandbox } from "modal";
 import {
   captureProcessBaseline,
-  createRunnerDistribution,
   createSshPreparation,
-  loadRunnerArtifact,
   type Machine,
   MODAL_IMAGE_LOCK,
   type ModalProvider,
+  modalImage,
   prepareFilesystemSnapshot,
   probeModalSsh,
-  withTrustedHarnessPath,
 } from "../src/index.ts";
 
 if (import.meta.main) {
@@ -55,7 +53,6 @@ if (import.meta.main) {
     return stdout;
   };
   try {
-    const artifact = await loadRunnerArtifact(join(import.meta.dir, "../../agent-runtime/dist"));
     let commands: string[] = [];
     const handle = {
       dockerfileCommands(value: string[]) {
@@ -71,49 +68,11 @@ if (import.meta.main) {
       ttlSeconds: 3600,
       physicalName: "fixture",
     };
-    const grant = {
-      token: "synthetic-os-runner-grant",
-      sandboxId: machine.info.id,
-      generation: "1",
-      expiresAt: Date.now() + 3600_000,
-    };
-    const distribution = createRunnerDistribution({
-      ...MODAL_IMAGE_LOCK,
-      ...artifact,
-      capabilities: {} as never,
-      bootstrap: async () => ({
-        root: "/home/user/.armada-runtime",
-        cwd: "/home/user",
-        port: 8765,
-        grant,
-        credentialFreeBuilder: true,
-        execEnv: { HOME: "/home/user", PATH: "/usr/local/bin:/usr/bin:/bin", GIT_TERMINAL_PROMPT: "0" },
-        claudeEnv: {},
-        codexEnv: {},
-        claudeExecutable: "/usr/local/bin/claude",
-        codexExecutable: "/usr/local/bin/codex",
-        ingestUrl: "https://unused.example",
-      }),
-      restoreEnv: async () => ({}),
-      prepareSnapshot: async () => {},
-    });
-    await distribution.image({ images: { fromRegistry: () => handle } } as unknown as ModalClient);
+    await modalImage(MODAL_IMAGE_LOCK)({ images: { fromRegistry: () => handle } } as unknown as ModalClient);
     await Bun.write(join(temp, "Dockerfile"), `FROM ${MODAL_IMAGE_LOCK.base}\n${commands.join("\n")}\n`);
     await run(["docker", "build", "-t", imageName, temp]);
     container = (
-      await run([
-        "docker",
-        "run",
-        "-d",
-        "--rm",
-        "-p",
-        "127.0.0.1::2222",
-        "-p",
-        "127.0.0.1::8765",
-        imageName,
-        "/bin/sleep",
-        "infinity",
-      ])
+      await run(["docker", "run", "-d", "--rm", "-p", "127.0.0.1::2222", imageName, "/bin/sleep", "infinity"])
     ).trim();
     const address = async (port: number) => {
       const value = (await run(["docker", "port", container, String(port)])).trim().split("\n")[0];
@@ -123,7 +82,6 @@ if (import.meta.main) {
       return Number(match[1]);
     };
     const sshPort = await address(2222);
-    let httpPort = await address(8765);
     const sandbox = {
       exec: async (argv: string[], options?: { workdir?: string }) => {
         const child = Bun.spawn(["docker", "exec", "-i", "-w", options?.workdir ?? "/home/user", container, ...argv], {
@@ -169,7 +127,7 @@ if (import.meta.main) {
       { stdout: "ignore", stderr: "ignore" },
     );
     if ((await bare.exited) !== 127) throw Error("No-PATH npm Codex witness did not reproduce exit127");
-    const modelPath = withTrustedHarnessPath({}).PATH;
+    const modelPath = "/usr/local/bin:/usr/bin:/bin";
     const launchVersion = await run([
       "docker",
       "exec",
@@ -194,60 +152,11 @@ if (import.meta.main) {
       "-c",
       "command -v node && command -v git && command -v gh && command -v claude && command -v codex",
     ]);
-    await distribution.start(sandbox, machine, {});
-    let healthy = false;
-    for (let i = 0; i < 200; i++) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${httpPort}`, {
-          method: "POST",
-          headers: { "x-armada-runner-grant": grant.token },
-          body: JSON.stringify({ version: 1, requestId: "health", sandboxId: machine.info.id, op: "health" }),
-        });
-        if (response.ok) {
-          healthy = true;
-          break;
-        }
-      } catch {}
-      await Bun.sleep(25);
-    }
-    if (!healthy) throw Error("Private pinned runtime did not boot after project Bun rewire");
-    const checkpoint = await fetch(`http://127.0.0.1:${httpPort}`, {
-      method: "POST",
-      headers: { "x-armada-runner-grant": grant.token },
-      body: JSON.stringify({ version: 1, requestId: "checkpoint", sandboxId: machine.info.id, op: "checkpoint" }),
-    });
-    if (!checkpoint.ok) throw Error("OS fixture checkpoint failed");
     machine.phase = "checkpoint";
     await prepareFilesystemSnapshot(sandbox, machine);
     await run(["docker", "commit", container, restoredImage]);
     await run(["docker", "rm", "-f", container]);
-    container = (
-      await run(["docker", "run", "-d", "--rm", "-p", "127.0.0.1::8765", restoredImage, "/bin/sleep", "infinity"])
-    ).trim();
-    httpPort = await address(8765);
-    machine.generation = 2;
-    machine.phase = "booting";
-    machine.physicalId = container;
-    machine.processBaseline = await captureProcessBaseline(sandbox, machine);
-    grant.generation = "2";
-    await distribution.start(sandbox, machine, {});
-    let resumed = false;
-    for (let i = 0; i < 200; i++) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${httpPort}`, {
-          method: "POST",
-          headers: { "x-armada-runner-grant": grant.token },
-          body: JSON.stringify({ version: 1, requestId: "health-restored", sandboxId: machine.info.id, op: "health" }),
-        });
-        const body = (await response.json()) as { result?: { generation: string; ready: boolean } };
-        if (response.ok && body.result?.generation === "2" && body.result.ready) {
-          resumed = true;
-          break;
-        }
-      } catch {}
-      await Bun.sleep(25);
-    }
-    if (!resumed) throw Error("Private runtime did not boot after filesystem restore");
+    container = (await run(["docker", "run", "-d", "--rm", restoredImage, "/bin/sleep", "infinity"])).trim();
     if ((await run(["docker", "exec", container, "/opt/armada/runtime-bun/bun", "--version"])).trim() !== "1.4.2")
       throw Error("Restored control Bun pin changed");
     if ((await run(["docker", "exec", "-u", "user", container, "/usr/local/bin/bun", "--version"])).trim() !== "1.3.14")
@@ -259,7 +168,7 @@ if (import.meta.main) {
           "real user SSH production baseline including Playwright --with-deps",
           "noninteractive privileged scanner",
           "user file ownership",
-          "project Bun1.3.14 with independent runner Bun1.4.2 startup and filesystem restore",
+          "project Bun1.3.14 with independent control Bun1.4.2 across filesystem restore",
         ],
       }),
     );

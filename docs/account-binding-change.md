@@ -14,9 +14,7 @@ uncertainty never becomes an optimistic pin change. Starting, stopping, running
 and leased states return explicit guidance, not not-found for an owner. The same
 confirmed operation is available on the owner's sandbox page.
 
-Support: Boat runtime, Modal dialout/native retained machines and owned Docker
-runtime. Native Modal updates private policy/labels atomically with the public
-pin. Runtime configuration is revoked by the existing lifecycle-generation trigger
+Support covers Boat runtime, enrolled Modal and owned Docker runtime. Runtime configuration is revoked by the existing lifecycle-generation trigger
 and recreated at enrollment. OpenCode requires the target account to support the
 retained model; incompatible custom/plan model namespaces are refused before stop.
 

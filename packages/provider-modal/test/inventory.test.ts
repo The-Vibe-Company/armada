@@ -66,14 +66,7 @@ function fixture(overrides: Partial<ModalProviderOptions>, sdk: Partial<ModalCli
       image: async () => {
         throw new Error("Unexpected builder image");
       },
-      start: async () => {},
-      restoreEnv: async () => ({}),
       prepareSnapshot: async () => {},
-    },
-    runner: {
-      async call() {
-        throw new Error("Unexpected runner call");
-      },
     },
     ...overrides,
   }).provider;
@@ -191,7 +184,7 @@ test("Modal attaches deployment ownership to the allocation request for a runtim
   } as unknown as ModalStore;
   let creationTags: Record<string, string> | undefined;
   const provider = fixture(
-    { store, commonRuntime: true },
+    { store },
     {
       images: { fromId: async () => ({ imageId: snapshot.imageId }) } as unknown as ModalClient["images"],
       volumes: {

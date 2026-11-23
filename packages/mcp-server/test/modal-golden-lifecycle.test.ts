@@ -11,14 +11,8 @@ import {
   type GoldenActor,
   snapshotGolden,
 } from "@armada/core/server";
-import {
-  createModalProvider,
-  createSqlModalStore,
-  type Machine,
-  type RunnerDistribution,
-  type Scope,
-} from "@armada/provider-modal";
-import type { Image, ModalClient, Sandbox } from "modal";
+import { createModalProvider, createSqlModalStore, type RunnerDistribution, type Scope } from "@armada/provider-modal";
+import { type Image, type ModalClient, NotFoundError, type Sandbox } from "modal";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
@@ -61,6 +55,11 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
     const client = {
       apps: { fromName: async () => ({ appId: scope.binding.appId }) },
       images: { fromId: async (imageId: string) => ({ imageId }), delete: async () => {} },
+      volumes: {
+        fromName: async () => {
+          throw new NotFoundError("Fixture has no artifact cache.");
+        },
+      },
       sandboxes: {
         create: async (_app: unknown, image: { imageId: string }) => {
           const sandboxId = `physical-${machines.size + 1}`;
@@ -155,8 +154,6 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
     const distribution: RunnerDistribution = {
       capabilities: { claude: capabilities, codex: { ...capabilities, steer: "restart" } },
       image: async () => ({ imageId: "im-base" }) as Image,
-      start: async () => {},
-      restoreEnv: async () => ({}),
       prepareSnapshot: async () => {},
     };
     const providerOptions = {
@@ -167,36 +164,6 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
       tokenSecret: "as-synthetic",
       appName: "bound",
       distribution,
-      runner: {
-        async call<T>(row: Machine, op: string, input: object) {
-          if (op === "health") return { generation: String(row.generation), ready: true } as T;
-          if (op === "checkpoint")
-            return { generation: String(row.generation), watermark: 0, acknowledgedSequence: 0 } as T;
-          if (op === "exec") {
-            const command = (input as { input: { command: string } }).input.command;
-            // Real file edits/reads in each physical fixture directory, not an assertion-shaped
-            // snapshot receipt. The unrelated scan transport remains covered by the OS/SSH test.
-            if (
-              ["printf revision-one > revision.txt", "printf revision-two > revision.txt", "cat revision.txt"].includes(
-                command,
-              )
-            ) {
-              const directory = machines.get(row.physicalId!)!.directory;
-              const stdout = await revisionCommand(directory, command);
-              return {
-                detached: false,
-                exitCode: 0,
-                stdout,
-                stderr: "",
-                timedOut: false,
-                truncated: false,
-              } as T;
-            }
-            return { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false } as T;
-          }
-          throw new Error(`Unexpected runner operation: ${op}`);
-        },
-      },
     };
     const { provider } = createModalProvider(providerOptions);
     const secondaryActor: GoldenActor = { ...actor, userId: people.owner };
@@ -346,9 +313,11 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
       providerSandboxId: null,
     });
     const forked = await provider.fork({ from: savedAgain.snapshotName, noEnv: true });
-    expect((await store.get(forked.id)).golden).toBe(false);
-    const forkedBytes = await provider.exec({ sandboxId: forked.id, command: "cat revision.txt" });
-    expect(!forkedBytes.detached && forkedBytes.stdout).toBe("revision-two");
+    const forkedMachine = await store.get(forked.id);
+    expect(forkedMachine.golden).toBe(false);
+    expect(await readFile(join(machines.get(forkedMachine.physicalId!)!.directory, "revision.txt"), "utf8")).toBe(
+      "revision-two",
+    );
     expect(savedAgain.snapshotName).not.toBe(saved.snapshotName);
     // The dedicated port returns a shared source. Readiness failure after another caller's
     // publication must not delete that caller's live canonical master.

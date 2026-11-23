@@ -1,22 +1,14 @@
-import type { Provider, VmResourceReading } from "@armada/core";
+import type { Provider } from "@armada/core";
 import type { ModalClient } from "modal";
 import { matchesManagementAuthority } from "./authority.ts";
 import { modalError, refusal } from "./errors.ts";
 import { lookupModalCompute, observeModalCompute } from "./machine.ts";
-import type {
-  Machine,
-  ModalManagementProvenance,
-  ModalResourceReceipt,
-  ModalStore,
-  RunnerTransport,
-  Scope,
-} from "./ports.ts";
+import type { Machine, ModalManagementProvenance, ModalResourceReceipt, ModalStore, Scope } from "./ports.ts";
 import { scopeKey } from "./store.ts";
 
 interface SandboxInspectionOptions {
   store: ModalStore;
   client: Pick<ModalClient, "sandboxes">;
-  runner: RunnerTransport;
   bound(): Promise<unknown>;
   assertMachineSource(row: Machine): void;
   managementAuthority: ModalManagementProvenance;
@@ -29,7 +21,6 @@ interface SandboxInspectionOptions {
 export function createSandboxInspection({
   store,
   client,
-  runner,
   bound,
   assertMachineSource,
   managementAuthority,
@@ -105,39 +96,8 @@ export function createSandboxInspection({
     return { ...sandboxInfo(row), providerState: row.phase };
   };
   const inspection = {
-    async observeResources(id) {
-      await bound();
-      return store.lease(id, async (row) => {
-        assertMachineSource(row);
-        const evidence = row.runtimeEvidence;
-        if (
-          row.golden ||
-          row.commonRuntime ||
-          row.phase !== "active" ||
-          !row.physicalId ||
-          row.runtimePolicy !== "explicit-vm-v1" ||
-          evidence?.version !== 1 ||
-          evidence.runtime !== "vm" ||
-          evidence.generation !== row.generation ||
-          evidence.physicalId !== row.physicalId
-        )
-          return null;
-        const reading = await runner.call<VmResourceReading | null>(row, "resourceObservation", {});
-        if (!reading) return null;
-        return {
-          version: 1 as const,
-          providerSandboxId: id,
-          physicalId: row.physicalId,
-          generation: String(row.generation),
-          scope: "dedicated-vm" as const,
-          runtimeProvenance: "modal-explicit-vm-v1" as const,
-          reading,
-          limitations: ["sampled-memory-not-peak", "hypervisor-throttling-unavailable"] as const,
-        };
-      });
-    },
     get,
-  } satisfies Pick<Provider, "observeResources" | "get">;
+  } satisfies Pick<Provider, "get">;
   async function readResourceReceipts() {
     try {
       const rows = (await store.list()).filter(

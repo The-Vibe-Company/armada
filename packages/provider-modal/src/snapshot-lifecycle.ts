@@ -9,7 +9,6 @@ import type {
   ModalStore,
   RunnerDistribution,
 } from "./ports.ts";
-import type { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
 
 export function createSnapshotLifecycle({
   store,
@@ -20,7 +19,6 @@ export function createSnapshotLifecycle({
   assertAuthority,
   assertMachineSource,
   physical,
-  checkpoint,
   distribution,
   resourceReceipt,
 }: {
@@ -32,7 +30,6 @@ export function createSnapshotLifecycle({
   assertAuthority(record: { managementAuthority?: ModalManagementProvenance }): void;
   assertMachineSource(row: Machine): void;
   physical: ReturnType<typeof createPhysicalLifecycle>["physical"];
-  checkpoint: ReturnType<typeof createStopDeleteLifecycle>["checkpoint"];
   distribution: Pick<RunnerDistribution, "prepareSnapshot">;
   resourceReceipt(row: Machine): Promise<ModalResourceReceipt>;
 }) {
@@ -67,7 +64,6 @@ export function createSnapshotLifecycle({
           row.phase = "checkpoint";
           row.info.state = "stopping";
           await save(row);
-          await checkpoint(row, save);
           await distribution.prepareSnapshot(sb, row);
           row.quiesced = true;
           row.phase = "snapshot";

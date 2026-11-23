@@ -17,18 +17,18 @@ test("provider timings stay inside their concurrent request and preserve callbac
   const results = await Promise.all([
     withRequestTiming(first, async () => {
       await Promise.resolve();
-      return measureProviderPhase("modal_prepare", async () => "prepared");
+      return measureProviderPhase("modal_app_lookup", async () => "prepared");
     }),
     withRequestTiming(second, async () => {
       await Promise.resolve();
-      return measureProviderPhase("modal_rpc", async () => "submitted");
+      return measureProviderPhase("modal_sandbox_create", async () => "submitted");
     }),
   ]);
   expect(results).toEqual(["prepared", "submitted"]);
-  expect(first.header()).toMatch(/^modal_prepare;dur=\d+\.\d{2}$/);
-  expect(second.header()).toMatch(/^modal_rpc;dur=\d+\.\d{2}$/);
-  expect(await measureProviderPhase("modal_health", async () => "no HTTP context")).toBe("no HTTP context");
-  expect(first.header()).not.toContain("modal_health");
+  expect(first.header()).toMatch(/^modal_app_lookup;dur=\d+\.\d{2}$/);
+  expect(second.header()).toMatch(/^modal_sandbox_create;dur=\d+\.\d{2}$/);
+  expect(await measureProviderPhase("modal_boot_baseline", async () => "no HTTP context")).toBe("no HTTP context");
+  expect(first.header()).not.toContain("modal_boot_baseline");
 });
 
 test("SQL timing includes rejected queries and is absent outside request context", async () => {

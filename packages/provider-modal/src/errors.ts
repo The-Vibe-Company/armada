@@ -106,7 +106,6 @@ export function modalFailureReceipt(error: unknown): import("./ports.ts").ModalR
 
 export async function lifecycleStep<T>(
   code:
-    | "modal_checkpoint_runner"
     | "modal_checkpoint_scrub"
     | "modal_checkpoint_snapshot"
     | "modal_checkpoint_terminate"
