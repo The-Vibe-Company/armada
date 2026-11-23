@@ -15,7 +15,7 @@ import { createSqlData } from "../src/data.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
-import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
+import { encryptedRecoveryExec, reuseCollectorKeyPair } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import {
   bunLikeSql,
@@ -29,6 +29,12 @@ import {
   seedDatabase,
   type TestServer,
 } from "./support.ts";
+
+let restoreCollectorKeys: (() => void) | undefined;
+beforeAll(() => {
+  restoreCollectorKeys = reuseCollectorKeyPair();
+});
+afterAll(() => restoreCollectorKeys?.());
 
 let sharedDatabase: ReturnType<typeof migratedDatabase> | undefined;
 let pendingServer: Promise<TestServer> | undefined;

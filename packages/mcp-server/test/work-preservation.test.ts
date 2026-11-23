@@ -14,9 +14,15 @@ import { deleteSandboxWithActivity } from "../src/sandbox-rest-controls.ts";
 import { bindRestTool, type ToolContext } from "../src/tools.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
 import { closeableFixture } from "./closeable.fixture.ts";
-import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
+import { encryptedRecoveryExec, reuseCollectorKeyPair } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
+
+let restoreCollectorKeys: (() => void) | undefined;
+beforeAll(() => {
+  restoreCollectorKeys = reuseCollectorKeyPair();
+});
+afterAll(() => restoreCollectorKeys?.());
 
 const fixture = closeableFixture(async () => {
   const db = await migratedDatabase();
