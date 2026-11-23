@@ -563,7 +563,7 @@ test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof 
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
 
-const dockerIdleCases = ["idle", "checkpointed", "merged", "opted out"] as const;
+const dockerIdleCases = ["idle", "checkpointed", "merged", "opted out"];
 test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) => {
   const merged = scenario === "merged";
   const db = database();
