@@ -204,6 +204,18 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (process.env.ARMADA_HYDRATION_FAILURE && thread === "poisoned-thread") {
+      if (process.env.ARMADA_HYDRATION_FAILURE === "after-tool") {
+        notify("item/started", {
+          threadId: thread,
+          turnId: `turn-${turn}`,
+          item: {
+            type: "commandExecution",
+            id: "write",
+            command: "touch artifact",
+            cwd: ".",
+          },
+        });
+      }
       notify("turn/completed", {
         threadId: thread,
         turn: {
@@ -211,9 +223,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           status: "failed",
           items: [],
           error: {
-            message:
-              "The encrypted content for item sample could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed.",
-            codexErrorInfo: "badRequest",
+            message: JSON.stringify({
+              error: {
+                code: "invalid_encrypted_content",
+                type: "invalid_request_error",
+                message:
+                  "The encrypted content for item sample could not be verified. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed.",
+              },
+            }),
+            codexErrorInfo: "other",
             additionalDetails: null,
           },
         },

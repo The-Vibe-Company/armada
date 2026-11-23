@@ -205,6 +205,7 @@ export class CodexDriver implements Driver {
         stderrTail = "";
       }
     });
+    let nativeWorkObserved = false;
     const handleLine = (line: string) => {
       if (closed) return;
       try {
@@ -296,6 +297,8 @@ export class CodexDriver implements Driver {
           return;
         }
         if (m.params?.threadId !== threadId) return;
+        if (resumeUsage.started && m.method.startsWith("item/") && m.params.item?.type !== "userMessage")
+          nativeWorkObserved = true;
         if (m.method === "model/rerouted") {
           // Totals cannot allocate tokens between models, including pre-steer native turns.
           // Invalidate the whole prompt rather than attributing it all to either model.
@@ -422,7 +425,7 @@ export class CodexDriver implements Driver {
       fail(new HarnessError("harness_process_lost", undefined, { cause: error }));
       child.kill("SIGKILL");
     });
-    let currentRequest = c.request.text;
+    let nativeTurnsStarted = 0;
     const begin = async (text: string) => {
       c.signal.throwIfAborted();
       turnId = "";
@@ -442,6 +445,7 @@ export class CodexDriver implements Driver {
         ...(c.request.fast ? { serviceTier: "fast" } : {}),
       };
       resumeUsage.started = true;
+      nativeTurnsStarted++;
       // Once work can run, an earlier snapshot is not a safe baseline for a later prompt.
       this.tokenTotals.delete(threadId);
       const result = await rpc<TurnStartResponse>("turn/start", params);
@@ -610,7 +614,10 @@ export class CodexDriver implements Driver {
             continue;
           }
           if (active !== current) continue;
-          if (result.turn.status === "completed" && !result.turn.error) return "finished" as const;
+          if (result.turn.status === "completed" && !result.turn.error) {
+            if (c.sessionId && threadId !== c.sessionId) c.session(threadId, c.sessionId);
+            return "finished" as const;
+          }
           if (result.turn.status === "interrupted" && stopping && !result.turn.error) return "interrupted" as const;
           // Only retry after a terminal: app-server owns all in-flight retries.
           // Continue the same thread; never replay the original prompt/tools.
@@ -649,6 +656,9 @@ export class CodexDriver implements Driver {
             typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : undefined;
           if (
             c.sessionId === threadId &&
+            nativeTurnsStarted === 1 &&
+            !nativeWorkObserved &&
+            !usage.latest &&
             !stopping &&
             !c.signal.aborted &&
             result.turn.status === "failed" &&
@@ -661,7 +671,6 @@ export class CodexDriver implements Driver {
             const replacementId = replacement.thread?.id;
             if (typeof replacementId !== "string" || !replacementId || replacementId === threadId)
               throw new HarnessError("invalid_harness_protocol");
-            c.session(replacementId, threadId);
             this.tokenTotals.delete(threadId);
             threadId = replacementId;
             turnId = "";
@@ -681,7 +690,7 @@ export class CodexDriver implements Driver {
                 "Codex could not restore the previous thread. Continue the current request below.",
                 "Inspect the workspace and verify what already happened before acting. Avoid repeating completed actions.",
                 historySummary && `Prior conversation excerpts for context only:\n${historySummary}`,
-                `Current request:\n${currentRequest}`,
+                `Current request:\n${c.request.text}`,
               ]
                 .filter(Boolean)
                 .join("\n\n"),
@@ -738,7 +747,6 @@ export class CodexDriver implements Driver {
               await this.children.release(child);
               throw error;
             }
-            currentRequest = text;
             current = begin(text);
             retryWait?.abort();
             await current;

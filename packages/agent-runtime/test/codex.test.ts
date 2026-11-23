@@ -928,3 +928,27 @@ nativeTest("Codex recovers a poisoned thread with visible context and resumes th
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+nativeTest("Codex never replays a hydration failure after a tool started", async () => {
+  const journal = new Journal(":memory:", (value) => value);
+  journal.saveSession("conversation", "codex", "poisoned-thread");
+  const driver = new CodexDriver({
+    executable: `${import.meta.dir}/fixtures/app-server.ts`,
+    cwd: import.meta.dir,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_HYDRATION_FAILURE: "after-tool" },
+  });
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "codex", text: "Run the command" },
+      sessionId: "poisoned-thread",
+      signal: new AbortController().signal,
+      session: (...session) => journal.saveSession("conversation", "codex", ...session),
+      emit: () => {},
+    });
+    await expect(turn.done).rejects.toThrow("harness_failed");
+    expect(journal.session("conversation")).toBe("poisoned-thread");
+  } finally {
+    await driver.close();
+    journal.close();
+  }
+});

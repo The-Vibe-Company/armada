@@ -19,8 +19,8 @@ export function codexTurnFailureCode(code: string | undefined, message: string |
 
 export function codexEncryptedHistoryRejected(message: string | undefined) {
   return (
-    /\binvalid_encrypted_content\b/.test(message ?? "") ||
-    /^The encrypted content for item [^\s]+ could not be verified\. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed\.?$/.test(
+    /"code"\s*:\s*"invalid_encrypted_content"/.test(message ?? "") ||
+    /^(?:stream disconnected before completion: )?The encrypted content for item [^\s]+ could not be verified\. Reason: reasoning hydration failed: Encrypted content could not be decrypted or parsed\.?$/.test(
       message ?? "",
     )
   );
