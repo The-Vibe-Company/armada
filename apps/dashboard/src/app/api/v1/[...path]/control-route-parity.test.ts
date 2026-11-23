@@ -60,32 +60,28 @@ test("CLI info and stop forward authenticated scope through the public proxy", a
     for (const { command, route, expectedBody } of cases) {
       const path = `/api/v1/sandbox/${route}`;
       const forwarded: Request[] = [];
-      await operation(
-        command,
-        [id, "--org", org, "--json"],
-        {
-          env: { ARMADA_TOKEN: token, ARMADA_URL: "https://dashboard.test" },
-          fetch: async (input, init) => {
-            const incoming = new Request(input, init);
-            expect(incoming.url).toBe(`https://dashboard.test${path}`);
-            expect(incoming.headers.get("accept")).toBe("application/json");
-            expect(incoming.headers.get("content-type")).toBe("application/json");
-            return forwardControl(
-              incoming,
-              new URL(incoming.url).pathname.slice("/api/v1/".length).split("/"),
-              async (target, options) => {
-                forwarded.push(new Request(target, options));
-                return Response.json({ id, status: "stopped", settled: true, prompt: null });
-              },
-            );
-          },
-          session: memorySessionStore(),
-          now: () => new Date(0),
-          open: () => {},
-          out: () => {},
-          err: () => {},
+      await operation(command, [id, "--org", org, "--json"], {
+        env: { ARMADA_TOKEN: token, ARMADA_URL: "https://dashboard.test" },
+        fetch: async (input, init) => {
+          const incoming = new Request(input, init);
+          expect(incoming.url).toBe(`https://dashboard.test${path}`);
+          expect(incoming.headers.get("accept")).toBe("application/json");
+          expect(incoming.headers.get("content-type")).toBe("application/json");
+          return forwardControl(
+            incoming,
+            new URL(incoming.url).pathname.slice("/api/v1/".length).split("/"),
+            async (target, options) => {
+              forwarded.push(new Request(target, options));
+              return Response.json({ id, status: "stopped", settled: true, prompt: null });
+            },
+          );
         },
-      );
+        session: memorySessionStore(),
+        now: () => new Date(0),
+        open: () => {},
+        out: () => {},
+        err: () => {},
+      });
       expect(forwarded).toHaveLength(1);
       const upstream = forwarded[0];
       expect(upstream?.url).toBe(`https://control.test${path}`);
