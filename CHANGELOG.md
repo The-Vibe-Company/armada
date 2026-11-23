@@ -1,5 +1,36 @@
 # Changelog
 
+## [11.0.0](https://github.com/The-Vibe-Company/armada/compare/v10.0.1...v11.0.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **provider-boat:** delete native events, cursor and usage ([#4070](https://github.com/The-Vibe-Company/armada/issues/4070))
+* **provider-boat:** delete native cwd and native Claude MCP ([#4036](https://github.com/The-Vibe-Company/armada/issues/4036))
+* **cli:** admin commands become dashboard-only ([#4041](https://github.com/The-Vibe-Company/armada/issues/4041))
+
+### Features
+
+* **accounts:** choose and reserve in one admission transaction ([#4061](https://github.com/The-Vibe-Company/armada/issues/4061)) ([e41f43d](https://github.com/The-Vibe-Company/armada/commit/e41f43d48559a1920118bf3d477229be6c017a26))
+* **docker:** no idle auto-stop on Docker hosts (keep stop after merge) ([#4067](https://github.com/The-Vibe-Company/armada/issues/4067)) ([b5cfbd2](https://github.com/The-Vibe-Company/armada/commit/b5cfbd2007c7b86956c02054e26db197f33c67e0))
+
+
+### Bug Fixes
+
+* **dashboard:** 'The agent stopped without saying what it did' shown above the agent's final message ([#4043](https://github.com/The-Vibe-Company/armada/issues/4043)) ([fd2d4de](https://github.com/The-Vibe-Company/armada/commit/fd2d4debb77730254c58b6855ac6590cdb0e68d6))
+* **dashboard:** 'Waiting for you' counts stopped sandboxes (896 of 1617, overlapping Stopped 1590) ([#4063](https://github.com/The-Vibe-Company/armada/issues/4063)) ([c8793ac](https://github.com/The-Vibe-Company/armada/commit/c8793ac2842ff2a05f26d987f2ac12b18cf1fd80))
+* **dashboard:** Working shows 0 and active runtime sandboxes read 'Waiting for you' ([#4073](https://github.com/The-Vibe-Company/armada/issues/4073)) ([a891aef](https://github.com/The-Vibe-Company/armada/commit/a891aef351a928457d3f68a0aea87e9d2f1689af))
+* **jobs:** Modal launch initial turns run one at a time despite concurrency 4; 3-day-old queued jobs ([#4072](https://github.com/The-Vibe-Company/armada/issues/4072)) ([3b618da](https://github.com/The-Vibe-Company/armada/commit/3b618da285101c323d199ac1fbe7a1aa29dc5a35))
+* **runtime:** Codex follow-up fails forever with invalid_encrypted_content on a long session ([#4059](https://github.com/The-Vibe-Company/armada/issues/4059)) ([0c67b17](https://github.com/The-Vibe-Company/armada/commit/0c67b17363f0cc5d412344ee59fa730cfb655879))
+* **snapshots:** Boat in-place snapshot rebuild fails at checkout_baseline with no failure reason ([#4057](https://github.com/The-Vibe-Company/armada/issues/4057)) ([52f1cc0](https://github.com/The-Vibe-Company/armada/commit/52f1cc09ab7e18287640ead987e06fe5901f67ca))
+
+
+### Code Refactoring
+
+* **cli:** admin commands become dashboard-only ([#4041](https://github.com/The-Vibe-Company/armada/issues/4041)) ([ce11f63](https://github.com/The-Vibe-Company/armada/commit/ce11f636febbbc6e775cfc32a732d49ce998d7bd))
+* **provider-boat:** delete native cwd and native Claude MCP ([#4036](https://github.com/The-Vibe-Company/armada/issues/4036)) ([f07410b](https://github.com/The-Vibe-Company/armada/commit/f07410bc537b87f49131d4e2824624b0988671ae))
+* **provider-boat:** delete native events, cursor and usage ([#4070](https://github.com/The-Vibe-Company/armada/issues/4070)) ([15ed852](https://github.com/The-Vibe-Company/armada/commit/15ed8523f2a7db924b033ab2f134ad18c4d164a3))
+
 ## [10.0.1](https://github.com/The-Vibe-Company/armada/compare/v10.0.0...v10.0.1) (2026-11-23)
 
 
