@@ -15,9 +15,7 @@ export function modalLaunchSetupTimer(
     const log = (state: "started" | "finished", durationMs?: number) => {
       try {
         write(JSON.stringify({ event: "modal_launch_setup_phase", ...identity, phase, ...step, state, durationMs }));
-      } catch {
-        // Best-effort diagnostics must not change the setup outcome.
-      }
+      } catch {}
     };
     log("started");
     return () => log("finished", Math.round(now() - started));

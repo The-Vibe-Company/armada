@@ -18,6 +18,7 @@ test("Modal workspace timing attributes a failed init wait to its command", asyn
       host: { id: "modal" },
       sandbox: { id: "sandbox", providerSandboxId: "machine" },
       credentials: { secrets: [] },
+      signal: new AbortController().signal,
     },
     {
       async workspaceHealth() {
