@@ -2527,7 +2527,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.execs).toHaveLength(0);
     expect(host.prompts).toHaveLength(0);
     delete options.launch;
-    const explicitOnly = await (await request("launch/options", {}))?.json();
+    const explicitOnly = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
     expect(explicitOnly).toMatchObject({ boatRuntime: { enabled: true } });
     expect(explicitOnly.boatRuntime).not.toHaveProperty("defaultPath");
     // Actual startup timeout -> launch failure persistence -> public logs response.

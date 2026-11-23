@@ -32,7 +32,7 @@ export async function prepareGoldenLaunchAccount(
   const placement = explicit ? undefined : goldenRuntimePlacement(options, golden.provider);
   const runtime = explicit ?? placement?.policy;
   if (!runtime) throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
-  const resolver = placement?.credentials ?? credentials;
+  const resolver: GoldenLaunchCredentials = placement?.credentials ?? credentials;
 
   const probe = async () => {
     try {
