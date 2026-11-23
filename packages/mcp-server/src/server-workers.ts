@@ -5,7 +5,6 @@ export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
   drain(): Promise<void>;
   stopAdmission?(): void;
-  /** The shared jobs lane keeps its claim ticks independent of legacy reconciliation. */
   independentJobs?: true;
   /** Isolated sweeps can bound provider calls individually and run until shutdown. */
   isolatedSweep?: true;
