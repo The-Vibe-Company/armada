@@ -32,10 +32,6 @@ export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, n
   return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
 }
 
-/**
- * All is the inventory and Mine is an ownership filter across activity tabs.
- * Working, Waiting for you, Stopped, and Failed are mutually exclusive subsets.
- */
 export function sandboxActivityPage(
   rows: SandboxListMetadata[],
   viewerId: string,
