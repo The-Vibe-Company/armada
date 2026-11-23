@@ -5,7 +5,6 @@ import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
-import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createPullRequestScanJob } from "../src/sandbox-pull-requests.ts";
 import { sqlOver } from "../src/sql.ts";
@@ -23,7 +22,7 @@ async function fixture(mode = "quiet") {
     via: "service" as const,
   };
   const data = createSqlData(sql)(caller);
-  const placement = mode === "modal-retry" || mode === "owner-modal" ? "modal" : "boat";
+  const placement = mode === "owner-modal" ? "modal" : "boat";
   const golden =
     placement === "boat"
       ? (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!
@@ -38,13 +37,11 @@ async function fixture(mode = "quiet") {
     physical = placement === "boat" ? "bx_23456789" : "native-modal",
     task = "turn";
   const at = Date.now();
-  let phase = "active",
-    nonactiveObservations = 0;
-  let clock = at + 599_999,
-    stopped = false,
+  let stopped = false,
     stops = 0,
     promptCalls = 0,
-    observations = 0;
+    quiesceCalls = 0,
+    eventReads = 0;
   const credential = (
     await db.query<{ id: string }>(
       "select id from credentials where scope='user' and owner_id=$1 and kind='claude_oauth'",
@@ -70,71 +67,37 @@ async function fixture(mode = "quiet") {
   await data.sandboxes.update(id, { taskPromptId: task, conversationIds: ["conversation"] });
   const provider = {
     id: placement,
-    observeOrchestrator: async () => {
-      if (phase !== "active") {
-        nonactiveObservations++;
-        throw Error("Native observation requires active phase");
-      }
-      return {
-        physicalGeneration: "1",
-        state: "quiescent",
-        eventWatermark: 1,
-        acknowledgedSequence: 1,
-        evidence: "f".repeat(64),
-        nativeSessionId: "native",
-      };
-    },
-    get: async (): Promise<SandboxInfo> => ({
-      id: physical,
-      state: stopped ? "stopped" : phase === "active" ? "running" : "stopping",
-      createdAt: new Date(at),
-      name: "native",
-      providerState: phase,
-      ...(placement === "modal" ? { physicalGeneration: "1" } : {}),
-      ...(stopped && placement === "boat" && mode !== "lost-retention" ? { retainedSnapshot: "usable" as const } : {}),
-      ...(stopped && mode === "lost-retention" ? { stopNote: "checkpoint_failed_disk_not_retained" as const } : {}),
-      labels: {},
-    }),
+    get: async () =>
+      ({
+        id: physical,
+        state: stopped ? "stopped" : "running",
+        createdAt: new Date(at),
+        name: "native",
+        providerState: stopped ? "stopped" : "active",
+        ...(placement === "modal" ? { physicalGeneration: "1" } : {}),
+        ...(stopped && placement === "boat" ? { retainedSnapshot: "usable" as const } : {}),
+        labels: {},
+      }) satisfies SandboxInfo,
     getPrompt: async () => ({
       promptId: task,
       status: mode === "running-turn" ? "running" : "finished",
       done: mode !== "running-turn",
     }),
-    conversations:
-      mode === "missing-port"
-        ? undefined
-        : async () => {
-            observations++;
-            return [
-              { id: "conversation", running: mode === "active" || (mode === "becomes-active" && observations > 2) },
-            ];
-          },
     events: async () => {
-      if (mode === "raced")
-        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+      eventReads++;
       return {
-        events:
-          mode === "missing-event"
-            ? []
-            : [
-                {
-                  id: "event",
-                  promptId: task,
-                  conversationId: "conversation",
-                  kind: "prompt",
-                  text: "done",
-                  status: "finished",
-                  at,
-                },
-              ],
+        events: [{ id: "terminal", kind: "prompt", promptId: task, status: "finished", text: "", at }],
         hasMore: false,
       };
     },
+    conversations: async () => [{ id: "conversation", running: mode === "active" }],
     quiesce: async () => {
+      quiesceCalls++;
       if (mode.startsWith("owner-")) return;
       throw Error("Idle policy must never interrupt/quiesce native work");
     },
     interrupt: async () => {
+      quiesceCalls++;
       throw Error("Idle policy must never interrupt native work");
     },
     exec: async () => ({
@@ -145,15 +108,9 @@ async function fixture(mode = "quiet") {
       stdout: '{"status":"clean"}',
       stderr: "",
     }),
-    stop: async (request: { requireRetention?: boolean }) => {
-      if (!mode.startsWith("owner-")) expect(request.requireRetention).toBe(true);
+    stop: async () => {
       stops++;
-      if (mode === "modal-retry" && stops === 1) {
-        phase = "checkpoint";
-        throw Error("checkpoint reply lost");
-      }
       stopped = true;
-      phase = "stopped";
     },
     prompt: async ({ onResumeStage }: PromptRequest) => {
       if (stopped) {
@@ -166,7 +123,7 @@ async function fixture(mode = "quiet") {
       return { promptId: "next", conversationId: "conversation", status: "queued", resumed: true };
     },
   } as unknown as Provider;
-  const worker = createSandboxLifecycle(sql, async () => provider, { now: () => clock, delayMs: 600_000 });
+  const worker = createSandboxLifecycle(sql, async () => provider, { now: () => at });
   const tick = async () => {
     await db.query("update sandboxes set reconcile_after=now()-interval '1 minute' where id=$1", [id]);
     await worker.reconcileOne();
@@ -183,133 +140,10 @@ async function fixture(mode = "quiet") {
     worker,
     stops: () => stops,
     promptCalls: () => promptCalls,
-    nonactiveObservations: () => nonactiveObservations,
-    setClock: (value: number) => {
-      clock = value;
-    },
+    quiesceCalls: () => quiesceCalls,
+    eventReads: () => eventReads,
   };
 }
-
-test.each([false, true])(
-  "native idle wake preserves work and expiry with a stale initial provider observation (%s)",
-  async (staleObservation) => {
-    const f = await fixture();
-    await f.tick();
-    expect(f.stops()).toBe(0);
-    f.setClock(f.at + 600_000);
-    await f.tick();
-    expect(f.stops()).toBe(1);
-    const paused = (await f.data.sandboxes.get(f.id))!;
-    expect(paused.status).toBe("stopped");
-    expect(paused.statusReason).toBe("idle_paused");
-    const receipt = await callSharedTool(
-      {
-        caller: f.caller,
-        data: f.data,
-        provider: async () =>
-          staleObservation
-            ? { ...f.provider, get: async (id) => ({ ...(await f.provider.get(id)), state: "running" }) }
-            : f.provider,
-        launchCredentials: {
-          resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }),
-        },
-        exposedSecrets: async () => [],
-        now: () => new Date(f.at + 600_000),
-        sleep: async () => {},
-      },
-      "send",
-      { id: f.id, prompt: "continue", request_id: crypto.randomUUID() },
-    );
-    expect(receipt).toMatchObject({ promptId: "next", conversationId: "conversation" });
-    const woke = (await f.data.sandboxes.get(f.id))!;
-    expect(woke.status).toBe("running");
-    expect(woke.expiresAt).toBe(paused.expiresAt);
-    const timing = await f.data.sandboxes.launchTiming?.(f.id);
-    expect(timing?.activation).toBe("2");
-    expect(timing?.stages.map(({ stage }) => stage)).toEqual([
-      "accepted",
-      "provider_claimed",
-      "machine_started",
-      "harness_ready",
-    ]);
-    await f.worker.drain();
-  },
-);
-
-test.each([
-  "active",
-  "raced",
-  "becomes-active",
-  "unknown-exec",
-  "running-turn",
-  "missing-event",
-  "missing-port",
-  "tainted",
-  "unbound",
-] as const)("unproven native work is not interrupted or stopped (%s)", async (mode) => {
-  const f = await fixture(mode);
-  f.setClock(f.at + 700_000);
-  if (mode === "tainted") await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
-  if (mode === "unbound")
-    await f.db.query("update sandboxes set credential_id=null,credential_version=null where id=$1", [f.id]);
-  if (mode === "unknown-exec")
-    await f.db.query("update sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 minute' where id=$1", [
-      f.id,
-      crypto.randomUUID(),
-    ]);
-  await f.tick();
-  expect(f.stops()).toBe(0);
-  if (mode === "unknown-exec") {
-    expect(
-      (await f.db.query<{ activity_lease_id: string }>("select activity_lease_id from sandboxes where id=$1", [f.id]))
-        .rows[0]?.activity_lease_id,
-    ).not.toBeNull();
-    await f.tick();
-    expect(f.stops()).toBe(0);
-  }
-  if (mode === "becomes-active") {
-    const stopping = (await f.data.sandboxes.get(f.id))!;
-    if (stopping.lifecycleGeneration === undefined) throw Error("Missing lifecycle generation");
-    expect(stopping.status).toBe("stopping");
-    await expect(
-      f.data.sandboxes.update(f.id, {
-        nativeResumeAdmission: stopping.providerSandboxId,
-        stopRequested: false,
-        activityToken: crypto.randomUUID(),
-        advanceGeneration: true,
-        expectedGeneration: stopping.lifecycleGeneration,
-      }),
-    ).rejects.toThrow();
-    await f.tick();
-    expect(f.stops()).toBe(0);
-  }
-  await f.worker.drain();
-});
-
-test("Modal native idle needs current physical quiescence and a synchronized watermark", async () => {
-  const info = { id: "modal-logical", state: "running", createdAt: new Date(), physicalGeneration: "7" } as SandboxInfo;
-  for (const [state, generation, watermark, acknowledged, expected] of [
-    ["quiescent", "7", 5, 5, true],
-    ["unknown", "7", 5, 5, false],
-    ["active", "7", 5, 5, false],
-    ["quiescent", "6", 5, 5, false],
-    ["quiescent", "7", 5, 4, false],
-  ] as const) {
-    const provider = {
-      id: "modal",
-      observeOrchestrator: async () => ({
-        state,
-        physicalGeneration: generation,
-        eventWatermark: watermark,
-        acknowledgedSequence: acknowledged,
-        evidence: "f".repeat(64),
-        nativeSessionId: "native",
-      }),
-    } as unknown as Provider;
-    expect(await nativeQuiescent(provider, info)).toBe(expected);
-  }
-  expect(await nativeQuiescent({ id: "modal" } as Provider, info)).toBe(false);
-});
 
 test("an expired native idle pause refuses wake before provider work", async () => {
   const f = await fixture();
@@ -374,27 +208,16 @@ test.each(["idle_paused", "work_merged"])(
   },
 );
 
-test("native Modal retries its already-fenced stop phase without active-only observation", async () => {
-  const f = await fixture("modal-retry");
-  f.setClock(f.at + 600_000);
+test("an admitted native idle stop waits while provider work is active", async () => {
+  const f = await fixture("active");
+  await f.db.query(
+    "update sandboxes set status='stopping',status_reason='idle_paused',stop_requested_at=now() where id=$1",
+    [f.id],
+  );
   await f.tick();
-  expect(f.stops()).toBe(1);
-  expect((await f.data.sandboxes.get(f.id))?.status).toBe("stopping");
-  await f.tick();
-  expect(f.stops()).toBe(2);
-  expect(f.nonactiveObservations()).toBe(0);
-  expect((await f.data.sandboxes.get(f.id))?.status).toBe("stopped");
-  await f.worker.drain();
-});
-
-test("a provider-reported lost workspace is failed, never advertised as a resumable idle pause", async () => {
-  const f = await fixture("lost-retention");
-  f.setClock(f.at + 600_000);
-  await f.tick();
-  const failed = (await f.data.sandboxes.get(f.id))!;
-  expect(failed.status).toBe("failed");
-  expect(failed.statusReason).not.toBe("idle_paused");
-  expect(failed.stoppedAt).not.toBeNull();
+  expect(f.quiesceCalls()).toBe(0);
+  expect(f.stops()).toBe(0);
+  expect(await f.data.sandboxes.get(f.id)).toMatchObject({ status: "stopping" });
   await f.worker.drain();
 });
 
@@ -502,7 +325,7 @@ test.each([
   "later push in first checkout",
   "later push in second checkout",
   "later push in dropped checkout",
-] as const)("GitHub observation and idle admission agree for %s work", async (state) => {
+] as const)("GitHub scan publishes metadata and merge proof for %s work", async (state) => {
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
   const repository = "example/repo";
@@ -548,13 +371,10 @@ test.each([
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
   }
   if (state === "reported PR merged before launch") {
-    // The agent names an old PR whose head it recreated: not this sandbox's work.
     await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", { state: "ready", prNumber: 12 });
   }
   if (state === "out-of-grant report") {
-    // A report outside the launch grant vetoes the stop but must not hide the
-    // pushed, verified and merged pull request in the grant.
     await f.db.query("update sandboxes set status='ready' where id=$1", [f.id]);
     await f.data.sandboxes.reportTaskOutcome!(f.id, "turn", {
       state: "ready",
@@ -568,22 +388,17 @@ test.each([
       state === "open" || state === "closed" || state === "closed after head advanced"
         ? null
         : new Date(f.at).toISOString(),
-    // A moved head: another commit, or a reviewer's commit on top of the push.
     head: {
       ref: "topic",
       sha: state === "other commit" || state.includes("after head advanced") ? "b".repeat(40) : sha,
       repo: { full_name: repository },
     },
-    // A PR merged a day before launch whose branch the sandbox recreated at its
-    // head commit: an exact match that is not this sandbox's work.
     ...(state === "merged before launch at pushed commit" || state === "reported PR merged before launch"
       ? { merged_at: new Date(f.at - 86_400_000).toISOString(), closed_at: new Date(f.at - 86_400_000).toISOString() }
       : {}),
     base: { repo: { full_name: repository } },
   };
-  // A merged PR at an older head: the later push to its branch has no PR yet.
   const laterPull = { ...pull, number: 13, head: { ...pull.head, ref: "scratch", sha: "d".repeat(40) } };
-  // A PR on the scratch branch that closed a day before launch: history, not this sandbox's work.
   const stalePull = {
     ...laterPull,
     number: 10,
@@ -591,9 +406,6 @@ test.each([
     closed_at: new Date(f.at - 86_400_000).toISOString(),
     head: { ...laterPull.head, sha: "7".repeat(40) },
   };
-  // An earlier push to the same branch whose PR closed without merging. In the
-  // moved-head cases another checkout advanced the branch before the close, so
-  // its head is none of this sandbox's pushes.
   const movedHead = state === "merged after closed at moved head" || state === "merged after closed before launch";
   const closedPull = {
     ...pull,
@@ -603,7 +415,6 @@ test.each([
     closed_at: new Date(f.at + (state === "merged after closed before launch" ? -86_400_000 : 300_000)).toISOString(),
     head: { ...pull.head, sha: (movedHead ? "8" : "e").repeat(40) },
   };
-  // A closed-unmerged PR at an unconfirmed attempt.
   const attemptPull = { ...closedPull, number: 14, head: { ...closedPull.head, ref: "other", sha: "f".repeat(40) } };
   const fetchGitHub = Object.assign(
     async (url: Parameters<typeof fetch>[0]) => {
@@ -613,11 +424,8 @@ test.each([
       }
       if (String(url) === "https://api.github.com/user")
         return Response.json({ id: 123, login: "owner", name: "Owner" });
-      // A pull request already known from an earlier scan is read by number.
       if (String(url) === `https://api.github.com/repos/${repository}/pulls/12`) return Response.json(pull);
-      // A corrected report needs no branch lookup.
       expect(state).not.toBe("corrected report");
-      // The pushed commit is in the advanced head's history; an unrelated head diverged.
       if (String(url).includes(`/repos/${repository}/compare/`)) {
         const advanced = String(url).endsWith(`/compare/${sha}...${"b".repeat(40)}?per_page=1`);
         if (advanced && state === "merged after head advanced past an unknown push")
@@ -629,7 +437,6 @@ test.each([
               : "diverged",
         });
       }
-      // Only the rejected attempt's commit is unknown to GitHub.
       if (String(url).includes(`/repos/${repository}/commits/`))
         return String(url).endsWith("9".repeat(40)) ? new Response("", { status: 404 }) : Response.json({});
       expect(String(url)).toContain(`/repos/${repository}/pulls?`);
@@ -703,9 +510,6 @@ test.each([
         return {
           detached: false,
           exitCode: 0,
-          // Two checkouts of one repository pushed `topic`: one at the merged PR's
-          // head, the other later at a commit with no PR yet. Their ledgers carry
-          // no order between them, whichever checkout is configured first.
           stdout:
             state === "generation changed during exec"
               ? "!untracked\n"
@@ -749,14 +553,9 @@ test.each([
       expect(rows[0]?.run_after).toEqual(new Date(at + 15_000));
     }
   };
-  // The lifecycle worker settles the finished turn before a scan may prove a
-  // stop; its timer is not due yet, so this tick stops nothing.
   if (state !== "scan during turn") await f.tick();
   expect(f.stops()).toBe(0);
   if (state === "ledger hook restored") {
-    // The reader reported the missing hook and reinstalled it, then the scan
-    // was abandoned. The next read is clean, but a push made while the hook
-    // was missing may have been pruned: coverage stays unprovable.
     await observe(`!unproven\ntopic\tnot-a-sha\n`);
     expect(
       (await f.db.query("select pull_request_scan->'untracked' as u from sandboxes where id=$1", [f.id])).rows[0],
@@ -764,8 +563,6 @@ test.each([
     await f.db.query("update jobs set run_after=now() where sandbox_id=$1", [f.id]);
   }
   if (state === "later push in dropped checkout") {
-    // A revised grant drops the checkout whose later push has no PR yet. Its
-    // latest push, read before, still has to be at a pull request head.
     await observe(`topic\t${sha}\n`);
     await f.db.query(
       `update sandboxes set pull_request_source=jsonb_set(pull_request_source,'{repositories}',$2::jsonb) where id=$1`,
@@ -778,8 +575,6 @@ test.each([
       (state === "no push" || state === "corrected report"
         ? ""
         : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${
-            // More older pushes to the branch than one scan looks up: the newest
-            // ones are still observed, but the observation is incomplete.
             state === "merged after many pushes"
               ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
               : ""
@@ -810,15 +605,12 @@ test.each([
     ).toEqual([{ valid: true }]);
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);
-  // A turn the proof did not see is in flight: stop admission rechecks settlement.
   if (state === "unsettled turn after scan")
     await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'later',false)", [f.id]);
   await f.tick();
-  // The read above preceded the turn's settlement (the tick that just settled
-  // it), so the turn could still have pushed after it: no stop on a later tick.
   if (state === "scan during turn") await f.tick();
   const sandbox = await f.data.sandboxes.get(f.id);
-  const shouldStop =
+  const shouldProveMerge =
     state === "merged" ||
     state === "completion interrupted" ||
     state === "activity started after enqueue" ||
@@ -828,8 +620,15 @@ test.each([
     state === "merged after closed before launch" ||
     state === "corrected report" ||
     state === "rejected attempt";
-  expect(f.stops()).toBe(shouldStop ? 1 : 0);
-  if (shouldStop) expect(sandbox?.statusReason).toBe("work_merged");
+  expect(f.stops()).toBe(0);
+  if (shouldProveMerge) {
+    expect(f.eventReads()).toBe(0);
+    const proof = await f.db.query<{ proved: boolean }>(
+      "select pull_request_merge_proof is not null as proved from sandboxes where id=$1",
+      [f.id],
+    );
+    expect(proof.rows[0]?.proved).toBe(true);
+  }
   expect(sandbox?.pullRequests?.map((pr) => pr.state)).toEqual(
     state === "no push" ||
       state.startsWith("generation changed") ||

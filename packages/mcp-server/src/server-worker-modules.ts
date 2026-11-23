@@ -23,11 +23,9 @@ import type { ServerServices } from "./server-services.ts";
 import type { ServerLifecycleLane } from "./server-workers.ts";
 
 export function createWorkerServices(services: ServerServices) {
-  const { sql, providers, idleDelayMs } = services;
+  const { sql, providers } = services;
   const lifecycleProvider = createMcpSandboxProviderResolver(sql, providers);
-  const lifecycle = createSandboxLifecycle(sql, lifecycleProvider, {
-    delayMs: idleDelayMs,
-  });
+  const lifecycle = createSandboxLifecycle(sql, lifecycleProvider);
   const nativePrompts = createNativeWebhookPrompts(
     sql,
     createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
