@@ -143,6 +143,6 @@ test("runtime repository admission recovers when a concurrent rotation invalidat
     now: () => now,
     fetch: fetchImpl,
   });
-  await resolver.authorizeRepositories!(actor, { env: {}, secrets: [], codexAuthJson: false }, [repository]);
+  await resolver.authorizeRepositories!(actor, {}, [repository]);
   expect(refAttempts).toEqual([`Bearer ${firstToken}`, `Bearer ${nextToken}`]);
 });
