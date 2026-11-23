@@ -1072,7 +1072,7 @@ test.each(["Boat unclaimed", "Boat acknowledged"] as const)(
   },
 );
 
-test("Boat drain leaves the dispatch unclaimed when its archive disappears during scoped cleanup", async () => {
+test("Boat drain opt-in leaves the dispatch unclaimed when its archive disappears during scoped cleanup", async () => {
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt();
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
   const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
@@ -1084,9 +1084,9 @@ test("Boat drain leaves the dispatch unclaimed when its archive disappears durin
     },
   };
 
-  await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toMatchObject({
-    code: "sandbox_not_ready",
-  });
+  await expect(
+    deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain-allow-unpreserved"),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(remove).not.toHaveBeenCalled();
   expect(
     (await db.query("select sandbox_id from native_drain_unclaimed_dispatches where sandbox_id=$1", [sandboxId])).rows,
