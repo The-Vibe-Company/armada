@@ -110,7 +110,7 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
     (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
   );
 
-type StatusReader = Pick<Provider, "id" | "getPrompt" | "events" | "collectTurnUsage"> & Partial<Pick<Provider, "get">>;
+type StatusReader = Pick<Provider, "id" | "getPrompt" | "events"> & Partial<Pick<Provider, "get">>;
 
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
@@ -287,7 +287,7 @@ export async function readStatus(
 
   // Stored Modal history already contains native counters; project it without waking compute.
   if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
-    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: stored });
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId);
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
@@ -570,7 +570,6 @@ export async function collectSandboxUsage(
   store: ServerSandboxStore,
   sandbox: SandboxView,
   targetPromptId?: string,
-  options: { eventsOnly?: boolean } = {},
 ): Promise<void> {
   if (!store.recordUsage) return;
   targetPromptId ??= sandbox.taskPromptId ?? undefined;
@@ -582,55 +581,6 @@ export async function collectSandboxUsage(
     const retained = (await store.get(sandbox.id))?.usage ?? sandbox.usage;
     const rows = new Map((retained?.turns ?? []).map((row) => [JSON.stringify([row.promptId, row.model]), row]));
     for (const row of collected.turns) rows.set(JSON.stringify([row.promptId, row.model]), row);
-    if (!options.eventsOnly && provider.collectTurnUsage) {
-      const prompts = new Map<string, string | undefined>();
-      for (const event of events) {
-        if (event.kind === "prompt" && event.promptId) prompts.set(event.promptId, event.conversationId ?? undefined);
-      }
-      if (targetPromptId && !prompts.has(targetPromptId)) prompts.set(targetPromptId, undefined);
-      // Observe compute once before fan-out. A terminal guest cannot provide native
-      // counters; per-prompt exec guards would otherwise repeat the same GET up to
-      // twenty times for an archived sandbox. Exec still guards races after this read.
-      const compute = prompts.size ? await provider.get?.(sandbox.providerSandboxId).catch(() => null) : null;
-      const inactive =
-        compute != null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
-      // A native read is bounded independently of provider event history.
-      for (const [promptId, conversationId] of [...prompts].slice(-20)) {
-        try {
-          const native: TurnTokenUsage[] =
-            inactive || compute === null
-              ? [
-                  {
-                    promptId,
-                    model: null,
-                    inputTokens: null,
-                    outputTokens: null,
-                    cachedTokens: null,
-                    unavailableReason: usageUnavailableReason(
-                      compute === null ? "reader_unavailable" : "compute_inactive",
-                    ),
-                  },
-                ]
-              : await provider.collectTurnUsage({
-                  sandboxId: sandbox.providerSandboxId,
-                  promptId,
-                  ...(conversationId ? { conversationId } : {}),
-                  harness: sandbox.harness,
-                });
-          for (const row of native) {
-            if (row.promptId !== promptId) continue;
-            observations.push(row);
-            const prior = [...rows.values()].filter((known) => known.promptId === promptId);
-            if (row.unavailableReason && prior.some(hasReportedCounters)) continue;
-            if (row.unavailableReason?.code === "compute_inactive" && prior.some((known) => known.unavailableReason))
-              continue;
-            rows.set(JSON.stringify([row.promptId, row.model]), row);
-          }
-        } catch {
-          /* A missing native file must not erase an earlier observation. */
-        }
-      }
-    }
     // An admitted but unmeasured target is a real turn, not a falsely complete subtotal.
     if (targetPromptId && ![...rows.values()].some((row) => row.promptId === targetPromptId)) {
       rows.set(JSON.stringify([targetPromptId, null]), {

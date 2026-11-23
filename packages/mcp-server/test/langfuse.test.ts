@@ -1,7 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Provider, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
-import { normalizeEvent } from "@armada/provider-boat";
 import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
@@ -572,28 +571,29 @@ test("full-mode native Boat content is credential-redacted before it is sent", a
   const { db } = await settledBoatTurn("turn");
   // Scanner-positive token bytes exist only at runtime, never as a fixture literal.
   const token = ["ghp", "x".repeat(36)].join("_");
-  const raw = [
-    { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: `use ${token}`, status: "running" } },
+  const events: AgentEvent[] = [
+    { id: "p", at: 1000, promptId: "turn", kind: "prompt", text: `use ${token}`, status: "running" },
     {
       id: "r",
-      timestamp: 1100,
-      taskId: "turn",
-      type: "response",
-      data: {
-        content: `printed ${token}`,
-        tools: [
-          {
-            use: { id: "t", name: "exec", input: { env: { GH: token }, [token]: "keyed" } },
-            result: { content: [token, { [`tokens/${token}`]: true }] },
-          },
-        ],
-      },
+      at: 1100,
+      promptId: "turn",
+      kind: "message",
+      text: `printed ${token}`,
+      partial: false,
+      tools: [
+        {
+          id: "t",
+          name: "exec",
+          input: { env: { GH: token }, [token]: "keyed" },
+          result: { output: [token, { [`tokens/${token}`]: true }], isError: false },
+        },
+      ],
     },
-    { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: `denied ${token}` } },
+    { id: "f", at: 1200, promptId: "turn", kind: "prompt", text: "", status: "failed", reason: `denied ${token}` },
   ];
   const provider = {
     id: "boat",
-    events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+    events: async () => ({ events, cursor: "native", hasMore: false }),
   } satisfies Pick<Provider, "id" | "events">;
   let payload = "";
   const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
@@ -648,28 +648,26 @@ for (const mode of ["metadata", "full"] as const)
       } finally {
         await db.exec("set session_replication_role=origin");
       }
-      const raw = [
-        { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: "print APP", status: "running" } },
+      const events: AgentEvent[] = [
+        { id: "p", at: 1000, promptId: "turn", kind: "prompt", text: "print APP", status: "running" },
         {
           id: "r",
-          timestamp: 1100,
-          taskId: "turn",
-          type: "response",
-          data: {
-            content: canary,
-            model: `model-${canary}`,
-            // Provider-controlled names, through the real Boat normalizer.
-            tools: [
-              { use: { id: "t", name: "exec", input: canary }, result: { content: canary } },
-              { use: { id: "u", name: `tool-${canary}` } },
-            ],
-          },
+          at: 1100,
+          promptId: "turn",
+          kind: "message",
+          text: canary,
+          model: `model-${canary}`,
+          partial: false,
+          tools: [
+            { id: "t", name: "exec", input: canary, result: { output: canary, isError: false } },
+            { id: "u", name: `tool-${canary}` },
+          ],
         },
-        { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: canary } },
+        { id: "f", at: 1200, promptId: "turn", kind: "prompt", text: "", status: "failed", reason: canary },
       ];
       const provider = {
         id: "boat",
-        events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+        events: async () => ({ events, cursor: "native", hasMore: false }),
       } satisfies Pick<Provider, "id" | "events">;
       let payload = "";
       const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
@@ -699,14 +697,14 @@ for (const [settled, delivered, content] of [
     const { db, counters, org } = await settledBoatTurn("turn", settled);
     await db.query("update org_langfuse set content_mode=$2 where org_id=$1", [org, delivered]);
     const canary = ["settled", "transcript", "canary"].join("-");
-    const raw = [
-      { id: "p", timestamp: 1000, taskId: "turn", type: "prompt", data: { prompt: canary, status: "running" } },
-      { id: "r", timestamp: 1100, taskId: "turn", type: "response", data: { content: canary } },
-      { id: "f", timestamp: 1200, taskId: "turn", type: "prompt", data: { status: "failed", error: "stopped" } },
+    const events: AgentEvent[] = [
+      { id: "p", at: 1000, promptId: "turn", kind: "prompt", text: canary, status: "running" },
+      { id: "r", at: 1100, promptId: "turn", kind: "message", text: canary, partial: false, tools: [] },
+      { id: "f", at: 1200, promptId: "turn", kind: "prompt", text: "", status: "failed", reason: "stopped" },
     ];
     const provider = {
       id: "boat",
-      events: async () => ({ events: raw.map((e) => normalizeEvent(e as never)), cursor: "native", hasMore: false }),
+      events: async () => ({ events, cursor: "native", hasMore: false }),
     } satisfies Pick<Provider, "id" | "events">;
     let payload = "";
     const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async (
