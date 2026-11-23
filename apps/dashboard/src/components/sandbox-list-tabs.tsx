@@ -9,7 +9,7 @@ export function SandboxListTabs({
   page,
   search,
 }: {
-  rows: { id: string; need: boolean; working: boolean; content: ReactNode }[];
+  rows: { id: string; content: ReactNode }[];
   counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
   tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
   page: number;

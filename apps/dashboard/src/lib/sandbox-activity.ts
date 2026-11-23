@@ -1,3 +1,4 @@
+import type { SandboxStatus } from "@armada/core/contract";
 import type { SandboxListMetadata } from "./sandbox-access.ts";
 import { sandboxAttention } from "./sandbox-attention";
 
@@ -18,8 +19,29 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
   ).attention;
 }
 
-export function sandboxNeedsViewer(row: SandboxListMetadata, viewerId: string, now: Date) {
-  return row.ownerId === viewerId && sandboxListAttention(row, now) !== null;
+export type SandboxTurnObservation = Pick<SandboxStatus, "status" | "settled" | "prompt" | "expiresAt">;
+
+function beforeDeadline(expiresAt: string | null, now: Date) {
+  return expiresAt === null || Date.parse(expiresAt) > now.getTime();
+}
+
+export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
+  return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
+}
+
+export function sandboxNeedsViewer(
+  row: SandboxListMetadata,
+  viewerId: string,
+  observation: SandboxTurnObservation | undefined,
+  now: Date,
+) {
+  return (
+    isWaitingCandidate(row, viewerId, now) &&
+    observation?.status === "ready" &&
+    observation.settled === true &&
+    observation.prompt?.state === "finished" &&
+    beforeDeadline(observation.expiresAt, now)
+  );
 }
 
 export function sandboxActivityPage(
@@ -27,10 +49,13 @@ export function sandboxActivityPage(
   viewerId: string,
   requestedActivity: string | string[] | undefined,
   requestedPage: number,
+  turns: ReadonlyMap<string, SandboxTurnObservation>,
   now = new Date(),
 ) {
   const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
-  const need = (row: SandboxListMetadata) => sandboxNeedsViewer(row, viewerId, now);
+  const need = (row: SandboxListMetadata) => sandboxNeedsViewer(row, viewerId, turns.get(row.id), now);
+  // All is the inventory and Mine is an ownership filter across activity tabs.
+  // Working, Waiting for you, Stopped, and Failed are mutually exclusive subsets.
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
