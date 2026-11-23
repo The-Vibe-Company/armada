@@ -10,16 +10,14 @@ import {
   terminateModalCompute,
 } from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
-import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution, RunnerTransport } from "./ports.ts";
+import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 
 const CLEANUP_RETRY_MS = [1_000, 5_000];
 
 export function createStopDeleteLifecycle(deps: {
   client: ReturnType<typeof modalConnection>;
   store: ModalStore;
-  runner: RunnerTransport;
   distribution: Pick<RunnerDistribution, "prepareSnapshot">;
-  runtimeOnly: boolean;
   bound: () => ReturnType<typeof boundModalApp>;
   physicalLifecycle: Pick<ReturnType<typeof createPhysicalLifecycle>, "physical" | "namedOwned" | "boundNotAbsence">;
   assertMachineSource(row: Machine): void;
@@ -31,9 +29,7 @@ export function createStopDeleteLifecycle(deps: {
   const {
     client,
     store,
-    runner,
     distribution,
-    runtimeOnly,
     bound,
     physicalLifecycle: { physical, namedOwned, boundNotAbsence },
     assertMachineSource,
@@ -43,24 +39,6 @@ export function createStopDeleteLifecycle(deps: {
     cleanupSleep,
   } = deps;
 
-  async function checkpoint(row: Machine, save: (row: Machine) => Promise<void>) {
-    if (runtimeOnly && row.golden) return;
-    const result = await runner.call<{ watermark: number; acknowledgedSequence: number; generation: string }>(
-      row,
-      "checkpoint",
-      {},
-    );
-    if (
-      result.generation !== String(row.generation) ||
-      !Number.isSafeInteger(result.watermark) ||
-      result.watermark < 0 ||
-      result.acknowledgedSequence !== result.watermark ||
-      (await store.watermark(row.info.id, row.generation)) !== result.watermark
-    )
-      throw refusal("conflict", "Checkpoint lacks a matching durably acknowledged event watermark; source retained.");
-    row.checkpointWatermark = result.watermark;
-    await save(row);
-  }
   async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>) {
     if (row.phase === "stopped") return;
     if (row.commonRuntime) {
@@ -100,7 +78,6 @@ export function createStopDeleteLifecycle(deps: {
             row.info.state = "stopping";
             await save(row);
             if (!row.quiesced) {
-              await lifecycleStep("modal_checkpoint_runner", () => checkpoint(row, save));
               await lifecycleStep("modal_checkpoint_scrub", () => distribution.prepareSnapshot(sb, row));
               row.quiesced = true;
             }
@@ -166,19 +143,6 @@ export function createStopDeleteLifecycle(deps: {
               "conflict",
               "Retained workspace is not proven; automatic idle stop refuses compute-only cleanup.",
             );
-          if (!row.golden && row.phase !== "stopped") {
-            if (row.ordinaryStopAttempted && row.phase !== "terminate" && !requireRetention) {
-              row.info.stopNote = "checkpoint_failed_disk_not_retained";
-              if (row.recoveryImageId)
-                row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-              delete row.recoveryImageId;
-              row.phase = "terminate";
-              await save(row);
-            } else {
-              row.ordinaryStopAttempted = true;
-              await save(row);
-            }
-          }
           await stopLeased(row, save);
         });
       } catch (error) {
@@ -233,5 +197,5 @@ export function createStopDeleteLifecycle(deps: {
       return { status: "deleted" };
     },
   } satisfies Pick<Provider, "stop" | "delete">;
-  return { checkpoint, ...operations };
+  return operations;
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Sandbox } from "modal";
 import type { Machine } from "../src/ports.ts";
-import { captureProcessBaseline, quiesceSandboxProcesses, sealProcessBaseline } from "../src/process-scope.ts";
+import { captureProcessBaseline, quiesceSandboxProcesses } from "../src/process-scope.ts";
 import { prepareFilesystemSnapshot } from "../src/snapshot.ts";
 
 const bun = process.execPath;
@@ -115,7 +115,7 @@ console.log(JSON.stringify({ready:true}));
     if (!Number.isSafeInteger(result.pid) || !result.pid) throw Error("Invalid platform child identity");
     return result.pid;
   }
-  let controlPid = 0,
+  let controlPid = await platformChild(),
     writerPid = 0;
   const deniedSyscalls = denyPidfd ? ["__NR_pidfd_open", "__NR_pidfd_send_signal"] : ["__NR_kill"];
   async function compilePolicy() {
@@ -197,7 +197,6 @@ execvp(argv[1],argv+1);return 126;}`);
   machine.processBaseline = await captureProcessBaseline(sdk, machine);
   if (!machine.processBaseline.processes.some((row) => row.pid === platform.pid))
     throw Error("Platform service missing before initial capture");
-  controlPid = await platformChild();
   await compilePolicy();
   const lock = join(mkdtempSync(join(tmpdir(), "checkpoint-launcher-")), "runtime.lock");
   const parent = Bun.spawn(
@@ -222,14 +221,7 @@ execvp(argv[1],argv+1);return 126;}`);
     }
     const ready = JSON.parse(frame.slice(0, frame.indexOf("\n")));
     if (ready.ready !== true || !Number.isSafeInteger(ready.runner)) throw Error("Both real MCP servers must start");
-    machine.processBaseline = await sealProcessBaseline(sdk, machine, ready.runner);
     machine.phase = "active";
-    try {
-      await sealProcessBaseline(sdk, machine, ready.runner);
-      throw Error("Controls recaptured after admission");
-    } catch (error) {
-      if ((error as { code?: string }).code !== "conflict") throw error;
-    }
   } finally {
     clearTimeout(deadline);
   }

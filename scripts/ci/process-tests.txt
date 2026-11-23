@@ -32,8 +32,6 @@ packages/provider-boat/test/native-claude-mcp.test.ts
 packages/provider-boat/test/native-cwd.test.ts
 packages/provider-boat/test/native-usage.test.ts
 packages/provider-boat/test/usage-probe.test.ts
-packages/provider-modal/test/artifact-validation.test.ts
-packages/provider-modal/test/distribution.test.ts
 packages/provider-modal/test/security.test.ts
 scripts/build.test.ts
 scripts/check-boat-runtime.test.ts

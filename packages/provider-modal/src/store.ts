@@ -1,15 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  type AgentEvent,
-  buildEventPage,
-  type EventPage,
-  eventPageOptions,
-  ProviderError,
-  type Sql,
-} from "@armada/core";
+import { ProviderError, type Sql } from "@armada/core";
 import { matchesManagementAuthority } from "./authority.ts";
 import { refusal } from "./errors.ts";
-import type { IngestPayload, Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
+import type { Machine, ModalStore, SavedImage, Scope } from "./ports.ts";
 
 export function scopeKey(scope: Scope): string {
   return createHash("sha256")
@@ -105,15 +98,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       return sql.transaction(reserve);
     },
     get,
-    async watermark(id, generation) {
-      const row = await get(id);
-      if (row.generation !== generation) throw refusal("conflict", "Event generation changed.");
-      const result = await sql.query<{ ack: string }>(
-        `select coalesce(max(producer_sequence),$4)::text as ack from public.modal_events where scope=$1 and sandbox_id=$2 and generation=$3`,
-        [key, id, String(generation), row.eventBase ?? 0],
-      );
-      return Number(result.rows[0]?.ack ?? row.eventBase ?? 0);
-    },
     async list() {
       await authorize();
       const result = await sql.query<{ record: Machine }>(
@@ -261,78 +245,5 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       return result.rows.length > 0;
     },
-    async latestPrompt(sandboxId, promptId) {
-      await get(sandboxId);
-      const result = await sql.query<{ event: Extract<AgentEvent, { kind: "prompt" }> }>(
-        `select event from public.modal_events where scope=$1 and sandbox_id=$2
-         and event->>'kind'='prompt' and event->>'promptId'=$3
-         order by cursor desc limit 1`,
-        [key, sandboxId, promptId],
-      );
-      return result.rows[0]?.event ?? null;
-    },
-    async events(input): Promise<EventPage> {
-      await get(input.sandboxId);
-      const { limit, backward } = eventPageOptions(input, "modal");
-      if (input.cursor && !/^\d+$/.test(input.cursor)) throw refusal("invalid_request", "Invalid event pagination.");
-      const result = await sql.query<{ cursor: string; event: AgentEvent }>(
-        `select cursor::text,event from public.modal_events where scope=$1 and sandbox_id=$2 and ($3::bigint is null or cursor${backward ? "<" : ">"}$3::bigint) and ($4::text is null or event->>'conversationId'=$4) order by public.modal_events.cursor ${backward ? "desc" : "asc"} limit $5`,
-        [key, input.sandboxId, input.cursor ?? (backward ? null : "0"), input.conversationId ?? null, limit + 1],
-      );
-      return buildEventPage(result.rows.slice(0, limit), input, result.rows.length > limit, "modal");
-    },
   };
-}
-export async function appendModalEvents(
-  sql: Sql,
-  scope: Scope,
-  sandboxId: string,
-  generation: string,
-  events: Omit<IngestPayload, "sandboxId" | "generation">[],
-  projectEvents?: (tx: Sql, events: AgentEvent[]) => Promise<void>,
-): Promise<number> {
-  if (!sql.transaction)
-    throw refusal("provider_routing_unavailable", "Transactional SQL is required for event ingestion.");
-  const key = scopeKey(scope);
-  return sql.transaction(async (db) => {
-    const member = await db.query(`select 1 from public.members where org_id=$1 and user_id=$2`, [
-      scope.orgId,
-      scope.userId,
-    ]);
-    if (!member.rows.length) throw refusal("forbidden", "Organization membership revoked.");
-    const row = (
-      await db.query<{ record: Machine }>(
-        `select record from public.modal_machines where scope=$1 and id=$2 for update`,
-        [key, sandboxId],
-      )
-    ).rows[0];
-    if (
-      !row ||
-      String(row.record.generation) !== generation ||
-      !["booting", "active", "checkpoint"].includes(row.record.phase)
-    )
-      throw refusal("forbidden", "Runner generation is fenced.");
-    const previous = await db.query<{ ack: string }>(
-      `select coalesce(max(producer_sequence),$4)::text as ack from public.modal_events where scope=$1 and sandbox_id=$2 and generation=$3`,
-      [key, sandboxId, generation, row.record.eventBase ?? 0],
-    );
-    let ack = Number(previous.rows[0]?.ack ?? 0);
-    const accepted: AgentEvent[] = [];
-    for (const item of [...events].sort((a, b) => a.sequence - b.sequence)) {
-      if (!Number.isSafeInteger(item.sequence) || item.sequence < 1)
-        throw refusal("invalid_request", "Invalid producer sequence.");
-      if (item.sequence > ack + 1) break;
-      const inserted = await db.query(
-        `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event) values($1,$2,$3,$4,$5::jsonb)
-         on conflict(scope,sandbox_id,generation,producer_sequence) do update set event=excluded.event
-         where modal_events.event=excluded.event returning cursor`,
-        [key, sandboxId, generation, item.sequence, JSON.stringify(item.event)],
-      );
-      if (!inserted.rows.length) throw refusal("conflict", "Producer replay differs from committed event.");
-      accepted.push(item.event);
-      ack = Math.max(ack, item.sequence);
-    }
-    if (accepted.length) await projectEvents?.(db, accepted);
-    return ack;
-  });
 }

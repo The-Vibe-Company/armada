@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo } from "@armada/core";
-import { mapHarnesses, ProviderError, parseMachineSize, resolveModelChoice } from "@armada/core";
+import { ProviderError, parseMachineSize } from "@armada/core";
 import type { boundModalApp } from "./client.ts";
 import { ModalOperationError, refusal } from "./errors.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
@@ -11,7 +11,6 @@ export function createLaunchLifecycle({
   store,
   source,
   scope,
-  commonRuntime,
   managementAuthority,
   bound,
   assertAuthority,
@@ -23,7 +22,6 @@ export function createLaunchLifecycle({
   store: ModalStore;
   source: { scope: Scope; store: ModalStore };
   scope: Scope;
-  commonRuntime: true | undefined;
   managementAuthority: ModalManagementProvenance;
   bound: () => ReturnType<typeof boundModalApp>;
   assertAuthority(record: { managementAuthority?: ModalManagementProvenance }): void;
@@ -73,11 +71,10 @@ export function createLaunchLifecycle({
           createdAt: new Date(),
         },
         generation: 1,
-        ...(!golden && commonRuntime ? { commonRuntime: true as const } : {}),
+        ...(!golden ? { commonRuntime: true as const } : {}),
         ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
         launchUserId: scope.userId,
         managementAuthority: { ...managementAuthority },
-        modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
         phase: "reserved",
         golden,
         ttlSeconds: ttl,
@@ -92,7 +89,7 @@ export function createLaunchLifecycle({
       if (
         row.golden !== golden ||
         (!golden && row.generation !== 1) ||
-        Boolean(row.commonRuntime) !== Boolean(!golden && commonRuntime) ||
+        Boolean(row.commonRuntime) !== Boolean(!golden) ||
         row.size !== size ||
         row.imageId !== imageId ||
         row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||

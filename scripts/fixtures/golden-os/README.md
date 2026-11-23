@@ -15,7 +15,7 @@ The model executable markers are deliberately not model-conformance proof. This 
 
 ## Actual provider-image CI gate
 
-CI does **not** use the repaired standalone fixture above to certify the provider image. It generates a Dockerfile from the actual exported `createRunnerDistribution.image()` instructions and `MODAL_IMAGE_LOCK`, then appends only local Git/SSH fixture data:
+CI does **not** use the repaired standalone fixture above to certify the provider image. It generates a Dockerfile from the actual exported `modalImage()` instructions and `MODAL_IMAGE_LOCK`, then appends only local Git/SSH fixture data:
 
 ```sh
 bun scripts/prepare-runtime.ts

@@ -26,7 +26,7 @@ async function removeManagedState(sandbox: Sandbox): Promise<void> {
       "-c",
       `set -eu
 # Also refuse an unexpected root/legacy writer (or an open directory/cwd) in managed state.
-# The lifecycle lease, sealed runner admission and terminated SSH prevent new managed writers.
+# The lifecycle lease and terminated SSH prevent new managed writers.
 for entry in /proc/[0-9]*/fd/* /proc/[0-9]*/cwd; do
   target=$(readlink "$entry" 2>/dev/null) || continue
   case "$target" in

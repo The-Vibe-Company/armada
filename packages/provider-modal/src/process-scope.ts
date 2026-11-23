@@ -19,11 +19,10 @@ const roots=["/home/user/.armada-runtime","/home/user/.codex","/home/user/.claud
 const inside=p=>p.startsWith("/home/user/.claude.json.")||roots.some(root=>p===root||p.startsWith(root+"/")||p.startsWith(root+" (deleted)"));
 function nameClass(name){return ["bun","bun.exe"].includes(name)?"bun":name==="node"?"node":name==="codex"?"codex":name==="claude"?"claude":["sshd","sshd-session","sshd-auth"].includes(name)?"ssh":"other";}
 function names(row){
-  let comm="unreadable",exe="unreadable",runner=false;
+  let comm="unreadable",exe="unreadable";
   try{comm=nameClass(readFileSync("/proc/"+row.pid+"/comm","utf8").trim());}catch(e){inspectError("proc_comm",e);}
   try{exe=nameClass(readlinkSync("/proc/"+row.pid+"/exe").replace(/ \(deleted\)$/," ").trim().split("/").pop());}catch(e){inspectError("proc_exe",e);}
-  if(comm==="bun"||exe==="bun")try{runner=readFileSync("/proc/"+row.pid+"/cmdline","utf8").split("\0").includes("/opt/armada/main.js");}catch(e){inspectError("proc_cmdline",e);}
-  return {comm,exe,runner,owned:runner||[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
+  return {comm,exe,owned:[comm,exe].some(x=>["codex","claude","ssh"].includes(x))};
 }
 function managedState(row){
   let unreadable=false;try{if(inside(readlinkSync("/proc/"+row.pid+"/cwd")))return "managed";}catch(e){inspectError("proc_cwd",e);unreadable=true;}
@@ -53,7 +52,7 @@ const ns=namespace();
 if(input.op==="capture"){
   const rows=all().filter(x=>x.uid===0).map(x=>({pid:x.pid,start:x.start}));
   if(!rows.some(x=>x.pid===1)||rows.length>4096)throw Error("control_baseline_invalid");
-  console.log(JSON.stringify({version:1,physicalId:input.physicalId,generation:input.generation,namespace:ns,processes:rows,admissionState:"pending"}));
+  console.log(JSON.stringify({version:1,physicalId:input.physicalId,generation:input.generation,namespace:ns,processes:rows}));
 }else{
   const baseline=input.baseline;
   if(!baseline||baseline.version!==1||baseline.physicalId!==input.physicalId||baseline.generation!==input.generation||
@@ -63,14 +62,6 @@ if(input.op==="capture"){
   let current=identity(process.pid);const ancestry=new Map();
   for(let n=0;current&&n<128;n++){ancestry.set(current.pid,current.start);if(current.pid===1)break;if(current.parent===0){ancestry.set(1,init.start);break;}const parent=identity(current.parent);if(!parent||parent.pid===current.pid)throw Error("cleanup_ancestry_unverifiable");current=parent;}
   if(!ancestry.has(1))throw Error("cleanup_ancestry_unverifiable");
-  if(input.op==="seal"){
-    if(baseline.admissionState!=="pending"||!Number.isSafeInteger(input.managedRunnerPid)||input.managedRunnerPid<=1)throw Error("control_seal_not_before_admission");
-    // Only trusted bootstrap has run. Never reconstruct this set after admission.
-    controls.delete(input.managedRunnerPid);
-    for(const row of all())if(row.uidKnown&&row.uid===0&&row.pid!==input.managedRunnerPid&&!names(row).owned&&managedState(row)!=="managed")controls.set(row.pid,row.start);
-    console.log(JSON.stringify({...baseline,admissionState:"sealed",managedRunnerPid:input.managedRunnerPid,processes:[...controls].map(([pid,start])=>({pid,start}))}));
-    process.exit(0);
-  }
   let libc;try{libc=dlopen("libc.so.6",{pidfd_open:{args:[FFIType.i32,FFIType.u32],returns:FFIType.i32},pidfd_send_signal:{args:[FFIType.i32,FFIType.i32,FFIType.ptr,FFIType.u32],returns:FFIType.i32},__errno_location:{args:[],returns:FFIType.ptr},close:{args:[FFIType.i32],returns:FFIType.i32}});}catch{denied("pidfd_open","ENOSYS");}
   const owned=new Map(),failures=new Map();
   const key=row=>row.pid+":"+row.start;
@@ -79,11 +70,9 @@ if(input.op==="capture"){
   function role(row){
     if(row.pid===1&&controls.get(1)===row.start)return "pid1";
     if(ancestry.get(row.pid)===row.start)return "scrub_ancestor";
-    if(baseline.managedRunnerPid===row.pid)return "armada_runner";
     if(row.uid===0&&row.kernel)return "kernel_control";
     if(controls.get(row.pid)===row.start)return "baseline_control";
     const known=names(row);
-    if(known.runner)return "armada_runner";
     if(known.owned)return "harness";
     return "writer";
   }
@@ -165,8 +154,8 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?
       const parsed = JSON.parse(text);
       const enums: Record<string, readonly string[]> = {
         processUidClass: ["root", "user", "unknown"],
-        processCommClass: ["armada_runner", "codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
-        processExeClass: ["armada_runner", "codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
+        processCommClass: ["codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
+        processExeClass: ["codex", "claude", "bun", "node", "ssh", "other", "unreadable"],
         processRole: [
           "pid1",
           "scrub_ancestor",
@@ -174,7 +163,6 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?
           "platform_control_child",
           "armada_launcher",
           "kernel_control",
-          "armada_runner",
           "harness",
           "writer",
         ],
@@ -196,7 +184,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?
         inspection = values.findLast(
           (value: unknown) =>
             typeof value === "string" &&
-            /^(self_namespace|proc_stat|proc_status|proc_comm|proc_exe|proc_cmdline|proc_cwd|proc_fds|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
+            /^(self_namespace|proc_stat|proc_status|proc_comm|proc_exe|proc_cwd|proc_fds|pidfd_open|pidfd_signal|kill)_(EPERM|EACCES|ENOSYS|EOPNOTSUPP|EINVAL|ENOENT|other)$/.test(
               value,
             ),
         );
@@ -249,50 +237,6 @@ function validateProcessBaseline(data: ProcessBaseline, machine: Machine): Proce
     throw refusal("conflict", "Invalid physical control baseline; admission refused.");
   return data;
 }
-export async function sealProcessBaseline(
-  sandbox: Sandbox,
-  machine: Machine,
-  managedRunnerPid: number,
-): Promise<ProcessBaseline> {
-  const baseline = machine.processBaseline;
-  if (
-    machine.phase !== "booting" ||
-    !baseline ||
-    baseline.admissionState !== "pending" ||
-    baseline.physicalId !== machine.physicalId ||
-    baseline.generation !== machine.generation ||
-    !Number.isSafeInteger(managedRunnerPid) ||
-    managedRunnerPid <= 1
-  )
-    throw refusal(
-      "conflict",
-      "Control baseline can only be sealed before admission with authenticated runner identity.",
-    );
-  const data = validateProcessBaseline(
-    JSON.parse(
-      await invoke(
-        sandbox,
-        {
-          op: "seal",
-          physicalId: machine.physicalId,
-          generation: machine.generation,
-          baseline,
-          managedRunnerPid,
-        },
-        true,
-      ),
-    ) as ProcessBaseline,
-    machine,
-  );
-  if (
-    data.admissionState !== "sealed" ||
-    data.managedRunnerPid !== managedRunnerPid ||
-    data.processes.some((row) => row.pid === managedRunnerPid)
-  )
-    throw refusal("conflict", "Invalid sealed control baseline; admission refused.");
-  return data;
-}
-
 export async function quiesceSandboxProcesses(sandbox: Sandbox, machine: Machine, signal?: AbortSignal): Promise<void> {
   if (
     !machine.processBaseline ||

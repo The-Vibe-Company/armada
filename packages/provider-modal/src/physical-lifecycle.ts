@@ -10,7 +10,7 @@ import {
   lookupNamedModalCompute,
   verifyModalComputeOwnership,
 } from "./machine.ts";
-import type { Machine, RunnerDistribution, RunnerTransport, Scope } from "./ports.ts";
+import type { Machine, RunnerDistribution, Scope } from "./ports.ts";
 import type { ModalProviderOptions } from "./provider.ts";
 import { SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
@@ -21,26 +21,12 @@ export function createPhysicalLifecycle(deps: {
   appName: string;
   scope: Scope;
   deploymentId?: string;
-  distribution: Omit<RunnerDistribution, "start"> & Partial<Pick<RunnerDistribution, "start">>;
-  runtimeOnly: boolean;
-  runner: RunnerTransport;
+  distribution: RunnerDistribution;
   measure: NonNullable<ModalProviderOptions["measure"]>;
   assertMachineSource(row: Machine): void;
   sandboxInfo(row: Machine): SandboxInfo;
 }) {
-  const {
-    client,
-    bound,
-    appName,
-    scope,
-    deploymentId,
-    distribution,
-    runner,
-    runtimeOnly,
-    measure,
-    assertMachineSource,
-    sandboxInfo,
-  } = deps;
+  const { client, bound, appName, scope, deploymentId, distribution, measure, assertMachineSource, sandboxInfo } = deps;
 
   async function boundNotAbsence() {
     await bound().catch((error) => {
@@ -91,10 +77,7 @@ export function createPhysicalLifecycle(deps: {
     verifyModalComputeOwnership(tags, ownershipTags(row));
     return sb;
   }
-  async function bootStage<T>(
-    stage: "binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication",
-    work: () => Promise<T>,
-  ) {
+  async function bootStage<T>(stage: "binding" | "baseline" | "fresh" | "active_publication", work: () => Promise<T>) {
     try {
       return await measure(`modal_boot_${stage}`, work);
     } catch (error) {
@@ -110,30 +93,10 @@ export function createPhysicalLifecycle(deps: {
       });
     }
   }
-  async function sealBaselineBeforeAdmission(
-    sb: Sandbox,
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    runnerPid: unknown,
-  ) {
-    const baseline = row.processBaseline;
-    if (baseline?.admissionState !== "pending") return;
-    await bootStage("baseline", async () => {
-      if (
-        distribution.sealProcessBaseline &&
-        typeof runnerPid === "number" &&
-        Number.isSafeInteger(runnerPid) &&
-        runnerPid >= 1
-      )
-        row.processBaseline = await distribution.sealProcessBaseline(sb, row, runnerPid);
-      else row.processBaseline = { ...baseline, admissionState: "legacy" };
-      await save(row);
-    });
-  }
   async function create(
     row: Machine,
     save: (row: Machine) => Promise<void>,
-    env: Readonly<Record<string, string>>,
+    _env: Readonly<Record<string, string>>,
     onResumeStage?: ResumeStageObserver,
   ) {
     const app = await bound();
@@ -194,8 +157,6 @@ export function createPhysicalLifecycle(deps: {
       row.runtimeEvidence = { version: 1, runtime: "vm", physicalId: sb.sandboxId, generation: row.generation };
     row.phase = "booting";
     await bootStage("binding", () => save(row));
-    if (!runtimeOnly && !row.commonRuntime && distribution.prepareRuntime)
-      await bootStage("runtime", () => distribution.prepareRuntime!(sb, row));
     await bootStage("baseline", async () => {
       if (distribution.captureProcessBaseline && !row.processBaseline) {
         if (row.freshStatePreparedGeneration === row.generation)
@@ -223,35 +184,7 @@ export function createPhysicalLifecycle(deps: {
         await save(row);
       });
     }
-    if (!runtimeOnly && !row.commonRuntime) {
-      const { start } = distribution;
-      if (!start) throw refusal("conflict", "Runner startup requires a distribution.");
-      await onResumeStage?.("machine_started");
-      await bootStage("start", () => start.call(distribution, sb, row, env));
-      let managedRunnerPid: unknown;
-      await bootStage("health", async () => {
-        let healthy = false;
-        for (let attempt = 0; attempt < 120; attempt++) {
-          try {
-            const health = await runner.call<{ generation?: string; ready?: boolean; pid?: unknown }>(
-              row,
-              "health",
-              {},
-            );
-            if (health.generation !== String(row.generation) || health.ready !== true)
-              throw refusal("conflict", "Runner health belongs to another or closed generation.");
-            managedRunnerPid = health.pid;
-            healthy = true;
-            break;
-          } catch (error) {
-            if (attempt === 119) throw error;
-            await Bun.sleep(250);
-          }
-        }
-        if (!healthy) throw refusal("unavailable", "Runner did not become ready.");
-      });
-      await sealBaselineBeforeAdmission(sb, row, save, managedRunnerPid);
-    } else if (runtimeOnly && row.golden && (await sb.poll()) !== null) {
+    if (row.golden && (await sb.poll()) !== null) {
       throw refusal("sandbox_not_ready", "Golden compute exited before admission.");
     }
     row.phase = "active";
@@ -261,5 +194,5 @@ export function createPhysicalLifecycle(deps: {
     await bootStage("active_publication", () => save(row));
     return sandboxInfo(row);
   }
-  return { physical, namedOwned, boundNotAbsence, create, sealBaselineBeforeAdmission };
+  return { physical, namedOwned, boundNotAbsence, create };
 }

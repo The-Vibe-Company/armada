@@ -1418,13 +1418,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         appName: "test",
         scope,
         store: createSqlModalStore(f.sql, scope),
-        commonRuntime: true,
-        runner: { call: refuseUnexpected },
         distribution: {
           capabilities: {},
           image: refuseUnexpected,
-          start: refuseUnexpected,
-          restoreEnv: refuseUnexpected,
           prepareSnapshot: prepareFilesystemSnapshot,
         },
       });

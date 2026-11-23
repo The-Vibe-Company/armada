@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
-import type { ExecResult, Harness, Provider, ResumeStageObserver, SandboxInfo } from "@armada/core";
-import { HARNESSES, isModelConnectionTestResult, OUTPUT_MAX_READ_BYTES, resolveModelChoice } from "@armada/core";
+import type { Provider, ResumeStageObserver, SandboxInfo } from "@armada/core";
+import { HARNESSES, OUTPUT_MAX_READ_BYTES } from "@armada/core";
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
@@ -17,16 +16,12 @@ import { ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
 import { createLaunchLifecycle } from "./launch-lifecycle.ts";
-import { createNativeLifecycle } from "./native-lifecycle.ts";
-import { createNativeOrchestratorOperations } from "./native-orchestrator.ts";
 import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type {
   Machine,
-  McpConfiguration,
   ModalManagementProvenance,
   ModalStore,
   RunnerDistribution,
-  RunnerTransport,
   Scope,
   SshPreparation,
 } from "./ports.ts";
@@ -41,21 +36,14 @@ import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
 import { scopeKey } from "./store.ts";
 
 export type ModalPromptPhase =
-  | "modal_prepare"
-  | "modal_before_prompt"
-  | "modal_admit"
-  | "modal_health"
-  | "modal_rpc"
   | "modal_app_lookup"
   | "modal_image"
   | "modal_sandbox_create"
-  | `modal_boot_${"binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication"}`;
+  | `modal_boot_${"binding" | "baseline" | "fresh" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
   deploymentId?: string;
-  commonRuntime?: true;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
   storedReads?: boolean;
-  admissionSleep?(milliseconds: number): Promise<void>;
   cleanupSleep?(milliseconds: number): Promise<void>;
   detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
@@ -63,12 +51,8 @@ export interface ModalProviderOptions extends ModalConnection {
   appName: string;
   store: ModalStore;
   source?: { scope: Scope; store: ModalStore };
-  runner: RunnerTransport;
   distribution: RunnerDistribution;
   ssh?: SshPreparation;
-  resumeRefused?(provider: ModalProvider, sandboxId: string): Promise<void>;
-  beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
-  beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
   startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
@@ -89,11 +73,8 @@ export interface ModalProvider extends Provider {
     onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo>;
   rollbackRuntimeResume(input: { sandboxId: string; generation: number }): Promise<void>;
-  configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
-  prepareNativeHarnessCwd(request: { sandboxId: string; harness: Harness; cwd: string }): Promise<void>;
-  configureMcp(request: { sandboxId: string; configuration: McpConfiguration }): Promise<{ revision: string }>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
   collectRetiredSnapshot: NonNullable<Provider["collectRetiredSnapshot"]>;
   sshKey(request: {
@@ -112,23 +93,8 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
-type RuntimeProviderOptions = Omit<ModalProviderOptions, "runner" | "distribution"> & {
-  commonRuntime: true;
-  runner?: never;
-  distribution: Omit<RunnerDistribution, "start">;
-};
-
-export function createModalProvider(options: ModalProviderOptions | RuntimeProviderOptions) {
+export function createModalProvider(options: ModalProviderOptions) {
   const { store, distribution } = options;
-  const runtimeOnly = options.runner === undefined;
-  const runner: RunnerTransport = {
-    call(row, op, input) {
-      if (row.commonRuntime)
-        throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
-      if (!options.runner) throw refusal("invalid_request", "This Modal connection requires Armada runtime enrolment.");
-      return options.runner.call(row, op, input);
-    },
-  };
   const detachCollection = options.detachCollection ?? trackDetachedCollection;
   const measure: NonNullable<ModalProviderOptions["measure"]> = options.measure ?? ((_phase, work) => work());
   const source = options.source ?? { scope: options.scope, store };
@@ -163,7 +129,7 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
   const { collectImages } = imageCollection;
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
-    if (runtimeOnly && !row.golden && !row.commonRuntime)
+    if (!row.golden && !row.commonRuntime)
       throw refusal("invalid_request", "This Modal connection requires Armada runtime enrolment.");
     const origin = row.sourceImage?.scopeKey ?? scopeKey(options.scope);
     if (origin !== scopeKey(source.scope))
@@ -172,7 +138,6 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
   const { sandboxInfo, resourceReceipt, inspection, readResourceReceipts } = createSandboxInspection({
     store,
     client,
-    runner,
     bound,
     assertMachineSource,
     managementAuthority,
@@ -188,23 +153,15 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
     scope: options.scope,
     ...(deploymentId ? { deploymentId } : {}),
     distribution,
-    runner,
-    runtimeOnly,
     measure,
     assertMachineSource,
     sandboxInfo,
   });
-  const { physical, namedOwned, create, sealBaselineBeforeAdmission } = physicalLifecycle;
-  const {
-    checkpoint,
-    stop,
-    delete: deleteSandbox,
-  } = createStopDeleteLifecycle({
+  const { physical, namedOwned, create } = physicalLifecycle;
+  const { stop, delete: deleteSandbox } = createStopDeleteLifecycle({
     client,
     store,
-    runner,
     distribution,
-    runtimeOnly,
     bound,
     physicalLifecycle,
     assertMachineSource,
@@ -213,16 +170,10 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
     detachCollection,
     cleanupSleep: options.cleanupSleep,
   });
-  const { ready, readyLeased, healthyAdmission, admit, call, turns } = createNativeLifecycle({
-    options,
-    provider: () => provider,
-    runner,
-    measure,
-    bound,
-    assertMachineSource,
-    physicalLifecycle,
-  });
-  const admitGoldenCompute = runtimeOnly ? readyLeased : healthyAdmission;
+  async function assertActive(row: Machine) {
+    if (row.phase !== "active" || (row.golden && row.quiesced) || (await (await physical(row)).poll()) !== null)
+      throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
+  }
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
       target.provider !== "modal" ||
@@ -296,8 +247,16 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
     return read(status, stdout);
   }
 
+  const requiresRuntime = async () => {
+    throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
+  };
   const provider: ModalProvider = {
     id: "modal",
+    prompt: requiresRuntime,
+    getPrompt: requiresRuntime,
+    steer: requiresRuntime,
+    interrupt: requiresRuntime,
+    events: requiresRuntime,
     backendIdentity: async () => {
       await bound();
       return {
@@ -318,7 +277,6 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
       store,
       source,
       scope: options.scope,
-      commonRuntime: options.commonRuntime,
       managementAuthority,
       bound,
       assertAuthority,
@@ -385,26 +343,12 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
                 "conflict",
                 "Active golden master has a different restore context; edits were not discarded.",
               );
-            return sandboxInfo(await admitGoldenCompute(row, save));
+            await assertActive(row);
+            return sandboxInfo(row);
           }
           if (["reserved", "creating", "booting"].includes(row.phase)) {
             if (!same || row.goldenRestore?.generation !== row.generation)
               throw refusal("conflict", "Another golden restore is in progress.");
-            if (!runtimeOnly && row.phase === "booting" && row.physicalId) {
-              let health: { generation: string; ready: boolean; pid?: unknown } | undefined;
-              try {
-                health = await runner.call(row, "health", {});
-              } catch {}
-              if (health?.generation === String(row.generation) && health.ready) {
-                if (row.processBaseline?.admissionState === "pending")
-                  await sealBaselineBeforeAdmission(await physical(row), row, save, health.pid);
-                row.phase = "active";
-                row.info.state = "ready";
-                row.info.providerState = "active";
-                await save(row);
-                return sandboxInfo(row);
-              }
-            }
             return create(row, save, {});
           }
           if (row.phase !== "restoring") {
@@ -441,9 +385,7 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
           if (!intent) throw refusal("conflict", "Golden restore intent is missing.");
           row.generation = intent.generation;
           row.imageId = intent.imageId;
-          row.eventBase = 0;
           row.quiesced = false;
-          delete row.checkpointWatermark;
           delete row.physicalId;
           delete row.processBaseline;
           delete row.grantExpiresAt;
@@ -457,110 +399,16 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
         throw error;
       }
     },
-    async prepareNativeHarnessCwd({ sandboxId, harness, cwd }) {
-      if (
-        !(HARNESSES as readonly string[]).includes(harness) ||
-        typeof cwd !== "string" ||
-        !posix.isAbsolute(cwd) ||
-        posix.normalize(cwd) !== cwd ||
-        Array.from(cwd).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
-        Buffer.byteLength(cwd) > 4095
-      )
-        throw refusal("invalid_request", "Native harness cwd must be a canonical absolute POSIX path.");
-      await admit(sandboxId, async (row, save) => {
-        if (row.golden) throw refusal("invalid_request", "Native harness cwd preparation requires a working fork.");
-        const active = await healthyAdmission(row, save);
-        active.harnessCwds = { ...active.harnessCwds, [harness]: cwd };
-        await save(active);
-      });
-    },
-    async configureGitHub({
-      sandboxId,
-      configuration,
-    }: {
-      sandboxId: string;
-      configuration: import("@armada/core").GitHubRuntimeConfiguration | null;
-    }) {
-      return admit(sandboxId, async (row) => {
-        if (
-          row.golden ||
-          !row.physicalId ||
-          !["ready", "running"].includes(row.info.state) ||
-          (configuration && configuration.generation !== String(row.generation))
-        )
-          throw refusal("unauthorized", "GitHub runtime generation is not active.");
-        const bounded =
-          configuration && row.grantExpiresAt
-            ? { ...configuration, expiresAt: Math.min(configuration.expiresAt, row.grantExpiresAt) }
-            : configuration;
-        const result = await runner.call<{ acknowledged?: boolean }>(row, "configureGitHub", {
-          configuration: bounded,
-        });
-        if (result?.acknowledged !== true)
-          throw refusal("unavailable", "GitHub runtime did not acknowledge configuration.");
-        return { acknowledged: true };
-      });
-    },
-    async testModelConnection({ sandboxId, harness, model }) {
-      resolveModelChoice(harness, { model });
-      return admit(sandboxId, async (row) => {
-        if (row.golden || row.phase !== "active" || !["ready", "running"].includes(row.info.state))
-          throw refusal("sandbox_not_ready", "Connection checks require an already-running sandbox.");
-        const result = await runner.call<unknown>(row, "testModelConnection", { harness, model });
-        if (!isModelConnectionTestResult(result)) throw refusal("unavailable", "Invalid connection-test receipt.");
-        return result;
-      });
-    },
-    async configureReadableVariables({ sandboxId, harness, variables }) {
-      await admit(sandboxId, async (row, save) => {
-        if (row.golden) throw refusal("invalid_request", "Golden builders cannot receive variables.");
-        const active = await healthyAdmission(row, save);
-        const result = await runner.call<{ acknowledged?: boolean }>(active, "configureReadableVariables", {
-          harness,
-          variables,
-        });
-        if (result.acknowledged !== true) throw refusal("unavailable", "Readable variable bootstrap unavailable.");
-      });
-    },
-    async configureMcp({ sandboxId, configuration }) {
-      if (
-        !configuration ||
-        typeof configuration.revision !== "string" ||
-        !configuration.servers ||
-        typeof configuration.servers !== "object" ||
-        Array.isArray(configuration.servers)
-      )
-        throw refusal("invalid_request", "Invalid MCP configuration shape.");
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden)
-          throw refusal("invalid_request", "Golden builders cannot receive model connection configuration.");
-        const active = await healthyAdmission(row, save);
-        const result = await runner.call<{ revision?: unknown }>(active, "configureMcp", { configuration });
-        if (!result || result.revision !== configuration.revision)
-          throw refusal("unavailable", "Runner did not acknowledge the requested MCP revision.");
-        return { revision: configuration.revision };
-      });
-    },
-    ...createNativeOrchestratorOperations({ admit, healthyAdmission, runner }),
-    ...turns,
-    supportsExecPhysicalGeneration: true,
-    async exec({ expectedPhysicalGeneration, ...r }) {
-      r.signal?.throwIfAborted();
-      if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
-        return admit(r.sandboxId, async (row) => {
-          r.signal?.throwIfAborted();
-          if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime exec is not enabled.");
-          if (expectedPhysicalGeneration !== undefined && expectedPhysicalGeneration !== String(row.generation))
-            throw refusal("conflict", "Native exec physical incarnation changed.");
-          if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
-          return runner.call<ExecResult>(row, "exec", { input: r });
-        });
-      const target = await store.get(r.sandboxId);
-      if (!target.golden) return call(r.sandboxId, "exec", { input: r }, r.signal);
-      return admit(r.sandboxId, async (row, save) => {
-        if (!row.golden) throw refusal("conflict", "Sandbox role changed during golden exec admission.");
-        const active = await admitGoldenCompute(row, save);
-        return executeGoldenCommand(await physical(active), r);
+    async exec(request) {
+      request.signal?.throwIfAborted();
+      if (request.onlyIfRunning || request.expectedPhysicalGeneration !== undefined)
+        throw refusal("invalid_request", "Generation-fenced workspace commands require the common transport.");
+      await bound();
+      return store.lease(request.sandboxId, async (row) => {
+        if (!row.golden) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
+        await assertActive(row);
+        request.signal?.throwIfAborted();
+        return executeGoldenCommand(await physical(row), request);
       });
     },
     ...createSnapshotLifecycle({
@@ -572,7 +420,6 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
       assertAuthority,
       assertMachineSource,
       physical,
-      checkpoint,
       distribution,
       resourceReceipt,
     }),
@@ -641,11 +488,12 @@ export function createModalProvider(options: ModalProviderOptions | RuntimeProvi
     },
     delete: deleteSandbox,
     async sshKey({ sandboxId, key }) {
-      const row = await ready(sandboxId);
+      const row = await store.get(sandboxId);
+      await assertActive(row);
       return store.lease(sandboxId, async (current) => {
         if (current.phase !== "active" || current.generation !== row.generation)
           throw refusal("sandbox_not_ready", "SSH lifecycle changed.");
-        const result = await ssh.prepare(await physical(row), row, key);
+        const result = await ssh.prepare(await physical(current), current, key);
         if (result.username !== (current.golden ? "root" : "user"))
           throw refusal("conflict", "SSH identity does not match trusted sandbox role.");
         return {

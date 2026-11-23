@@ -3,13 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Image, ModalClient, Sandbox } from "modal";
 import {
-  createRunnerDistribution,
   createSshPreparation,
   executeGoldenCommand,
-  loadRunnerArtifact,
   type Machine,
   MODAL_IMAGE_LOCK,
   type ModalProvider,
+  modalImage,
   probeModalSsh,
 } from "../src/index.ts";
 
@@ -44,7 +43,6 @@ if (import.meta.main) {
     return out;
   };
   try {
-    const artifact = await loadRunnerArtifact(join(import.meta.dir, "../../agent-runtime/dist"));
     let commands: string[] = [];
     const handle = {
       dockerfileCommands(value: string[]) {
@@ -52,14 +50,7 @@ if (import.meta.main) {
         return this;
       },
     } as unknown as Image;
-    await createRunnerDistribution({
-      ...MODAL_IMAGE_LOCK,
-      ...artifact,
-      capabilities: {} as never,
-      bootstrap: async () => ({}),
-      restoreEnv: async () => ({}),
-      prepareSnapshot: async () => {},
-    }).image({ images: { fromRegistry: () => handle } } as unknown as ModalClient);
+    await modalImage(MODAL_IMAGE_LOCK)({ images: { fromRegistry: () => handle } } as unknown as ModalClient);
     await Bun.write(join(root, "Dockerfile"), `FROM ${MODAL_IMAGE_LOCK.base}\n${commands.join("\n")}\n`);
     await run(["docker", "build", "-t", imageName, root]);
     for (const golden of [false, true]) {

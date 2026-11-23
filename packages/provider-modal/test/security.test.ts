@@ -1,14 +1,8 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import type { Sandbox } from "modal";
-import { createGenerationGrants, createSshPreparation, type Machine, type Scope, scrubSsh } from "../src/index.ts";
+import { createSshPreparation, type Machine, scrubSsh } from "../src/index.ts";
 
-const scope: Scope = {
-  orgId: "org",
-  userId: "owner",
-  visibility: "private",
-  binding: { workspace: "workspace", environment: "main", appId: "ap_bound" },
-};
 const machine: Machine = {
   info: { id: "logical", name: "test", state: "ready", providerState: "active", labels: {} },
   phase: "active",
@@ -18,16 +12,6 @@ const machine: Machine = {
   ttlSeconds: 60,
   physicalName: "physical",
 };
-test("generation grants authenticate immutable tenant/App scope and expiry without storing tokens", async () => {
-  const key = crypto.getRandomValues(new Uint8Array(32));
-  const service = createGenerationGrants(key, scope);
-  const grant = service.issue(machine);
-  expect((await service.verifyGrant(grant.token)).claims).toMatchObject({ sandboxId: "logical", generation: "4" });
-  const other = createGenerationGrants(key, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
-  await expect(other.verifyGrant(grant.token)).rejects.toMatchObject({ code: "unauthorized" });
-  await expect(service.verifyGrant(`${grant.token}corrupt`)).rejects.toMatchObject({ code: "unauthorized" });
-  expect(() => service.issue({ ...machine, grantExpiresAt: Date.now() - 1 })).toThrow();
-});
 test("SSH registration accepts only an Ed25519 public key and sends it on stdin, returning actual pinned tunnel hostkey", async () => {
   const publicKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }).subarray(-32);
   const encoded = Buffer.concat([

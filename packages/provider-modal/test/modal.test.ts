@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { type AgentEvent, ProviderError, type Sql } from "@armada/core";
+import { ProviderError, type Sql } from "@armada/core";
 import {
   createSqlVaultStore,
   encryptSecret,
@@ -10,33 +10,21 @@ import {
 } from "@armada/core/server";
 import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
-import { Journal } from "../../agent-runtime/src/journal.ts";
-import type { Driver } from "../../agent-runtime/src/protocol.ts";
-import { Runner } from "../../agent-runtime/src/runtime.ts";
-import { createMemoryAuthStore } from "../../auth/src/index.ts";
-import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
-import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createGoldenBuildJob } from "../../mcp-server/src/golden-worker.ts";
 import { createJobsRunner } from "../../mcp-server/src/jobs/runner.ts";
 import { createJobsStore } from "../../mcp-server/src/jobs/store.ts";
-import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import {
-  appendModalEvents,
-  type ComposedModalOptions,
-  createComposedModalProvider,
-  createModalIngestHandler,
   createModalProvider,
-  createRunnerTransport,
   createRuntimeModalProvider,
   createSqlModalStore,
   type Machine,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
-  type ModalProviderOptions,
   mergeModalResourceReceipts,
   modalFailureReceipt,
   type RunnerDistribution,
+  type RuntimeModalOptions,
   type Scope,
   scopeKey,
   settleDetachedModalCollections,
@@ -123,20 +111,7 @@ function createFixtureSql(getDatabase: typeof getDb) {
   return sql;
 }
 const fixtureSql = createFixtureSql(getDb);
-function fixture(
-  accessScope: Scope = scope,
-  sql: Sql = fixtureSql,
-  beforePrompt?: ModalProviderOptions["beforePrompt"],
-  beforeResume?: ModalProviderOptions["beforeResume"],
-  commonRuntime?: true,
-  admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = async () => {
-    throw new Error("Unexpected admission retry: supply a fixture barrier for contention.");
-  },
-  resumeHooks?: {
-    resumeRefused?: ModalProviderOptions["resumeRefused"];
-    restoreEnv?: RunnerDistribution["restoreEnv"];
-  },
-) {
+function fixture(accessScope: Scope = scope, sql: Sql = fixtureSql) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
@@ -154,10 +129,8 @@ function fixture(
   let onScrub: (() => Promise<void>) | undefined;
   let onTerminate: (() => Promise<void>) | undefined;
   let onImageDelete: ((id: string) => Promise<void>) | undefined;
-  let onRpc: ((row: Machine, op: string, input: object) => Promise<unknown>) | undefined;
   let provisioned = false;
   let ownershipOverride: Record<string, string> | undefined;
-  const bootstraps = new Map<string, { grant: { token: string; generation: string } }>();
   const machines = new Map<string, { sb: Sandbox; exit: number | null }>();
   const names = new Map<string, Sandbox>();
   const fakeClient = {
@@ -200,7 +173,6 @@ function fixture(
           sandboxId: id,
           poll: async () => state.exit,
           getTags: async () => ownershipOverride ?? params.tags,
-          createConnectToken: async () => ({ url: `https://runner.example/${id}`, token: "synthetic-connect" }),
           exec: async (argv: string[], params: object) => {
             const command = { argv, params, stdin: [] as string[] };
             sdkCommands.push(command);
@@ -214,8 +186,6 @@ function fixture(
                   if (input?.op === "quiesce") log.push("quiesce-processes");
                   if (input && "command" in input)
                     log.push(argv.includes("/usr/sbin/runuser") ? "workspace-exec" : "root-exec");
-                  if (input && "grant" in input)
-                    bootstraps.set(id, input as unknown as { grant: { token: string; generation: string } });
                 },
                 close: async () => {
                   closed.resolve();
@@ -236,18 +206,16 @@ function fixture(
                         namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
                         processes: [{ pid: 1, start: "1" }],
                       })
-                    : typeof input?.bundle === "string" && typeof input.sha256 === "string"
-                      ? `ARMADA_RUNTIME_INSTALLED ${createHash("sha256").update(Buffer.from(input.bundle, "base64")).digest("hex")}`
-                      : input && "command" in input
-                        ? JSON.stringify({
-                            detached: false,
-                            exitCode: 0,
-                            stdout: argv.includes("/usr/sbin/runuser") ? '{"status":"clean"}' : "",
-                            stderr: "",
-                            timedOut: false,
-                            truncated: false,
-                          })
-                        : "";
+                    : input && "command" in input
+                      ? JSON.stringify({
+                          detached: false,
+                          exitCode: 0,
+                          stdout: argv.includes("/usr/sbin/runuser") ? '{"status":"clean"}' : "",
+                          stderr: "",
+                          timedOut: false,
+                          truncated: false,
+                        })
+                      : "";
                 },
               },
               wait: async () => 0,
@@ -300,15 +268,10 @@ function fixture(
   const distribution: RunnerDistribution = {
     capabilities: { claude: capabilities, codex: { ...capabilities, steer: "restart" } },
     image: async () => ({ imageId: "im_base" }) as Image,
-    start: async (_sb, row, env) => {
-      log.push(`start-${row.generation}`);
-      if (failBoot) throw Error("synthetic boot failure; never log request/env");
-      expect(Object.keys(env)).not.toContain("MODAL_TOKEN_SECRET");
-    },
     prepareFreshMachine: async (_sandbox, row) => {
+      if (failBoot) throw Error("Synthetic fresh preparation failure");
       log.push(`fresh-${row.generation}`);
     },
-    restoreEnv: resumeHooks?.restoreEnv ?? (async () => ({})),
     prepareSnapshot: async () => {
       log.push("scrub");
       provisioned = false;
@@ -318,7 +281,6 @@ function fixture(
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
   const { provider, captureRuntimeWork, readResourceReceipts } = createModalProvider({
-    admissionSleep,
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
     },
@@ -326,32 +288,12 @@ function fixture(
       detached.push(work);
     },
     scope: accessScope,
-    ...(commonRuntime ? { commonRuntime } : {}),
-    ...(beforePrompt ? { beforePrompt } : {}),
-    ...(beforeResume ? { beforeResume } : {}),
-    ...(resumeHooks?.resumeRefused ? { resumeRefused: resumeHooks.resumeRefused } : {}),
     tokenId: "synthetic-id",
     tokenSecret: "synthetic-secret",
     appName: "pinned",
     client,
     store,
     distribution,
-    runner: {
-      async call<T>(_row: Machine, op: string, input: object) {
-        log.push(op);
-        const override = await onRpc?.(_row, op, input);
-        if (override !== undefined) return override as T;
-        if (op === "configureMcp")
-          return { revision: (input as { configuration: { revision: string } }).configuration.revision } as T;
-        if (op === "exec") expect(input).toHaveProperty("input");
-        if (op === "health") return { generation: String(_row.generation), ready: true } as T;
-        if (op === "prompt")
-          return { promptId: crypto.randomUUID(), conversationId: crypto.randomUUID(), status: "queued" } as T;
-        return (
-          op === "checkpoint" ? { watermark: 0, acknowledgedSequence: 0, generation: String(_row.generation) } : {}
-        ) as T;
-      },
-    },
     ssh: {
       prepare: async (_sandbox, row) => {
         provisioned = true;
@@ -406,7 +348,6 @@ function fixture(
     client,
     distribution,
     log,
-    bootstraps,
     requestedRuntimes,
     resourceRequests,
     setArtifactVolume: (volume: Volume) => {
@@ -415,9 +356,6 @@ function fixture(
     sdkCommands,
     get provisioned() {
       return provisioned;
-    },
-    onRpc(work: (row: Machine, op: string, input: object) => Promise<unknown>) {
-      onRpc = work;
     },
     loseTerminateResponse(value: boolean) {
       loseTerminateResponse = value;
@@ -460,117 +398,6 @@ function fixture(
     },
   };
 }
-async function seedHistory(sandboxId: string, events: AgentEvent[]) {
-  await getDb().query(
-    `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event)
-     select $1,$2,'1',sequence,event
-     from jsonb_array_elements($3::jsonb) with ordinality as history(event,sequence)`,
-    [scopeKey(scope), sandboxId, JSON.stringify(events)],
-  );
-}
-
-test("stored composition reads ingested turns without any live SDK, runner or lifecycle lease", async () => {
-  const f = fixture();
-  const row = await activeWorker(f);
-  const event = {
-    id: "terminal",
-    at: 1,
-    kind: "prompt" as const,
-    promptId: "stored-turn",
-    text: "work",
-    status: "finished" as const,
-  };
-  const history: AgentEvent[] = [
-    { ...event, status: "running" },
-    ...Array.from(
-      { length: 1001 },
-      (_, i): AgentEvent => ({ id: `other-${i}`, at: i + 2, kind: "other", type: "historical", data: {} }),
-    ),
-    { ...event, id: "terminal-final", at: 2000 },
-  ];
-  await seedHistory(row.id, history);
-  let queries = 0;
-  const tracedSql: Sql = {
-    query: (text, params) => {
-      queries++;
-      return getDb().query(text, params);
-    },
-    transaction: (work) => getDb().transaction!(work),
-  };
-  f.client.apps.fromName = async () => {
-    throw new Error("No live App lookup on stored reads");
-  };
-  f.client.sandboxes.fromId = async () => {
-    throw new Error("No physical poll on stored reads");
-  };
-  const stored = await createComposedModalProvider({
-    ...compositionOptions(f),
-    sql: tracedSql,
-    storedReads: true,
-    fetcher: Object.assign(
-      async () => {
-        throw new Error("No runner RPC on stored reads");
-      },
-      {
-        preconnect: () => {
-          throw new Error("No network preconnect on stored reads");
-        },
-      },
-    ),
-  });
-  try {
-    expect(await stored.provider.get(row.id)).toMatchObject({ id: row.id, state: "ready" });
-    expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
-    const beforePrompt = queries;
-    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "stored-turn" })).toMatchObject({
-      status: "finished",
-      done: true,
-    });
-    expect(queries - beforePrompt).toBeLessThanOrEqual(5);
-    const beforeMissing = queries;
-    expect(await stored.provider.getPrompt({ sandboxId: row.id, promptId: "not-ingested-yet" })).toMatchObject({
-      status: "queued",
-      done: false,
-    });
-    expect(queries - beforeMissing).toBeLessThanOrEqual(5);
-    await f.store.lease(row.id, async () => {
-      expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
-    });
-    await getDb().query("update members set role='admin' where org_id=$1 and user_id=$2", [
-      scope.orgId,
-      "00000000-0000-0000-0000-000000000004",
-    ]);
-    await getDb().query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
-    await expect(stored.provider.events({ sandboxId: row.id })).rejects.toMatchObject({ code: "forbidden" });
-  } finally {
-    await getDb().query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
-      scope.orgId,
-      scope.userId,
-    ]);
-    await getDb().query("update members set role='member' where org_id=$1 and user_id=$2", [
-      scope.orgId,
-      "00000000-0000-0000-0000-000000000004",
-    ]);
-    await stored.close();
-  }
-});
-
-test.each(["foreign-source", "deleted"] as const)("history refuses an invalid machine (%s)", async (invalid) => {
-  const f = fixture();
-  const row = await activeWorker(f);
-  await f.store.lease(row.id, async (record, save) => {
-    if (invalid === "deleted") record.phase = "deleted";
-    else {
-      if (!record.sourceImage) throw new Error("Fixture must record its source image");
-      record.sourceImage.scopeKey = "foreign";
-    }
-    await save(record);
-  });
-  await expect(f.provider.events({ sandboxId: row.id })).rejects.toMatchObject({
-    code: invalid === "deleted" ? "not_found" : "forbidden",
-  });
-});
-
 test("detail verifies the App once per read and still rejects a changed binding", async () => {
   const f = fixture();
   const row = await activeWorker(f);
@@ -1061,8 +888,13 @@ test.each([
   expect(f.resourceRequests[1]).toMatchObject(resources);
   expect(f.resourceRequests[0]).not.toHaveProperty("cpu");
   expect(f.resourceRequests[0]).not.toHaveProperty("memoryMiB");
-  await f.provider.stop({ sandboxId: row.id });
-  await f.provider.exec({ sandboxId: row.id, command: "true" });
+  await f.provider.stopRuntime({ sandboxId: row.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+  await f.provider.resumeRuntime({
+    sandboxId: row.id,
+    generation: 2,
+    checkpoint: { epoch: "1", watermark: 0 },
+    ttlSeconds: 3600,
+  });
   expect(f.resourceRequests[2]).toMatchObject(resources);
   expect((await f.store.get(row.id)).size).toBe(size);
 });
@@ -1108,11 +940,8 @@ async function seedHistoricalSnapshotTombstone(name: string) {
   );
 }
 
-test.each([
-  ["native", undefined],
-  ["enrolled", true],
-] as const)("%s Modal forks from one snapshot can boot concurrently", async (_path, commonRuntime) => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
+test("Modal forks from one snapshot can boot concurrently", async () => {
+  const f = fixture(scope, fixtureSql);
   const { name } = await savedGolden(f);
   const entered = deferred();
   const release = deferred();
@@ -1142,25 +971,16 @@ test.each([
   }
 });
 
-test.each([
-  ["native", undefined],
-  ["enrolled", true],
-] as const)("%s Modal fork refuses a snapshot retired before reservation", async (_path, commonRuntime) => {
+test("Modal fork refuses a snapshot retired before reservation", async () => {
   const source = fixture();
   const { name } = await savedGolden(source);
-  const fork = fixture(
-    scope,
-    {
-      query: fixtureSql.query,
-      async transaction(work) {
-        await source.provider.deleteSnapshot(name);
-        return getDb().transaction(work);
-      },
+  const fork = fixture(scope, {
+    query: fixtureSql.query,
+    async transaction(work) {
+      await source.provider.deleteSnapshot(name);
+      return getDb().transaction(work);
     },
-    undefined,
-    undefined,
-    commonRuntime,
-  );
+  });
   const requestKey = crypto.randomUUID();
   await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
     code: "not_found",
@@ -1169,11 +989,8 @@ test.each([
   expect(fork.creates).toBe(0);
 });
 
-test.each([
-  ["native", undefined],
-  ["enrolled", true],
-] as const)("snapshot retirement refuses a live %s Modal fork reference", async (_path, commonRuntime) => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
+test("snapshot retirement refuses a live Modal fork reference", async () => {
+  const f = fixture(scope, fixtureSql);
   const { name } = await savedGolden(f);
   const child = await f.provider.fork({ from: name });
   const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
@@ -1186,7 +1003,7 @@ test.each([
 });
 
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
-  const f = fixture(scope, getDb(), undefined, undefined, true);
+  const f = fixture(scope, getDb());
   const volume = new Volume("vo_public_artifacts");
   f.setArtifactVolume(volume);
   await runningFork(f);
@@ -1196,7 +1013,7 @@ test("enrolled Modal forks mount the environment artifact cache read-only", asyn
 });
 
 test("enrolled Modal bootstrap rejects a different physical machine before consuming the attempt", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const row = await runningFork(f);
   const lookup = f.client.sandboxes.fromId;
   f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
@@ -1215,16 +1032,11 @@ test("enrolled Modal bootstrap rejects a different physical machine before consu
   expect((await f.store.get(row.id)).runtimeStartAttempted).toBeUndefined();
 });
 
-test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+test("enrolled Modal forks bootstrap once and stop without a recovery claim", async () => {
+  const f = fixture(scope, fixtureSql);
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
   const afterFork = f.log.length;
-  expect(f.log).not.toContain("start-1");
-  expect(f.log).not.toContain("health");
-  await expect(f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no fallback" })).rejects.toMatchObject({
-    code: "invalid_request",
-  });
   await f.provider.startRuntime({
     sandboxId: row.id,
     serverUrl: "https://armada.example",
@@ -1254,14 +1066,11 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
   expect(f.log.slice(afterFork)).toEqual(["terminate"]);
   expect(await f.provider.get(row.id)).toMatchObject({ state: "stopped" });
   expect((await f.store.get(row.id)).recoveryImageId).toBeUndefined();
-  await expect(
-    f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "no implicit resume" }),
-  ).rejects.toMatchObject({ code: "invalid_request" });
   expect(f.creates).toBe(1);
 });
 
 test("common-runtime Modal capture quiesces the active incarnation and runs the Git policy as the workspace user", async () => {
-  const f = fixture(scope, getDb(), undefined, undefined, true);
+  const f = fixture(scope, getDb());
   f.distribution.captureProcessBaseline = captureProcessBaseline;
   const worker = await runningFork(f);
   const afterFork = f.log.length;
@@ -1279,7 +1088,7 @@ test("common-runtime Modal capture quiesces the active incarnation and runs the 
 });
 
 test("common-runtime Modal capture refuses a stale incarnation before touching physical compute", async () => {
-  const f = fixture(scope, getDb(), undefined, undefined, true);
+  const f = fixture(scope, getDb());
   const worker = await runningFork(f);
   const afterFork = f.sdkCommands.length;
 
@@ -1295,7 +1104,7 @@ test("common-runtime Modal capture refuses a stale incarnation before touching p
 });
 
 test("Modal delete keeps ownership when physical lookup returns a different machine", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const lookup = f.client.sandboxes.fromId;
   f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
@@ -1309,7 +1118,7 @@ test("Modal delete keeps ownership when physical lookup returns a different mach
 });
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const original = await f.store.get(worker.id);
   const bootstrap = {
@@ -1374,7 +1183,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
 });
 
 test("retained Modal rollback retries termination and fences a newer replacement", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const checkpoint = { epoch: "1", watermark: 2 };
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
@@ -1413,7 +1222,7 @@ test("retained Modal rollback retries termination and fences a newer replacement
 });
 
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
@@ -1441,7 +1250,7 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
 });
 
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
   const afterLaunch = f.log.length;
@@ -1470,32 +1279,6 @@ function deferred() {
   });
   return { promise, resolve };
 }
-function admissionBarrier() {
-  const retry = deferred();
-  let holder: Promise<unknown> | undefined;
-  return {
-    retry: retry.promise,
-    wait: async () => {
-      retry.resolve();
-      if (holder) await Promise.allSettled([holder]);
-    },
-    track(store: ReturnType<typeof createSqlModalStore>, sandboxId: string) {
-      const lease = store.lease.bind(store);
-      store.lease = async (id, work) => {
-        if (id !== sandboxId) return lease(id, work);
-        const attempt = lease(id, (row, save) => {
-          holder = attempt;
-          return work(row, save);
-        });
-        try {
-          return await attempt;
-        } finally {
-          if (holder === attempt) holder = undefined;
-        }
-      };
-    },
-  };
-}
 function runtimeComposition(f: ReturnType<typeof fixture>) {
   return createRuntimeModalProvider({
     scope,
@@ -1511,50 +1294,15 @@ function compositionOptions(
   f: ReturnType<typeof fixture>,
   target: Scope = scope,
   sourceScope: Scope = target,
-): ComposedModalOptions {
-  const bundle = new TextEncoder().encode("credential-free fixture bundle");
+): RuntimeModalOptions {
   return {
     scope: target,
     sourceScope,
     appName: "pinned",
     sql: fixtureSql,
-    signingKey: new Uint8Array(32).fill(23),
-    ingestUrl: "https://ingest.example/api/v1/modal/events",
+    publicUrl: "https://armada.example",
     client: f.client,
-    artifact: {
-      base: `node@sha256:${"a".repeat(64)}`,
-      apt: {
-        gh: "1",
-        opensshServer: "1",
-        sudo: "1",
-        caCertificates: "1",
-        curl: "1",
-        unzip: "1",
-        python3: "1",
-      },
-      bundle,
-      sha256: createHash("sha256").update(bundle).digest("hex"),
-    },
-    resolveHarnessEnvironment: async () => ({ claudeEnv: {}, codexEnv: {} }),
-    fetcher: (async (url, init) => {
-      const request = JSON.parse(String(init?.body));
-      const bootstrap = f.bootstraps.get(new URL(String(url)).pathname.slice(1));
-      if (!bootstrap) throw Error("missing SDK bootstrap");
-      expect(new Headers(init?.headers).get("x-armada-runner-grant")).toBe(bootstrap.grant.token);
-      const result =
-        request.op === "checkpoint"
-          ? { generation: bootstrap.grant.generation, watermark: 0, acknowledgedSequence: 0 }
-          : request.op === "configureMcp"
-            ? { revision: request.configuration.revision, unsafeConfiguration: request.configuration }
-            : request.op === "prompt"
-              ? {
-                  promptId: crypto.randomUUID(),
-                  conversationId: request.input.conversationId ?? crypto.randomUUID(),
-                  status: "queued",
-                }
-              : { generation: bootstrap.grant.generation, ready: true };
-      return Response.json({ version: 1, requestId: request.requestId, result });
-    }) as typeof fetch,
+    image: MODAL_IMAGE_LOCK,
   };
 }
 describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
@@ -1711,282 +1459,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log).toContain("snapshot");
     expect(f.provisioned).toBe(false);
   });
-  test("native resume refusal fences restoration under the provider lifecycle lease", async () => {
-    const f = fixture(scope, fixtureSql, undefined, async () => {
-      throw new ProviderError({ provider: "modal", code: "conflict", message: "credential_busy", retryable: false });
-    });
-    const { name: snapshot } = await savedGolden(f);
-    const row = await f.provider.fork({ from: snapshot });
-    await f.provider.stop({ sandboxId: row.id });
-    const creates = f.creates;
-    await expect(f.provider.exec({ sandboxId: row.id, command: "pwd" })).rejects.toThrow("credential_busy");
-    expect(f.creates).toBe(creates);
-    expect((await f.store.get(row.id)).phase).toBe("stopped");
-    expect((await f.store.get(row.id)).generation).toBe(1);
-  });
-  test("snapshot failure never terminates or reports a durable stop", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    f.failSnapshot(true);
-    await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "unknown" });
-    expect(f.log).not.toContain("terminate");
-    expect((await f.store.get(row.id)).phase).toBe("snapshot");
-    await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
-  });
-  test.each(["scrub", "snapshot"] as const)(
-    "ordinary stop bounds failed %s and terminates without stale disk recovery",
-    async (stage) => {
-      const f = fixture();
-      const row = await activeWorker(f);
-      let scrubs = 0;
-      if (stage === "scrub")
-        f.onScrub(async () => {
-          scrubs++;
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            retryable: false,
-            message: "unsafe upstream payload",
-            details: { processCategory: "privileged_writer", processFailure: "unproven" },
-          });
-        });
-      else f.failSnapshot(true);
-      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({
-        providerCode: stage === "scrub" ? "modal_checkpoint_scrub" : "modal_checkpoint_snapshot",
-      });
-      expect(f.log).not.toContain("terminate");
-      await f.provider.stop({ sandboxId: row.id });
-      expect(await f.provider.get(row.id)).toMatchObject({
-        state: "stopped",
-        stopNote: "checkpoint_failed_disk_not_retained",
-      });
-      expect((await f.store.get(row.id)).recoveryImageId).toBeUndefined();
-      expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
-      if (stage === "scrub") expect(scrubs).toBe(1);
-      await f.provider.stop({ sandboxId: row.id });
-      expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
-    },
-  );
-  test("checkpoint, scrub, save, commit and terminate; resume retains logical ID with fenced new generation", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    await f.provider.stop({ sandboxId: row.id });
-    expect(f.log.slice(-4)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
-    const stopped = await f.store.get(row.id);
-    const creates = f.creates;
-    await expect(
-      f.provider.exec({ sandboxId: row.id, command: "recovery", onlyIfRunning: true }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    expect(f.creates).toBe(creates);
-    expect((await f.store.get(row.id)).generation).toBe(stopped.generation);
-    expect(stopped.phase).toBe("stopped");
-    expect(stopped.recoveryImageId).toBeDefined();
-    await f.provider.exec({ sandboxId: row.id, command: "pwd" });
-    const resumed = await f.store.get(row.id);
-    expect(resumed.info.id).toBe(row.id);
-    expect(resumed.generation).toBe(2);
-    expect(resumed.physicalId).not.toBe(stopped.physicalId);
-  });
-  test("native exec cancelled during resume preparation leaves the retained workspace stopped", async () => {
-    const controller = new AbortController();
-    const refusals: string[] = [];
-    const f = fixture(scope, fixtureSql, undefined, async () => controller.abort(), undefined, undefined, {
-      async resumeRefused(_provider, id) {
-        refusals.push(id);
-      },
-    });
-    const worker = await activeWorker(f);
-    await f.provider.stop({ sandboxId: worker.id });
-    const stopped = await f.store.get(worker.id);
-    const creates = f.creates;
-
-    await expect(
-      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
-    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
-    expect(await f.store.get(worker.id)).toMatchObject({
-      phase: "stopped",
-      generation: stopped.generation,
-      recoveryImageId: stopped.recoveryImageId,
-    });
-    expect(f.creates).toBe(creates);
-    expect(f.log).not.toContain("exec");
-    expect(refusals).toEqual([worker.id]);
-  });
-  test("native exec cancelled during restore environment lookup leaves the reservation replayable", async () => {
-    const controller = new AbortController();
-    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, undefined, {
-      async restoreEnv() {
-        controller.abort();
-        return {};
-      },
-    });
-    const worker = await activeWorker(f);
-    await f.provider.stop({ sandboxId: worker.id });
-    const stopped = await f.store.get(worker.id);
-    const creates = f.creates;
-
-    await expect(
-      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
-    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
-    const reserved = await f.store.get(worker.id);
-    expect(reserved).toMatchObject({
-      phase: "reserved",
-      generation: stopped.generation + 1,
-      imageId: stopped.recoveryImageId,
-    });
-    expect(f.creates).toBe(creates);
-    expect(f.log).not.toContain("exec");
-
-    await f.provider.exec({ sandboxId: worker.id, command: "edit workspace" });
-    expect(await f.store.get(worker.id)).toMatchObject({
-      phase: "active",
-      generation: reserved.generation,
-      physicalName: reserved.physicalName,
-    });
-    expect(f.creates).toBe(creates + 1);
-    expect(f.log.filter((op) => op === "exec")).toHaveLength(1);
-  });
-  test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
-    await appendModalEvents(
-      getDb(),
-      scope,
-      row.id,
-      "1",
-      statuses.map((status, i) => ({
-        sequence: i + 1,
-        event: {
-          id: `event-${i}`,
-          at: i,
-          kind: "prompt" as const,
-          text: "task",
-          promptId: `prompt-${i}`,
-          conversationId: "conversation",
-          status,
-        },
-      })),
-    );
-    f.onRpc(async (_row, op) =>
-      op === "checkpoint" ? { watermark: 5, acknowledgedSequence: 5, generation: "1" } : undefined,
-    );
-    await f.provider.stop({ sandboxId: row.id });
-    const creates = f.creates;
-    for (const [i, status] of statuses.entries()) {
-      expect(await f.provider.getPrompt({ sandboxId: row.id, promptId: `prompt-${i}` })).toEqual({
-        promptId: `prompt-${i}`,
-        conversationId: "conversation",
-        status,
-        done: !["queued", "running"].includes(status),
-      });
-    }
-    await expect(f.provider.getPrompt({ sandboxId: row.id, promptId: "missing" })).rejects.toMatchObject({
-      code: "not_found",
-    });
-    expect(f.creates).toBe(creates);
-    expect((await f.store.get(row.id)).phase).toBe("stopped");
-    expect((await f.store.get(row.id)).generation).toBe(1);
-    await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "resume deliberately" });
-    expect((await f.store.get(row.id)).generation).toBe(2);
-  });
-  test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    const eventCount = 13;
-    const pageSize = 5;
-    const maximum = await getDb().query<{ cursor: string }>(
-      "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
-    );
-    const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + eventCount).length - 4;
-    await getDb().query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
-    const events: AgentEvent[] = Array.from({ length: eventCount }, (_, i) => ({
-      id: `ordered-${i}`,
-      at: eventCount - i,
-      promptId: "ordered-prompt",
-      conversationId: i > 1 && i < eventCount - 1 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
-      ...(i === 0 || i === 1 || i === eventCount - 1
-        ? {
-            kind: "prompt" as const,
-            text: "task",
-            status: i === 0 ? ("queued" as const) : i === 1 ? ("running" as const) : ("finished" as const),
-          }
-        : { kind: "message" as const, text: `delta-${i}`, partial: i !== eventCount - 2, tools: [] }),
-    }));
-    await seedHistory(row.id, events);
-    f.onRpc(async (_row, op) =>
-      op === "checkpoint" ? { watermark: eventCount, acknowledgedSequence: eventCount, generation: "1" } : undefined,
-    );
-    await f.provider.stop({ sandboxId: row.id });
-    const before = await f.store.get(row.id);
-    const calls = [...f.log];
-    const creates = f.creates;
-
-    async function read(conversationId?: string, resume?: string) {
-      const collected: AgentEvent[] = [];
-      let cursor = resume;
-      for (let pages = 0; pages < 20; pages++) {
-        const page = await f.provider.events({
-          sandboxId: row.id,
-          limit: pageSize,
-          ...(cursor ? { cursor } : {}),
-          ...(conversationId ? { conversationId } : {}),
-        });
-        if (page.events.length) {
-          expect(BigInt(page.cursor ?? "0")).toBeGreaterThan(BigInt(cursor ?? "0"));
-          expect(typeof page.cursor).toBe("string");
-        }
-        collected.push(...page.events);
-        cursor = page.cursor;
-        if (!page.hasMore) return { collected, cursor };
-      }
-      throw new Error("Pagination failed to terminate");
-    }
-    const all = await read();
-    expect(all.collected).toEqual(events);
-    expect(all.cursor).toBe(String(start + eventCount - 1));
-    expect(await read(undefined, String(start + pageSize - 1))).toEqual({
-      collected: events.slice(pageSize),
-      cursor: all.cursor,
-    });
-    expect((await read("ordered-conversation")).collected).toEqual(
-      events.filter((event) => event.conversationId === "ordered-conversation"),
-    );
-    expect(await read(undefined, all.cursor)).toEqual({ collected: [], cursor: all.cursor });
-    expect(await f.provider.getPrompt({ sandboxId: row.id, promptId: "ordered-prompt" })).toEqual({
-      promptId: "ordered-prompt",
-      conversationId: "ordered-conversation",
-      status: "finished",
-      done: true,
-    });
-    expect(f.log).toEqual(calls);
-    expect(f.creates).toBe(creates);
-    expect(await f.store.get(row.id)).toEqual(before);
-  });
-  test("a prompt observation delayed across stop never enters activation", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    const entered = deferred();
-    const release = deferred();
-    const get = f.store.get;
-    let pause = true;
-    f.store.get = async (id) => {
-      if (pause) {
-        pause = false;
-        entered.resolve();
-        await release.promise;
-      }
-      return get(id);
-    };
-    const read = f.provider.getPrompt({ sandboxId: row.id, promptId: "missing" });
-    await entered.promise;
-    await f.provider.stop({ sandboxId: row.id });
-    const creates = f.creates;
-    release.resolve();
-    await expect(read).rejects.toMatchObject({ code: "not_found" });
-    expect(f.creates).toBe(creates);
-    expect((await get(row.id)).phase).toBe("stopped");
-  });
   test("historically retired snapshots leave existing forks usable", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
@@ -1998,7 +1470,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: fork.id });
     expect(f.log).not.toContain("delete-image");
     await f.runDetached();
-    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a retired image still referenced by a live fork never leases its source", async () => {
@@ -2225,7 +1696,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { name } = await savedGolden(f);
     const saved = await f.store.image(name);
     const child = await f.provider.fork({ from: name });
-    await f.provider.stop({ sandboxId: child.id });
+    await f.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
     const recovery = (await f.store.get(child.id)).recoveryImageId;
     expect(recovery).toBeDefined();
     await seedHistoricalSnapshotTombstone(name);
@@ -2233,7 +1704,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.store.purgeImage(name, saved.sourceId, saved.imageId!);
     expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
     expect(await f.store.imageReferenced(recovery!)).toBe(true);
-    await f.provider.exec({ sandboxId: child.id, command: "resume retained recovery" });
+    await f.provider.resumeRuntime({
+      sandboxId: child.id,
+      generation: 2,
+      checkpoint: { epoch: "1", watermark: 0 },
+      ttlSeconds: 3600,
+    });
     expect((await f.provider.get(child.id)).state).toBe("ready");
   });
   test("retiring one saved handle preserves another live handle sharing its artifact", async () => {
@@ -2272,12 +1748,22 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       const seedName = crypto.randomUUID();
       await other.provider.snapshot({ sandboxId: seed.id, name: seedName });
       const child = await other.provider.fork({ from: seedName });
-      await other.provider.stop({ sandboxId: child.id });
+      await other.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
       const recovery = (await other.store.get(child.id)).recoveryImageId!;
       if (mode === "retained") {
-        await other.provider.exec({ sandboxId: child.id, command: "second recovery generation" });
-        await other.provider.stop({ sandboxId: child.id });
-        await other.provider.exec({ sandboxId: child.id, command: "third recovery generation" });
+        await other.provider.resumeRuntime({
+          sandboxId: child.id,
+          generation: 2,
+          checkpoint: { epoch: "1", watermark: 0 },
+          ttlSeconds: 3600,
+        });
+        await other.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "2", epoch: "2", watermark: 0 });
+        await other.provider.resumeRuntime({
+          sandboxId: child.id,
+          generation: 3,
+          checkpoint: { epoch: "2", watermark: 0 },
+          ttlSeconds: 3600,
+        });
         const row = await other.store.get(child.id);
         expect(row.retainedRecoveryIds).toContain(recovery);
         expect(row.imageId).not.toBe(recovery);
@@ -2320,259 +1806,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
-  test("HTTP ingest retains message semantics through SQL replay, pagination and conversation filtering", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    const handler = createModalIngestHandler({
-      sql: getDb(),
-      verifyGrant: async () => ({
-        scope,
-        claims: { sandboxId: row.id, generation: "1", expiresAt: Date.now() + 60000 },
-      }),
-    });
-    const events = [
-      {
-        id: "delta",
-        at: 1,
-        kind: "message" as const,
-        conversationId: "a",
-        promptId: "p",
-        messageId: "native",
-        textMode: "delta" as const,
-        text: "Hi",
-        partial: true,
-        tools: [],
-      },
-      {
-        id: "legacy",
-        at: 2,
-        kind: "message" as const,
-        conversationId: "b",
-        promptId: "q",
-        text: "Historical",
-        partial: false,
-        tools: [],
-      },
-      {
-        id: "final",
-        at: 3,
-        kind: "message" as const,
-        conversationId: "a",
-        promptId: "p",
-        messageId: "native",
-        textMode: "snapshot" as const,
-        text: "Hi there",
-        partial: false,
-        tools: [],
-      },
-    ];
-    const request = () =>
-      new Request("https://example/ingest", {
-        method: "POST",
-        body: JSON.stringify({
-          sandboxId: row.id,
-          generation: "1",
-          events: events.map((event, i) => ({ sequence: i + 1, event })),
-        }),
-      });
-    expect((await handler(request())).status).toBe(200);
-    expect((await handler(request())).status).toBe(200);
-    const first = await f.provider.events({ sandboxId: row.id, conversationId: "a", limit: 1 });
-    expect(first.events).toEqual(events.slice(0, 1));
-    expect(first.hasMore).toBe(true);
-    expect(
-      (await f.provider.events({ sandboxId: row.id, conversationId: "a", cursor: first.cursor ?? "0" })).events,
-    ).toEqual(events.slice(2));
-    expect((await f.provider.events({ sandboxId: row.id, conversationId: "b" })).events).toEqual(events.slice(1, 2));
-  });
-  test("native outbox drains large UTF-8 conversations through HTTP ingest and remains readable after stop", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    const grant = {
-      token: "fixture-ingest-private-grant",
-      sandboxId: row.id,
-      generation: "1",
-      expiresAt: Date.now() + 60000,
-    };
-    const handler = createModalIngestHandler({ sql: getDb(), verifyGrant: async () => ({ scope, claims: grant }) });
-    const journal = new Journal(":memory:", (s) => s);
-    const driver: Driver = {
-      start() {
-        throw Error("unused");
-      },
-      async close() {},
-    };
-    const requests: number[] = [];
-    const runner = new Runner(
-      journal,
-      grant,
-      { claude: driver, codex: driver },
-      {
-        async append(batch) {
-          const body = JSON.stringify(batch);
-          requests.push(Buffer.byteLength(body));
-          const response = await handler(new Request("https://example/ingest", { method: "POST", body }));
-          if (!response.ok) throw Error(`ingest_http_${response.status}`);
-          return (await response.json()) as { acknowledgedSequence: number };
-        },
-      },
-    );
-    const events: AgentEvent[] = ["claude", "codex"].flatMap((harness) => [
-      {
-        id: `${harness}-running`,
-        at: 1,
-        kind: "prompt",
-        promptId: harness,
-        conversationId: harness,
-        text: "Inspect output",
-        status: "running",
-      },
-      ...Array.from(
-        { length: 4 },
-        (_, i): AgentEvent => ({
-          id: `${harness}-${i}`,
-          at: i + 2,
-          kind: "message",
-          promptId: harness,
-          conversationId: harness,
-          messageId: `${harness}-native`,
-          textMode: "delta",
-          text: "😀".repeat(40000),
-          partial: true,
-          tools: [
-            {
-              id: `${harness}-tool-${i}`,
-              name: "shell",
-              input: { command: "echo ok" },
-              result: { output: "ok", isError: false },
-            },
-          ],
-        }),
-      ),
-      {
-        id: `${harness}-completed`,
-        at: 8,
-        kind: "prompt",
-        promptId: harness,
-        conversationId: harness,
-        text: "Inspect output",
-        status: "finished",
-      },
-    ]);
-    try {
-      for (const event of events) journal.append(event);
-      await runner.flushOutbox();
-      expect(journal.ack).toBe(events.length);
-      expect(requests.length).toBeGreaterThan(1);
-      expect(requests.every((bytes) => bytes <= 1048576)).toBe(true);
-      await runner.flushOutbox();
-      const requestCount = requests.length;
-      f.onRpc(async (_row, op) =>
-        op === "checkpoint"
-          ? { watermark: events.length, acknowledgedSequence: events.length, generation: "1" }
-          : undefined,
-      );
-      await f.provider.stop({ sandboxId: row.id });
-      const replay: AgentEvent[] = [];
-      let cursor: string | undefined;
-      for (;;) {
-        const page = await f.provider.events({ sandboxId: row.id, limit: 3, ...(cursor ? { cursor } : {}) });
-        replay.push(...page.events);
-        expect(page.cursor).not.toBe(cursor);
-        cursor = page.cursor;
-        if (!page.hasMore) break;
-      }
-      expect(replay).toEqual(events);
-      const tail = await f.provider.events({ sandboxId: row.id, ...(cursor ? { cursor } : {}) });
-      expect(tail.events).toEqual([]);
-      expect(tail.cursor).toBe(cursor);
-      expect(tail.hasMore).toBe(false);
-      expect(requests).toHaveLength(requestCount);
-    } finally {
-      journal.close();
-    }
-  });
-  test("tail history, older history and live follow stitch without gaps or duplicates", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    expect(await f.provider.events({ sandboxId: row.id, direction: "backward" })).toEqual({
-      events: [],
-      hasMore: false,
-    });
-    const event = (n: number): AgentEvent => ({
-      id: `history-${n}`,
-      at: n,
-      kind: "message",
-      conversationId: "history",
-      promptId: "p",
-      messageId: "m",
-      textMode: "delta",
-      text: String(n),
-      partial: true,
-      tools: [],
-    });
-    await appendModalEvents(
-      getDb(),
-      scope,
-      row.id,
-      "1",
-      [1, 2, 3, 4].map((n) => ({ sequence: n, event: event(n) })),
-    );
-    const tail = await f.provider.events({ sandboxId: row.id, direction: "backward", limit: 2, coalesce: true });
-    expect(tail.events).toMatchObject([
-      { text: "3", textMode: "delta" },
-      { text: "4", textMode: "delta" },
-    ]);
-    expect(tail.hasMore).toBe(true);
-    const older = await f.provider.events({
-      sandboxId: row.id,
-      direction: "backward",
-      cursor: tail.olderCursor!,
-      limit: 2,
-      coalesce: true,
-    });
-    expect(older.events.map((e) => e.id)).toEqual(["history-1", "history-2"]);
-    expect(
-      [...older.events, ...tail.events].reduce(
-        (text, event) =>
-          event.kind === "message" ? (event.textMode === "snapshot" ? event.text : text + event.text) : text,
-        "",
-      ),
-    ).toBe("1234");
-    expect(older.hasMore).toBe(false);
-    await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
-    const follow = await f.provider.events({ sandboxId: row.id, cursor: tail.cursor! });
-    expect(follow.events.map((e) => e.id)).toEqual(["history-5"]);
-  });
-  test("events dedupe, acknowledge only contiguous commit and fence old generation", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
-    expect(
-      await appendModalEvents(getDb(), scope, row.id, "1", [
-        { sequence: 1, event },
-        { sequence: 2, event },
-      ]),
-    ).toBe(2);
-    expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(2);
-    await expect(appendModalEvents(getDb(), scope, row.id, "0", [{ sequence: 3, event }])).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  });
-  test("restored producer sequences continue checkpoint watermark instead of waiting for sequence one", async () => {
-    const f = fixture();
-    const row = await f.seedMachine(goldenTemplate);
-    await f.store.lease(row.id, async (current, save) => {
-      current.generation = 2;
-      current.eventBase = 42;
-      await save(current);
-    });
-    const event = { id: "restored", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(getDb(), scope, row.id, "2", [{ sequence: 43, event }])).toBe(43);
-    expect(await f.store.watermark(row.id, 2)).toBe(43);
-    expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(1);
-  });
   test("actual composition forks ORG snapshot into owner-private access while management authority stays ORG and GC counts private references", async () => {
     const orgScope: Scope = { ...scope, visibility: "org" };
     const f = fixture(orgScope);
@@ -2580,19 +1813,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const snapshot = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name: snapshot });
     const authorities: ModalManagementAuthority[] = [];
-    let preparedFromComposition = false;
     const detached: (() => Promise<void>)[] = [];
-    const configuration: ComposedModalOptions = {
+    const configuration: RuntimeModalOptions = {
       detachCollection: (work) => {
         detached.push(work);
-      },
-      beforePrompt: async (provider, id) => {
-        await provider.get(id);
-        await provider.configureMcp({
-          sandboxId: id,
-          configuration: { revision: "composed-before-turn", servers: {} },
-        });
-        preparedFromComposition = true;
       },
       ...compositionOptions(f, scope, orgScope),
       resolveManagementCredentials: async (authority) => {
@@ -2605,63 +1829,22 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         };
       },
       client: f.client,
-      resolveHarnessEnvironment: async (machine) => {
-        expect(machine.launchUserId).toBe(scope.userId);
-        return {
-          claudeEnv: { EXPLICIT_MODEL_ENV: "synthetic-model" },
-          codexEnv: {},
-          mcp: {
-            revision: "owner-private-revision",
-            servers: {
-              personal: {
-                type: "http",
-                url: "https://personal-mcp.example/mcp",
-                headers: { Authorization: "synthetic-personal-mcp" },
-              },
-            },
-          },
-        };
-      },
     };
-    const { provider, close } = await createComposedModalProvider(configuration);
-    const launched = await provider.fork({ from: snapshot, name: "private-personal-MCP" });
+    const { provider, close } = await createRuntimeModalProvider(configuration);
+    const launched = await provider.fork({ from: snapshot, name: "private-working-fork" });
     const privateStore = createSqlModalStore(getDb(), scope);
     const machine = await privateStore.get(launched.id);
     expect(machine.sourceImage).toMatchObject({ name: snapshot });
     expect(machine.processBaseline).toMatchObject({ physicalId: machine.physicalId, generation: machine.generation });
     expect(machine.launchUserId).toBe(scope.userId);
-    expect(
-      await provider.configureMcp({
-        sandboxId: launched.id,
-        configuration: { revision: "post-init-authority", servers: {} },
-      }),
-    ).toEqual({ revision: "post-init-authority" });
-    const receipt = await provider.prompt({
-      sandboxId: launched.id,
-      harness: "claude",
-      text: "composed lifecycle hook",
-    });
-    expect(receipt.status).toBe("queued");
-    expect(preparedFromComposition).toBe(true);
     await expect(f.store.get(launched.id)).rejects.toMatchObject({ code: "not_found" });
     const otherScope = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
-    const other = await createComposedModalProvider({
+    const other = await createRuntimeModalProvider({
       ...configuration,
       scope: otherScope,
       sourceScope: { ...orgScope, userId: otherScope.userId },
     });
     await expect(other.provider.get(launched.id)).rejects.toMatchObject({ code: "not_found" });
-    await expect(other.provider.events({ sandboxId: launched.id })).rejects.toMatchObject({ code: "not_found" });
-    await expect(
-      other.provider.configureMcp({ sandboxId: launched.id, configuration: { revision: "not-owner", servers: {} } }),
-    ).rejects.toMatchObject({ code: "not_found" });
-    await expect(
-      other.provider.prepareNativeHarnessCwd({
-        sandboxId: launched.id,
-        harness: "claude",
-        cwd: "/home/user/repos/private",
-      }),
-    ).rejects.toMatchObject({ code: "not_found" });
     other.close();
     await expect(createSqlModalStore(getDb(), otherScope).get(launched.id)).rejects.toMatchObject({
       code: "not_found",
@@ -2669,9 +1852,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await createSqlModalStore(getDb(), otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
     await expect(createSqlModalStore(getDb(), scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
     const { resolveManagementCredentials: _resolveSource, ...operatorWithSource } = configuration;
-    const wrongSource = await createComposedModalProvider({ ...operatorWithSource, sourceScope: scope });
+    const wrongSource = await createRuntimeModalProvider({ ...operatorWithSource, sourceScope: scope });
     await expect(wrongSource.provider.get(launched.id)).rejects.toMatchObject({ code: "forbidden" });
-    await expect(wrongSource.provider.observeResources?.(launched.id)).rejects.toMatchObject({ code: "forbidden" });
     await expect(wrongSource.provider.delete({ sandboxId: launched.id })).rejects.toMatchObject({ code: "forbidden" });
     expect((await privateStore.get(launched.id)).phase).toBe("active");
     wrongSource.close();
@@ -2685,13 +1867,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         credentialOwnerId: scope.orgId,
         binding: scope.binding,
       });
-    expect(JSON.stringify(f.bootstraps.get(machine.physicalId ?? ""))).not.toContain("synthetic-org-management");
-    expect(f.bootstraps.get(machine.physicalId ?? "")).toMatchObject({
-      mcp: {
-        revision: "owner-private-revision",
-        servers: { personal: { type: "http", headers: { Authorization: "synthetic-personal-mcp" } } },
-      },
-    });
     await expect(f.provider.deleteSnapshot(snapshot)).rejects.toMatchObject({ providerCode: "snapshot_source_busy" });
     expect(f.log).not.toContain("delete-image");
     await provider.delete({ sandboxId: launched.id });
@@ -2700,18 +1875,18 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     close();
     const { resolveManagementCredentials: _resolver, ...operatorConfiguration } = configuration;
-    const operator = await createComposedModalProvider(operatorConfiguration);
+    const operator = await createRuntimeModalProvider(operatorConfiguration);
     await expect(operator.provider.getSnapshot(snapshot)).rejects.toMatchObject({ code: "not_found" });
     operator.close();
     const { client: _client, ...withoutClient } = operatorConfiguration;
-    await expect(createComposedModalProvider(withoutClient)).rejects.toMatchObject({
+    await expect(createRuntimeModalProvider(withoutClient)).rejects.toMatchObject({
       code: "provider_routing_unavailable",
     });
     await expect(
-      createComposedModalProvider({ ...operatorConfiguration, tokenId: "incomplete-pair" }),
+      createRuntimeModalProvider({ ...operatorConfiguration, tokenId: "incomplete-pair" }),
     ).rejects.toMatchObject({ code: "provider_routing_unavailable" });
     await expect(
-      createComposedModalProvider({
+      createRuntimeModalProvider({
         ...configuration,
         resolveManagementCredentials: async () => ({
           tokenId: "private-must-not-win",
@@ -2722,14 +1897,14 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      createComposedModalProvider({ ...configuration, sourceScope: { ...scope, userId: otherScope.userId } }),
+      createRuntimeModalProvider({ ...configuration, sourceScope: { ...scope, userId: otherScope.userId } }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
   test("private golden with explicit org fallback authority stays owner-private across fork/restore and rejects scope/key substitution", async () => {
     const f = fixture();
     const requested = { credentialScope: "org" as const, credentialOwnerId: scope.orgId };
     const seen: ModalManagementAuthority[] = [];
-    const configuration: ComposedModalOptions = {
+    const configuration: RuntimeModalOptions = {
       ...compositionOptions(f),
       managementAuthority: requested,
       resolveManagementCredentials: async (authority) => {
@@ -2742,21 +1917,22 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         };
       },
     };
-    const { provider, close } = await createComposedModalProvider(configuration);
+    const { provider, close } = await createRuntimeModalProvider(configuration);
     const builder = await provider.createGolden({});
     const snapshot = crypto.randomUUID();
     await provider.snapshot({ sandboxId: builder.id, name: snapshot });
     expect((await f.store.get(builder.id)).managementAuthority).toEqual(requested);
     expect((await f.store.image(snapshot)).managementAuthority).toEqual(requested);
-    const { provider: restoredConnection } = await createComposedModalProvider(configuration);
+    const { provider: restoredConnection } = await createRuntimeModalProvider(configuration);
     const fork = await restoredConnection.fork({ from: snapshot });
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
-    await restoredConnection.stop({ sandboxId: fork.id });
-    await restoredConnection.configureMcp({
+    await restoredConnection.stopRuntime({ sandboxId: fork.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+    await restoredConnection.resumeRuntime({
       sandboxId: fork.id,
-      configuration: { revision: "after-restore", servers: {} },
+      generation: 2,
+      checkpoint: { epoch: "1", watermark: 0 },
+      ttlSeconds: 3600,
     });
-    expect((await f.store.get(fork.id)).generation).toBe(2);
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
     for (const authority of seen)
       expect(authority).toMatchObject({
@@ -2765,16 +1941,16 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         credentialOwnerId: scope.orgId,
       });
     const otherScope = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
-    const other = await createComposedModalProvider({ ...configuration, scope: otherScope, sourceScope: otherScope });
+    const other = await createRuntimeModalProvider({ ...configuration, scope: otherScope, sourceScope: otherScope });
     await expect(other.provider.getSnapshot(snapshot)).rejects.toMatchObject({ code: "not_found" });
     await expect(other.provider.get(fork.id)).rejects.toMatchObject({ code: "not_found" });
-    const orgView = await createComposedModalProvider({
+    const orgView = await createRuntimeModalProvider({
       ...configuration,
       scope: { ...scope, visibility: "org" },
       sourceScope: { ...scope, visibility: "org" },
     });
     await expect(orgView.provider.getSnapshot(snapshot)).rejects.toMatchObject({ code: "not_found" });
-    const userKey = await createComposedModalProvider({
+    const userKey = await createRuntimeModalProvider({
       ...compositionOptions(f),
       managementAuthority: { credentialScope: "user", credentialOwnerId: scope.userId },
     });
@@ -2783,7 +1959,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(userKey.provider.get(fork.id)).rejects.toMatchObject({ code: "forbidden" });
     await expect(userKey.provider.delete({ sandboxId: fork.id })).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      createComposedModalProvider({
+      createRuntimeModalProvider({
         ...configuration,
         resolveManagementCredentials: async () => ({
           tokenId: "wrong-user-id",
@@ -2794,7 +1970,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      createComposedModalProvider({
+      createRuntimeModalProvider({
         ...configuration,
         scope: { ...scope, visibility: "org" },
         sourceScope: { ...scope, visibility: "org" },
@@ -2802,7 +1978,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      createComposedModalProvider({
+      createRuntimeModalProvider({
         ...configuration,
         managementAuthority: { credentialScope: "org", credentialOwnerId: otherScope.userId },
       }),
@@ -2820,69 +1996,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
-  });
-  test("actual bootstrap separates GitHub exec credentials from model env, disables them explicitly, and re-resolves on restore without persisting values", async () => {
-    const f = fixture();
-    let enabled = true,
-      calls = 0;
-    const options: ComposedModalOptions = {
-      ...compositionOptions(f),
-      resolveHarnessEnvironment: async (_machine, launchEnv) => {
-        calls++;
-        return {
-          claudeEnv: { ANTHROPIC_API_KEY: "synthetic-model-private" },
-          codexEnv: { OPENAI_API_KEY: "synthetic-codex-private" },
-          ...(enabled && !Object.keys(launchEnv).length
-            ? { execEnv: { GH_TOKEN: "synthetic-refreshed-github", GITHUB_TOKEN: "synthetic-refreshed-github" } }
-            : enabled
-              ? {}
-              : { execEnv: {} }),
-        };
-      },
-    };
-    const { provider } = await createComposedModalProvider(options);
-    const fork = await provider.fork({
-      from: workerSnapshot,
-      env: {
-        GH_TOKEN: "synthetic-initial-github",
-        GITHUB_TOKEN: "synthetic-initial-github",
-        ANTHROPIC_API_KEY: "must-not-reach-exec",
-        MODAL_TOKEN_SECRET: "must-not-reach-exec",
-      },
-    });
-    let row = await f.store.get(fork.id);
-    let bootstrap = f.bootstraps.get(row.physicalId ?? "");
-    expect(bootstrap).toMatchObject({
-      credentialFreeBuilder: false,
-      claudeEnv: { PATH: "/usr/local/bin:/usr/bin:/bin" },
-      codexEnv: { PATH: "/usr/local/bin:/usr/bin:/bin" },
-      execEnv: {
-        GH_TOKEN: "synthetic-initial-github",
-        GITHUB_TOKEN: "synthetic-initial-github",
-        HOME: "/home/user",
-        GIT_TERMINAL_PROMPT: "0",
-      },
-    });
-    expect((bootstrap as unknown as { execEnv: object }).execEnv).not.toHaveProperty("ANTHROPIC_API_KEY");
-    expect((bootstrap as unknown as { execEnv: object }).execEnv).not.toHaveProperty("MODAL_TOKEN_SECRET");
-    await provider.stop({ sandboxId: fork.id });
-    await provider.exec({ sandboxId: fork.id, command: "git status" });
-    row = await f.store.get(fork.id);
-    bootstrap = f.bootstraps.get(row.physicalId ?? "");
-    expect(bootstrap).toMatchObject({
-      execEnv: { GH_TOKEN: "synthetic-refreshed-github", GITHUB_TOKEN: "synthetic-refreshed-github" },
-    });
-    expect(calls).toBe(2);
-    expect(JSON.stringify((await getDb().query("select record from public.modal_machines")).rows)).not.toContain(
-      "synthetic-initial-github",
-    );
-    expect(JSON.stringify(row)).not.toContain("synthetic-refreshed-github");
-    enabled = false;
-    const disabled = await provider.fork({ from: workerSnapshot, env: { GH_TOKEN: "must-stay-disabled" } });
-    const disabledRow = await f.store.get(disabled.id);
-    expect(
-      (f.bootstraps.get(disabledRow.physicalId ?? "") as unknown as { execEnv: object }).execEnv,
-    ).not.toHaveProperty("GH_TOKEN");
   });
   test("NULL canonical golden master restores from its exact owned image, reconnect is idempotent, and resnapshot/fork remain credential-free", async () => {
     const f = fixture();
@@ -2939,24 +2052,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.restoreGoldenMaster({ snapshotId: name })).rejects.toMatchObject({ code: "conflict" });
     expect(f.creates).toBe(count);
   });
-  test("fresh history purge is committed before bootstrap, not repeated on unknown boot retry, and skipped for working recovery", async () => {
-    const f = fixture();
-    const key = crypto.randomUUID();
-    f.failBoot(true);
-    await expect(f.provider.fork({ from: workerSnapshot, idempotencyKey: key })).rejects.toMatchObject({
-      code: "unknown",
-    });
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
-    f.failBoot(false);
-    const fork = await f.provider.fork({ from: workerSnapshot, idempotencyKey: key });
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
-    expect((await f.store.get(fork.id)).freshStatePreparedGeneration).toBe(1);
-    await f.provider.stop({ sandboxId: fork.id });
-    await f.provider.exec({ sandboxId: fork.id, command: "resume session" });
-    expect((await f.store.get(fork.id)).generation).toBe(2);
-    expect(f.log.filter((x) => x.startsWith("fresh-"))).toEqual(["fresh-1"]);
-  });
-  test("golden restore recovers a lost final active commit without replacing its runner or losing edits", async () => {
+  test("golden restore recovers a lost final active commit without replacing its machine", async () => {
     let fail = false;
     const sql: Sql = {
       async query<T>(statement: string, params?: unknown[]) {
@@ -2982,12 +2078,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     fail = true;
     await expect(f.provider.restoreGoldenMaster({ snapshotId: name })).rejects.toMatchObject({ code: "unknown" });
     expect((await f.store.get(builder.id)).phase).toBe("booting");
-    const count = f.creates,
-      starts = f.log.filter((x) => x === "start-2").length;
+    const count = f.creates;
     const restored = await f.provider.restoreGoldenMaster({ snapshotId: name });
     expect(restored.physicalGeneration).toBe("2");
     expect(f.creates).toBe(count);
-    expect(f.log.filter((x) => x === "start-2")).toHaveLength(starts);
   });
   test("runtime-only composition builds, snapshots, retains and restores a golden without runner bootstrap", async () => {
     const f = fixture();
@@ -3011,7 +2105,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
 
       const fork = await provider.fork({ from: name });
       expect(await f.store.get(fork.id)).toMatchObject({ commonRuntime: true, phase: "active" });
-      expect(f.bootstraps.size).toBe(0);
     } finally {
       close();
     }
@@ -3025,7 +2118,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       const restored = await provider.restoreGoldenMaster({ snapshotId: name });
       expect(restored).toMatchObject({ id: builder.id, physicalGeneration: "2", state: "ready" });
       expect(await f.store.get(restored.id)).toMatchObject({ imageId: snapshot.imageId, phase: "active" });
-      expect(f.bootstraps.size).toBe(0);
     } finally {
       close();
     }
@@ -3033,6 +2125,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("runtime-only stop refuses an unenrolled fork before recording a stop attempt", async () => {
     const f = fixture();
     const worker = await f.seedMachine(workerTemplate);
+    await f.store.lease(worker.id, async (row, save) => {
+      delete row.commonRuntime;
+      await save(row);
+    });
     const before = await f.store.get(worker.id);
     const { provider, close } = await runtimeComposition(f);
     try {
@@ -3044,14 +2140,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("actual source-scoped golden restore keeps org-fallback provenance and boots without model/session credentials", async () => {
     const f = fixture();
-    let harnessResolutions = 0;
-    const connection = await createComposedModalProvider({
+    const connection = await createRuntimeModalProvider({
       ...compositionOptions(f),
       managementAuthority: { credentialScope: "org", credentialOwnerId: scope.orgId },
-      resolveHarnessEnvironment: async () => {
-        harnessResolutions++;
-        return { claudeEnv: { ANTHROPIC_API_KEY: "synthetic-model-only" }, codexEnv: {} };
-      },
     });
     const builder = await connection.provider.createGolden({});
     const name = crypto.randomUUID();
@@ -3061,18 +2152,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const row = await f.store.get(restored.id);
     expect(restored.id).toBe(builder.id);
     expect(restored.physicalGeneration).toBe("2");
-    expect(harnessResolutions).toBe(0);
     expect(row.managementAuthority).toEqual({ credentialScope: "org", credentialOwnerId: scope.orgId });
     expect(row.processBaseline).toMatchObject({ physicalId: row.physicalId, generation: 2 });
-    expect(f.bootstraps.get(row.physicalId ?? "")).toMatchObject({
-      credentialFreeBuilder: true,
-      claudeEnv: {},
-      codexEnv: {},
-      grant: { generation: "2" },
-    });
-    expect(JSON.stringify(f.bootstraps.get(row.physicalId ?? ""))).not.toContain("synthetic-model-only");
     const other = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
-    const outsider = await createComposedModalProvider({
+    const outsider = await createRuntimeModalProvider({
       ...compositionOptions(f, other),
       managementAuthority: { credentialScope: "org", credentialOwnerId: scope.orgId },
     });
@@ -3081,39 +2164,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     connection.close();
     outsider.close();
-  });
-  test("golden builders reject prompts before runner/model admission and physical generation never trusts labels", async () => {
-    const f = fixture();
-    const builder = await f.provider.createGolden({ labels: { physicalGeneration: "untrusted-label" } });
-    const before = f.log.length;
-    await expect(
-      f.provider.prompt({ sandboxId: builder.id, harness: "claude", text: "must never start" }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    await expect(
-      f.provider.steer({ sandboxId: builder.id, conversationId: "legacy-builder-turn", text: "must not restart" }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    expect(f.log).toHaveLength(before);
-    expect(f.log).not.toContain("prompt");
-    expect(builder.physicalGeneration).toBe("1");
-    expect((await f.provider.get(builder.id)).physicalGeneration).toBe("1");
-    const fork = await runningFork(f);
-    expect(fork.physicalGeneration).toBe("1");
-    await f.provider.stop({ sandboxId: fork.id });
-    await f.provider.exec({ sandboxId: fork.id, command: "true" });
-    expect((await f.provider.get(fork.id)).physicalGeneration).toBe("2");
-  });
-  test("golden history cleanup and filesystem save never run before the exact durable event ACK", async () => {
-    const f = fixture();
-    const builder = await f.seedMachine(goldenTemplate);
-    f.onRpc(async (row, op) =>
-      op === "checkpoint" ? { generation: String(row.generation), watermark: 1, acknowledgedSequence: 1 } : undefined,
-    );
-    await expect(f.provider.snapshot({ sandboxId: builder.id, name: crypto.randomUUID() })).rejects.toMatchObject({
-      code: "conflict",
-    });
-    expect(f.log).not.toContain("scrub");
-    expect(f.log).not.toContain("snapshot");
-    expect(f.log).not.toContain("terminate");
   });
   test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
     const f = fixture();
@@ -3181,488 +2231,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const merged = mergeModalResourceReceipts([receipt, ...persisted]);
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
-  test.each([true, false])("prompt performs one final health probe after preparation (healthy=%s)", async (healthy) => {
-    let prepared = false;
-    const f = fixture(scope, fixtureSql, async () => {
-      prepared = true;
-    });
-    const row = await activeWorker(f);
-    f.log.length = 0;
-    f.onRpc(async (machine, op) =>
-      op === "health" ? { generation: String(machine.generation), ready: healthy || !prepared } : undefined,
-    );
-    const send = f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "prepared work" });
-    if (healthy) await send;
-    else await expect(send).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    expect(prepared).toBe(true);
-    expect(f.log.filter((op) => op === "health")).toHaveLength(1);
-    expect(f.log.filter((op) => op === "prompt")).toHaveLength(healthy ? 1 : 0);
-  });
-  test("beforePrompt sees ready first/restored generation outside the lease, configures before native submission, and supports parallel stable turns", async () => {
-    const admission = admissionBarrier();
-    const observed: string[] = [];
-    const hydrated: { generation: number; variables: unknown }[] = [];
-    const beforePrompt: ModalProviderOptions["beforePrompt"] = async (provider, id) => {
-      const info = await provider.get(id);
-      expect(info.state).toBe("ready");
-      observed.push(info.physicalGeneration ?? "missing");
-      await provider.configureReadableVariables!({
-        sandboxId: id,
-        harness: "codex",
-        variables: { APP_REGION: "frozen" },
-      });
-      await provider.configureMcp({
-        sandboxId: id,
-        configuration: { revision: `generation-${info.physicalGeneration}`, servers: {} },
-      });
-    };
-    const f = fixture(scope, fixtureSql, beforePrompt, undefined, undefined, admission.wait);
-    f.onRpc(async (machine, op, input) => {
-      if (op !== "configureReadableVariables") return undefined;
-      hydrated.push({ generation: machine.generation, variables: (input as { variables: unknown }).variables });
-      return { acknowledged: true };
-    });
-    const row = await activeWorker(f);
-    admission.track(f.store, row.id);
-    await Promise.all(
-      (["claude", "codex"] as const).map((harness) =>
-        f.provider.prompt({ sandboxId: row.id, harness, text: "prepared turn" }),
-      ),
-    );
-    expect(observed).toEqual(["1", "1"]);
-    expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
-    await f.provider.stop({ sandboxId: row.id });
-    await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "restore before hook" });
-    expect(observed.at(-1)).toBe("2");
-    expect(hydrated).toEqual([
-      { generation: 1, variables: { APP_REGION: "frozen" } },
-      { generation: 1, variables: { APP_REGION: "frozen" } },
-      { generation: 2, variables: { APP_REGION: "frozen" } },
-    ]);
-    expect(f.log.lastIndexOf("configureReadableVariables")).toBeLessThan(f.log.lastIndexOf("prompt"));
-  });
-  test("beforePrompt failure or an intervening checkpoint/restore refuses submission; goldens never call the hook", async () => {
-    let fail = true,
-      calls = 0;
-    const f = fixture(scope, fixtureSql, async (provider, id) => {
-      calls++;
-      if (fail) throw Error("private registry failure must not leak");
-      await provider.stop({ sandboxId: id });
-      await provider.exec({ sandboxId: id, command: "restore" });
-    });
-    const row = await activeWorker(f);
-    await expect(
-      f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "must not start" }),
-    ).rejects.toMatchObject({ code: "unknown" });
-    expect(f.log).not.toContain("prompt");
-    fail = false;
-    await expect(
-      f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "stale prepared generation" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect((await f.store.get(row.id)).generation).toBe(2);
-    expect(f.log).not.toContain("prompt");
-    const builder = await f.seedMachine(goldenTemplate);
-    const before = calls;
-    await expect(
-      f.provider.prompt({ sandboxId: builder.id, harness: "claude", text: "no hook on builder" }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    expect(calls).toBe(before);
-  });
-  test("beforePrompt fence is rechecked after healthyAdmission mutates the runner incarnation", async () => {
-    let prepared = false;
-    const f = fixture(scope, fixtureSql, async () => {
-      prepared = true;
-    });
-    const row = await activeWorker(f);
-    f.onRpc(async (current, op) => {
-      if (prepared && op === "health") {
-        current.generation++;
-        return { generation: String(current.generation), ready: true };
-      }
-    });
-    await expect(
-      f.provider.prompt({ sandboxId: row.id, harness: "codex", text: "must not submit after replacement" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect(f.log).not.toContain("prompt");
-  });
-  test("golden exec alone takes scoped leased SDK root control, worker exec stays journaled runner, and unsupported/closed requests refuse", async () => {
-    const delays: number[] = [];
-    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
-      delays.push(ms);
-    });
-    const builder = await f.seedMachine(goldenTemplate);
-    await f.provider.exec({ sandboxId: builder.id, command: "root scanner", timeoutSeconds: 600 });
-    expect(f.log).toContain("root-exec");
-    expect(f.log).not.toContain("exec");
-    const count = f.log.filter((x) => x === "root-exec").length;
-    await expect(
-      f.provider.exec({ sandboxId: builder.id, command: "unsupported", detached: true }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    await expect(
-      f.provider.exec({ sandboxId: builder.id, command: "timeout", timeoutSeconds: 601 }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    await expect(f.provider.exec({ sandboxId: builder.id, command: "badcwd", cwd: "relative" })).rejects.toMatchObject({
-      code: "invalid_request",
-    });
-    expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
-    const lease = f.store.lease.bind(f.store);
-    const get = f.store.get.bind(f.store);
-    await lease(builder.id, async (active) => {
-      const conflict = await lease(builder.id, async () => {
-        throw new Error("Busy lease unexpectedly acquired");
-      }).catch((error: unknown) => error);
-      expect(conflict).toMatchObject({ providerCode: "lifecycle_lease_busy" });
-      f.store.lease = async () => {
-        throw conflict;
-      };
-      f.store.get = async (id) => (id === builder.id ? active : get(id));
-      try {
-        await expect(f.provider.exec({ sandboxId: builder.id, command: "busy" })).rejects.toMatchObject({
-          providerCode: "lifecycle_lease_busy",
-        });
-      } finally {
-        f.store.lease = lease;
-        f.store.get = get;
-      }
-    });
-    expect(delays).toEqual(Array(99).fill(20));
-    expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
-    const name = crypto.randomUUID();
-    await f.provider.snapshot({ sandboxId: builder.id, name });
-    await expect(f.provider.exec({ sandboxId: builder.id, command: "must not unseal" })).rejects.toMatchObject({
-      code: "sandbox_not_ready",
-    });
-    const worker = await f.provider.fork({ from: name });
-    await f.provider.exec({ sandboxId: worker.id, command: "worker exec" });
-    expect(f.log).toContain("exec");
-    expect(f.log.filter((x) => x === "root-exec")).toHaveLength(count);
-  });
-  test("admission never retries a busy-shaped error after entering the callback", async () => {
-    const delays: number[] = [];
-    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, async (ms) => {
-      delays.push(ms);
-    });
-    const worker = await activeWorker(f);
-    let calls = 0;
-    f.onRpc(async () => {
-      calls++;
-      throw new ProviderError({
-        provider: "modal",
-        code: "conflict",
-        message: "uncertain outcome",
-        providerCode: "lifecycle_lease_busy",
-        retryable: true,
-      });
-    });
-    await expect(f.provider.exec({ sandboxId: worker.id, command: "once", onlyIfRunning: true })).rejects.toMatchObject(
-      {
-        providerCode: "lifecycle_lease_busy",
-      },
-    );
-    expect(calls).toBe(1);
-    expect(delays).toEqual([]);
-  });
-  test("native harness cwd is durable per harness and forwarded privately on prompt/resume without changing text, exec or steer", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    const claudeCwd = "/home/user/repos/repo with spaces;$(not-a-command)",
-      codexCwd = "/home/user/repos/backend";
-    const originalCreates = f.creates;
-    await f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd: claudeCwd });
-    await f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "codex", cwd: codexCwd });
-    expect((await f.store.get(row.id)).harnessCwds).toEqual({ claude: claudeCwd, codex: codexCwd });
-    expect(f.creates).toBe(originalCreates);
-    expect(f.log).not.toContain("exec");
-    const sent: { op: string; input: unknown; generation: number }[] = [];
-    f.onRpc(async (current, op, input) => {
-      if (op === "prompt" || op === "steer") sent.push({ op, input, generation: current.generation });
-    });
-    await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "unmodified task" });
-    await f.provider.prompt({
-      sandboxId: row.id,
-      harness: "codex",
-      text: "resume task",
-      conversationId: "existing-conversation",
-    });
-    expect(sent[0]).toMatchObject({
-      op: "prompt",
-      input: { input: { cwd: claudeCwd, text: "unmodified task", harness: "claude" } },
-      generation: 1,
-    });
-    expect(sent[1]).toMatchObject({
-      op: "prompt",
-      input: { input: { cwd: codexCwd, text: "resume task", conversationId: "existing-conversation" } },
-      generation: 1,
-    });
-    await f.provider.stop({ sandboxId: row.id });
-    const stages: string[] = [];
-    const restoreLogStart = f.log.length;
-    await f.provider.prompt({
-      sandboxId: row.id,
-      harness: "claude",
-      text: "restored task",
-      conversationId: "existing-claude",
-      onResumeStage: async (stage) => {
-        expect(sent).toHaveLength(2);
-        if (stage === "machine_started") expect(f.log.slice(restoreLogStart)).not.toContain("start-2");
-        stages.push(stage);
-      },
-    });
-    expect(stages).toEqual(["accepted", "provider_claimed", "machine_started", "harness_ready"]);
-    expect(sent[2]).toMatchObject({
-      op: "prompt",
-      input: { input: { cwd: claudeCwd, conversationId: "existing-claude" } },
-      generation: 2,
-    });
-    expect((await f.store.get(row.id)).harnessCwds).toEqual({ claude: claudeCwd, codex: codexCwd });
-    await f.provider.prepareNativeHarnessCwd({
-      sandboxId: row.id,
-      harness: "claude",
-      cwd: "/home/user/repos/next-conversation",
-    });
-    await f.provider.steer({ sandboxId: row.id, conversationId: "existing-claude", text: "continue in original cwd" });
-    expect(sent[3]).toEqual({
-      op: "steer",
-      generation: 2,
-      input: { sandboxId: row.id, conversationId: "existing-claude", text: "continue in original cwd" },
-    });
-  });
-  test("native cwd preparation validates path data and owner/admission while unprepared prompts use runtime defaults", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    for (const cwd of [
-      "relative/repo",
-      "/home/user/../repo",
-      "/home/user//repo",
-      "/home/user/repo\n",
-      "/home/user/repo\0",
-      `/${"x".repeat(4096)}`,
-    ])
-      await expect(
-        f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd }),
-      ).rejects.toMatchObject({ code: "invalid_request" });
-    expect((await f.store.get(row.id)).harnessCwds).toBeUndefined();
-    const other = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000004" });
-    await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
-    f.onRpc(async (_row, op, input) => {
-      if (op === "prompt")
-        expect(input).toMatchObject({ input: { sandboxId: row.id, harness: "codex", text: "default cwd" } });
-      if (op === "prompt") expect((input as { input: object }).input).not.toHaveProperty("cwd");
-    });
-    await f.provider.prompt({
-      ...{ sandboxId: row.id, harness: "codex" as const, text: "default cwd", cwd: "/unprepared" },
-    });
-    await f.store.lease(row.id, async (current, save) => {
-      current.phase = "checkpoint";
-      current.info.state = "stopping";
-      await save(current);
-    });
-    await expect(
-      f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd: "/home/user/repos/valid" }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const { builder } = await savedGolden(f);
-    await expect(
-      f.provider.prepareNativeHarnessCwd({ sandboxId: builder.id, harness: "claude", cwd: "/home/user/repos/valid" }),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-  });
-  test("GitHub private configuration binds an active native generation and never restores stopped machines or persists capabilities", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    const machine = await f.store.get(row.id);
-    const configuration = {
-      version: 1 as const,
-      revision: "1",
-      generation: String(machine.generation),
-      url: "https://armada.example/api/internal/github/credentials",
-      capability: `armada_gh_${"a".repeat(64)}`,
-      expiresAt: machine.grantExpiresAt!,
-    };
-    f.onRpc(async (_machine, op, input) => {
-      if (op !== "configureGitHub") return;
-      expect(input).toEqual({ configuration });
-      return { acknowledged: true, token: "must-not-echo" };
-    });
-    expect(await f.provider.configureGitHub({ sandboxId: row.id, configuration })).toEqual({ acknowledged: true });
-    await expect(
-      f.provider.configureGitHub({ sandboxId: row.id, configuration: { ...configuration, generation: "wrong" } }),
-    ).rejects.toMatchObject({ code: "unauthorized" });
-    const persisted = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
-    expect(persisted).not.toContain(configuration.capability);
-    expect(persisted).not.toContain(configuration.url);
-    await f.provider.stop({ sandboxId: row.id });
-    const allocations = f.creates;
-    await expect(f.provider.configureGitHub({ sandboxId: row.id, configuration })).rejects.toMatchObject({
-      code: "unauthorized",
-    });
-    expect(f.creates).toBe(allocations);
-  });
-  test("configureMcp serializes transient authority with turn admission, returns only revision and never persists config", async () => {
-    const admission = admissionBarrier();
-    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, admission.wait);
-    const row = await activeWorker(f);
-    admission.track(f.store, row.id);
-    const entered = deferred(),
-      release = deferred();
-    const configuration = {
-      revision: "authoritative-private-revision",
-      servers: {
-        private: {
-          type: "http" as const,
-          url: "https://private.example/mcp",
-          headers: { Authorization: "synthetic-private-auth" },
-        },
-      },
-    };
-    f.onRpc(async (_row, op, input) => {
-      if (op !== "configureMcp") return;
-      expect(input).toEqual({ configuration });
-      entered.resolve();
-      await release.promise;
-      return { revision: configuration.revision, servers: configuration.servers, unsafeAuth: "must-not-echo" };
-    });
-    const configuring = f.provider.configureMcp({ sandboxId: row.id, configuration });
-    await entered.promise;
-    const pendingPrompts = (["claude", "codex"] as const).map((harness) =>
-      f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
-    );
-    const prompts = Promise.all(pendingPrompts);
-    try {
-      await Promise.race([
-        admission.retry,
-        prompts.then(() => {
-          throw new Error("A prompt entered before MCP configuration released the lease.");
-        }),
-      ]);
-      await expect(f.provider.stop({ sandboxId: row.id })).rejects.toMatchObject({ code: "conflict" });
-      expect(f.log.at(-1)).toBe("configureMcp");
-    } finally {
-      release.resolve();
-      await Promise.allSettled([configuring, ...pendingPrompts]);
-    }
-    expect(await configuring).toEqual({ revision: configuration.revision });
-    const receipts = await prompts;
-    expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);
-    expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
-    const stored = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
-    expect(stored).not.toContain(configuration.revision);
-    expect(stored).not.toContain("synthetic-private-auth");
-    expect(stored).not.toContain("private.example");
-  });
-  test("configureMcp resumes under the new generation lease, supports empty servers, rejects bad receipts and sealed goldens", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    await f.provider.stop({ sandboxId: row.id });
-    const empty = { revision: "remove-connections", servers: {} };
-    f.onRpc(async (current, op, input) => {
-      if (op !== "configureMcp") return;
-      expect(current.phase).toBe("active");
-      expect(current.generation).toBe(2);
-      expect(input).toEqual({ configuration: empty });
-      await expect(f.store.lease(row.id, async () => {})).rejects.toMatchObject({
-        providerCode: "lifecycle_lease_busy",
-      });
-      return { revision: empty.revision };
-    });
-    expect(await f.provider.configureMcp({ sandboxId: row.id, configuration: empty })).toEqual({
-      revision: empty.revision,
-    });
-    f.onRpc(async (_row, op) => (op === "configureMcp" ? { revision: "wrong" } : undefined));
-    await expect(f.provider.configureMcp({ sandboxId: row.id, configuration: empty })).rejects.toMatchObject({
-      code: "unavailable",
-    });
-    const { builder } = await savedGolden(f);
-    await f.provider.stop({ sandboxId: builder.id });
-    const before = await f.store.get(builder.id);
-    const calls = f.log.filter((x) => x === "configureMcp").length;
-    await expect(f.provider.configureMcp({ sandboxId: builder.id, configuration: empty })).rejects.toMatchObject({
-      code: "invalid_request",
-    });
-    expect((await f.store.get(builder.id)).generation).toBe(before.generation);
-    expect((await f.store.get(builder.id)).phase).toBe("stopped");
-    expect(f.log.filter((x) => x === "configureMcp")).toHaveLength(calls);
-  });
-  test("configure and new turns refuse a live physical runner whose admission or generation is sealed", async () => {
-    const f = fixture();
-    const row = await activeWorker(f);
-    f.onRpc(async (current, op) =>
-      op === "health" ? { generation: String(current.generation), ready: false } : undefined,
-    );
-    await expect(
-      f.provider.configureMcp({ sandboxId: row.id, configuration: { revision: "cannot-unseal", servers: {} } }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    await expect(
-      f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "not admitted" }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    f.onRpc(async (_row, op) => (op === "health" ? { generation: "foreign-generation", ready: true } : undefined));
-    await expect(
-      f.provider.configureMcp({ sandboxId: row.id, configuration: { revision: "wrong-generation", servers: {} } }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    expect(f.log).not.toContain("configureMcp");
-    expect(f.log).not.toContain("prompt");
-  });
-  test("configureMcp wire preserves protocol identity/current grant and maps safe errors without auth output", async () => {
-    const f = fixture();
-    const info = await activeWorker(f);
-    const row = await f.store.get(info.id);
-    const configuration = {
-      revision: "wire-revision",
-      servers: {
-        private: {
-          type: "http" as const,
-          url: "https://mcp.example",
-          headers: { Authorization: "synthetic-wire-auth" },
-        },
-      },
-    };
-    let mode = "success",
-      calls = 0;
-    const fetcher = (async (_url, init) => {
-      calls++;
-      const request = JSON.parse(String(init?.body));
-      expect(request).toMatchObject({ version: 1, sandboxId: info.id, op: "configureMcp", configuration });
-      expect(typeof request.requestId).toBe("string");
-      expect(new Headers(init?.headers).get("x-armada-runner-grant")).toBe("current-generation-grant");
-      if (mode === "conflict")
-        return Response.json({ version: 1, requestId: request.requestId, error: "conflict" }, { status: 409 });
-      if (mode === "native-auth-busy")
-        return Response.json(
-          { version: 1, requestId: request.requestId, error: "native_auth_writer_busy" },
-          { status: 409 },
-        );
-      if (mode === "foreign-error")
-        return Response.json({ version: 1, requestId: "foreign", error: "conflict" }, { status: 409 });
-      return Response.json({
-        version: mode === "wrong-version" ? 2 : 1,
-        requestId: request.requestId,
-        result: { revision: configuration.revision },
-      });
-    }) as typeof fetch;
-    const access = async () => ({
-      url: "https://runner.example",
-      connectToken: "proxy-token",
-      grant: "current-generation-grant",
-      expiresAt: Date.now() + 60_000,
-    });
-    const transport = createRunnerTransport(access, fetcher);
-    expect(await transport.call<{ revision: string }>(row, "configureMcp", { configuration })).toEqual({
-      revision: configuration.revision,
-    });
-    mode = "conflict";
-    await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({
-      code: "conflict",
-      message: "Runner operation refused.",
-    });
-    mode = "native-auth-busy";
-    await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "conflict" });
-    mode = "foreign-error";
-    await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "unavailable" });
-    mode = "wrong-version";
-    await expect(transport.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "unavailable" });
-    const before = calls;
-    const expired = createRunnerTransport(async () => ({ ...(await access()), expiresAt: 0 }), fetcher);
-    await expect(expired.call(row, "configureMcp", { configuration })).rejects.toMatchObject({ code: "unauthorized" });
-    expect(calls).toBe(before);
-  });
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
     const row = await f.seedMachine(goldenTemplate);
@@ -3677,241 +2245,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await getDb().exec("reset role");
     }
   });
-  test("expired and wrong-generation ingest grants never append", async () => {
-    const handler = createModalIngestHandler({
-      sql: getDb(),
-      verifyGrant: async () => ({
-        scope,
-        claims: { sandboxId: "expected", generation: "1", expiresAt: Date.now() + 1000 },
-      }),
-    });
-    expect(
-      (
-        await handler(
-          new Request("https://example/ingest", {
-            method: "POST",
-            body: JSON.stringify({ sandboxId: "other", generation: "1", events: [] }),
-          }),
-        )
-      ).status,
-    ).toBe(403);
-  });
-  test("runner uses nested prompt input, distinct proxy bearer and application header, validates response identity", async () => {
-    const f = fixture();
-    const info = await f.seedMachine(goldenTemplate);
-    const row = await f.store.get(info.id);
-    const transport = createRunnerTransport(
-      async () => ({
-        url: "https://runner.example",
-        connectToken: "connect",
-        grant: "application",
-        expiresAt: Date.now() + 1000,
-      }),
-      (async (_url, init) => {
-        const headers = init?.headers as Record<string, string>;
-        expect(headers.Authorization).toBe("Bearer connect");
-        expect(headers["x-armada-runner-grant"]).toBe("application");
-        const body = JSON.parse(String(init?.body));
-        expect(body.input.text).toBe("hello");
-        return Response.json({ version: 1, requestId: "wrong", result: {} });
-      }) as typeof fetch,
-    );
-    await expect(transport.call(row, "prompt", { input: { text: "hello" } })).rejects.toMatchObject({
-      code: "unavailable",
-    });
-  });
-});
-
-for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
-  test(`server deadline reconciler settles Modal after ${mode}`, async () => {
-    const hardExit = mode === "hard_exit";
-    const f = fixture();
-    const machine = await activeWorker(f);
-    const goldenId = crypto.randomUUID();
-    const id = crypto.randomUUID();
-    await getDb().query(
-      `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-    values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$1::text,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
-      [goldenId, scope.orgId, scope.userId],
-    );
-    await getDb().query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,expires_at)
-    values($1,$2,$3,$4,'modal',$5,'claude','running',now()-interval '1 second')`,
-      [id, goldenId, scope.orgId, scope.userId, machine.id],
-    );
-    const before = await f.store.get(machine.id);
-    if (hardExit) {
-      if (!before.physicalId) throw Error("missing physical machine");
-      const physical = await f.client.sandboxes.fromId(before.physicalId);
-      if (!physical) throw Error("missing SDK sandbox");
-      await physical.terminate();
-      f.onRpc(async () => {
-        throw Error("runner expired");
-      });
-    }
-    if (mode === "legacy_scrub_failure") {
-      await f.store.lease(machine.id, async (current, save) => {
-        current.phase = "checkpoint";
-        current.info.state = "stopping";
-        await save(current);
-      });
-      await getDb().query(
-        "update sandboxes set status='stopping',preservation_note='unpushed work could not be preserved (missing_python3)' where id=$1",
-        [id],
-      );
-      f.onScrub(async () => {
-        throw new ProviderError({ provider: "modal", code: "conflict", message: "refused", retryable: false });
-      });
-    }
-    const baseline = f.log.length;
-    let resolved = 0;
-    const lifecycle = createSandboxLifecycle(fixtureSql, async () => {
-      resolved++;
-      return f.provider;
-    });
-    await lifecycle.reconcileOne();
-    if (mode === "legacy_scrub_failure") {
-      expect(
-        (await getDb().query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status,
-      ).toBe("stopping");
-      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-      await lifecycle.reconcileOne();
-      expect((await f.provider.get(machine.id)).stopNote).toBe("checkpoint_failed_disk_not_retained");
-      expect(f.log.slice(baseline).filter((x) => x === "checkpoint")).toHaveLength(1);
-    }
-    const row = (
-      await getDb().query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
-        "select status,stopped_at,status_reason from sandboxes where id=$1",
-        [id],
-      )
-    ).rows[0];
-    expect(row?.status).toBe(hardExit || mode === "legacy_scrub_failure" ? "failed" : "stopped");
-    expect(row?.stopped_at).not.toBeNull();
-    if (mode === "legacy_scrub_failure") expect(row?.status_reason).toBe("expired");
-    expect(f.log).not.toContain("delete-image");
-    if (hardExit) {
-      expect(row?.status_reason).toContain("without a new verified recovery checkpoint");
-      expect((await f.store.get(machine.id)).phase).toBe("active");
-      expect((await f.store.get(machine.id)).imageId).toBe(before.imageId);
-      expect(f.log.slice(baseline)).not.toContain("checkpoint");
-      expect(f.log.slice(baseline)).not.toContain("snapshot");
-      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-      expect(await lifecycle.reconcileOne()).toBe(false);
-      expect(resolved).toBe(1);
-    } else {
-      expect((await f.store.get(machine.id)).phase).toBe("stopped");
-      expect(f.log).toContain("terminate");
-    }
-  });
-
-test("private scoped transport requires exact active incarnation and ACK, never restores stopped compute", async () => {
-  const f = fixture();
-  const parent = await activeWorker(f);
-  const binding = { epoch: "1", physicalGeneration: (await f.provider.get(parent.id)).physicalGeneration ?? "missing" };
-  const request = {
-    sandboxId: parent.id,
-    token: `armada_epoch_${"a".repeat(64)}`,
-    binding,
-    url: "https://armada.invalid/private/mcp",
-  };
-  const install = f.provider.installOrchestratorEpoch;
-  const scrub = f.provider.scrubOrchestratorEpoch;
-  const quiesce = f.provider.quiesceOrchestrator;
-  const observe = f.provider.observeOrchestrator;
-  if (!install || !scrub || !quiesce || !observe) throw Error("missing private native authority port");
-  await expect(install(request)).rejects.toMatchObject({ code: "unavailable" });
-  await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
-    { code: "unavailable" },
-  );
-  f.onRpc(async (_row, op) =>
-    op === "observeOrchestrator"
-      ? {
-          physicalGeneration: binding.physicalGeneration,
-          state: "quiescent",
-          evidence: "a".repeat(64),
-          eventWatermark: 0,
-          acknowledgedSequence: 0,
-          nativeSessionId: null,
-        }
-      : ["installOrchestratorEpoch", "scrubOrchestratorEpoch"].includes(op)
-        ? { acknowledged: true }
-        : undefined,
-  );
-  expect((await observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).state).toBe(
-    "quiescent",
-  );
-  expect(await install(request)).toEqual({ acknowledged: true });
-  await expect(install({ ...request, binding: { ...binding, physicalGeneration: "old" } })).rejects.toMatchObject({
-    code: "conflict",
-  });
-  expect(await quiesce({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).toEqual({
-    acknowledged: true,
-  });
-  expect(await scrub({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).toEqual({
-    acknowledged: true,
-  });
-  await f.provider.stop({ sandboxId: parent.id });
-  const created = f.creates;
-  const calls = f.log.length;
-  await expect(install(request)).rejects.toMatchObject({ code: "conflict" });
-  await expect(scrub({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject({
-    code: "conflict",
-  });
-  await expect(quiesce({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
-    { code: "conflict" },
-  );
-  await expect(observe({ sandboxId: parent.id, physicalGeneration: binding.physicalGeneration })).rejects.toMatchObject(
-    { code: "conflict" },
-  );
-  expect(f.creates).toBe(created);
-  expect(f.log.length).toBe(calls);
-});
-
-test("only newly managed VM incarnations expose resource observations", async () => {
-  const f = fixture();
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  const fork = await f.provider.fork({ from: name });
-  expect(f.requestedRuntimes).toEqual([undefined, "vm"]);
-  const row = await f.store.get(fork.id);
-  if (!row.physicalId) throw Error("missing physical ID");
-  expect(row.runtimeEvidence).toEqual({ version: 1, runtime: "vm", physicalId: row.physicalId, generation: 1 });
-  const reading = {
-    version: 1,
-    bootId: "00000000-0000-0000-0000-000000000001",
-    uptimeMs: 1000,
-    captureDurationMs: 10,
-    cpuLogicalCpus: 2,
-    cpuTotalTicks: 100,
-    cpuBusyTicks: 10,
-    cpuStealTicks: 0,
-    memoryTotalBytes: 4096,
-    memoryAvailableBytes: 2048,
-    cpuPressureSomeUsec: 0,
-    oomKills: 0,
-  };
-  f.onRpc(async (_row, op) => (op === "resourceObservation" ? reading : undefined));
-  expect(await f.provider.observeResources?.(fork.id)).toMatchObject({
-    physicalId: row.physicalId,
-    generation: "1",
-    runtimeProvenance: "modal-explicit-vm-v1",
-    reading,
-  });
-  const calls = f.log.filter((x) => x === "resourceObservation").length;
-  expect(await f.provider.observeResources?.(builder.id)).toBeNull();
-  await f.store.lease(fork.id, async (stored, save) => {
-    delete stored.runtimePolicy;
-    await save(stored);
-  });
-  expect(await f.provider.observeResources?.(fork.id)).toBeNull();
-  await f.store.lease(fork.id, async (stored, save) => {
-    stored.runtimePolicy = "explicit-vm-v1";
-    stored.generation++;
-    await save(stored);
-  });
-  expect(await f.provider.observeResources?.(fork.id)).toBeNull();
-  expect(f.log.filter((x) => x === "resourceObservation")).toHaveLength(calls);
 });
 
 test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
@@ -3925,345 +2258,4 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBeNull();
   expect(f.creates).toBe(creates);
   expect(f.log.filter((x) => x === "outputs")).toHaveLength(1);
-});
-
-test("ordinary stop retains its new disk checkpoint across resume with generation-bound sealed controls", async () => {
-  const f = fixture();
-  f.distribution.captureProcessBaseline = async (_sb, row) => ({
-    version: 1,
-    physicalId: row.physicalId!,
-    generation: row.generation,
-    namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
-    processes: [{ pid: 1, start: "1" }],
-    admissionState: "pending",
-  });
-  f.onRpc(async (row, op) =>
-    op === "health" ? { generation: String(row.generation), ready: true, pid: 123 } : undefined,
-  );
-  f.distribution.sealProcessBaseline = async (_sb, row, managedRunnerPid) => {
-    if (!row.processBaseline) throw Error("Missing baseline");
-    return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
-  };
-  const machine = await runningFork(f);
-  for (const generation of [1, 2]) {
-    const before = await f.store.get(machine.id);
-    expect(before.golden).toBe(false);
-    expect(before.processBaseline).toMatchObject({
-      physicalId: before.physicalId,
-      generation,
-      admissionState: "sealed",
-      managedRunnerPid: 123,
-    });
-    const start = f.log.length;
-    await f.provider.stop({ sandboxId: machine.id });
-    const stopped = await f.store.get(machine.id);
-    expect(stopped.phase).toBe("stopped");
-    expect(stopped.recoveryImageId).toBeString();
-    expect(stopped.info.stopNote).toBeUndefined();
-    expect(f.log.slice(start)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
-    await f.provider.stop({ sandboxId: machine.id });
-    expect((await f.store.get(machine.id)).recoveryImageId).toBe(stopped.recoveryImageId);
-    if (generation === 1) {
-      await f.provider.exec({ sandboxId: machine.id, command: "pwd" });
-      const resumed = await f.store.get(machine.id);
-      expect(resumed.phase).toBe("active");
-      expect(resumed.imageId).toBe(stopped.recoveryImageId);
-      expect(resumed.physicalId).not.toBe(before.physicalId);
-      expect(resumed.ordinaryStopAttempted).toBeUndefined();
-    }
-  }
-});
-
-test.each([
-  ["pending", 123, true, "sealed"],
-  ["pending", undefined, true, "legacy"],
-  ["pending", 0, true, "legacy"],
-  ["pending", 1.5, true, "legacy"],
-  ["pending", 123, false, "legacy"],
-  ["sealed", 123, true, "sealed"],
-  ["legacy", 123, true, "legacy"],
-  [undefined, 123, true, undefined],
-] as const)(
-  "boot seals only pending baselines before admission (%s, pid %s, hook %s)",
-  async (initial, pid, hook, expected) => {
-    const f = fixture();
-    f.distribution.prepareRuntime = async () => {
-      f.log.push("runtime-overlay");
-    };
-    f.distribution.captureProcessBaseline = async (_sb, row) => {
-      f.log.push("baseline");
-      return {
-        version: 1,
-        physicalId: row.physicalId!,
-        generation: row.generation,
-        namespace: { pid: "pid:[fixture]", mount: "mnt:[fixture]" },
-        processes: [{ pid: 1, start: "1" }],
-        ...(initial === undefined ? {} : { admissionState: initial }),
-      };
-    };
-    f.onRpc(async (row, op) =>
-      op === "health" ? { generation: String(row.generation), ready: true, pid } : undefined,
-    );
-    if (hook)
-      f.distribution.sealProcessBaseline = async (_sb, row, managedRunnerPid) => {
-        f.log.push("seal-baseline");
-        expect(managedRunnerPid).toBe(123);
-        expect(await f.store.get(row.info.id)).toMatchObject({
-          phase: "booting",
-          processBaseline: { admissionState: "pending" },
-        });
-        if (!row.processBaseline) throw Error("Missing pre-admission baseline");
-        return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
-      };
-    const lease = f.store.lease.bind(f.store);
-    f.store.lease = (id, work) =>
-      lease(id, (row, save) =>
-        work(row, async (next) => {
-          if (next.phase === "active") {
-            const persisted = await f.store.get(next.info.id);
-            expect(persisted.phase).toBe("booting");
-            expect(persisted.processBaseline?.admissionState).toBe(expected);
-            f.log.push("publish-active");
-          }
-          await save(next);
-        }),
-      );
-    const result = await f.provider.createGolden({ name: `ordered-boot-${crypto.randomUUID()}` });
-    expect(result.state).toBe("ready");
-    const seals = initial === "pending" && pid === 123 && hook;
-    expect(f.log).toEqual([
-      "runtime-overlay",
-      "baseline",
-      "fresh-1",
-      "start-1",
-      "health",
-      ...(seals ? ["seal-baseline"] : []),
-      "publish-active",
-    ]);
-    const persisted = await f.store.get(result.id);
-    expect(persisted.processBaseline?.admissionState).toBe(expected);
-    expect(persisted.processBaseline?.managedRunnerPid).toBe(seals ? 123 : undefined);
-  },
-);
-
-test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as const)(
-  "boot stage %s preserves the normalized error and durable booting receipt",
-  async (stage) => {
-    const f = fixture();
-    const fail = async () => {
-      throw new ProviderError({
-        provider: "modal",
-        code: "unavailable",
-        retryable: true,
-        status: 503,
-        message: "synthetic-private-runtime-env",
-      });
-    };
-    if (stage === "runtime") f.distribution.prepareRuntime = fail;
-    if (stage === "baseline") f.distribution.captureProcessBaseline = fail;
-    if (stage === "fresh") f.distribution.prepareFreshMachine = fail;
-    if (stage === "start") f.distribution.start = fail;
-    if (stage === "active_publication")
-      await getDb().exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
-    create trigger boot_publication_fault before update of record on modal_machines for each row when (new.record->>'phase'='active') execute function boot_publication_fault()`);
-    try {
-      let failure: unknown;
-      try {
-        await f.provider.createGolden({ name: `failed-boot-${crypto.randomUUID()}` });
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(ProviderError);
-      expect(failure).toMatchObject({
-        providerCode: `modal_boot_${stage}`,
-        code: stage === "active_publication" ? "unknown" : "unavailable",
-      });
-      if (stage !== "active_publication") expect(failure).toMatchObject({ retryable: true, status: 503 });
-      const receipt = modalFailureReceipt(failure);
-      expect(receipt).toMatchObject({ phase: "booting", registryConfirmed: true, generation: 1 });
-      expect((await f.store.get(receipt!.sandboxId)).phase).toBe("booting");
-      expect(f.creates).toBe(1);
-      expect(JSON.stringify(failure)).not.toContain("synthetic-private-runtime-env");
-      expect(JSON.stringify(failure)).not.toContain("synthetic-private-sql");
-    } finally {
-      if (stage === "active_publication")
-        await getDb().exec(
-          "drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()",
-        );
-    }
-  },
-);
-
-test("unscoped Modal steer preserves no_running_turn and 409 at the control boundary", async () => {
-  const f = fixture();
-  const row = await activeWorker(f);
-
-  const journal = new Journal(":memory:", (s) => s);
-  const driver: Driver = {
-    start() {
-      throw new Error("No turn should be started by steer");
-    },
-    async close() {},
-  };
-  const runner = new Runner(
-    journal,
-    {
-      token: "fixture-steer-runner-grant",
-      sandboxId: row.id,
-      generation: "1",
-      expiresAt: Date.now() + 60000,
-    },
-    { claude: driver, codex: driver },
-    {
-      async append() {
-        return { acknowledgedSequence: 0 };
-      },
-    },
-  );
-  const transport = createRunnerTransport(
-    async () => ({
-      url: "https://runner.test",
-      connectToken: "connect",
-      grant: "fixture-steer-runner-grant",
-      expiresAt: Date.now() + 60000,
-    }),
-    (async (url, init) => runner.handle(new Request(String(url), init))) as typeof fetch,
-  );
-  f.onRpc(async (machine, op, input) => {
-    if (op === "steer") return transport.call(machine, op, input);
-  });
-  const authStore = createMemoryAuthStore();
-  authStore.addMembership(scope.userId, { orgId: scope.orgId, name: "modal", role: "admin" });
-  const record = {
-    id: row.id,
-    provider: "modal",
-    providerSandboxId: row.id,
-    orgId: scope.orgId,
-    ownerId: scope.userId,
-    harness: "claude",
-    credentialId: "bound",
-    status: "ready",
-    conversationIds: [],
-  };
-  const options = {
-    authStore,
-    supabase: {
-      supabaseUrl: "https://supabase.test",
-      anonKey: "anon",
-      fetch: async () => Response.json({ id: scope.userId }),
-    },
-    store: createSqlVaultStore(getDb()),
-    encryptionKey: Buffer.alloc(32, 5).toString("base64"),
-    data: () => ({ sandboxes: { get: async () => record, update: async () => {} } }),
-    providers: { resolve: async () => f.provider },
-  } as unknown as ControlOptions;
-  const response = await handleControlRequest(
-    new Request("https://armada.test/api/v1/sandbox/steer", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: scope.userId })).replace(/=+$/, "")}.sig`,
-      },
-      body: JSON.stringify({ id: row.id, text: "ignore" }),
-    }),
-    options,
-  );
-  if (!response) throw new Error("Missing control response");
-  const body = (await response.json()) as { error: { code: string; message: string } };
-  expect(body).toMatchObject({ error: { code: "no_running_turn" } });
-  expect(response.status).toBe(409);
-  expect(sandboxFailure("/api/v1/sandbox/steer", response.status, body.error.code, body.error.message)).toMatchObject({
-    code: "no_running_turn",
-    exitCode: 1,
-  });
-  expect((await f.store.get(row.id)).phase).toBe("active");
-  expect(await f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "continue" })).toHaveProperty(
-    "promptId",
-  );
-  journal.close();
-});
-
-test("Modal lifecycle refusals do not resume stopped steer or admit send during transitions", async () => {
-  const f = fixture();
-  const row = await activeWorker(f);
-
-  const active = await f.store.get(row.id);
-  for (const phase of ["booting", "terminate"] as const) {
-    await f.store.lease(row.id, async (machine, save) => {
-      await save({
-        ...machine,
-        phase,
-        info: { ...machine.info, state: phase === "booting" ? "starting" : "stopping" },
-      });
-    });
-    await expect(f.provider.prompt({ sandboxId: row.id, harness: "claude", text: "not yet" })).rejects.toMatchObject({
-      code: "sandbox_not_ready",
-    });
-  }
-  await f.store.lease(row.id, async (_machine, save) => {
-    await save(active);
-  });
-  await f.provider.stop({ sandboxId: row.id });
-  const creates = f.creates;
-  await expect(f.provider.steer({ sandboxId: row.id, text: "ignore" })).rejects.toMatchObject({
-    code: "sandbox_not_ready",
-  });
-  if (!f.provider.extendLifetime) throw new Error("Modal must support lifetime extension");
-  await expect(f.provider.extendLifetime({ sandboxId: row.id, ttlSeconds: 60 })).rejects.toMatchObject({
-    code: "sandbox_not_ready",
-  });
-  expect(f.creates).toBe(creates);
-  expect((await f.store.get(row.id)).phase).toBe("stopped");
-});
-
-test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
-  const f = fixture(scope, getDb());
-  const row = await activeWorker(f);
-  const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;
-  let receipt: unknown = expected;
-  f.onRpc(async (_machine, op, input) => {
-    if (op !== "testModelConnection") return undefined;
-    expect(input).toEqual({ harness: "codex", model: "deployment" });
-    return receipt;
-  });
-  expect(await f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" })).toEqual(
-    expected,
-  );
-  receipt = { ok: false, status: 401, error: "provider_rejected", code: "private-diagnostic" };
-  await expect(
-    f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" }),
-  ).rejects.toMatchObject({ code: "unavailable" });
-  await f.store.lease(row.id, async (machine, save) =>
-    save({ ...machine, phase: "stopped", info: { ...machine.info, state: "stopped" } }),
-  );
-  const creates = f.creates;
-  f.log.length = 0;
-  await expect(
-    f.provider.testModelConnection!({ sandboxId: row.id, harness: "codex", model: "deployment" }),
-  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-  expect(f.creates).toBe(creates);
-  expect(f.log).toEqual([]);
-});
-
-test("a native scan cannot exec on a newer physical incarnation", async () => {
-  const f = fixture();
-  const worker = await activeWorker(f);
-  const { physicalGeneration } = await f.provider.get(worker.id);
-  if (!physicalGeneration) throw new Error("Expected an observed physical generation");
-  const request = {
-    sandboxId: worker.id,
-    command: "true",
-    onlyIfRunning: true,
-    expectedPhysicalGeneration: physicalGeneration,
-  };
-  await f.provider.stop({ sandboxId: worker.id });
-  await f.provider.exec({ sandboxId: worker.id, command: "pwd" });
-  const replacement = await f.provider.get(worker.id);
-  if (!replacement.physicalGeneration) throw new Error("Expected a replacement physical generation");
-  expect(replacement.physicalGeneration).not.toBe(physicalGeneration);
-  const execs = f.log.filter((call) => call === "exec").length;
-
-  await expect(f.provider.exec(request)).rejects.toMatchObject({ code: "conflict" });
-  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs);
-  await f.provider.exec({ ...request, expectedPhysicalGeneration: replacement.physicalGeneration });
-  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs + 1);
 });

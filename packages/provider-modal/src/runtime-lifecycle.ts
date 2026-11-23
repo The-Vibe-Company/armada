@@ -193,7 +193,6 @@ export function createRuntimeLifecycle({
             delete row.physicalId;
             delete row.processBaseline;
             delete row.runtimeStartAttempted;
-            delete row.ordinaryStopAttempted;
             delete row.info.stopNote;
             delete row.info.stoppedAt;
             await save(row);

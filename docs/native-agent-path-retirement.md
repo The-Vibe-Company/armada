@@ -157,9 +157,9 @@ Counts are physical lines, including comments and blanks, at baseline commit `4c
 | [`packages/provider-boat/src/native-usage.ts`](../packages/provider-boat/src/native-usage.ts) | 396 |
 | [`packages/provider-boat/src/event-cursor.ts`](../packages/provider-boat/src/event-cursor.ts) | 50 |
 | [`packages/provider-boat/src/events.ts`](../packages/provider-boat/src/events.ts) | 111 |
-| [`packages/provider-modal/src/grants.ts`](../packages/provider-modal/src/grants.ts) | 42 |
-| [`packages/provider-modal/src/ingest.ts`](../packages/provider-modal/src/ingest.ts) | 91 |
-| [`packages/provider-modal/src/transport.ts`](../packages/provider-modal/src/transport.ts) | 107 |
+| `packages/provider-modal/src/grants.ts` | 42 |
+| `packages/provider-modal/src/ingest.ts` | 91 |
+| `packages/provider-modal/src/transport.ts` | 107 |
 | [`packages/mcp-server/src/modal-event-usage.ts`](https://github.com/The-Vibe-Company/armada/blob/aed5e165e60281c67ea320f5adee10296b993b34/packages/mcp-server/src/modal-event-usage.ts) | 46 |
 | [`packages/mcp-server/src/native-idle.ts`](../packages/mcp-server/src/native-idle.ts) | 57 |
 | [`packages/mcp-server/src/native-webhook-prompts.ts`](../packages/mcp-server/src/native-webhook-prompts.ts) | 227 |
