@@ -63,7 +63,7 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
       expect(role).toBe("admin");
       if (id === "unproven-id" && !proofAvailable) throw new Error("Unverified work for unproven-id");
       await db.query("update public.sandboxes set status='deleted', deleted_at=now() where id=$1", [id]);
-      return id === "archived-id" ? ("with-proof" as const) : ("without-proof" as const);
+      return "with-proof" as const;
     },
   };
   expect(await runNativeDrain(request, sql, operation)).toEqual({
@@ -72,7 +72,6 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
     total: 2,
     deleted: 1,
     deletedWithProof: 1,
-    deletedWithoutProof: 0,
     alreadyDeleted: 0,
     failed: 1,
   });
@@ -82,7 +81,7 @@ test("real drain reports failed preservation, keeps the row, and skips deleted r
   expect(await runNativeDrain(request, sql, operation)).toMatchObject({
     total: 1,
     deleted: 1,
-    deletedWithoutProof: 1,
+    deletedWithProof: 1,
     failed: 0,
   });
   expect(await runNativeDrain(request, sql, operation)).toMatchObject({ total: 0, deleted: 0, failed: 0 });

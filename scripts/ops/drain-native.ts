@@ -7,7 +7,7 @@ import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 
 type StatusCount = { status: SandboxState; count: number };
 type NativeRow = { id: string; org_id: string; role: MemberRole | null };
-type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | "without-proof" | undefined>;
+type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | undefined>;
 type NativeDrainRequest = { provider: "boat"; dryRun: boolean };
 
 const usage = "Usage: bun scripts/ops/drain-native.ts --provider boat [--dry-run]";
@@ -68,14 +68,12 @@ export async function runNativeDrain(
   if (!operation) throw new Error("Native drain deletion requires a configured operator.");
   const rows = await inventory<NativeRow>(sql, candidatesQuery, [provider, operation.actorId]);
   let deletedWithProof = 0;
-  let deletedWithoutProof = 0;
   let alreadyDeleted = 0;
   let failed = 0;
   for (const row of rows) {
     try {
       const proof = await operation.remove(row);
       if (proof === "with-proof") deletedWithProof++;
-      else if (proof === "without-proof") deletedWithoutProof++;
       else alreadyDeleted++;
     } catch {
       failed++;
@@ -85,9 +83,8 @@ export async function runNativeDrain(
     provider,
     mode: "drain" as const,
     total: rows.length,
-    deleted: deletedWithProof + deletedWithoutProof,
+    deleted: deletedWithProof,
     deletedWithProof,
-    deletedWithoutProof,
     alreadyDeleted,
     failed,
   };

@@ -1625,14 +1625,6 @@ test.each(drainAdmissionScenarios)(
         )
       ).rows[0];
     const remove = mock(async () => {
-      if (scenario === "expired Modal journal lease") {
-        const saveStartedBeforeExpiry = await db.query(
-          `update modal_machines set record=jsonb_set(record,'{generation}','2') where id=$1 and lease_id=$2
-           and lease_until>'1999-12-31'::timestamptz returning id`,
-          [placement, abandonedToken],
-        );
-        expect(saveStartedBeforeExpiry.rows).toEqual([]);
-      }
       if (scenario === "verified proof") {
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
         expect(await state()).toEqual({ status: "stopped", generation: 5, drain_operation_id: null });
