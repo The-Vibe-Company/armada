@@ -120,9 +120,7 @@ export function launchCredentials(
                     connectionStatus: access.status,
                   }),
                 );
-              } catch {
-                // Diagnostics cannot change the admission result.
-              }
+              } catch {}
             };
             for (const repository of repositories) {
               let identity: { owner: string; repo: string };
@@ -165,8 +163,6 @@ export function launchCredentials(
               const request = async (suffix = "") => {
                 const response = await fetchRepository(suffix);
                 if (!repositoryGithub || github || rechecked || !connected || response?.status !== 401) return response;
-                // A concurrent refresh can invalidate the token after preflight resolved it.
-                // Recheck once and retry only this read with a validated successor.
                 rechecked = true;
                 const previous = connected;
                 const latest = await resolveAccess();

@@ -132,7 +132,6 @@ test("runtime repository admission recovers when a concurrent rotation invalidat
     if (url === "https://api.github.com/user") return Response.json({ id: 7, login: "caller", name: null });
     if (url.includes("/git/ref/")) {
       refAttempts.push(authorization);
-      // The other replica has published by the time GitHub refuses the old token.
       connection = successor;
       return Response.json({}, { status: authorization === `Bearer ${nextToken}` ? 200 : 401 });
     }
