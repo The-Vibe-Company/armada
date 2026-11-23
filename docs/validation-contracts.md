@@ -67,9 +67,8 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- The Boat integration probe is coordinator-only and spends sandbox and model
-  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
-  account, run
+- The Boat integration probe is coordinator-only and uses Boat compute.
+  With `BOAT_API_KEY` exported, run
   `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
   Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
   build a disposable one (snapshot creation requires a paid account).
@@ -356,32 +355,15 @@ The daemon archive case replaces `Bun.spawn` with a mock.
 
 ## Process-spawning unit cases in the Boat adapter
 
-The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four
-Boat adapter files by direct subprocess syntax. One additional case in
-`provider.test.ts` starts a local binary through the SSH helper. Timings
-measure whole cases in focused Linux runs with Bun 1.4.2. The four allowlisted
-files ran together on main at `7dc693ad`. The SSH case ran on its own with
-main at `c9bf4fcf`. Both runs used local fixtures.
+The SSH case in `provider.test.ts` ran on its own on main at `c9bf4fcf`
+using local fixtures and Bun 1.4.2.
 
 | File under `packages/provider-boat/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
-| `native-usage.test.ts` | multi-turn Codex cumulative counters yield deltas, retries do not add | Python executes the embedded guest usage code with temporary state. | 28.51 ms |
-| `native-usage.test.ts` | a valid stale flush is never frozen at admission or attributed to the next turn | Python executes the embedded guest usage code with temporary state. | 28.02 ms |
-| `native-usage.test.ts` | missing resume baseline, symlink, mismatched session identity fail closed | Python executes the embedded guest usage code with temporary state. | 27.39 ms |
-| `native-usage.test.ts` | an interrupted native turn leaves counters unknown without poisoning later closed turns | Python executes the embedded guest usage code with temporary state. | 29.39 ms |
-| `native-usage.test.ts` | Claude cumulative files without a proven native boundary remain unknown | Python executes the embedded guest usage code with temporary state. | 26.53 ms |
-| `native-usage.test.ts` | expired and rejected admissions recover without letting late callbacks claim newer prompts | Python executes the embedded guest usage code with temporary state. | 28.72 ms |
-| `native-usage.test.ts` | wire codec rejects ambiguous context and legacy admissions without losing safe recovery | Python executes the embedded guest usage code with temporary state. | 27.50 ms |
-| `native-usage.test.ts` | a warm legacy bridge cannot consume a new admission whose raw text aliases an old envelope | Python executes the embedded guest usage code with temporary state. | 26.25 ms |
-| `native-usage.test.ts` | collection explains the failed stage without exposing raw state or changing counters | Python executes the embedded guest usage code with temporary state. | 26.19 ms |
-| `native-usage.test.ts` | identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover | Python executes the embedded guest usage code with temporary state. | 25.67 ms |
-| `usage-probe.test.ts` | diagnostic probe exports only metadata and does not mutate guest state | Python runs the guest metadata probe against temporary state. | 20.95 ms |
 | `provider.test.ts` | cleared Boat /run receipt restarts SSH hydration instead of trusting a previous delivery | The SSH helper starts local `ssh-keygen`. The fake provider refuses authorization before an SSH connection is opened. | 15.63 ms |
 
-The native reader transport-error case in `native-usage.test.ts` injects the
-exec response in process. The matching-receipt case in `provider.test.ts`
-returns before SSH hydration. Provider API calls use fake fetch. Explicit
-conformance and the coordinator probe are outside unit discovery.
+The matching-receipt case in `provider.test.ts` returns before SSH hydration.
+Provider API calls use fake fetch. Explicit conformance and the coordinator probe are outside unit discovery.
 
 ## Core subprocess cases
 

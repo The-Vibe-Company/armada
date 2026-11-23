@@ -1,4 +1,4 @@
-import { isFinalPromptStatus, type Provider, type SandboxInfo } from "@armada/core/server";
+import { isFinalPromptStatus, type Provider, ProviderError, type SandboxInfo } from "@armada/core/server";
 import type { BoatProvider } from "@armada/provider-boat";
 import { runtimeIdle } from "./runtime-idle.ts";
 
@@ -41,13 +41,19 @@ export async function nativeIdleDue(
   const turn = await provider.getPrompt({ sandboxId: info.id, promptId: taskPromptId, ...(signal ? { signal } : {}) });
   if (turn.promptId !== taskPromptId || !turn.done || !isFinalPromptStatus(turn.status)) return false;
   signal?.throwIfAborted();
-  const page = await provider.events({
-    sandboxId: info.id,
-    direction: "backward",
-    limit: 200,
-    ...(signal ? { signal } : {}),
-  });
+  const page = await provider
+    .events({
+      sandboxId: info.id,
+      direction: "backward",
+      limit: 200,
+      ...(signal ? { signal } : {}),
+    })
+    .catch((error: unknown) => {
+      if (error instanceof ProviderError && error.code === "invalid_request") return null;
+      throw error;
+    });
   if (
+    !page ||
     !page.events.some(
       (event) => event.kind === "prompt" && event.promptId === taskPromptId && isFinalPromptStatus(event.status),
     )

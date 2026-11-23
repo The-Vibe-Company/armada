@@ -87,7 +87,6 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       publicUrl: need("ARMADA_PUBLIC_URL"),
     }));
   const providers = providerRegistry({
-    launchStageSql: sql,
     vault: store,
     encryptionKey,
     providerFor,

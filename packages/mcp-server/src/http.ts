@@ -14,14 +14,12 @@ import {
   type ProviderTarget,
   resolveBoatKey,
   resolveModalTokens,
-  type Sql,
   VERSION,
 } from "@armada/core/server";
 import { AuthUnavailable, authenticateCaller, type Caller, type CallerResult, type SupabaseProject } from "./caller.ts";
 import type { DataSource, SandboxView } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
-import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
@@ -80,8 +78,6 @@ export interface HandlerOptions {
   /** The project that checks a Supabase session bearer (the dashboard's). */
   supabase: SupabaseProject;
   data: DataSource;
-  /** #2560: where native Boat event reads record first_token. Absent: native output is not timed. */
-  launchStageSql?: Pick<Sql, "query">;
   /** Ciphertext of the stored credentials: the server's privileged connection, read in this process. */
   vault: CredentialReader;
   /** `ARMADA_ENCRYPTION_KEY`. Decrypted values stay in this process: no tool returns one. */
@@ -250,21 +246,10 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
 export function providerRegistry(
   options: Pick<
     HandlerOptions,
-    | "vault"
-    | "encryptionKey"
-    | "providerFor"
-    | "modalProviderFor"
-    | "modalTokensFor"
-    | "runtimeProviderFor"
-    | "launchStageSql"
+    "vault" | "encryptionKey" | "providerFor" | "modalProviderFor" | "modalTokensFor" | "runtimeProviderFor"
   >,
 ): ProviderRegistry {
   const modal = options.modalProviderFor;
-  // #2560: native paths time their first model output where the server reads it; runtime paths record it on upload.
-  const native = (provider: Provider, target: ProviderTarget) =>
-    target.id && options.launchStageSql
-      ? observeNativeFirstToken(provider, target.id, options.launchStageSql)
-      : provider;
   return createProviderRegistry({
     boat: async (target, caller) => {
       const runtime = target.boatRuntime ? options.runtimeProviderFor : undefined;
@@ -281,10 +266,7 @@ export function providerRegistry(
       });
       const provider = runtime
         ? await runtime(key, target, caller)
-        : native(
-            options.providerFor(key, { userId: caller.userId, orgId: target.orgId }, diagnosticSandboxId(target)),
-            target,
-          );
+        : options.providerFor(key, { userId: caller.userId, orgId: target.orgId }, diagnosticSandboxId(target));
       const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
       // Keep source authority immutable even if a provider factory caches a shared client.
       return new Proxy(provider, {

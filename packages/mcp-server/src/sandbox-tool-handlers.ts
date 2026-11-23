@@ -36,7 +36,7 @@ import { ToolError } from "./tool-error.ts";
 import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
 import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
-import { collectSandboxUsage, isFailedModalLaunch, latestPrompt, readStatus } from "./turns.ts";
+import { isFailedModalLaunch, latestPrompt, readStatus } from "./turns.ts";
 import { SANDBOX_ADMISSION_TIMEOUT_MS, waitForSandboxAdmission } from "./wake-bus.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
@@ -596,7 +596,6 @@ export function configureTools(
           let preservationNote =
             checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
           try {
-            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
             const observed = await stopAndObserve(
               provider,
