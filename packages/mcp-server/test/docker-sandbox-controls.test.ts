@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -463,7 +463,15 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
       },
     },
   });
-  await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
+  const warning = spyOn(console, "warn");
+  let lines: unknown[][];
+  try {
+    await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
+    await db.query("select 1");
+    lines = [...warning.mock.calls];
+  } finally {
+    warning.mockRestore();
+  }
   expect(waits).toBe(2);
   const jobs = async () =>
     (
@@ -474,6 +482,22 @@ test("cleanup waits outside transactions for physical ACK; timeout retries reuse
     ).rows;
   const original = (await jobs())[0];
   if (!original) throw Error("missing stop intent");
+  expect(lines.map(([line]) => JSON.parse(String(line)))).toContainEqual(
+    expect.objectContaining({
+      event: "docker_stop_receipt_timeout",
+      sandboxId: f.sandbox.id,
+      stopRequestId: original.request_id,
+      evidence: expect.objectContaining({
+        hostId: f.hostId,
+        launchStages: expect.objectContaining({ accepted: expect.any(String) }),
+        hostJobs: expect.arrayContaining([
+          expect.objectContaining({ operation: "create", requestId: f.sandbox.id, outcome: "completed" }),
+          expect.objectContaining({ operation: "bootstrap", outcome: "completed" }),
+          expect.objectContaining({ operation: "stop", requestId: original.request_id, outcome: null }),
+        ]),
+      }),
+    }),
+  );
   await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
   expect(await jobs()).toEqual([original]);
   await rejected(invoke(who, "stop", { id: f.sandbox.id, request_id: randomUUID() }, pending), "conflict");
