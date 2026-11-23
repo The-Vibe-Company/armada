@@ -467,20 +467,46 @@ export function createModalInitialTurnJob(
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
 
+      function timePhase(
+        phase: "load_target" | "environment" | "workspace" | "skills" | "mcp" | "scoped_access" | "first_prompt",
+      ) {
+        const started = performance.now();
+        const log = (state: "started" | "finished", durationMs?: number) => {
+          try {
+            console.info(
+              JSON.stringify({
+                event: "modal_launch_setup_phase",
+                sandboxId,
+                jobId: job.id,
+                generation,
+                attempt: job.attempts,
+                phase,
+                state,
+                durationMs,
+              }),
+            );
+          } catch {}
+        };
+        log("started");
+        return () => log("finished", Math.round(performance.now() - started));
+      }
+
+      const endLoad = timePhase("load_target");
       const {
         rows: [target],
-      } = await sql.query<{
-        org_id: string;
-        owner_id: string;
-        role: MemberRole;
-        provider_sandbox_id: string;
-        repository_dir: string | null;
-        harness: Harness;
-        state: string;
-        epoch: string | null;
-        accepted: boolean;
-      }>(
-        `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.repository_dir, s.harness, launch.state, runtime.epoch::text as epoch,
+      } = await sql
+        .query<{
+          org_id: string;
+          owner_id: string;
+          role: MemberRole;
+          provider_sandbox_id: string;
+          repository_dir: string | null;
+          harness: Harness;
+          state: string;
+          epoch: string | null;
+          accepted: boolean;
+        }>(
+          `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.repository_dir, s.harness, launch.state, runtime.epoch::text as epoch,
                 exists(select 1 from public.account_turn_queue q
                        where q.sandbox_id=s.id and q.request_id=intent.id
                          and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
@@ -496,8 +522,9 @@ export function createModalInitialTurnJob(
            and runtime.lifecycle_generation=s.lifecycle_generation and runtime.runtime_hash is not null
            and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null
          where intent.id=$1`,
-        [job.id, payload.data.launchJobId],
-      );
+          [job.id, payload.data.launchJobId],
+        )
+        .finally(endLoad);
       if (target?.accepted) return { status: "done" };
       if (!target || target.state === "failed") return { status: "fail", reason: "modal_initial_turn_unavailable" };
       if (!(await context.canDispatch())) return { status: "fail", reason: "modal_initial_turn_budget_exhausted" };
@@ -518,6 +545,7 @@ export function createModalInitialTurnJob(
         );
         if (!rows.length) throw new GoldenError("conflict", "Modal setup runtime changed.");
       };
+      const endEnvironment = timePhase("environment");
       try {
         await environment.deliver("modal", actor, sandboxId, epoch, context.signal, async (tx) => {
           await assertClaim(tx);
@@ -532,6 +560,8 @@ export function createModalInitialTurnJob(
           return { status: "fail", reason: "modal_initial_turn_environment_refused" };
         recordOperatorFailure("modal.launch_setup.environment", error, { sandboxId });
         throw error;
+      } finally {
+        endEnvironment();
       }
 
       const { skills } = payload.data;
@@ -575,6 +605,7 @@ export function createModalInitialTurnJob(
         },
         { model: "", reasoningEffort: "" },
       );
+      const endWorkspace = timePhase("workspace");
       try {
         const config = parseModalLaunchWorkspace(payload.data);
         const workspaceStarted =
@@ -619,9 +650,12 @@ export function createModalInitialTurnJob(
           ...(error instanceof ProviderError ? { causeCode: error.code } : {}),
         });
         throw error;
+      } finally {
+        endWorkspace();
       }
 
       if (skills.length) {
+        const endPhase = timePhase("skills");
         try {
           const receipts = await agent.installSkills(skills, null, epoch, context.signal, `skills_${job.id}_${epoch}`);
           await runtime.withOwner(
@@ -642,6 +676,8 @@ export function createModalInitialTurnJob(
             return { status: "fail", reason: "modal_initial_turn_skills_refused" };
           recordOperatorFailure("modal.launch_setup.skills", error, { sandboxId });
           throw error;
+        } finally {
+          endPhase();
         }
       }
 
@@ -650,6 +686,7 @@ export function createModalInitialTurnJob(
         orgs: [{ orgId: target.org_id, role: target.role }],
         via: "service",
       };
+      const endMcp = timePhase("mcp");
       try {
         await prepareMcp(caller, sandboxId, context.signal, assertRuntimeClaim, `mcp_health_${job.id}_${epoch}`);
       } catch (error) {
@@ -657,11 +694,14 @@ export function createModalInitialTurnJob(
           return { status: "fail", reason: "modal_initial_turn_mcp_refused" };
         recordOperatorFailure("modal.launch_setup.mcp", error, { sandboxId });
         throw error;
+      } finally {
+        endMcp();
       }
 
       if (payload.data.scopedAccess) {
         if (!restoreScopedAccess) return { status: "fail", reason: "modal_initial_turn_scoped_access_unavailable" };
         const projectDir = target.repository_dir ? `${GOLDEN_ROOT}/${target.repository_dir}` : GOLDEN_ROOT;
+        const endPhase = timePhase("scoped_access");
         try {
           const installed = await agent.workspaceExec(
             {
@@ -688,12 +728,15 @@ export function createModalInitialTurnJob(
         } catch (error) {
           recordOperatorFailure("modal.launch_setup.scoped_access", error, { sandboxId });
           throw error;
+        } finally {
+          endPhase();
         }
       }
 
       const { prompt } = payload.data;
       if (prompt === undefined) return { status: "done" };
 
+      const endFirstPrompt = timePhase("first_prompt");
       try {
         const accepted = await queue.acceptInitialLaunch(
           caller,
@@ -714,6 +757,8 @@ export function createModalInitialTurnJob(
           recordOperatorFailure("modal.launch_setup.first_prompt", error, { sandboxId });
           throw error;
         }
+      } finally {
+        endFirstPrompt();
       }
       return { status: "fail", reason: "modal_initial_turn_refused" };
     },

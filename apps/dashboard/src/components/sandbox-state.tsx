@@ -9,6 +9,7 @@ export function SandboxState({
   expiresAt,
   statusMessage,
   readyLabel,
+  activityLabel,
   viewerOwns = true,
 }: {
   status: SandboxStatus;
@@ -16,6 +17,7 @@ export function SandboxState({
   idlePaused?: boolean | undefined;
   expiresAt?: string | null | undefined;
   statusMessage?: string | null | undefined;
+  activityLabel?: string | undefined;
   readyLabel?: string | undefined;
 }) {
   const paused = idlePauseMessage(
@@ -25,13 +27,14 @@ export function SandboxState({
   const waiting = status === "running" && /waiting for a free (agent )?slot/i.test(statusMessage ?? "");
   const look = statusLook(status);
   const label =
-    status === "ready" && !viewerOwns && readyLabel !== "Finished"
+    activityLabel ??
+    (status === "ready" && !viewerOwns && readyLabel !== "Finished"
       ? "Waiting"
       : paused
         ? "Paused"
         : status === "ready"
           ? (readyLabel ?? look.label)
-          : look.label;
+          : look.label);
   const hollow = paused || status === "stopped";
   return (
     <span

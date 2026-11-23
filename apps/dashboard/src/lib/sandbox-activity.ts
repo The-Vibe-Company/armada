@@ -28,8 +28,25 @@ function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
 }
 
-export function isWaitingCandidate(row: SandboxListMetadata, viewerId: string, now: Date) {
-  return row.ownerId === viewerId && row.canOpen && row.status === "ready" && beforeDeadline(row.expiresAt, now);
+function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: string | null, now: Date) {
+  return (
+    status === "starting" ||
+    status === "ready" ||
+    status === "running" ||
+    (status === "stopped" && expiresAt !== null && beforeDeadline(expiresAt, now))
+  );
+}
+
+export function isTurnCandidate(row: SandboxListMetadata, now: Date) {
+  return row.canOpen && canHaveActiveTurn(row.status, row.expiresAt, now);
+}
+
+function incompleteTurnObservation(turn: SandboxTurnObservation) {
+  return (
+    (turn.status === "ready" && turn.prompt === null && Boolean(turn.statusMessage)) ||
+    turn.statusMessage === "Provider observation unavailable; showing recorded state." ||
+    turn.statusMessage === "Stored prompt state is incomplete; live data may be stale."
+  );
 }
 
 export function sandboxActivityPage(
@@ -40,20 +57,34 @@ export function sandboxActivityPage(
   turns: ReadonlyMap<string, SandboxTurnObservation>,
   now = new Date(),
 ) {
-  const working = (row: SandboxListMetadata) => row.status === "running" || row.status === "starting";
+  const workingIds = new Set<string>();
   const waitingIds = new Set<string>();
-  let waitingIncomplete = false;
+  let turnsIncomplete = false;
   for (const row of rows) {
-    if (!isWaitingCandidate(row, viewerId, now)) continue;
+    if (!isTurnCandidate(row, now)) continue;
     const turn = turns.get(row.id);
-    if (!turn || (turn.status === "ready" && turn.prompt === null && turn.statusMessage)) {
-      waitingIncomplete = true;
+    if (!turn) {
+      turnsIncomplete = true;
+      continue;
+    }
+    const incomplete = incompleteTurnObservation(turn);
+    turnsIncomplete ||= incomplete;
+    const state = turn.prompt?.state;
+    if (
+      canHaveActiveTurn(turn.status, turn.expiresAt, now) &&
+      (state === "queued" || (!incomplete && state === "running"))
+    ) {
+      workingIds.add(row.id);
       continue;
     }
     if (
+      !incomplete &&
+      row.ownerId === viewerId &&
+      row.status === "ready" &&
+      beforeDeadline(row.expiresAt, now) &&
       turn.status === "ready" &&
       turn.settled === true &&
-      turn.prompt?.state === "finished" &&
+      state === "finished" &&
       beforeDeadline(turn.expiresAt, now)
     )
       waitingIds.add(row.id);
@@ -61,9 +92,9 @@ export function sandboxActivityPage(
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
     mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
-    working,
+    working: (row: SandboxListMetadata) => workingIds.has(row.id),
     need: (row: SandboxListMetadata) => waitingIds.has(row.id),
-    stopped: (row: SandboxListMetadata) => row.status === "stopped",
+    stopped: (row: SandboxListMetadata) => row.status === "stopped" && !workingIds.has(row.id),
     failed: (row: SandboxListMetadata) => row.status === "failed",
   };
   const activity =
@@ -75,5 +106,13 @@ export function sandboxActivityPage(
   ) as Record<keyof typeof predicates, number>;
   const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
-  return { rows: activeRows.slice((page - 1) * 50, page * 50), activity, counts, page, waitingIds, waitingIncomplete };
+  return {
+    rows: activeRows.slice((page - 1) * 50, page * 50),
+    activity,
+    counts,
+    page,
+    workingIds,
+    waitingIds,
+    turnsIncomplete,
+  };
 }

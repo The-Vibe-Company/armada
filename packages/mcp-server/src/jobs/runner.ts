@@ -155,6 +155,7 @@ export function createJobsRunner(
   }
 
   return {
+    independentJobs: true,
     async reconcileOne(signal) {
       for (let count = 0; count < registrations.length && !signal.aborted && !shutdown.signal.aborted; count++) {
         const registration = registrations[nextKind]!;

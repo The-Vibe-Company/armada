@@ -152,6 +152,7 @@ const jobsLane: LaneFactory = ({
       if (config.encryptionKey && !signal.aborted) {
         try {
           await accountTurns.backfillDispatchJobs(signal);
+          if (!signal.aborted) await jobs.settleTurnDispatchMirrors();
         } catch {
           (options.logError ?? console.error)("armada: queued turn job backfill unavailable.");
         }
