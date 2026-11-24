@@ -17,8 +17,6 @@ export function createBoatMachine(
   authorize: () => Promise<void>,
   bootstrapRuntime = startBoatRuntime,
 ) {
-  // The stop authority supplies this binding from the current sandbox and its
-  // allocation. In-place activation changes the logical generation only.
   const stopBinding = options.stopBinding && { ...options.stopBinding };
   const api = new BoatApi(
     new Configuration({

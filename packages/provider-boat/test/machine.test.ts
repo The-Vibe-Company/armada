@@ -142,7 +142,7 @@ test("Boat retained stop verifies the original VM and receipts the resumed gener
     archived,
   );
   const machine = stopMachine(boat);
-  const receipt = { sandboxId: resumed.sandboxId, generation: 3, kind: "disk", ref: resumed.machineId };
+  const receipt = { sandboxId: resumed.sandboxId, generation: 3, kind: "disk", ref: resumed.machineId } as const;
   expect(await machine.stop({ ...resumed, retain: true })).toEqual(receipt);
   expect(await machine.stop({ ...resumed, retain: true })).toEqual(receipt);
   expect(boat.requests.filter(({ method }) => method === "POST").map(({ path }) => path)).toEqual([
