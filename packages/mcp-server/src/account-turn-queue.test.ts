@@ -54,6 +54,8 @@ beforeAll(async () => {
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,stop_generation bigint not null default 0,reconcile_lease_until timestamptz,
       application_secret_tainted boolean not null default false,native_drain_pending boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
+    create table sandbox_transitions(id bigint generated always as identity, sandbox_id uuid,
+      to_status text, actor text, code text, generation bigint);
     create table native_drain_stop_requests(sandbox_id uuid primary key references sandboxes(id) on delete cascade,stop_generation bigint not null);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text,docker_issuer_fence text);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
@@ -115,7 +117,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_requests; delete from docker_queued_prompts; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_requests; delete from docker_queued_prompts; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; delete from sandbox_transitions; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -1878,4 +1880,62 @@ test.each([true, false])("retained stop intent fences new queued work (merged=%s
     [id, merged],
   );
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+});
+
+test.each(["modal", "boat"])(
+  "a send during %s idle stop waits for the retained stop before dispatch",
+  async (provider) => {
+    const input = { id: ids[0]!, request_id: requests[0]!, prompt: "continue after idle pause" };
+    await sql.query(
+      `update sandboxes set provider=$2,status='stopping',status_reason='idle_paused',stop_requested_at=now(),
+      boat_runtime=$2='boat',runtime_transport=case when $2='modal' then 'dialout' end,lifecycle_generation=2
+      where id=$1`,
+      [input.id, provider],
+    );
+    await sql.query(
+      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopping','idle','runtime_checkpoint_idle_paused',2)",
+      [input.id],
+    );
+    expect(await queue.accept(caller, input)).toMatchObject({ status: "queued", promptId: input.request_id });
+    const sent: (typeof input)[] = [];
+    const run = sharedDispatcher(async (_actor, request) => {
+      sent.push({ id: request.id, request_id: request.request_id!, prompt: request.prompt });
+      return { promptId: "resumed-turn" };
+    });
+
+    await run();
+    expect(sent).toEqual([]);
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: false });
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+
+    await sql.query("update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null where id=$1", [
+      input.id,
+    ]);
+    await sql.query(
+      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopped','reconciler','provider_stopped',2)",
+      [input.id],
+    );
+    await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [input.id]);
+
+    await run();
+    expect(sent).toEqual([input]);
+    expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "resumed-turn" });
+  },
+);
+
+test("an explicit retained stop refuses a new queued send even with an idle pause reason", async () => {
+  const id = ids[0]!;
+  await sql.query(
+    `update sandboxes set provider='modal',runtime_transport='dialout',status='stopping',
+      status_reason='idle_paused',stop_requested_at=now() where id=$1`,
+    [id],
+  );
+  await sql.query(
+    "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopping','api','runtime_retained_stop',1)",
+    [id],
+  );
+  await expect(queue.accept(caller, { id, prompt: "continue after explicit stop" })).rejects.toThrow(
+    "Sandbox cannot accept a queued prompt.",
+  );
+  expect(await queue.status(caller, id)).toBeNull();
 });

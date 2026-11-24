@@ -15,12 +15,13 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  IDLE_STOP_PENDING,
   LAUNCH_PENDING,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   TURN_FIFO_ELIGIBLE,
-  TURN_LAUNCH_WAITING,
+  TURN_LIFECYCLE_WAITING,
   TURN_RECOVERY_ELIGIBLE,
   UNCERTAIN_DISPATCH_MESSAGE,
   UNSETTLED_TASK,
@@ -122,7 +123,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         has_slot: boolean;
       }>(
         `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
-          (${TURN_LAUNCH_WAITING} or s.reconcile_lease_until>now() or s.activity_lease_id is not null
+          (${TURN_LIFECYCLE_WAITING} or s.reconcile_lease_until>now() or s.activity_lease_id is not null
             or (${UNSETTLED_TASK})
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
@@ -274,14 +275,22 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
           `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
-           and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
-           and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})) for update`,
+           and deleted_at is null and expires_at>now() and not native_drain_pending
+           and (status='stopping' or (stop_requested_at is null
+             and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})))) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
         if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
           throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        if (locked.status !== "stopped") {
+        if (locked.status === "stopping") {
+          // Read the journal after locking so a concurrent stop admission's committed transition is visible.
+          const pending = await tx.query(
+            `select 1 from public.sandboxes s where id=$1 and expires_at>clock_timestamp() and ${IDLE_STOP_PENDING}`,
+            [input.id],
+          );
+          if (!pending.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        } else if (locked.status !== "stopped") {
           const checkpoint = (
             await tx.query<{ merge_stop: boolean }>(
               `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
@@ -471,7 +480,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
              where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
-           and (q.state<>'queued' or not ${TURN_LAUNCH_WAITING})
+           and (q.state<>'queued' or not ${TURN_LIFECYCLE_WAITING})
            and ${TURN_FIFO_ELIGIBLE}
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],

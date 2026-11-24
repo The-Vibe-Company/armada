@@ -25,8 +25,26 @@ function deferredDockerLaunch(sandbox: string, pending = false) {
 export const LAUNCH_PENDING = `(exists(select 1 from public.jobs setup
   where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state in ('queued','leased')) or ${deferredDockerLaunch("s", true)})`;
 
-function launchBlocksTurn(sandbox: string, turn: string) {
-  return `(exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
+// The reason alone also labels some explicit retained stops.
+function idleStopPending(sandbox: string) {
+  return `(${sandbox}.status='stopping' and ${sandbox}.stop_requested_at is not null
+    and ${sandbox}.status_reason is not distinct from 'idle_paused'
+    and ((${sandbox}.provider='boat' and ${sandbox}.boat_runtime is true)
+      or (${sandbox}.provider='modal' and ${sandbox}.runtime_transport is not distinct from 'dialout'))
+    and exists (
+      select 1 from (
+        select to_status, actor, code, generation from public.sandbox_transitions
+        where sandbox_id=${sandbox}.id order by id desc limit 1
+      ) latest
+      where latest.generation=${sandbox}.lifecycle_generation and latest.to_status='stopping'
+        and latest.actor='idle' and latest.code='runtime_checkpoint_idle_paused'
+    ))`;
+}
+
+export const IDLE_STOP_PENDING = idleStopPending("s");
+
+function lifecycleBlocksTurn(sandbox: string, turn: string) {
+  return `(${idleStopPending(sandbox)} or exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
     and (setup.state='failed' or (setup.state in ('queued','leased') and setup.id<>${turn}.request_id)
       or exists(
       select 1 from public.account_turn_queue initial
@@ -37,13 +55,13 @@ function launchBlocksTurn(sandbox: string, turn: string) {
       where pending.sandbox_id=${sandbox}.id and pending.status in ('queued','dispatching')))`;
 }
 
-export const TURN_LAUNCH_WAITING = launchBlocksTurn("s", "q");
+export const TURN_LIFECYCLE_WAITING = lifecycleBlocksTurn("s", "q");
 
 export const TURN_FIFO_ELIGIBLE = `(exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null)
   or not exists(select 1 from public.account_turn_queue earlier join public.sandboxes target on target.id=earlier.sandbox_id
     where earlier.account_id=q.account_id and earlier.state='queued'
       and earlier.model is not distinct from q.model and earlier.sequence<q.sequence
-      and not ${launchBlocksTurn("target", "earlier")}))`;
+      and not ${lifecycleBlocksTurn("target", "earlier")}))`;
 
 export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
@@ -148,12 +166,16 @@ export const DISPATCH_ABANDONED = `((q.dispatch_until is null or q.dispatch_unti
   and s.activity_lease_id is null and not ${QUEUED_DISPATCH_EVIDENCE})`;
 export const UNCERTAIN_DISPATCH_MESSAGE = "Dispatch outcome uncertain; inspect sandbox history before resending.";
 
-const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now() or s.stop_requested_at is not null
+const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now()
   or (s.status = 'stopped' and s.lifecycle_generation <> q.queued_generation))`;
 
-export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_PENDING}))
+export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
+  or (not (${IDLE_STOP_PENDING} and s.lifecycle_generation=q.queued_generation)
+    and (s.stop_requested_at is not null
+      or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_PENDING}))))
   or exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state='failed'))`;
-export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED} or s.status in ('deleted','stopping','failed'))`;
+export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
+  or s.stop_requested_at is not null or s.status in ('deleted','stopping','failed'))`;
 
 export async function failTurnReceipt(tx: Sql, sandboxId: string, requestId: string, uncertain = false) {
   await tx.query(
@@ -257,7 +279,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
       where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
       and (q.state='queued' or q.dispatch_until<=now() or $4::boolean)
-      and (q.state<>'queued' or not ${TURN_LAUNCH_WAITING})
+      and (q.state<>'queued' or not ${TURN_LIFECYCLE_WAITING})
       and ${TURN_FIFO_ELIGIBLE} for update of q`,
         [candidate.sandbox_id, candidate.request_id, candidate.state, Boolean(claim)],
       );

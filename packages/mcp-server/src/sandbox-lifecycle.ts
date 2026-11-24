@@ -22,6 +22,7 @@ import type { Job } from "./jobs/runner.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -1940,6 +1941,7 @@ export function createSandboxLifecycle(
       let resolved = false;
       let observing = false;
       let initialObservation = true;
+      let stopDispatched = false;
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let observedNativeReady = false;
@@ -2437,6 +2439,7 @@ export function createSandboxLifecycle(
                 retainedResume ||
                 ["idle_paused", "work_merged"].includes(row.status_reason ?? "")));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
+          stopDispatched = true;
           await operation(signal, () =>
             provider.stop({
               sandboxId: row.provider_sandbox_id,
@@ -2503,7 +2506,13 @@ export function createSandboxLifecycle(
         ) {
           terminal = true;
           if (requireMissingObservation) physicalExit = true;
-        } else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
+        } else {
+          if (providerId === "modal" && row.runtime_transport === "dialout" && row.status === "stopping") {
+            const phase = observing ? "observe" : stopDispatched ? "stop" : resolved ? "prepare" : "resolve_provider";
+            recordOperatorFailure(`sandbox.lifecycle.modal.${phase}`, caught, { sandboxId: row.id });
+          }
+          error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
+        }
       }
       return settle();
     } finally {
