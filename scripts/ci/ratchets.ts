@@ -11,7 +11,6 @@ import {
 const serverAdapters = new Set(
   [
     "boat-delegated-access-provider.ts",
-    "boat-inventory-report.ts",
     "boat-runtime-launch.ts",
     "boat-runtime-resume.ts",
     "docker-runtime-lifecycle.ts",
@@ -24,7 +23,7 @@ const serverAdapters = new Set(
 );
 
 const serverSource = /^packages\/mcp-server\/src\//;
-const routeTables = /^packages\/mcp-server\/src\/(?:public-rest-routes|control[^/]*)\.ts$/;
+const routeTables = /^packages\/mcp-server\/src\/control[^/]*\.ts$/;
 
 const controlPath = "packages/mcp-server/src/control.ts";
 const servePath = "packages/mcp-server/src/serve.ts";
