@@ -1,4 +1,3 @@
-import type { Harness } from "./contract.ts";
 import type { HarnessCredentials } from "./credentials.ts";
 import type { GoldenActor } from "./golden.ts";
 import type { LaunchOptions, LaunchPlan } from "./launch.ts";
@@ -21,8 +20,7 @@ type GoldenAdmission = {
 interface GoldenLaunchPlacement
   extends LaunchPlacement<LaunchPlan, GoldenAdmission, Awaited<ReturnType<Provider["fork"]>>> {
   readonly recordLaunchTimings: boolean;
-  runtimeDefault(options: LaunchOptions, harness: Harness): LaunchOptions["boatRuntimeDefault"];
-  endpointRuntime?(options: LaunchOptions): LaunchOptions["boatEndpointRuntime"];
+  runtimeDefault(options: LaunchOptions): LaunchOptions["boatRuntimeDefault"];
   allocationTtlSeconds(ttlSeconds: number, extensionHeadroom: number, privateParent: boolean): number;
 }
 
@@ -48,9 +46,7 @@ export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLa
   boat: {
     admit: admitGoldenLaunch,
     recordLaunchTimings: false,
-    runtimeDefault: (options, harness) =>
-      options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined),
-    endpointRuntime: (options) => options.boatEndpointRuntime,
+    runtimeDefault: (options) => options.boatRuntimeDefault,
     allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
       allocationTtlFor("boat", ttlSeconds, extensionHeadroom, privateParent),
   },

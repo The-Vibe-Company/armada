@@ -17,10 +17,6 @@ import { join } from "node:path";
 // Fake SSH maps the provider's guest home to a temporary home, never the CI host's /home/user.
 test.each([
   "ok",
-  "launch ok",
-  "launch refused",
-  "launch missing key",
-  "launch missing transport",
   "refused",
   "broad key",
   "missing",
@@ -84,24 +80,14 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
     if (mode === "missing executable")
       writeFileSync(join(bin, "skillpack"), "#!/nonexistent/skillpack-interpreter\n", { mode: 0o755 });
     const entry = join(import.meta.dir, "../src/private-skill.ts");
-    const launchEntry = join(import.meta.dir, "../src/launch.ts");
-    const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; if(process.env.LAUNCH==='1'){
- const {launchSandbox}=await import(${JSON.stringify(launchEntry)});
- let stored=[],prompted=false;const now=new Date().toISOString();
- Object.assign(provider,{id:'boat',harnesses:['codex'],capabilities:{codex:{reasoningEffort:true}},fork:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),get:async()=>({id:'fake',state:'ready',expiresAt:new Date(Date.now()+86400000)}),exec:async()=>({detached:false,exitCode:0,stdout:'',stderr:'',timedOut:false,truncated:false}),prompt:async()=>{prompted=true;if(stored.length!==1)throw Error('receipt_not_persisted');return {promptId:'p',conversationId:'c',status:'queued'};},stop:async()=>{},delete:async()=>({status:'deleted'})});
- const golden={id:'golden',orgId:'org',ownerId:'owner',name:'web',visibility:'org',provider:'boat',providerSnapshotId:'snapshot',config:{repos:[{url:'https://github.com/example/repo.git',branch:'main',dir:'repo'}],init:[]}};
- const stores={goldens:{findByName:async()=>[golden]},sandboxes:{insert:async input=>({...input,createdAt:now,conversationIds:[]}),update:async()=>{},recordSkills:async(_id,receipts)=>{stored=receipts;}},credentials:{installPrivateSkill,resolve:async()=>({env:{OPENAI_API_KEY:'synthetic-model-key'},github:{status:'not_connected'}}),skillpackKey:async()=>process.env.MODE==='missing key'?null:key}};
- if(process.env.MODE==='missing transport'){delete stores.credentials.installPrivateSkill;stores.credentials.skillpackKey=async()=>{throw Error('unexpected_key_resolution');};}
- try{const result=await launchSandbox(provider,stores,{userId:'owner',orgId:'org',role:'member'},{golden:'web',harness:'codex',skills:['notes@1.0.0'],prompt:'start'});console.log(JSON.stringify({receipt:result.sandbox.skills[0],prompted}));}catch(e){console.log(JSON.stringify({reason:e.reason,stage:e.stage,prompted}));}
-}else try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
+    const script = `import {installPrivateSkill} from ${JSON.stringify(entry)}; const key='cmp_pat_'+'a'.repeat(48); const provider={sshKey:async({key})=>{const fs=require('node:fs');for(const home of process.getuid()===0?[process.env.HOME,process.env.HOME+'/.root']:[process.env.HOME])fs.appendFileSync(home+'/.ssh/authorized_keys',key+'\\n');return {sshEndpoint:'fake.test:22',hostKey:'ssh-ed25519 AAAA'};}}; try{console.log(JSON.stringify(await installPrivateSkill(provider,{sandboxId:'fake',projectDir:${JSON.stringify(root)},reference:process.env.MODE==='bad reference'?'not-a-pin':'notes@1.0.0',harness:'codex',key:process.env.MODE==='unreadable key'?'invalid':key})));}catch(e){console.log(JSON.stringify({reason:e.reason}));}`;
     const result = Bun.spawnSync([process.execPath, "--eval", script], {
       env: {
         ...process.env,
         HOME: root,
         // Fake SSH rewrites the guest-local fallback to root/.local/bin as well.
         PATH: bin,
-        MODE: mode.startsWith("launch ") ? mode.slice(7) : mode,
-        LAUNCH: mode.startsWith("launch ") ? "1" : "0",
+        MODE: mode,
       },
     });
     expect(result.exitCode).toBe(0);
@@ -109,8 +95,8 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       stderr = result.stderr.toString();
     expect(stdout + stderr).not.toContain("cmp_pat_" + "a".repeat(48));
     const value = JSON.parse(stdout);
-    if (mode === "ok" || mode === "broad key" || mode === "launch ok")
-      expect(mode === "launch ok" ? value.receipt : value).toEqual({
+    if (mode === "ok" || mode === "broad key")
+      expect(value).toEqual({
         reference: "notes@1.0.0",
         version: "1.0.0",
         skillId: "22222222-2222-4222-8222-222222222222",
@@ -122,9 +108,6 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
       expect(value.reason).toBe(
         {
           refused: "skillpack_credential_refused",
-          "launch refused": "skillpack_credential_refused",
-          "launch missing key": "skillpack_credential_missing",
-          "launch missing transport": "skillpack_transport_failed",
           expired: "skillpack_credential_refused",
           revoked: "skillpack_credential_refused",
           missing: "skillpack_skill_unavailable",
@@ -143,13 +126,6 @@ process.stdout.write(process.env.SKILLPACK_API_KEY);process.stderr.write(process
           "unsafe lock": "skillpack_ssh_key_cleanup_failed",
         }[mode],
       );
-    if (mode === "launch ok") expect(value.prompted).toBe(true);
-    if (mode === "launch refused" || mode === "launch missing key" || mode === "launch missing transport") {
-      expect(value.prompted).toBe(false);
-      expect(value.stage).toBe(
-        mode === "launch refused" ? "auth" : mode === "launch missing transport" ? "transport" : "credential",
-      );
-    }
     for (const home of homes) {
       const contents = readFileSync(join(home, ".ssh/authorized_keys"), "utf8");
       if (mode === "unsafe lock") expect(contents).toStartWith(originalKeys);

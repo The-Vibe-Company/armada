@@ -21,14 +21,7 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
-import {
-  createUsagePricingContext,
-  installPrivateSkill,
-  PrivateSkillError,
-  sshHydrateAuthState,
-  sshHydrateGitHubToken,
-  VaultError,
-} from "@armada/core/server";
+import { createUsagePricingContext, PrivateSkillError, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
 import { refreshLegacyGitHub } from "./github-legacy.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { currentRequestId } from "./request-observability.ts";
@@ -96,7 +89,6 @@ export function launchCredentials(
   return {
     resolveModel,
     ...(ownership ? { launchAccountDefault: ownership.launchAccountDefault } : {}),
-    installPrivateSkill,
     ...(repositoryAccess
       ? ({
           async authorizeRepositories(actor, credentials, repositories) {
@@ -253,27 +245,6 @@ export function launchCredentials(
     },
     async releaseAdmission(sandboxId) {
       await ownership?.releaseCapacity(sandboxId);
-    },
-    async hydrateNative(actor, credentials, sandboxId, provider, providerSandboxId) {
-      const binding =
-        "binding" in credentials
-          ? (credentials.binding as { credentialId: string; credentialVersion: number } | undefined)
-          : undefined;
-      if (
-        ownership?.broker &&
-        binding &&
-        (await ownership.broker.enrolled(binding.credentialId, binding.credentialVersion))
-      ) {
-        if (provider.id === "boat")
-          throw new VaultError("unavailable", "Boat subscriptions require Armada runtime enrolment.");
-        return true;
-      }
-      if (!ownership || !binding || !(await ownership.managed(sandboxId))) return false;
-      const saved = await ownership.bootstrap(actor, binding.credentialId, binding.credentialVersion, sandboxId);
-      if (!saved?.authJson) throw new Error("Native hydration state is unavailable.");
-      if (provider.id === "boat") await sshHydrateAuthState(provider, providerSandboxId, saved.authJson);
-      // Modal already hydrates this exact sealed state in its private stdin bootstrap.
-      return true;
     },
     async nativeSecrets(actor, sandboxId, provider, providerSandboxId, phase = "after") {
       if (!ownership) return [];

@@ -654,7 +654,7 @@ single-allocation smoke:
 ARMADA_RUNTIME_SMOKE=one_real_modal_launch bun scripts/check-modal-runtime.ts --ordinary --empty-resume --variables --usage --skills --mcp --github
 ```
 
-The script preflights `modalRuntime.defaultPath:runtime`, uses ONLY ordinary routes
+The script preflights `modalRuntime.enabled` and the follow-up capability, uses ONLY ordinary routes
 (`sandbox/launch` or `templates/launch`) and omits explicit runtime version/transport
 selection. It still requires actual enrolled/immutable-routing receipts and all
 existing archive/session/epoch/checkpoint/tool/cost/disk proofs. New feature inputs,

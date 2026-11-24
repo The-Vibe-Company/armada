@@ -107,7 +107,6 @@ export interface LaunchOptionsResponse {
   ttl: { defaultSeconds: number; maxSeconds: Partial<Record<SandboxPlacementProviderId, number>> };
   providers: LaunchProviderOption[];
   modalRuntime?: {
-    defaultPath?: "native" | "runtime";
     enabled: boolean;
     followupVersion?: number;
     idleLaunchVersion?: number;
@@ -127,7 +126,6 @@ export interface LaunchOptionsResponse {
     opencodeMcpProofVersion?: number;
   };
   boatRuntime: {
-    defaultPath?: "native" | "runtime";
     diagnosticsVersion: number;
     followupVersion: number;
     checkpointVersion: number;

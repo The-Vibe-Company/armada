@@ -270,7 +270,7 @@ export async function createServerServices(env: Record<string, string | undefine
       })
     : undefined;
   if (runtimeLaunch) {
-    launch.boatEndpointRuntime = {
+    launch.boatRuntimeDefault = {
       policy: runtimeLaunch,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
@@ -283,7 +283,6 @@ export async function createServerServices(env: Record<string, string | undefine
         return withBoatManagementIdentity(runtimeHostFor(key), scope, scope === "org" ? actor.orgId : actor.userId);
       },
     };
-    if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
   const { manifest, artifactDir } = modalRuntime;
   const warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);

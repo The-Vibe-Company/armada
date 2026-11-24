@@ -45,7 +45,7 @@ describe("model choice from the dashboard forms", () => {
     expect(launchArgs({ ...form, harness: "opencode" })).toMatchObject({ ok: false });
     const advertised = {
       providers: [{ id: "boat", enabled: true, capabilities: { launch: true }, harnesses: ["opencode"] }],
-      boatRuntime: { enabled: true, defaultPath: "native", opencodeVersion: 1 },
+      boatRuntime: { enabled: true, opencodeVersion: 1 },
     };
     expect(launchArgs({ ...form, harness: "opencode" }, advertised)).toMatchObject({
       ok: true,

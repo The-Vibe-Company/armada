@@ -340,7 +340,6 @@ export {
   isFinalPromptStatus,
   type Page,
   PROMPT_STATUSES,
-  type PrepareNativeHarnessCwdRequest,
   type PromptReceipt,
   type PromptRequest,
   type PromptState,

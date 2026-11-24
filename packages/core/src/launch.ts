@@ -1,9 +1,7 @@
 import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
-import { CLAUDE_ENDPOINT_ENV } from "./claude-endpoint.ts";
-import { CODEX_ENDPOINT_ENV } from "./codex-endpoint.ts";
 import { HARNESSES, type Harness } from "./contract.ts";
 import { type HarnessCredentials, redact } from "./credentials.ts";
-import { GITHUB_NOT_CONNECTED, type GitHubAccess, type GitHubStatus, githubEnv } from "./github.ts";
+import type { GitHubStatus } from "./github.ts";
 import {
   type GoldenActor,
   type GoldenLimits,
@@ -16,7 +14,6 @@ import { GoldenError, type GoldenRepo, initCommand, pullCommand } from "./golden
 import { HARNESS_CAPABILITIES } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
-import { nativeLaunch } from "./launch-native.ts";
 import { goldenLaunchPlacements } from "./launch-placement.ts";
 import { applyLaunchAccountDefaults, resolveLaunchConnections, resolveLaunchSkills } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
@@ -34,7 +31,6 @@ import { CoreLaunchSettlementConflict, isExternalRef, type SandboxRecord, type S
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
-import * as placement from "./sandbox-provider.ts";
 import { assertProviderOf, PROVIDER_LIMITS, type SandboxProviderId } from "./sandbox-provider.ts";
 import { VaultError } from "./vault-error.ts";
 
@@ -80,11 +76,6 @@ export interface LaunchCredentialResolver {
   ): Promise<{ credentialId: string | null; model: string | null } | undefined>;
   /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
   skillpackKey?(actor: GoldenActor): Promise<string | null>;
-  /** Server transport port; the browser-safe launcher must not import SSH implementation. */
-  installPrivateSkill?(
-    provider: Provider,
-    input: Parameters<typeof import("./private-skill.ts").installPrivateSkill>[1],
-  ): ReturnType<typeof import("./private-skill.ts").installPrivateSkill>;
   /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
   refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
 
@@ -104,13 +95,6 @@ export interface LaunchCredentialResolver {
   enrollAccount?(actor: GoldenActor, credentials: HarnessCredentials): Promise<void>;
   releaseAdmission?(sandboxId: string): Promise<void>;
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string, model?: string): Promise<void>;
-  hydrateNative?(
-    actor: GoldenActor,
-    credentials: HarnessCredentials,
-    sandboxId: string,
-    provider: Provider,
-    providerSandboxId: string,
-  ): Promise<boolean>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
   /** Returns true when native output needs the shared lifecycle admission lease. */
@@ -179,8 +163,6 @@ export interface LaunchOptions extends GoldenLimits {
     credentials: LaunchCredentialResolver;
     connections: NonNullable<LaunchStores["connections"]>;
   };
-  /** Custom endpoints require private runtime configuration even when ordinary Boat launches stay native. */
-  boatEndpointRuntime?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Coordinator-owned Modal cutover default; never selected by request JSON. */
   modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
@@ -223,7 +205,6 @@ export interface LaunchOptions extends GoldenLimits {
   beforeFork?: (sandboxId: string) => Promise<void>;
   /** A durable template request supplies the snapshot reference for this launch. */
   templateSnapshotAdmission?: {
-    validatePlacement: (provider: Provider, enrolled: boolean) => void;
     admit: () => Promise<void>;
     confirmAbsence: () => void;
   };
@@ -250,7 +231,7 @@ export interface LaunchPlan {
   request: LaunchRequest;
   options: LaunchOptions;
   golden: GoldenRecord;
-  runtime: LaunchOptions["runtime"];
+  runtime: NonNullable<LaunchOptions["runtime"]>;
   harness: Harness;
   prompt: string | undefined;
   choice: ModelChoice;
@@ -259,14 +240,10 @@ export interface LaunchPlan {
   repositoryDir: string | null;
   resourceProject: GoldenRepo | undefined;
   machineSize: ReturnType<typeof resolveMachineSize>;
-  prepareNativeCwd: Provider["prepareNativeHarnessCwd"];
   visibility: "private" | "org";
   connectionIds: string[];
   snapshot: string;
   credentials: HarnessCredentials;
-  github: GitHubAccess;
-  connected: Extract<GitHubAccess, { status: "connected" }> | null;
-  env: HarnessCredentials["env"];
   secrets: HarnessCredentials["secrets"];
 }
 
@@ -287,12 +264,12 @@ function modalLaunchTiming(startedAt: number) {
       stages.push({ stage, ms: now - previous });
       previous = now;
     },
-    report(sandboxId: string, path: "native" | "enrolled") {
+    report(sandboxId: string) {
       if (!enabled) return;
       try {
         writeLaunchDiagnostic("info", "modal_launch_timing", {
           sandboxId,
-          path,
+          path: "enrolled",
           totalMs: previous - startedAt,
           stages,
         });
@@ -335,8 +312,7 @@ async function resolveGoldenLaunch(
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
   const launchPlacement = goldenLaunchPlacements[golden.provider];
-  const defaultRuntime =
-    !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options, request.harness) : undefined;
+  const defaultRuntime = !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options) : undefined;
   if (defaultRuntime) {
     provider = await defaultRuntime.provider(actor, golden);
     if (provider.id !== golden.provider)
@@ -345,23 +321,23 @@ async function resolveGoldenLaunch(
     options = { ...options, runtime: defaultRuntime.policy };
   }
   const runtime = options.runtime ?? options.boatRuntime;
-  const harness = checkHarness(provider, request.harness, Boolean(runtime));
+  if (!runtime) throw new LaunchError("invalid_request", "Runtime configuration is unavailable.");
+  const harness = checkHarness(provider, request.harness);
   if (
-    runtime &&
-    (!["boat", "modal"].includes(provider.id) ||
-      (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
-      options.privateParent)
+    !["boat", "modal"].includes(provider.id) ||
+    (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
+    options.privateParent
   )
     throw new LaunchError(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  if (runtime && !runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
+  if (!runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = validateGoldenLaunchPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = resolveModelChoice(harness, request);
-  if (!(runtime ? HARNESS_CAPABILITIES[harness] : provider.capabilities[harness])?.reasoningEffort) {
+  if (!HARNESS_CAPABILITIES[harness]?.reasoningEffort) {
     throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
   }
 
@@ -385,9 +361,6 @@ async function resolveGoldenLaunch(
     options,
   );
   const resourceProject = golden.config.repos.find((repo) => repo.dir === repositoryDir);
-  const prepareNativeCwd = provider.prepareNativeHarnessCwd?.bind(provider);
-  if (repositoryDir !== null && !prepareNativeCwd && !runtime)
-    throw new LaunchError("invalid_request", `${provider.id} cannot prepare a native repository working directory.`);
   // Public launch visibility cannot change access or source authority. Only the
   // trusted launch caller may narrow sandbox access; the source stays unchanged.
   const visibility = options.privateParent || options.privateVisibility ? "private" : golden.visibility;
@@ -395,7 +368,7 @@ async function resolveGoldenLaunch(
     request.connections,
     () => stores.connections?.defaults?.(actor, visibility),
     async (ids) => {
-      if (runtime && request.helperCapabilities?.length)
+      if (request.helperCapabilities?.length)
         throw new LaunchError("invalid_request", "The experimental runtime does not yet support helpers.");
       if (ids.length && !stores.connections)
         throw new LaunchError("invalid_request", "MCP launch connections are not configured.");
@@ -407,8 +380,7 @@ async function resolveGoldenLaunch(
   if (launchPlacement.recordLaunchTimings) timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
   if (launchPlacement.recordLaunchTimings) timing.mark("credential_resolution");
-  if (runtime && !credentials.binding)
-    throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
+  if (!credentials.binding) throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
   if (credentials.morphModels) {
     const models = credentials.morphModels;
     const prefix = `${OPENCODE_CONNECTION_PROVIDER}/`;
@@ -421,33 +393,7 @@ async function resolveGoldenLaunch(
       throw new LaunchError("invalid_request", "Choose a Morph plan model configured on this account.");
     choice.model = harness === "opencode" ? `${prefix}${selected}` : selected;
   }
-  const endpointRuntime = launchPlacement.endpointRuntime?.(options);
-  if (!runtime && (credentials.env[CLAUDE_ENDPOINT_ENV] || credentials.env[CODEX_ENDPOINT_ENV]) && endpointRuntime) {
-    // Re-enter through the shared runtime selection before allocating compute.
-    // Its resolver excludes native GitHub/model environment delivery.
-    return resolveGoldenLaunch(
-      provider,
-      stores,
-      actor,
-      validateGoldenLaunch(request),
-      {
-        ...options,
-        boatRuntimeDefault: endpointRuntime,
-      },
-      timing,
-    );
-  }
-  const customEndpoint =
-    (credentials.env[CLAUDE_ENDPOINT_ENV] && "Claude gateways") ||
-    (credentials.env[CODEX_ENDPOINT_ENV] && "Codex endpoints");
-  if (customEndpoint && !placement.launchInfrastructure(provider.id).nativeRuntime && !runtime)
-    throw new LaunchError(
-      "invalid_request",
-      `Custom ${customEndpoint} require the Boat runtime artifacts; use --provider modal or a Docker host.`,
-    );
   if (harness === "opencode") {
-    if (!placement.launchInfrastructure(provider.id).nativeRuntime && !runtime)
-      throw new LaunchError("invalid_request", "OpenCode on Boat requires the shared runtime.");
     const configured = credentials.env[OPENCODE_ENDPOINT_ENV];
     if (configured) {
       const endpoint = parseOpenCodeEndpoint(JSON.parse(configured));
@@ -467,11 +413,6 @@ async function resolveGoldenLaunch(
       );
     }
   }
-  const github: GitHubAccess = credentials.github ?? { status: "not_connected", message: GITHUB_NOT_CONNECTED };
-  const connected = github.status === "connected" ? github : null;
-  const env = connected ? { ...credentials.env, ...githubEnv(connected.token) } : credentials.env;
-  const secrets = connected ? [...credentials.secrets, connected.token] : credentials.secrets;
-
   await stores.credentials.authorizeRepositories?.(actor, credentials, golden.config.repos);
   return {
     acceptedAt,
@@ -489,15 +430,14 @@ async function resolveGoldenLaunch(
     repositoryDir,
     resourceProject,
     machineSize,
-    prepareNativeCwd,
     visibility,
     connectionIds,
     snapshot,
     credentials,
-    github,
-    connected,
-    env,
-    secrets,
+    secrets:
+      credentials.github?.status === "connected"
+        ? [...credentials.secrets, credentials.github.token]
+        : credentials.secrets,
   };
 }
 
@@ -559,8 +499,7 @@ export async function launchSandbox(
     secrets,
   } = plan;
   const templateAdmission = options.templateSnapshotAdmission;
-  templateAdmission?.validatePlacement(provider, Boolean(plan.runtime));
-  const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
+  const strategy = runtimeLaunch(plan.runtime);
   const id = (options.newId ?? (() => crypto.randomUUID()))();
   let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
@@ -656,7 +595,7 @@ export async function launchSandbox(
     };
     let enrolledEpoch: string | undefined;
     const start = async (signal: AbortSignal) => {
-      if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
+      if (!(record.boatRuntime === true || record.runtimeTransport === "dialout"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });
@@ -666,10 +605,7 @@ export async function launchSandbox(
           { safeReason: "visibility_not_persisted" },
         );
       }
-      if (
-        (placement.launchInfrastructure(golden.provider).nativeRuntime || strategy.kind === "enrolled") &&
-        credentials.usagePricing
-      )
+      if (credentials.usagePricing)
         await stores.sandboxes.recordUsagePricingContext?.(record.id, credentials.usagePricing);
       progress("initialization_bind");
       await stores.connections?.bind(record.id, connectionIds);
@@ -685,9 +621,7 @@ export async function launchSandbox(
       } = await strategy
         .initialize(plan, {
           actor,
-          launchId: id,
           record,
-          providerSandboxId: ready.id,
           signal,
           progress,
           runtimeStarted: () => timing.mark("runtime_startup"),
@@ -706,7 +640,7 @@ export async function launchSandbox(
                 sandboxId: record.id,
                 goldenId: golden.id,
                 provider: provider.id,
-                path: strategy.kind,
+                path: "enrolled",
                 status: launchGithub.status,
                 repositorySelected: repositoryDir !== null,
                 configuredRepositories: golden.config.repos.length,
@@ -717,8 +651,7 @@ export async function launchSandbox(
           },
         })
         .catch((error: unknown) => {
-          if (strategy.kind === "enrolled" && error instanceof LaunchSecretRefusal)
-            throw new RuntimeLaunchSecretRefusal(error, record.id);
+          if (error instanceof LaunchSecretRefusal) throw new RuntimeLaunchSecretRefusal(error, record.id);
           throw error;
         });
       timing.mark("finish_initialization");
@@ -794,7 +727,7 @@ export async function launchSandbox(
       };
     };
     const reportTiming = (result: LaunchResult) => {
-      timing.report(record.id, strategy.kind);
+      timing.report(record.id);
       return result;
     };
     const expected = record.lifecycleGeneration === undefined ? {} : { expectedGeneration: record.lifecycleGeneration };
@@ -942,16 +875,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function checkHarness(provider: Provider, harness: string, runtime = false): Harness {
-  if (placement.launchInfrastructure(provider.id).nativeCli && harness === "opencode" && !runtime)
-    throw new LaunchError(
-      "invalid_request",
-      "OpenCode on Boat requires the Boat runtime artifacts to be installed on the server.",
-    );
+function checkHarness(provider: Provider, harness: string): Harness {
   if (
     !(HARNESSES as readonly string[]).includes(harness) ||
     (!(provider.harnesses as readonly string[]).includes(harness) &&
-      !(runtime && placement.launchInfrastructure(provider.id).nativeCli && harness === "opencode"))
+      !(provider.id === "boat" && harness === "opencode"))
   ) {
     throw new LaunchError(
       "invalid_request",

@@ -3,7 +3,7 @@ export function boatOpenCodeAvailable(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const options = value as {
     providers?: unknown;
-    boatRuntime?: { enabled?: unknown; defaultPath?: unknown; opencodeVersion?: unknown };
+    boatRuntime?: { enabled?: unknown; opencodeVersion?: unknown };
   };
   if (
     options.boatRuntime?.enabled !== true ||

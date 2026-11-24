@@ -24,10 +24,7 @@ the selected organization. Set `ORG_UUID` to that organization's UUID,
 `CLAUDE_ACCOUNT_UUID` to the UUID of an entitled direct Claude account (a
 standard Anthropic API key or Claude subscription), and
 `BOAT_SNAPSHOT_NAME` and `MODAL_SNAPSHOT_NAME` to the corresponding snapshot
-names. The Boat probe checks the native path. Confirm that the existing
-deployment and selected account use that path before running it. In
-`POST /api/v1/launch/options`, confirm `boatRuntime.defaultPath: "native"`
-and `modalRuntime.defaultPath: "runtime"` on the target server.
+names. The Boat native probe below is a historical record. Ordinary launches now use the enrolled runtime.
 
 ```sh
 armada new "$BOAT_SNAPSHOT_NAME" --agent claude --provider boat --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."

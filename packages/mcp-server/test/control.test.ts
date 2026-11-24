@@ -1111,7 +1111,6 @@ describe("control API", () => {
           const unknown = await launch({ repo: "acme/missing" });
           expect(unknown?.status).toBe(404);
           expect(boat.forks).toHaveLength(0);
-          expect(boat.preparations).toEqual([]);
         }
         if (repo === undefined) {
           for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
@@ -1143,7 +1142,6 @@ describe("control API", () => {
         expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
           { provider_sandbox_id: "bx_1" },
         ]);
-        expect(boat.preparations).toEqual([]);
         if (repo !== undefined)
           expect((await db.query("select repository_dir from sandboxes")).rows).toEqual([{ repository_dir: "web" }]);
         expect(text).not.toContain("server-only-boat-key");
@@ -2462,9 +2460,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         connections: { validate: noNative, bind: noNative },
       },
     };
-    expect(await (await request("launch/options", {}))?.json()).toMatchObject({
-      boatRuntime: { defaultPath: "runtime" },
-    });
+    const discovery = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
+    expect(discovery.providers.find((provider) => provider.id === "boat")?.capabilities.launch).toBe(true);
+    expect(discovery.boatRuntime).not.toHaveProperty("defaultPath");
+    expect(discovery.modalRuntime).not.toHaveProperty("defaultPath");
     const account = (
       await db.query<{ id: string; version: number }>(
         "select id,version from credentials where owner_id=$1 and kind='openai'",
@@ -2528,8 +2527,8 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     delete options.launch;
     const explicitOnly = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
-    expect(explicitOnly).toMatchObject({ boatRuntime: { enabled: true } });
-    expect(explicitOnly.boatRuntime).not.toHaveProperty("defaultPath");
+    expect(explicitOnly.boatRuntime?.enabled).toBe(true);
+    expect(explicitOnly.providers.find((provider) => provider.id === "boat")?.capabilities.launch).toBe(false);
     // Actual startup timeout -> launch failure persistence -> public logs response.
     expectedForks = 2;
     options.boatRuntimeLaunch = {

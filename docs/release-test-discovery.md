@@ -7,12 +7,12 @@ No CI routing or required contract selection changes are made here.
 
 ## Reproduction and attribution
 
-Bun 1.4.2, isolated local fake transport (no provider or production access):
+On the revisions below, run Bun 1.4.2 with the isolated fake transport:
 `bun test ./packages/core/test/private-skill.probe.ts -t 'launch ok' --reporter=junit --reporter-outfile=/tmp/private.xml`.
 
 Parent `45ceacef` of #2462: 1 pass, 0 fail. Commit
 `f9947c59df5b1120968fa48fab919816295dd627` (#2462): 0 pass, 1 fail,
-JSON parse error at line 111. Current main reproduces that same failure.
+JSON parse error at line 111. The native launch case was retired in #2747.
 The added core launch audit record precedes the expected receipt on stdout:
 
 ```json

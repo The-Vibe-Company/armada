@@ -13,6 +13,7 @@ import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { collectSandboxUsage, type StatusReport } from "../src/turns.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, fakeBoat, harness, type People, PUBLIC_URL, SECRETS } from "./support.ts";
 
@@ -118,6 +119,7 @@ test.each([
         },
         actor,
         { golden: "amount-modal", harness: agent, prompt: "Reply OK" },
+        { runtime: enrolledLaunchPolicy(db) },
       );
       const promptId = launched.promptId!;
       fake.sandbox(launched.sandbox.providerSandboxId).events.push({

@@ -2,14 +2,16 @@ import type { LaunchOptions } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import { type LaunchStrategy, requireLaunchHeadroom } from "./launch-strategy.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
-import { launchInfrastructure } from "./sandbox-provider.ts";
+
+const runtimeRecordFields = {
+  boat: { boatRuntime: true },
+  modal: { runtimeTransport: "dialout" },
+} as const;
 
 export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): LaunchStrategy {
   return {
-    kind: "enrolled",
     forkEnv: () => ({}),
-    recordFields: ({ provider }) =>
-      launchInfrastructure(provider.id).nativeCli ? { boatRuntime: true } : { runtimeTransport: "dialout" },
+    recordFields: ({ golden }) => runtimeRecordFields[golden.provider],
     async initialize(plan, { actor, record, signal, progress, mark, runtimeStarted, runtimeEnrolled, reportGitHub }) {
       const { provider, stores, request, options, golden, credentials } = plan;
       progress("initialization_hydrate");

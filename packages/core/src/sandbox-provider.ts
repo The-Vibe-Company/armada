@@ -33,8 +33,6 @@ export function launchInfrastructure(id: string) {
   const transports: Record<
     string,
     {
-      nativeCli: boolean;
-      nativeRuntime: boolean;
       authPath?: string;
       managedNativeAuthWriter: boolean;
       privateSshBootstrap: boolean;
@@ -42,16 +40,12 @@ export function launchInfrastructure(id: string) {
     }
   > = {
     boat: {
-      nativeCli: true,
-      nativeRuntime: false,
       authPath: "/home/user/.codex/auth.json",
       managedNativeAuthWriter: true,
       privateSshBootstrap: true,
       terminalPromptEventIsBoundary: true,
     },
     modal: {
-      nativeCli: false,
-      nativeRuntime: true,
       authPath: "/home/user/.armada-runtime/codex/auth.json",
       managedNativeAuthWriter: false,
       privateSshBootstrap: false,
@@ -61,8 +55,6 @@ export function launchInfrastructure(id: string) {
   return Object.hasOwn(transports, id)
     ? transports[id]!
     : {
-        nativeCli: false,
-        nativeRuntime: false,
         managedNativeAuthWriter: false,
         privateSshBootstrap: false,
         terminalPromptEventIsBoundary: false,
