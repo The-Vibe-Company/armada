@@ -224,6 +224,7 @@ async function collect(
     generation: string;
     periodic?: boolean;
     canDispatch?: () => Promise<boolean>;
+    checkpoint?: ((tx: Sql) => Promise<void>) | undefined;
   },
 ) {
   const { signal, writes, generation, periodic } = options;
@@ -280,7 +281,7 @@ async function collect(
           { sandboxId: providerId, ...(signal ? { signal } : {}) },
           scan,
           key,
-          { generation, mode: "live", writes },
+          { generation, mode: "live", writes, checkpoint: options.checkpoint },
         ),
       );
       return;
@@ -355,6 +356,7 @@ async function collect(
       [id, JSON.stringify(payload)],
     );
     await recordOutputPublication(tx, id, scan);
+    await options.checkpoint?.(tx);
     signal?.throwIfAborted();
   });
   // A write already in progress is bounded by SQL and settles before the pool closes.
@@ -385,7 +387,12 @@ export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader,
   id: string,
-  options: { key?: string | undefined; signal?: AbortSignal } = {},
+  options: {
+    key?: string | undefined;
+    signal?: AbortSignal;
+    generation?: string;
+    checkpoint?: (tx: Sql) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
@@ -406,8 +413,9 @@ export async function captureFinalOutputs(
         }>(
           `select provider,provider_sandbox_id,lifecycle_generation::text as generation,clock_timestamp()::text as scan
            from public.sandboxes where id=$1 and stopped_at is null and (${CAN_WRITE_LIVE})
+           and ($2::bigint is null or lifecycle_generation=$2)
            and provider_sandbox_id is not null and ${OUTPUT_COLLECTOR_ELIGIBLE}`,
-          [id],
+          [id, options.generation ?? null],
         ),
       )
     ).rows[0];
@@ -420,7 +428,11 @@ export async function captureFinalOutputs(
     providerKind = row.provider;
     try {
       await outputPhase("publish_snapshot", () =>
-        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, generation: row.generation }),
+        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
+          signal,
+          generation: row.generation,
+          checkpoint: options.checkpoint,
+        }),
       );
     } catch (error) {
       if (

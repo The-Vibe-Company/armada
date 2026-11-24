@@ -110,6 +110,8 @@ export function createRuntimeIdle(
            where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout') or (s.provider='docker' and $2::boolean))
            and s.status in ('ready','running') and s.stop_requested_at is null
            and not ${unresolvedModalLaunch("s")}
+           and not exists(select 1 from public.jobs j where j.sandbox_id=s.id
+             and j.generation=s.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased'))
            and s.expires_at>now() and not s.application_secret_tainted
            and s.activity_lease_id is null and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
            order by case when $1::uuid is null or s.id>$1::uuid then 0 else 1 end,s.id limit 20`,
@@ -157,7 +159,7 @@ export function createRuntimeIdle(
             signal.throwIfAborted();
             if (usesHostLaunch(row.provider)) {
               // Host store rechecks checkpoint identity under its own ordered locks
-              // and atomically commits both the idle marker and durable stop job.
+              // before recording the durable intent.
               await options.dockerStop?.({ userId: row.owner_id, orgId: row.org_id }, row.id, requestId);
               continue;
             }

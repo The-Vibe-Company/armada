@@ -5,6 +5,7 @@ import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
 import { createModalInitialTurnJob, MODAL_INITIAL_TURN } from "./jobs/modal-launch.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
+import { createStopJob } from "./jobs/stop.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "./retention-maintenance.ts";
@@ -104,6 +105,7 @@ const jobsLane: LaneFactory = ({
         : {}),
       ...(config.encryptionKey
         ? {
+            stop: createStopJob(sql, config.encryptionKey),
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
               sql,
               config.encryptionKey,
@@ -170,7 +172,14 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
     ...(dockerBootstrap
       ? {
           dockerStop: async (actor, id, requestId) => {
-            await captureDockerStopOutputs(sql, config.encryptionKey, id);
+            const unbound = await sql.query(
+              `select 1 from public.sandboxes s where s.id=$1 and not exists(
+                 select 1 from public.docker_machine_bindings b where b.sandbox_id=s.id
+                   and b.host_id=s.docker_host_id and b.installation_id=s.docker_installation_id
+                   and b.daemon_generation=s.docker_generation)`,
+              [id],
+            );
+            if (unbound.rows.length) await captureDockerStopOutputs(sql, config.encryptionKey, id);
             return createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
               operation: "stop",
               requestId,

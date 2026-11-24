@@ -115,6 +115,11 @@ export async function withJobLease<T>(
   });
 }
 
+// The caller holds the checked claim through the capture's publication transaction.
+export async function recordStopCapture(tx: Sql, jobId: string) {
+  await tx.query("update public.jobs set outcome=jsonb_build_object('captured',true) where id=$1", [jobId]);
+}
+
 export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId: string) {
   const { rows } = await tx.query(
     `update public.jobs set outcome=case
@@ -374,25 +379,25 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     return rows.length > 0;
   }
 
-  async function withLockedTurnGeneration<T>(
+  async function withLockedJobGeneration<T>(
     job: Job,
     owner: string,
     work: (db: Sql, generation: string | null) => Promise<T>,
     lockPrerequisites?: (tx: Sql) => Promise<void>,
   ) {
-    if (job.kind !== "turn_dispatch") return work(sql, job.generation);
-    if (!sql.transaction) throw new Error("Turn job fencing requires a transaction.");
+    if (job.kind !== "turn_dispatch" && job.kind !== "stop") return work(sql, job.generation);
+    if (!sql.transaction) throw new Error("Job fencing requires a transaction.");
     return sql.transaction(async (tx) => {
       await lockPrerequisites?.(tx);
       await tx.query("select id from public.sandboxes where id = $1 for update", [job.sandbox_id]);
       const { rows } = await tx.query<{ generation: string }>(
         `select j.generation::text from public.jobs j
          join public.sandboxes s on s.id = j.sandbox_id and s.lifecycle_generation = j.generation
-         where ${fence} and j.kind = 'turn_dispatch'`,
-        claimIdentity(job, owner),
+         where ${fence} and j.kind = $4`,
+        [...claimIdentity(job, owner), job.kind],
       );
       if (rows[0]) return work(tx, rows[0].generation);
-      if (lockPrerequisites) throw new Error("Turn job lease is no longer current.");
+      if (lockPrerequisites) throw new Error("Job lease is no longer current.");
     });
   }
 
@@ -602,20 +607,20 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       });
     },
     async handoffGeneration(job, owner, handoff) {
-      if (job.kind !== "turn_dispatch" || job.generation === null)
-        throw new Error("Only a sandbox turn job can hand off its generation.");
-      const generation = await withLockedTurnGeneration(
+      if ((job.kind !== "turn_dispatch" && job.kind !== "stop") || job.generation === null)
+        throw new Error("This job cannot hand off its generation.");
+      const generation = await withLockedJobGeneration(
         job,
         owner,
         async (tx, current) => {
-          const claim = claimKey(job, owner);
+          const claim = [...claimIdentity(job, owner), current];
           const { rows } = await tx.query(
             `select j.id from public.jobs j where ${fence} and j.generation = $4
              and j.attempts <= j.max_attempts and (j.deadline_at is null or j.deadline_at > clock_timestamp())
            for update`,
             claim,
           );
-          if (current !== job.generation || !rows[0]) throw new Error("Turn job cannot admit another generation.");
+          if (current !== job.generation || !rows[0]) throw new Error("Job cannot admit another generation.");
           await handoff.advance(tx, job);
           const updated = await tx.query<{ generation: string }>(
             `update public.jobs j set generation = s.lifecycle_generation from public.sandboxes s
@@ -625,17 +630,18 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
            returning j.generation::text`,
             claim,
           );
-          if (!updated.rows[0]) throw new Error("Turn admission did not advance its fenced generation.");
+          if (!updated.rows[0]) throw new Error("Admission did not advance its fenced generation.");
           return updated.rows[0].generation;
         },
         handoff.lockPrerequisites,
       );
-      if (generation === undefined) throw new Error("Turn job lease is no longer current.");
+      if (generation === undefined) throw new Error("Job lease is no longer current.");
+      job.generation = generation;
       return generation;
     },
     async renew(job, owner, seconds) {
       return (
-        (await withLockedTurnGeneration(job, owner, async (db, generation) => {
+        (await withLockedJobGeneration(job, owner, async (db, generation) => {
           const { rows } = await db.query<{ renewed: boolean }>("select public.renew_job($1,$2,$3,$4,$5) as renewed", [
             ...claimIdentity(job, owner),
             generation,
@@ -684,7 +690,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         return rows[0]?.completed === true;
       };
-      if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
+      if (job.kind === "turn_dispatch") return (await withLockedJobGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));

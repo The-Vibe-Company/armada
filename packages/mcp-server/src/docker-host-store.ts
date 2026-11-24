@@ -51,6 +51,8 @@ import { createDockerMachineGenerationBindings, projectDockerMachineInventory } 
 import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./docker-machine-inventory.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
+import type { DockerStopIntent } from "./jobs/stop.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -72,6 +74,7 @@ type Job = DockerHostJob;
 type MachineHost = {
   hostId: string;
   installationId: string;
+  actorEpoch?: string;
   canDispatch?: (tx: Sql, actorEpoch: string) => Promise<boolean>;
 };
 type RestoreClaim = Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">;
@@ -586,6 +589,22 @@ export function createDockerHostStore(sql: Sql, key: string) {
       deny();
     const live = await tx.query(`select 1 from public.sandboxes where id=$1 and expires_at>now()`, [row.id]);
     if (!live.rows.length) deny();
+  }
+  async function checkpointedStop(tx: Sql, row: Sandbox, checkpoint: string) {
+    const proof = await tx.query<{ work_merged: boolean; epoch: string }>(
+      `select p.merge_stop as work_merged,p.epoch::text from public.sandboxes s join public.runtime_enrolments r
+       on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
+       join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
+       where s.id=$1 and p.request_id=$2 and p.watermark is not null
+       and ${currentDockerRuntimeIssuer("s.docker_host_id")}
+       and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+       and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()
+       and s.activity_lease_id is null and not s.application_secret_tainted
+       and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id
+         and q.state in ('queued','dispatching'))`,
+      [row.id, checkpoint],
+    );
+    return proof.rows[0] ?? deny();
   }
   async function machine(tx: Sql, row: Sandbox, operation: string) {
     const original = (
@@ -1708,6 +1727,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    async lockCheckpointedStop(tx: Sql, sandboxId: string, intent: DockerStopIntent) {
+      const { row } = await lockSandboxAdmission(tx, intent.actor, sandboxId, "stop", intent);
+      await permission(tx, intent.actor, row, "stop", intent.actorEpoch);
+      const proof = await checkpointedStop(tx, row, intent.checkpoint);
+      if (
+        String(row.lifecycle_generation) !== String(intent.generation) ||
+        proof.work_merged !== intent.workMerged ||
+        proof.epoch !== intent.runtimeEpoch
+      )
+        deny();
+    },
     machineCleanup(actor: Actor, scope?: MachineHost) {
       const unknown = { kind: "unknown" } as const;
       return {
@@ -1715,7 +1745,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           request.signal?.throwIfAborted();
           return transaction<MachineObservation>(async (tx) => {
             const { host, row } = await lockSandboxAdmission(tx, actor, request.sandboxId, "stop", scope);
-            await permission(tx, actor, row, "stop");
+            await permission(tx, actor, row, "stop", scope?.actorEpoch);
             if (host.revoked) return unknown;
             if (
               scope &&
@@ -1777,7 +1807,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           const result = await transaction(async (tx) => {
             const { sandboxId, generation, machineId, retain } = request;
             const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, "stop", scope);
-            const epoch = await permission(tx, actor, row, "stop");
+            const epoch = await permission(tx, actor, row, "stop", scope?.actorEpoch);
             if (
               !/^[a-f0-9]{64}$/.test(machineId) ||
               (await allocationReceipt(tx, row)) !== machineId ||
@@ -2043,21 +2073,58 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!known) await state(tx, row, selection.operation);
         let workMerged = false;
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
-          id(selection.idleCheckpointRequest);
-          const proof = await tx.query<{ work_merged: boolean }>(
-            `select p.merge_stop as work_merged from public.sandboxes s join public.runtime_enrolments r
-             on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
-             join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
-             where s.id=$1 and p.request_id=$2 and p.watermark is not null
-             and ${currentDockerRuntimeIssuer("s.docker_host_id")}
-             and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
-             and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()
-             and s.activity_lease_id is null and not s.application_secret_tainted`,
-            [sandboxId, selection.idleCheckpointRequest],
-          );
-          if (!proof.rows.length) deny();
-          workMerged = proof.rows[0]?.work_merged === true;
+          const checkpoint = selection.idleCheckpointRequest;
+          id(checkpoint);
+          const proof = await checkpointedStop(tx, row, checkpoint);
+          workMerged = proof.work_merged;
+          const boundGeneration = await currentMachineCleanup(tx, row);
+          if (boundGeneration !== undefined) {
+            const generation = Number(boundGeneration);
+            const machineId = await allocationReceipt(tx, row);
+            if (!machineId || !Number.isSafeInteger(generation) || boundGeneration !== String(row.lifecycle_generation))
+              deny();
+            const deadline = new Date(Date.now() + 120_000);
+            const payload: DockerStopIntent = {
+              actor,
+              actorEpoch: epoch,
+              checkpoint,
+              workMerged,
+              machineId,
+              generation,
+              runtimeEpoch: proof.epoch,
+              hostId: host.id,
+              installationId: row.docker_installation_id,
+              captureUntil: deadline.getTime() - 98_000,
+            };
+            await createJobsStore(sql, key).enqueue(
+              "stop",
+              sandboxId,
+              generation,
+              checkpoint,
+              payload,
+              {
+                orgId: actor.orgId,
+                maxAttempts: 8,
+                deadline,
+              },
+              tx,
+            );
+            return { requestId: selection.requestId };
+          }
         }
+        if (
+          selection.operation === "stop" &&
+          !known &&
+          row.status === "stopping" &&
+          (
+            await tx.query(
+              `select 1 from public.jobs where sandbox_id=$1 and kind='stop'
+            and generation=$2 and state in ('queued','leased')`,
+              [row.id, row.lifecycle_generation],
+            )
+          ).rows.length
+        )
+          deny();
         const request = await machine(tx, row, selection.operation);
         const target = { requestId: selection.requestId, request };
         let job: Job;
