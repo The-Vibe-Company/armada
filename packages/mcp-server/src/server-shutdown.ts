@@ -30,10 +30,11 @@ export function installServerShutdown(server: ShutdownServer, resources: Shutdow
     // SQL stays alive until the native HTTP drain completes.
     const socketsStopped = resources.stopSockets();
     const stopped = stop(closeActiveConnections);
+    const loginCleanup = Promise.allSettled([resources.closeAntigravityLogin?.()]);
     shutdown = Promise.all([
       resources.workersDone,
       resources.closeDocker(),
-      resources.closeAntigravityLogin?.(),
+      loginCleanup,
       resources.drainModalArtifacts?.(),
       socketsStopped,
       (async () => {
@@ -43,7 +44,10 @@ export function installServerShutdown(server: ShutdownServer, resources: Shutdow
       .then(() => resources.closeMcp())
       .then(() => stopped)
       .then(() => resources.closePools())
-      .then(() => {});
+      .then(async () => {
+        const [login] = await loginCleanup;
+        if (login.status === "rejected") throw login.reason;
+      });
     server.workerDone = shutdown;
     return shutdown;
   };

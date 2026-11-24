@@ -10,6 +10,7 @@ import { run } from "../src/run.ts";
 const user = "11111111-1111-4111-8111-111111111111";
 const other = "22222222-2222-4222-8222-222222222222";
 const org = "33333333-3333-4333-8333-333333333333";
+const secondOrg = "55555555-5555-4555-8555-555555555555";
 const account = "44444444-4444-4444-8444-444444444444";
 const loginPath = antigravityLoginOperations.startAntigravityLogin.route.path;
 const link =
@@ -22,31 +23,37 @@ const key = Buffer.alloc(32, 9).toString("base64");
 function fixture() {
   const authStore = createMemoryAuthStore();
   const membership = { orgId: org, name: "Example", role: "admin" } as const;
+  authStore.addMembership(user, { ...membership, orgId: secondOrg, name: "Second" });
   authStore.addMembership(user, membership);
   authStore.addMembership(other, membership);
 
   const submitted: string[] = [];
   const saved: { owner: string; scope: string; name: string | undefined; sealed: Uint8Array }[] = [];
   const logs: string[] = [];
-  const { promise: exited, resolve: exit } = Promise.withResolvers<number>();
-  const login = createAntigravityLogin(async () => ({
-    authorizationUrl: Promise.resolve(link),
-    exited,
-    async submitCode(value) {
-      submitted.push(value);
-      exit(0);
-    },
-    async readToken() {
-      return credential.token;
-    },
-    async close() {
-      exit(1);
-    },
-  }));
+  const login = createAntigravityLogin(async () => {
+    const { promise: exited, resolve: exit } = Promise.withResolvers<number>();
+    return {
+      authorizationUrl: Promise.resolve(link),
+      exited,
+      async submitCode(value) {
+        submitted.push(value);
+        exit(0);
+      },
+      async readToken() {
+        return credential.token;
+      },
+      async close() {
+        exit(1);
+      },
+    };
+  });
 
   const store = {
     async memberships() {
-      return [{ ...membership, id: org }];
+      return [
+        { ...membership, id: org },
+        { ...membership, id: secondOrg, name: "Second" },
+      ];
     },
     async mutateAccount(owner, input, sealed) {
       if (!sealed) throw new Error("Missing ciphertext");
@@ -71,7 +78,7 @@ function fixture() {
     },
   };
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input instanceof Request ? input : String(input), init);
+    const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
     return observeRequest(
       async () => (await handleControlRequest(request, options)) ?? new Response(null, { status: 404 }),
       (line) => logs.push(line),
@@ -87,8 +94,7 @@ function fixture() {
   return { fetch, post, submitted, saved, logs, shutdown: login.shutdown };
 }
 
-test("the CLI exchanges a pasted Google code through the authenticated routes and prints account metadata", async () => {
-  const server = fixture();
+async function signIn(server: ReturnType<typeof fixture>, paste: string) {
   const output: string[] = [];
   const opened: string[] = [];
   const write = (chunk: string) => output.push(chunk);
@@ -96,7 +102,7 @@ test("the CLI exchanges a pasted Google code through the authenticated routes an
     ["account", "login", "antigravity", "--name", "google"],
     { out: write, err: write },
     {
-      readStdin: async () => code,
+      readStdin: async () => paste,
       auth: {
         out: write,
         err: write,
@@ -109,11 +115,17 @@ test("the CLI exchanges a pasted Google code through the authenticated routes an
       },
     },
   );
+  return { exit, output, opened };
+}
+
+test("the CLI exchanges a pasted Google code through the authenticated routes and prints account metadata", async () => {
+  const server = fixture();
+  const { exit, output, opened } = await signIn(server, code);
   expect({ exit, output }).toMatchObject({ exit: 0 });
   expect(opened).toEqual([link]);
   expect(server.submitted).toEqual([code]);
   expect(server.saved).toEqual([{ owner: user, scope: "user", name: "google", sealed: expect.any(Uint8Array) }]);
-  expect(JSON.parse(await decryptSecret(server.saved[0]!.sealed, key))).toEqual(credential);
+  expect(JSON.parse(await decryptSecret(new Uint8Array(server.saved[0]!.sealed), key))).toEqual(credential);
   const text = output.join("");
   expect(text).toContain(link);
   expect(text).toContain(account);
@@ -136,4 +148,12 @@ test("the HTTP boundary refuses unauthenticated start and a different user's com
   } finally {
     await server.shutdown();
   }
+});
+
+test("a refused code can be retried with a fresh CLI sign-in immediately", async () => {
+  const server = fixture();
+  const refused = await signIn(server, "bad\ncode");
+  expect(refused.exit).not.toBe(0);
+  expect(server.submitted).toEqual([]);
+  expect((await signIn(server, code)).exit).toBe(0);
 });

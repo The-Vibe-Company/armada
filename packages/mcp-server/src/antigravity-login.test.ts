@@ -54,11 +54,13 @@ test("invalid codes never reach stdin and leave the pending login usable", async
   for (const invalid of [
     "code\n",
     "a".repeat(2049),
-    "https://antigravity.google/oauth-callback?code=example&state=foreign",
     "https://antigravity.google/oauth-callback?code=example%0A&state=matching",
   ]) {
     await expect(login.complete(caller, loginId, invalid)).rejects.toThrow("matching Google sign-in");
   }
+  await expect(
+    login.complete(caller, loginId, "https://antigravity.google/oauth-callback?code=example&state=foreign"),
+  ).rejects.toThrow("Start sign-in again.");
   expect(submitted).toEqual([]);
   await login.cancel(caller, loginId);
 });

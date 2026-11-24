@@ -34,8 +34,7 @@ type Pending = {
 const messages = {
   already_pending: "An Antigravity sign-in is already pending.",
   login_missing: "Start sign-in again.",
-  invalid_code:
-    "Enter the code or callback URL from the matching Google sign-in. If the code is from another session, start sign-in again.",
+  invalid_code: "Enter the code or callback URL from the matching Google sign-in.",
   login_failed: "Antigravity sign-in failed. Start sign-in again.",
 } as const;
 
@@ -78,6 +77,7 @@ function validatedCode(value: string, state: string) {
     ) {
       const codes = url.searchParams.getAll("code");
       const states = url.searchParams.getAll("state");
+      if (states.length === 1 && states[0] !== state) throw new AntigravityLoginError("login_missing");
       if (
         codes.length === 1 &&
         states.length === 1 &&
@@ -137,8 +137,9 @@ export function createAntigravityLogin(
   }
 
   return {
-    matches(caller: LoginCaller, id: string) {
-      return pending.get(callerKey(caller))?.id === id;
+    targetFor(caller: LoginCaller, id: string) {
+      const login = pending.get(callerKey(caller));
+      if (login?.id === id) return { ...login.target };
     },
 
     async start(caller: LoginCaller, target: LoginTarget) {

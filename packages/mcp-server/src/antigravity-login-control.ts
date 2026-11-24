@@ -39,7 +39,8 @@ export const antigravityLoginRoutes = defineRoutes("antigravity-login-control", 
     if (!parsed.success) throw new VaultError("invalid", "Give an account name, or an ID and expected version.");
     const login = loginService(options, request);
     const { org, ...target } = parsed.data;
-    const organization = await resolveOrg(options.store, caller.userId, scopedOrg(caller, org));
+    const orgRef = scopedOrg(caller, org) ?? caller.orgs.map(({ orgId }) => orgId).sort()[0];
+    const organization = await resolveOrg(options.store, caller.userId, orgRef);
     const membership = caller.orgs.find(({ orgId }) => orgId === organization.id);
     if (!membership || (org !== undefined && (organization.role !== "admin" || membership.role !== "admin")))
       throw new VaultError("forbidden", "You cannot sign in for this organization.");
@@ -58,16 +59,21 @@ export const antigravityLoginRoutes = defineRoutes("antigravity-login-control", 
     handler: async ({ caller, route, body, options, request }) => {
       const login = loginService(options, request);
       const id = complete.input.path.loginId.safeParse(route.slice(startKey.length + 1));
-      const actor = id.success
-        ? caller.orgs
-            .map(({ orgId }) => ({ userId: caller.userId, orgId }))
-            .find((candidate) => login.matches(candidate, id.data))
-        : undefined;
-      if (!id.success || !actor) throw new VaultError("not_found", "Start sign-in again.");
+      if (!id.success) throw new VaultError("not_found", "Start sign-in again.");
+      const pending = caller.orgs
+        .map(({ orgId, role }) => {
+          const actor = { userId: caller.userId, orgId };
+          return { actor, role, target: login.targetFor(actor, id.data) };
+        })
+        .find(({ target }) => target !== undefined);
+      if (!pending?.target) throw new VaultError("not_found", "Start sign-in again.");
+      const { actor } = pending;
       if (request?.method === cancel.route.method) {
         await exchange(() => login.cancel(actor, id.data));
         return cancel.output.parse({ ok: true });
       }
+      if (pending.target.org !== undefined && pending.role !== "admin")
+        throw new VaultError("forbidden", "Only an org admin can do that.");
       const parsed = complete.input.body.safeParse(body);
       if (!parsed.success) throw new VaultError("invalid", "Enter the code or callback URL from Google.");
       const { target, credential } = await exchange(() => login.complete(actor, id.data, parsed.data.code));

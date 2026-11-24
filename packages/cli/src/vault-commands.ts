@@ -484,7 +484,7 @@ async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, read
     org: single(args, "--org"),
   });
   if (!target.success) throw usage("Give --name, or --id with --expected-version.");
-  const client = await createSdkCommandClient(auth);
+  const client = await createSdkCommandClient(auth, { preserveServerErrors: true });
   const started = start.output.parse(
     await client.control(controlRouteKey(start.route), target.data, AbortSignal.timeout(310_000)),
   );
@@ -504,9 +504,9 @@ async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, read
     throw usage("Antigravity sign-in cancelled. Start sign-in again.");
   }
   const result = await client
-    .control(path.slice("/api/v1/".length), { code }, AbortSignal.timeout(310_000))
+    .control(controlRouteKey({ path }), { code }, AbortSignal.timeout(310_000))
     .catch(async (error: unknown) => {
-      if (error instanceof ArmadaApiError && error.status === 400)
+      if (error instanceof ArmadaApiError && (error.status === 400 || error.status === 404))
         await client.request(path, { method: "DELETE" }).catch(() => {});
       throw error;
     });
