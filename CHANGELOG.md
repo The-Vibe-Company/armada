@@ -1,5 +1,16 @@
 # Changelog
 
+## [11.0.1](https://github.com/The-Vibe-Company/armada/compare/v11.0.0...v11.0.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **cli:** send right after a Modal launch fails with conflict while the launch job is starting ([#4078](https://github.com/The-Vibe-Company/armada/issues/4078)) ([bc6abef](https://github.com/The-Vibe-Company/armada/commit/bc6abef2274a0e1973cd741010e01291e0a7ece9))
+* **dashboard:** the Sandboxes list waits up to 10 s on per-sandbox status calls at every render ([#4088](https://github.com/The-Vibe-Company/armada/issues/4088)) ([8a90bd3](https://github.com/The-Vibe-Company/armada/commit/8a90bd3b610ff7fc9113309ee7e321c5bb027f68))
+* **server:** send during an idle-pause stop returns conflict for minutes instead of queueing ([#4096](https://github.com/The-Vibe-Company/armada/issues/4096)) ([e6ace82](https://github.com/The-Vibe-Company/armada/commit/e6ace823cf0c27a3d8acd40d8e7c84d0188d7096))
+* **snapshots:** Boat in-place snapshot rebuild fails at checkout_baseline with no failure reason ([#4086](https://github.com/The-Vibe-Company/armada/issues/4086)) ([1180cab](https://github.com/The-Vibe-Company/armada/commit/1180cabcd9366ad20311181e492fd7b473e63140))
+* **snapshots:** Boat in-place snapshot rebuild fails at checkout_baseline with no failure reason ([#4090](https://github.com/The-Vibe-Company/armada/issues/4090)) ([8ee98bd](https://github.com/The-Vibe-Company/armada/commit/8ee98bda9688c005142a77801219d61773bb1145))
+
 ## [11.0.0](https://github.com/The-Vibe-Company/armada/compare/v10.0.1...v11.0.0) (2026-11-23)
 
 
