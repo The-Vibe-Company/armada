@@ -63,7 +63,10 @@ const WRITE_ELIGIBILITY = {
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
-type PublishedFile = { name: string; size: number; skipped?: Skipped; digest?: string; transfer_id?: string };
+export type PublishedFile = { name: string; size: number; skipped?: Skipped; digest?: string; transfer_id?: string };
+
+const UNSTAGED_TRANSFER = `not exists(select 1 from public.jobs j where j.sandbox_id=t.sandbox_id and j.kind='stop'
+  and j.outcome #> '{output,files}' @> jsonb_build_array(jsonb_build_object('transfer_id',t.id)))`;
 
 export async function collectOutputTransfers(
   sql: Sql,
@@ -72,7 +75,12 @@ export async function collectOutputTransfers(
   request: { sandboxId: string; signal?: AbortSignal },
   scan: string,
   key: string,
-  options: { generation: string; mode: keyof typeof WRITE_ELIGIBILITY; writes?: Set<Promise<unknown>> | undefined },
+  options: {
+    generation: string;
+    mode: keyof typeof WRITE_ELIGIBILITY;
+    writes?: Set<Promise<unknown>> | undefined;
+    stage?: ((tx: Sql, files: PublishedFile[]) => Promise<void>) | undefined;
+  },
 ): Promise<void> {
   const { signal } = request;
   const { generation, mode, writes } = options;
@@ -108,7 +116,7 @@ export async function collectOutputTransfers(
   if (!entries) throw new OutputCollectionError("output_unavailable");
   const planned = await update(async (tx, orgId) => {
     await tx.query(
-      `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<$2::timestamptz
+      `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<$2::timestamptz and ${UNSTAGED_TRANSFER}
         and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
         and not exists(select 1 from jsonb_to_recordset($3::jsonb) as e(name text,revision text,size bigint)
           where (e.name,e.revision,e.size)=(t.name,t.revision,t.size))`,
@@ -149,10 +157,10 @@ export async function collectOutputTransfers(
       }
       if (transfer) {
         // A concurrent older capture must not delete a revision this capture is still using.
-        await tx.query("update public.sandbox_output_transfers set scan=greatest(scan,$2::timestamptz) where id=$1", [
-          transfer.id,
-          scan,
-        ]);
+        await tx.query(
+          "update public.sandbox_output_transfers set scan=greatest(scan,$2::timestamptz),progress_at=clock_timestamp() where id=$1",
+          [transfer.id, scan],
+        );
       } else {
         transfer = (
           await tx.query<Transfer>(
@@ -255,36 +263,45 @@ export async function collectOutputTransfers(
   }
 
   await update(async (tx) => {
-    // Hold the completed revisions through publication against expiration in another sandbox's
-    // quota transaction. A swept transfer cannot publish a reference to deleted data.
     const transferIds = files.flatMap((file) => (file.transfer_id ? [file.transfer_id] : []));
     const ready = await tx.query(
       "select id from public.sandbox_output_transfers where sandbox_id=$1 and id=any($2::uuid[]) for key share",
       [id, transferIds],
     );
     if (ready.rows.length !== transferIds.length) throw new OutputCollectionError("output_unavailable");
-    await tx.query(
-      `with incoming as (select * from jsonb_to_recordset($2::jsonb)
-         as f(name text,size bigint,digest text,transfer_id uuid,skipped text)),
-       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
-       insert into public.sandbox_outputs(sandbox_id,name,size,digest,transfer_id,skipped)
-       select $1,name,size,digest,transfer_id,skipped from incoming
-       on conflict(sandbox_id,name) do update set size=excluded.size,digest=excluded.digest,
-         transfer_id=excluded.transfer_id,skipped=excluded.skipped,content_enc=null,
-         updated_at=case when (sandbox_outputs.digest,sandbox_outputs.skipped,sandbox_outputs.size)
-           is distinct from (excluded.digest,excluded.skipped,excluded.size) then now() else sandbox_outputs.updated_at end
-       where (excluded.skipped is distinct from 'org_limit' or sandbox_outputs.digest is null)
-         and (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
-         is distinct from (excluded.transfer_id,excluded.skipped,excluded.size)`,
-      [id, JSON.stringify(files)],
-    );
-    await tx.query(
-      `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz
-        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
-      [id, scan],
-    );
-    await recordOutputPublication(tx, id, scan, mode === "live" ? undefined : generation);
+    if (options.stage) await options.stage(tx, files);
+    else await publishOutputTransfers(tx, id, scan, files, mode === "live" ? undefined : generation);
   });
+}
+
+export async function publishOutputTransfers(
+  tx: Sql,
+  id: string,
+  scan: string,
+  files: PublishedFile[],
+  retainedGeneration?: string,
+) {
+  await tx.query(
+    `with incoming as (select * from jsonb_to_recordset($2::jsonb)
+       as f(name text,size bigint,digest text,transfer_id uuid,skipped text)),
+     removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
+     insert into public.sandbox_outputs(sandbox_id,name,size,digest,transfer_id,skipped)
+     select $1,name,size,digest,transfer_id,skipped from incoming
+     on conflict(sandbox_id,name) do update set size=excluded.size,digest=excluded.digest,
+       transfer_id=excluded.transfer_id,skipped=excluded.skipped,content_enc=null,
+       updated_at=case when (sandbox_outputs.digest,sandbox_outputs.skipped,sandbox_outputs.size)
+         is distinct from (excluded.digest,excluded.skipped,excluded.size) then now() else sandbox_outputs.updated_at end
+     where (excluded.skipped is distinct from 'org_limit' or sandbox_outputs.digest is null)
+       and (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
+       is distinct from (excluded.transfer_id,excluded.skipped,excluded.size)`,
+    [id, JSON.stringify(files)],
+  );
+  await tx.query(
+    `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz and ${UNSTAGED_TRANSFER}
+      and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
+    [id, scan],
+  );
+  await recordOutputPublication(tx, id, scan, retainedGeneration);
 }
 
 /** Serialize chunk reservations and legacy publication for a single organization. */
@@ -296,6 +313,7 @@ export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<n
     `select t.id from public.sandbox_output_transfers t
       join public.sandboxes s on s.id=t.sandbox_id
       where s.org_id=$1 and t.progress_at<now()-interval '15 minutes'
+      and ${UNSTAGED_TRANSFER}
       and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
       for update of t skip locked`,
     [orgId],
@@ -303,7 +321,7 @@ export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<n
   if (stale.rows.length) {
     // Recheck published references with the locks held and a fresh PostgreSQL snapshot.
     await tx.query(
-      `delete from public.sandbox_output_transfers t where t.id=any($1::uuid[])
+      `delete from public.sandbox_output_transfers t where t.id=any($1::uuid[]) and ${UNSTAGED_TRANSFER}
         and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
       [stale.rows.map(({ id }) => id)],
     );

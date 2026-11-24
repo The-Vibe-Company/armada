@@ -114,6 +114,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
+    if (encryptionKey) expected.push("stop");
     const claimed = new Set<string>();
     const errors: string[] = [];
     let backfillAttempts = 0;

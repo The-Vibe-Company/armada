@@ -654,26 +654,35 @@ export function createDockerSandboxControls(
     const selected = await sql.transaction(async (tx) => {
       await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [`docker-cleanup:${row.id}:${operation}`]);
       const pending = (
-        await tx.query<{ request_id: string; bound_actor_id: string }>(
-          `select request_id,bound_actor_id from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation=$2
-         and outcome is null order by position limit 1`,
+        await tx.query<{ request_id: string; bound_actor_id: string; shared_stop: boolean }>(
+          `select h.request_id,h.bound_actor_id, ($2='stop' and exists (
+            select 1 from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+            where j.sandbox_id=h.bound_sandbox_id and j.kind='stop' and j.generation=s.lifecycle_generation
+              and j.state in ('queued','leased') and s.status='stopping'
+          )) as shared_stop from public.docker_host_jobs h where h.bound_sandbox_id=$1 and h.bound_operation=$2
+         and h.outcome is null order by h.position limit 1`,
           [row.id, operation],
         )
       ).rows[0];
       if (
         pending &&
+        !pending.shared_stop &&
         (pending.bound_actor_id !== caller.userId || (requestId !== undefined && requestId !== pending.request_id))
       )
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       const id = requestId ?? pending?.request_id ?? randomUUID();
       const scoped = scopedRuntimeSql(tx);
       if (operation === "delete") await assertDelete(caller, row.id, scoped);
-      await createDockerHostStore(scoped, key).enqueueSandbox({ userId: caller.userId, orgId: row.org_id }, row.id, {
-        requestId: id,
-        operation,
-        ...(operation === "stop" && onlyIfIdle ? { onlyIfIdle: true } : {}),
-      });
-      return id;
+      const admitted = await createDockerHostStore(scoped, key).enqueueSandbox(
+        { userId: caller.userId, orgId: row.org_id },
+        row.id,
+        {
+          requestId: id,
+          operation,
+          ...(operation === "stop" && onlyIfIdle ? { onlyIfIdle: true } : {}),
+        },
+      );
+      return admitted.requestId;
     });
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     for (;;) {
