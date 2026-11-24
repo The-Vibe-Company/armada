@@ -403,19 +403,6 @@ transport, and Docker diagnostics can contain private data and are kept out
 of command error output. The server checks retained-output admission before
 the daemon reads or uploads the archive, fencing tainted or superseded work.
 
-Bearer-only POST JSON under `/api/v1/docker/sandboxes/`; no browser Origin/cookie
-authority. Every body has `org`; all except launch have `sandboxId`.
-
-| Operation | Additional fields | Expected result |
-| --- | --- | --- |
-| `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
-| `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
-| `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
-| `get` | none | 200 safe retained metadata/status |
-| `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
-| `job` | `requestId` | pending/completed/failed state, or null if absent |
-
 Keep stable UUIDs for launch/bootstrap/health/cleanup retries. Never generate
 replacement operations for an unknown result. Bootstrap retries cannot rotate a
 consumed/live ticket; deployment changes are not upgrades to an admitted operation.
@@ -501,7 +488,7 @@ a pre-existing binary/state or a shared pulled image. The managed installer belo
 ## Local checks
 
 ```sh
-bun test packages/mcp-server/test/docker-runtime-lifecycle.test.ts packages/mcp-server/test/docker-sandbox-routes.test.ts packages/docker-host/test packages/core/test/docker-machine.test.ts
+bun test packages/mcp-server/test/docker-runtime-lifecycle.test.ts packages/docker-host/test packages/core/test/docker-machine.test.ts
 ```
 
 Migrated SQL plus fake host facts/Docker CLI protect dispatch, admission, durable
