@@ -366,7 +366,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     if (endedAt < stoppedAt) return defer("unconfirmed", "stop_ended_before_archive");
 
     const observed = await call(async () => {
-      // The SDK's stop decoder omits Boat's documented forced flag.
       const response = await api.getStopRaw({ sandboxId: sandbox.id, stopId: stop.id }, { signal });
       const body = (await response.raw.json()) as { stop?: { forced?: unknown } } | null;
       return { receipt: StopOperationResponseFromJSON(body), forced: body?.stop?.forced };
@@ -389,7 +388,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return defer("unconfirmed", "stop_request_time_unconfirmed", observedStop);
     if (requestedAt > endedAt) return defer("unconfirmed", "stop_request_after_end", observedStop);
     if (forced === true) return defer("unconfirmed", "forced_stop", observedStop);
-    // A confirmed normal stop saves the disk even when Boat reuses a verified snapshot.
     if (requestedAt > verifiedAt && forced !== false)
       return defer("unconfirmed", "verification_before_stop_request", observedStop);
     return "usable";
