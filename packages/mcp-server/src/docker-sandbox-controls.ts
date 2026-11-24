@@ -37,6 +37,7 @@ import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { currentRequestId, observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -159,7 +160,8 @@ export function createDockerSandboxControls(
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
       )
     ).rows[0];
-    if (!row || (row.provider === "docker" && row.owner_id !== caller.userId && row.role !== "admin")) throw denied();
+    if (!row || (usesHostLaunch(row.provider) && row.owner_id !== caller.userId && row.role !== "admin"))
+      throw denied();
     return row;
   }
   async function nativeHistory(
@@ -176,7 +178,7 @@ export function createDockerSandboxControls(
         // revalidates membership after decryption before returning the page.
         const row = authorized ?? (await visible(viewer, sandboxId));
         authorized = undefined;
-        if (row.provider !== "docker") throw denied();
+        if (!usesHostLaunch(row.provider)) throw denied();
         return { status: row.status, statusReason: reason(row) };
       },
     })(caller, id, request);
@@ -861,7 +863,7 @@ export function createDockerSandboxControls(
     /** Worker-only idle observation: queued server admissions must not hide the native journal's settled state. */
     async canDispatchQueued(caller: Caller, id: string): Promise<boolean> {
       const row = await visible(caller, id);
-      if (row.provider !== "docker" || row.owner_id !== caller.userId || !["ready", "running"].includes(row.status))
+      if (!usesHostLaunch(row.provider) || row.owner_id !== caller.userId || !["ready", "running"].includes(row.status))
         return false;
       return (await status(caller, row, undefined, false)).settled;
     },
@@ -897,7 +899,7 @@ export function createDockerSandboxControls(
         if (args.request_id !== undefined && (typeof args.request_id !== "string" || !UUID.test(args.request_id)))
           throw invalid();
         const row = await visible(caller, args.id);
-        if (row.provider !== "docker") return { handled: false };
+        if (!usesHostLaunch(row.provider)) return { handled: false };
         const dispatch = async () => {
           if (name === "report") {
             if (!row.task_prompt_id || args.prompt_id !== row.task_prompt_id)

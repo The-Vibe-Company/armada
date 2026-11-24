@@ -1,5 +1,6 @@
 import { assertProvider, assertSupabaseUrl, type Provider, resourceUrl } from "@armada/auth";
-import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
+import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { ServerConfigError } from "./server-config-error.ts";
 
 export interface ServerConfig {
@@ -120,7 +121,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   if (
     !Number.isSafeInteger(sandboxExtensionHeadroomSeconds) ||
     sandboxExtensionHeadroomSeconds < 0 ||
-    sandboxExtensionHeadroomSeconds > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
+    sandboxExtensionHeadroomSeconds > capabilities("modal").maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
   )
     throw new ServerConfigError(
       "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",

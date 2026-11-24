@@ -1,4 +1,5 @@
-import { PROVIDER_LIMITS, resolveBoatKey, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core/server";
+import { capabilities } from "@armada/core/machine-capabilities";
+import { resolveBoatKey, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
@@ -22,7 +23,7 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
       if (current.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
     },
     admissionError: "runtime_resume_admission_changed",
-    maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,
+    maxTtlSeconds: capabilities("boat").maxTtlSeconds,
     async restore(host, sandbox, ttl, signal, _checkpoint, observe) {
       try {
         await host.resumeRuntime(sandbox.providerSandboxId, ttl, signal, observe);
