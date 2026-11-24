@@ -126,14 +126,6 @@ bootstrap/env, never MCP command arguments. Configure fresh short-lived gateway
 headers/env on restore. Session sanitization removes configured secret values
 and structured credential/config fields, not conversation/session IDs.
 
-Opt-in model smoke (not unit verify):
-`bun packages/agent-runtime/scripts/codex-smoke.ts --run`.
-It uses only the already selected harness environment, creates an isolated
-system-temp root, never prints native messages or credentials, bounds the run
-to 90 seconds, and cleans up child groups and temporary state. The optional
-`--record-terminal` captures only sanitized failed terminal fields, never raw
-provider messages, auth responses or environment values.
-
 ## Retry safety and review regressions
 
 Checkpoint admission is durably fenced in SQLite per generation before any
@@ -166,15 +158,6 @@ import ordering differed). The package-local Biome override excludes only
 these upstream generated TypeScript bytes from rewriting; handwritten code
 and tests still undergo normal lint/format verification. No inventory test
 or global Codex installation is used as provenance.
-
-Claude opt-in entrypoint, for the coordinator's privately injected selected
-OAuth environment:
-`bun packages/agent-runtime/scripts/claude-smoke.ts --run`.
-It uses pinned native Claude, Opus 5.5 / medium, no auth-file reads or auth
-response logging, system-temp state and a 90-second work deadline plus bounded
-cleanup. It checks remember/sanitized checkpoint retry/restore/recall,
-parallel conversations, scoped interrupt and native steer. It has not been
-run against authenticated Claude in this worker environment.
 
 ## Secret-bearing MCP transport
 

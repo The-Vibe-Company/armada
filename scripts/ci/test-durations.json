@@ -209,7 +209,6 @@
     "packages/mcp-server/src/runtime-publication.test.ts": 0.076,
     "packages/mcp-server/test/application-vault.test.ts": 5.002,
     "packages/mcp-server/test/boat-delegated-access-provider.test.ts": 0.583,
-    "packages/mcp-server/test/boat-orchestrator-private.test.ts": 0.448,
     "packages/mcp-server/test/boat-runtime-configuration.test.ts": 0.026,
     "packages/mcp-server/test/boat-runtime-manifest.test.ts": 0.011,
     "packages/mcp-server/test/boat-usage-diagnostics.test.ts": 1.466,

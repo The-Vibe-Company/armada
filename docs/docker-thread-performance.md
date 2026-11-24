@@ -1,7 +1,7 @@
 # Docker thread read path (#2543)
 
-Baseline: main after #2542, measured offline with
-`bun packages/mcp-server/benchmarks/docker-thread.ts`.
+Baseline: main after #2542, measured offline with the docker-thread
+benchmark, which has since been removed.
 The fixture has 50,000 encrypted 1 KiB output events. It executes real Docker
 controls, pagination and AES decryption against a query fixture. The injected
 clock charges one logical work unit per SQL call; these are work counts, **not
@@ -120,7 +120,6 @@ Offline 50,000-event fixture, same ciphertext/work accounting as above:
 | Logs page | 14 / 600 | 7 / 100 |
 | Unchanged live tail | 25 / 1001 | 7 / 0 |
 
-Run `bun packages/mcp-server/benchmarks/docker-thread.ts --assert-targets`.
 The unchanged-tail assertion failed before implementation (25/1001), and requires
 at most seven SQL statements and one decryption. Empty queue and no prompt events
 are fixture limitations; promptful sessions decrypt a single encrypted projection,

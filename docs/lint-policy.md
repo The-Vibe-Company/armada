@@ -41,7 +41,7 @@ reports the base and head totals and the locations of new matches.
   TypeScript. Provider packages, Docker host, and server adapter files listed in
   the script are excluded.
 - `versioned-route` counts route-name literals with a `-vN` segment suffix in
-  `public-rest-routes.ts` and `control*.ts` under the server source directory.
+  `control*.ts` under the server source directory.
 - `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test
   server TypeScript.
 - `native-path` requires zero provider-run references in the architecture metric’s scope.
