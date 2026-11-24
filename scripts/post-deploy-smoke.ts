@@ -1,5 +1,7 @@
+import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from "../packages/core/src/docker-api.ts";
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
 import { describeNativeFailure, promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
@@ -112,6 +114,10 @@ function jsonShape(value: unknown): string {
   if (Array.isArray(value)) return "array";
   return typeof value;
 }
+const dockerSmokeFailureMessages = {
+  ...DOCKER_LAUNCH_FAILURE_MESSAGES,
+  image_unavailable: DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+};
 function fail(code: Code): never {
   throw new SmokeFailure(code);
 }
@@ -138,8 +144,13 @@ type DockerModelCase = Pick<SmokeCase, "org" | "model" | "modelAccountId"> & {
 type RealModelCase = SmokeCase | DockerModelCase;
 type RealModelLaunchSource = { golden: string; connections: [] } | { hostId: string };
 const smokeLaunch = {
-  modal: { ready: ["ready"], waitForRecoveredSetup: true },
-  docker: { ready: ["ready", "running"], waitForRecoveredSetup: false },
+  modal: { ready: ["ready"], waitForRecoveredSetup: true, failureReason: modalSmokeSetupReason },
+  docker: {
+    ready: ["ready", "running"],
+    waitForRecoveredSetup: false,
+    failureReason: (reason: unknown) =>
+      Object.entries(dockerSmokeFailureMessages).find(([, message]) => message === reason)?.[0],
+  },
 };
 interface SmokeIo {
   fetch: (url: string, init: RequestInit, receipt?: "admission") => Promise<Response>;
@@ -686,6 +697,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           response.status,
           undefined,
           launchResponse,
+          undefined,
+          statusResponse,
         );
       }
       type ResponseBody = {
@@ -1147,17 +1160,59 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         ).catch(refuseModelCredentials);
         id = result.sandbox.id;
       });
-      await step("real_model_ready", () =>
-        poll(
-          status,
-          (result) => {
-            if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
-            if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
-            return smokeLaunch[item.provider].ready.includes(result.status);
-          },
-          { step: "real_model_ready" },
-        ),
-      );
+      const readinessStep = "real_model_ready";
+      await step(readinessStep, async () => {
+        let observedStarting = false;
+        let terminal: Awaited<ReturnType<typeof status>> | undefined;
+        try {
+          await poll(
+            status,
+            (result) => {
+              if (result.status === "starting") observedStarting = true;
+              if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
+              if (["failed", "stopped", "deleted"].includes(result.status)) {
+                terminal = result;
+                fail("sandbox_not_ready");
+              }
+              return smokeLaunch[item.provider].ready.includes(result.status);
+            },
+            { step: readinessStep },
+          );
+        } catch (error) {
+          if (error instanceof SmokeFailure && error.code === "sandbox_not_ready") {
+            let statusResponse: { status: string; providerState: string; statusReason: string } | undefined;
+            if (terminal) {
+              const { status, providerState, statusReason } = terminal;
+              const runtimeReason = Object.entries(RUNTIME_STARTUP_FAILURES).find(
+                ([, message]) => message === statusReason,
+              )?.[0];
+              const providerReason = smokeLaunch[item.provider].failureReason(statusReason);
+              statusResponse = {
+                status,
+                providerState:
+                  providerState === "active" || providerState === "running" || providerState === "stopped"
+                    ? providerState
+                    : jsonShape(providerState),
+                statusReason: runtimeReason ?? providerReason ?? jsonShape(statusReason),
+              };
+            }
+            out(
+              JSON.stringify({
+                step: "readiness_diagnostic",
+                readinessStep,
+                provider: item.provider,
+                sandboxId: id,
+                code: error.code,
+                observedStarting,
+                source: terminal ? "status_body" : "status_api",
+                statusResponse,
+                ...error.statusResponse,
+              }),
+            );
+          }
+          throw error;
+        }
+      });
       const turn = await step("real_model_send", () =>
         withStepDeadline("real_model_send", async () => {
           const result = await sandbox<{ promptId: string }>("send", {
