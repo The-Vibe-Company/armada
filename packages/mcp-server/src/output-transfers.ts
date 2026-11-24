@@ -157,10 +157,10 @@ export async function collectOutputTransfers(
       }
       if (transfer) {
         // A concurrent older capture must not delete a revision this capture is still using.
-        await tx.query("update public.sandbox_output_transfers set scan=greatest(scan,$2::timestamptz) where id=$1", [
-          transfer.id,
-          scan,
-        ]);
+        await tx.query(
+          "update public.sandbox_output_transfers set scan=greatest(scan,$2::timestamptz),progress_at=clock_timestamp() where id=$1",
+          [transfer.id, scan],
+        );
       } else {
         transfer = (
           await tx.query<Transfer>(
