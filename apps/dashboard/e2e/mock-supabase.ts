@@ -11,7 +11,13 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
-import { createInboundTrigger, type LaunchEnvelope, streamSandboxEvents } from "@armada/core/contract";
+import {
+  antigravityLoginOperations,
+  createInboundTrigger,
+  isAntigravityLoginPath,
+  type LaunchEnvelope,
+  streamSandboxEvents,
+} from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -3092,6 +3098,50 @@ function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray, bod
   return controlFail(405, "method_not_allowed", "Method not allowed.");
 }
 
+const googleLoginPath = antigravityLoginOperations.startAntigravityLogin.route.path;
+const pendingGoogleLogins = new Map<string, { caller: string; org?: string; name: string }>();
+
+function fixtureGoogleSignIn(path: string, body: Row, request: Request) {
+  const caller = viewer(request);
+  if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
+  if (path === googleLoginPath) {
+    const parsed = antigravityLoginOperations.startAntigravityLogin.input.body.safeParse(body);
+    if (!parsed.success || !("name" in parsed.data)) return controlFail(400, "invalid", "Name the account.");
+    const { name, org } = parsed.data;
+    if (org && !isAdmin(org, caller)) return controlFail(403, "forbidden", "Only an org admin can do that.");
+    const loginId = crypto.randomUUID();
+    pendingGoogleLogins.set(loginId, { caller, name, ...(org ? { org } : {}) });
+    return json({
+      loginId,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+  }
+  const loginId = path.slice(googleLoginPath.length + 1);
+  const pending = pendingGoogleLogins.get(loginId);
+  if (!pending || pending.caller !== caller) return controlFail(404, "not_found", "Start sign-in again.");
+  if (request.method === "DELETE") {
+    pendingGoogleLogins.delete(loginId);
+    return json({ ok: true });
+  }
+  if (body.code !== "fixture-code") return controlFail(404, "not_found", "Start sign-in again.");
+  pendingGoogleLogins.delete(loginId);
+  const now = new Date().toISOString();
+  const row = {
+    id: crypto.randomUUID(),
+    name: pending.name,
+    kind: "antigravity",
+    scope: pending.org ? "org" : "user",
+    owner_id: pending.org ?? caller,
+    created_at: now,
+    updated_at: now,
+    status: "active",
+    version: 1,
+  };
+  state.credentials.push(row);
+  return json({ account: { id: row.id, name: row.name, kind: row.kind, createdAt: now, version: row.version } });
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -3106,6 +3156,11 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (
+      (request.method === "POST" && url.pathname === googleLoginPath) ||
+      ((request.method === "POST" || request.method === "DELETE") && isAntigravityLoginPath(url.pathname))
+    )
+      return fixtureGoogleSignIn(url.pathname, body, request);
     const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
     if (canonicalLaunch && request.method === "POST" && body.armadaAccess) {
       if (

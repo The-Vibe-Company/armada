@@ -273,13 +273,18 @@ export type ArmadaApiOptions = {
  * One authenticated POST to the Armada API: JSON in, a JSON object out, its `{error: {message}}` turned into a
  * {@link ControlError}. `feature` names what an older server does not offer yet.
  */
-export async function controlPost(
+export function controlPost(options: ArmadaApiOptions, path: string, body: object, feature = "MCP connections") {
+  return controlJson(options, path, "POST", body, feature);
+}
+
+export async function controlJson(
   options: ArmadaApiOptions,
   path: string,
-  body: object,
-  feature = "MCP connections",
+  method: "POST" | "DELETE",
+  body: object | undefined,
+  feature: string,
 ): Promise<Record<string, unknown>> {
-  const { response, parsed } = await transport(options, path, body);
+  const { response, parsed } = await transport(options, path, body, method);
   const payload = isRecord(parsed) ? parsed : null;
   if (response.ok) {
     if (!payload) throw new ControlError("The Armada server sent something unreadable.", response.status);

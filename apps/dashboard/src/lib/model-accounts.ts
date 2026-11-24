@@ -92,7 +92,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     hint: "From platform.openai.com. Billed per token.",
   },
   antigravity: {
-    label: "Antigravity Gemini API key",
+    label: HARNESS_CATALOG.antigravity.label,
     billing: "api",
     valueLabel: "Gemini API key",
     hint: "Use a Gemini Developer API key. Available on Modal and Docker hosts.",

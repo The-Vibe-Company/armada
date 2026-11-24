@@ -184,26 +184,28 @@ export function ModelFields({
           />
         )}
       </div>
-      <div className={compact ? "min-w-0 max-w-40" : "space-y-2"}>
-        <Label className={compact ? "sr-only" : undefined} htmlFor={`${idPrefix}-effort`}>
-          Reasoning effort
-        </Label>
-        <NativeSelect
-          id={`${idPrefix}-effort`}
-          className={compact ? "h-7 border-0 bg-transparent text-xs shadow-none" : undefined}
-          name="reasoning_effort"
-          value={effort}
-          onChange={(event) => setEffort(event.target.value)}
-        >
-          {keepLabel && <option value="">{effortPlaceholder}</option>}
-          {efforts.map((level) => (
-            <option key={level} value={level}>
-              {EFFORT_LABEL[level] ?? level}
-              {level === entry.defaultReasoningEffort && !keepLabel ? " (default)" : ""}
-            </option>
-          ))}
-        </NativeSelect>
-      </div>
+      {HARNESS_CATALOG[harness].capabilities.reasoningEffort && (
+        <div className={compact ? "min-w-0 max-w-40" : "space-y-2"}>
+          <Label className={compact ? "sr-only" : undefined} htmlFor={`${idPrefix}-effort`}>
+            Reasoning effort
+          </Label>
+          <NativeSelect
+            id={`${idPrefix}-effort`}
+            className={compact ? "h-7 border-0 bg-transparent text-xs shadow-none" : undefined}
+            name="reasoning_effort"
+            value={effort}
+            onChange={(event) => setEffort(event.target.value)}
+          >
+            {keepLabel && <option value="">{effortPlaceholder}</option>}
+            {efforts.map((level) => (
+              <option key={level} value={level}>
+                {EFFORT_LABEL[level] ?? level}
+                {level === entry.defaultReasoningEffort && !keepLabel ? " (default)" : ""}
+              </option>
+            ))}
+          </NativeSelect>
+        </div>
+      )}
     </div>
   );
 }

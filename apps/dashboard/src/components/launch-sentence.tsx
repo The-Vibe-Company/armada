@@ -1,6 +1,6 @@
 "use client";
 
-import { HARNESSES, type Harness } from "@armada/core";
+import { HARNESS_CATALOG, HARNESSES, type Harness } from "@armada/core";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
@@ -61,7 +61,12 @@ export function LaunchSentence({
   const chosen = rows.find((row) => row.id === account);
   const entry = catalog[harness];
   const efforts = entry.models.find((row) => row.id === model.trim())?.reasoningEfforts ?? entry.reasoningEfforts;
-  const selectedEffort = efforts.includes(effort) ? effort : (efforts[0] ?? entry.defaultReasoningEffort);
+  const hasEffort = HARNESS_CATALOG[harness].capabilities.reasoningEffort;
+  const selectedEffort = hasEffort
+    ? efforts.includes(effort)
+      ? effort
+      : (efforts[0] ?? entry.defaultReasoningEffort)
+    : "";
   const defaultEffort = (agent: Harness, modelId: string) => {
     const catalogEntry = catalog[agent];
     const allowed =
@@ -236,22 +241,24 @@ export function LaunchSentence({
             )}
           </div>
         )}
-        <fieldset className="flex flex-wrap gap-x-3 border-t p-2 text-sm">
-          <legend className="px-2 font-medium">Effort</legend>
-          {efforts.map((value) => (
-            <label key={value} className="flex min-h-8 items-center gap-1.5 pointer-coarse:min-h-11">
-              <input
-                type="radio"
-                name={`${id}-effort`}
-                checked={value === selectedEffort}
-                onChange={() => {
-                  setEffort(value);
-                }}
-              />
-              {EFFORT_LABEL[value] ?? value}
-            </label>
-          ))}
-        </fieldset>
+        {hasEffort && (
+          <fieldset className="flex flex-wrap gap-x-3 border-t p-2 text-sm">
+            <legend className="px-2 font-medium">Effort</legend>
+            {efforts.map((value) => (
+              <label key={value} className="flex min-h-8 items-center gap-1.5 pointer-coarse:min-h-11">
+                <input
+                  type="radio"
+                  name={`${id}-effort`}
+                  checked={value === selectedEffort}
+                  onChange={() => {
+                    setEffort(value);
+                  }}
+                />
+                {EFFORT_LABEL[value] ?? value}
+              </label>
+            ))}
+          </fieldset>
+        )}
 
         {accounts.state !== "legacy" && (
           <div className="border-t p-2">

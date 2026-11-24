@@ -1,5 +1,6 @@
 import { type AgentDefault, isModelConnectionTestResult, MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
-import { type ArmadaApiOptions, ControlError, controlPost } from "./control.ts";
+import { antigravityLoginOperations, antigravityLoginPath } from "@armada/core/contract";
+import { type ArmadaApiOptions, ControlError, controlJson, controlPost } from "./control.ts";
 import {
   type AccountScope,
   type AccountUsage,
@@ -70,6 +71,27 @@ export function createAccountControl(options: ArmadaApiOptions) {
   }
 
   return {
+    async startGoogleSignIn(body: { name: string; org?: string }) {
+      const operation = antigravityLoginOperations.startAntigravityLogin;
+      const payload = await controlPost(options, operation.route.path, body, "Antigravity sign-in");
+      const result = operation.output.safeParse(payload);
+      if (!result.success || new URL(result.data.authorizationUrl).origin !== "https://accounts.google.com")
+        throw new ControlError("The Armada server sent an unexpected Google sign-in response.");
+      return result.data;
+    },
+    async completeGoogleSignIn(id: string, code: string) {
+      const payload = await controlPost(
+        { ...options, timeoutMs: 5 * 60_000 },
+        antigravityLoginPath(id),
+        { code },
+        "Antigravity sign-in",
+      );
+      const result = antigravityLoginOperations.completeAntigravityLogin.output.safeParse(payload);
+      if (!result.success) throw new ControlError("The Armada server sent an unexpected account.");
+      return result.data.account;
+    },
+    cancelGoogleSignIn: (id: string) =>
+      controlJson(options, antigravityLoginPath(id), "DELETE", undefined, "Antigravity sign-in"),
     setAgentDefault: (body: AgentDefault & { org: string }) => post("creds/defaults/set", body),
     async testConnection(body: { id: string; model: string; org: string }) {
       const payload = await controlPost(

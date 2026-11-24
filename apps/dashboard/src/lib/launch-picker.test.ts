@@ -53,3 +53,15 @@ test("a rebuilt starting point retains the current agent only while it can run i
   expect(launchHarnessForSource("opencode", undefined, false)).toBe("opencode");
   expect(launchHarnessForSource("claude", ["codex", "opencode"], false)).toBe("codex");
 });
+
+test("an Antigravity account offers its default and its harness catalog models", () => {
+  const antigravity = { ...account, kind: "antigravity" } satisfies ModelAccount;
+  const [group] = launchPickerGroups([antigravity], MODEL_CATALOG, "codex", 0);
+  expect(group?.options).toEqual(
+    MODEL_CATALOG.antigravity.models.map((model) => ({
+      ...model,
+      harness: "antigravity",
+      isDefault: model.id === "default",
+    })),
+  );
+});

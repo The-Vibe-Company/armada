@@ -29,12 +29,14 @@ import { useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addAccount,
+  cancelGoogleSignIn,
   makeDefaultAccount,
   pollModelAccounts,
   removeAccount,
   renameAccount,
   replaceAccountSecret,
   setPersonalAgentDefault,
+  startGoogleSignIn,
   testAccountConnection,
   updateAccountLimits,
 } from "@/app/actions/model-accounts";
@@ -74,6 +76,7 @@ import { useToast } from "@/components/ui/toast";
 import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { ANTIGRAVITY_METHODS, antigravityMethod } from "@/lib/antigravity-account";
 import { clientMutation } from "@/lib/client-mutation";
 import { HARNESS_LABELS } from "@/lib/labels";
 import {
@@ -749,7 +752,9 @@ function ProviderMark({ kind }: { kind: AccountKind }) {
         ? "O"
         : kind === "morph"
           ? "M"
-          : "OC";
+          : kind === "antigravity"
+            ? "AG"
+            : "OC";
   return (
     <span
       aria-hidden
@@ -1584,7 +1589,11 @@ export function AddAccountDialog({
   const [open, setOpen] = useState(false);
   const step = 2;
   const [generation, setGeneration] = useState(0);
-  const [state, formAction] = useMutationState(addAccount);
+  const [state, formAction, saving] = useMutationState(addAccount);
+  const [method, setMethod] = useState<(typeof ANTIGRAVITY_METHODS)[number]["id"]>("google");
+  const [login, setLogin] = useState<{ loginId: string; authorizationUrl: string } | null>(null);
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [signInPending, runSignIn] = useTransition();
   const [choice, setChoice] = useState<AddChoice>(initialKind);
   const preset = connectionPreset(choice);
   const kind: AccountKind =
@@ -1601,6 +1610,47 @@ export function AddAccountDialog({
   const router = useRouter();
   const id = useId();
   const info = KIND_INFO[kind];
+  const google = kind === "antigravity" && method === "google";
+
+  const openGoogleSignIn = () => {
+    const form = wizardRef.current;
+    if (!form?.reportValidity()) return;
+    const data = new FormData(form);
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
+    setSignInError(null);
+    runSignIn(async () => {
+      const result = await clientMutation(() => startGoogleSignIn(data));
+      if (!result.ok) {
+        tab?.close();
+        setSignInError(result.error);
+        return;
+      }
+      if (tab && !tab.closed) tab.location.replace(result.authorizationUrl);
+      setLogin(result);
+    });
+  };
+
+  const resetGoogleSignIn = (close: boolean) => {
+    if (!login) {
+      if (close) setOpen(false);
+      return;
+    }
+    const data = new FormData();
+    data.set("loginId", login.loginId);
+    data.set("scope", scope);
+    data.set("org", orgId);
+    setSignInError(null);
+    runSignIn(async () => {
+      const result = await clientMutation(() => cancelGoogleSignIn(data));
+      if (!result.ok && !close) {
+        setSignInError(result.error);
+        return;
+      }
+      setLogin(null);
+      if (close) setOpen(false);
+    });
+  };
   const subscription = info.billing === "subscription";
   const pasteSignIn = PASTE_SIGN_IN[kind];
   const command = subscription
@@ -1610,6 +1660,7 @@ export function AddAccountDialog({
   useEffect(() => {
     if (!state?.ok) return;
     setOpen(false);
+    setLogin(null);
     setGeneration((value) => value + 1);
   }, [state]);
 
@@ -1677,13 +1728,61 @@ export function AddAccountDialog({
   );
   const saveFields = (
     <>
-      {secretFields}
+      {kind === "antigravity" && (
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-method`}>Connection method</Label>
+          <NativeSelect
+            id={`${id}-method`}
+            name="antigravityMethod"
+            value={method}
+            disabled={signInPending || !!login || saving}
+            onChange={(event) => {
+              const next = antigravityMethod(event.target.value);
+              if (next) setMethod(next);
+              setSignInError(null);
+            }}
+          >
+            {ANTIGRAVITY_METHODS.map(({ id, label }) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </NativeSelect>
+          {login && <input type="hidden" name="antigravityMethod" value="google" />}
+        </div>
+      )}
+      {google
+        ? login && (
+            <div className="space-y-2">
+              <input type="hidden" name="loginId" value={login.loginId} />
+              <Label htmlFor={`${id}-code`}>Paste the code Google shows</Label>
+              <Input id={`${id}-code`} name="code" type="password" required maxLength={8192} autoComplete="off" />
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <a href={login.authorizationUrl} target="_blank" rel="noreferrer" className="underline">
+                  Open Google sign-in again
+                </a>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={signInPending || saving}
+                  onClick={() => resetGoogleSignIn(false)}
+                >
+                  Start sign-in again
+                </Button>
+              </div>
+            </div>
+          )
+        : secretFields}
       {kind === "morph" && <MorphModelField idPrefix={id} models={MORPH_MODEL_IDS} />}
-      <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
-        <Checkbox id={`${id}-default-account`} name="default" value="on" />
-        Make it the default for {info.harnessLabel}
-      </Label>
-      {state && !state.ok && <ResultLine result={state} />}
+      {!google && (
+        <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
+          <Checkbox id={`${id}-default-account`} name="default" value="on" />
+          Make it the default for {info.harnessLabel}
+        </Label>
+      )}
+      {signInError && <ResultLine result={{ ok: false, error: signInError }} />}
+      {!signInError && (!google || login) && state && !state.ok && <ResultLine result={state} />}
     </>
   );
   const choose = (next: AddChoice) => {
@@ -1695,6 +1794,8 @@ export function AddAccountDialog({
           ? "openai"
           : (nextPreset?.kind ?? (next as AccountKind));
     setChoice(next);
+    setMethod("google");
+    setSignInError(null);
     setName("");
     setMaxAgents(nextKind === "morph" ? "2" : "");
   };
@@ -1707,8 +1808,11 @@ export function AddAccountDialog({
       description="Agents run on this account. Credentials are encrypted and never shown again."
       open={open}
       onOpenChange={(next) => {
-        setOpen(next);
-        if (next) {
+        if (signInPending || saving) return;
+        if (!next) {
+          resetGoogleSignIn(true);
+        } else {
+          setOpen(true);
           choose(initialKind);
           setScope("user");
           setGeneration((value) => value + 1);
@@ -1722,6 +1826,11 @@ export function AddAccountDialog({
         }}
         key={generation}
         action={formAction}
+        onSubmit={(event) => {
+          if (!google || login) return;
+          event.preventDefault();
+          if (!signInPending) openGoogleSignIn();
+        }}
         className="min-w-0 gap-4"
       >
         <input type="hidden" name="org" value={orgId} />
@@ -1729,10 +1838,10 @@ export function AddAccountDialog({
         {preset?.models === "choose" && <input type="hidden" name="preset" value={preset.id} />}
         <input type="hidden" name="scope" value={scope} />
         <CreateDialogBody className="space-y-4">
-          <fieldset className="space-y-2">
+          <fieldset className="space-y-2" disabled={signInPending || !!login || saving}>
             <legend className="mb-2 text-sm font-medium">Kind</legend>
             <div className="overflow-hidden rounded-lg border divide-y">
-              {(["claude_oauth", "anthropic", "codex_auth", "openai", "morph"] as const).map((value) => (
+              {(["claude_oauth", "anthropic", "codex_auth", "openai", "morph", "antigravity"] as const).map((value) => (
                 <label
                   key={value}
                   className={cn(
@@ -1759,7 +1868,9 @@ export function AddAccountDialog({
                           ? "The contents of ~/.codex/auth.json"
                           : value === "morph"
                             ? connectionPreset(value)?.hint
-                            : "Billed per token"}
+                            : value === "antigravity"
+                              ? "Google account or Gemini API key"
+                              : "Billed per token"}
                     </span>
                   </span>
                 </label>
@@ -1772,6 +1883,7 @@ export function AddAccountDialog({
                 value={choice}
                 onChange={(event) => choose(event.target.value as AddChoice)}
               >
+                <option value="antigravity">Antigravity</option>
                 {SUBSCRIPTION_KINDS.map((value) => (
                   <option key={value} value={value}>
                     {KIND_INFO[value].label}
@@ -1800,6 +1912,7 @@ export function AddAccountDialog({
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   required
+                  readOnly={signInPending || !!login || saving}
                   maxLength={MAX_ACCOUNT_NAME}
                   autoComplete="off"
                 />
@@ -1835,6 +1948,7 @@ export function AddAccountDialog({
                           variant="ghost"
                           aria-pressed={scope === option.value}
                           className={scope === option.value ? "h-7 bg-card shadow-xs" : "h-7"}
+                          disabled={signInPending || !!login || saving}
                           onClick={() => setScope(option.value as "user" | "org")}
                         >
                           {option.label}
@@ -1843,17 +1957,30 @@ export function AddAccountDialog({
                     </fieldset>
                   </div>
                 )}
-                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
+                {!google && <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />}
               </div>
             </div>
           </div>
         </CreateDialogBody>
         <CreateDialogFooter className="flex flex-wrap items-center justify-between gap-2">
-          <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={signInPending || saving}
+            onClick={() => resetGoogleSignIn(true)}
+          >
             Cancel
           </Button>
           <div className="flex flex-wrap gap-2">
-            {<SubmitButton>{preset?.deploymentNames ? "Test and add account" : "Add account"}</SubmitButton>}
+            <SubmitButton disabled={signInPending || saving}>
+              {google
+                ? login
+                  ? "Connect"
+                  : "Open Google sign-in"
+                : preset?.deploymentNames
+                  ? "Test and add account"
+                  : "Add account"}
+            </SubmitButton>
           </div>
         </CreateDialogFooter>
       </form>
@@ -2196,7 +2323,6 @@ function PersonalDefaultSentence({
             const row = document.getElementById(`account-${account.id}`)?.closest("[data-account]");
             const summary = row?.querySelector<HTMLButtonElement>("button[aria-expanded]");
             if (summary?.getAttribute("aria-expanded") === "false") summary.click();
-            // Wait for the expanded detail to render before focusing its repair action.
             requestAnimationFrame(() => {
               const repair = document
                 .getElementById(`account-${account.id}-detail`)

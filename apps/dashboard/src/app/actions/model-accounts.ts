@@ -4,6 +4,7 @@ import { HARNESSES, type Harness, parseCredentialValue, resolveModelChoice, Vaul
 import { revalidatePath } from "next/cache";
 import type { AccountControl, AccountTarget } from "@/lib/account-control";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { antigravityMethod, GOOGLE_CODE_ERROR, googleCode, googleSignInFailure } from "@/lib/antigravity-account";
 import { ControlError } from "@/lib/control";
 import { listSelectedAccounts, viewerAccountControl } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -36,7 +37,7 @@ type Scoped = { control: AccountControl; scope: AccountScope; org: string };
  * The control client and the scope the form names. An org account belongs to the org the person is looking at,
  * so its form must name that org; the server checks the admin role itself.
  */
-async function scoped(data: FormData): Promise<Scoped | ActionResult> {
+async function scoped(data: FormData) {
   const scope = formString(data, "scope");
   if (scope !== "user" && scope !== "org") return fail("That request is not valid.");
   const selected = await selectedOrganization();
@@ -44,7 +45,7 @@ async function scoped(data: FormData): Promise<Scoped | ActionResult> {
   if (scope === "org" && formString(data, "org") !== selected.org.id) return fail("Switch to that organization first.");
   const control = await viewerAccountControl();
   if (!control) return fail("The Armada server is not configured for this dashboard.");
-  return { control, scope, org: selected.org.id };
+  return { control, scope, org: selected.org.id } satisfies Scoped;
 }
 
 function target(context: Scoped, id: string): AccountTarget {
@@ -82,6 +83,52 @@ function refresh() {
   revalidatePath("/snapshots");
 }
 
+export async function startGoogleSignIn(data: FormData) {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const name = checkAccountName(data.get("name"));
+  if (!name.ok) return fail(name.error);
+  try {
+    const login = await context.control.startGoogleSignIn({
+      name: name.value,
+      ...(context.scope === "org" ? { org: context.org } : {}),
+    });
+    return { ok: true as const, ...login };
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(googleSignInFailure("start", error.status, error.code));
+  }
+}
+
+export async function cancelGoogleSignIn(data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const id = formString(data, "loginId");
+  if (!isUuid(id)) return fail("That request is not valid.");
+  try {
+    await context.control.cancelGoogleSignIn(id);
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.code !== "not_found") return explain(error);
+  }
+  return done("Google sign-in cancelled.");
+}
+
+async function completeGoogleSignIn(context: Scoped, data: FormData): Promise<ActionResult> {
+  const id = formString(data, "loginId");
+  if (!isUuid(id)) return fail("Start sign-in again.");
+  const code = googleCode(data.get("code"));
+  if (!code) return fail(GOOGLE_CODE_ERROR);
+  try {
+    const account = await context.control.completeGoogleSignIn(id, code);
+    refresh();
+    return done(`${account.name} saved.`);
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(googleSignInFailure("complete", error.status, error.code));
+  }
+}
+
 /** Adds a named account from a pasted token, key or auth.json, and makes it the default when asked. */
 export async function addAccount(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const context = await scoped(data);
@@ -94,13 +141,20 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!(ACCOUNT_KINDS as readonly string[]).includes(kind)) return fail("Choose what you are adding.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
+  const method = kind === "antigravity" ? antigravityMethod(data.get("antigravityMethod")) : undefined;
+  if (kind === "antigravity" && !method) return fail("Choose an Antigravity connection method.");
+  if (method === "google") return completeGoogleSignIn(context, data);
+  const raw =
+    method === "gemini-api-key"
+      ? JSON.stringify({ method, apiKey: formString(data, "value").trim() })
+      : data.get("value");
   const value =
     fromPreset ??
     (kind === "morph"
       ? morphAccountValue(data)
       : data.get("customEndpoint") === "on"
         ? customAccountValue(kind as AccountKind, data)
-        : secret(kind as AccountKind, data.get("value")));
+        : secret(kind as AccountKind, raw));
   if (!value.ok) return fail(value.error);
 
   const maxAgents = formAgentLimit(data);
@@ -271,7 +325,7 @@ function formAgentLimit(data: FormData): number | null | undefined {
   return /^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(value) ? value : undefined;
 }
 
-export async function updateAccountLimits(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function updateAccountLimits(_previous: ActionResult | null, data: FormData) {
   const context = await scoped(data);
   if (!isScoped(context)) return context;
   const id = formString(data, "id");
@@ -298,7 +352,7 @@ export async function pollModelAccounts(orgId: string) {
 }
 
 /** Personal selections never mutate organization-owned accounts. */
-export async function setPersonalAgentDefault(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function setPersonalAgentDefault(_previous: ActionResult | null, data: FormData) {
   const selected = await selectedOrganization();
   if (!selected || formString(data, "org") !== selected.org.id) return fail("Switch to that organization first.");
   const harness = formString(data, "harness") as Harness;
