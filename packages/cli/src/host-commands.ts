@@ -10,7 +10,7 @@ import {
   isRecord as record,
   validDockerHostResources,
 } from "@armada/core";
-import { isDockerHostVersionStatus } from "@armada/core/docker";
+import { isDockerHostVersionStatus } from "@armada/core/contract";
 import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";

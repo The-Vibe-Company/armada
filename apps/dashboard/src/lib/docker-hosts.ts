@@ -4,7 +4,7 @@ import {
   parseDockerMemory,
   validDockerHostResources,
 } from "@armada/core";
-import { isDockerHostVersionStatus } from "@armada/core/docker";
+import { isDockerHostVersionStatus } from "@armada/core/contract";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 

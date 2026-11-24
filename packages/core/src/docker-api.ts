@@ -1,3 +1,4 @@
+import type { DockerHostVersionStatus } from "./contract/docker-host.ts";
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
 import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
@@ -22,13 +23,6 @@ export interface DockerHostResourceSummary {
   heldBack?: number;
   mode: "automatic" | "manual";
 }
-const DOCKER_HOST_VERSION_STATUSES = ["unknown", "current", "outdated", "ahead"] as const;
-export type DockerHostVersionStatus = (typeof DOCKER_HOST_VERSION_STATUSES)[number];
-
-export function isDockerHostVersionStatus(value: unknown): value is DockerHostVersionStatus {
-  return DOCKER_HOST_VERSION_STATUSES.some((status) => status === value);
-}
-
 export interface DockerHostSummary {
   id: string;
   name: string | null;
