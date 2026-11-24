@@ -48,6 +48,7 @@ import {
   SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
+  StopOperationResponseFromJSON,
   StopOperationStatusEnum,
 } from "@boatdev/sdk";
 import {
@@ -364,16 +365,19 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     if (endedAt === undefined || !Number.isFinite(endedAt)) return defer("unconfirmed", "stop_end_time_unconfirmed");
     if (endedAt < stoppedAt) return defer("unconfirmed", "stop_ended_before_archive");
 
-    const observed = await call(() => api.getStop({ sandboxId: sandbox.id, stopId: stop.id }, { signal })).catch(
-      (error: unknown) => {
-        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
-        throw error;
-      },
-    );
+    const observed = await call(async () => {
+      const response = await api.getStopRaw({ sandboxId: sandbox.id, stopId: stop.id }, { signal });
+      const body = (await response.raw.json()) as { stop?: { forced?: unknown } } | null;
+      return { receipt: StopOperationResponseFromJSON(body), forced: body?.stop?.forced };
+    }).catch((error: unknown) => {
+      if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
+      throw error;
+    });
     if (!observed) return defer("pending", "stop_lookup_not_found");
-    if (observed.ok !== true) return defer("unconfirmed", "stop_lookup_not_ok");
-    if (observed.id !== sandbox.id) return defer("unconfirmed", "stop_lookup_sandbox_mismatch");
-    const operation = observed.stop;
+    const { receipt, forced } = observed;
+    if (receipt?.ok !== true) return defer("unconfirmed", "stop_lookup_not_ok");
+    if (receipt.id !== sandbox.id) return defer("unconfirmed", "stop_lookup_sandbox_mismatch");
+    const operation = receipt.stop;
     if (operation?.id !== stop.id) return defer("unconfirmed", "stop_lookup_operation_mismatch");
     if (operation.status !== StopOperationStatusEnum.Completed)
       return defer("unconfirmed", "stop_lookup_not_completed");
@@ -382,7 +386,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     if (observedStop.endedAt !== endedAt) return defer("unconfirmed", "stop_end_mismatch", observedStop);
     if (requestedAt === undefined || !Number.isFinite(requestedAt))
       return defer("unconfirmed", "stop_request_time_unconfirmed", observedStop);
-    if (requestedAt > verifiedAt) return defer("unconfirmed", "verification_before_stop_request", observedStop);
+    if (requestedAt > endedAt) return defer("unconfirmed", "stop_request_after_end", observedStop);
+    if (forced === true) return defer("unconfirmed", "forced_stop", observedStop);
+    if (requestedAt > verifiedAt && forced !== false)
+      return defer("unconfirmed", "verification_before_stop_request", observedStop);
     return "usable";
   }
 

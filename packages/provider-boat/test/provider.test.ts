@@ -199,34 +199,54 @@ describe("golden and snapshots", () => {
 
 describe("sandboxes", () => {
   test.each([
-    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, null, "usable"],
-    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, null, "unconfirmed"],
-    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, null, "unconfirmed"],
-    ["a newer snapshot attempt", "2026-11-21T19:42:24Z", 1795290158322, "2026-11-21T19:42:35Z", "unconfirmed"],
-  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, lastSnapshotAttemptAt, expected) => {
-    const stop = {
-      id: "stop-1",
-      status: StopOperationStatusEnum.Completed,
-      endedAt: new Date(endedAt).toISOString(),
-      lastAttemptAt: new Date(endedAt).toISOString(),
-      error: null,
-    };
-    const boat = fakeBoat(
-      {
-        body: {
-          sandbox: retainedSandbox({
-            stoppedAt: new Date(1795290158322).toISOString(),
-            snapshotVerifiedAt: new Date(1795290150656).toISOString(),
-            lastSnapshotAttemptAt,
-            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
-            stop: { ...stop, requestedAt: null },
-          }),
+    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, null, undefined, "usable"],
+    ["an earlier checkpoint and a normal stop", "2026-11-21T19:42:35Z", 1795290158322, null, false, "usable"],
+    [
+      "an earlier checkpoint and ambiguous stop mode",
+      "2026-11-21T19:42:35Z",
+      1795290158322,
+      null,
+      undefined,
+      "unconfirmed",
+    ],
+    [
+      "a forced stop even with verification during the stop",
+      "2026-11-21T19:42:24Z",
+      1795290158322,
+      null,
+      true,
+      "unconfirmed",
+    ],
+    ["a request timestamp after the stop ended", "2026-11-21T19:42:39Z", 1795290158322, null, false, "unconfirmed"],
+    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, null, false, "unconfirmed"],
+    ["a newer snapshot attempt", "2026-11-21T19:42:24Z", 1795290158322, "2026-11-21T19:42:35Z", false, "unconfirmed"],
+  ])(
+    "get checks archived retention with %s",
+    async (_name, requestedAt, endedAt, lastSnapshotAttemptAt, forced, expected) => {
+      const stop = {
+        id: "stop-1",
+        status: StopOperationStatusEnum.Completed,
+        endedAt: new Date(endedAt).toISOString(),
+        lastAttemptAt: new Date(endedAt).toISOString(),
+        error: null,
+      };
+      const boat = fakeBoat(
+        {
+          body: {
+            sandbox: retainedSandbox({
+              stoppedAt: new Date(1795290158322).toISOString(),
+              snapshotVerifiedAt: new Date(1795290150656).toISOString(),
+              lastSnapshotAttemptAt,
+              lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+              stop: { ...stop, requestedAt: null },
+            }),
+          },
         },
-      },
-      { body: { ok: true, type: "stop.status", id: ID, stop: { ...stop, requestedAt } } },
-    );
-    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
-  });
+        { body: { ok: true, type: "stop.status", id: ID, stop: { ...stop, requestedAt, forced } } },
+      );
+      expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+    },
+  );
 
   test("get identifies a by-ID stop completion mismatch in the retention diagnostic", async () => {
     const stop = {
