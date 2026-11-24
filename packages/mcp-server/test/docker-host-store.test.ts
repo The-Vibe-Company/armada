@@ -2445,6 +2445,11 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping", stopped_at: null });
   expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
   await store.complete(a.hostToken, a.installationId, stopReceipt);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({
+    status: "stopped",
+    stopped_at: expect.anything(),
+    stop_requested_at: null,
+  });
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   const remove = await store.poll(a.hostToken, a.installationId);
   expect(remove?.operation).toBe("delete");
