@@ -35,7 +35,7 @@ import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { withBoatManagementIdentity } from "./observed-boat.ts";
-import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
+import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -388,14 +388,14 @@ export const launchRoutes = defineRoutes("launch", {
     },
   },
   "sandbox/launch": async ({ caller, body, options, request }) => {
-    if (body.provider === "docker") configureDockerLaunch(options, request);
+    if (usesHostLaunch(body.provider)) configureDockerLaunch(options, request);
     const { store, encryptionKey } = options;
     const userId = caller.userId;
     const parsed = launchOperation.input.body.safeParse(body);
     if (!parsed.success)
       throw new VaultError(
         "invalid",
-        body.provider === "docker" && Object.hasOwn(body, "image")
+        usesHostLaunch(body.provider) && Object.hasOwn(body, "image")
           ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
           : "Invalid launch request. See the sandbox/launch request schema.",
       );

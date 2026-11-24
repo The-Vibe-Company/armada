@@ -3307,6 +3307,21 @@ test.each(["auth", "auth-deferred", "network"] as const)(
           }
           expect(
             (
+              await db.query(
+                "select from_status, to_status, actor, code from sandbox_transitions where sandbox_id=$1 and to_status='failed'",
+                [f.body.requestId],
+              )
+            ).rows,
+          ).toEqual([
+            {
+              from_status: "ready",
+              to_status: "failed",
+              actor: "lifecycle_runner",
+              code: "docker_launch_failed",
+            },
+          ]);
+          expect(
+            (
               await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
                 f.body.requestId,
               ])

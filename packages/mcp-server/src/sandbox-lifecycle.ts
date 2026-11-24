@@ -1281,6 +1281,37 @@ export async function finishLaunchFailure(
   return true;
 }
 
+export async function recordDeferredDockerLaunchFailure(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  workerId: string,
+  promptRequestId: string,
+  message: string,
+) {
+  const sandbox = await tx.query(
+    `select id from public.sandboxes
+     where id=$1 and lifecycle_generation=$2 and provider='docker'
+       and status in ('starting','ready','running') and stop_requested_at is null and deleted_at is null
+     for update`,
+    [sandboxId, generation],
+  );
+  if (!sandbox.rows.length) return;
+  const claim = await tx.query(
+    `select sandbox_id from public.docker_launch_requests
+     where sandbox_id=$1 and worker_id=$2 and worker_expires_at>clock_timestamp() and result_enc is null
+     for update`,
+    [sandboxId, workerId],
+  );
+  if (!claim.rows.length) return;
+  const prompt = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+    sandboxId,
+    promptRequestId,
+  ]);
+  if (prompt.rows.length) return;
+  await recordRuntimeStartupFailure(tx, sandboxId, generation, "docker_launch_failed", message);
+}
+
 export async function recordRuntimeStartupFailure(
   tx: Sql,
   sandboxId: string,

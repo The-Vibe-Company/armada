@@ -1,4 +1,11 @@
-import { DelegatedAuthority, decryptSecret, failureDiagnostic, type Sql, VaultError } from "@armada/core/server";
+import {
+  DelegatedAuthority,
+  decryptSecret,
+  failureDiagnostic,
+  isSandboxProvider,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
@@ -141,7 +148,7 @@ export function createRuntimeCheckpoint(
       row.ownerId !== caller.userId ||
       !(
         (usesHostLaunch(row.provider) && options.docker) ||
-        ((row.boatRuntime || row.runtimeTransport === "dialout") && ["boat", "modal"].includes(row.provider))
+        ((row.boatRuntime || row.runtimeTransport === "dialout") && isSandboxProvider(row.provider))
       ) ||
       !runtimeHarnessSupported(row.provider, row.harness) ||
       row.deletedAt
