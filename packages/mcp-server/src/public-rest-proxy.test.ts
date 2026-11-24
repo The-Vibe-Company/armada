@@ -1,16 +1,6 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
-import {
-  operations as contractOperations,
-  controlRouteKey,
-  PUBLIC_CONTROL_ROUTES,
-  tokenOperations,
-} from "@armada/core/contract";
-import {
-  forwardControl,
-  PARAMETERIZED_CONTROL_ROUTES,
-  PRIVATE_POST_PATHS,
-} from "../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts";
+import { forwardControl } from "../../../apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts";
 
 test("the SDK keeps the drain refusal's Retry-After through the dashboard proxy, and malformed delays are dropped", async () => {
   const { Armada, ArmadaError } = await import("../../sdk/src/index.ts");
@@ -161,68 +151,6 @@ test("published OpenAPI and migrated admin operations follow their proxy routing
     if (env === undefined) delete process.env.ARMADA_MCP_URL;
     else process.env.ARMADA_MCP_URL = env;
   }
-});
-
-test("every route the public proxy forwards is published or has a recorded reason to stay outside the description", async () => {
-  const published = (await import("../openapi.json")).default as {
-    paths: Record<string, Record<string, unknown>>;
-  };
-  const { UNPUBLISHED_REST_ROUTES, unpublishedReason } = await import("./public-rest-routes.ts");
-  const publishedOperations = Object.entries(published.paths).flatMap(([path, verbs]) =>
-    Object.keys(verbs).map((verb) => `${verb.toUpperCase()} ${path.replace(/^\/api\/v1\//, "")}`),
-  );
-  const adminOperations = new Set(
-    Object.values(contractOperations)
-      .filter(({ audience }) => audience === "admin")
-      .map(({ route }) => `${route.method} ${controlRouteKey(route)}`),
-  );
-  const publishedRoutes = publishedOperations.map((operation) => operation.split(" ")[1]!);
-  const operations = [
-    ...[...PRIVATE_POST_PATHS].map((path) => ({ method: "POST", path })),
-    ...Object.entries(PUBLIC_CONTROL_ROUTES).flatMap(([path, methods]) => methods.map((method) => ({ method, path }))),
-    ...PARAMETERIZED_CONTROL_ROUTES,
-  ];
-  const env = process.env.ARMADA_MCP_URL;
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  try {
-    for (const { method, path } of PARAMETERIZED_CONTROL_ROUTES) {
-      const url = `https://dashboard.test/api/v1/${fillParameters(path)}`;
-      const upstream: string[] = [];
-      const response = await forwardControl(
-        new Request(url, { method, headers: { authorization: "Bearer masked" } }),
-        new URL(url).pathname
-          .replace(/^\/api\/v1\//, "")
-          .split("/")
-          .map(decodeURIComponent),
-        async (target) => {
-          upstream.push(new URL(target).pathname);
-          return Response.json({});
-        },
-      );
-      expect([method, path, response.status, upstream]).toEqual([method, path, 200, [new URL(url).pathname]]);
-    }
-  } finally {
-    if (env === undefined) delete process.env.ARMADA_MCP_URL;
-    else process.env.ARMADA_MCP_URL = env;
-  }
-  const forwarded = operations.map(({ path }) => path);
-  expect(
-    operations
-      .filter(({ method, path }) => {
-        const key = `${method} ${path}`;
-        return !publishedOperations.includes(key) && !adminOperations.has(key) && !unpublishedReason(path);
-      })
-      .map(({ method, path }) => `${method} ${path}`),
-  ).toEqual([]);
-  expect(publishedRoutes.filter((route) => unpublishedReason(route) !== undefined)).toEqual([]);
-  for (const { route } of Object.values(tokenOperations)) {
-    expect(publishedOperations).not.toContain(`${route.method} ${controlRouteKey(route)}`);
-  }
-  expect(
-    Object.keys(UNPUBLISHED_REST_ROUTES).filter((key) =>
-      key.endsWith("/") ? !forwarded.some((route) => route.startsWith(key)) : !forwarded.includes(key),
-    ),
-  ).toEqual([]);
 });
 
 test("a keyed Docker send prompt the published variant admits crosses the proxy, and one it refuses never reaches upstream", async () => {

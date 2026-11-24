@@ -71,7 +71,7 @@ test("browser core entries exclude native payloads while sharing release digests
   const build = await Bun.build({
     entrypoints: [
       join(import.meta.dir, "../src/index.ts"),
-      ...["@armada/core/accounts", "@armada/core/docker", "@armada/core/launch", "@armada/core/runtime"].map((entry) =>
+      ...["@armada/core/accounts", "@armada/core/docker", "@armada/core/runtime"].map((entry) =>
         fileURLToPath(import.meta.resolve(entry)),
       ),
     ],

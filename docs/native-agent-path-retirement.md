@@ -204,8 +204,6 @@ Also retire the owning tests and fixtures when their last caller goes away. Serv
 | [`provider-modal/ports.ts:1–220`](../packages/provider-modal/src/ports.ts#L1-L220) | 220 | Native runner transport, distribution and ingest ports. Retain host and storage contracts |
 | [`mcp-server/tools.ts:1809–1917`](../packages/mcp-server/src/tools.ts#L1809-L1917) | 109 | Ordinary native send, wake, credential preparation and prompt receipt |
 | [`mcp-server/boat-delegated-access-provider.ts:1–119`](../packages/mcp-server/src/boat-delegated-access-provider.ts#L1-L119) | 119 | Boat-specific delegated generation provider |
-| [`mcp-server/boat-delegated-access-script.ts:1–104`](../packages/mcp-server/src/boat-delegated-access-script.ts#L1-L104) | 104 | Boat-specific delegated generation control script |
-| [`mcp-server/boat-delegated-access-bridge.ts:1–34`](../packages/mcp-server/src/boat-delegated-access-bridge.ts#L1-L34) | 34 | Boat-specific MCP bridge install/scrub |
 | [`agent-runtime/main.ts:216–233`](../packages/agent-runtime/src/main.ts#L216-L233) | 18 | Legacy Modal generation-grant auth publication, alongside enrolled publication |
 | [`agent-runtime/main.ts:445–461`](../packages/agent-runtime/src/main.ts#L445-L461) | 17 | Legacy Modal HTTP journal upload |
 | [`agent-runtime/main.ts:603–610`](../packages/agent-runtime/src/main.ts#L603-L610) | 8 | Legacy Modal runner HTTP listener |
