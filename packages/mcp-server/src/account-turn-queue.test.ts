@@ -1417,8 +1417,9 @@ test.each(["modal", "boat", "docker"] as const)(
     const sent: string[] = [];
     worker.setDispatch(async (_, request) => {
       sent.push(request.request_id!);
-      await sql.query("update sandboxes set status='ready',stopped_at=null,lifecycle_generation=2 where id=$1", [
+      await sql.query("update sandboxes set status=$2,stopped_at=null,lifecycle_generation=2 where id=$1", [
         input.id,
+        docker ? "starting" : "ready",
       ]);
       if (docker) {
         await sql.query(
@@ -1429,8 +1430,8 @@ test.each(["modal", "boat", "docker"] as const)(
         );
         await sql.query(
           `insert into docker_host_jobs
-             (bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch,outcome)
-           values($1,1,$2,$3,$4,'resume',1,'failed')`,
+             (bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch,refused_resume_generation)
+           values($1,1,$2,$3,$4,'resume',1,2)`,
           [input.id, input.request_id, owner, host],
         );
       } else {
