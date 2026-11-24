@@ -2,6 +2,8 @@ import { lstat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Route } from "./http.ts";
 
+const ARTIFACT_DOWNLOAD_IDLE_SECONDS = 120;
+
 /** Public executable bytes only, deliberately separate from enrolment/model configuration. */
 export function createRuntimeArtifactRoute(
   directory: string | undefined,
@@ -19,8 +21,7 @@ export function createRuntimeArtifactRoute(
     try {
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink()) return new Response(null, { status: 404 });
-      // Match the runtime fetch budget so a stalled file transfer can outlive Bun's default idle window.
-      if (request.method === "GET") configureRequestTimeout?.(request, 120);
+      if (request.method === "GET") configureRequestTimeout?.(request, ARTIFACT_DOWNLOAD_IDLE_SECONDS);
       return new Response(request.method === "HEAD" ? null : Bun.file(file), {
         headers: {
           "content-type": "application/octet-stream",
