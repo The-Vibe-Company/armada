@@ -4,6 +4,7 @@ import type { DockerHostResources, DockerSandboxLimits } from "./docker-resource
 
 import type { SnapshotBaselineTool } from "./snapshot-baseline.ts";
 
+export const DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER = "x-armada-docker-host-machine-bootstrap";
 export const DOCKER_HOST_PREFER_STARTUP_HEADER = "x-armada-docker-host-prefer-startup";
 
 export interface DockerHostPollRequest {

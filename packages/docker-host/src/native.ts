@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/src/docker-host-protocol.ts";
 import {
+  DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
   DOCKER_HOST_PREFER_STARTUP_HEADER,
   type DockerHostPollRequest,
   type DockerHostPollResponse,
@@ -203,7 +204,11 @@ export function httpApi(
         "content-type": "application/json",
         [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
         ...(endpoint === "poll"
-          ? { "x-armada-docker-host-delete-physical": "1", "x-armada-docker-host-restore": "1" }
+          ? {
+              "x-armada-docker-host-delete-physical": "1",
+              "x-armada-docker-host-restore": "1",
+              [DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER]: "1",
+            }
           : {}),
         ...headers,
       },
