@@ -2280,3 +2280,50 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   expect(f.creates).toBe(creates);
   expect(f.log.filter((x) => x === "outputs")).toHaveLength(1);
 });
+
+test.each([
+  { exitCode: null, step: "close_stdin" },
+  { exitCode: 5, step: "read_result" },
+  { exitCode: 4, step: "missing directory" },
+])("Modal manifest reports $step without SDK or collector text", async ({ exitCode, step }) => {
+  const f = fixture();
+  const fork = await activeWorker(f);
+  const row = await f.store.get(fork.id);
+  const sandbox = await f.client.sandboxes.fromId(row.physicalId!);
+  const failure = Error("private SDK detail");
+  const warnings: unknown[] = [];
+  const warn = spyOn(console, "warn").mockImplementation((line) => warnings.push(JSON.parse(line)));
+  const exec = spyOn(sandbox, "exec").mockResolvedValue({
+    stdin: {
+      close: async () => {
+        if (exitCode === null) throw failure;
+      },
+    },
+    stdout: { readText: async () => "private collector detail" },
+    wait: async () => exitCode,
+  } as Awaited<ReturnType<Sandbox["exec"]>>);
+  try {
+    const result = f.provider.listOutputEntries!({ sandboxId: fork.id });
+    if (exitCode === null) await expect(result).rejects.toMatchObject({ code: "unknown" });
+    else
+      await expect(result).rejects.toMatchObject({
+        reason: exitCode === 4 ? "output_directory_missing" : "collector_failed",
+      });
+    expect(warnings).toEqual(
+      exitCode === 4
+        ? []
+        : [
+            {
+              event: "modal_output_collector_step_failed",
+              sandboxId: fork.id,
+              operation: "list_entries",
+              step,
+              ...(exitCode === null ? {} : { exitCode }),
+            },
+          ],
+    );
+  } finally {
+    exec.mockRestore();
+    warn.mockRestore();
+  }
+});

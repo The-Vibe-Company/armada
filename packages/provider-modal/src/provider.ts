@@ -4,6 +4,7 @@ import { HARNESSES, OUTPUT_MAX_READ_BYTES } from "@armada/core";
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
+  OutputCollectionError,
   outputEntryCollector,
   readCollectorChunk,
   readCollectorEntries,
@@ -34,6 +35,9 @@ import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation } from "./ssh.ts";
 import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
 import { scopeKey } from "./store.ts";
+
+type CollectorOperation = "list_entries" | "read_chunk" | "read_snapshot" | "probe_collector";
+const lastCollectorDiagnosticAt = new Map<string, number>();
 
 export type ModalPromptPhase =
   | "modal_app_lookup"
@@ -226,33 +230,59 @@ export function createModalProvider(options: ModalProviderOptions) {
   }
   async function collectOutputs<T>(
     { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
+    operation: CollectorOperation,
     command: string,
     read: (status: number | null, stdout: string) => T,
   ): Promise<T | null> {
+    async function check<R>(step: string, work: () => R | Promise<R>, exitCode?: number | null) {
+      try {
+        return await work();
+      } catch (error) {
+        if (
+          !signal?.aborted &&
+          !(error instanceof OutputCollectionError && error.reason === "output_directory_missing")
+        ) {
+          const key = JSON.stringify([operation, step, exitCode]);
+          const now = performance.now();
+          const previous = lastCollectorDiagnosticAt.get(key);
+          if (previous === undefined || now - previous >= 60_000) {
+            lastCollectorDiagnosticAt.set(key, now);
+            console.warn(
+              JSON.stringify({ event: "modal_output_collector_step_failed", sandboxId, operation, step, exitCode }),
+            );
+          }
+        }
+        throw error;
+      }
+    }
+
     signal?.throwIfAborted();
-    await bound();
+    await check("bind_app", bound);
     signal?.throwIfAborted();
-    const row = await store.get(sandboxId);
+    const row = await check("read_machine", () => store.get(sandboxId));
     signal?.throwIfAborted();
-    assertMachineSource(row);
+    await check("check_authority", () => assertMachineSource(row));
     if (row.golden || row.phase !== "active" || !row.physicalId) return null;
-    const sb = await physical(row, signal);
+    const sb = await check("resolve_machine", () => physical(row, signal));
     signal?.throwIfAborted();
-    const child = await sb.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", command], {
-      mode: "text",
-      env: {},
-      secrets: [],
-      timeoutMs: 10_000,
-      workdir: "/",
-      stderr: "ignore",
-    });
+    const child = await check("start_exec", () =>
+      sb.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", command], {
+        mode: "text",
+        env: {},
+        secrets: [],
+        timeoutMs: 10_000,
+        workdir: "/",
+        stderr: "ignore",
+      }),
+    );
     signal?.throwIfAborted();
-    const output = child.stdout.readText();
+    const output = check("read_stdout", () => child.stdout.readText());
     output.catch(() => {});
-    await child.stdin.close();
+    await check("close_stdin", () => child.stdin.close());
     signal?.throwIfAborted();
-    const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
-    return read(status, stdout);
+    const [status, stdout] = await abortable(Promise.all([check("wait_for_exit", () => child.wait()), output]), signal);
+    const exitCode = status !== null && Number.isInteger(status) && status >= 0 && status <= 255 ? status : null;
+    return check("read_result", () => read(status, stdout), exitCode);
   }
 
   const requiresRuntime = async () => {
@@ -304,18 +334,20 @@ export function createModalProvider(options: ModalProviderOptions) {
     }),
     outputReadBytes: OUTPUT_MAX_READ_BYTES,
     listOutputEntries(request) {
-      return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
+      return collectOutputs(request, "list_entries", outputEntryCollector(null), readCollectorEntries);
     },
     readOutputChunk(request) {
-      return collectOutputs(request, outputEntryCollector(request.chunk), (status, stdout) =>
+      return collectOutputs(request, "read_chunk", outputEntryCollector(request.chunk), (status, stdout) =>
         readCollectorChunk(status, stdout, request.chunk),
       );
     },
     readOutputs(request) {
-      return collectOutputs(request, OUTPUT_COLLECTOR, readCollectorResult);
+      return collectOutputs(request, "read_snapshot", OUTPUT_COLLECTOR, readCollectorResult);
     },
     async probeOutputs(request) {
-      return (await collectOutputs(request, OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null;
+      return (
+        (await collectOutputs(request, "probe_collector", OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null
+      );
     },
 
     ...inspection,
@@ -536,6 +568,7 @@ export function createModalProvider(options: ModalProviderOptions) {
             try {
               return await value(...args);
             } catch (e) {
+              if (e instanceof OutputCollectionError) throw e;
               throw modalError(e);
             }
           }
