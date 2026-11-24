@@ -404,7 +404,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const githubRefresh = args.includes("--github-refresh");
   const expiry = args.includes("--expiry");
   const realModel = args.includes("--real-model");
-  let realModelCases: { item: RealModelCase; source: RealModelLaunchSource }[] = [];
+  let realModelCases: { item: RealModelCase; source: RealModelLaunchSource; advisory?: true }[] = [];
   try {
     if (env.ARMADA_SMOKE !== "create_real_compute") fail("compute_opt_in_required");
     if (
@@ -491,7 +491,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         fail("invalid_configuration");
       realModelCases = [
         { item: modal[0], source: { golden: modal[0].golden, connections: [] } },
-        { item: host, source: { hostId: host.hostId } },
+        // Advisory until #4033 is fixed (owner decision 2026-11-24); the fix removes this flag.
+        { item: host, source: { hostId: host.hostId }, advisory: true },
       ];
     }
     for (const item of modalCases) {
@@ -1064,14 +1065,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const accountSlot = createKeyedQueue();
   // Owner decision 2026-11-24: the Docker real-model lane is advisory until #4033 is fixed. It still runs
   // and reports every step; a failure adds an advisory receipt instead of failing the run. Revert with #4033.
-  const modelUnits = realModelCases.map(({ item, source }, index) =>
+  const modelUnits = realModelCases.map(({ item, source, advisory }, index) =>
     accountSlot(item.modelAccountId.toLowerCase(), () => realModelUnit(index, item, source)).then((passed) => {
-      if (passed || item.provider !== "docker") return passed;
+      if (passed || !advisory) return passed;
       io.out(
         JSON.stringify({
           case: index,
           lane: "real-model",
-          provider: "docker",
+          provider: item.provider,
           step: "real_model_advisory",
           issue: 4033,
         }),
