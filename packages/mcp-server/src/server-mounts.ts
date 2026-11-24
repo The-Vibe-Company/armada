@@ -81,7 +81,7 @@ export const runtimeMounts: MountFactory = (services, configureRequestTimeout) =
     createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, configureRequestTimeout),
     ...(dockerArtifactSet ? [dockerArtifactSet] : []),
     runtimeEnrolments.route,
-    createRuntimeProgress(runtimeEnrolments),
+    createRuntimeProgress(runtimeEnrolments, config.encryptionKey),
     createRuntimeModelAccess(sql, config.encryptionKey, modelAuth.broker),
     runtimeEvents.route,
     langfuse.route(authenticate(services)),

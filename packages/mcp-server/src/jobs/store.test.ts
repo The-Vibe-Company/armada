@@ -41,6 +41,7 @@ import { createRuntimeFollowup } from "../runtime-followup.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
+import { createRuntimeProgress } from "../runtime-progress.ts";
 import { runtimeConfigurationWithVariables } from "../runtime-readable-variables.ts";
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
@@ -60,6 +61,7 @@ import {
   type ModalLaunchAdmission,
   modalLaunchTicketGuard,
   replayModalLaunch,
+  runFailedModalLaunchDelete,
   runModalLaunch,
 } from "./modal-launch.ts";
 import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
@@ -458,140 +460,175 @@ async function modalAdmissionFixture(visibility: "org" | "private" = "private") 
   return { ...f, input };
 }
 
-test.each(["lost reply", "refusal", "bootstrap failure"] as const)("Boat successor after %s", async (outcome) => {
-  const { db, sql, input, people } = await modalAdmissionFixture();
-  const golden = (
-    await db.query<{ id: string; provider_snapshot_id: string }>(
-      "select id,provider_snapshot_id from goldens where owner_id=$1 and provider='boat'",
-      [people.owner],
-    )
-  ).rows[0]!;
-  const account = (
-    await db.query<{ id: string; version: number }>(
-      "select id,version from credentials where owner_id=$1 and kind='claude_oauth'",
-      [people.owner],
-    )
-  ).rows[0]!;
-  const {
-    sandbox: { id: sandboxId },
-  } = await admitModalLaunch(sql, ENCRYPTION_KEY, {
-    ...input,
-    boat: { scope: "user", backendId: "account" },
-    sandbox: {
-      ...input.sandbox,
-      goldenId: golden.id,
-      credentialId: account.id,
-      credentialVersion: account.version,
-      harness: "claude",
-      model: "claude-sonnet-4-6",
-    },
-    allocation: { ...input.allocation, source: { kind: "snapshot", ref: golden.provider_snapshot_id } },
-  });
-  const jobs = createJobsStore(sql, ENCRYPTION_KEY);
-  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-  const { key, scope } = await resolveBoatKey(createSqlVaultStore(sql), ENCRYPTION_KEY, {
-    userId: people.owner,
-    orgId: people.org,
-    visibility: "private",
-  });
-  const boatKeyDigest = await sha256Hex(JSON.stringify([scope, key]));
-  const machine = { sandboxId, generation: 1, machineId: "boat-worker" };
-  const unsupported = async () => {
-    throw Error("Unexpected lifecycle operation");
-  };
-  let allocations = 0;
-  let delayedTicket: string | undefined;
-  async function run() {
-    const owner = crypto.randomUUID();
-    const job = (await jobs.claim("launch", owner, 30, 1))!;
-    const context = { signal: new AbortController().signal, canDispatch: async () => true };
-    const plan = () => ({
-      boat: boatKeyDigest,
-      bindingRef: job.id,
-      allocation: { ...input.allocation, size: null },
-      canUseModalCredential: async () => true,
-      prepareRuntimeTicket: async () => ({
-        ownerId: people.owner,
-        configuration: { grant: { expiresAt: 1 } },
-        serverUrl: "https://armada.test",
-        artifact: { sha256: "", bytes: 1 },
-        cacheDir: "/fixture",
-        lockPrerequisites: async () => {},
-        checkAccountPin: async () => {},
-      }),
-      machine: (ticket: (request: typeof machine, expiry: number) => Promise<{ enrolmentToken: string } | null>) => ({
-        async create() {
-          allocations++;
-          if (outcome === "refusal")
-            throw new ProviderError({
-              provider: "boat",
-              status: 402,
-              code: "payment_required",
-              retryable: false,
-              message: "Fixture",
-            });
-          throw Error("Lost Boat create reply.");
-        },
-        async observe() {
-          return allocations
-            ? ({ kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const)
-            : ({ kind: "absent" } as const);
-        },
-        async bootstrap(request: typeof machine) {
-          const lifecycle = createSandboxLifecycle(sql, unsupported);
-          expect(await lifecycle.reconcileOne(new AbortController().signal)).toBe(false);
-          const configuration = await ticket(request, Date.now() + 3_600_000);
-          delayedTicket = configuration?.enrolmentToken;
-        },
-        resume: unsupported,
-        stop: unsupported,
-        delete: unsupported,
-      }),
+test.each(["lost reply", "refusal", "bootstrap failure", "enrolled failure", "completed failure"] as const)(
+  "Boat successor after %s",
+  async (outcome) => {
+    const { db, sql, input, people } = await modalAdmissionFixture();
+    const golden = (
+      await db.query<{ id: string; provider_snapshot_id: string }>(
+        "select id,provider_snapshot_id from goldens where owner_id=$1 and provider='boat'",
+        [people.owner],
+      )
+    ).rows[0]!;
+    const account = (
+      await db.query<{ id: string; version: number }>(
+        "select id,version from credentials where owner_id=$1 and kind='claude_oauth'",
+        [people.owner],
+      )
+    ).rows[0]!;
+    const {
+      sandbox: { id: sandboxId },
+    } = await admitModalLaunch(sql, ENCRYPTION_KEY, {
+      ...input,
+      boat: { scope: "user", backendId: "account" },
+      sandbox: {
+        ...input.sandbox,
+        goldenId: golden.id,
+        credentialId: account.id,
+        credentialVersion: account.version,
+        harness: "claude",
+        model: "claude-sonnet-4-6",
+      },
+      allocation: { ...input.allocation, source: { kind: "snapshot", ref: golden.provider_snapshot_id } },
     });
-    await jobs.complete(job, owner, await runModalLaunch(sql, ENCRYPTION_KEY, job, context, plan, "boat"));
-  }
-  const vacate = () =>
-    db.query(
-      "update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1 and kind='launch'",
-      [sandboxId],
-    );
-  if (outcome === "refusal") {
-    expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeDefined();
+    const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+    const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+    const { key, scope } = await resolveBoatKey(createSqlVaultStore(sql), ENCRYPTION_KEY, {
+      userId: people.owner,
+      orgId: people.org,
+      visibility: "private",
+    });
+    const boatKeyDigest = await sha256Hex(JSON.stringify([scope, key]));
+    const machine = { sandboxId, generation: 1, machineId: "boat-worker" };
+    const unsupported = async () => {
+      throw Error("Unexpected lifecycle operation");
+    };
+    const context = { signal: new AbortController().signal, canDispatch: async () => true };
+    let allocations = 0;
+    let delayedTicket: string | undefined;
+    async function run() {
+      const owner = crypto.randomUUID();
+      const job = (await jobs.claim("launch", owner, 30, 1))!;
+      const plan = () => ({
+        boat: boatKeyDigest,
+        bindingRef: job.id,
+        allocation: { ...input.allocation, size: null },
+        canUseModalCredential: async () => true,
+        prepareRuntimeTicket: async () => ({
+          ownerId: people.owner,
+          configuration: { grant: { expiresAt: 1 } },
+          serverUrl: "https://armada.test",
+          artifact: { sha256: "", bytes: 1 },
+          cacheDir: "/fixture",
+          lockPrerequisites: async () => {},
+          checkAccountPin: async () => {},
+        }),
+        machine: (ticket: (request: typeof machine, expiry: number) => Promise<{ enrolmentToken: string } | null>) => ({
+          async create() {
+            allocations++;
+            if (outcome === "refusal")
+              throw new ProviderError({
+                provider: "boat",
+                status: 402,
+                code: "payment_required",
+                retryable: false,
+                message: "Fixture",
+              });
+            throw Error("Lost Boat create reply.");
+          },
+          async observe() {
+            return allocations
+              ? ({ kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const)
+              : ({ kind: "absent" } as const);
+          },
+          async bootstrap(request: typeof machine) {
+            const lifecycle = createSandboxLifecycle(sql, unsupported);
+            expect(await lifecycle.reconcileOne(new AbortController().signal)).toBe(false);
+            const configuration = await ticket(request, Date.now() + 3_600_000);
+            delayedTicket = configuration?.enrolmentToken;
+          },
+          resume: unsupported,
+          stop: unsupported,
+          delete: unsupported,
+        }),
+      });
+      await jobs.complete(job, owner, await runModalLaunch(sql, ENCRYPTION_KEY, job, context, plan, "boat"));
+    }
+    const vacate = () =>
+      db.query(
+        "update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1 and kind='launch'",
+        [sandboxId],
+      );
+    if (outcome === "refusal") {
+      expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeDefined();
+      await vacate();
+      await run();
+      expect((await db.query("select status from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+        { status: "failed" },
+      ]);
+      return;
+    }
+    await expect(run()).rejects.toThrow("Lost Boat create reply.");
     await vacate();
     await run();
-    expect((await db.query("select status from sandboxes where id=$1", [sandboxId])).rows).toEqual([
-      { status: "failed" },
+    if (!delayedTicket) throw Error("Boat bootstrap did not receive a ticket.");
+    if (outcome === "bootstrap failure") {
+      expect(await requestBoatLaunchFailure(sql, sandboxId, "1")).toBe(true);
+      await db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
+      await run();
+      expect((await db.query("select kind from jobs where sandbox_id=$1 and kind='delete'", [sandboxId])).rows).toEqual(
+        [{ kind: "delete" }],
+      );
+      const data = createSqlData(sql)({
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" }],
+        via: "service",
+      });
+      await expect(data.sandboxes.assertDeletionAllowed!(sandboxId)).rejects.toThrow("exit is unconfirmed");
+      return;
+    }
+    await db.query("update credentials set expires_at=now() where id=$1", [account.id]);
+    await expect(enrolments.enrol(delayedTicket)).rejects.toThrow("runtime_enrolment_denied");
+    await db.query("update credentials set expires_at=null where id=$1", [account.id]);
+    const session = await enrolments.enrol(delayedTicket);
+    if (outcome === "enrolled failure" || outcome === "completed failure") {
+      await db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
+      if (outcome === "completed failure") await run();
+      const request = new Request("https://armada.test/api/runtime/progress", {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+        body: JSON.stringify({ stage: "runtime_failed" }),
+      });
+      const report = await createRuntimeProgress(enrolments, ENCRYPTION_KEY)(request);
+      expect(report?.status).toBe(200);
+      const owner = crypto.randomUUID();
+      const cleanup = (await jobs.claim("delete", owner, 30, 1))!;
+      let stops = 0;
+      const result = await runFailedModalLaunchDelete(sql, cleanup, context, undefined, async (authorize) => ({
+        create: unsupported,
+        resume: unsupported,
+        stop: unsupported,
+        bootstrap: unsupported,
+        observe: async () => ({ kind: "present", machine, phase: "running" }),
+        async delete(target) {
+          await authorize();
+          expect(target).toMatchObject({ ...machine, scope: "physical-only" });
+          stops++;
+        },
+      }));
+      await jobs.complete(cleanup, owner, result);
+      expect((await db.query("select stopped_at from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+        { stopped_at: expect.anything() },
+      ]);
+      expect(stops).toBe(1);
+      return;
+    }
+    expect((await db.query("select status,provider_sandbox_id from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+      { status: "ready", provider_sandbox_id: machine.machineId },
     ]);
-    return;
-  }
-  await expect(run()).rejects.toThrow("Lost Boat create reply.");
-  await vacate();
-  await run();
-  if (!delayedTicket) throw Error("Boat bootstrap did not receive a ticket.");
-  if (outcome === "bootstrap failure") {
-    expect(await requestBoatLaunchFailure(sql, sandboxId, "1")).toBe(true);
-    await db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
-    await run();
-    expect((await db.query("select kind from jobs where sandbox_id=$1 and kind='delete'", [sandboxId])).rows).toEqual([
-      { kind: "delete" },
-    ]);
-    const data = createSqlData(sql)({
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-      via: "service",
-    });
-    await expect(data.sandboxes.assertDeletionAllowed!(sandboxId)).rejects.toThrow("exit is unconfirmed");
-    return;
-  }
-  await db.query("update credentials set expires_at=now() where id=$1", [account.id]);
-  await expect(enrolments.enrol(delayedTicket)).rejects.toThrow("runtime_enrolment_denied");
-  await db.query("update credentials set expires_at=null where id=$1", [account.id]);
-  await enrolments.enrol(delayedTicket);
-  expect((await db.query("select status,provider_sandbox_id from sandboxes where id=$1", [sandboxId])).rows).toEqual([
-    { status: "ready", provider_sandbox_id: machine.machineId },
-  ]);
-  expect(allocations).toBe(1);
-});
+    expect(allocations).toBe(1);
+  },
+);
 
 test("Modal backfill preserves accepted, refused and unresolved ordinary keys without scheduling work", async () => {
   const { db, sql, input, store } = await modalAdmissionFixture();

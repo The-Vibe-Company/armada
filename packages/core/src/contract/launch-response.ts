@@ -12,6 +12,7 @@ export const modalLaunchReceipt = z.strictObject({
 export type ModalLaunchReceipt = z.infer<typeof modalLaunchReceipt>;
 
 const admissionReceipts = new Map([
+  ["boat", modalLaunchReceipt],
   ["modal", modalLaunchReceipt],
   ["docker", modalLaunchReceipt],
 ]);

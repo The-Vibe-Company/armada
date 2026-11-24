@@ -30,8 +30,7 @@ const mcpLaunchArguments = z.looseObject({}).meta({
 
 export const mcpLaunchContract = {
   title: "Launch an agent",
-  description:
-    "Admits a Boat or Modal launch and returns its sandbox ID and status. The worker starts the optional prompt after runtime enrolment. For scoped tokens, omit org or use the scoped org UUID.",
+  description: launch.mcpDescription,
   input: mcpLaunchArguments,
   output: modalLaunchReceipt,
 };

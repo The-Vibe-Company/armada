@@ -6,6 +6,7 @@ import {
   RUNTIME_STARTUP_FAILURES,
 } from "../../core/src/runtime-startup-failure.ts";
 import type { Route } from "./http.ts";
+import { settleEnrolledBoatLaunchFailure } from "./jobs/modal-launch.ts";
 import { recordLaunchStage } from "./launch-stage-record.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeSessionScope } from "./runtime-enrolment.ts";
@@ -42,7 +43,10 @@ export function logRuntimeStage(scope: RuntimeSessionScope, stage: string, reaso
   }
 }
 
-export function createRuntimeProgress(authority: ReturnType<typeof createRuntimeEnrolments>): Route {
+export function createRuntimeProgress(
+  authority: ReturnType<typeof createRuntimeEnrolments>,
+  encryptionKey?: string,
+): Route {
   return async (request) => {
     if (new URL(request.url).pathname !== "/api/runtime/progress") return null;
     const headers = { "cache-control": "no-store" };
@@ -104,6 +108,12 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
         if (stage === "bootstrap_failed") message = "Armada runtime bootstrap failed.";
         if (isRuntimeStartupFailure(reason)) message = RUNTIME_STARTUP_FAILURES[reason];
         if (await requestBoatLaunchFailure(tx, scope.sandboxId, generation)) return;
+        if (
+          stage === "runtime_failed" &&
+          encryptionKey &&
+          (await settleEnrolledBoatLaunchFailure(tx, encryptionKey, scope.sandboxId, generation))
+        )
+          return;
         const result = await recordRuntimeStartupFailure(tx, scope.sandboxId, generation, code, message);
         if (result.kind === "conflict") throw new RuntimeEnrolmentDenied();
       };

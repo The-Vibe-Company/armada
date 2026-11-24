@@ -1139,6 +1139,7 @@ export async function runModalLaunch(
                   request.machineId,
                   handoff,
                   "boat" in plan ? plan.boat : undefined,
+                  "boat" in plan ? boatLaunchPayload.parse(job.payload).boat : undefined,
                 ))
               )
                 throw new ModalBootstrapRefused("Modal launch changed before handoff.");
@@ -1497,6 +1498,45 @@ export function createModalLaunchCleanupJob(sql: Sql, openMachine: OpenModalMach
   } satisfies JobKind;
 }
 
+export async function settleEnrolledBoatLaunchFailure(
+  tx: Sql,
+  encryptionKey: string,
+  sandboxId: string,
+  generation: string,
+) {
+  const {
+    rows: [target],
+  } = await tx.query<{ id: string; org_id: string; machine_id: string; boat: BoatAuthority }>(
+    `select j.id,s.org_id,s.provider_sandbox_id as machine_id,j.outcome->'boat_authority' as boat
+     from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+       and j.org_id=s.org_id and j.request_owner_id=s.owner_id and j.kind='launch'
+     where s.id=$1 and s.lifecycle_generation=$2 and s.boat_runtime and s.status in ('ready','running')
+       and j.outcome ? 'boat_authority' and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id`,
+    [sandboxId, generation],
+  );
+  if (!target) return false;
+  const failed = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: Number(generation),
+    fromStates: ["ready", "running"],
+    toState: "failed",
+    actor: "lifecycle_runner",
+    code: MODAL_LAUNCH_FAILURE,
+    effects: [],
+  });
+  if (failed.kind !== "applied") throw new RuntimeEnrolmentDenied();
+  await createJobsStore(tx, encryptionKey).enqueue(
+    "delete",
+    sandboxId,
+    Number(generation),
+    "modal-launch-failure",
+    { launchJobId: target.id, machineId: target.machine_id, boat: target.boat },
+    { orgId: target.org_id, deadline: new Date(Date.now() + DELETE_DISPATCH_BUDGET_MS), maxAttempts: 3 },
+    tx,
+  );
+  return true;
+}
+
 export async function runFailedModalLaunchDelete(
   sql: Sql,
   job: Job,
@@ -1529,19 +1569,20 @@ export async function runFailedModalLaunchDelete(
       `select launch.outcome #>> '{evidence,modal_machine,entry,phase}' = 'deleted' as deleted
        from public.sandboxes s
        join public.jobs cleanup on cleanup.id=$2 and cleanup.org_id=s.org_id
-       join public.jobs launch on launch.id=$3 and launch.kind='launch' and launch.state='failed'
+       join public.jobs launch on launch.id=$3 and launch.kind='launch'
          and launch.sandbox_id=s.id and launch.generation=s.lifecycle_generation
          and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id
        where s.id=$1 and s.provider::text=$6 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status='failed' and s.deleted_at is null and s.stop_requested_at is null
-         and launch.outcome->>'reason'=$5
-         and (s.provider_sandbox_id is null or s.provider_sandbox_id=$4)
-         and (
+         and s.status_reason=$5 and (s.provider_sandbox_id is null or s.provider_sandbox_id=$4)
+         and (($6='boat' and launch.outcome ? 'boat_authority'
+               and launch.outcome #>> '{modal_machine,entry,machineId}'=$4)
+           or (launch.state='failed' and launch.outcome->>'reason'=$5 and (
            ($4::text is null and launch.outcome #> '{evidence,modal_machine}' is null)
            or (launch.outcome #>> '{evidence,modal_machine,entry,operation}'='create'
              and (launch.outcome #>> '{evidence,modal_machine,entry,machineId}'=$4
                or (launch.outcome #>> '{evidence,modal_machine,entry,phase}'='creating' and $4 is not null)))
-         )`,
+         )))`,
       [sandboxId, job.id, launchJobId, machineId, MODAL_LAUNCH_FAILURE, openBoat ? "boat" : "modal"],
     );
     return rows[0];

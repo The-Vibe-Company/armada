@@ -154,11 +154,12 @@ export async function recordModalBootstrapTicket(
   machineId: string,
   handoff: ModalLaunchHandoff | undefined,
   boatKeyDigest?: string,
+  boatAuthority?: { scope: string; backendId: string },
 ) {
   const sealed = await encryptSecret(token, encryptionKey);
   const { rows } = await tx.query(
     `update public.jobs set outcome=outcome ||
-       jsonb_strip_nulls(jsonb_build_object('bootstrap_ticket_enc',$2::text,'boat_authority_sha256',$6::text,
+       jsonb_strip_nulls(jsonb_build_object('bootstrap_ticket_enc',$2::text,'boat_authority_sha256',$6::text,'boat_authority',$7::jsonb,
          'modal_handoff',coalesce(outcome->'modal_handoff',$3::jsonb)))
      where id=$1 and lease_epoch=$4 and lease_until>clock_timestamp()
        and outcome #>> '{modal_machine,entry,machineId}'=$5
@@ -172,6 +173,7 @@ export async function recordModalBootstrapTicket(
       job.lease_epoch,
       machineId,
       boatKeyDigest ?? null,
+      boatAuthority ? JSON.stringify(boatAuthority) : null,
     ],
   );
   return rows.length === 1;
@@ -677,7 +679,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                                 then jsonb_build_object('modal_handoff', outcome->'modal_handoff')
                                 else '{}'::jsonb end ||
                            case when $5 = 'queued' and outcome ? 'boat_authority_sha256'
-                                then jsonb_build_object('boat_authority_sha256', outcome->'boat_authority_sha256')
+                                then jsonb_build_object('boat_authority_sha256', outcome->'boat_authority_sha256', 'boat_authority', outcome->'boat_authority')
                                 else '{}'::jsonb end
                          when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
                            then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' - 'boat_authority_sha256'
