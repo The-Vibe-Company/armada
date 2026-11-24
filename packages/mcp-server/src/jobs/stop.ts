@@ -21,7 +21,6 @@ export interface DockerStopIntent {
   installationId: string;
   captureUntil: number;
 }
-
 export function createStopJob(sql: Sql, key: string, readOutputs = createDockerOutputReader(sql, key), now = Date.now) {
   const hosts = createDockerHostStore(sql, key);
   const jobs = createJobsStore(sql, key);
