@@ -11,6 +11,8 @@ import { printOptionalResourceAdvice } from "../resource-advice.ts";
 import { createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
+const agentChoices = HARNESSES.join("|");
+
 type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
 
 const run: Command["run"] = async (argv, { io, deps, auth }) => {
@@ -132,9 +134,9 @@ export default {
   name: "new",
   summary: "Launch an agent sandbox",
   usage: {
-    "docker-launch": `  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
+    "docker-launch": `  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent ${agentChoices} [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.`,
-    new: `  armada new <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
+    new: `  armada new <snapshot> --agent ${agentChoices} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
@@ -147,7 +149,7 @@ export default {
                                            Defaults:
                                            ${modelDefaults()}`,
   },
-  help: `Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
+  help: `Usage: armada new <snapshot> --provider boat|modal --agent ${agentChoices} ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
 Find snapshots with armada snapshot ls; select an organization with --org or armada login --org NAME|UUID.
@@ -167,7 +169,7 @@ Boat/Modal options:
   --org <org> --json                     Organization selector and machine output.
 
 Docker form:
-  armada new [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
+  armada new [prompt] --provider docker --agent ${agentChoices} [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
     [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
