@@ -11,6 +11,7 @@ import {
   SANDBOX_PROVIDERS,
 } from "@armada/core";
 import type { ControlOptions } from "./control-options.ts";
+import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 
 /**
  * `POST /api/v1/launch/options`: what a launch may choose, read from the server's own catalogs so an API-only client
@@ -130,8 +131,8 @@ export function launchProviderOptions(
       enabled: true,
       launchSources: ["golden"],
       harnesses: boatRuntime ? [...HARNESSES] : ["claude", "codex"],
-      capabilities: { ...supported },
-      unsupportedReasons: {},
+      capabilities: { ...supported, launch: boatRuntime },
+      unsupportedReasons: boatRuntime ? {} : { launch: "Armada runtime launch is unavailable for Boat." },
     },
     {
       id: "modal",
@@ -171,12 +172,13 @@ export type LaunchDiscoveryOptions = Pick<
 >;
 
 export function readLaunchOptions(options: LaunchDiscoveryOptions) {
+  const explicitBoatRuntime = Boolean(options.boatRuntimeLaunch && options.runtimeHostFor);
+  const boatLaunch = Boolean(
+    options.launch?.runtime || options.launch?.boatRuntime || goldenRuntimePlacement(options.launch ?? {}, "boat"),
+  );
   return {
     ...launchOptions,
-    providers: launchProviderOptions(
-      options.docker,
-      Boolean(options.launch?.boatRuntimeDefault || options.launch?.boatEndpointRuntime),
-    ),
+    providers: launchProviderOptions(options.docker, boatLaunch),
     modalRuntime: {
       defaultPath: "runtime",
       enabled: Boolean(options.modalRuntimeLaunch),
@@ -208,7 +210,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
           : 0,
     },
     boatRuntime: {
-      defaultPath: options.launch?.boatRuntimeDefault ? "runtime" : "native",
+      ...(boatLaunch ? { defaultPath: "runtime" as const } : {}),
       diagnosticsVersion: 1,
       followupVersion: options.runtimeSend ? 1 : 0,
       checkpointVersion: options.runtimeCheckpoint ? 1 : 0,
@@ -228,7 +230,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
         options.runtimeSend
           ? 1
           : 0,
-      enabled: Boolean(options.boatRuntimeLaunch && options.runtimeHostFor),
+      enabled: explicitBoatRuntime,
     },
   } satisfies LaunchOptionsResponse;
 }

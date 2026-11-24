@@ -21,7 +21,9 @@ import { resetMigratedDatabaseRows } from "../../../scripts/test-support/migrate
 import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 import { ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
@@ -504,9 +506,18 @@ test("changed variable, removed membership and invalid authority overrides fail 
 test("Template REST validates authoring and launch requests", async () => {
   const f = await fixture();
   try {
+    const store = createSqlVaultStore(f.sql);
     const options: ControlOptions = {
+      launch: {
+        boatEndpointRuntime: {
+          policy: enrolledLaunchPolicy(f.sql),
+          provider: async () => f.provider,
+          credentials: launchCredentials(store, ENCRYPTION_KEY),
+          connections: { async validate() {}, async bind() {} },
+        },
+      },
       templates: f.service,
-      store: createSqlVaultStore(f.sql),
+      store,
       authStore: createSqlAuthStore(f.sql),
       encryptionKey: ENCRYPTION_KEY,
       data: createSqlData(f.sql),

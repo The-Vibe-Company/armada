@@ -27,6 +27,7 @@ import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -277,12 +278,17 @@ test("own children support independent target receipts while unrelated children 
       async launch(op, selected) {
         return launchSandboxChild({
           sql,
+          runtime: enrolledLaunchPolicy(sql),
           provider: boat.provider,
           operation: op,
           selection: selected,
           stores: {
             goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlSandboxStore(sql),
+            sandboxes: createSqlData(sql)({
+              via: "service",
+              userId: p.owner,
+              orgs: [{ orgId: p.org, role: "member" }],
+            }).sandboxes,
             credentials: {
               async resolve() {
                 throw Error("legacy credential fallback forbidden");
@@ -760,6 +766,7 @@ test("revocation after snapshot admission releases a child allocation that never
       async launch(operation, selected) {
         return launchSandboxChild({
           sql,
+          runtime: enrolledLaunchPolicy(sql),
           provider: boat.provider,
           operation,
           selection: selected,
@@ -813,6 +820,7 @@ test("missing actual named-account schema fails before fork without an uncertain
       async launch(operation, selected) {
         return launchSandboxChild({
           sql,
+          runtime: enrolledLaunchPolicy(sql),
           provider: boat.provider,
           operation,
           selection: selected,
@@ -1085,12 +1093,17 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       async launch(op, chosen) {
         return launchSandboxChild({
           sql,
+          runtime: enrolledLaunchPolicy(sql),
           provider: boat.provider,
           operation: op,
           selection: chosen,
           stores: {
             goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlSandboxStore(sql),
+            sandboxes: createSqlData(sql)({
+              via: "service",
+              userId: p.owner,
+              orgs: [{ orgId: p.org, role: "member" }],
+            }).sandboxes,
             credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
           },
           namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
@@ -1227,7 +1240,6 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     expect(boat.forks).toHaveLength(1);
     for (const [method, body, key] of [
       ["message", { text: "continue the same ticket" }, "mcp-child-message"],
-      ["extend", { ttlSeconds: 60 }, "api-child-extend"],
       ["stop", {}, "api-child-stop"],
     ] as const) {
       const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
@@ -1301,23 +1313,13 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
 });
 
 test("registered failed child with confirmed stopped compute releases explicit capacity", async () => {
-  const { close, sql, id, authority, token, selection } = await fixture();
+  const { close, sql, p, id, authority, token, selection } = await fixture();
   try {
     await sql.query(
       "insert into orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,1) on conflict(orchestrator_id) do update set max_active_children=1",
       [id],
     );
     const boat = fakeBoat();
-    const failedProvider = new Proxy(boat.provider, {
-      get(target, key) {
-        if (key === "exec")
-          return async () => {
-            throw Error("synthetic repository preparation failure");
-          };
-        const value = Reflect.get(target, key);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
     let executionCalls = 0;
     const children = createSandboxChildren(sql, authority, {
       async launch(op, chosen) {
@@ -1327,12 +1329,28 @@ test("registered failed child with confirmed stopped compute releases explicit c
         }
         return launchSandboxChild({
           sql,
-          provider: failedProvider,
+          runtime: {
+            async start(input) {
+              const agent = await enrolledLaunchPolicy(sql).start(input);
+              input.onEnrolled?.(agent.epoch);
+              return {
+                ...agent,
+                async prepareWorkspace() {
+                  throw Error("synthetic repository preparation failure");
+                },
+              };
+            },
+          },
+          provider: boat.provider,
           operation: op,
           selection: chosen,
           stores: {
             goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlSandboxStore(sql),
+            sandboxes: createSqlData(sql)({
+              via: "service",
+              userId: p.owner,
+              orgs: [{ orgId: p.org, role: "member" }],
+            }).sandboxes,
             credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
           },
           namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
@@ -1623,18 +1641,26 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
   }
 });
 
-test.each(["golden lookup failure", "placement refusal", "parent revocation during configuration"] as const)(
-  "scoped Modal launch fences host dispatch after %s",
+test.each(["golden lookup failure", "placement refusal", "config revocation", "MCP revocation"] as const)(
+  "scoped Modal launch fences host dispatch and configuration after %s",
   async (scenario) => {
     const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
     try {
       if (scenario === "golden lookup failure") {
         await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
       }
-      const preallocationRefused = scenario !== "parent revocation during configuration";
+      const preallocationRefused = scenario === "golden lookup failure" || scenario === "placement refusal";
       const fake = fakeBoat();
       const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
       let bootstraps = 0;
+      const configureMcp = mock(() => {});
+      const prepareMcp: NonNullable<
+        NonNullable<Parameters<typeof launchSandboxChild>[0]["stores"]["connections"]>["prepare"]
+      > = async (_host, _sandbox, _actor, _signal, assertClaim?: (tx: Sql) => Promise<void>) => {
+        await authority.revoke(id);
+        if (assertClaim) await sql.transaction!(assertClaim);
+        configureMcp();
+      };
       const host = {
         ...fake.provider,
         id: "modal" as const,
@@ -1656,9 +1682,10 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
               return host;
             },
             credentials,
-            connections: { async validate() {}, async bind() {} },
+            connections: { async validate() {}, async bind() {}, prepare: prepareMcp },
             policy: {
               async start(input) {
+                if (scenario === "MCP revocation") return enrolledLaunchPolicy(sql).start(input);
                 await authority.revoke(id);
                 await (input.host as typeof host).startRuntime();
                 throw Error("Revoked parent should have prevented bootstrap");
@@ -1709,6 +1736,7 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
       }
       expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
       expect(bootstraps).toBe(0);
+      expect(configureMcp).not.toHaveBeenCalled();
     } finally {
       await close();
     }

@@ -52,11 +52,12 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
-import { createObservedBoatProvider } from "./observed-boat.ts";
+import { createObservedBoatProvider, withBoatManagementIdentity } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
+import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
@@ -273,16 +274,14 @@ export async function createServerServices(env: Record<string, string | undefine
       policy: runtimeLaunch,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
-      provider: async (actor, golden: GoldenRecord & { sourceGoldenVisibility?: GoldenRecord["visibility"] }) =>
-        runtimeHostFor(
-          (
-            await resolveBoatKey(store, config.encryptionKey, {
-              userId: actor.userId,
-              orgId: actor.orgId,
-              visibility: golden.sourceGoldenVisibility ?? golden.visibility,
-            })
-          ).key,
-        ),
+      provider: async (actor, golden: GoldenRecord & { sourceGoldenVisibility?: GoldenRecord["visibility"] }) => {
+        const { key, scope } = await resolveBoatKey(store, config.encryptionKey, {
+          userId: actor.userId,
+          orgId: actor.orgId,
+          visibility: golden.sourceGoldenVisibility ?? golden.visibility,
+        });
+        return withBoatManagementIdentity(runtimeHostFor(key), scope, scope === "org" ? actor.orgId : actor.userId);
+      },
     };
     if (config.boatAgentPath === "runtime") launch.boatRuntimeDefault = launch.boatEndpointRuntime;
   }
@@ -546,8 +545,7 @@ export async function createServerServices(env: Record<string, string | undefine
     credentials,
     runtimeSend,
     runtimeCheckpoint,
-    runtimePlacements: { boat: launch.boatRuntimeDefault, modal: launch.modalRuntimeDefault },
-    boatEndpointRuntime: launch.boatEndpointRuntime,
+    runtimePlacements: { boat: goldenRuntimePlacement(launch, "boat"), modal: launch.modalRuntimeDefault },
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,

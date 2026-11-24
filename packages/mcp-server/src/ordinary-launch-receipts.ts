@@ -30,7 +30,23 @@ interface Receipt {
 
 /** Atomic, fail-closed admission. An unfinished receipt is never dispatched again. */
 export function createOrdinaryLaunchReceipts(sql: Sql) {
+  async function replay<T>(actor: Scope, key: string, payload: unknown) {
+    const { rows } = await sql.query<Receipt>(
+      `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts
+       WHERE org_id=$1 AND owner_id=$2 AND request_key=$3`,
+      [actor.orgId, actor.userId, key],
+    );
+    const prior = rows[0];
+    if (!prior) return undefined;
+    if (prior.fingerprint !== ordinaryLaunchFingerprint(payload))
+      throw new GoldenError("conflict", `Launch key conflicts with receipt ${prior.id}.`);
+    if (prior.failure) throw replayOrdinaryLaunchFailure(prior.failure);
+    if (prior.response !== null) return { response: prior.response as T };
+    throw new LaunchError("outcome_unknown", `Launch outcome unknown; receipt ${prior.id}. Do not use a new key.`);
+  }
+
   return {
+    replay,
     async run<T>(
       actor: Scope,
       key: string,
@@ -57,19 +73,10 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
         throw error;
       }
       if (!inserted.rows.length) {
-        const { rows } = await sql.query<Receipt>(
-          `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts
-           WHERE org_id=$1 AND owner_id=$2 AND request_key=$3`,
-          [actor.orgId, actor.userId, key],
-        );
-        const prior = rows[0];
+        const prior = await replay<T>(actor, key, payload);
         if (!prior)
           throw new LaunchError("outcome_unknown", "Launch receipt unavailable; do not retry with a new key.");
-        if (prior.fingerprint !== fingerprint)
-          throw new GoldenError("conflict", `Launch key conflicts with receipt ${prior.id}.`);
-        if (prior.failure) throw replayOrdinaryLaunchFailure(prior.failure);
-        if (prior.response !== null) return prior.response as T;
-        throw new LaunchError("outcome_unknown", `Launch outcome unknown; receipt ${prior.id}. Do not use a new key.`);
+        return prior.response;
       }
       try {
         const response = await dispatch(id);

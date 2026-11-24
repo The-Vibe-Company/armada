@@ -21,6 +21,7 @@ import type { DataSource, SandboxView } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import { withBoatManagementIdentity } from "./observed-boat.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
@@ -267,18 +268,8 @@ export function providerRegistry(
       const provider = runtime
         ? await runtime(key, target, caller)
         : options.providerFor(key, { userId: caller.userId, orgId: target.orgId }, diagnosticSandboxId(target));
-      const authority = Object.freeze({ scope, ownerId: scope === "org" ? target.orgId : caller.userId });
       // Keep source authority immutable even if a provider factory caches a shared client.
-      return new Proxy(provider, {
-        get(instance, property) {
-          if (property === "managementIdentity") return async () => authority;
-          const value = Reflect.get(instance, property, instance);
-          return typeof value === "function" ? value.bind(instance) : value;
-        },
-        set(instance, property, value) {
-          return property !== "managementIdentity" && Reflect.set(instance, property, value, instance);
-        },
-      });
+      return withBoatManagementIdentity(provider, scope, scope === "org" ? target.orgId : caller.userId);
     },
     ...(modal
       ? {

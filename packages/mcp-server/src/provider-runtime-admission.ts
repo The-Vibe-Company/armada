@@ -1,6 +1,7 @@
 import {
   isSandboxPlacementProvider,
   isSandboxProvider,
+  type LaunchOptions,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
 } from "@armada/core";
@@ -22,6 +23,11 @@ export const runtimeBridgeProfiles = {
     repeatPinnedSettings: false,
   },
 } as const satisfies Record<SandboxProviderId, object>;
+
+export function goldenRuntimePlacement(options: LaunchOptions, provider: SandboxProviderId) {
+  const { launchDefault, endpointDefault } = runtimeBridgeProfiles[provider];
+  return options[launchDefault] ?? (endpointDefault ? options[endpointDefault] : undefined);
+}
 
 const missingMachineStopPolicy = {
   boat: "observe-exit",

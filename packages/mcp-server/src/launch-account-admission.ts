@@ -1,6 +1,4 @@
 import {
-  CLAUDE_ENDPOINT_ENV,
-  CODEX_ENDPOINT_ENV,
   type GoldenActor,
   type GoldenRecord,
   type Harness,
@@ -10,7 +8,7 @@ import {
   VaultError,
 } from "@armada/core";
 import type { launchCredentials } from "./launch-credentials.ts";
-import { runtimeBridgeProfiles } from "./provider-runtime-admission.ts";
+import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 
 export type GoldenLaunchCredentials = LaunchCredentialResolver &
   Partial<Pick<ReturnType<typeof launchCredentials>, "resolveModel">>;
@@ -31,27 +29,21 @@ export async function prepareGoldenLaunchAccount(
 ) {
   const { harness, credentialId } = request;
   const explicit = options.runtime ?? options.boatRuntime;
-  const { launchDefault: key, endpointDefault } = runtimeBridgeProfiles[golden.provider];
-  const endpoint = endpointDefault ? options[endpointDefault] : undefined;
-  const runtimeDefault = explicit ? undefined : (options[key] ?? (harness === "opencode" ? endpoint : undefined));
-  if (!explicit && !runtimeDefault && !endpoint) return { credentials, options };
+  const placement = explicit ? undefined : goldenRuntimePlacement(options, golden.provider);
+  const runtime = explicit ?? placement?.policy;
+  if (!runtime) throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
+  const resolver: GoldenLaunchCredentials = placement?.credentials ?? credentials;
 
-  const probe = async (
-    resolver: GoldenLaunchCredentials,
-    requestedId = credentialId,
-    version = options.credentialVersion,
-  ) => {
+  const probe = async () => {
     try {
       const preference = await resolver.defaults?.(actor, harness);
-      const selectedId = requestedId ?? preference?.credentialId ?? undefined;
+      const selectedId = credentialId ?? preference?.credentialId ?? undefined;
       const resolved = resolver.resolveModel
-        ? await resolver.resolveModel(actor, harness, selectedId, version)
-        : await resolver.resolve(actor, harness, selectedId, version);
+        ? await resolver.resolveModel(actor, harness, selectedId, options.credentialVersion)
+        : await resolver.resolve(actor, harness, selectedId, options.credentialVersion);
       return {
         preference,
-        selectedId,
         binding: resolved.binding,
-        customEndpoint: Boolean(resolved.env[CLAUDE_ENDPOINT_ENV] || resolved.env[CODEX_ENDPOINT_ENV]),
       };
     } catch (error) {
       if (error instanceof VaultError && error.code === "credential_binding_required") throw error;
@@ -67,31 +59,10 @@ export async function prepareGoldenLaunchAccount(
         resolver.resolve(launchActor, launchHarness, binding.credentialId, binding.credentialVersion),
     } satisfies LaunchCredentialResolver;
   };
-  if (runtimeDefault) {
-    const account = await probe(runtimeDefault.credentials);
-    const selected = account
-      ? { ...runtimeDefault, credentials: pin(runtimeDefault.credentials, account) }
-      : runtimeDefault;
-    return { credentials, runtimeDefault: selected, options: { ...options, [key]: selected } };
-  }
-
-  const account = await probe(credentials);
-  if (!account) return { credentials, options };
-  if (explicit) return { credentials: pin(credentials, account), options };
-  if (endpoint && account.customEndpoint) {
-    const enrolled = await probe(
-      endpoint.credentials,
-      account.binding?.credentialId ?? account.selectedId,
-      account.binding?.credentialVersion,
-    );
-    if (!enrolled) return { credentials, options };
-    return {
-      credentials: account.binding ? pin(credentials, account) : credentials,
-      options: {
-        ...options,
-        boatEndpointRuntime: { ...endpoint, credentials: pin(endpoint.credentials, enrolled) },
-      },
-    };
-  }
-  return { credentials, options };
+  const account = await probe();
+  return {
+    placement,
+    credentials: account ? pin(resolver, account) : resolver,
+    options: { ...options, runtime },
+  };
 }

@@ -37,6 +37,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -902,6 +903,7 @@ describe("control API", () => {
 
   test("launch/options publishes the server's harness, model, size and TTL catalogs to a signed-in caller", async () => {
     await withServer(async ({ options }) => {
+      delete options.launch;
       const call = (init: RequestInit) =>
         handleControlRequest(new Request("https://armada.test/api/v1/launch/options", init), options);
       expect((await call({ method: "POST" }))?.status).toBe(401);
@@ -916,7 +918,8 @@ describe("control API", () => {
         enabled: true,
         launchSources: ["golden"],
         harnesses: ["claude", "codex"],
-        capabilities: { launch: true },
+        capabilities: { launch: false },
+        unsupportedReasons: { launch: expect.any(String) },
       });
       expect(
         body.harnesses
@@ -1140,9 +1143,9 @@ describe("control API", () => {
         expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
           { provider_sandbox_id: "bx_1" },
         ]);
-        expect(boat.preparations).toEqual(
-          repo === undefined ? [] : [{ sandboxId: "bx_1", harness: "claude", cwd: "/home/user/web" }],
-        );
+        expect(boat.preparations).toEqual([]);
+        if (repo !== undefined)
+          expect((await db.query("select repository_dir from sandboxes")).rows).toEqual([{ repository_dir: "web" }]);
         expect(text).not.toContain("server-only-boat-key");
         expect(text).not.toContain("server-only-model-token");
       };
@@ -1286,6 +1289,7 @@ describe("control API", () => {
         launched.id,
         JSON.stringify(oldReceipt),
       ]);
+      delete keyed.launch;
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
       expect(await replay!.json()).toEqual(body);
@@ -1693,6 +1697,7 @@ async function withServer(
       store: createSqlVaultStore(db),
       encryptionKey: KEY,
       data: createSqlData(db),
+      launch: { runtime: enrolledLaunchPolicy(db) },
     };
     const cli = (userId: string, opts: { session?: boolean; armadaUrl?: boolean; token?: string } = {}): Who => {
       const who: Who = {
@@ -2239,6 +2244,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
 
 test("versioned runtime launch is explicit/default-off and never selects native fork credentials or prompt", async () => {
   await withServer(async ({ db, options }) => {
+    delete options.launch;
     const org = await options.store.createOrg("Runtime", STAN);
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
@@ -2296,6 +2302,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       runtimeVersion: 1,
     };
     expect((await request("sandbox/launch", body))?.status).toBe(503);
+    expect(
+      (await request("sandbox/launch", { golden: body.golden, org: body.org, provider: "boat", harness: "codex" }))
+        ?.status,
+    ).toBe(503);
     expect(host.forks).toHaveLength(0);
     const connection = "44444444-4444-4444-8444-444444444444";
     let mcpPrepared = false,
@@ -2441,12 +2451,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.prompts).toHaveLength(0);
     expect(host.execs).toHaveLength(0);
     // An ordinary, unchanged client request obeys the deployment default too.
-    const priorLaunch = options.launch;
     const noNative = async (): Promise<never> => {
       throw Error("No native fallback");
     };
     options.launch = {
-      ...priorLaunch,
       boatRuntimeDefault: {
         policy: options.boatRuntimeLaunch!,
         provider: async () => host.provider,
@@ -2518,11 +2526,10 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     expect(host.forks[1]?.env).toEqual({});
     expect(host.execs).toHaveLength(0);
     expect(host.prompts).toHaveLength(0);
-    if (priorLaunch) options.launch = priorLaunch;
-    else delete options.launch;
-    expect(await (await request("launch/options", {}))?.json()).toMatchObject({
-      boatRuntime: { defaultPath: "native" },
-    });
+    delete options.launch;
+    const explicitOnly = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
+    expect(explicitOnly).toMatchObject({ boatRuntime: { enabled: true } });
+    expect(explicitOnly.boatRuntime).not.toHaveProperty("defaultPath");
     // Actual startup timeout -> launch failure persistence -> public logs response.
     expectedForks = 2;
     options.boatRuntimeLaunch = {
@@ -2795,7 +2802,6 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
       if (ordinary) {
         if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
         options.launch = {
-          ...options.launch,
           [boat ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
             policy: runtimePolicy,
             credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
@@ -2872,7 +2878,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
           },
           encryptionKey: KEY,
           scopedMcpUrl: "https://armada.test",
-          ...(boat ? { boatEndpointRuntime: childPlacement } : { runtimePlacements: { modal: childPlacement } }),
+          runtimePlacements: { [provider]: childPlacement },
         });
         const child = await children.childWorker.launch(token, "enrolled-child", {
           goldenId: parent.goldenId,

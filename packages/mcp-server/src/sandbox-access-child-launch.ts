@@ -77,6 +77,13 @@ interface PinnedModelAccountResolver {
   >;
 }
 
+type PrepareMcp = NonNullable<NonNullable<LaunchStores["connections"]>["prepare"]>;
+type ChildLaunchStores = LaunchStores & {
+  connections?: {
+    prepare?(...args: [...Parameters<PrepareMcp>, assertClaim: (tx: Sql) => Promise<void>]): Promise<void>;
+  };
+};
+
 /** Actual ordinary launcher integration, without altering ordinary-worker behavior.
  * Own-child reservation already exists before any fork, and relation is bound before prompt.
  * Provider idempotency/correlation comes from that durable reservation, never a new UUID. */
@@ -84,8 +91,8 @@ export async function launchSandboxChild(input: {
   extensionHeadroomSeconds?: number;
   sql: Sql;
   provider: Provider;
-  runtime?: NonNullable<LaunchOptions["runtime"]>;
-  stores: LaunchStores;
+  runtime: NonNullable<LaunchOptions["runtime"]>;
+  stores: ChildLaunchStores;
   namedCredentials: PinnedModelAccountResolver;
   operation: ChildOperation;
   selection: ChildLaunchSelection;
@@ -96,9 +103,9 @@ export async function launchSandboxChild(input: {
   let providerRefused = false;
   try {
     if (!sql.transaction || op.action !== "launch") throw new Error("Child launch reservation unavailable.");
-    const assertCurrent = async () => {
+    const assertCurrent = async (tx?: Sql) => {
       const row = (
-        await sql.query(
+        await (tx ?? sql).query(
           `select c.id from public.orchestrator_child_operations c
       join public.armada_access_parents o on o.id=c.orchestrator_id
       join public.sandboxes s on s.id=o.sandbox_id
@@ -106,7 +113,8 @@ export async function launchSandboxChild(input: {
       where c.id=$1 and c.target_id=$2 and c.owner_id=$3 and c.org_id=$4 and c.action='launch'
       and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
       and c.state='pending' and c.dispatched_at is not null and o.state='ready'
-      and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.authority_epoch=c.parent_epoch`,
+      and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.authority_epoch=c.parent_epoch
+          ${tx ? "for share of o nowait" : ""}`,
           [op.id, op.sandboxId, op.ownerId, op.orgId, op.orchestratorId, op.parentGeneration, op.parentEpoch],
         )
       ).rows[0];
@@ -168,7 +176,7 @@ export async function launchSandboxChild(input: {
             ]);
             return result;
           };
-        if (["exec", "prompt", "prepareNativeHarnessCwd", "configureMcp", "startRuntime"].includes(String(key))) {
+        if (["exec", "startRuntime"].includes(String(key))) {
           const method = Reflect.get(target, key);
           if (typeof method !== "function") return method;
           return async (...args: unknown[]) => {
@@ -222,8 +230,8 @@ export async function launchSandboxChild(input: {
       },
     };
     // Preserve the actual credential lifecycle (including prototype hooks). Only
-    // selection is pinned here; dropping admit/hydrate/release would bypass native
-    // rotating-account ownership and could fork a second writer on the parent account.
+    // selection is pinned here. Admission acquires account capacity before the fork,
+    // and release can settle it after initialization fails.
     const lifecycleCredentials = new Proxy(input.stores.credentials, {
       get(target, key) {
         if (key === "resolve")
@@ -236,6 +244,7 @@ export async function launchSandboxChild(input: {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
+    const connections = input.stores.connections;
     guard = "launch_admission";
     const launched = await launchSandbox(
       routed,
@@ -243,6 +252,16 @@ export async function launchSandboxChild(input: {
         ...input.stores,
         sandboxes,
         credentials: lifecycleCredentials,
+        ...(connections && {
+          connections: {
+            ...connections,
+            async prepare(host, sandbox, launchActor, signal) {
+              await assertCurrent();
+              await connections.prepare?.(host, sandbox, launchActor, signal, assertCurrent);
+              await assertCurrent();
+            },
+          },
+        }),
       },
       actor,
       {
@@ -258,36 +277,33 @@ export async function launchSandboxChild(input: {
       },
       {
         newId: () => op.sandboxId,
-        ...(runtime
-          ? {
-              privateVisibility: true as const,
-              runtime: {
-                async start(request) {
-                  await assertCurrent();
-                  const agent = await runtime.start(request);
-                  return {
-                    ...agent,
-                    async prompt(prompt) {
-                      await assertCurrent();
-                      return agent.prompt(prompt);
-                    },
-                    ...(agent.prepareWorkspace && {
-                      prepareWorkspace: async (...args: Parameters<NonNullable<typeof agent.prepareWorkspace>>) => {
-                        await assertCurrent();
-                        return agent.prepareWorkspace!(...args);
-                      },
-                    }),
-                    ...(agent.installSkills && {
-                      installSkills: async (...args: Parameters<NonNullable<typeof agent.installSkills>>) => {
-                        await assertCurrent();
-                        return agent.installSkills!(...args);
-                      },
-                    }),
-                  };
-                },
+        privateVisibility: true,
+        runtime: {
+          ...runtime,
+          async start(request) {
+            await assertCurrent();
+            const agent = await runtime.start(request);
+            return {
+              ...agent,
+              async prompt(prompt) {
+                await assertCurrent();
+                return agent.prompt(prompt);
               },
-            }
-          : {}),
+              ...(agent.prepareWorkspace && {
+                prepareWorkspace: async (...args: Parameters<NonNullable<typeof agent.prepareWorkspace>>) => {
+                  await assertCurrent();
+                  return agent.prepareWorkspace!(...args);
+                },
+              }),
+              ...(agent.installSkills && {
+                installSkills: async (...args: Parameters<NonNullable<typeof agent.installSkills>>) => {
+                  await assertCurrent();
+                  return agent.installSkills!(...args);
+                },
+              }),
+            };
+          },
+        },
         ...(input.extensionHeadroomSeconds === undefined
           ? {}
           : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),

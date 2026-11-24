@@ -475,11 +475,13 @@ export function createRuntimeMcp(options: {
       sandbox: { id: string },
       actor: { userId: string; orgId: string; role: "admin" | "member" },
       signal?: AbortSignal,
+      assertClaim?: (tx: Sql) => Promise<void>,
     ) {
       await prepare(
         { userId: actor.userId, via: "service", orgs: [{ orgId: actor.orgId, role: actor.role }] },
         sandbox.id,
         signal,
+        assertClaim,
       );
     },
   };

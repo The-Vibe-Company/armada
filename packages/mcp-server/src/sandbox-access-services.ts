@@ -48,7 +48,6 @@ export function createSandboxAccessServices(input: {
   credentials: NamedLaunchCredentials;
   connections: LaunchStores["connections"];
   runtimePlacements?: Partial<Record<SandboxProviderId, LaunchOptions["modalRuntimeDefault"]>>;
-  boatEndpointRuntime?: LaunchOptions["boatEndpointRuntime"];
   runtimeSend?: RuntimeFollowup;
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
@@ -216,28 +215,11 @@ export function createSandboxAccessServices(input: {
       });
       const golden = goldens.find((g) => g.id === chosen.goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
-      let placement = input.runtimePlacements?.[golden.provider];
-      if (!placement) {
-        const enrolledBoatParent = (
-          await sql.query(
-            `select p.id from public.armada_access_parents p
-             join public.sandboxes s on s.id=p.sandbox_id
-             where p.id=$1 and p.owner_id=$2 and p.org_id=$3 and s.provider=$4 and s.boat_runtime`,
-            [operation.orchestratorId, operation.ownerId, operation.orgId, golden.provider],
-          )
-        ).rows[0];
-        if (enrolledBoatParent) {
-          placement = input.boatEndpointRuntime;
-          if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
-        }
-      }
+      const placement = input.runtimePlacements?.[golden.provider];
+      if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
-      const credentials = placement?.credentials ?? input.credentials;
       const privateTarget = { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility };
-      const provider = await (placement
-        ? placement.provider(actor, privateTarget)
-        : input.providers.resolve(golden, { userId: actor.userId })
-      ).catch((error) => {
+      const provider = await placement.provider(actor, privateTarget).catch((error) => {
         throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement", error);
       });
       return launchSandboxChild({
@@ -249,8 +231,8 @@ export function createSandboxAccessServices(input: {
           : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
         stores: {
           ...stores,
-          credentials,
-          ...(placement ? { connections: placement.connections } : {}),
+          credentials: placement.credentials,
+          connections: placement.connections,
           // Children are ordinary sandboxes: initialization owns the same activity
           // lease as a public launch. The legacy service store does not fence the
           // lifecycle observer, which otherwise treats "starting" as abandoned.
@@ -269,8 +251,8 @@ export function createSandboxAccessServices(input: {
             },
           }),
         },
-        namedCredentials: credentials,
-        ...(placement ? { runtime: placement.policy } : {}),
+        namedCredentials: placement.credentials,
+        runtime: placement.policy,
         provider,
       });
     },
