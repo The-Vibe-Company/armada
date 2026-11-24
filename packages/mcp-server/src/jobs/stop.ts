@@ -34,20 +34,18 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
       const target = { sandboxId, generation: intent.generation, machineId: intent.machineId };
       const { signal } = context;
       const retry = (delay = 2_000) => ({ status: "retry", after: new Date(now() + delay) }) satisfies JobResult;
-      const finish = () =>
-        ({
-          status: "done",
-          async commit(tx) {
-            const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(job.generation), "stop");
-            if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-            await enqueueStopOutput(tx, jobs, sandboxId, intent.actor.orgId, settled.generation);
-          },
-        }) satisfies JobResult;
-
+      const finish = {
+        status: "done",
+        async commit(tx) {
+          const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(job.generation), "stop");
+          if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
+          await enqueueStopOutput(tx, jobs, sandboxId, intent.actor.orgId, settled.generation);
+        },
+      } satisfies JobResult;
       if (job.generation !== String(intent.generation)) {
         const outcome = await hosts.checkpointedStopOutcome(sandboxId, intent);
         signal.throwIfAborted();
-        if (outcome === "stopped") return finish();
+        if (outcome === "stopped") return finish;
         if (outcome === "refused") return { status: "fail", reason: "stop_receipt_refused" };
         return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
