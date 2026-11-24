@@ -1082,7 +1082,7 @@
     "apps/dashboard/src/app/actions/goldens.ts": 7,
     "apps/dashboard/src/app/actions/invitations.ts": 6,
     "apps/dashboard/src/app/actions/langfuse.ts": 1,
-    "apps/dashboard/src/app/actions/model-accounts.ts": 13,
+    "apps/dashboard/src/app/actions/model-accounts.ts": 12,
     "apps/dashboard/src/app/actions/orgs.ts": 3,
     "apps/dashboard/src/app/actions/provider-setup.ts": 3,
     "apps/dashboard/src/app/actions/routines.ts": 3,

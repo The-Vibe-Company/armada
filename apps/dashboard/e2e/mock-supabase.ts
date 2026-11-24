@@ -2897,6 +2897,7 @@ function accounts(route: string, body: Row, request: Request): Response {
       created_at: now,
       name: String(body.name),
       is_default: false,
+      maxAgents: body.maxAgents,
       version: 1,
       status: "active",
       expires_at: null,
@@ -2906,6 +2907,10 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ account: accountDto(row) });
   }
   if (!target) return controlFail(400, "invalid", "Name the account.");
+  if (route === "creds/accounts/limits") {
+    target.maxAgents = body.maxAgents;
+    return json({ account: accountDto(target) });
+  }
   if (route === "creds/accounts/rename") {
     Object.assign(target, { name: String(body.name), updated_at: now });
     return json({ account: accountDto(target) });

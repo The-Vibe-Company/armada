@@ -13,6 +13,7 @@ import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { launchAgentSummary } from "@/lib/launch-composer";
 import { initialLaunchSelection, launchHarnessBlocker, launchPickerGroups } from "@/lib/launch-picker";
 import { accountProblem, accountsFor, KIND_INFO, type LaunchAccounts } from "@/lib/model-accounts";
+import { dashboardHarnessModels } from "@/lib/model-picker";
 import { cn } from "@/lib/utils";
 
 export function LaunchSentence({
@@ -59,7 +60,7 @@ export function LaunchSentence({
 
   const rows = accounts.state === "ready" ? accountsFor(accounts.accounts, harness) : [];
   const chosen = rows.find((row) => row.id === account);
-  const entry = catalog[harness];
+  const entry = dashboardHarnessModels(harness, catalog[harness]);
   const efforts = entry.models.find((row) => row.id === model.trim())?.reasoningEfforts ?? entry.reasoningEfforts;
   const hasEffort = HARNESS_CATALOG[harness].capabilities.reasoningEffort;
   const selectedEffort = hasEffort

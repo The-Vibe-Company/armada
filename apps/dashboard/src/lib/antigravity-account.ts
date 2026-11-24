@@ -22,7 +22,8 @@ export function googleCode(value: unknown) {
 
 export function googleSignInFailure(stage: "start" | "complete", status?: number, code?: string) {
   if (stage === "complete") {
-    if (code === "not_found" || code === "unavailable") return "Start sign-in again.";
+    if (code === "not_found" || code === "unavailable")
+      return "That Google code is invalid or expired. Get a new code.";
     if (code === "invalid") return "Enter the code or callback URL from the matching Google sign-in.";
   }
   if (stage === "start" && code === "conflict")

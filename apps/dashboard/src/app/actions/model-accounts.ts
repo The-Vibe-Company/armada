@@ -114,19 +114,28 @@ export async function cancelGoogleSignIn(data: FormData): Promise<ActionResult> 
   return done("Google sign-in cancelled.");
 }
 
-async function completeGoogleSignIn(context: Scoped, data: FormData): Promise<ActionResult> {
+async function completeGoogleSignIn(context: Scoped, data: FormData, maxAgents: number | null) {
   const id = formString(data, "loginId");
   if (!isUuid(id)) return fail("Start sign-in again.");
   const code = googleCode(data.get("code"));
   if (!code) return fail(GOOGLE_CODE_ERROR);
+  let account: Awaited<ReturnType<AccountControl["completeGoogleSignIn"]>>;
   try {
-    const account = await context.control.completeGoogleSignIn(id, code);
-    refresh();
-    return done(`${account.name} saved.`);
+    account = await context.control.completeGoogleSignIn(id, code);
   } catch (error) {
     if (!(error instanceof ControlError)) throw error;
     return fail(googleSignInFailure("complete", error.status, error.code));
   }
+  if (maxAgents !== null) {
+    try {
+      await context.control.limits({ ...target(context, account.id), maxAgents });
+    } catch (error) {
+      if (!(error instanceof ControlError)) throw error;
+      refresh();
+      return fail(`${account.name} was saved. Reload Models to check its limit and default settings.`);
+    }
+  }
+  return finishAccountSetup(context, data, account);
 }
 
 /** Adds a named account from a pasted token, key or auth.json, and makes it the default when asked. */
@@ -143,7 +152,9 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!name.ok) return fail(name.error);
   const method = kind === "antigravity" ? antigravityMethod(data.get("antigravityMethod")) : undefined;
   if (kind === "antigravity" && !method) return fail("Choose an Antigravity connection method.");
-  if (method === "google") return completeGoogleSignIn(context, data);
+  const maxAgents = formAgentLimit(data);
+  if (maxAgents === undefined) return fail("Maximum agents must be a positive integer, or empty for unlimited.");
+  if (method === "google") return completeGoogleSignIn(context, data, maxAgents);
   const raw =
     method === "gemini-api-key"
       ? JSON.stringify({ method, apiKey: formString(data, "value").trim() })
@@ -157,8 +168,6 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
         : secret(kind as AccountKind, raw));
   if (!value.ok) return fail(value.error);
 
-  const maxAgents = formAgentLimit(data);
-  if (maxAgents === undefined) return fail("Maximum agents must be a positive integer, or empty for unlimited.");
   let saved: Awaited<ReturnType<AccountControl["set"]>>;
   try {
     saved = await context.control.set({
@@ -172,6 +181,14 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   } catch (error) {
     return explain(error);
   }
+  return finishAccountSetup(context, data, saved);
+}
+
+async function finishAccountSetup(
+  context: Scoped,
+  data: FormData,
+  saved: Pick<Awaited<ReturnType<AccountControl["set"]>>, "id" | "kind" | "name"> & { isDefault?: boolean },
+) {
   refresh();
   if (data.get("default") === "on" && !saved.isDefault) {
     try {

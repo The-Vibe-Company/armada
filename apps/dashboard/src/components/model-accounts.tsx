@@ -20,6 +20,7 @@ import {
   KeyRoundIcon,
   PencilIcon,
   RefreshCwIcon,
+  SparklesIcon,
   StarIcon,
   Trash2Icon,
   UserIcon,
@@ -103,6 +104,7 @@ import {
   usageView,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
+import { dashboardHarnessModels } from "@/lib/model-picker";
 import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
 import { cn } from "@/lib/utils";
 
@@ -752,9 +754,7 @@ function ProviderMark({ kind }: { kind: AccountKind }) {
         ? "O"
         : kind === "morph"
           ? "M"
-          : kind === "antigravity"
-            ? "AG"
-            : "OC";
+          : "OC";
   return (
     <span
       aria-hidden
@@ -766,6 +766,8 @@ function ProviderMark({ kind }: { kind: AccountKind }) {
         <AnthropicIcon className="size-5" />
       ) : kind === "openai" || kind === "codex_auth" ? (
         <OpenAI className="size-5" />
+      ) : kind === "antigravity" ? (
+        <SparklesIcon className="size-5" />
       ) : (
         mark
       )}
@@ -1593,6 +1595,7 @@ export function AddAccountDialog({
   const [dismissedSaveResult, setDismissedSaveResult] = useState<typeof state>(null);
   const [method, setMethod] = useState<(typeof ANTIGRAVITY_METHODS)[number]["id"]>("google");
   const [login, setLogin] = useState<{ loginId: string; authorizationUrl: string } | null>(null);
+  const [code, setCode] = useState("");
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signInPending, runSignIn] = useTransition();
   const [choice, setChoice] = useState<AddChoice>(initialKind);
@@ -1612,16 +1615,43 @@ export function AddAccountDialog({
   const id = useId();
   const info = KIND_INFO[kind];
   const google = kind === "antigravity" && method === "google";
+  const saveError = !signInError && !saving && state && state !== dismissedSaveResult && !state.ok ? state : null;
+  const recoveryLink = "text-sm underline underline-offset-2 disabled:text-muted-foreground";
+  const changeMethod = (next: typeof method) => {
+    setMethod(next);
+    setCode("");
+    setSignInError(null);
+    setDismissedSaveResult(state);
+  };
+
+  const cancelPendingGoogleSignIn = (id: string) => {
+    const data = new FormData();
+    data.set("loginId", id);
+    data.set("scope", scope);
+    data.set("org", orgId);
+    return clientMutation(() => cancelGoogleSignIn(data));
+  };
 
   const openGoogleSignIn = () => {
     const form = wizardRef.current;
-    if (!form?.reportValidity()) return;
+    if (!form || (!login && !form.reportValidity())) return;
     const data = new FormData(form);
+    data.delete("code");
     setDismissedSaveResult(state);
     const tab = window.open("about:blank", "_blank");
     if (tab) tab.opener = null;
     setSignInError(null);
     runSignIn(async () => {
+      if (login) {
+        const cancelled = await cancelPendingGoogleSignIn(login.loginId);
+        if (!cancelled.ok) {
+          tab?.close();
+          setSignInError(cancelled.error);
+          return;
+        }
+        setLogin(null);
+        setCode("");
+      }
       const result = await clientMutation(() => startGoogleSignIn(data));
       if (!result.ok) {
         tab?.close();
@@ -1633,24 +1663,22 @@ export function AddAccountDialog({
     });
   };
 
-  const resetGoogleSignIn = (close: boolean) => {
+  const resetGoogleSignIn = (close: boolean, nextMethod?: typeof method) => {
     if (!login) {
       if (close) setOpen(false);
       return;
     }
-    const data = new FormData();
-    data.set("loginId", login.loginId);
-    data.set("scope", scope);
-    data.set("org", orgId);
     setSignInError(null);
     runSignIn(async () => {
-      const result = await clientMutation(() => cancelGoogleSignIn(data));
+      const result = await cancelPendingGoogleSignIn(login.loginId);
       if (!result.ok && !close) {
         setSignInError(result.error);
         return;
       }
       setLogin(null);
+      setCode("");
       setDismissedSaveResult(state);
+      if (nextMethod) changeMethod(nextMethod);
       if (close) setOpen(false);
     });
   };
@@ -1664,6 +1692,7 @@ export function AddAccountDialog({
     if (!state?.ok) return;
     setOpen(false);
     setLogin(null);
+    setCode("");
     setGeneration((value) => value + 1);
   }, [state]);
 
@@ -1738,12 +1767,12 @@ export function AddAccountDialog({
             id={`${id}-method`}
             name="antigravityMethod"
             value={method}
-            disabled={signInPending || !!login || saving}
+            disabled={signInPending || saving}
             onChange={(event) => {
               const next = antigravityMethod(event.target.value);
-              if (next) setMethod(next);
-              setSignInError(null);
-              setDismissedSaveResult(state);
+              if (!next || next === method) return;
+              if (login) resetGoogleSignIn(false, next);
+              else changeMethod(next);
             }}
           >
             {ANTIGRAVITY_METHODS.map(({ id, label }) => (
@@ -1752,7 +1781,6 @@ export function AddAccountDialog({
               </option>
             ))}
           </NativeSelect>
-          {login && <input type="hidden" name="antigravityMethod" value="google" />}
         </div>
       )}
       {google
@@ -1760,38 +1788,58 @@ export function AddAccountDialog({
             <div className="space-y-2">
               <input type="hidden" name="loginId" value={login.loginId} />
               <Label htmlFor={`${id}-code`}>Paste the code Google shows</Label>
-              <Input id={`${id}-code`} name="code" type="password" required maxLength={8192} autoComplete="off" />
-              <div className="flex flex-wrap items-center gap-3 text-sm">
-                <a href={login.authorizationUrl} target="_blank" rel="noreferrer" className="underline">
-                  Open Google sign-in again
+              <Input
+                id={`${id}-code`}
+                name="code"
+                type="password"
+                required
+                maxLength={8192}
+                autoComplete="off"
+                data-preserve-on-action-error
+                aria-invalid={!!saveError}
+                aria-describedby={`${id}-code-help${saveError ? ` ${id}-code-error` : ""}`}
+                value={code}
+                onChange={(event) => {
+                  setCode(event.target.value);
+                  setDismissedSaveResult(state);
+                }}
+              />
+              <p id={`${id}-code-help`} className="text-xs text-muted-foreground">
+                Google shows a code after you approve access. Paste it here.
+              </p>
+              {saveError && (
+                <div id={`${id}-code-error`}>
+                  <ResultLine result={saveError} />
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-4 pt-2">
+                <a href={login.authorizationUrl} target="_blank" rel="noreferrer" className={recoveryLink}>
+                  Reopen Google page
                 </a>
-                <Button
+                <button
                   type="button"
-                  variant="ghost"
-                  size="sm"
+                  className={recoveryLink}
                   disabled={signInPending || saving}
-                  onClick={() => resetGoogleSignIn(false)}
+                  onClick={openGoogleSignIn}
                 >
-                  Start sign-in again
-                </Button>
+                  Get a new code
+                </button>
               </div>
             </div>
           )
         : secretFields}
       {kind === "morph" && <MorphModelField idPrefix={id} models={MORPH_MODEL_IDS} />}
-      {!google && (
-        <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
-          <Checkbox id={`${id}-default-account`} name="default" value="on" />
-          Make it the default for {info.harnessLabel}
-        </Label>
-      )}
+      <Label htmlFor={`${id}-default-account`} className="flex items-center gap-2 text-sm font-normal">
+        <Checkbox id={`${id}-default-account`} name="default" value="on" />
+        Make it the default for {info.harnessLabel}
+      </Label>
       {google && !login && signInPending && (
         <p role="status" className="text-sm text-muted-foreground">
           Opening Google sign-in…
         </p>
       )}
       {signInError && <ResultLine result={{ ok: false, error: signInError }} />}
-      {!signInError && !saving && state && state !== dismissedSaveResult && !state.ok && <ResultLine result={state} />}
+      {!login && saveError && <ResultLine result={saveError} />}
     </>
   );
   const choose = (next: AddChoice) => {
@@ -1970,7 +2018,7 @@ export function AddAccountDialog({
                     </fieldset>
                   </div>
                 )}
-                {!google && <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />}
+                <AgentLimitField id={id} value={maxAgents} onChange={setMaxAgents} />
               </div>
             </div>
           </div>
@@ -1985,7 +2033,7 @@ export function AddAccountDialog({
             Cancel
           </Button>
           <div className="flex flex-wrap gap-2">
-            <SubmitButton disabled={signInPending || saving}>
+            <SubmitButton disabled={signInPending || saving || (google && !!login && !code.trim())}>
               {google
                 ? login
                   ? "Connect"
@@ -2246,7 +2294,9 @@ function PersonalDefaultSentence({
   const resolved = modelsPageDefault(accounts, harness, now, [current]);
   const account = resolved.state === "resolved" || resolved.state === "unusable" ? resolved.account : null;
   const model = account ? (current.model ?? modelsPageModel(account, harness)) : undefined;
-  const catalogModel = MODEL_CATALOG[harness].models.find((entry) => entry.id === model);
+  const catalogModel = dashboardHarnessModels(harness, MODEL_CATALOG[harness]).models.find(
+    (entry) => entry.id === model,
+  );
   const modelLabel = catalogModel?.label ?? model;
   const id = useId();
   const save = async (next: AgentDefault, restoring = false) => {

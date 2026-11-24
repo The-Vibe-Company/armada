@@ -17,6 +17,8 @@ test("Google sign-in accepts a single pasted code or callback URL", () => {
 });
 
 test("Google sign-in asks for a replacement login when the code is expired or foreign", () => {
-  expect(googleSignInFailure("complete", 404, "not_found")).toBe("Start sign-in again.");
+  expect(googleSignInFailure("complete", 404, "not_found")).toBe(
+    "That Google code is invalid or expired. Get a new code.",
+  );
   expect(googleSignInFailure("complete", 400, "invalid")).toContain("matching Google sign-in");
 });
