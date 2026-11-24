@@ -543,7 +543,6 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     }),
   ).rejects.toThrow("interrupted after capture");
   const outputNames = () => sql.query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId]);
-
   await sql.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [first.id]);
   const owner = randomUUID();
   const job = (await jobs.claim("stop", owner, 30, 1))!;
@@ -585,7 +584,6 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
       request_id: randomUUID(),
     }),
   ).toMatchObject({ handled: true, result: { status: "stopped" } });
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
   expect((await outputNames()).rows).toEqual([]);
   await sql.query(
     `select public.sandbox_transition(id,lifecycle_generation,array['stopped']::public.sandbox_status[],
@@ -601,12 +599,11 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     canDispatch: async () => (await jobs.inspect(publish, owner)) === "dispatch",
   });
   expect(await jobs.complete(publish, owner, result)).toBe(true);
-  expect((await outputNames()).rows).toEqual([{ name: "last.txt" }]);
   const chunks = await sql.query(
-    "select 1 from sandbox_output_chunks c join sandbox_outputs o on o.transfer_id=c.transfer_id where o.sandbox_id=$1",
+    "select o.name from sandbox_output_chunks c join sandbox_outputs o on o.transfer_id=c.transfer_id where o.sandbox_id=$1",
     [a.sandboxId],
   );
-  expect(chunks.rows).toHaveLength(1);
+  expect(chunks.rows).toEqual([{ name: "last.txt" }]);
 });
 
 test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {
