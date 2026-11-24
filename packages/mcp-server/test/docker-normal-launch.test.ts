@@ -1190,7 +1190,8 @@ test.each(["rejects", "returns"] as const)(
         sendEnabled: true,
         async prepareMcp() {
           entered.resolve();
-          return release.promise;
+          await release.promise;
+          return undefined;
         },
       });
       const { options } = restControl(f, { accountTurns, dockerControls });
