@@ -1216,6 +1216,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             data: createSqlData(f.sql),
             providerFor: fail,
             store: vault,
+            encryptionKey: launchEncryptionKey,
             admitModalLaunch: createModalLaunchAdmission(
               f.sql,
               {
@@ -1448,10 +1449,10 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
               ? await runtimeConfigurationWithVariables(
                   jobsSql,
                   {
-                    actor: { orgId: target.orgId, userId: target.ownerId },
+                    actor: { orgId: target.orgId, userId: target.ownerId, role: "member" },
                     sandbox: target,
                     credentials: await credentials.resolve(
-                      { orgId: target.orgId, userId: target.ownerId },
+                      { orgId: target.orgId, userId: target.ownerId, role: "member" },
                       target.harness,
                       target.credentialId ?? undefined,
                       target.credentialVersion ?? undefined,

@@ -54,7 +54,7 @@ export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./gol
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation, beginSnapshotLaunch } from "./golden-store.ts";
 export * from "./index.ts";
-export { prepareGoldenLaunch, prepareLaunchWorkspace } from "./launch.ts";
+export { prepareGoldenLaunch, prepareLaunchWorkspace, requireRuntimeHarness } from "./launch.ts";
 export {
   admitLaunchPlan,
   applyLaunchAccountDefaults,

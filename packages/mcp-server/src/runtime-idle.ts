@@ -1,3 +1,4 @@
+import { HARNESS_CAPABILITIES, type Harness } from "@armada/core";
 import { capabilities } from "@armada/core/machine-capabilities";
 import { isSandboxPlacementProvider, type Sql } from "@armada/core/server";
 import { hostDrainingSql } from "./docker-host-drain.ts";
@@ -33,12 +34,13 @@ export function createRuntimeIdle(
     const target = (
       await tx.query<{
         provider: string;
+        harness: Harness;
         task_prompt_id: string | null;
         merge_proof: boolean;
         request_id: string | null;
         merge_stop: boolean | null;
       }>(
-        `select s.provider,s.task_prompt_id,${mergedWorkProof("s")} as merge_proof,p.request_id::text,p.merge_stop
+        `select s.provider,s.harness,s.task_prompt_id,${mergedWorkProof("s")} as merge_proof,p.request_id::text,p.merge_stop
          from public.sandboxes s
          join public.runtime_enrolments r on r.sandbox_id=s.id
          left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
@@ -53,7 +55,9 @@ export function createRuntimeIdle(
     if (
       requestId === null &&
       !mergeStop &&
-      (!isSandboxPlacementProvider(target.provider) || !capabilities(target.provider).idleStop)
+      (!HARNESS_CAPABILITIES[target.harness].resume ||
+        !isSandboxPlacementProvider(target.provider) ||
+        !capabilities(target.provider).idleStop)
     )
       throw Error("Machine does not stop for inactivity.");
     const busy = await tx.query(

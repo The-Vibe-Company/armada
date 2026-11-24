@@ -30,6 +30,7 @@ function snapshot(
   const v = object(value),
     rates = object(v?.rates);
   if (
+    harness === "antigravity" ||
     !v ||
     !rates ||
     ![5, 6].includes(Object.keys(rates).length) ||

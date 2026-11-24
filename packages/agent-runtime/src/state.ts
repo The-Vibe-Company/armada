@@ -392,7 +392,11 @@ export class HarnessState {
       await this.syncDirectory(this.root);
       await rm(previous, { recursive: true, force: true });
     }
-    await Promise.all(HARNESSES.map((name) => rm(join(this.root, name), { recursive: true, force: true })));
+    await Promise.all(
+      [...HARNESSES, "antigravity", "antigravity-tmp"].map((name) =>
+        rm(join(this.root, name), { recursive: true, force: true }),
+      ),
+    );
     await this.syncDirectory(this.root);
   }
 }

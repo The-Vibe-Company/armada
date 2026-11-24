@@ -1,5 +1,5 @@
 import { sha256Hex } from "@armada/auth";
-import { isSandboxProvider } from "@armada/core";
+import { HARNESS_CAPABILITIES, isSandboxProvider } from "@armada/core";
 import { type PromptReceipt, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import { CONFIRMED_WAKE_WITHOUT_TICKET } from "./account-turn-dispatch.ts";
@@ -111,6 +111,8 @@ export function createRuntimeResume(
     const found = await store.get(input.id);
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found) || found.deletedAt)
       throw new VaultError("not_found", "No owned runtime resume target.");
+    if (!HARNESS_CAPABILITIES[found.harness].resume)
+      throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
     const prior = await read(sql, found.id, requestId);
     const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
     const conversation =

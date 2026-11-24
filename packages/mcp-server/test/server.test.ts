@@ -942,3 +942,18 @@ test("MCP launch preserves the closed busy account code and safe action", async 
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
 });
+
+test("MCP refuses Antigravity on Boat before provider resolution", async () => {
+  let opened = false;
+  const { token, client, people } = await start({
+    providerFor: () => {
+      opened = true;
+      throw Error("Boat provider must not be resolved");
+    },
+  });
+  const mcp = await client(await token(people.owner));
+  const result = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "antigravity" });
+  expect(result.isError).toBe(true);
+  expect(result.text).toContain("Unknown agent 'antigravity'");
+  expect(opened).toBe(false);
+});

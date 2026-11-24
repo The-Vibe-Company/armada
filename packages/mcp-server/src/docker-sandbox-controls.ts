@@ -697,6 +697,8 @@ export function createDockerSandboxControls(
   async function resume(caller: Caller, row: Row, requestId?: string, claim?: RuntimeTurnClaim) {
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
+    if (!HARNESS_CAPABILITIES[row.harness].resume)
+      throw failure("unavailable", "This harness cannot resume a stopped conversation.");
     const reclaimed = dockerWorkspaceReclaimedMessage(row.status_reason);
     if (row.status === "deleted" && reclaimed) throw new DockerRetentionEnded(row.status_reason);
     if (!requestId) throw invalid();

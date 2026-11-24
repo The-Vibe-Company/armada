@@ -60,6 +60,19 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
+test("a stopped Antigravity Modal sandbox refuses resume before activation", async () => {
+  const f = await stopped("codex", "modal");
+  await f.db.query("update sandboxes set harness='antigravity' where id=$1", [f.row.id]);
+  const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+    throw Error("Antigravity must not activate retained compute");
+  });
+  await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({
+    code: "unavailable",
+    message: "This harness cannot resume a stopped conversation.",
+  });
+  expect((await f.db.query("select 1 from runtime_resumes where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+});
+
 describe("Modal user stop and wake-on-send", () => {
   const fixture = scopedRuntimeFixture(async () => runtimeFixture(await sharedDatabase(), "modal"), {
     perTest: true,

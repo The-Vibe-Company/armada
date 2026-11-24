@@ -469,6 +469,7 @@ async function main(dialout = false) {
         ? {
             antigravity: new AntigravityDriver({
               ...antigravity,
+              readableVariables,
               root: config.root,
               cwd: config.cwd,
               journal,

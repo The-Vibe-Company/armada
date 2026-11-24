@@ -269,6 +269,14 @@ function modalLaunchTiming(startedAt: number) {
   };
 }
 
+export function requireRuntimeHarness(provider: SandboxProviderId, harness: Harness) {
+  if (!runtimeHarnessSupported(provider, harness))
+    throw new LaunchError(
+      "invalid_request",
+      `Unknown agent '${harness}'. Use one of: ${HARNESSES.filter((id) => runtimeHarnessSupported(provider, id)).join(", ")}.`,
+    );
+}
+
 /** Validate a golden launch before resolving accounts or placement. */
 export function validateGoldenLaunchRequest(request: LaunchRequest): void {
   validateLaunchSkillPins(request.skills ?? []);
@@ -300,11 +308,7 @@ async function resolveGoldenLaunch(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
-  if (!runtimeHarnessSupported(golden.provider, request.harness))
-    throw new LaunchError(
-      "invalid_request",
-      `Unknown agent '${request.harness}'. Use one of: ${HARNESSES.filter((id) => runtimeHarnessSupported(golden.provider, id)).join(", ")}.`,
-    );
+  requireRuntimeHarness(golden.provider, request.harness);
   const launchPlacement = goldenLaunchPlacements[golden.provider];
   const defaultRuntime = !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options) : undefined;
   if (defaultRuntime) {

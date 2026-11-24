@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { HARNESSES, type Harness, HOST_CAPABILITIES, launchFailureHelp, type VaultStore } from "@armada/core";
+import { type Harness, HOST_CAPABILITIES, launchFailureHelp, type VaultStore } from "@armada/core";
 import {
   controlRouteKey,
   type LaunchInput,
@@ -15,6 +15,7 @@ import {
   LaunchError,
   launchSandbox,
   type ModelChoice,
+  requireRuntimeHarness,
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
@@ -36,7 +37,7 @@ import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { withBoatManagementIdentity } from "./observed-boat.ts";
 import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
-import { goldenRuntimePlacement, runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
+import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -95,11 +96,7 @@ async function launchGolden(
   const data = options.data(caller);
   const actor = await launchActor(data, caller, name, body.org, options.store);
   const golden = await goldenForLaunch(data.goldens, actor, name, body.provider);
-  if (!runtimeHarnessSupported(golden.provider, harness))
-    throw new LaunchError(
-      "invalid_request",
-      `Unknown agent '${harness}'. Use one of: ${HARNESSES.filter((id) => runtimeHarnessSupported(golden.provider, id)).join(", ")}.`,
-    );
+  requireRuntimeHarness(golden.provider, harness);
   resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");

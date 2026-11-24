@@ -1,4 +1,4 @@
-import type { Harness } from "@armada/core";
+import type { Harness } from "../packages/core/src/harnesses.ts";
 import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import type { EnvironmentDigestIo } from "./provider-parity-environment-digest.ts";
 
