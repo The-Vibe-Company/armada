@@ -617,6 +617,7 @@ test("Machine physical deletion can retry an uncertain result with a fresh durab
   expect(await poll()).toEqual(retry);
   await store.complete(a.hostToken, a.installationId, { requestId: retry.requestId, outcome: "completed" });
   await adapter.delete(removal);
+  expect(await poll()).toBeNull();
 });
 
 test("host drain refuses new Machine physical deletion but allows full cleanup", async () => {

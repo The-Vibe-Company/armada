@@ -845,7 +845,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     const { rows } = await tx.query<StoredJob>(
       `select * from public.docker_host_jobs where host_id=$1 and bound_sandbox_id=$2
        and bound_operation='deletePhysical'
-       order by (outcome='completed' and cancelled_at is null) desc nulls last, position desc`,
+       order by (outcome is not distinct from 'completed' and cancelled_at is null) desc, position desc`,
       [row.docker_host_id, row.id],
     );
     for (const receipt of rows) {
