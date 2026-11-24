@@ -65,6 +65,7 @@ import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
 const FALLBACK_POLL_MS = 2000;
+const STREAM_READ_DELAY_MS = 100;
 const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 8000;
 const MAX_RETRIES = 5;
@@ -204,6 +205,7 @@ export function SandboxChat(props: Props) {
   const known = useRef(initialStatus);
   const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
   const refreshing = useRef(false);
+  const refreshAfterPending = useRef(false);
   const [refreshPending, startRefresh] = useTransition();
   useLayoutEffect(() => {
     rendered.current = { status: initialStatus, usage: props.initialUsageRevision };
@@ -230,9 +232,8 @@ export function SandboxChat(props: Props) {
       // Only committed page props acknowledge the card's revision. A discarded or
       // stale RSC refresh must remain retryable on the next successful read.
       const refreshNeeded = next !== rendered.current.status || usageChanged;
-      if (!refreshing.current && refreshNeeded) {
-        startRefresh(() => router.refresh());
-      }
+      if (refreshing.current) refreshAfterPending.current = refreshNeeded;
+      else if (refreshNeeded) startRefresh(() => router.refresh());
       const error = typeof body.error === "string" ? body.error : null;
       const configured = typeof body.configured === "boolean" ? body.configured : true;
       setPoll((current) =>
@@ -358,8 +359,10 @@ export function SandboxChat(props: Props) {
           session.retries = 0;
           if (!result.active) session.stream.close();
           else if (props.configured) session.stream.connect();
-          if (result.more || session.pendingUpdate) session.timer = setTimeout(() => void readUpdate(), 0);
-          else if ((result.active && !session.stream.waitingForEvents) || (!result.active && result.refreshNeeded)) {
+          if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
+          else if (session.pendingUpdate) {
+            session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
+          } else if ((result.active && !session.stream.waitingForEvents) || (!result.active && result.refreshNeeded)) {
             session.timer = setTimeout(() => void readUpdate(), FALLBACK_POLL_MS);
           }
           return;
@@ -402,6 +405,12 @@ export function SandboxChat(props: Props) {
     [isCurrent, props.configured, read],
   );
 
+  useEffect(() => {
+    if (refreshPending || !refreshAfterPending.current) return;
+    refreshAfterPending.current = false;
+    void tick();
+  }, [refreshPending, tick]);
+
   const retryPolling = useCallback(() => {
     const session = sessionRef.current;
     if (!session || !isCurrent(session)) return;
@@ -436,7 +445,11 @@ export function SandboxChat(props: Props) {
       reading: false,
       pendingUpdate: false,
       stream: chatEventStream(sandboxId, () => {
-        if (isCurrent(session)) void tick();
+        if (!isCurrent(session) || session.paused || session.retries > 0 || session.pendingUpdate) return;
+        session.pendingUpdate = true;
+        if (session.reading) return;
+        clearTimeout(session.timer);
+        session.timer = setTimeout(() => void tick(), STREAM_READ_DELAY_MS);
       }),
       paused: false,
       retries: 0,
