@@ -178,14 +178,14 @@ staging org/account and image (these are public IDs, not credential values):
 ```sh
 export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
 export DOCKER_HOST_ID='70bde9cd-36c9-40af-b15e-65b2f9d3c2a2'
-export DOCKER_IMAGE='buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 # DOCKER_SSH, ARMADA_ORG and ARMADA_CREDENTIAL: use the previous passed check.
 read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
 export ARMADA_TOKEN
 python3 scripts/smoke-docker-lifecycle.py \
   --server "$ARMADA_STAGING" --org "$ARMADA_ORG" \
   --credential "$ARMADA_CREDENTIAL" --ssh "$DOCKER_SSH" --image "$DOCKER_IMAGE" \
-  --host-id "$DOCKER_HOST_ID" --start-host --normal-launch
+  --host-id "$DOCKER_HOST_ID" --start-host
 unset ARMADA_TOKEN
 ```
 
@@ -352,9 +352,8 @@ bun build packages/docker-host/src/main.ts --compile --target=bun-linux-x64 --ou
 ssh -- "$DOCKER_SSH" 'docker version; docker info --format "{{json .Runtimes}}"; docker ps -a; docker image ls; docker volume ls'
 ssh -- "$DOCKER_SSH" 'set -eu; umask 077; install -d -m 700 "$HOME/.local/bin"; test ! -e "$HOME/.local/state/armada-docker-smoke"; test ! -L "$HOME/.local/state/armada-docker-smoke"; test ! -e "$HOME/.local/bin/armada-docker-host"; test ! -L "$HOME/.local/bin/armada-docker-host"'
 scp dist/armada-docker-host "$DOCKER_SSH:.local/bin/armada-docker-host"
-ssh -- "$DOCKER_SSH" 'chmod 700 "$HOME/.local/bin/armada-docker-host"; docker pull buildpack-deps:bookworm-curl'
-export DOCKER_IMAGE="$(ssh -- "$DOCKER_SSH" 'docker image inspect --format "{{index .RepoDigests 0}}" buildpack-deps:bookworm-curl')"
-# This plain Debian-based image contains CA roots, but no Armada runtime or Codex.
+ssh -- "$DOCKER_SSH" 'chmod 700 "$HOME/.local/bin/armada-docker-host"'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
 export ARMADA_TOKEN
 python3 scripts/smoke-docker-lifecycle.py \
@@ -374,10 +373,9 @@ It starts the daemon detached with `nohup setsid`, saving a private PID/log besi
 state. Do not register again if an exchange outcome is unknown: inspect that state
 or use a fresh admin registration ticket after checking whether exchange committed. Never replay an uncertain exchange.
 
-Expected script output: public `HOST_ID`, `SANDBOX_ID`, bootstrap/prompt/cleanup
-request IDs, then `DOCKER_OK` with harness-reported input/output tokens and `PASS`.
-The script waits for create ACK, issues one bootstrap, waits for epoch-bound Runner
-health, enqueues one durable Codex prompt and reads the **acknowledged server journal**
+Expected script output includes `HOST_ID`, `LAUNCH_KEY`, `SANDBOX_ID` and cleanup
+request IDs. The ordinary launch admits the first prompt after runtime enrolment.
+The script reads the **acknowledged server journal**
 until answer, finished status and token counters are present. Missing usage is
 unknown, never estimated; it fails the smoke rather than inventing a count.
 It then waits for stop and delete ACKs. Stages have a bounded ten-minute budget;

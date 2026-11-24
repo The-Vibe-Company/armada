@@ -83,20 +83,19 @@ export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
 export ARMADA_ORG='YOUR_STAGING_ORG_UUID'
 export ARMADA_CREDENTIAL='YOUR_CODEX_ACCOUNT_UUID'
 export ARMADA_CREDENTIAL_VERSION='1' # current pin
-export DOCKER_IMAGE='buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 read -r -s -p 'Staging Armada bearer: ' ARMADA_TOKEN; printf '\n'
 export ARMADA_TOKEN
 python3 scripts/smoke-docker-lifecycle.py \
   --server "$ARMADA_STAGING" --org "$ARMADA_ORG" \
   --credential "$ARMADA_CREDENTIAL" --credential-version "$ARMADA_CREDENTIAL_VERSION" \
   --ssh "$DOCKER_SSH" --image "$DOCKER_IMAGE" \
-  --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 --start-host --normal-controls
+  --host-id 70bde9cd-36c9-40af-b15e-65b2f9d3c2a2 --start-host
 unset ARMADA_TOKEN
 ```
 
-Use the already-updated #1405 host binary and retained private state. Initial
-allocation/bootstrap/prompt still use the compatible preview in this check;
-**all conversation status/logs and stop/delete then use ordinary sandbox routes**.
+Use the retained private host state and the image pinned by the deployed server.
+The helper uses the ordinary sandbox API for launch, status, logs, stop and delete.
 Expect DOCKER_OK with reported token counts and
 `PASS: normal Docker status/logs and stop/delete routes confirmed.` Native IDs,
 not model secrets, are printed. Confirm this sandbox appears in normal list and
