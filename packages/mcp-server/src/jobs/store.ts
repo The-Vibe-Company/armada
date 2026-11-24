@@ -18,7 +18,6 @@ import {
   resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
 import type { ModalLaunchHandoff } from "../modal-launch-handoff.ts";
-import { recordOperatorDiagnostic } from "../request-observability.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
 
@@ -43,6 +42,30 @@ const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job
 const ADJACENT_RUNTIME_DISPATCH = `(q.state = 'dispatching'
   and q.dispatch_generation = s.lifecycle_generation - 1
   and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE})`;
+
+const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.request_id
+  and not ${QUEUED_DISPATCH_EVIDENCE}
+  and (s.provider <> 'docker' or not exists(
+    select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
+  )))`;
+
+const OBSOLETE_RUNTIME_PROMPT = `(s.activity_lease_id is distinct from q.request_id
+  and (s.provider <> 'docker' or (
+    not exists(select 1 from public.docker_resume_claims dc
+      where dc.sandbox_id = s.id and dc.request_id = q.request_id)
+    and not exists(select 1 from public.docker_host_jobs dj
+      where dj.bound_sandbox_id = s.id and dj.request_id = q.request_id)
+  ))
+  and exists(
+    select 1 from public.runtime_commands c
+    join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id
+    where c.sandbox_id = s.id and c.request_id = (case when s.provider = 'docker' then 'docker_prompt_' else 'follow_' end) || q.request_id::text
+      and c.result_enc is not null and c.epoch < e.epoch
+      and e.runtime_hash is not null and e.lifecycle_generation = s.lifecycle_generation
+  )
+  and not exists(
+    select 1 from public.runtime_resumes r where r.sandbox_id = s.id and r.request_id = q.request_id
+  ))`;
 
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
@@ -152,9 +175,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     const requestId = job.payload.requestId;
     const claim = claimKey(job, owner);
     const retiring = phase !== "claim";
-    let failedStaleReceipt = false;
     try {
-      const reconciled = await sql.transaction(async (tx) => {
+      return await sql.transaction(async (tx) => {
         // WARNING: Acquire the write lock first to avoid a table lock upgrade against startup model repair.
         await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
         const {
@@ -183,6 +205,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           native_uncertain: boolean;
           failed_docker_wake: boolean;
           abandoned: boolean;
+          unrecoverable_dispatch: boolean;
           defer_dispatch_until: string | null;
         }>(
           `select s.lifecycle_generation::text as generation,
@@ -194,6 +217,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'dispatching' and ${FAILED_DOCKER_WAKE}) as failed_docker_wake,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
+                  (q.state = 'dispatching' and (q.dispatch_generation is null
+                    or q.dispatch_generation < s.lifecycle_generation - 1
+                    or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
+                      and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
+                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_PROMPT}))))
+                    as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
                     and (s.status in ('ready','running')
                       or (s.status = 'starting'
@@ -283,20 +312,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           if (rows.length) return job;
         }
-        if (retiring && (await retireClaim(tx, job, owner, sandbox?.generation ?? null))) {
-          // WARNING: The terminal job still owns the idempotency key, so backfill cannot recover this receipt.
+        if (
+          retiring &&
+          (await retireClaim(tx, job, owner, sandbox?.generation ?? null)) &&
+          sandbox?.unrecoverable_dispatch
+        )
           await failTurnReceipt(tx, sandboxId, requestId, true);
-          failedStaleReceipt = true;
-        }
         return job;
       });
-      if (failedStaleReceipt)
-        recordOperatorDiagnostic(
-          "account_turn.receipt.failed",
-          { errorClass: "Error", message: "Dispatch job retired before receipt settlement.", stack: [] },
-          { sandboxId, operationId: requestId, code: "stale_generation" },
-        );
-      return reconciled;
     } catch (error) {
       const fields = error as { errno?: string; code?: string } | null;
       if ((fields?.errno ?? fields?.code) !== "55P03") throw error;

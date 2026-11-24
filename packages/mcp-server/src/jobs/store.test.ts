@@ -369,7 +369,7 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
 });
 
-async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>, stopped = false) {
+async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
   const goldenId = crypto.randomUUID();
   const id = crypto.randomUUID();
   await f.db.query(
@@ -378,11 +378,9 @@ async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>, stopp
     [goldenId, f.people.org, f.people.owner],
   );
   await f.db.query(
-    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation,
-       runtime_transport, provider_sandbox_id, stopped_at)
-     values ($1, $2, $3, $4, 'codex', 'modal', (case when $5 then 'stopped' else 'starting' end)::sandbox_status,
-       2, 'dialout', case when $5 then 'sb-fixture' end, case when $5 then now() end)`,
-    [id, goldenId, f.people.org, f.people.owner, stopped],
+    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation, runtime_transport)
+     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2, 'dialout')`,
+    [id, goldenId, f.people.org, f.people.owner],
   );
   return id;
 }
@@ -4742,7 +4740,7 @@ test.each([
           [sandboxId, requestId],
         )
       ).rows,
-    ).toEqual([{ state: failedWake || hostJobOnly || resumeClaimOnly ? "failed" : "dispatching", reserved: true }]);
+    ).toEqual([{ state: failedWake ? "failed" : "dispatching", reserved: true }]);
   },
 );
 
@@ -4809,37 +4807,6 @@ test.each([
     ]);
   },
 );
-
-test("a stale Modal wake without dispatch authority fails the sender's receipt", async () => {
-  const f = await turnFixture();
-  const sandboxId = await unboundModalSandbox(f, true);
-  const requestId = await f.accept(sandboxId);
-  await f.db.query("update sandboxes set status='ready',lifecycle_generation=3,stopped_at=null where id=$1", [
-    sandboxId,
-  ]);
-  await f.db.query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='-infinity' where request_id=$1",
-    [requestId],
-  );
-  await f.db.query(
-    `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
-     values ($1,3,2,repeat('a',64))`,
-    [sandboxId],
-  );
-  await f.db.query(
-    `insert into runtime_resumes (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,
-         conversation_id,model,reasoning_effort,phase)
-     values ($1,$2,1,2,0,repeat('a',64),'fixture','fixture','low','dispatched')`,
-    [sandboxId, requestId],
-  );
-  const sent: string[] = [];
-  const runner = f.runnerFor(async (_caller, input) => sent.push(input.request_id!));
-  expect(await runner.reconcileOne(signal)).toBe(true);
-  await runner.drain();
-
-  expect(sent).toEqual([]);
-  expect(await f.queue.status(f.caller, sandboxId, requestId)).toMatchObject({ requestId, failed: true });
-});
 
 test.each([
   "confirmed stop",
