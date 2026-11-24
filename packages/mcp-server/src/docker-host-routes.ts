@@ -7,7 +7,11 @@ import {
   OUTPUT_ARCHIVE_LIMIT,
 } from "@armada/core";
 import { isSnapshotBaselineTool } from "@armada/core/server";
-import { DOCKER_HOST_PREFER_STARTUP_HEADER, type DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
+import {
+  DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
+  DOCKER_HOST_PREFER_STARTUP_HEADER,
+  type DockerHostPollResponse,
+} from "../../core/src/docker-host-wire.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
 import { dockerResourceLimits } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
@@ -382,6 +386,7 @@ export function createDockerHostRoutes(
         const skipSnapshots = body.skipSnapshots === true;
         const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
         const supportsRestore = request.headers.get("x-armada-docker-host-restore") === "1";
+        const supportsMachineBootstrap = request.headers.get(DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER) === "1";
         const preferStartup = request.headers.get(DOCKER_HOST_PREFER_STARTUP_HEADER) === "1";
         const runningIds = (running as string[] | undefined) ?? [];
         let probed = false;
@@ -403,6 +408,7 @@ export function createDockerHostRoutes(
               supportsPhysicalDelete,
               supportsRestore,
               preferStartup,
+              supportsMachineBootstrap,
             );
             if (job || resumeClaims.length) break;
             // Recheck every second with a read-only probe; the full poll above
@@ -428,6 +434,7 @@ export function createDockerHostRoutes(
                 body.resumeClaimProtocol === 1,
                 supportsPhysicalDelete,
                 supportsRestore,
+                supportsMachineBootstrap,
               );
             }
             if (!ready) break;

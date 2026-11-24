@@ -190,9 +190,13 @@ function notRunning(n: number): string {
       and (j.bound_operation is distinct from 'restore' or r.bound_operation not in ('stop','delete','deletePhysical')))
       or (r.snapshot_id is not null and j.snapshot_id is not null)))`;
 }
-function eligibleJob(physical: number, restore: number) {
+function eligibleJob(physical: number, restore: number, bootstrap: number) {
   return `($${physical}::boolean or j.bound_operation is distinct from 'deletePhysical')
     and ($${restore}::boolean or j.bound_operation is distinct from 'restore')
+    and ($${bootstrap}::boolean or j.bound_operation is distinct from 'bootstrap' or not exists(
+      select 1 from public.docker_machine_bindings b
+      where b.sandbox_id=j.bound_sandbox_id and b.host_id=j.host_id
+        and j.request_id=left(encode(sha256(convert_to('docker-machine:' || b.daemon_generation::text || ':bootstrap', 'UTF8')), 'hex'), 32)::uuid))
     and (j.bound_operation='restore' or not exists(
       select 1 from public.docker_host_jobs pending
       where pending.host_id=j.host_id and pending.bound_sandbox_id=j.bound_sandbox_id
@@ -317,6 +321,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     lifecycleGeneration?: string,
     runnerJobId?: string,
     machineRetain?: boolean,
+    machinePhysicalDelete?: true,
   ) {
     const canonical = input(job);
     if (
@@ -328,7 +333,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
     const serialized = bound
-      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId, machineRetain })
+      ? JSON.stringify({
+          bound: 1,
+          job: JSON.parse(canonical),
+          lifecycleGeneration,
+          runnerJobId,
+          machineRetain,
+          machinePhysicalDelete,
+        })
       : canonical;
     const metadata: Bound = {
       snapshot_id: null,
@@ -381,6 +393,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     let runnerJobId: string | undefined;
     let lifecycleGeneration: string | undefined;
     let machineRetain: boolean | undefined;
+    let machinePhysicalDelete = false;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -400,18 +413,24 @@ export function createDockerHostStore(sql: Sql, key: string) {
           stored !== null &&
           "lifecycleGeneration" in stored);
       const machineStop = fenced && row.bound_operation === "stop";
+      machinePhysicalDelete =
+        row.bound_operation === "deletePhysical" &&
+        typeof stored === "object" &&
+        stored !== null &&
+        "machinePhysicalDelete" in stored;
       exact(stored, [
         "bound",
         "job",
         ...(fenced ? ["lifecycleGeneration"] : []),
         ...(machineStop ? ["machineRetain"] : []),
+        ...(machinePhysicalDelete ? ["machinePhysicalDelete"] : []),
         ...(row.bound_operation === "restore" ? ["runnerJobId"] : []),
       ]);
       if (row.bound_operation === "restore") {
         id(stored.runnerJobId);
         runnerJobId = stored.runnerJobId;
       }
-      if (stored.bound !== 1) deny();
+      if (stored.bound !== 1 || (machinePhysicalDelete && stored.machinePhysicalDelete !== true)) deny();
       if (machineStop) {
         if (typeof stored.machineRetain !== "boolean") deny();
         machineRetain = stored.machineRetain;
@@ -455,7 +474,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       job.requestId !== dockerMachineJobId(job.request.generation, job.operation)
     )
       deny();
-    return { job, runnerJobId, lifecycleGeneration, machineCleanup, machineRetain };
+    return { job, runnerJobId, lifecycleGeneration, machineCleanup, machineRetain, machinePhysicalDelete };
   }
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
@@ -792,7 +811,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     const current = BigInt(row.lifecycle_generation);
     if (
       current === BigInt(generation) ||
-      (["stopping", "stopped"].includes(row.status) && current === BigInt(generation) + 1n)
+      (["stopping", "stopped", "failed"].includes(row.status) && current === BigInt(generation) + 1n)
     )
       return generation;
     return undefined;
@@ -822,15 +841,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
     await requireCurrentMachine(tx, row, delivered.job);
     return { ...receipt, retain: delivered.machineRetain };
   }
-  async function physicalRemovalReceipt(tx: Sql, row: Sandbox, machineId: string) {
+  async function physicalRemovalReceipt(tx: Sql, row: Sandbox, machineId: string, machineOnly = false) {
     const { rows } = await tx.query<StoredJob>(
       `select * from public.docker_host_jobs where host_id=$1 and bound_sandbox_id=$2
-       and bound_operation='deletePhysical' order by (outcome='completed' and cancelled_at is null) desc nulls last`,
+       and bound_operation='deletePhysical'
+       order by (outcome is not distinct from 'completed' and cancelled_at is null) desc, position desc`,
       [row.docker_host_id, row.id],
     );
     for (const receipt of rows) {
-      const job = await readJob(receipt);
+      const { job, machinePhysicalDelete } = await readStoredJob(receipt);
       if (
+        (!machineOnly || machinePhysicalDelete) &&
         job.operation === "deletePhysical" &&
         job.request.generation === row.docker_generation &&
         job.machineId === machineId
@@ -849,9 +870,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ).rows[0];
   }
 
+  async function runtimeEnrolled(tx: Sql, row: Sandbox) {
+    const result = await tx.query(
+      `select 1 from public.runtime_enrolments
+       where sandbox_id=$1 and lifecycle_generation=$2 and runtime_hash is not null`,
+      [row.id, row.lifecycle_generation],
+    );
+    return result.rows.length > 0;
+  }
+
   async function machineBootstrapped(tx: Sql, row: Sandbox) {
     const receipt = await machineJob(tx, row, dockerMachineJobId(row.docker_generation, "bootstrap"), "bootstrap");
-    if (receipt?.outcome !== "completed" || receipt.cancelled_at) return undefined;
+    if (!receipt || ((receipt.outcome !== "completed" || receipt.cancelled_at) && !(await runtimeEnrolled(tx, row))))
+      return undefined;
     const job = await readJob(receipt);
     if (job.operation !== "bootstrap") deny();
     return {
@@ -868,6 +899,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     const unknown = { kind: "unknown" } as const;
     if (!Number.isSafeInteger(request.generation) || Number(row.lifecycle_generation) !== request.generation)
       return unknown;
+    try {
+      await state(tx, row, "bootstrap");
+    } catch (error) {
+      if (error instanceof DockerHostDenied) return unknown;
+      throw error;
+    }
     const bindings = createDockerMachineGenerationBindings(tx, {
       hostId: row.docker_host_id,
       installationId: row.docker_installation_id,
@@ -890,7 +927,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         receipt: { operation: "resume", machine: identity },
       };
     }
-    if (!["starting", "ready", "running"].includes(row.status) || row.stop_requested_at !== null) return unknown;
     const bootstrap = await machineBootstrapped(tx, row);
     const operation = (await machineJob(tx, row, daemonGeneration, "restore")) ? "resume" : "create";
     return {
@@ -974,6 +1010,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation !== "create" && operation !== "bootstrap") return false;
     if (operation === "create" && !(await matchesMachineCreateGeneration(tx, row, job.request_id))) return false;
     if (await supersededLifecycle(tx, job)) return false;
+    if (
+      operation === "bootstrap" &&
+      job.request_id === dockerMachineJobId(row.docker_generation, "bootstrap") &&
+      (await runtimeEnrolled(tx, row))
+    )
+      return false;
     return failDockerStartup(tx, row.id, row.lifecycle_generation, "docker_startup_failed", message);
   }
   async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
@@ -1282,12 +1324,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
       resumeClaims: boolean,
       supportsPhysicalDelete = false,
       supportsRestore = false,
+      supportsMachineBootstrap = false,
     ): Promise<boolean> {
       return transaction(async (tx) => {
         const result = await tx.query<{ found: boolean }>(
           `select exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null
-               and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(6, 7)})
+               and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(6, 7, 8)})
            or exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
              join public.sandboxes s on s.id=j.bound_sandbox_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and ${settledRefusedResumeSql})
@@ -1305,6 +1348,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             resumeClaims,
             supportsPhysicalDelete,
             supportsRestore,
+            supportsMachineBootstrap,
           ],
         );
         return result.rows[0]?.found === true;
@@ -2202,6 +2246,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       supportsPhysicalDelete = false,
       supportsRestore = false,
       preferStartup = false,
+      supportsMachineBootstrap = false,
     ): Promise<Job | null> {
       const priority = preferStartup
         ? `case when j.bound_operation in ('create','bootstrap') then 0 else 1 end,${dispatchPriority}`
@@ -2243,8 +2288,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(5, 6)} order by ${priority} limit 1`,
-            [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete, supportsRestore],
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(5, 6, 7)} order by ${priority} limit 1`,
+            [
+              hash(hostToken),
+              installationId,
+              skipSnapshots,
+              running,
+              supportsPhysicalDelete,
+              supportsRestore,
+              supportsMachineBootstrap,
+            ],
           )
         ).rows[0];
         const refusals = (
@@ -2320,8 +2373,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const row = (
           await tx.query<StoredJob & { recovering_receipt: boolean }>(
             `select j.*, (${pendingRefusedResumeSql}) as recovering_receipt
-            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${eligibleJob(4, 5)} order by ${priority} limit 1`,
-            [host.id, skipSnapshots, running, supportsPhysicalDelete, supportsRestore],
+            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${eligibleJob(4, 5, 6)} order by ${priority} limit 1`,
+            [host.id, skipSnapshots, running, supportsPhysicalDelete, supportsRestore, supportsMachineBootstrap],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
@@ -2409,10 +2462,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 supersededPlacement = true;
                 deny();
               }
-            } else if (
-              row.bound_operation !== "deletePhysical" ||
-              row.request_id !== dockerMachineJobId(logical.docker_generation, "deletePhysical")
-            )
+            } else if (row.bound_operation !== "deletePhysical" || !(await readStoredJob(row)).machinePhysicalDelete)
               await state(tx, logical, row.bound_operation ?? deny());
             if (row.bound_operation !== "deletePhysical") await machine(tx, logical, row.bound_operation ?? deny());
             // Create pickup belongs to activation 1. Resume timing comes from its durable host claim.
@@ -2962,6 +3012,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 input(saved) !== input({ ...saved, request: allocation })
               )
                 deny();
+              if (await runtimeEnrolled(tx, row)) return { kind: "completed", value: undefined };
               return mailboxOutcome(existing);
             }
             if (!descriptor || createHash("sha256").update(descriptor.enrolmentToken).digest("hex") !== bindingRef)
@@ -3024,9 +3075,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
               (await allocationReceipt(tx, row)) !== machineId
             )
               deny();
-            const requestId = dockerMachineJobId(row.docker_generation, operation);
-            const existing = await machineJob(tx, row, requestId, operation);
-            if (existing) return mailboxOutcome(existing);
+            const requestId = physical ? randomUUID() : dockerMachineJobId(row.docker_generation, "delete");
+            const existing = physical
+              ? await physicalRemovalReceipt(tx, row, machineId, true)
+              : await machineJob(tx, row, requestId, operation);
+            if (existing) {
+              const outcome = mailboxOutcome(existing);
+              if (!physical || outcome.kind !== "unknown") return outcome;
+            }
+            if (physical) await refuseDraining(tx, hostId);
             const allocation = await machine(tx, row, operation);
             signal?.throwIfAborted();
             await insert(
@@ -3042,6 +3099,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 bound_operation: operation,
               },
               physical ? String(row.lifecycle_generation) : String(generation),
+              undefined,
+              undefined,
+              physical ? true : undefined,
             );
             return { kind: "pending" };
           });

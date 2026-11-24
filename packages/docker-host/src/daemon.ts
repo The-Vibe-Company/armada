@@ -1170,7 +1170,7 @@ function allocationMachineId(result: unknown) {
 
 function isUncertainDockerFailure(operation: Job["operation"], error: unknown) {
   return (
-    (operation === "restore" || operation === "stop" || operation === "delete") &&
+    (operation === "restore" || operation === "stop" || operation === "delete" || operation === "deletePhysical") &&
     error instanceof DockerMachineError &&
     error.code === "docker_failed"
   );
