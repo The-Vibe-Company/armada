@@ -30,7 +30,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeGitHub } from "../src/runtime-github.ts";
+import { runtimeWorkspace } from "../src/runtime-workspace.ts";
 import { type SqlDriver, sqlOver } from "../src/sql.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -330,6 +335,7 @@ export interface FakeGitHub {
   connect(userId: string, login: string, githubId: number): Promise<void>;
   /** Refresh tokens GitHub was asked to refresh, in order. */
   refreshed: string[];
+  runtimeIdentities: { name: string; email: string }[];
   /** The access tokens it handed out. */
   accessTokens: string[];
   /** Makes GitHub refuse every refresh token, as after a revocation. */
@@ -350,6 +356,7 @@ function fakeGitHub(db: PGlite) {
       );
     },
     refreshed,
+    runtimeIdentities: [],
     accessTokens,
     revokeEverything() {
       revoked = true;
@@ -433,6 +440,7 @@ interface HarnessOptions {
   admitModalLaunch?: HandlerOptions["admitModalLaunch"];
   modalProviderFor?: HandlerOptions["modalProviderFor"];
   providerFor?: HandlerOptions["providerFor"];
+  enrolledLaunch?: boolean;
   modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
   connections?: HandlerOptions["connections"];
 }
@@ -506,15 +514,41 @@ function createTestServer(
     },
     provider: async () => boat.provider,
   });
+  const sql = sqlFor(db);
+  const vault = createSqlVaultStore(sql);
+  const github = { store: vault, app: GITHUB_APP, fetch: fakeGit.fetch };
+  const runtime = enrolledLaunchPolicy(sql);
+  const runtimeGitHub =
+    options.enrolledLaunch &&
+    createRuntimeGitHub({
+      sql,
+      key: ENCRYPTION_KEY,
+      origin: PUBLIC_URL,
+      github: { ...github, encryptionKey: ENCRYPTION_KEY },
+      commands: {
+        ...createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
+        async call(_ownerId, command) {
+          if (command.op !== "configureGitHub" || !command.configuration?.identity)
+            throw Error("Unexpected GitHub fixture command");
+          fakeGit.github.runtimeIdentities.push(command.configuration.identity);
+          return {
+            epoch: command.configuration.generation,
+            requestId: command.requestId,
+            status: 200,
+            body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+          };
+        },
+      },
+    });
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
     oauth,
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
-    data: createSqlData(options.sql ? options.sql(db) : db),
-    vault: createSqlVaultStore(sqlFor(db)),
+    data: createSqlData(sql),
+    vault,
     encryptionKey: ENCRYPTION_KEY,
-    github: { store: createSqlVaultStore(sqlFor(db)), app: GITHUB_APP, fetch: fakeGit.fetch },
+    github,
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
@@ -526,7 +560,26 @@ function createTestServer(
     sleep: async (ms) => {
       clock.now = new Date(clock.now.getTime() + ms);
     },
-    launch: { sleep: async () => {}, sandboxPolls: 3 },
+    launch: {
+      sleep: async () => {},
+      sandboxPolls: 3,
+      ...(runtimeGitHub && {
+        runtime: {
+          async start(input) {
+            const agent = await runtime.start(input);
+            const peer = {
+              workspaceHealth: async () => {},
+              workspaceExec: async (request: ExecRequest) => {
+                const output = await input.host.exec(request);
+                if (output.detached) throw Error("Unexpected detached workspace command");
+                return output;
+              },
+            };
+            return { ...agent, ...runtimeWorkspace(input, peer, agent.epoch, runtimeGitHub) };
+          },
+        },
+      }),
+    },
   });
   const clients: Client[] = [];
   const joined = new Set<string>();

@@ -6,8 +6,9 @@ import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { seedPersistedBoat } from "./persisted-boat.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, type FakeBoat, harness, launchSandboxId, PUBLIC_URL } from "./support.ts";
+import { call, ENCRYPTION_KEY, type FakeBoat, harness, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -37,14 +38,7 @@ test("explicit report validates the latest finished turn and persists through AP
     const { client, token, people, boat, db } = server;
     const bearer = await token(people.member);
     const mcp = await client(bearer);
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "work",
-    });
-    expect(launched.isError).toBe(false);
-    const id = launchSandboxId(launched.data);
+    const id = await seedPersistedBoat({ db, boat, people }, { prompt: "work" });
     const report = (outcome: unknown, prompt_id = "prompt_1") => call(mcp, "report", { id, prompt_id, outcome });
     expect((await report({ state: "ready" })).isError).toBe(true); // still running
     finishMatched(boat, "prompt_1");
@@ -114,13 +108,7 @@ test("send and steer clear outcomes before admission and fence replacement recei
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "first",
-    });
-    const id = launchSandboxId(launched.data);
+    const id = await seedPersistedBoat({ db, boat, people }, { prompt: "first" });
     finishMatched(boat, "prompt_1");
     expect((await call(mcp, "report", { id, prompt_id: "prompt_1", outcome: { state: "ready" } })).isError).toBe(false);
     // Observe actual SQL state at the provider boundary, not just after completion.
@@ -187,9 +175,7 @@ test("a restart steer registers its replacement run so settlement exports it", a
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = launchSandboxId(
-      (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
-    );
+    const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", prompt: "first" });
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -227,9 +213,7 @@ test("a new restart steer preserves an older unresolved replacement across downt
   try {
     const { client, token, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const id = launchSandboxId(
-      (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
-    );
+    const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", prompt: "first" });
     await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
       people.org,
       await encryptSecret("{}", ENCRYPTION_KEY),
@@ -293,9 +277,7 @@ for (const stopFirst of [false, true])
     try {
       const { client, token, people, boat, db } = server;
       const mcp = await client(await token(people.member));
-      const id = launchSandboxId(
-        (await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex", prompt: "first" })).data,
-      );
+      const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", prompt: "first" });
       await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
         people.org,
         await encryptSecret("{}", ENCRYPTION_KEY),
