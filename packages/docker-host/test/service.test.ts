@@ -99,7 +99,6 @@ async function upgradeFixture(instance?: string) {
   const directory = stateDirectory(home, instance);
   const markerFile = join(directory, "managed.json");
   const unitFile = join(home, ".config/systemd/user", `${instanceName(instance)}.service`);
-  const executable = join(home, "verified-download");
   const oldBytes = "previous verified binary",
     newBytes = "new verified binary";
   const hash = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
@@ -116,7 +115,7 @@ async function upgradeFixture(instance?: string) {
   for (const path of [join(home, ".local/bin"), directory, join(home, ".config/systemd/user")])
     await mkdir(path, { recursive: true, mode: 0o700 });
   await writeFile(binary, oldBytes, { mode: 0o700 });
-  await writeFile(executable, newBytes, { mode: 0o700 });
+
   await writeFile(unitFile, unit, { mode: 0o600 });
   await writeFile(markerFile, JSON.stringify(marker), { mode: 0o600 });
   await writeFile(join(directory, "state.json"), JSON.stringify(state), { mode: 0o600 });
@@ -130,9 +129,17 @@ async function upgradeFixture(instance?: string) {
       };
     },
   };
+  const requests: string[] = [];
+  const download = { pin: newBytes, artifact: newBytes };
   const io: UpgradeServiceIo = {
     home,
-    executable,
+    fetch: async (url) => {
+      requests.push(url);
+      if (url === `${state.server}/api/docker-host/install.json`)
+        return Response.json({ [process.arch]: hash(download.pin) });
+      if (url === `${state.server}/api/runtime/artifacts/${hash(download.pin)}`) return new Response(download.artifact);
+      throw new Error("Unexpected upgrade URL");
+    },
     service: async (args) => {
       events.push(args.join(" "));
     },
@@ -143,7 +150,6 @@ async function upgradeFixture(instance?: string) {
     directory,
     markerFile,
     unitFile,
-    executable,
     oldBytes,
     newBytes,
     hash,
@@ -151,6 +157,8 @@ async function upgradeFixture(instance?: string) {
     unit,
     marker,
     events,
+    requests,
+    download,
     store,
     io,
   };
@@ -164,7 +172,7 @@ test.each(["before swap", "after swap"])(
       await writeFile(f.markerFile, JSON.stringify({ ...f.marker, pendingBinarySha256: f.hash(f.newBytes) }));
       if (phase === "after swap") await writeFile(f.binary, f.newBytes);
       await validateInstallation(f.state, f.home);
-      await writeFile(f.executable, "later verified binary");
+      f.download.pin = f.download.artifact = "later verified binary";
       await upgradeService(f.store, f.state.server, f.io);
       expect(await readFile(f.binary, "utf8")).toBe("later verified binary");
       expect(JSON.parse(await readFile(f.markerFile, "utf8"))).toEqual({
@@ -235,7 +243,7 @@ test.each([
     ] as const) {
       if (change === name) {
         await rm(path);
-        await symlink(f.executable, path);
+        await symlink(f.directory, path);
       }
     }
     if (change === "parent symlink") {
@@ -254,17 +262,47 @@ test.each([
   }
 });
 
-test("same verified binary with a stable marker leaves the running service untouched", async () => {
+test("a matching server pin starts the service without replacing the binary", async () => {
   const f = await upgradeFixture();
   try {
-    await writeFile(f.executable, f.oldBytes);
+    f.download.pin = f.oldBytes;
     const inode = (await lstat(f.binary)).ino;
     const marker = await readFile(f.markerFile, "utf8");
     await upgradeService(f.store, f.state.server, f.io);
-    expect(f.events).toEqual([]);
+    expect(f.events).toEqual(["systemctl --user start armada-docker-host.service"]);
+    expect(f.requests).toEqual([`${f.state.server}/api/docker-host/install.json`]);
     expect((await lstat(f.binary)).ino).toBe(inode);
     expect(await readFile(f.markerFile, "utf8")).toBe(marker);
     expect(await f.store.load()).toEqual(f.state);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("an artifact that fails SHA-256 verification leaves the installation running", async () => {
+  const f = await upgradeFixture();
+  try {
+    f.download.artifact = "unexpected artifact";
+    await expect(upgradeService(f.store, f.state.server, f.io)).rejects.toThrow(
+      "Host artifact SHA-256 mismatch. Check the server and retry:",
+    );
+    expect(f.events).toEqual([]);
+    expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
+    await validateInstallation(f.state, f.home);
+  } finally {
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+test("upgrade refuses success if the binary differs from the server pin after service start", async () => {
+  const f = await upgradeFixture();
+  try {
+    f.io.service = async (args) => {
+      if (args.includes("start")) await writeFile(f.binary, f.oldBytes);
+    };
+    await expect(upgradeService(f.store, f.state.server, f.io)).rejects.toThrow(
+      "Installed Docker host SHA-256 differs from the server pin.",
+    );
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }
@@ -282,7 +320,10 @@ test("verified namespaced upgrade atomically replaces its own binary and preserv
     await upgradeService(f.store, f.state.server, f.io, instance);
     expect(await readFile(f.binary, "utf8")).toBe(f.newBytes);
     expect((await lstat(f.binary)).ino).not.toBe(oldInode);
-    expect(await readFile(f.executable, "utf8")).toBe(f.newBytes);
+    expect(f.requests).toEqual([
+      `${f.state.server}/api/docker-host/install.json`,
+      `${f.state.server}/api/runtime/artifacts/${f.hash(f.newBytes)}`,
+    ]);
     expect(JSON.parse(await readFile(f.markerFile, "utf8"))).toEqual({ ...f.marker, binarySha256: f.hash(f.newBytes) });
     expect(await readFile(stateFile, "utf8")).toBe(stateBytes);
     expect(await readFile(f.unitFile, "utf8")).toBe(f.unit);
