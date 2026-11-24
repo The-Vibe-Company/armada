@@ -27,6 +27,17 @@ export function jobRequestKey(orgId: string, kind: string, ownerId: string, key:
   return JSON.stringify(["request", orgId, kind, ownerId, key]);
 }
 
+export async function recordDockerLaunchEvidence(
+  tx: Sql,
+  jobId: string,
+  evidence: { docker_actor_epoch: string } | { docker_receipt: string },
+) {
+  await tx.query(
+    "update public.jobs set outcome=coalesce(outcome,'{}'::jsonb)||$2::jsonb where id=$1 and kind='launch'",
+    [jobId, JSON.stringify(evidence)],
+  );
+}
+
 export class ConflictingJobRequest extends Error {
   constructor() {
     super("Conflicting job request.");
@@ -635,7 +646,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const complete = async (db: Sql, generation: string | null) => {
         const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
-             case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
+             case when $5 = 'failed' and evidence ? 'docker_actor_epoch'
+                  then evidence || jsonb_build_object('reason', $8::text)
+                  when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (
              select case when kind = 'launch' and $6::jsonb is not null

@@ -71,7 +71,7 @@ import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
-type MachineHost = { hostId: string; installationId: string };
+type MachineHost = { hostId: string; installationId: string; canDispatch?: (tx: Sql) => Promise<boolean> };
 type RestoreClaim = Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">;
 type DockerMachineOptions = MachineHost & {
   actor: Actor;
@@ -574,13 +574,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
     ).rows[0];
     if (!original) {
-      if (operation !== "create") deny();
+      if (operation !== "create" && (!isCleanupOperation(operation) || !(await currentMachineCleanup(tx, row)))) deny();
       // Cleanup and replay validate an existing sandbox's identity; a drain must not hide its source.
-      const source = row.docker_snapshot_id
-        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
-            allowDraining: true,
-          })
-        : undefined;
+      const source =
+        operation === "create" && row.docker_snapshot_id
+          ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
+              allowDraining: true,
+            })
+          : undefined;
       if (
         source &&
         (source.image_id !== row.docker_image ||
@@ -1833,6 +1834,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             : source.kind !== "image" || source.ref !== allocation.image)
         )
           deny();
+        if (scope?.canDispatch && !(await scope.canDispatch(tx))) deny();
         signal?.throwIfAborted();
         await insert(
           tx,
@@ -2060,7 +2062,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           deny();
         if (!known && selection.operation === "stop" && selection.onlyIfIdle && row.status === "ready") {
           const pendingWork = await tx.query(
-            `select 1 from public.docker_launch_requests where sandbox_id=$1 and result_enc is null
+            `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
              union all
              select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
              union all
@@ -2973,8 +2975,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
 
   return {
     ...store,
-    machine({ actor, hostId, installationId, inventory, bootstrapDescriptor, restoreClaim }: DockerMachineOptions) {
-      const scope = { hostId, installationId };
+    machine(options: DockerMachineOptions) {
+      const { actor, hostId, installationId, inventory, bootstrapDescriptor, restoreClaim } = options;
+      const scope = { hostId, installationId, ...(options.canDispatch && { canDispatch: options.canDispatch }) };
       const descriptor = bootstrapDescriptor && structuredClone(bootstrapDescriptor);
       const claim = restoreClaim && { ...restoreClaim };
       return createDockerMachineAdapter({

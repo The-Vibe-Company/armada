@@ -727,12 +727,13 @@ for (const mode of [
               break;
             }
             case "docker/sandboxes/get":
-              expect(mode.startsWith("snapshot_lost_receipt")).toBe(true);
               expect(body).toEqual({ org: p, sandboxId: sandboxId(p) });
               result = {
                 id: sandboxId(p),
                 provider: "docker",
-                snapshotId: mode === "snapshot_lost_receipt" ? snapshotId : "other-snapshot",
+                snapshotId: ["snapshot_wrong_receipt", "snapshot_lost_receipt_wrong_source"].includes(mode)
+                  ? "other-snapshot"
+                  : snapshotId,
                 hostId: "owned-host",
                 image: snapshotImage,
                 orgId: p,
@@ -742,7 +743,7 @@ for (const mode of [
               };
               break;
             case "sandbox/list":
-              if (mode.startsWith("snapshot_lost_receipt") && p === "docker") {
+              if (!dockerLaunchScenario && p === "docker") {
                 expect(body.externalRef).toBe(dockerLaunchKey);
                 result = {
                   sandboxes: [{ id: sandboxId(p), provider: p, externalRef: dockerLaunchKey, status: "ready" }],
@@ -872,31 +873,22 @@ for (const mode of [
               if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
               if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
-              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, ordinaryDockerId);
-              if (mode.startsWith("snapshot_lost_receipt") && p === "docker") {
+              else if (p === "docker" && body.externalRef) {
+                ordinaryIds.set(p, ordinaryDockerId);
                 dockerLaunchKey = body.externalRef;
-                await advance(1_500);
-                return Response.json(
-                  { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
-                  { status: 504, headers: { "x-request-id": launchRequestId } },
-                );
+                if (mode.startsWith("snapshot_lost_receipt")) {
+                  await advance(1_500);
+                  return Response.json(
+                    { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
+                    { status: 504, headers: { "x-request-id": launchRequestId } },
+                  );
+                }
               }
               result = {
-                sandbox: {
-                  id: sandboxId(p),
-                  provider: p,
-                  externalRef: body.externalRef,
-                  ...(p === "docker" && mode.startsWith("snapshot_")
-                    ? {
-                        snapshotId: mode === "snapshot_wrong_receipt" ? "other-snapshot" : snapshotId,
-                        hostId: "owned-host",
-                        image: snapshotImage,
-                        orgId: p,
-                        ownerId: snapshotOwner,
-                        visibility: "private",
-                      }
-                    : {}),
-                },
+                sandbox:
+                  p === "docker"
+                    ? { id: sandboxId(p), status: "starting" }
+                    : { id: sandboxId(p), provider: p, externalRef: body.externalRef },
               };
               break;
             case "sandbox/wait": {

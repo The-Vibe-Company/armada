@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -7,7 +7,6 @@ import {
   DOCKER_HOST_PROTOCOL_HEADER,
   DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
-  type DockerLaunchResult,
   type DockerSandboxStatus,
   type Harness,
   type LaunchCredentialResolver,
@@ -19,7 +18,7 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
-import { LOGS_OUTPUT, launchEnvelope } from "@armada/core/contract";
+import { LOGS_OUTPUT, modalLaunchReceipt } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlMcpLeasePort,
@@ -33,7 +32,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
+import { dockerLaunchBody } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import { httpApi } from "../../docker-host/src/native.ts";
 import { Armada, ArmadaError, type SendInput } from "../../sdk/src/index.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
@@ -52,6 +51,7 @@ import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { responseJsonSchema } from "../src/launch-response-schemas.ts";
@@ -67,6 +67,9 @@ import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
 const database = useMigratedDatabase();
+afterEach(async () => {
+  await database().query("delete from public.jobs where kind='launch' and outcome ? 'docker_actor_epoch'");
+});
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -206,12 +209,28 @@ async function fixture(
   };
   async function step() {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
-    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], pollResumeClaims)) {
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], pollResumeClaims, false, false, true)) {
       if (pollResumeClaims) {
         for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
           await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
       }
-      job = await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
+      const version = options.daemonVersion ?? "2.28.0";
+      job = await hosts.poll(
+        host.hostToken,
+        installationId,
+        version,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        false,
+        false,
+        false,
+        true,
+      );
     }
     if (job) {
       jobs.push(job);
@@ -222,6 +241,7 @@ async function fixture(
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failed ? "failed" : "completed",
+        ...(!failed && job.operation === "create" ? { machineId: "a".repeat(64) } : {}),
         ...(failed && failCreate !== "plain"
           ? { reason: failCreate === "image" ? ("image_unavailable" as const) : ("disk_full" as const) }
           : {}),
@@ -410,7 +430,7 @@ async function fixture(
     releaseImage: string | (() => never) | null = officialImage,
     deferLaunch = false,
   ) {
-    return createDockerNormalLaunch(target, key, {
+    const launch = createDockerNormalLaunch(target, key, {
       enabled,
       deferLaunch,
       get officialImage() {
@@ -423,6 +443,33 @@ async function fixture(
       github,
       mcp: mcp(target),
     });
+    const jobs = createJobsStore(sql, key);
+    const workerId = randomUUID();
+    async function runClaim() {
+      const job = await jobs.claim("launch", workerId, 30, 1);
+      if (!job) return false;
+      const result = await launch.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async (tx) => (await jobs.inspect(job, workerId, tx)) === "dispatch",
+        handoffGeneration: async () => {
+          throw Error("Unexpected launch generation handoff.");
+        },
+      });
+      await jobs.complete(job, workerId, result);
+      if (result.status !== "retry" || !drive) return false;
+      await step();
+      await db.query("update public.jobs set run_after=now() where id=$1", [job.id]);
+      return true;
+    }
+    return {
+      ...launch,
+      runClaim,
+      async drain() {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (!(await runClaim())) return;
+        }
+      },
+    };
   }
   return {
     actor,
@@ -532,7 +579,7 @@ async function counts(f: Fixture) {
   return (
     await db.query<{ sandboxes: number; claims: number; jobs: number; commands: number }>(
       `select (select count(*)::int from public.sandboxes where id=$1) as sandboxes,
-    (select count(*)::int from public.docker_launch_requests where sandbox_id=$1) as claims,
+    (select count(*)::int from public.docker_launch_manifests where sandbox_id=$1) as claims,
     (select count(*)::int from public.docker_host_jobs where bound_sandbox_id=$1) as jobs,
     (select count(*)::int from public.runtime_commands where sandbox_id=$1) as commands`,
       [f.body.requestId],
@@ -553,12 +600,12 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
   expect(
     (
       await db.query<{ actor_epoch: string }>(
-        "select actor_epoch::text from public.docker_launch_requests where sandbox_id=$1",
+        "select actor_epoch::text from public.docker_launch_manifests where sandbox_id=$1",
         [f.body.requestId],
       )
     ).rows,
   ).toEqual([{ actor_epoch: "0" }]);
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 0, commands: 0 });
   await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
     f.actor.orgId,
     f.actor.userId,
@@ -627,7 +674,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(JSON.stringify(result)).not.toContain(f.secret);
   const claim = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer>; request_hash: string }>(
-      `select request_enc,result_enc,request_hash from public.docker_launch_requests where sandbox_id=$1`,
+      `select request_enc,result_enc,request_hash from public.docker_launch_manifests where sandbox_id=$1`,
       [f.body.requestId],
     )
   ).rows[0];
@@ -686,7 +733,7 @@ test("unknown timeout and response loss survive restart and concurrent exact ret
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
   const before = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      `select request_enc from public.docker_launch_requests where sandbox_id=$1`,
+      `select request_enc from public.docker_launch_manifests where sandbox_id=$1`,
       [f.body.requestId],
     )
   ).rows[0];
@@ -729,7 +776,7 @@ test("unknown timeout and response loss survive restart and concurrent exact ret
   expect(f.resolutions()).toBe(1);
   const after = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      `select request_enc from public.docker_launch_requests where sandbox_id=$1`,
+      `select request_enc from public.docker_launch_manifests where sandbox_id=$1`,
       [f.body.requestId],
     )
   ).rows[0];
@@ -965,7 +1012,7 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   });
   const replay = await post("sandbox/launch", { ...base, idempotencyKey, ttlSeconds: 3600 });
   publishedResponse("sandbox/launch").parse(replay);
-  expect(replay).toEqual({ ...result, promptId: null, conversationId: null });
+  expect(replay).toEqual({ sandbox: { id: result.sandbox.id, status: result.sandbox.status } });
   expect(
     (
       await database().query(
@@ -1158,31 +1205,44 @@ test("Docker sends through the production-wired account queue key a legacy body,
     }),
   ]);
 });
-test("canonical Docker admission replays a scoped key and makes the external reference discoverable", async () => {
-  const f = await fixture();
-  const { org, requestId: _requestId, ...fields } = f.body;
-  const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
-  const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
+test.each([false, true])(
+  "ordinary Docker receipt replays its key before and after backfill (historical=%s)",
+  async (historical) => {
+    const f = await fixture();
+    const { org, requestId: _requestId, ...fields } = f.body;
+    const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
+    const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
 
-  const admitted = launchEnvelope.parse(await post("sandbox/launch", body));
-  try {
-    expect(admitted.sandbox).toMatchObject({ status: "starting", externalRef: body.externalRef });
-    expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
-    await expect(
-      dispatchControlCommand("sandbox/launch", f.caller, { ...body, externalRef: "customer:43" }, options),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect(await post("sandbox/list", { org, externalRef: body.externalRef })).toMatchObject({
-      sandboxes: [{ id: admitted.sandbox.id, externalRef: body.externalRef }],
-    });
-    expect(await post("sandbox/status", { org, id: admitted.sandbox.id })).toMatchObject({
-      externalRef: body.externalRef,
-    });
-    expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
-  } finally {
-    // Later fixtures drain the shared database. Leave no live admission for their workers to claim.
-    await sql.query("update public.sandboxes set status='failed' where id=$1", [admitted.sandbox.id]);
-  }
-});
+    const originalId = dockerLaunchRequestId(key, f.actor.userId, org, body.idempotencyKey);
+    if (historical) {
+      await f.service().launch(f.caller, { ...fields, org, requestId: originalId, externalRef: body.externalRef });
+      await sql.query("update docker_launch_requests set async_launch=true where sandbox_id=$1", [originalId]);
+      const migration = await Bun.file(
+        new URL("../../../supabase/migrations/20261124200500_docker_ordinary_launch_jobs.sql", import.meta.url),
+      ).text();
+      await sql.query(migration.slice(migration.indexOf("insert into public.jobs"), migration.indexOf("-- Setup")));
+    }
+    const admitted = modalLaunchReceipt.parse(await post("sandbox/launch", body));
+    try {
+      expect(admitted.sandbox).toEqual({ id: originalId, status: historical ? "running" : "starting" });
+      expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
+      await expect(
+        dispatchControlCommand("sandbox/launch", f.caller, { ...body, externalRef: "customer:43" }, options),
+      ).rejects.toMatchObject({ code: "conflict" });
+      expect(await post("sandbox/list", { org, externalRef: body.externalRef })).toMatchObject({
+        sandboxes: [{ id: admitted.sandbox.id, externalRef: body.externalRef }],
+      });
+      expect(await post("sandbox/status", { org, id: admitted.sandbox.id })).toMatchObject({
+        externalRef: body.externalRef,
+      });
+      expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
+      expect((await counts({ ...f, body: { ...f.body, requestId: originalId } }))?.jobs).toBe(historical ? 2 : 0);
+    } finally {
+      // Later fixtures drain the shared database. Leave no live admission for their workers to claim.
+      await sql.query("update public.sandboxes set status='failed' where id=$1", [admitted.sandbox.id]);
+    }
+  },
+);
 
 const competingPromptRefusals = [
   ["conversation_busy", "conversation_busy", true],
@@ -1233,24 +1293,10 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     options.dockerLaunch = f.service();
     // The published contract describes the dashboard's Docker request and its receipt.
     publishedRequest("sandbox/launch").parse(body);
-    const launched = (await post("sandbox/launch", body)) as DockerLaunchResult;
+    const launched = modalLaunchReceipt.parse(await post("sandbox/launch", body));
     publishedResponse("sandbox/launch").parse(launched);
-    expect(launchedDockerSandbox(launched)).toBe(f.body.requestId);
-    expect(launched).toMatchObject({
-      sandbox: {
-        provider: "docker",
-        goldenId: null,
-        hostId: f.hostId,
-        image: officialImage,
-        model: "normal-http-model",
-        reasoningEffort: "high",
-        credentialVersion: 2,
-        status: "running",
-      },
-      runtime: { kind: "armada", epoch: "1" },
-      promptId: f.receipt.promptId,
-      conversationId: f.receipt.conversationId,
-    });
+    expect(launched.sandbox.id).toBe(f.body.requestId);
+    expect(launched).toEqual({ sandbox: { id: f.body.requestId, status: "running" } });
     expect(f.native).toContainEqual(
       expect.objectContaining({
         op: "prompt",
@@ -1483,7 +1529,7 @@ test.each(["codex", "opencode"] as const)(
     await launch.launch(f.caller, body);
     const stored = (
       await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from docker_launch_requests where sandbox_id=$1",
+        "select request_enc from docker_launch_manifests where sandbox_id=$1",
         [f.body.requestId],
       )
     ).rows[0];
@@ -1558,7 +1604,7 @@ test("legacy initial prompt replay retains its already-enqueued conversation pay
   await server.drain();
   const claim = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from docker_launch_requests where sandbox_id=$1",
+      "select request_enc from docker_launch_manifests where sandbox_id=$1",
       [f.body.requestId],
     )
   ).rows[0];
@@ -1580,10 +1626,10 @@ test("legacy initial prompt replay retains its already-enqueued conversation pay
     commandId,
     await encryptSecret(JSON.stringify(old), key),
   ]);
-  await db.query("update docker_launch_requests set request_enc=$2,result_enc=null where sandbox_id=$1", [
-    f.body.requestId,
-    await encryptSecret(JSON.stringify(manifest), key),
-  ]);
+  await db.query(
+    "update jobs set payload_enc=$2,outcome=outcome-'docker_receipt',state='queued' where sandbox_id=$1 and kind='launch'",
+    [f.body.requestId, await encryptSecret(JSON.stringify(manifest), key)],
+  );
   await db.query("update sandboxes set conversation_ids='{}'::text[] where id=$1", [f.body.requestId]);
   const actualConversation = f.receipt.conversationId;
   const controls = createDockerSandboxControls(sql, key, {
@@ -1613,7 +1659,7 @@ async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.pr
   if (!session) throw Error("no runtime");
   const launch = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from docker_launch_requests where sandbox_id=$1",
+      "select request_enc from docker_launch_manifests where sandbox_id=$1",
       [f.body.requestId],
     )
   ).rows[0];
@@ -1654,7 +1700,7 @@ test.each([false, true])(
     const server = f.service(sql, true, 10000, officialImage, true);
     const { prompt: _prompt, ...empty } = f.body;
     const accepted = await server.launch(f.caller, initial ? f.body : empty);
-    expect(launchedDockerSandbox(accepted)).toBe(f.body.requestId);
+    expect(accepted.sandbox.id).toBe(f.body.requestId);
     let waited = false;
     const sender = createDockerNormalSend(sql, key, {
       enabled: true,
@@ -2025,7 +2071,7 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
     handled: true,
     result: { id: f.body.requestId, status: "stopped" },
   });
-  expect(f.jobs.map((j) => (j as { operation: string }).operation)).toEqual(["stop"]);
+  expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["stop"]);
   await server.drain();
   await server.drainQueued();
   expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queuedId })).toMatchObject({
@@ -2048,7 +2094,11 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
       return sql.transaction((tx) =>
         work({
           query: (q, v) => {
-            if (!failed && q.startsWith("update public.docker_launch_requests set result_enc=")) {
+            if (
+              !failed &&
+              q.startsWith("update public.jobs set outcome=") &&
+              String(v?.[1]).includes("docker_receipt")
+            ) {
               failed = true;
               throw Error("synthetic lost receipt publication");
             }
@@ -2064,7 +2114,9 @@ test("deferred launch reconciles an uncertain first-prompt receipt without marki
     status: "unavailable",
     message: "GitHub preparation has not completed for this launch.",
   });
-  await server.drain();
+  await server.runClaim();
+  await server.runClaim();
+  await server.runClaim();
   expect(failed).toBe(true);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
   const recovered = f.service(sql, true, 10000, officialImage, true);
@@ -2115,15 +2167,15 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       await db.query("update public.credentials set is_default=false where id=$1", [f.body.credentialId]);
       await db.query("update public.credentials set is_default=true where id=$1", [laterAccount]);
       await db.query(
-        "update public.docker_launch_requests set worker_id=$2,worker_expires_at=now()+interval '1 hour' where sandbox_id=$1",
+        "update public.jobs set state='leased',lease_owner=$2,lease_until=now()+interval '1 hour' where sandbox_id=$1",
         [body.requestId, randomUUID()],
       );
       await restarted.drain();
       expect(f.native).toHaveLength(0);
-      await db.query(
-        "update public.docker_launch_requests set worker_expires_at=now()-interval '1 hour' where sandbox_id=$1",
-        [body.requestId],
-      );
+      await db.query("update public.jobs set lease_until=now()-interval '1 hour' where sandbox_id=$1", [
+        body.requestId,
+      ]);
+      await first.runClaim();
     }
     await restarted.drain();
     const completed = await restarted.launch(caller, body);
@@ -2134,6 +2186,15 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       expect(f.checkoutStatuses).toEqual(["ready"]);
       expect(completed.promptId).toBe(f.receipt.promptId);
       expect(completed.runtime?.epoch).toBe(f.session()?.epoch);
+      expect(f.jobs.filter((job) => (job as { operation: string }).operation === "create")).toHaveLength(1);
+      expect(
+        (
+          await db.query<{ machine_id: string }>(
+            "select result_machine_id as machine_id from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'",
+            [body.requestId],
+          )
+        ).rows,
+      ).toEqual([{ machine_id: "a".repeat(64) }]);
       const before = f.native.length;
       await restarted.drain();
       expect(f.native).toHaveLength(before);
@@ -2443,7 +2504,7 @@ test("Docker delivers value-free secret references through native environment an
   expect(JSON.stringify(f.jobs)).not.toContain(canary);
   const claim = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+      "select request_enc from public.docker_launch_manifests where sandbox_id=$1",
       [f.body.requestId],
     )
   ).rows[0];
@@ -2657,7 +2718,7 @@ test("legacy Docker claims without preparation keep their original hash and do n
   await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
   const row = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string }>(
-      "select request_enc,request_hash from public.docker_launch_requests where sandbox_id=$1",
+      "select request_enc,request_hash from public.docker_launch_manifests where sandbox_id=$1",
       [f.body.requestId],
     )
   ).rows[0];
@@ -2678,7 +2739,7 @@ test("legacy Docker claims without preparation keep their original hash and do n
   expect(
     (
       await db.query<{ request_hash: string }>(
-        "select request_hash from public.docker_launch_requests where sandbox_id=$1",
+        "select request_hash from public.docker_launch_manifests where sandbox_id=$1",
         [f.body.requestId],
       )
     ).rows[0]?.request_hash,
@@ -3919,7 +3980,7 @@ test.each(["account_full", "incompatible_model"] as const)(
       const {
         rows: [row],
       } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from docker_launch_requests where sandbox_id=$1",
+        "select request_enc from docker_launch_manifests where sandbox_id=$1",
         [body.requestId],
       );
       expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({

@@ -50,15 +50,19 @@ import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
+import { createDockerHostStore } from "./docker-host-store.ts";
 import { dockerPoolOpenCodeModel, resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
+import { DockerMachinePending } from "./docker-machine-adapter.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import type { Job, JobContext } from "./jobs/runner.ts";
+import { createJobsStore, recordDockerLaunchEvidence, withJobLease } from "./jobs/store.ts";
 import { admitAccount, preparePoolCandidates } from "./launch-account-pool.ts";
 import type { launchCredentials } from "./launch-credentials.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
@@ -74,7 +78,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { recordDeferredDockerLaunchFailure } from "./sandbox-lifecycle.ts";
+import { recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -303,6 +307,7 @@ const notReady = (row: Row) => {
     ? new LaunchError("no_credentials", message)
     : failure("sandbox_not_ready", dockerSandboxFailureReason(row.status_reason));
 };
+const dockerJobKey = (sandboxId: string) => JSON.stringify(["docker", sandboxId]);
 const iso = (date: Date | string) => new Date(date).toISOString();
 const active = (row: Row) =>
   ["starting", "ready", "running"].includes(row.status) &&
@@ -325,7 +330,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   async function member(tx: Sql, actor: { userId: string; orgId: string }) {
     const membership = (
       await tx.query<{ role: GoldenActor["role"]; epoch: string }>(
-        `select m.role,e.epoch::text from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
+        `select m.role,e.epoch::text from public.members m join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
        where m.org_id=$1 and m.user_id=$2 for share of m`,
         [actor.orgId, actor.userId],
       )
@@ -355,7 +360,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       throw failure("not_found");
     const claim = (
       await tx.query<Claim>(
-        `select actor_epoch::text,request_hash,request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1`,
+        `select actor_epoch::text,request_hash,request_enc,result_enc from public.docker_launch_manifests where sandbox_id=$1`,
         [row.id],
       )
     ).rows[0];
@@ -371,6 +376,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       (explicitModel && manifest.accountModelDefaulted) ||
       (manifest.credentialId !== undefined && !UUID.test(manifest.credentialId)) ||
       (!claim.result_enc &&
+        active(row) &&
         (row.credential_version !== manifest.credentialVersion ||
           row.credential_id !== (manifest.credentialId ?? manifest.request.credentialId))) ||
       (manifest.conversationId !== undefined &&
@@ -462,7 +468,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       beforeReserve(tx: Sql): Promise<void>;
       beforeStart(): Promise<void>;
     },
-    workerId?: string,
+    worker?: { job: Job; context: JobContext },
   ): Promise<DockerLaunchResult> {
     let dispatchPossible = false;
     let reason = "request_validation";
@@ -490,7 +496,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       dispatchPossible = true;
       const retained = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-          `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+          `select d.request_enc from public.docker_launch_manifests d join public.sandboxes s on s.id=d.sandbox_id
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
            where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.provider='docker' and ($4::uuid is null or s.docker_snapshot_id=$4)`,
@@ -544,7 +550,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      const explicitModel = workerId === undefined && input.model !== undefined;
+      const explicitModel = worker === undefined && input.model !== undefined;
       const state = await transaction((tx) => load(tx, actor, request, hash, explicitModel));
       dispatchPossible ||= Boolean(state.row);
       const plan = { request, actor, hash, state, explicitModel };
@@ -685,6 +691,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                   return candidate;
                 }
               : undefined,
+            options.deferLaunch && !launchAdmission,
           );
           if (request.externalRef !== undefined)
             await tx.query("update public.sandboxes set external_ref=$2 where id=$1", [
@@ -713,10 +720,30 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           await port.validate(actor, connections, "private");
           await port.bind(request.requestId, connections);
           const current = await member(tx, actor);
-          await tx.query(
-            `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,async_launch) values($1,$2,$3,$4,$5)`,
-            [request.requestId, current.epoch, hash, encrypted, options.deferLaunch === true && !launchAdmission],
-          );
+          if (options.deferLaunch && !launchAdmission) {
+            const receiptKey = dockerJobKey(request.requestId);
+            const id = await createJobsStore(sql, key).enqueue(
+              "launch",
+              request.requestId,
+              1,
+              receiptKey,
+              manifest,
+              {
+                orgId: actor.orgId,
+                request: { ownerId: actor.userId, digest: hash },
+                deadline: new Date(Date.now() + (options.timeoutMs ?? 600_000)),
+                maxAttempts: 8,
+              },
+              tx,
+            );
+            await recordDockerLaunchEvidence(tx, id, { docker_actor_epoch: current.epoch });
+            noteAdmission();
+          } else {
+            await tx.query(
+              `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc) values($1,$2,$3,$4)`,
+              [request.requestId, current.epoch, hash, encrypted],
+            );
+          }
           const reserved = await load(tx, actor, request, hash);
           // Only a fully completed callback can reach COMMIT. Earlier failures roll back host work.
           dispatchPossible = true;
@@ -739,12 +766,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       diagnosticSandboxId = state.row?.id;
       if (!manifest || !state.row) throw failure("unavailable");
       const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
-      if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
+      if (options.deferLaunch && !admission && !worker) return envelope(state.row);
       // From here this call drives the host itself, even when it resumes a retried launch.
       noteAdmission();
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       try {
-        if (workerId && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
+        if (worker && (request.repos?.length || manifest.snapshotConfig?.repos.length)) {
           reason = "github_preparation";
           phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
           const repositories = request.repos ?? manifest.snapshotConfig!.repos;
@@ -762,13 +789,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         reason = "machine_start";
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         async function live() {
-          if (workerId) {
-            const lease = await sql.query(
-              `select sandbox_id from public.docker_launch_requests where sandbox_id=$1 and worker_id=$2 and worker_expires_at>now()`,
-              [request.requestId, workerId],
-            );
-            if (!lease.rows.length || stopping) throw failure("unavailable");
-          }
+          if (worker && !(await worker.context.canDispatch())) throw failure("unavailable");
           const current = await transaction((tx) => load(tx, actor, request, hash));
           if (!current.row) throw failure("not_found");
           if (!active(current.row)) {
@@ -798,12 +819,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             await wait();
           }
         }
-        await acknowledged(request.requestId);
-        await live();
-        await admission?.beforeStart();
-        reason = "runtime_bootstrap";
-        await bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
-        await acknowledged(manifest.bootstrapId);
+        if (worker) {
+          await startMachine(actor, request, state.row, worker);
+        } else {
+          await acknowledged(request.requestId);
+          await live();
+          await admission?.beforeStart();
+          reason = "runtime_bootstrap";
+          await bootstrap.bootstrap(actor, request.requestId, manifest.bootstrapId);
+          await acknowledged(manifest.bootstrapId);
+        }
         reason = "runtime_readiness";
         let receipt: Receipt;
         for (;;) {
@@ -1011,10 +1036,17 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           if (!active(current.row)) throw failure("sandbox_not_ready");
           await authority.withOwner(request.requestId, actor.userId, async (_tx, scope) => {
             if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-            await tx.query(
-              `update public.docker_launch_requests set result_enc=$2 where sandbox_id=$1 and result_enc is null`,
-              [request.requestId, encrypted],
-            );
+            if (worker) {
+              if (!(await worker.context.canDispatch(tx))) throw failure("unavailable");
+              await recordDockerLaunchEvidence(tx, worker.job.id, {
+                docker_receipt: Buffer.from(encrypted).toString("hex"),
+              });
+            } else {
+              await tx.query(
+                "update public.docker_launch_requests set result_enc=$2 where sandbox_id=$1 and result_enc is null",
+                [request.requestId, encrypted],
+              );
+            }
           });
           const saved = await load(tx, actor, request, hash);
           if (!saved.row || !saved.receipt) throw failure("unavailable");
@@ -1029,22 +1061,27 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           repositoryAccessMessage(error.message)
         )
           phase = error.message;
-        if (workerId && !stopping) {
-          const generation = String(state.row.lifecycle_generation);
-          await transaction((tx) =>
-            recordDeferredDockerLaunchFailure(
-              tx,
-              request.requestId,
-              generation,
-              workerId,
-              `docker_prompt_${manifest.promptId}`,
-              phase,
-            ),
-          );
+        if (worker && !(error instanceof DockerMachinePending) && !worker.context.signal.aborted) {
+          await withJobLease(sql, worker.job, async (tx) => {
+            if (!(await worker.context.canDispatch(tx))) return;
+            const prior = await tx.query(
+              "select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+              [request.requestId, `docker_prompt_${manifest.promptId}`],
+            );
+            if (!prior.rows.length)
+              await recordRuntimeStartupFailure(
+                tx,
+                request.requestId,
+                String(state.row.lifecycle_generation),
+                "docker_launch_failed",
+                phase,
+              );
+          });
         }
         throw error;
       }
     } catch (error) {
+      if (error instanceof DockerMachinePending) throw error;
       recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
         sandboxId: diagnosticSandboxId,
         causeCode: reason === "runtime_readiness" ? readinessCause : undefined,
@@ -1093,85 +1130,95 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   });
   /** A replay can report a durable failure without throwing; that is not a successful launch. */
   const launched = (result: DockerLaunchResult) => result.sandbox.status !== "failed";
-  let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
-  const working = new Set<Promise<void>>();
-  async function drain() {
-    if (stopping || working.size >= 8) return;
-    const work = (async () => {
-      const workerId = randomUUID();
-      const candidate = (
-        await sql.query<{
-          sandbox_id: string;
-          request_enc: Uint8Array<ArrayBuffer>;
-          owner_id: string;
-          org_id: string;
-          role: GoldenActor["role"];
-        }>(
-          `
-        update public.docker_launch_requests d set worker_id=$1,worker_expires_at=now()+interval '30 seconds'
-        where d.sandbox_id=(select q.sandbox_id from public.docker_launch_requests q
-          join public.sandboxes s on s.id=q.sandbox_id join public.members m on m.user_id=s.owner_id and m.org_id=s.org_id
-          join public.mcp_actor_epochs e on e.user_id=m.user_id and e.org_id=m.org_id and e.epoch=q.actor_epoch
-          where q.async_launch and q.result_enc is null and (q.worker_expires_at is null or q.worker_expires_at<=now())
-          and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
-          order by s.created_at limit 1 for update of q skip locked)
-        returning d.sandbox_id,d.request_enc,(select owner_id from public.sandboxes where id=d.sandbox_id) as owner_id,
-          (select org_id from public.sandboxes where id=d.sandbox_id) as org_id,
-          (select m.role from public.members m join public.sandboxes s on s.owner_id=m.user_id and s.org_id=m.org_id where s.id=d.sandbox_id) as role`,
-          [workerId],
-        )
-      ).rows[0];
-      if (!candidate) return;
-      const renew = setInterval(() => {
-        void sql
-          .query(
-            `update public.docker_launch_requests set worker_expires_at=now()+interval '30 seconds' where sandbox_id=$1 and worker_id=$2 and worker_expires_at>now()`,
-            [candidate.sandbox_id, workerId],
-          )
-          .catch(() => {});
-      }, 10000);
-      try {
-        const manifest = JSON.parse(await decryptSecret(candidate.request_enc, key)) as Manifest;
-        const { image: _image, credentialId, credentialVersion, prompt, ...body } = manifest.request;
-        // The admitting request recorded only `launch.admit`; the real outcome joins its ID here.
-        await continueRequest(manifest.correlationId, () =>
-          observeProviderCall(
-            "docker",
-            "launch",
-            () =>
-              launch(
-                {
-                  userId: candidate.owner_id,
-                  orgs: [{ orgId: candidate.org_id, role: candidate.role }],
-                  via: "service",
-                },
-                {
-                  ...body,
-                  ...(credentialId === null ? {} : { credentialId }),
-                  ...(credentialVersion === null ? {} : { credentialVersion }),
-                  ...(prompt === null ? {} : { prompt }),
-                },
-                undefined,
-                workerId,
-              ),
-            launched,
-          ),
-        );
-      } catch {
-        // Phase-specific safe reason is durable; never log raw build/authorization errors.
-      } finally {
-        clearInterval(renew);
-        await sql.query(
-          `update public.docker_launch_requests set worker_id=null,worker_expires_at=null where sandbox_id=$1 and worker_id=$2`,
-          [candidate.sandbox_id, workerId],
-        );
-      }
-    })().finally(() => {
-      working.delete(work);
-    });
-    working.add(work);
-    return work;
+
+  async function startMachine(
+    actor: { userId: string; orgId: string },
+    request: Request,
+    row: Row,
+    { job, context }: { job: Job; context: JobContext },
+  ) {
+    const { requestId: sandboxId, hostId, image, snapshotId } = request;
+    const generation = Number(job.generation);
+    const target = await sql.query<{ docker_installation_id: string; enrolled: boolean }>(
+      `
+      select s.docker_installation_id,
+        exists(select 1 from public.runtime_enrolments e where e.sandbox_id=s.id
+          and e.lifecycle_generation=s.lifecycle_generation and e.runtime_hash is not null) as enrolled
+      from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+      where s.id=$1 and s.lifecycle_generation=$3 and s.stop_requested_at is null`,
+      [sandboxId, job.id, generation],
+    );
+    const placement = target.rows[0];
+    if (!placement || !(await context.canDispatch())) throw failure("unavailable");
+    if (placement.enrolled) return;
+    const source = snapshotId ? { kind: "snapshot" as const, ref: snapshotId } : { kind: "image" as const, ref: image };
+    const scope = { actor, hostId, installationId: placement.docker_installation_id };
+    const machine = createDockerHostStore(sql, key).machine({ ...scope, canDispatch: context.canDispatch });
+    const incarnation = { sandboxId, generation, signal: context.signal };
+    const observed = await machine.observe(incarnation);
+    const targetMachine =
+      observed.kind === "present"
+        ? observed.machine
+        : await machine.create({
+            ...incarnation,
+            source,
+            size: null,
+            computeTtlSeconds: row.effective_ttl_seconds,
+          });
+    await options.bootstrap!.bootstrapMachine(actor, targetMachine, context);
+    throw new DockerMachinePending("pending");
+  }
+
+  async function run(job: Job, context: JobContext) {
+    const manifest = job.payload as Manifest;
+    const { request } = manifest;
+    const membership = await sql.query<{ role: GoldenActor["role"]; user_id: string }>(
+      `select m.role,m.user_id from public.jobs j join public.sandboxes s on s.id=j.sandbox_id and s.lifecycle_generation=j.generation
+       join public.members m on m.org_id=j.org_id and m.user_id=j.request_owner_id
+       join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+       where j.id=$1 and e.epoch::text=j.outcome->>'docker_actor_epoch' and s.stop_requested_at is null`,
+      [job.id],
+    );
+    const role = membership.rows[0]?.role;
+    if (!role || !(await context.canDispatch())) return { status: "fail" as const, reason: "docker_launch_inactive" };
+    const { image: _image, credentialId, credentialVersion, prompt, ...body } = request;
+    try {
+      const result = await continueRequest(manifest.correlationId, () =>
+        observeProviderCall(
+          "docker",
+          "launch",
+          () =>
+            launch(
+              { userId: membership.rows[0]!.user_id, orgs: [{ orgId: request.org, role }], via: "service" },
+              {
+                ...body,
+                ...(credentialId === null ? {} : { credentialId }),
+                ...(credentialVersion === null ? {} : { credentialVersion }),
+                ...(prompt === null ? {} : { prompt }),
+              },
+              undefined,
+              { job, context },
+            ).catch((error: unknown) => {
+              if (error instanceof DockerMachinePending) return null;
+              throw error;
+            }),
+          (result) => result && launched(result),
+        ),
+      );
+      return result
+        ? { status: "done" as const }
+        : { status: "retry" as const, after: new Date(Date.now() + 1000), unattempted: true as const };
+    } catch {
+      const retry = await sql.query(
+        `select 1 from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$2
+          and s.status in ('starting','ready','running') and s.stop_requested_at is null`,
+        [job.sandbox_id, job.generation],
+      );
+      return retry.rows.length && (await context.canDispatch())
+        ? { status: "retry" as const, after: new Date(Date.now() + 1000) }
+        : { status: "fail" as const, reason: "docker_launch_failed" };
+    }
   }
   return {
     launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) => {
@@ -1191,20 +1238,17 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         { replayable: true },
       );
     },
-    drain,
+    run,
     drainQueued: promptWorker.drain,
     startBackground() {
       if (timer || !options.deferLaunch) return;
       timer = setInterval(() => {
-        void drain().catch(() => {});
         void promptWorker.drain().catch(() => {});
       }, 250);
       timer.unref();
     },
     async close() {
-      stopping = true;
       if (timer) clearInterval(timer);
-      await Promise.allSettled([...working]);
       await promptWorker.close();
     },
   };

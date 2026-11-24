@@ -49,6 +49,7 @@ const jobsLane: LaneFactory = ({
   control,
   modal,
   modalLaunchJob,
+  dockerLaunch,
   accountTurns,
 }) => {
   const prScan = githubApp
@@ -81,7 +82,17 @@ const jobsLane: LaneFactory = ({
     jobs,
     {
       delete: modal.launchCleanupJob,
-      ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
+      launch: {
+        concurrency: modalLaunchJob?.concurrency ?? 8,
+        run(job, context) {
+          if (dockerLaunch && job.outcome && typeof job.outcome === "object" && "docker_actor_epoch" in job.outcome)
+            return dockerLaunch.run(job, context);
+          return (
+            modalLaunchJob?.run(job, context) ??
+            Promise.resolve({ status: "fail", reason: "launch_provider_unavailable" })
+          );
+        },
+      },
       ...(config.encryptionKey
         ? {
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(

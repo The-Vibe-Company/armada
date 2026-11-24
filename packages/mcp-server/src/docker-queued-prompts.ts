@@ -35,7 +35,7 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
     if (actual[0]) return actual[0];
     const launch = (
       await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+        "select request_enc from public.docker_launch_manifests where sandbox_id=$1",
         [sandboxId],
       )
     ).rows[0];
@@ -150,7 +150,7 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
           const pending =
             (
               await tx.query(
-                `select 1 from public.docker_launch_requests where sandbox_id=$1 and result_enc is null
+                `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
             union all select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching') limit 1`,
                 [sandboxId],
               )

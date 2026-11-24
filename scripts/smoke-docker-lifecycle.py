@@ -38,34 +38,27 @@ def is_sandbox_id(value):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value) is not None
 
 
-def normal_launch_receipt(api, launch, timeout, require_github=False, on_admission=None):
-    """Replay one admitted request until preparation yields its original first-prompt receipt."""
+def normal_launch_receipt(api, launch, timeout, on_admission=None):
+    """Admit once, then observe the first prompt on the admitted Docker sandbox."""
     deadline = time.monotonic() + timeout
-    sandbox_id = None
+    result = api("sandbox/launch", launch, normal=True)
+    sandbox = result.get("sandbox", {})
+    sandbox_id = sandbox.get("id")
+    if set(result) != {"sandbox"} or set(sandbox) != {"id", "status"} or not is_sandbox_id(sandbox_id):
+        raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
+    if on_admission:
+        on_admission(sandbox_id)
     while True:
-        result = api("sandbox/launch", launch, normal=True)
-        sandbox = result.get("sandbox", {})
-        received_id = sandbox.get("id")
-        if (not is_sandbox_id(received_id) or sandbox.get("provider") != "docker"
-                or sandbox.get("externalRef") != launch["externalRef"]):
-            raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
-        if sandbox_id is None:
-            sandbox_id = received_id
-            if on_admission:
-                on_admission(sandbox_id)
-        elif received_id != sandbox_id:
-            raise RuntimeError("Docker launch replay returned a different sandbox ID")
-        if sandbox.get("status") == "failed":
-            raise RuntimeError(sandbox.get("statusReason") or
+        status = api("sandbox/status", {"id": sandbox_id}, normal=True)
+        if (status.get("id") != sandbox_id or status.get("provider") != "docker"
+                or status.get("externalRef") != launch["externalRef"]):
+            raise RuntimeError("Normal launch status does not identify the admitted Docker sandbox")
+        if status.get("status") in ("failed", "stopped", "deleted"):
+            raise RuntimeError(status.get("statusReason") or
                                "Normal Docker launch preparation failed; retain printed sandbox ID")
-        if result.get("promptId") and result.get("conversationId"):
-            github = result.get("github") or {}
-            if require_github and github.get("status") != "connected":
-                reason = github.get("message") or "Launch did not confirm a current caller GitHub connection."
-                raise RuntimeError("GitHub proof blocked: " + reason)
-            return result
-        if sandbox.get("status") not in ("starting", "ready", "running") or result.get("runtime") is not None:
-            raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
+        prompt = status.get("prompt") or {}
+        if prompt.get("promptId") and prompt.get("conversationId"):
+            return status
         if time.monotonic() >= deadline:
             raise RuntimeError("Normal launch preparation timed out; retain sandbox ID and launch key for reconciliation")
         time.sleep(2)
@@ -536,15 +529,14 @@ def main():
             launch.update({"provider": "docker", "harness": harness, "visibility": "private",
                            "prompt": initial_task})
             submitted_normal_launch = True
-            launched = normal_launch_receipt(api, launch, args.timeout,
-                                             require_github=args.snapshot or args.github,
-                                             on_admission=record_admission)
-            if (launched["sandbox"].get("image") != expected_image
-                    or (args.snapshot and launched["sandbox"].get("snapshotId") != snapshot_id)):
+            launched = normal_launch_receipt(api, launch, args.timeout, on_admission=record_admission)
+            placement = api("sandboxes/get", {"sandboxId": sandbox_id})
+            if (placement.get("image") != expected_image
+                    or (args.snapshot and placement.get("snapshotId") != snapshot_id)):
                 raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
-            launch_receipt = {"promptId": launched["promptId"], "conversationId": launched["conversationId"]}
+            launch_receipt = launched["prompt"]
             if args.skills or args.skill_defaults:
-                receipts = launched.get("sandbox", {}).get("skills", [])
+                receipts = launched.get("skills", [])
                 if (not receipts or not set(args.skills).issubset({r.get("reference") for r in receipts})
                         or any(not isinstance(r.get("checksum"), str) or not r["checksum"].startswith("sha256:")
                                or len(r["checksum"]) != 71 or r.get("origin") != "https://skillpack.app/v1" for r in receipts)):

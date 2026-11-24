@@ -191,7 +191,8 @@ export class Armada {
     input: Extract<LaunchInput, { provider: "modal"; golden: string }>,
     options?: RequestOptions,
   ): Promise<ModalLaunchReceipt>;
-  launch(input: Exclude<LaunchInput, { provider: "modal" }>, options?: RequestOptions): Promise<LaunchEnvelope>;
+  launch(input: Extract<LaunchInput, { provider: "docker" }>, options?: RequestOptions): Promise<ModalLaunchReceipt>;
+  launch(input: Extract<LaunchInput, { provider: "boat" }>, options?: RequestOptions): Promise<LaunchEnvelope>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions) {
     return this.#sandboxes.launch<LaunchResult>(input, options);

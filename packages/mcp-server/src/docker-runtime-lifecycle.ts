@@ -180,7 +180,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           // The launch reserves a conversation before any native admission or queued receipt.
           const launch = (
             await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
-              "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
+              "select request_enc,result_enc from public.docker_launch_manifests where sandbox_id=$1",
               [sandboxId],
             )
           ).rows[0];

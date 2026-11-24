@@ -1,7 +1,7 @@
 import { expect, jest, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
-import { launch, launchEnvelope } from "@armada/core/contract";
+import { launch, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { ProviderError } from "@armada/core/server";
 import { controlFailureResponse } from "../../mcp-server/src/control-errors.ts";
 import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
@@ -83,7 +83,7 @@ test("a logged or serialized client never exposes its service token, yet still a
   expect(authorization).toBe("Bearer service_secret_placeholder");
 });
 
-test("launch sends a Docker request and returns the Docker receipt without a golden", async () => {
+test("launch sends a Docker request and returns its admission receipt", async () => {
   const org = "00000000-0000-4000-8000-000000000001";
   const input = {
     org,
@@ -97,24 +97,8 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
   expect(launch.input.body.safeParse(input).success).toBe(true);
   const history = { ...input, repos: [{ url: "https://github.com/acme/app", history: "full" }] };
   expect(launch.input.body.safeParse(history).success).toBe(false);
-  const receipt = {
-    sandbox: {
-      id: "sandbox_placeholder",
-      provider: "docker",
-      providerSandboxId: "c1",
-      status: "running",
-      hostId: input.hostId,
-    },
-    golden: null,
-    helper: null,
-    github: { status: "none" },
-    promptId: null,
-    conversationId: null,
-    runtime: null,
-    ttlSeconds: 3600,
-    expiresAt: "2026-11-18T00:00:00.000Z",
-  };
-  expect(launchEnvelope.safeParse(receipt).success).toBe(true);
+  const receipt = { sandbox: { id: "00000000-0000-4000-8000-000000000003", status: "starting" as const } };
+  expect(parseLaunchAdmissionReceipt("docker", receipt)).toEqual(receipt);
   let sent: unknown;
   const client = new Armada({
     token: "service_placeholder",
