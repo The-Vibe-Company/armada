@@ -1837,7 +1837,7 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
   ]);
 });
 
-test("workspace health diagnostics separate delivery, result commit, and readback", async () => {
+test("workspace health diagnostics distinguish delivery, acknowledgement, and replay", async () => {
   const f = await fixture(54_000);
   const active = await f.enrol();
   const bridge = f.bridge();
@@ -1865,9 +1865,12 @@ test("workspace health diagnostics separate delivery, result commit, and readbac
     const lines = info.mock.calls
       .map(([line]) => JSON.parse(line))
       .filter((entry) => entry.event === "runtime_workspace_command" && entry.commandId === requestId);
-    expect(lines.map(({ stage }) => stage)).toEqual(["admitted", "sent_poll", "result_committed", "observed"]);
+    expect(lines.map(({ stage }) => stage)).toEqual(["admitted", "sent_poll", "result_acknowledged", "observed"]);
     expect(lines.at(-1)).toMatchObject({ sandboxId: f.id, epoch: active.epoch, observedAtMs: 54_000, resultReads: 2 });
     expect(JSON.stringify(lines)).not.toContain("not-for-logs");
+    info.mockClear();
+    await bridge.call(f.people.owner, f.command(requestId), { expectedEpoch: active.epoch });
+    expect(info.mock.calls.map(([line]) => JSON.parse(line).stage)).toEqual(["admission_replayed", "observed"]);
   } finally {
     info.mockRestore();
   }

@@ -405,9 +405,9 @@ export function createRuntimeCommands(
       }
       return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: row.request_id };
     });
-    const committed = time.now();
-    logWorkspaceCommand({ sandboxId, epoch: receipt.epoch }, receipt.requestId, "result_committed", committed, {
-      durationMs: committed - started,
+    const acknowledged = time.now();
+    logWorkspaceCommand({ sandboxId, epoch: receipt.epoch }, receipt.requestId, "result_acknowledged", acknowledged, {
+      durationMs: acknowledged - started,
     });
     runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
     runtimeWakes.notify(`socket:${sandboxId}`);
@@ -548,7 +548,9 @@ export function createRuntimeCommands(
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         const scope = { sandboxId: request.sandboxId, epoch: admitted.epoch };
         const admittedAt = time.now();
-        logWorkspaceCommand(scope, request.requestId, "admitted", admittedAt, { durationMs: admittedAt - started });
+        logWorkspaceCommand(scope, request.requestId, admitted.fresh ? "admitted" : "admission_replayed", admittedAt, {
+          durationMs: admittedAt - started,
+        });
         let resultReads = 0;
         let resultReadMs = 0;
         let observed = false;
