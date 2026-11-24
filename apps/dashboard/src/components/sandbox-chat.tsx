@@ -49,6 +49,7 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
+import { chatEventStream } from "@/lib/chat-event-stream";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
@@ -63,7 +64,8 @@ import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
-const POLL_MS = 2000;
+const FALLBACK_POLL_MS = 2000;
+const STREAM_READ_DELAY_MS = 100;
 const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 8000;
 const MAX_RETRIES = 5;
@@ -86,7 +88,7 @@ type Props = {
   provider?: string;
   preservationNote?: string | null;
   initialIdlePaused?: boolean;
-  /** The persisted stop reason of `initialStatus`; ignored once a poll reports another status. */
+  /** The persisted stop reason of `initialStatus`; ignored once a conversation read reports another status. */
   statusReason?: string | null;
   expiresAt?: string | null;
   initialUsageRevision: string;
@@ -116,6 +118,8 @@ type Poll = {
 type PollSession = {
   active: boolean;
   reading: boolean;
+  pendingUpdate: boolean;
+  stream: ReturnType<typeof chatEventStream>;
   paused: boolean;
   retries: number;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -123,7 +127,7 @@ type PollSession = {
 };
 
 type ReadResult =
-  | { kind: "success"; more: boolean; active: boolean }
+  | { kind: "success"; more: boolean; active: boolean; refreshNeeded: boolean }
   | { kind: "retryable"; message: string }
   | { kind: "access-ended"; message: string }
   | { kind: "aborted" };
@@ -171,7 +175,7 @@ function accessEndedMessage(status: number): string {
 
 /**
  * The sandbox as a conversation: the prompts, the agent's answers and its tool calls, read from the event stream
- * by cursor (every couple of seconds while the sandbox is active), with a composer for the next message.
+ * by cursor when the event feed changes, with a composer for the next message.
  */
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
@@ -201,6 +205,7 @@ export function SandboxChat(props: Props) {
   const known = useRef(initialStatus);
   const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
   const refreshing = useRef(false);
+  const refreshAfterPending = useRef(false);
   const [refreshPending, startRefresh] = useTransition();
   useLayoutEffect(() => {
     rendered.current = { status: initialStatus, usage: props.initialUsageRevision };
@@ -225,11 +230,10 @@ export function SandboxChat(props: Props) {
         setStatus(next);
       }
       // Only committed page props acknowledge the card's revision. A discarded or
-      // stale RSC refresh must remain retryable on the next successful poll.
+      // stale RSC refresh must remain retryable on the next successful read.
       const refreshNeeded = next !== rendered.current.status || usageChanged;
-      if (!refreshing.current && refreshNeeded) {
-        startRefresh(() => router.refresh());
-      }
+      if (refreshing.current) refreshAfterPending.current = refreshNeeded;
+      else if (refreshNeeded) startRefresh(() => router.refresh());
       const error = typeof body.error === "string" ? body.error : null;
       const configured = typeof body.configured === "boolean" ? body.configured : true;
       setPoll((current) =>
@@ -296,7 +300,8 @@ export function SandboxChat(props: Props) {
         return {
           kind: "success",
           more: !backward && page.hasMore,
-          active: isActiveStatus(metadata.next) || metadata.refreshNeeded,
+          active: isActiveStatus(metadata.next),
+          refreshNeeded: metadata.refreshNeeded,
         };
       } catch (error) {
         if (isAbortError(error) || !isCurrent(session)) return { kind: "aborted" };
@@ -333,12 +338,17 @@ export function SandboxChat(props: Props) {
     }
   };
 
-  /** Read until drained, inactive and rendered metadata is acknowledged. One loop at a time. */
+  /** Serialize reads and coalesce stream notifications received while a page is in flight. */
   const tick = useCallback(
-    async function pollTick() {
+    async function readUpdate() {
       const session = sessionRef.current;
-      if (!session || !isCurrent(session) || session.reading || session.paused) return;
+      if (!session || !isCurrent(session) || session.paused) return;
+      if (session.reading) {
+        session.pendingUpdate = true;
+        return;
+      }
       session.reading = true;
+      session.pendingUpdate = false;
       clearTimeout(session.timer);
       session.timer = undefined;
       try {
@@ -347,12 +357,19 @@ export function SandboxChat(props: Props) {
         if (result.kind === "aborted") return;
         if (result.kind === "success") {
           session.retries = 0;
-          if (result.more) session.timer = setTimeout(() => void pollTick(), 0);
-          else if (result.active) session.timer = setTimeout(() => void pollTick(), POLL_MS);
+          if (!result.active) session.stream.close();
+          else if (props.configured) session.stream.connect();
+          if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
+          else if (session.pendingUpdate) {
+            session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
+          } else if ((result.active && !session.stream.waitingForEvents) || (!result.active && result.refreshNeeded)) {
+            session.timer = setTimeout(() => void readUpdate(), FALLBACK_POLL_MS);
+          }
           return;
         }
         if (result.kind === "access-ended") {
           session.paused = true;
+          session.stream.close();
           setPoll((current) => ({
             ...current,
             error: result.message,
@@ -363,6 +380,7 @@ export function SandboxChat(props: Props) {
         }
         if (session.retries >= MAX_RETRIES) {
           session.paused = true;
+          session.stream.close();
           setPoll((current) => ({
             ...current,
             error: `${result.message} Retry when the server is available.`,
@@ -379,13 +397,19 @@ export function SandboxChat(props: Props) {
           retryAvailable: false,
           accessEnded: false,
         }));
-        session.timer = setTimeout(() => void pollTick(), delay);
+        session.timer = setTimeout(() => void readUpdate(), delay);
       } finally {
         session.reading = false;
       }
     },
-    [isCurrent, read],
+    [isCurrent, props.configured, read],
   );
+
+  useEffect(() => {
+    if (refreshPending || !refreshAfterPending.current) return;
+    refreshAfterPending.current = false;
+    void tick();
+  }, [refreshPending, tick]);
 
   const retryPolling = useCallback(() => {
     const session = sessionRef.current;
@@ -405,19 +429,28 @@ export function SandboxChat(props: Props) {
   }, [isCurrent, tick]);
 
   // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
-  // not at the next poll, and read again when it says the sandbox is active (polling stops on an inactive status).
+  // close the stream when the sandbox becomes inactive, and read the latest conversation.
   useLayoutEffect(() => {
     setIdlePaused(props.initialIdlePaused === true);
     if (initialStatus === known.current) return;
     known.current = initialStatus;
     setStatus(initialStatus);
-    if (isActiveStatus(initialStatus)) void tick();
+    if (!isActiveStatus(initialStatus)) sessionRef.current?.stream.close();
+    void tick();
   }, [initialStatus, tick, props.initialIdlePaused]);
 
   useEffect(() => {
     const session: PollSession = {
       active: true,
       reading: false,
+      pendingUpdate: false,
+      stream: chatEventStream(sandboxId, () => {
+        if (!isCurrent(session) || session.paused || session.retries > 0 || session.pendingUpdate) return;
+        session.pendingUpdate = true;
+        if (session.reading) return;
+        clearTimeout(session.timer);
+        session.timer = setTimeout(() => void tick(), STREAM_READ_DELAY_MS);
+      }),
       paused: false,
       retries: 0,
       timer: undefined,
@@ -429,10 +462,11 @@ export function SandboxChat(props: Props) {
       session.active = false;
       session.paused = true;
       clearTimeout(session.timer);
+      session.stream.close();
       session.controller?.abort();
       if (sessionRef.current === session) sessionRef.current = null;
     };
-  }, [tick]);
+  }, [isCurrent, sandboxId, tick]);
 
   const { currentConversation } = props;
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);

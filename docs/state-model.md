@@ -2,7 +2,7 @@
 
 Audit baseline: 2026-11-10, issue #829. This describes the implementation, not
 a promise that a configured provider passes deployed conformance. See
-[smoke boundaries](consolidation-audit.md) and [error codes](api-error-codes.md).
+[error codes](api-error-codes.md).
 
 ## Ordinary sandbox
 

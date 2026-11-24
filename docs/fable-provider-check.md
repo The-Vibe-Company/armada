@@ -5,8 +5,7 @@
 Armada's Boat adapter sends the exact model in the SDK prompt JSON. The native
 cwd wrapper preserves argv. The captured first main API request already selected
 Sonnet: no evidence establishes an Armada rewrite, entitlement failure or refusal
-fallback. See [the investigation](model-selection-investigation.md) and its
-unchanged recording. The remaining mapping boundary is upstream Boat; guessing a
+fallback. The remaining mapping boundary is upstream Boat; guessing a
 native override would not establish fidelity. The Boat native prompt adapter refuses explicit Fable
 before dispatch, including send overrides, with readable mismatch terminology.
 
