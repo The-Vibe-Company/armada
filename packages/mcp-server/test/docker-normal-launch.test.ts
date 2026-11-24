@@ -1171,6 +1171,72 @@ test("Docker sends through the production-wired account queue key a legacy body,
     }),
   ]);
 });
+test.each(["rejects", "returns"] as const)(
+  "expired shared Docker turn worker cannot settle a successor receipt when it %s",
+  async (outcome) => {
+    const f = await fixture();
+    await f.seedRunningSandbox();
+    await sql.query(
+      `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
+     select id,task_prompt_id,true from public.sandboxes where id=$1`,
+      [f.body.requestId],
+    );
+    const makeWorker = () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const accountTurns = createAccountTurnQueue(sql, key);
+      const dockerControls = createDockerSandboxControls(sql, key, {
+        clock: f.clock,
+        sendEnabled: true,
+        async prepareMcp() {
+          entered.resolve();
+          await release.promise;
+        },
+      });
+      const { options } = restControl(f, { accountTurns, dockerControls });
+      accountTurns.setDispatch(createQueuedSandboxDispatch(options));
+      return { accountTurns, entered, release };
+    };
+    const a = makeWorker();
+    const b = makeWorker();
+    const id = f.body.requestId;
+    const requestId = randomUUID();
+    const signal = new AbortController().signal;
+    await a.accountTurns.accept(f.caller, { id, request_id: requestId, prompt: "Follow up" });
+    expect(await a.accountTurns.reconcileOne(signal)).toBe(true);
+    await a.entered.promise;
+    await sql.query(
+      `update public.account_turn_queue set dispatch_until=clock_timestamp()-interval '1 second'
+     where sandbox_id=$1 and request_id=$2`,
+      [id, requestId],
+    );
+    expect(await b.accountTurns.reconcileOne(signal)).toBe(true);
+    await b.entered.promise;
+    try {
+      if (outcome === "rejects") a.release.reject(new Error("Preparation failed after this worker lost the receipt"));
+      else a.release.resolve();
+      await a.accountTurns.drain();
+      const { rows } = await sql.query(
+        "select state from public.account_turn_queue where sandbox_id=$1 and request_id=$2",
+        [id, requestId],
+      );
+      expect(rows).toEqual([{ state: "dispatching" }]);
+    } finally {
+      b.release.resolve();
+      await b.accountTurns.drain();
+    }
+    expect(
+      (
+        await sql.query("select state from public.account_turn_queue where sandbox_id=$1 and request_id=$2", [
+          id,
+          requestId,
+        ])
+      ).rows,
+    ).toEqual([{ state: "admitted" }]);
+    expect(f.native.filter((effect) => effect.requestId === `docker_prompt_${requestId}`)).toHaveLength(1);
+  },
+);
+
 test.each([false, true])(
   "ordinary Docker receipt replays its key before and after backfill (historical=%s)",
   async (historical) => {

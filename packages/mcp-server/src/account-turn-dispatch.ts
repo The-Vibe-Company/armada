@@ -282,7 +282,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
       where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
-      and (q.state='queued' or q.dispatch_until<=now() or $4::boolean)
+      and (q.state='queued' or q.dispatch_until<=clock_timestamp() or $4::boolean)
       and (q.state<>'queued' or not ${TURN_LIFECYCLE_WAITING})
       and ${TURN_FIFO_ELIGIBLE} for update of q`,
         [candidate.sandbox_id, candidate.request_id, candidate.state, Boolean(claim)],
@@ -372,14 +372,20 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         if (error instanceof VaultError && error.code === "conflict") return null;
         throw error;
       }
-      const claimed = await tx.query(
-        "update public.account_turn_queue set dispatch_generation=case when state='queued' then (select lifecycle_generation from public.sandboxes where id=$1) else dispatch_generation end,state='dispatching',dispatch_until=now()+interval '15 minutes' where sandbox_id=$1 and request_id=$2 and state=$3 returning request_id",
+      const {
+        rows: [claimed],
+      } = await tx.query<{ dispatch_until: string }>(
+        `update public.account_turn_queue
+         set dispatch_generation=case when state='queued' then
+           (select lifecycle_generation from public.sandboxes where id=$1) else dispatch_generation end,
+           state='dispatching',dispatch_until=clock_timestamp()+interval '15 minutes'
+         where sandbox_id=$1 and request_id=$2 and state=$3 returning dispatch_until::text`,
         [candidate.sandbox_id, candidate.request_id, candidate.state],
       );
       if (claim && !(await claim.canDispatch(tx))) throw new TurnAdmissionLeaseLost();
-      if (!claimed.rows.length) return null;
+      if (!claimed) return null;
       return {
-        entry: candidate,
+        entry: { ...candidate, dispatch_until: claimed.dispatch_until },
         caller: {
           userId: candidate.owner_id,
           via: "service" as const,
@@ -443,9 +449,11 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
 
 class TurnSettlementLeaseLost extends Error {}
 
+type AdmittedEntry = DispatchEntry & { dispatch_until: string };
+
 async function settleAccountTurn<T>(
   sql: Sql,
-  entry: DispatchEntry,
+  entry: AdmittedEntry,
   claim: TurnClaim | undefined,
   write: (tx: Sql) => Promise<T>,
 ) {
@@ -453,13 +461,24 @@ async function settleAccountTurn<T>(
   try {
     return await sql.transaction(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
-      if (claim) {
-        await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
-        await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
-        if (!(await claim.canDispatch(tx))) return;
-      }
+      if (claim) await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
+      await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
+      if (claim && !(await claim.canDispatch(tx))) return;
+      const receipt = await tx.query(
+        `select request_id from public.account_turn_queue
+         where sandbox_id=$1 and request_id=$2 and state='dispatching'
+           and dispatch_until=$3::timestamptz and dispatch_until>clock_timestamp() for update`,
+        [entry.sandbox_id, entry.request_id, entry.dispatch_until],
+      );
+      if (!receipt.rows.length) return;
       const result = await write(tx);
       if (claim && !(await claim.canDispatch(tx))) throw new TurnSettlementLeaseLost();
+      const {
+        rows: [deadline],
+      } = await tx.query<{ live: boolean }>("select $1::timestamptz > clock_timestamp() as live", [
+        entry.dispatch_until,
+      ]);
+      if (!deadline?.live) throw new TurnSettlementLeaseLost();
       return result;
     });
   } catch (error) {
@@ -470,7 +489,7 @@ async function settleAccountTurn<T>(
 export async function dispatchAccountTurn(
   sql: Sql,
   key: string,
-  entry: DispatchEntry,
+  entry: AdmittedEntry,
   caller: Caller,
   dispatch: DispatchTurn,
   claim?: TurnClaim & RuntimeTurnClaim,
@@ -511,15 +530,14 @@ export async function dispatchAccountTurn(
     );
     phase = "publish_receipt";
     const resultEnc = await encryptSecret(JSON.stringify(result), key);
-    const publish = (tx: Sql) =>
+    await settleAccountTurn(sql, entry, claim, (tx) =>
       tx.query(
         `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
              where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
            delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-        [id, entry.request_id, resultEnc],
-      );
-    if (claim) await settleAccountTurn(sql, entry, claim, publish);
-    else await publish(sql);
+        [entry.sandbox_id, entry.request_id, resultEnc],
+      ),
+    );
   } catch (error) {
     if (claim && (phase === "publish_receipt" || phase === "dispatch_fence")) throw error;
     const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
