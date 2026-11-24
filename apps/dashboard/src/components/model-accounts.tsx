@@ -84,7 +84,6 @@ import {
   ACCOUNT_KINDS,
   type AccountKind,
   type AccountUsage,
-  type AuthCapabilities,
   accountProblem,
   accountsFor,
   creditText,
@@ -705,31 +704,19 @@ export function AccountRow({
                   onOpenChange={closeDialog}
                   onCloseAutoFocus={restoreFocus}
                 />
-                <LimitsDialog
-                  account={account}
-                  orgId={orgId}
-                  onResult={setResult}
-                  open={dialog === "limits"}
-                  onOpenChange={closeDialog}
-                  onCloseAutoFocus={restoreFocus}
-                />
-                <RenameDialog
-                  account={account}
-                  orgId={orgId}
-                  onResult={setResult}
-                  open={dialog === "rename"}
-                  onOpenChange={closeDialog}
-                  onCloseAutoFocus={restoreFocus}
-                />
-                <ReplaceDialog
-                  account={account}
-                  orgId={orgId}
-                  reconnect={state.needsAction}
-                  onResult={setResult}
-                  open={dialog === "replace"}
-                  onOpenChange={closeDialog}
-                  onCloseAutoFocus={restoreFocus}
-                />
+                {(["limits", "rename", "replace"] as const).map((mode) => (
+                  <AccountEditDialog
+                    key={mode}
+                    mode={mode}
+                    account={account}
+                    orgId={orgId}
+                    reconnect={state.needsAction}
+                    onResult={setResult}
+                    open={dialog === mode}
+                    onOpenChange={closeDialog}
+                    onCloseAutoFocus={restoreFocus}
+                  />
+                ))}
                 <RemoveDialog
                   account={account}
                   orgId={orgId}
@@ -924,49 +911,153 @@ function useDialogAction(
   return { state, formAction, generation };
 }
 
-function LimitsDialog({
+function AccountEditDialog({
   account,
   orgId,
   onResult,
   open,
   onOpenChange,
   onCloseAutoFocus,
+  mode,
+  reconnect,
 }: {
   account: ModelAccount;
   orgId: string;
   onResult: (result: ActionResult) => void;
+  mode: "limits" | "rename" | "replace";
+  reconnect: boolean;
 } & Controlled) {
+  const action = mode === "limits" ? updateAccountLimits : mode === "rename" ? renameAccount : replaceAccountSecret;
+  const { state, formAction, generation } = useDialogAction(action, onResult, onOpenChange);
   const preserve = usePreservedActionForm();
-  const { state, formAction, generation } = useDialogAction(updateAccountLimits, onResult, onOpenChange);
   const id = useId();
+  const info = KIND_INFO[account.kind];
+  const replacing = mode === "replace";
+  const title =
+    mode === "limits"
+      ? `Agent limit for ${account.name}`
+      : mode === "rename"
+        ? `Rename ${account.name}`
+        : reconnect
+          ? `Reconnect ${account.name}`
+          : `Replace the ${info.valueLabel} of ${account.name}`;
+  const submit =
+    mode === "limits"
+      ? "Save limit"
+      : mode === "rename"
+        ? "Save name"
+        : account.kind === "morph" && account.models?.length
+          ? "Save account"
+          : `Save ${info.valueLabel}`;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
+      <DialogContent
+        className={replacing ? "max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg" : "sm:max-w-md"}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
-          <DialogTitle>Agent limit for {account.name}</DialogTitle>
-          <DialogDescription>
-            Turns wait when an account or model limit is full. Existing agents are not stopped.
-          </DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          {replacing ? (
+            <>
+              {/* Both sentences describe the dialog, so screen readers announce the effect along with the hint. */}
+              <DialogDescription asChild>
+                <div className="space-y-2">
+                  <p>{info.hint}</p>
+                  {account.kind === "openai" && (
+                    <p>
+                      Choose the destination again: existing endpoint details are not returned. To keep a custom
+                      endpoint, re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
+                    </p>
+                  )}
+                  {account.kind === "opencode" && (
+                    <p>
+                      Choose the destination again: an existing provider address and models are not returned. To keep a
+                      DeepSeek, OpenRouter or other connection, choose it and tick its models again.
+                    </p>
+                  )}
+                  {account.kind === "anthropic" && (
+                    <p>
+                      Choose the destination again: existing gateway details are not returned. To keep a custom gateway,
+                      re-enter its URL, authentication and key. Choosing Anthropic default changes routing to Anthropic.
+                    </p>
+                  )}
+                  <p data-replace-effect>
+                    Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the
+                    current version keep their files and conversations, but new messages to them are refused. Launch a
+                    new sandbox to use the new version.
+                  </p>
+                </div>
+              </DialogDescription>
+            </>
+          ) : (
+            <DialogDescription>
+              {mode === "limits"
+                ? "Turns wait when an account or model limit is full. Existing agents are not stopped."
+                : "Only the name changes. Its token and running sandboxes are untouched."}
+            </DialogDescription>
+          )}
         </DialogHeader>
-        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
+        <form
+          ref={preserve}
+          key={replacing ? `${generation}:${account.version}` : generation}
+          action={formAction}
+          className="space-y-4"
+        >
           <TargetFields account={account} orgId={orgId} />
-          <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-model`}>Model ID (optional)</Label>
-            <Input id={`${id}-model`} name="model" placeholder="Leave empty to change the account limit" />
-            <p className="text-xs text-muted-foreground">
-              Enter the exact launch model ID to change its limit instead. Empty maximum clears that model limit.
-            </p>
-          </div>
-          {Object.entries(account.modelCounts ?? {}).map(([model, counts]) => (
-            <p key={model} className="text-xs wrap-anywhere text-muted-foreground">
-              {model}: {counts.runningAgents} working / {counts.waitingAgents} waiting /{" "}
-              {account.modelLimits?.[model] ?? "unlimited"} max
-            </p>
-          ))}
-
+          {mode === "limits" ? (
+            <>
+              <AgentLimitField id={id} defaultValue={account.maxAgents ?? ""} />
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-model`}>Model ID (optional)</Label>
+                <Input id={`${id}-model`} name="model" placeholder="Leave empty to change the account limit" />
+                <p className="text-xs text-muted-foreground">
+                  Enter the exact launch model ID to change its limit instead. Empty maximum clears that model limit.
+                </p>
+              </div>
+              {Object.entries(account.modelCounts ?? {}).map(([model, counts]) => (
+                <p key={model} className="text-xs wrap-anywhere text-muted-foreground">
+                  {model}: {counts.runningAgents} working / {counts.waitingAgents} waiting /{" "}
+                  {account.modelLimits?.[model] ?? "unlimited"} max
+                </p>
+              ))}
+            </>
+          ) : mode === "rename" ? (
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-name`}>Name</Label>
+              <Input
+                id={`${id}-name`}
+                name="name"
+                defaultValue={account.name}
+                required
+                maxLength={MAX_ACCOUNT_NAME}
+                autoComplete="off"
+              />
+            </div>
+          ) : (
+            <>
+              <input type="hidden" name="kind" value={account.kind} />
+              <input type="hidden" name="name" value={account.name} />
+              {account.kind === "openai" ? (
+                <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
+              ) : account.kind === "anthropic" ? (
+                <ClaudeReplacementFields idPrefix={id} />
+              ) : account.kind === "opencode" ? (
+                <OpenCodeReplacementFields idPrefix={id} />
+              ) : (
+                <SecretField idPrefix={id} kind={account.kind} />
+              )}
+              {account.kind === "morph" &&
+                (account.models?.length ? (
+                  <MorphModelField idPrefix={id} models={account.models.map(({ model }) => model)} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    The model list could not be loaded. Reload Models to edit it. Saving here replaces only the key.
+                  </p>
+                ))}
+            </>
+          )}
           {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>Save limit</SubmitButton>
+          <SubmitButton>{submit}</SubmitButton>
         </form>
       </DialogContent>
     </Dialog>
@@ -1004,146 +1095,6 @@ function AgentLimitField({
         Leave empty for unlimited. Shared across all sandbox providers.
       </p>
     </div>
-  );
-}
-
-function RenameDialog({
-  account,
-  orgId,
-  onResult,
-  open,
-  onOpenChange,
-  onCloseAutoFocus,
-}: {
-  account: ModelAccount;
-  orgId: string;
-  onResult: (result: ActionResult) => void;
-} & Controlled) {
-  const preserve = usePreservedActionForm();
-  const { state, formAction, generation } = useDialogAction(renameAccount, onResult, onOpenChange);
-  const id = useId();
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
-        <DialogHeader>
-          <DialogTitle>Rename {account.name}</DialogTitle>
-          <DialogDescription>Only the name changes. Its token and running sandboxes are untouched.</DialogDescription>
-        </DialogHeader>
-        <form ref={preserve} key={generation} action={formAction} className="space-y-4">
-          <TargetFields account={account} orgId={orgId} />
-          <div className="space-y-2">
-            <Label htmlFor={`${id}-name`}>Name</Label>
-            <Input
-              id={`${id}-name`}
-              name="name"
-              defaultValue={account.name}
-              required
-              maxLength={MAX_ACCOUNT_NAME}
-              autoComplete="off"
-            />
-          </div>
-          {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>Save name</SubmitButton>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * A new token for the same account: its id, name and default stay. This explicit replacement increments the account
- * version (#612). Sandboxes pinned to the earlier version keep their files and conversations, but the server refuses
- * new messages to them; a new launch uses the new version. A routine native auth refresh keeps its own revision and
- * does not change the account version.
- */
-function ReplaceDialog({
-  account,
-  orgId,
-  reconnect,
-  onResult,
-  open,
-  onOpenChange,
-  onCloseAutoFocus,
-}: {
-  account: ModelAccount;
-  orgId: string;
-  /** The account cannot run now (expired, say): replacing its token is how it reconnects. */
-  reconnect: boolean;
-  onResult: (result: ActionResult) => void;
-} & Controlled) {
-  const { state, formAction, generation } = useDialogAction(replaceAccountSecret, onResult, onOpenChange);
-  const formRef = usePreservedActionForm();
-  const info = KIND_INFO[account.kind];
-  const id = useId();
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
-        onCloseAutoFocus={onCloseAutoFocus}
-      >
-        <DialogHeader>
-          <DialogTitle>
-            {reconnect ? "Reconnect" : "Replace the"}{" "}
-            {reconnect ? account.name : `${info.valueLabel} of ${account.name}`}
-          </DialogTitle>
-          {/* Both sentences describe the dialog, so screen readers announce the effect along with the hint. */}
-          <DialogDescription asChild>
-            <div className="space-y-2">
-              <p>{info.hint}</p>
-              {account.kind === "openai" && (
-                <p>
-                  Choose the destination again: existing endpoint details are not returned. To keep a custom endpoint,
-                  re-enter its URL and key. Choosing OpenAI default changes routing to OpenAI.
-                </p>
-              )}
-              {account.kind === "opencode" && (
-                <p>
-                  Choose the destination again: an existing provider address and models are not returned. To keep a
-                  DeepSeek, OpenRouter or other connection, choose it and tick its models again.
-                </p>
-              )}
-              {account.kind === "anthropic" && (
-                <p>
-                  Choose the destination again: existing gateway details are not returned. To keep a custom gateway,
-                  re-enter its URL, authentication and key. Choosing Anthropic default changes routing to Anthropic.
-                </p>
-              )}
-              <p data-replace-effect>
-                Saving a new {info.valueLabel} creates a new version of {account.name}. Sandboxes launched with the
-                current version keep their files and conversations, but new messages to them are refused. Launch a new
-                sandbox to use the new version.
-              </p>
-            </div>
-          </DialogDescription>
-        </DialogHeader>
-        <form ref={formRef} key={`${generation}:${account.version}`} action={formAction} className="space-y-4">
-          <TargetFields account={account} orgId={orgId} />
-          <input type="hidden" name="kind" value={account.kind} />
-          <input type="hidden" name="name" value={account.name} />
-          {account.kind === "openai" ? (
-            <CustomEndpointFields idPrefix={id} kind="openai" requireChoice />
-          ) : account.kind === "anthropic" ? (
-            <ClaudeReplacementFields idPrefix={id} />
-          ) : account.kind === "opencode" ? (
-            <OpenCodeReplacementFields idPrefix={id} />
-          ) : (
-            <SecretField idPrefix={id} kind={account.kind} />
-          )}
-          {account.kind === "morph" &&
-            (account.models?.length ? (
-              <MorphModelField idPrefix={id} models={account.models.map(({ model }) => model)} />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                The model list could not be loaded. Reload Models to edit it. Saving here replaces only the key.
-              </p>
-            ))}
-          {state && !state.ok && <ResultLine result={state} />}
-          <SubmitButton>
-            {account.kind === "morph" && account.models?.length ? "Save account" : `Save ${info.valueLabel}`}
-          </SubmitButton>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -1377,10 +1328,9 @@ function CustomEndpointFields({
   defaultCustom?: boolean;
 }) {
   const codex = kind === "openai";
-  const [custom, setCustom] = useState(defaultCustom);
-  const [chosen, setChosen] = useState(!requireChoice);
-  // Replacement may re-enter a provider-preset connection with its models (#1483).
-  const [preset, setPreset] = useState<ConnectionPreset | null>(null);
+  const [mode, setMode] = useState(requireChoice ? "" : defaultCustom ? "custom" : kind);
+  const custom = mode === "custom";
+  const preset = requireChoice ? replacementPreset(kind, mode) : null;
   return (
     <div className="space-y-4">
       {requireChoice ? (
@@ -1390,12 +1340,8 @@ function CustomEndpointFields({
             id={`${idPrefix}-mode`}
             name="connectionMode"
             required
-            value={chosen ? (preset ? preset.id : custom ? "custom" : "openai") : ""}
-            onChange={(event) => {
-              setChosen(Boolean(event.target.value));
-              setCustom(event.target.value === "custom");
-              setPreset(replacementPreset(kind, event.target.value));
-            }}
+            value={mode}
+            onChange={(event) => setMode(event.target.value)}
           >
             <option value="" disabled>
               Choose a destination
@@ -1418,7 +1364,7 @@ function CustomEndpointFields({
             name="customEndpoint"
             value="on"
             checked={custom}
-            onCheckedChange={(value) => setCustom(value === true)}
+            onCheckedChange={(value) => setMode(value === true ? "custom" : kind)}
           />
           Use a custom endpoint
         </Label>
@@ -1506,7 +1452,7 @@ function CustomEndpointFields({
           />
         </>
       ) : (
-        chosen && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />
+        mode && <SecretField key={`${kind}:${custom}`} idPrefix={idPrefix} kind={kind} />
       )}
     </div>
   );
@@ -1575,23 +1521,18 @@ export function AddAccountDialog({
   orgId,
   orgName,
   isAdmin,
-  capabilities: _capabilities,
-  initialKind = "claude_oauth",
   triggerLabel = "Add an account",
   triggerVariant = "default",
 }: {
   orgId: string;
   orgName: string;
   isAdmin: boolean;
-  capabilities: AuthCapabilities | null;
-  initialKind?: AccountKind;
   triggerLabel?: string;
   triggerVariant?: "default" | "outline";
 }) {
   const formRef = usePreservedActionForm();
   const wizardRef = useRef<HTMLFormElement>(null);
   const [open, setOpen] = useState(false);
-  const step = 2;
   const [generation, setGeneration] = useState(0);
   const [state, formAction, saving] = useMutationState(addAccount);
   const [dismissedSaveResult, setDismissedSaveResult] = useState<typeof state>(null);
@@ -1600,7 +1541,7 @@ export function AddAccountDialog({
   const [code, setCode] = useState("");
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signInPending, runSignIn] = useTransition();
-  const [choice, setChoice] = useState<AddChoice>(initialKind);
+  const [choice, setChoice] = useState<AddChoice>("claude_oauth");
   const preset = connectionPreset(choice);
   const kind: AccountKind =
     choice === "your-endpoint-claude"
@@ -1612,7 +1553,7 @@ export function AddAccountDialog({
           : (choice as AccountKind);
   const [scope, setScope] = useState<"user" | "org">("user");
   const [name, setName] = useState("");
-  const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
+  const [maxAgents, setMaxAgents] = useState("");
   const router = useRouter();
   const toast = useToast();
   const id = useId();
@@ -1708,7 +1649,7 @@ export function AddAccountDialog({
 
   // Read only safe metadata. Capture a baseline so an existing namesake cannot close the dialog.
   useEffect(() => {
-    if (!open || !subscription || step !== 2) return;
+    if (!open || !subscription) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     let baseline: Set<string> | null = null;
@@ -1748,7 +1689,7 @@ export function AddAccountDialog({
     if (open)
       wizardRef.current
         ?.querySelector<HTMLElement>(
-          `[data-wizard-panel="${step}"] button, [data-wizard-panel="${step}"] input:not([type="hidden"]), [data-wizard-panel="${step}"] textarea`,
+          `[data-wizard-panel="2"] button, [data-wizard-panel="2"] input:not([type="hidden"]), [data-wizard-panel="2"] textarea`,
         )
         ?.focus();
   }, [open]);
@@ -1881,7 +1822,7 @@ export function AddAccountDialog({
           resetGoogleSignIn(true);
         } else {
           setOpen(true);
-          choose(initialKind);
+          choose("claude_oauth");
           setScope("user");
           setGeneration((value) => value + 1);
         }

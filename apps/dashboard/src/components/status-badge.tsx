@@ -1,43 +1,7 @@
-import { idlePauseMessage, type SandboxStatus } from "@armada/core";
 import type { ComponentProps } from "react";
 import { Badge } from "@/components/ui/badge";
-import { type ConnectionState, connectionLook, statusLook, TONE_BADGE, TONE_DOT, type Tone } from "@/lib/status-tone";
+import { type ConnectionState, connectionLook, TONE_BADGE, TONE_DOT, type Tone } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
-
-/** A sandbox's state: a dot that pulses while the state moves on its own, and its name. */
-export function StatusBadge({
-  status,
-  idlePaused = false,
-  canMessage = true,
-  readyLabel,
-  expiresAt,
-  className,
-}: {
-  status: SandboxStatus;
-  idlePaused?: boolean;
-  /** A metadata-only viewer can see the pause, but cannot send the wake-up message. */
-  canMessage?: boolean;
-  /** Context-specific plain wording without changing the stored status or other screens. */
-  readyLabel?: string;
-  expiresAt?: string | null;
-  className?: string;
-}) {
-  const look = statusLook(status);
-  const paused = idlePauseMessage({ status, idlePaused, expiresAt: expiresAt ?? null }, new Date());
-  const pauseHint = paused ? (canMessage ? paused : "Paused to save resources") : undefined;
-  return (
-    <Badge
-      variant="outline"
-      className={cn("gap-1.5 pr-2 pl-1.5", TONE_BADGE[look.tone], status === "deleted" && "line-through", className)}
-      data-status={status}
-      title={pauseHint}
-      aria-label={pauseHint}
-    >
-      <StatusDot tone={look.tone} pulse={look.pulse} />
-      {paused ? "Paused" : status === "ready" ? (readyLabel ?? look.label) : look.label}
-    </Badge>
-  );
-}
 
 /** The dot alone, for a place that already names the state. Decorative: the label beside it carries the meaning. */
 export function StatusDot({ tone, pulse = false, className }: { tone: Tone; pulse?: boolean; className?: string }) {

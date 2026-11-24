@@ -1,5 +1,5 @@
 import { MODEL_CATALOG } from "@armada/core";
-import { CircleAlertIcon, InfoIcon, LayoutTemplateIcon, TriangleAlertIcon, UserIcon, UsersIcon } from "lucide-react";
+import { CircleAlertIcon, InfoIcon, LayoutTemplateIcon, TriangleAlertIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CatalogBrowser } from "@/components/catalog-browser";
@@ -30,7 +30,6 @@ import {
   agentSummary,
   canManageTemplate,
   modelLabel,
-  plural,
   type TemplateItem,
   type TemplateLookups,
   templateAudience,
@@ -199,19 +198,13 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
       ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · ${DOCKER_HOST_LABEL} ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "unavailable"}`
       : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
-  const meta = definition
-    ? [
-        `${HARNESS_LABELS[definition.harness]} running ${modelLabel(definition.harness, definition.model)}, effort ${definition.reasoningEffort}, from ${environment}`,
-        definition.connections.length
-          ? definition.connections
-              .map((id) => lookups.connections?.find((tool) => tool.id === id)?.name ?? "Unavailable tool")
-              .join(", ")
-          : "No tools",
-        plural(definition.variables.length, "variable"),
-      ].join(" · ")
-    : `Version ${item.currentRevision}`;
   const target = launchTarget(item, context.goldens, lookups);
-  const blocker = target?.blocker ?? null;
+  const launch = target && !target.blocker && (
+    <TemplateLaunchDialog
+      target={target}
+      dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
+    />
+  );
 
   const detail = (
     <div className="space-y-4" data-template-panel={item.name}>
@@ -230,14 +223,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             </AlertDescription>
           </Alert>
         )}
-        {target && !blocker && (
-          <div className="pt-1">
-            <TemplateLaunchDialog
-              target={target}
-              dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
-            />
-          </div>
-        )}
+        {launch && <div className="pt-1">{launch}</div>}
       </div>
       {definition && target ? (
         <>
@@ -394,15 +380,9 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     bucket: state.bucket,
     search: [item.name, item.scope, environment ?? "", definition ? agentSummary(definition) : ""].join(" "),
     mark: definition ? <CatalogHarnessMark harness={definition.harness} /> : undefined,
-    tags: (
-      <RowTag>
-        {item.scope === "personal" ? <UserIcon aria-hidden /> : <UsersIcon aria-hidden />}
-        {item.scope === "personal" ? "Personal" : "Org"}
-      </RowTag>
-    ),
     meta: definition
       ? `${HARNESS_LABELS[definition.harness]} · ${modelLabel(definition.harness, definition.model)}`
-      : meta,
+      : `Version ${item.currentRevision}`,
     subtitle: `Version ${item.currentRevision} · ${templateAudience(item.scope, org.name)}`,
     state: <StateCell tone={state.tone} label={state.label} data-template-state={state.label} />,
     fact: (
@@ -413,16 +393,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
         ))}
       </div>
     ),
-    ...(target && !blocker
-      ? {
-          action: (
-            <TemplateLaunchDialog
-              target={target}
-              dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
-            />
-          ),
-        }
-      : {}),
+    ...(launch ? { action: launch } : {}),
     detail,
     attrs: { "data-template": item.name },
   };
