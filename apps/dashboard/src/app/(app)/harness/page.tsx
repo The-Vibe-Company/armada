@@ -19,6 +19,7 @@ import { type AuthCapabilities, HARNESS_PATH } from "@/lib/model-accounts";
 
 export const metadata: Metadata = { title: "Models" };
 export const dynamic = "force-dynamic";
+export const maxDuration = 320;
 
 /**
  * The coding harnesses (Claude Code, Codex) and the subscriptions they run on (#805). Only that: a person's own

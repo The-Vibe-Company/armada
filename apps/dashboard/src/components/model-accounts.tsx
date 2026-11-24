@@ -1590,6 +1590,7 @@ export function AddAccountDialog({
   const step = 2;
   const [generation, setGeneration] = useState(0);
   const [state, formAction, saving] = useMutationState(addAccount);
+  const [showSaveResult, setShowSaveResult] = useState(false);
   const [method, setMethod] = useState<(typeof ANTIGRAVITY_METHODS)[number]["id"]>("google");
   const [login, setLogin] = useState<{ loginId: string; authorizationUrl: string } | null>(null);
   const [signInError, setSignInError] = useState<string | null>(null);
@@ -1616,6 +1617,7 @@ export function AddAccountDialog({
     const form = wizardRef.current;
     if (!form?.reportValidity()) return;
     const data = new FormData(form);
+    setShowSaveResult(false);
     const tab = window.open("about:blank", "_blank");
     if (tab) tab.opener = null;
     setSignInError(null);
@@ -1740,6 +1742,7 @@ export function AddAccountDialog({
               const next = antigravityMethod(event.target.value);
               if (next) setMethod(next);
               setSignInError(null);
+              setShowSaveResult(false);
             }}
           >
             {ANTIGRAVITY_METHODS.map(({ id, label }) => (
@@ -1781,8 +1784,13 @@ export function AddAccountDialog({
           Make it the default for {info.harnessLabel}
         </Label>
       )}
+      {google && !login && signInPending && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Opening Google sign-in…
+        </p>
+      )}
       {signInError && <ResultLine result={{ ok: false, error: signInError }} />}
-      {!signInError && (!google || login) && state && !state.ok && <ResultLine result={state} />}
+      {!signInError && showSaveResult && state && !state.ok && <ResultLine result={state} />}
     </>
   );
   const choose = (next: AddChoice) => {
@@ -1796,6 +1804,7 @@ export function AddAccountDialog({
     setChoice(next);
     setMethod("google");
     setSignInError(null);
+    setShowSaveResult(false);
     setName("");
     setMaxAgents(nextKind === "morph" ? "2" : "");
   };
@@ -1827,7 +1836,11 @@ export function AddAccountDialog({
         key={generation}
         action={formAction}
         onSubmit={(event) => {
-          if (!google || login) return;
+          if (!google || login) {
+            setShowSaveResult(true);
+            setSignInError(null);
+            return;
+          }
           event.preventDefault();
           if (!signInPending) openGoogleSignIn();
         }}

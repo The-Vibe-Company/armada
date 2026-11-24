@@ -18,6 +18,7 @@ import {
   type LaunchEnvelope,
   streamSandboxEvents,
 } from "@armada/core/contract";
+import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -1479,9 +1480,8 @@ function launchRoute(body: Row, userId: string | null): Response {
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
   if (!source) return controlFail(404, "not_found", "No such golden.");
-  if (body.harness !== "claude" && body.harness !== "codex") {
-    return controlFail(400, "invalid", "The agent is claude or codex.");
-  }
+  if (!runtimeHarnessSupported(String(source.provider), String(body.harness)))
+    return controlFail(400, "invalid", "This agent is unavailable on the snapshot.");
   const dirs = ((source.config as { repos?: { dir?: string }[] }).repos ?? []).map((repo) => repo.dir);
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
@@ -2933,6 +2933,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
     pendingOAuth.clear();
+    pendingGoogleLogins.clear();
     sessions.clear();
     goldenJobs.clear();
     return json({ ok: true });
@@ -3099,7 +3100,7 @@ function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray, bod
 }
 
 const googleLoginPath = antigravityLoginOperations.startAntigravityLogin.route.path;
-const pendingGoogleLogins = new Map<string, { caller: string; org?: string; name: string }>();
+const pendingGoogleLogins = new Map<string, { caller: string; org?: string; name: string; expiresAt: number }>();
 
 function fixtureGoogleSignIn(path: string, body: Row, request: Request) {
   const caller = viewer(request);
@@ -3110,16 +3111,18 @@ function fixtureGoogleSignIn(path: string, body: Row, request: Request) {
     const { name, org } = parsed.data;
     if (org && !isAdmin(org, caller)) return controlFail(403, "forbidden", "Only an org admin can do that.");
     const loginId = crypto.randomUUID();
-    pendingGoogleLogins.set(loginId, { caller, name, ...(org ? { org } : {}) });
+    const expiresAt = Date.now() + 300_000;
+    pendingGoogleLogins.set(loginId, { caller, name, expiresAt, ...(org ? { org } : {}) });
     return json({
       loginId,
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
     });
   }
   const loginId = path.slice(googleLoginPath.length + 1);
   const pending = pendingGoogleLogins.get(loginId);
-  if (!pending || pending.caller !== caller) return controlFail(404, "not_found", "Start sign-in again.");
+  if (!pending || pending.caller !== caller || pending.expiresAt <= Date.now())
+    return controlFail(404, "not_found", "Start sign-in again.");
   if (request.method === "DELETE") {
     pendingGoogleLogins.delete(loginId);
     return json({ ok: true });

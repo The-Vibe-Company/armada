@@ -1,5 +1,6 @@
 import { type AgentDefault, isModelConnectionTestResult, MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
 import { antigravityLoginOperations, antigravityLoginPath } from "@armada/core/contract";
+import { safeAuthorizationUrl } from "./connections.ts";
 import { type ArmadaApiOptions, ControlError, controlJson, controlPost } from "./control.ts";
 import {
   type AccountScope,
@@ -48,6 +49,7 @@ type SetAccountRequest = Omit<AccountTarget, "id"> & {
 };
 
 const FEATURE = "named model accounts";
+const GOOGLE_SIGN_IN_TIMEOUT_MS = 310_000;
 /** What `controlPost` says for a route this server does not know. */
 const NOT_OFFERED = "This Armada server does not offer account usage yet.";
 
@@ -73,15 +75,21 @@ export function createAccountControl(options: ArmadaApiOptions) {
   return {
     async startGoogleSignIn(body: { name: string; org?: string }) {
       const operation = antigravityLoginOperations.startAntigravityLogin;
-      const payload = await controlPost(options, operation.route.path, body, "Antigravity sign-in");
+      const payload = await controlPost(
+        { ...options, timeoutMs: GOOGLE_SIGN_IN_TIMEOUT_MS },
+        operation.route.path,
+        body,
+        "Antigravity sign-in",
+      );
       const result = operation.output.safeParse(payload);
-      if (!result.success || new URL(result.data.authorizationUrl).origin !== "https://accounts.google.com")
+      const url = result.success ? safeAuthorizationUrl(result.data.authorizationUrl) : null;
+      if (!result.success || !url || new URL(url).origin !== "https://accounts.google.com")
         throw new ControlError("The Armada server sent an unexpected Google sign-in response.");
       return result.data;
     },
     async completeGoogleSignIn(id: string, code: string) {
       const payload = await controlPost(
-        { ...options, timeoutMs: 5 * 60_000 },
+        { ...options, timeoutMs: GOOGLE_SIGN_IN_TIMEOUT_MS },
         antigravityLoginPath(id),
         { code },
         "Antigravity sign-in",
