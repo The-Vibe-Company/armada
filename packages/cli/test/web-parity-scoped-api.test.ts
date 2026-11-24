@@ -7,8 +7,9 @@ import { encryptSecret } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSqlData } from "../../mcp-server/src/data.ts";
+import { enrolledLaunchPolicy } from "../../mcp-server/test/launch-runtime.fixture.ts";
 import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
-import { fakeBoat } from "../../mcp-server/test/support.ts";
+import { fakeBoat, ENCRYPTION_KEY as key } from "../../mcp-server/test/support.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
@@ -22,7 +23,6 @@ const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 const golden = "33333333-3333-4333-8333-333333333333",
   secondGolden = "44444444-4444-4444-8444-444444444444",
   modalGolden = "55555555-5555-4555-8555-555555555555";
-const key = Buffer.alloc(32, 6).toString("base64");
 const sid = (n: number) => `99999999-9999-4999-8999-${String(n).padStart(12, "0")}`;
 
 const database = rowOnlyConnection();
@@ -332,6 +332,7 @@ test("CLI retires launch visibility without changing source golden authority", a
   const f = await fixture();
   try {
     const boat = fakeBoat();
+    f.options.launch = { runtime: enrolledLaunchPolicy(f.db) };
     f.options.providerFor = boat.providerFor;
     delete f.options.providers;
     await f.db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
