@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";
 import { deadlinesFor } from "./smoke-deadlines.ts";
@@ -206,10 +207,14 @@ test.each([
   {
     scenario: "terminal status",
     response: () =>
-      Response.json({ status: "failed", providerState: null, statusReason: "private_diagnostic_placeholder" }),
+      Response.json({
+        status: "failed",
+        providerState: "private_diagnostic_placeholder",
+        statusReason: RUNTIME_STARTUP_FAILURES.artifact_integrity,
+      }),
     evidence: {
       source: "status_body",
-      statusResponse: { status: "failed", providerState: "null", statusReason: "string" },
+      statusResponse: { status: "failed", providerState: "string", statusReason: "artifact_integrity" },
     },
   },
   {
@@ -258,7 +263,7 @@ test.each([
             events: [{ kind: "message", promptId: id(8), partial: false, text: "Hello" }],
           });
         case "/api/v1/sandbox/stop":
-          return Response.json({ status: "stopped" });
+          return Response.json({ id: body.id, status: "stopped" });
         default:
           throw new Error(`Unexpected request ${url}`);
       }
@@ -279,5 +284,19 @@ test.each([
     },
   ]);
   expect(JSON.stringify(receipts)).not.toContain("private_diagnostic_placeholder");
+  expect(receipts).toContainEqual(
+    expect.objectContaining({
+      provider: "docker",
+      step: "real_model_ready",
+      pass: false,
+      code: "sandbox_not_ready",
+    }),
+  );
+  expect(
+    receipts
+      .filter((row) => row.step === "real_model_stop" && row.pass)
+      .map((row) => row.provider)
+      .sort(),
+  ).toEqual(["docker", "modal"]);
   expect(receipts).toContainEqual(expect.objectContaining({ provider: "modal", step: "real_model_wait", pass: true }));
 });

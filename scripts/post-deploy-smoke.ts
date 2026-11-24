@@ -1,6 +1,7 @@
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from "../packages/core/src/docker-api.ts";
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
 import { describeNativeFailure, promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
@@ -113,6 +114,10 @@ function jsonShape(value: unknown): string {
   if (Array.isArray(value)) return "array";
   return typeof value;
 }
+const dockerSmokeFailureMessages = {
+  ...DOCKER_LAUNCH_FAILURE_MESSAGES,
+  image_unavailable: DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+};
 function fail(code: Code): never {
   throw new SmokeFailure(code);
 }
@@ -1170,20 +1175,25 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           );
         } catch (error) {
           if (error instanceof SmokeFailure && error.code === "sandbox_not_ready") {
-            const statusResponse = terminal && {
-              status: terminal.status,
-              providerState: ["active", "running", "stopped"].some((state) => state === terminal?.providerState)
-                ? terminal.providerState
-                : jsonShape(terminal.providerState),
-              statusReason:
-                (item.provider === "docker"
-                  ? terminal.statusReason === DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-                    ? "image_unavailable"
-                    : Object.entries(DOCKER_LAUNCH_FAILURE_MESSAGES).find(
-                        ([, message]) => message === terminal?.statusReason,
-                      )?.[0]
-                  : modalSmokeSetupReason(terminal.statusReason)) ?? jsonShape(terminal.statusReason),
-            };
+            let statusResponse: { status: string; providerState: string; statusReason: string } | undefined;
+            if (terminal) {
+              const { status, providerState, statusReason } = terminal;
+              const runtimeReason = Object.entries(RUNTIME_STARTUP_FAILURES).find(
+                ([, message]) => message === statusReason,
+              )?.[0];
+              const providerReason =
+                item.provider === "docker"
+                  ? Object.entries(dockerSmokeFailureMessages).find(([, message]) => message === statusReason)?.[0]
+                  : modalSmokeSetupReason(statusReason);
+              statusResponse = {
+                status,
+                providerState:
+                  providerState === "active" || providerState === "running" || providerState === "stopped"
+                    ? providerState
+                    : jsonShape(providerState),
+                statusReason: runtimeReason ?? providerReason ?? jsonShape(statusReason),
+              };
+            }
             out(
               JSON.stringify({
                 step: "readiness_diagnostic",
