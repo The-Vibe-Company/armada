@@ -88,8 +88,8 @@ export const antigravityLoginOperations = {
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;
 
-export function antigravityLoginPath(id: string): `${typeof loginPath}/${string}` {
-  return `${loginPath}/${loginId.parse(id)}`;
+export function antigravityLoginPath(id: string) {
+  return `${loginPath}/${loginId.parse(id)}` as const;
 }
 
 export function isAntigravityLoginPath(path: string) {
