@@ -8,14 +8,18 @@ import { startBoatRuntime } from "./runtime-bootstrap.ts";
 
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
 type Ticket = Omit<Parameters<typeof startBoatRuntime>[1], "sandboxId">;
+type StopBinding = MachineIdentity & { readonly launchGeneration: number };
 
 export function createBoatMachine(
-  options: BoatProviderOptions & { deploymentId: string },
+  options: BoatProviderOptions & { deploymentId: string; stopBinding?: StopBinding },
   host: Provider,
   resolveTicket: (request: Bootstrap, expiresAt: number) => Promise<Ticket | null>,
   authorize: () => Promise<void>,
   bootstrapRuntime = startBoatRuntime,
 ) {
+  // The stop authority supplies this binding from the current sandbox and its
+  // allocation. In-place activation changes the logical generation only.
+  const stopBinding = options.stopBinding && { ...options.stopBinding };
   const api = new BoatApi(
     new Configuration({
       basePath: options.baseUrl ?? "https://boat.dev/api/v1",
@@ -119,7 +123,18 @@ export function createBoatMachine(
       await bootstrapRuntime({ ...host, sshKey }, { ...ticket, sandboxId: request.machineId });
     },
     async stop(request) {
-      await stopCompute(request);
+      if (
+        stopBinding &&
+        (stopBinding.sandboxId !== request.sandboxId ||
+          stopBinding.generation !== request.generation ||
+          stopBinding.machineId !== request.machineId ||
+          !Number.isSafeInteger(stopBinding.launchGeneration) ||
+          stopBinding.launchGeneration < 1 ||
+          stopBinding.launchGeneration > request.generation)
+      )
+        throw invalidRequest("Boat machine incarnation changed.");
+      const physical = { ...request, generation: stopBinding?.launchGeneration ?? request.generation };
+      await stopCompute(physical);
       if (!request.retain) return null;
       const info = await host.get(request.machineId, request.signal ? { signal: request.signal } : undefined);
       if (info.retainedSnapshot !== "usable") throw invalidRequest("Boat disk retention is unconfirmed.");
