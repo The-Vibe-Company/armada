@@ -221,15 +221,15 @@ describe("http", () => {
   });
 });
 
-test("HTTP request logs mask encoded path tokens and omit query values", async () => {
+test("HTTP request logs use the gateway template without the connection identifier or query", async () => {
   const lines: string[] = [];
   const { handler } = await start({ log: (line) => lines.push(line) });
   const token = `armada_runtime_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
-  const encoded = `%61${token.slice(1)}`;
-  const response = await handler(new Request(`${PUBLIC_URL}/missing/${encoded}?query=private-value`));
+  const response = await handler(new Request(`${PUBLIC_URL}/mcp/gateway/${token}?query=private-value`));
   expect(response.status).toBe(404);
   expect(lines).toHaveLength(1);
-  expect(JSON.parse(lines[0]!)).toMatchObject({ event: "http_request", path: "/missing/***" });
+  expect(JSON.parse(lines[0]!)).toMatchObject({ event: "http_request", path: "/mcp/gateway/{connectionId}" });
+  expect(lines[0]).not.toContain(token);
   expect(lines[0]).not.toContain("private-value");
 });
 

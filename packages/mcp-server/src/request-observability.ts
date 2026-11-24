@@ -28,12 +28,23 @@ function requestLogForStatus(status: number) {
   return console.info;
 }
 
-function requestPath(request: Request) {
-  try {
-    return redactForLog(decodeURIComponent(new URL(request.url).pathname));
-  } catch {
-    return "[invalid path]";
-  }
+const loggedPaths = [
+  "/healthz",
+  "/mcp",
+  "/api/v1/sandbox/status",
+  "/api/runtime/channel",
+  "/api/runtime/events",
+  "/api/runtime/github/credentials",
+  "/api/runtime/model-access",
+  "/api/runtime/poll",
+  "/api/runtime/progress",
+  "/api/runtime/results",
+];
+
+function loggedPath(request: Request) {
+  const pathname = new URL(request.url).pathname;
+  if (/^\/mcp\/gateway\/[^/]+$/.test(pathname)) return "/mcp/gateway/{connectionId}";
+  return loggedPaths.find((path) => path === pathname);
 }
 
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
@@ -57,10 +68,11 @@ export function observeRequest<T extends Response | undefined>(
     }
     const status = response?.status ?? 101;
     const requestLog = log ?? requestLogForStatus(status);
+    const path = request && loggedPath(request);
     requestLog(
       JSON.stringify({
         event: "http_request",
-        ...(request ? { path: requestPath(request) } : {}),
+        ...(path ? { path } : {}),
         requestId: id,
         status,
         durationMs: Math.round(performance.now() - started),
