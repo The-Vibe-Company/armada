@@ -521,9 +521,9 @@ function createTestServer(
     app: GITHUB_APP,
     fetch: fakeGit.fetch,
   };
-  const runtime = options.enrolledLaunch ? enrolledLaunchPolicy(sql) : undefined;
+  const runtime = enrolledLaunchPolicy(sql);
   const runtimeGitHub =
-    runtime &&
+    options.enrolledLaunch &&
     createRuntimeGitHub({
       sql,
       key: ENCRYPTION_KEY,
@@ -566,27 +566,15 @@ function createTestServer(
     launch: {
       sleep: async () => {},
       sandboxPolls: 3,
-      ...(runtime && runtimeGitHub
-        ? {
-            runtime: {
-              async start(input) {
-                const agent = await runtime.start(input);
-                return {
-                  ...agent,
-                  ...runtimeWorkspace(
-                    input,
-                    {
-                      workspaceHealth: async () => {},
-                      workspaceExec: (request) => input.host.exec(request),
-                    },
-                    agent.epoch,
-                    runtimeGitHub,
-                  ),
-                };
-              },
-            },
-          }
-        : {}),
+      ...(runtimeGitHub && {
+        runtime: {
+          async start(input) {
+            const agent = await runtime.start(input);
+            const peer = { workspaceHealth: async () => {}, workspaceExec: input.host.exec.bind(input.host) };
+            return { ...agent, ...runtimeWorkspace(input, peer, agent.epoch, runtimeGitHub) };
+          },
+        },
+      }),
     },
   });
   const clients: Client[] = [];

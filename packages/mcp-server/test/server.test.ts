@@ -16,6 +16,7 @@ import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec, reuseCollectorKeyPair } from "./fixtures/recovery-exec.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { seedPersistedBoat } from "./persisted-boat.fixture.ts";
 import {
@@ -461,6 +462,7 @@ describe("tools", () => {
         encryptionKey: ENCRYPTION_KEY,
         data: createSqlData(s.db),
         providerFor: s.boat.providerFor,
+        launch: { runtime: enrolledLaunchPolicy(s.db) },
         github: {
           app: GITHUB_APP,
           fetch: (async () => Response.json({ message: "Not found." }, { status: 404 })) as unknown as typeof fetch,

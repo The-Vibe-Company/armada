@@ -2,7 +2,6 @@ import { MODEL_CATALOG } from "@armada/core";
 import { createSqlSandboxStore, type Harness, type PromptRequest } from "@armada/core/server";
 import type { TestServer } from "./support.ts";
 
-/** Start at an existing provider-run Boat row, independent of public launch admission. */
 export async function seedPersistedBoat(
   { boat, db, people }: Pick<TestServer, "boat" | "db" | "people">,
   {
