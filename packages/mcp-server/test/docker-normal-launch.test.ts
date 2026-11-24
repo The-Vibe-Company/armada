@@ -81,7 +81,7 @@ const key = Buffer.alloc(32, 19).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
-const bootstrap = createDockerBootstrapService(sql, key, {
+const bootstrapOptions = {
   enabled: true,
   serverUrl: "https://armada.example",
   architecture: "x64",
@@ -94,7 +94,8 @@ const bootstrap = createDockerBootstrapService(sql, key, {
     harnesses: { codex: { files: [{ path: "bin/codex" }] }, claude: { files: [{ path: "bin/claude" }] } },
   },
   credentials,
-});
+} as const;
+const bootstrap = createDockerBootstrapService(sql, key, bootstrapOptions);
 // The real migrated boundary owns normal-launch sequencing and durable retries.
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
@@ -469,6 +470,7 @@ async function fixture(
     timeoutMs = 10_000,
     releaseImage: string | (() => never) | null = officialImage,
     deferLaunch = false,
+    bootstrapService = bootstrap,
   ) {
     const launch = createDockerNormalLaunch(target, key, {
       enabled,
@@ -476,7 +478,7 @@ async function fixture(
         return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
       },
       credentials: resolver,
-      bootstrap,
+      bootstrap: bootstrapService,
       clock,
       timeoutMs,
       github,
@@ -1601,6 +1603,44 @@ test("revoking the admitted actor rejects a previously delivered bootstrap ticke
     f.actor.userId,
   ]);
   await expect(authority.enrol(bootstrap.bootstrap.enrolmentToken)).rejects.toThrow();
+});
+
+test("launch keeps the runtime grant when enrolment races Machine bootstrap replay", async () => {
+  const f = await fixture();
+  let enrolDuringReplay = false;
+  const bootstrapService = createDockerBootstrapService(
+    {
+      ...sql,
+      async query(query, values) {
+        if (enrolDuringReplay && values?.[0] === f.body.requestId && query.includes("bound_operation='bootstrap'")) {
+          enrolDuringReplay = false;
+          await f.step();
+        }
+        return sql.query(query, values);
+      },
+    },
+    key,
+    bootstrapOptions,
+  );
+  const launch = f.service(sql, true, 10000, officialImage, true, bootstrapService);
+  await launch.launch(f.caller, f.body);
+  await launch.runClaim();
+  f.setDrive(false);
+  await launch.runClaim();
+  expect(f.session()).toBeUndefined();
+  await sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
+
+  enrolDuringReplay = true;
+  f.setDrive(true);
+  await launch.drain();
+
+  expect(enrolDuringReplay).toBe(false);
+  expect(await launch.launch(f.caller, f.body)).toMatchObject({
+    sandbox: { status: "running" },
+    runtime: { kind: "armada", epoch: "1" },
+    promptId: f.receipt.promptId,
+  });
+  expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["create", "bootstrap"]);
 });
 
 test("a stale worker cannot enqueue runtime setup after enrolment", async () => {
