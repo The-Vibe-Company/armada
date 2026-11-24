@@ -195,14 +195,14 @@ export default async function SandboxPage({ params }: Props) {
             <ShellPageActions slot="status">
               <SandboxState
                 viewerOwns={owner}
-                status={sandbox.status}
+                status={sandbox.publicStatus}
                 statusMessage={sandbox.status_reason}
                 readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
                 idlePaused={sandbox.status_reason === "idle_paused"}
                 expiresAt={sandbox.expires_at}
               />
             </ShellPageActions>
-            {sandbox.status === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
+            {sandbox.publicStatus === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
               <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
             )}
             {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
@@ -235,7 +235,7 @@ export default async function SandboxPage({ params }: Props) {
           <SandboxChat
             sandboxId={sandbox.id}
             currentConversation={sandbox.conversation_ids.at(-1)}
-            initialStatus={sandbox.status}
+            initialStatus={sandbox.publicStatus}
             provider={sandbox.provider}
             preservationNote={sandbox.preservation_note}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
@@ -469,7 +469,7 @@ function DockerSandbox({
             <ShellPageActions slot="status">
               <SandboxState
                 viewerOwns={sandbox.owner_id === viewer.id}
-                status={sandbox.status}
+                status={sandbox.publicStatus}
                 statusMessage={sandbox.status_reason}
                 readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
                 idlePaused={sandbox.status_reason === "idle_paused"}
@@ -525,7 +525,7 @@ function DockerSandbox({
             <SandboxChat
               sandboxId={sandbox.id}
               currentConversation={sandbox.conversation_ids.at(-1)}
-              initialStatus={sandbox.status}
+              initialStatus={sandbox.publicStatus}
               provider={sandbox.provider}
               preservationNote={sandbox.preservation_note}
               initialIdlePaused={sandbox.status_reason === "idle_paused"}
@@ -551,7 +551,7 @@ function DockerSandbox({
           </footer>
         </div>
         <SandboxDetailsPanel>
-          {configured && !reasons.exec && (sandbox.status === "ready" || sandbox.status === "running") && (
+          {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
           <section className="space-y-3 text-sm">

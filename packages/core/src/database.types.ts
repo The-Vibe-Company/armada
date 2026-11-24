@@ -5877,6 +5877,7 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      sandbox_detail_status: { Args: { target_id: string; target_org: string }; Returns: SandboxStatus | null };
       sandbox_list_metadata: { Args: Record<string, never>; Returns: SandboxListMetadata[] };
       sandbox_launch_percentiles: { Args: { target_org: string }; Returns: LaunchPercentiles[] };
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };

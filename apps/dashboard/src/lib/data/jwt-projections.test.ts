@@ -32,7 +32,10 @@ function database(row: Record<string, unknown>) {
     );
   }
   return {
-    client: { from: () => query } as unknown as Supabase,
+    client: {
+      from: () => query,
+      rpc: async () => ({ data: "failed", error: null }),
+    } as unknown as Supabase,
     filters,
   };
 }
@@ -45,7 +48,7 @@ describe("dashboard JWT projections", () => {
     ["sandbox interior", (db: Supabase) => getSandbox(db, "sandbox_id"), true],
   ] as const) {
     test(`${name} preserves readable data without implicitly fetching new columns`, async () => {
-      const details = name === "sandbox interior" ? { harness: "claude" } : {};
+      const details = name === "sandbox interior" ? { harness: "claude", status: "ready" } : {};
       const db = database({
         id: "row_id",
         org_id: "selected_org",
@@ -55,7 +58,13 @@ describe("dashboard JWT projections", () => {
       });
       const result = await read(db.client);
       const row = single ? result : (result as unknown[])[0];
-      expect(row).toEqual({ id: "row_id", org_id: "selected_org", created_at: "created_time", ...details });
+      expect(row).toEqual({
+        id: "row_id",
+        org_id: "selected_org",
+        created_at: "created_time",
+        ...details,
+        ...(name === "sandbox interior" ? { publicStatus: "failed" } : {}),
+      });
       expect(db.filters).toContainEqual(["org_id", "selected_org"]);
     });
   }

@@ -145,6 +145,9 @@ test("current org metadata is allowlisted; raw interior and mutation require cur
           expect(row.idlePaused).toBe(row.id === ids[0]);
           expect(row.canOpen).toBe(mayOpen);
         }
+        expect((await db.query("select public.sandbox_detail_status($1,$2) as status", [ids[0], p.org])).rows).toEqual([
+          { status: mayOpen ? "stopped" : null },
+        ]);
         expect((await db.query("select * from sandboxes")).rows.length).toBe(mayOpen ? 2 : 0);
         expect((await db.query("update sandboxes set conversation_ids=array['rls'] returning id")).rows.length).toBe(
           mayOpen ? 2 : 0,

@@ -135,13 +135,13 @@ export function registerStatusTools(
       enrolled || (!recorded && (confirmedStop || (!waiting && !fenced)))
         ? await context.modalJobReader?.(found)
         : null;
-    const setupState = enrolled ? jobReader?.setupState : undefined;
-    const setupPending = setupState === "queued" || setupState === "leased";
-    if (setupPending || setupState === "failed")
+    const enrolledStatus = enrolled ? jobReader?.enrolledStatus : undefined;
+    const setupPending = enrolledStatus === "starting";
+    if (setupPending || enrolledStatus === "failed")
       return {
         ...recordedStatus(found),
         ...logicalExpiry(found.expiresAt, context.now()),
-        status: setupPending ? ("starting" as const) : ("failed" as const),
+        status: enrolledStatus,
         statusReason: setupPending ? null : jobReader!.setupFailure,
         settled: !setupPending,
         statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",

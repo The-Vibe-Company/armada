@@ -25,7 +25,7 @@ export async function readSandboxConversation(id: string, cursor: string | null,
   if (!gateway) {
     return {
       body: {
-        status: sandbox.status,
+        status: sandbox.publicStatus,
         statusMessage: persistedMessage,
         usageRevision: persistedRevision,
         configured: false,
@@ -48,11 +48,11 @@ export async function readSandboxConversation(id: string, cursor: string | null,
       usage?: unknown;
     };
     return {
-      status: detail.status ?? sandbox.status,
+      status: detail.status ?? sandbox.publicStatus,
       statusMessage:
         detail.statusMessage !== undefined
           ? detail.statusMessage
-          : detail.status === undefined || detail.status === sandbox.status
+          : detail.status === undefined || detail.status === sandbox.publicStatus
             ? persistedMessage
             : null,
       prompt: detail.prompt ?? null,

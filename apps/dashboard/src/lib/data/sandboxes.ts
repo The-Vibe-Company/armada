@@ -64,21 +64,21 @@ export type SandboxDetail = Omit<
   | "pull_request_merge_proof"
   | "stop_when_work_merged"
   | "transition_context"
-> & { harness: Harness };
+> & { harness: Harness; publicStatus: Sandbox["status"] };
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
 export async function getSandbox(supabase: Supabase, id: string): Promise<SandboxDetail | null> {
   const selected = await selectedOrganization();
   if (!selected) return null;
-  const { data, error } = await supabase
-    .from("sandboxes")
-    .select(SANDBOXES_COLUMNS)
-    .eq("id", id)
-    .eq("org_id", selected.org.id)
-    .maybeSingle();
+  const orgId = selected.org.id;
+  const [{ data, error }, readiness] = await Promise.all([
+    supabase.from("sandboxes").select(SANDBOXES_COLUMNS).eq("id", id).eq("org_id", orgId).maybeSingle(),
+    supabase.rpc("sandbox_detail_status", { target_id: id, target_org: orgId }),
+  ]);
   if (error) throw new Error(error.message);
-  if (!data || !isHarness(data.harness)) return null;
-  return { ...data, harness: data.harness };
+  if (readiness.error) throw new Error(readiness.error.message);
+  if (!data || !isHarness(data.harness) || readiness.data === null) return null;
+  return { ...data, harness: data.harness, publicStatus: readiness.data };
 }
 
 /**

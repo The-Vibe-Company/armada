@@ -1071,6 +1071,10 @@ async function rest(request: Request, url: URL): Promise<Response> {
 
 function rpc(name: string, args: Row, userId: string): Response {
   switch (name) {
+    case "sandbox_detail_status": {
+      const sandbox = state.sandboxes.find((row) => row.id === args.target_id && row.org_id === args.target_org);
+      return json(sandbox && canOpenSandbox(sandbox, userId) ? sandbox.status : null);
+    }
     case "sandbox_launch_percentiles":
       return json([]); // The fixture has no launch stage history.
     case "create_org": {
