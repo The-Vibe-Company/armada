@@ -465,7 +465,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     },
     async exec(request) {
       request.signal?.throwIfAborted();
-      if (request.onlyIfRunning || request.expectedPhysicalGeneration !== undefined)
+      if (request.onlyIfRunning)
         throw refusal("invalid_request", "Generation-fenced workspace commands require the common transport.");
       const target = await store.get(request.sandboxId);
       if (!target.golden) return requiresRuntime();
