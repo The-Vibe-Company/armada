@@ -2319,7 +2319,7 @@ test.each(["never delivered", "journaled before restart", "actor revoked", "atte
       if (journaled) {
         const first = (f.native as RunnerRequest[]).find((command) => command.op === "prompt")!;
         const original = new Runner(journal, grant, drivers);
-        const response = await handle(original, first);
+        const response = await handle(original, { ...first, input: { ...first.input, cwd: process.cwd() } });
         expect(response.status).toBe(200);
         accepted = ((await response.json()) as { result: { promptId: string; conversationId: string } }).result;
         await original.close();
