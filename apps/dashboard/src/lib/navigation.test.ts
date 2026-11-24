@@ -17,10 +17,9 @@ describe("sidebar navigation", () => {
     expect(isActiveLink("/routinesx", "/routines")).toBe(false);
   });
 
-  test("always offers Machines so cloud accounts remain accessible without Docker hosts", () => {
+  test("links Machines to provider setup", () => {
     const machines = NAV_GROUPS.flatMap((group) => group.links).find((link) => link.label === "Machines");
     expect(machines?.href).toBe("/providers/cloud");
-    expect(machines?.optIn).toBeUndefined();
   });
 
   test("shows organizations only to a member of several, or to someone with none", () => {

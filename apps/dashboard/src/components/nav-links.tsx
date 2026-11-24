@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ReactNode, Suspense, use } from "react";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { StatusDot } from "@/components/status-badge";
 import {
@@ -33,7 +32,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { isActiveLink, NAV_GROUPS, type NavIcon, type NavOptIn } from "@/lib/navigation";
+import { isActiveLink, NAV_GROUPS, type NavIcon } from "@/lib/navigation";
 import { statusLook } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
@@ -52,16 +51,6 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   models: KeyRoundIcon,
   settings: SettingsIcon,
 };
-
-/**
- * Destinations behind a server opt-in. The shell passes the server's answer as a promise and does not wait for it:
- * only the entry itself appears once the answer says the server offers it.
- */
-type NavOptIns = Record<NavOptIn, Promise<boolean>>;
-
-function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode }) {
-  return use(when) ? children : null;
-}
 
 export function NavMobileTrigger() {
   const pathname = usePathname();
@@ -89,7 +78,6 @@ export function NavMobileTrigger() {
  */
 export function NavLinks({
   className,
-  optIns,
   sandboxes = [],
   organizationId = null,
   organizationAdmin = false,
@@ -97,7 +85,6 @@ export function NavLinks({
   organizationId?: string | null;
   organizationAdmin?: boolean;
   className?: string;
-  optIns: NavOptIns;
   sandboxes?: { id: string; label: string; status: SandboxStatus }[];
 }) {
   const pathname = usePathname();
@@ -120,7 +107,7 @@ export function NavLinks({
                   const { href, label } = link;
                   const Icon = ICONS[link.icon];
                   const active = isActiveLink(pathname, href);
-                  const item = (
+                  return (
                     <SidebarMenuItem key={href}>
                       <SidebarMenuButton
                         asChild
@@ -145,14 +132,6 @@ export function NavLinks({
                             <Icon />
                           </LinkPendingIcon>
                           <span className="truncate">{label}</span>
-                          {href === "/sandboxes" && sandboxes.length > 0 && (
-                            <span
-                              className="ml-auto rounded bg-[var(--accent-tint)] px-1.5 text-xs tabular-nums text-[var(--accent-text)]"
-                              title={`${sandboxes.length} live sandboxes`}
-                            >
-                              {sandboxes.length}
-                            </span>
-                          )}
                         </Link>
                       </SidebarMenuButton>
                       {href === "/sandboxes" && sandboxes.length > 0 && (
@@ -182,12 +161,6 @@ export function NavLinks({
                         </ul>
                       )}
                     </SidebarMenuItem>
-                  );
-                  if (!link.optIn) return item;
-                  return (
-                    <Suspense key={href} fallback={null}>
-                      <OptIn when={optIns[link.optIn]}>{item}</OptIn>
-                    </Suspense>
                   );
                 })}
               </SidebarMenu>

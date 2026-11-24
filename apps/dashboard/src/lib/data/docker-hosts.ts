@@ -70,9 +70,8 @@ type DockerHostsState =
   | { state: "error"; message: string };
 
 /**
- * The selected organization's Docker hosts, or why there are none to show, read once per request: the navigation and
- * the Hosts page share it. Without an organization, an Armada server or the server's host list, Docker hosts are
- * "disabled" here (the list is the opt-in signal).
+ * The selected organization's Docker hosts, or why there are none to show, read once per request. Without an organization, an Armada
+ * server or the server's host list, Docker hosts are "disabled" here.
  */
 export const readSelectedDockerHosts = cache(async (): Promise<DockerHostsState> => {
   const selected = await selectedOrganization();
@@ -88,36 +87,14 @@ export const readSelectedDockerHosts = cache(async (): Promise<DockerHostsState>
   }
 });
 
-/** The navigation's patience: past this, its Hosts entry stays hidden instead of holding a refresh. */
-const NAV_DEADLINE_MS = 2_000;
-
-/**
- * Whether the navigation shows Hosts: only when the list was read. Disabled, failing or slow hides the entry (a direct
- * visit to the page still says what went wrong). The shell does not wait for it: only that one entry does.
- */
-export async function dockerHostsEnabled(): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), NAV_DEADLINE_MS);
-  });
-  try {
-    return await Promise.race([readSelectedDockerHosts().then((hosts) => hosts.state === "ready"), deadline]);
-  } catch {
-    // Streamed to the client navigation: an unexpected failure hides the entry instead of breaking the menu.
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * The selected organization's host list for a Docker sandbox page's host name (#1526), or null when it is not read
- * within the navigation's patience: the page then names the host by its short id instead of waiting.
+ * before the deadline: the page then names the host by its short id instead of waiting.
  */
 export async function hostListForPage(): Promise<DockerHostList | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), NAV_DEADLINE_MS);
+    timer = setTimeout(() => resolve(null), 2_000);
   });
   try {
     return await Promise.race([
