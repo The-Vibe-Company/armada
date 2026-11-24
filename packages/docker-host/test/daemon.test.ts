@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
+import { dockerMachineJobId } from "../../core/src/docker-host-job.ts";
 import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
 import {
   type Api,
@@ -1033,9 +1034,10 @@ test("bootstrap executes once with a private descriptor; identity changes and of
   expect(denied.executed).toEqual([]);
 });
 
-test("pending bootstrap is terminally unknown on recovery, before invocation or after an outcome-save failure", async () => {
+test.each([false, true])("pending bootstrap recovers only with a Machine intent (%s)", async (machine) => {
   for (const interruptedAfter of ["intent", "execution"]) {
     const f = fixture("create", bootstrapDescriptor());
+    if (machine) f.job.requestId = dockerMachineJobId(f.job.request.generation, "bootstrap");
     let saves = 0;
     const store: Store = {
       load: f.store.load,
@@ -1050,8 +1052,8 @@ test("pending bootstrap is terminally unknown on recovery, before invocation or 
     expect(f.state().receipts[0]?.outcome).toBeUndefined();
     await tick(f.store, f.api, f.executor);
     await tick(f.store, f.api, f.executor);
-    expect(f.executed).toEqual(interruptedAfter === "execution" ? ["bootstrap"] : []);
-    expect(f.acknowledgements).toEqual(["failed", "failed"]);
+    expect(f.executed).toHaveLength(Number(machine) + Number(interruptedAfter === "execution"));
+    expect(f.acknowledgements).toEqual(machine ? ["completed", "completed"] : ["failed", "failed"]);
     f.job.requestId = crypto.randomUUID();
     await expect(tick(f.store, f.api, f.executor)).rejects.toThrow("Changed machine generation");
   }

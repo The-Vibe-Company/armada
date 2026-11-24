@@ -322,8 +322,8 @@ export async function attachDockerRestorePlacement(
        select s.id,s.docker_generation,s.provider_sandbox_id from public.sandboxes s cross join locked_runner j
        where s.id=$2 and s.lifecycle_generation=$3 and s.provider='docker'
          and s.docker_host_id=$5 and s.docker_installation_id=$6 and s.docker_generation in ($7,$8)
-         and s.status='starting' and s.stop_requested_at is null and s.deleted_at is null
-         and s.expires_at > clock_timestamp()
+         and (s.status='starting' or (s.docker_generation=$8 and s.status in ('ready','running')))
+         and s.stop_requested_at is null and s.deleted_at is null and s.expires_at > clock_timestamp()
          and j.lease_until > clock_timestamp() and j.deadline_at > clock_timestamp()
      ), attached as (
        update public.sandboxes s set docker_generation=$8,provider_sandbox_id=$9

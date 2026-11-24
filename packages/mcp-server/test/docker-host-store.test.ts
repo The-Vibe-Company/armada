@@ -449,6 +449,23 @@ async function machineStopFixture() {
   return { ...a, machine: { sandboxId: a.sandboxId, generation: a.request.generation, machineId } };
 }
 
+test("a fresh Docker Machine recovers allocation and confirms exact physical deletion from mailbox receipts", async () => {
+  const a = await machineStopFixture();
+  const adapter = () => store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+  await store.poll(a.hostToken, a.installationId);
+  expect(await adapter().observe(a.request)).toMatchObject({ kind: "present", machine: a.machine });
+  expect(await adapter().create(a.request)).toEqual(a.machine);
+  const removal = { ...a.machine, scope: "physical-only" as const };
+  await denied(adapter().delete({ ...removal, machineId: "e".repeat(64) }));
+  await expect(adapter().delete(removal)).rejects.toThrow("outcome is pending");
+  const options = [undefined, false, undefined, undefined, null, null, [], null, true] as const;
+  const delivery = await store.poll(a.hostToken, a.installationId, ...options);
+  expect(delivery).toMatchObject({ operation: "deletePhysical", machineId: a.machine.machineId });
+  await store.complete(a.hostToken, a.installationId, { requestId: delivery!.requestId, outcome: "completed" });
+  await adapter().delete(removal);
+  expect(await adapter().observe(a.machine)).toMatchObject({ kind: "absent" });
+});
+
 test.each(["revocation", "physical removal", "failed physical removal"] as const)(
   "Machine stop recovers on takeover and fences %s",
   async (fence) => {

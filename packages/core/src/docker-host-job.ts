@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type DockerSnapshotBinding, isDockerImageReference, parseDockerSnapshotBinding } from "./docker-image.ts";
 import type { DockerMachineRequest } from "./docker-machine.ts";
 import { type GoldenConfig, parseGoldenConfig } from "./golden-config.ts";
@@ -19,6 +20,11 @@ export type DockerHostJob = { requestId: string; request: DockerMachineRequest }
   | { operation: "bootstrap" | "resume"; bootstrap: BootstrapDescriptor }
   | { operation: "buildSnapshot"; build: DockerSnapshotBuildDescriptor }
 );
+export function dockerMachineJobId(generation: string, operation: "bootstrap" | "stop" | "delete" | "deletePhysical") {
+  const digest = createHash("sha256").update(`docker-machine:${generation}:${operation}`).digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`;
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function invalid(): never {
   throw new Error("Invalid host job");
