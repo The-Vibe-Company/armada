@@ -298,12 +298,16 @@ test("host ls flags an outdated daemon with a supported protocol", async () => {
     Response.json({
       placement: true,
       targetVersion: "12.0.0",
-      hosts: [{ ...summary, version: "11.0.0", protocol: 1, upgradeRequired: false, versionStatus: "outdated" }],
+      hosts: [
+        { ...summary, version: "11.0.0", protocol: 1, upgradeRequired: false, versionStatus: "outdated" },
+        { ...summary, id: other, version: "dev", protocol: 1, upgradeRequired: false, versionStatus: "unknown" },
+      ],
     }),
   );
   expect(result.code).toBe(0);
   expect(result.out).toContain("11.0.0");
   expect(result.out).toContain("12.0.0");
   expect(result.out).toMatch(/outdated/i);
+  expect(result.out).toContain("dev (unrecognized version)");
   expect(result.out).not.toContain("Upgrade the Docker host daemon");
 });

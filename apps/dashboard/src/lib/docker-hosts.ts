@@ -265,9 +265,10 @@ export function connectedHostName(list: DockerHostList, hostId: string): string 
   return hostName(host);
 }
 
-export function hostVersionWarning(host: Pick<DockerHost, "versionStatus">) {
+export function hostVersionWarning(host: Pick<DockerHost, "version" | "versionStatus">) {
   if (host.versionStatus === "outdated") return "Outdated daemon";
   if (host.versionStatus === "ahead") return "Daemon newer than target";
+  if (host.versionStatus === "unknown" && host.version) return "Unrecognized daemon version";
   return null;
 }
 

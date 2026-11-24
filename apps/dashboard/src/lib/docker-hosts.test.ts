@@ -301,4 +301,6 @@ test("a protocol-compatible host shows the server's outdated daemon warning", ()
     hosts: [host({ version: "11.0.0", protocol: 1, upgradeRequired: false, versionStatus: "outdated" })],
   });
   expect(hostVersionWarning(list!.hosts[0]!)).toBe("Outdated daemon");
+  expect(hostVersionWarning(host({ versionStatus: "unknown" }))).toBe("Unrecognized daemon version");
+  expect(hostVersionWarning(host({ version: null, versionStatus: "unknown" }))).toBeNull();
 });
