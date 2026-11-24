@@ -3,7 +3,6 @@ import { createSqlGoldenStore, parseGoldenConfig } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
@@ -49,7 +48,7 @@ test("size policies use live org admin/private owner authority, persist without 
       size: "small",
     });
     expect(launched.isError).not.toBe(true);
-    expect(server.boat.forks[0]?.size).toBe("small");
+    expect(server.boat.forks).toHaveLength(0);
     const row = (await db.query<{ machine_size: unknown }>("select machine_size from sandboxes")).rows[0];
     expect(row?.machine_size).toMatchObject({
       requested: "small",
@@ -61,7 +60,7 @@ test("size policies use live org admin/private owner authority, persist without 
     await db.query("update members set role='admin' where user_id=$1", [people.member]);
     await db.query("update members set role='member' where user_id=$1", [people.admin]);
     expect((await request(people.admin, "shared", policy))?.status).toBe(403);
-    expect(server.boat.forks).toHaveLength(1);
+    expect(server.boat.forks).toHaveLength(0);
     const store = createSqlGoldenStore(db);
     const golden = (await store.findByName(people.org, "shared"))[0];
     if (!golden) throw new Error("missing shared golden");
@@ -104,7 +103,7 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
       encryptionKey: ENCRYPTION_KEY,
       data: createSqlData(db),
       providerFor: server.boat.providerFor,
-      launch: { runtime: enrolledLaunchPolicy(db) },
+      admitModalLaunch: server.admitBoat,
     };
     const token = await server.token(people.member);
     const launch = async (body: Record<string, unknown>) =>
@@ -123,30 +122,15 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
     ]);
     const sized = await launch({ size: "small" });
     expect(sized?.status).toBe(200);
-    expect(await sized?.json()).toMatchObject({
-      sandbox: {
-        machineSize: {
-          requested: "small",
-          effective: "small",
-          source: "override",
-        },
-      },
-    });
     const defaults = await launch({});
     expect(defaults?.status).toBe(200);
-    expect(await defaults?.json()).toMatchObject({
-      sandbox: {
-        machineSize: {
-          requested: null,
-          effective: "large",
-          source: "golden",
-        },
-      },
-    });
+    expect(
+      (await db.query("select machine_size->>'effective' as size from sandboxes order by created_at")).rows,
+    ).toEqual([{ size: "small" }, { size: "large" }]);
     const client = await server.client(token);
     const mcp = await call(client, "launch", { provider: "boat", golden: "shared", harness: "claude", size: "medium" });
     expect(mcp.isError).not.toBe(true);
-    expect(server.boat.forks.at(-1)?.size).toBe("medium");
+    expect(server.boat.forks).toHaveLength(0);
   } finally {
     await server.close();
   }

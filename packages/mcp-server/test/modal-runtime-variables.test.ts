@@ -14,7 +14,7 @@ import {
 } from "@armada/core/server";
 import * as boatProvider from "@armada/provider-boat";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
-import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
+import { boatRuntimeActivation } from "../src/boat-runtime-activation.ts";
 import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createGoldenRuntimeEnvironment } from "../src/golden-runtime-environment.ts";
@@ -383,7 +383,7 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
 });
 
 function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledged = true) {
-  const policy = boatRuntimeLaunch({
+  const policy = boatRuntimeActivation({
     sql: f.sql,
     encryptionKey: ENCRYPTION_KEY,
     serverUrl: "https://armada.test",

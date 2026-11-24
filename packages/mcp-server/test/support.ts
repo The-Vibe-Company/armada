@@ -21,8 +21,8 @@ import type {
   SandboxState,
   SteerRequest,
 } from "@armada/core";
-import { encryptSecret, ProviderError, type Sql } from "@armada/core";
-import { launchEnvelope } from "@armada/core/contract";
+import { encryptSecret, ProviderError, ProviderRoutingError, resolveBoatKey, type Sql } from "@armada/core";
+import { launch } from "@armada/core/contract";
 import { createSqlVaultStore, GoldenBuildJobs, type GoldenCreateOptions } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -30,6 +30,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
+import { admitModalLaunch } from "../src/jobs/modal-launch.ts";
+import { launchCredentials } from "../src/launch-credentials.ts";
+import { createModalLaunchAdmission } from "../src/modal-launch-admission.ts";
+import { withBoatManagementIdentity } from "../src/observed-boat.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
@@ -303,6 +307,7 @@ export type FakeBoat = ReturnType<typeof fakeBoat>;
 
 export interface TestServer {
   builds: GoldenBuildJobs;
+  admitBoat: ReturnType<typeof createModalLaunchAdmission>;
   db: PGlite;
   people: People;
   boat: FakeBoat;
@@ -538,6 +543,28 @@ function createTestServer(
         },
       },
     });
+  const admitBoat = createModalLaunchAdmission(
+    sql,
+    {
+      policy: runtime,
+      credentials: launchCredentials(vault, ENCRYPTION_KEY, undefined, undefined, github),
+      connections: { async validate() {}, async bind() {} },
+      async provider(actor, golden) {
+        const { key, scope } = await resolveBoatKey(vault, ENCRYPTION_KEY, {
+          userId: actor.userId,
+          orgId: actor.orgId,
+          visibility: golden.visibility,
+        });
+        return withBoatManagementIdentity(
+          (options.providerFor ?? boat.providerFor)(key),
+          scope,
+          scope === "org" ? actor.orgId : actor.userId,
+        );
+      },
+    },
+    {},
+    (input) => admitModalLaunch(sql, ENCRYPTION_KEY, input, { async bindLaunch() {} }),
+  );
   const handler = createHandler({
     publicUrl: PUBLIC_URL,
     oauth,
@@ -550,7 +577,12 @@ function createTestServer(
     providerFor: options.providerFor ?? boat.providerFor,
     ...(options.modelAuth ? { modelAuth: options.modelAuth(db) } : {}),
     ...(options.connections ? { connections: options.connections } : {}),
-    ...(options.admitModalLaunch ? { admitModalLaunch: options.admitModalLaunch } : {}),
+    admitModalLaunch: async (actor, golden, ...rest) => {
+      if (golden.provider === "boat") return admitBoat(actor, golden, ...rest);
+      if (!options.admitModalLaunch)
+        throw new ProviderRoutingError("provider_routing_unavailable", "modal", "Modal is unavailable.");
+      return options.admitModalLaunch(actor, golden, ...rest);
+    },
     ...(options.modalProviderFor ? { modalProviderFor: options.modalProviderFor } : {}),
     ...(options.routes ? { routes: options.routes } : {}),
     log: options.log ?? (() => {}),
@@ -588,6 +620,7 @@ function createTestServer(
   };
   return {
     builds,
+    admitBoat,
     db,
     people,
     boat,
@@ -666,5 +699,5 @@ export async function call(client: Client, name: string, args: Record<string, un
 }
 
 export function launchSandboxId(data: unknown) {
-  return launchEnvelope.parse(data).sandbox.id;
+  return launch.output.parse(data).sandbox.id;
 }

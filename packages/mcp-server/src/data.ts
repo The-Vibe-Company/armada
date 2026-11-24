@@ -544,7 +544,7 @@ export function createSqlData(
         const row = (
           await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
             `select s.status::text as status,
-             coalesce(s.status='failed' and s.provider='modal' and s.status_reason=$4 and s.stopped_at is null, false)
+             coalesce(s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason=$4 and s.stopped_at is null, false)
                as modal_cleanup_owns_exit,
              ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
@@ -969,7 +969,7 @@ export function createSqlData(
         if (patch.deleteRequested) {
           params.push(MODAL_LAUNCH_FAILURE);
           fence += ` and s.status in ('stopped','failed')
-            and not (s.status='failed' and s.provider='modal' and s.status_reason is not distinct from $${params.length}::text
+            and not (s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
             and not ${SANDBOX_DELETION_MANAGED}`;
         }

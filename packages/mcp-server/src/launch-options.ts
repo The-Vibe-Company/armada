@@ -11,7 +11,7 @@ import {
 } from "@armada/core";
 import { capabilities } from "@armada/core/machine-capabilities";
 import type { ControlOptions } from "./control-options.ts";
-import { goldenRuntimePlacement, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 /**
  * `POST /api/v1/launch/options`: what a launch may choose, read from the server's own catalogs so an API-only client
@@ -157,7 +157,7 @@ export function launchProviderOptions(
 
 export type LaunchDiscoveryOptions = Pick<
   ControlOptions,
-  | "boatRuntimeLaunch"
+  | "boatLaunchEnabled"
   | "docker"
   | "dockerControls"
   | "dockerLaunch"
@@ -166,7 +166,6 @@ export type LaunchDiscoveryOptions = Pick<
   | "modalRuntimeLaunch"
   | "runtimeCheckpoint"
   | "runtimeGitHub"
-  | "runtimeHostFor"
   | "runtimeMcp"
   | "runtimeResume"
   | "runtimeSend"
@@ -174,10 +173,8 @@ export type LaunchDiscoveryOptions = Pick<
 >;
 
 export function readLaunchOptions(options: LaunchDiscoveryOptions) {
-  const explicitBoatRuntime = Boolean(options.boatRuntimeLaunch && options.runtimeHostFor);
-  const boatLaunch = Boolean(
-    options.launch?.runtime || options.launch?.boatRuntime || goldenRuntimePlacement(options.launch ?? {}, "boat"),
-  );
+  const explicitBoatRuntime = options.boatLaunchEnabled === true;
+  const boatLaunch = Boolean(explicitBoatRuntime || options.launch?.runtime || options.launch?.boatRuntime);
   return {
     ...launchOptions,
     providers: launchProviderOptions(options.docker, boatLaunch),
@@ -217,15 +214,14 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
       resumeVersion: options.runtimeResume ? 1 : 0,
       githubVersion: options.runtimeGitHub ? 1 : 0,
       mcpVersion: options.runtimeMcp ? 2 : 0,
-      skillsVersion: options.boatRuntimeLaunch ? 1 : 0,
-      workspaceVersion: options.boatRuntimeLaunch ? 1 : 0,
-      controlsVersion: options.runtimeHostFor ? 1 : 0,
-      opencodeVersion: options.boatRuntimeLaunch && options.runtimeHostFor ? 1 : 0,
+      skillsVersion: options.boatLaunchEnabled ? 1 : 0,
+      workspaceVersion: options.boatLaunchEnabled ? 1 : 0,
+      controlsVersion: options.boatLaunchEnabled ? 1 : 0,
+      opencodeVersion: options.boatLaunchEnabled ? 1 : 0,
       opencodeMcpProofVersion:
         options.templates &&
         options.launch?.boatRuntimeDefault &&
-        options.boatRuntimeLaunch &&
-        options.runtimeHostFor &&
+        options.boatLaunchEnabled &&
         options.runtimeMcp &&
         options.runtimeSend
           ? 1

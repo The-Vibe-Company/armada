@@ -11,20 +11,22 @@ export async function modalAdmissionFixture(
   sql: Sql,
   key: string,
   vault: VaultStore,
-  scope: Scope,
+  scope: Scope | undefined,
   host: Provider | NonNullable<LaunchOptions["modalRuntimeDefault"]>["provider"],
 ) {
-  const scopeId = scopeKey(scope);
-  await sql.query(
-    `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
-     values($1,$2,$3,$4,'builder','builder','{}')`,
-    [scopeId, scope.orgId, scope.userId, scope.visibility],
-  );
-  await sql.query(
-    `insert into modal_images(scope,name,source_id,record)
-     values($1,'image','builder','{"info":{"status":"ready"},"imageId":"im-snapshot"}')`,
-    [scopeId],
-  );
+  if (scope) {
+    const scopeId = scopeKey(scope);
+    await sql.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+       values($1,$2,$3,$4,'builder','builder','{}')`,
+      [scopeId, scope.orgId, scope.userId, scope.visibility],
+    );
+    await sql.query(
+      `insert into modal_images(scope,name,source_id,record)
+       values($1,'image','builder','{"info":{"status":"ready"},"imageId":"im-snapshot"}')`,
+      [scopeId],
+    );
+  }
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const mcp = createRuntimeMcp({ sql, key, commands, origin: "https://armada.test" });
   return createModalLaunchAdmission(

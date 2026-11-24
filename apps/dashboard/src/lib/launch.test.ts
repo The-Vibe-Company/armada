@@ -404,9 +404,7 @@ test("typed launch causes override misleading HTTP statuses without exposing dia
 
 test("the dashboard opens an admitted sandbox from its ID alone", async () => {
   const id = "11111111-1111-4111-8111-111111111111";
-  expect(
-    await launchSandbox(answering({ sandbox: { id, status: "starting" } }), { ...args, provider: "modal" }),
-  ).toEqual({ id });
+  expect(await launchSandbox(answering({ sandbox: { id, status: "starting" } }), args)).toEqual({ id });
   expect(
     await postSandboxLaunch(
       answering({ sandbox: { id, status: "starting" } }),

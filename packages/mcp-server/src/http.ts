@@ -23,7 +23,6 @@ import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { withBoatManagementIdentity } from "./observed-boat.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
-import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
@@ -114,7 +113,6 @@ export interface HandlerOptions {
   launch?: LaunchOptions;
   launchDiscovery?: LaunchDiscoveryOptions;
   admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
-  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   connections?: LaunchStores["connections"];
   /** Where the real cause of a 503 goes. Defaults to stderr. Never given a token or a key. */
@@ -222,7 +220,6 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         sleep,
         logError: log,
         ...(options.admitModalLaunch ? { admitModalLaunch: options.admitModalLaunch } : {}),
-        ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
       },
       VERSION,

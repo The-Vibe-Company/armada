@@ -14,7 +14,7 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
-import { dashboardOrigin, databasePoolMax } from "./config.ts";
+import { boatDeploymentId, dashboardOrigin, databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
@@ -62,11 +62,13 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ),
   });
   const templates = createTemplateService(sql, encryptionKey);
-  const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
+  const deploymentId = env.ARMADA_PUBLIC_URL
+    ? boatDeploymentId(env.ARMADA_BOAT_DEPLOYMENT_ID, env.ARMADA_PUBLIC_URL)
+    : env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const providerFor = (apiKey: string) =>
     createObservedBoatProvider({
       apiKey,
-      ...(boatDeploymentId ? { deploymentId: boatDeploymentId } : {}),
+      ...(deploymentId ? { deploymentId } : {}),
     });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () =>
