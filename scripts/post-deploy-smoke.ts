@@ -491,7 +491,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         fail("invalid_configuration");
       realModelCases = [
         { item: modal[0], source: { golden: modal[0].golden, connections: [] } },
-        // Advisory until #4033 is fixed (owner decision 2026-11-24); the fix removes this flag.
         { item: host, source: { hostId: host.hostId }, advisory: true },
       ];
     }
@@ -1063,8 +1062,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // before the lifecycle runs makes its TTL wait overlap them. Queued ahead of a template probe
   // (up to a 10-minute launch), the sandbox could expire before any lifecycle work started.
   const accountSlot = createKeyedQueue();
-  // Owner decision 2026-11-24: the Docker real-model lane is advisory until #4033 is fixed. It still runs
-  // and reports every step; a failure adds an advisory receipt instead of failing the run. Revert with #4033.
   const modelUnits = realModelCases.map(({ item, source, advisory }, index) =>
     accountSlot(item.modelAccountId.toLowerCase(), () => realModelUnit(index, item, source)).then((passed) => {
       if (passed || !advisory) return passed;

@@ -269,7 +269,6 @@ test.each([
       }
     },
   });
-  // The Docker real-model lane is advisory until #4033: its failure is reported but does not fail the run.
   expect(passed).toBe(true);
   expect(receipts).toContainEqual({
     case: 1,
