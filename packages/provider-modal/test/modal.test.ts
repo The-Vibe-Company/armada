@@ -7,6 +7,7 @@ import {
   GoldenBuildJobs,
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
+  outputEntryCollector,
 } from "@armada/core/server";
 import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
@@ -122,6 +123,7 @@ function fixture(
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
+  let manifestExitCode: number | null | undefined;
   let failSnapshot = false;
   let loseTerminateResponse = false;
   let failCreate = false;
@@ -179,6 +181,18 @@ function fixture(
           exec: async (argv: string[], params: object) => {
             const command = { argv, params, stdin: [] as string[] };
             sdkCommands.push(command);
+            if (manifestExitCode !== undefined && argv.includes(outputEntryCollector(null))) {
+              const exitCode = manifestExitCode;
+              return {
+                stdin: {
+                  close: async () => {
+                    if (exitCode === null) throw Error("private SDK detail");
+                  },
+                },
+                stdout: { readText: async () => "private collector detail" },
+                wait: async () => exitCode,
+              };
+            }
             let input: Record<string, unknown> | undefined;
             const closed = deferred();
             return {
@@ -357,6 +371,9 @@ function fixture(
       artifactVolume = volume;
     },
     sdkCommands,
+    setManifestExitCode(code: number | null) {
+      manifestExitCode = code;
+    },
     get provisioned() {
       return provisioned;
     },
@@ -2288,20 +2305,8 @@ test.each([
 ])("Modal manifest reports $step without SDK or collector text", async ({ exitCode, step }) => {
   const f = fixture();
   const fork = await activeWorker(f);
-  const row = await f.store.get(fork.id);
-  const sandbox = await f.client.sandboxes.fromId(row.physicalId!);
-  const failure = Error("private SDK detail");
-  const warnings: unknown[] = [];
-  const warn = spyOn(console, "warn").mockImplementation((line) => warnings.push(JSON.parse(line)));
-  const exec = spyOn(sandbox, "exec").mockResolvedValue({
-    stdin: {
-      close: async () => {
-        if (exitCode === null) throw failure;
-      },
-    },
-    stdout: { readText: async () => "private collector detail" },
-    wait: async () => exitCode,
-  } as Awaited<ReturnType<Sandbox["exec"]>>);
+  f.setManifestExitCode(exitCode);
+  const warn = spyOn(console, "warn");
   try {
     const result = f.provider.listOutputEntries!({ sandboxId: fork.id });
     if (exitCode === null) await expect(result).rejects.toMatchObject({ code: "unknown" });
@@ -2309,7 +2314,7 @@ test.each([
       await expect(result).rejects.toMatchObject({
         reason: exitCode === 4 ? "output_directory_missing" : "collector_failed",
       });
-    expect(warnings).toEqual(
+    expect(warn.mock.calls.map(([line]) => JSON.parse(line))).toEqual(
       exitCode === 4
         ? []
         : [
@@ -2323,7 +2328,6 @@ test.each([
           ],
     );
   } finally {
-    exec.mockRestore();
     warn.mockRestore();
   }
 });
