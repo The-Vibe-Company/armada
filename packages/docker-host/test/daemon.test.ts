@@ -20,7 +20,7 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, hostFailureClass, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
+import { fileStore, hostFailureClass, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/host.ts";
 
 test("the daemon reports the poll failure class and phase without its message", async () => {
   const { store, api, executor } = fixture();

@@ -34,7 +34,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
-import { httpApi } from "../../docker-host/src/native.ts";
+import { httpApi } from "../../docker-host/src/host.ts";
 import { Armada, ArmadaError, type SendInput } from "../../sdk/src/index.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
