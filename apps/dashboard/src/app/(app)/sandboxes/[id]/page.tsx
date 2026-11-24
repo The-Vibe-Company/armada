@@ -551,7 +551,7 @@ function DockerSandbox({
           </footer>
         </div>
         <SandboxDetailsPanel>
-          {configured && !reasons.exec && (sandbox.status === "ready" || sandbox.status === "running") && (
+          {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
           <section className="space-y-3 text-sm">
