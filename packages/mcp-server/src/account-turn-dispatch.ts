@@ -277,8 +277,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         )
       ).rows[0];
       await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
-      // WARNING: Startup model repair can queue ahead of a receipt table lock upgrade.
-      if (claim) await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
+      await lockTurnReceiptWrites(tx, claim);
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
       where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
@@ -451,6 +450,11 @@ class TurnSettlementLeaseLost extends Error {}
 
 type AdmittedEntry = DispatchEntry & { dispatch_until: string };
 
+async function lockTurnReceiptWrites(tx: Sql, claim: TurnClaim | undefined) {
+  // WARNING: Startup model repair can block a lock upgrade while waiting for the receipt row.
+  await tx.query(`lock table public.account_turn_queue in row exclusive mode${claim ? " nowait" : ""}`);
+}
+
 async function settleAccountTurn<T>(
   sql: Sql,
   entry: AdmittedEntry,
@@ -461,7 +465,7 @@ async function settleAccountTurn<T>(
   try {
     return await sql.transaction(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
-      if (claim) await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
+      await lockTurnReceiptWrites(tx, claim);
       await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
       if (claim && !(await claim.canDispatch(tx))) return;
       const receipt = await tx.query(
