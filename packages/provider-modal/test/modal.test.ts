@@ -123,7 +123,7 @@ function fixture(
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
-  let manifestExitCode: number | null | undefined;
+  let manifestResult: { exitCode: number | null; stdout: string } | undefined;
   let failSnapshot = false;
   let loseTerminateResponse = false;
   let failCreate = false;
@@ -181,15 +181,15 @@ function fixture(
           exec: async (argv: string[], params: object) => {
             const command = { argv, params, stdin: [] as string[] };
             sdkCommands.push(command);
-            if (manifestExitCode !== undefined && argv.includes(outputEntryCollector(null))) {
-              const exitCode = manifestExitCode;
+            if (manifestResult && argv.includes(outputEntryCollector(null))) {
+              const { exitCode, stdout } = manifestResult;
               return {
                 stdin: {
                   close: async () => {
                     if (exitCode === null) throw Error("private SDK detail");
                   },
                 },
-                stdout: { readText: async () => "private collector detail" },
+                stdout: { readText: async () => stdout },
                 wait: async () => exitCode,
               };
             }
@@ -371,8 +371,8 @@ function fixture(
       artifactVolume = volume;
     },
     sdkCommands,
-    setManifestExitCode(code: number | null) {
-      manifestExitCode = code;
+    setManifestResult(exitCode: number | null, stdout = "private collector detail") {
+      manifestResult = { exitCode, stdout };
     },
     get provisioned() {
       return provisioned;
@@ -2305,7 +2305,7 @@ test.each([
 ])("Modal manifest reports $step without SDK or collector text", async ({ exitCode, step }) => {
   const f = fixture();
   const fork = await activeWorker(f);
-  f.setManifestExitCode(exitCode);
+  f.setManifestResult(exitCode);
   const warn = spyOn(console, "warn");
   try {
     const result = f.provider.listOutputEntries!({ sandboxId: fork.id });
@@ -2320,7 +2320,7 @@ test.each([
         : [
             {
               event: "modal_output_collector_step_failed",
-              sandboxId: fork.id,
+              providerSandboxId: fork.id,
               operation: "list_entries",
               step,
               ...(exitCode === null ? {} : { exitCode }),
@@ -2330,4 +2330,18 @@ test.each([
   } finally {
     warn.mockRestore();
   }
+});
+
+test.each([
+  { stdout: "private collector detail", error: SyntaxError, message: "invalid collector JSON" },
+  { stdout: "{}", error: Error, message: "invalid_output" },
+  { stdout: " ".repeat(60_001), error: Error, message: "output_limit" },
+])("Modal preserves the decoder's $message classification", async ({ stdout, error, message }) => {
+  const f = fixture();
+  const fork = await activeWorker(f);
+  f.setManifestResult(0, stdout);
+  await expect(f.provider.listOutputEntries!({ sandboxId: fork.id })).rejects.toMatchObject({
+    name: error.name,
+    message,
+  });
 });

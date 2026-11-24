@@ -36,7 +36,13 @@ import { createSshPreparation } from "./ssh.ts";
 import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
 import { scopeKey } from "./store.ts";
 
-type CollectorOperation = "list_entries" | "read_chunk" | "read_snapshot" | "probe_collector";
+const collectorOperations = {
+  listOutputEntries: "list_entries",
+  readOutputChunk: "read_chunk",
+  readOutputs: "read_snapshot",
+  probeOutputs: "probe_collector",
+} as const;
+type CollectorOperation = (typeof collectorOperations)[keyof typeof collectorOperations];
 const lastCollectorDiagnosticAt = new Map<string, number>();
 
 export type ModalPromptPhase =
@@ -248,7 +254,13 @@ export function createModalProvider(options: ModalProviderOptions) {
           if (previous === undefined || now - previous >= 60_000) {
             lastCollectorDiagnosticAt.set(key, now);
             console.warn(
-              JSON.stringify({ event: "modal_output_collector_step_failed", sandboxId, operation, step, exitCode }),
+              JSON.stringify({
+                event: "modal_output_collector_step_failed",
+                providerSandboxId: sandboxId,
+                operation,
+                step,
+                exitCode,
+              }),
             );
           }
         }
@@ -334,19 +346,32 @@ export function createModalProvider(options: ModalProviderOptions) {
     }),
     outputReadBytes: OUTPUT_MAX_READ_BYTES,
     listOutputEntries(request) {
-      return collectOutputs(request, "list_entries", outputEntryCollector(null), readCollectorEntries);
+      return collectOutputs(
+        request,
+        collectorOperations.listOutputEntries,
+        outputEntryCollector(null),
+        readCollectorEntries,
+      );
     },
     readOutputChunk(request) {
-      return collectOutputs(request, "read_chunk", outputEntryCollector(request.chunk), (status, stdout) =>
-        readCollectorChunk(status, stdout, request.chunk),
+      return collectOutputs(
+        request,
+        collectorOperations.readOutputChunk,
+        outputEntryCollector(request.chunk),
+        (status, stdout) => readCollectorChunk(status, stdout, request.chunk),
       );
     },
     readOutputs(request) {
-      return collectOutputs(request, "read_snapshot", OUTPUT_COLLECTOR, readCollectorResult);
+      return collectOutputs(request, collectorOperations.readOutputs, OUTPUT_COLLECTOR, readCollectorResult);
     },
     async probeOutputs(request) {
       return (
-        (await collectOutputs(request, "probe_collector", OUTPUT_COLLECTOR_PROBE, readCollectorProbeResult)) !== null
+        (await collectOutputs(
+          request,
+          collectorOperations.probeOutputs,
+          OUTPUT_COLLECTOR_PROBE,
+          readCollectorProbeResult,
+        )) !== null
       );
     },
 
@@ -568,7 +593,12 @@ export function createModalProvider(options: ModalProviderOptions) {
             try {
               return await value(...args);
             } catch (e) {
-              if (e instanceof OutputCollectionError) throw e;
+              if (Object.hasOwn(collectorOperations, key)) {
+                if (e instanceof OutputCollectionError) throw e;
+                if (e instanceof SyntaxError) throw new SyntaxError("invalid collector JSON");
+                if (e instanceof Error && (e.message === "invalid_output" || e.message === "output_limit"))
+                  throw new Error(e.message);
+              }
               throw modalError(e);
             }
           }
