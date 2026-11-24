@@ -14,18 +14,22 @@ import {
   parseOpenCodeEndpoint,
   VaultError,
 } from "@armada/core";
-import { flag, parseArgs, single } from "./args.ts";
+import { antigravityLoginOperations, antigravityLoginPath, controlRouteKey } from "@armada/core/contract";
+import { ArmadaApiError } from "./api-responses.ts";
+import { acceptedOptions, flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { authorizationUrl } from "./connection-authorization.ts";
 import { control } from "./control.ts";
 import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
 import type { Deps } from "./run.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
 import { promptSecret } from "./secret-input.ts";
 
 export interface VaultIo {
   auth: AuthIo;
   readFile: (path: string) => Promise<string>;
-  readStdin: () => Promise<string>;
+  readStdin: (prompt?: string) => Promise<string>;
 }
 
 type ListedCredential = CredentialInfo & {
@@ -37,7 +41,9 @@ export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">
   return {
     auth,
     readFile: deps.readFile ?? ((path) => Bun.file(path).text()),
-    readStdin: deps.readStdin ?? (() => (process.stdin.isTTY ? promptSecret() : Bun.stdin.text())),
+    readStdin:
+      deps.readStdin ??
+      ((prompt) => (process.stdin.isTTY ? promptSecret(process.stdin, process.stderr, prompt) : Bun.stdin.text())),
   } satisfies VaultIo;
 }
 
@@ -127,8 +133,9 @@ export async function modelAccountCommand(
       const [harness] = expect(
         args.positionals,
         1,
-        `armada account ${sub} ${sub === "login" ? "codex" : "claude|codex"} --name <name> [--org <name>]`,
+        `armada account ${sub} ${sub === "login" ? "codex|antigravity" : "claude|codex"} --name <name> [--org <name>]`,
       );
+      if (sub === "login" && harness === "antigravity") return antigravityLogin(args, io);
       if (harness !== "claude" && harness !== "codex") throw usage("Native import supports claude or codex.");
       const id = single(args, "--id");
       const revision = single(args, "--expected-version");
@@ -462,4 +469,48 @@ function agentLimit(args: ReturnType<typeof parseArgs>): number | null | undefin
   if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(value))
     throw usage("--max-agents must be a positive integer.");
   return value;
+}
+
+async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, readStdin }: VaultIo) {
+  acceptedOptions(args, "account login antigravity", ["--name", "--id", "--expected-version", "--org"]);
+  const { startAntigravityLogin: start, completeAntigravityLogin: complete } = antigravityLoginOperations;
+  const revision = single(args, "--expected-version");
+  const name = single(args, "--name");
+  const id = single(args, "--id");
+  const target = start.input.body.safeParse({
+    ...(name === undefined ? {} : { name }),
+    ...(id === undefined ? {} : { id }),
+    ...(revision === undefined ? {} : { expectedVersion: /^[1-9][0-9]*$/.test(revision) ? Number(revision) : NaN }),
+    org: single(args, "--org"),
+  });
+  if (!target.success) throw usage("Give --name, or --id with --expected-version.");
+  const client = await createSdkCommandClient(auth);
+  const started = start.output.parse(
+    await client.control(controlRouteKey(start.route), target.data, AbortSignal.timeout(310_000)),
+  );
+  const path = antigravityLoginPath(started.loginId);
+  const url = authorizationUrl(started.authorizationUrl);
+  if (new URL(url).origin !== "https://accounts.google.com") throw usage("The server returned an unsafe Google link.");
+  auth.err(`Open this link to sign in with Google: ${url}\n`);
+  try {
+    if (auth.interactive) auth.open(url);
+  } catch {}
+  let code: string;
+  try {
+    code = (await readStdin("Paste the Google code or callback URL, then Enter: ")).replace(/\r?\n$/, "");
+    if (!code) throw usage("Enter the code from Google.");
+  } catch {
+    await client.request(path, { method: "DELETE" }).catch(() => {});
+    throw usage("Antigravity sign-in cancelled. Start sign-in again.");
+  }
+  const result = await client
+    .control(path.slice("/api/v1/".length), { code }, AbortSignal.timeout(310_000))
+    .catch(async (error: unknown) => {
+      if (error instanceof ArmadaApiError && error.status === 400)
+        await client.request(path, { method: "DELETE" }).catch(() => {});
+      throw error;
+    });
+  const account = complete.output.parse(result);
+  auth.out(`${JSON.stringify(account, null, 2)}\n`);
+  return 0;
 }

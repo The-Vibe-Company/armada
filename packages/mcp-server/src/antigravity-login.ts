@@ -6,7 +6,7 @@ const maxUrlLength = 8192;
 const codePattern = /^[\w./~-]{1,2048}$/;
 
 export type LoginCaller = { userId: string; orgId: string };
-export type LoginTarget = { name: string } | { id: string; expectedVersion: number };
+export type LoginTarget = ({ name: string } | { id: string; expectedVersion: number }) & { org?: string };
 
 export interface AntigravityLoginProcess {
   authorizationUrl: Promise<string>;
@@ -34,7 +34,8 @@ type Pending = {
 const messages = {
   already_pending: "An Antigravity sign-in is already pending.",
   login_missing: "Start sign-in again.",
-  invalid_code: "Enter the code or callback URL from the matching Google sign-in.",
+  invalid_code:
+    "Enter the code or callback URL from the matching Google sign-in. If the code is from another session, start sign-in again.",
   login_failed: "Antigravity sign-in failed. Start sign-in again.",
 } as const;
 
@@ -136,6 +137,10 @@ export function createAntigravityLogin(
   }
 
   return {
+    matches(caller: LoginCaller, id: string) {
+      return pending.get(callerKey(caller))?.id === id;
+    },
+
     async start(caller: LoginCaller, target: LoginTarget) {
       const key = callerKey(caller);
       const previous = pending.get(key);
@@ -197,11 +202,12 @@ export function createAntigravityLogin(
         credential = parseAntigravityCredential({ method: "google", token: await child.readToken() });
         assertLive(login);
       } catch {
-        throw new AntigravityLoginError("login_failed");
+        throw new AntigravityLoginError(expired(login) ? "login_missing" : "login_failed");
       } finally {
         await close(key, login);
       }
-      if (stopped || login.cancelled || expired(login)) throw new AntigravityLoginError("login_failed");
+      if (expired(login)) throw new AntigravityLoginError("login_missing");
+      if (stopped || login.cancelled) throw new AntigravityLoginError("login_failed");
       return { target: login.target, credential };
     },
 

@@ -13,6 +13,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
     .sort();
   expect(routes).toMatchInlineSnapshot(`
     [
+      "DELETE /model-accounts/antigravity/login/{loginId}",
       "DELETE /sandboxes/{id}",
       "GET /auth/authorize",
       "GET /events",
@@ -81,6 +82,8 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /members/list",
       "POST /members/remove",
       "POST /members/role",
+      "POST /model-accounts/antigravity/login",
+      "POST /model-accounts/antigravity/login/{loginId}",
       "POST /org/create",
       "POST /org/invitations/accept",
       "POST /org/invitations/create",

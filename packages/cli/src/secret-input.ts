@@ -1,7 +1,11 @@
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 
-export function promptSecret(input = process.stdin, output = process.stderr): Promise<string> {
+export function promptSecret(
+  input = process.stdin,
+  output = process.stderr,
+  prompt = "Paste the token, then Enter: ",
+): Promise<string> {
   if (!input.isTTY || !output.isTTY) return Promise.reject(new Error("A terminal is required"));
   const muted = new Writable({
     write(_chunk, _encoding, done) {
@@ -28,6 +32,6 @@ export function promptSecret(input = process.stdin, output = process.stderr): Pr
     reader.once("SIGINT", () => finish());
     reader.once("close", () => finish());
     reader.once("error", () => finish());
-    output.write("Paste the token, then Enter: ");
+    output.write(prompt);
   });
 }

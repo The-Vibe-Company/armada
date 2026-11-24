@@ -7,6 +7,7 @@ interface ShutdownResources {
   beginDrain(): void;
   workersDone: Promise<void>;
   stopSockets(): Promise<void>;
+  closeAntigravityLogin?(): Promise<void> | undefined;
   closeDocker(): Promise<void> | undefined;
   drainModalArtifacts?(): Promise<void> | undefined;
   requests: ReadonlySet<Promise<unknown>>;
@@ -32,6 +33,7 @@ export function installServerShutdown(server: ShutdownServer, resources: Shutdow
     shutdown = Promise.all([
       resources.workersDone,
       resources.closeDocker(),
+      resources.closeAntigravityLogin?.(),
       resources.drainModalArtifacts?.(),
       socketsStopped,
       (async () => {

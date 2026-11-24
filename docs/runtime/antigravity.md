@@ -108,3 +108,13 @@ the empty scratch directory. That measurement covers startup through initialize.
 `session/new` with an empty MCP server list and the temporary working directory
 returned `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Authentication required"},"id":2}`.
 No sign-in was attempted.
+
+## Connect Antigravity
+
+Run `armada account login antigravity --name google`. Open the Google link in any
+browser, then paste the code or callback URL into the terminal within five minutes.
+Armada runs the pinned login executable on the server and prints the saved account's
+metadata. For an organization-owned account, add `--org <name>` as an org admin.
+To replace an account, use `--id <id> --expected-version <version>` in place of
+`--name`. If the session expires or reaches a different server instance, start
+sign-in again.

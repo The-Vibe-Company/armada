@@ -101,7 +101,7 @@ test("the deadline closes a pending exchange and refuses the result", async () =
   await Promise.resolve();
   expect(submitted).toEqual(["example"]);
   deadline.abort();
-  await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
+  await expect(complete).rejects.toThrow("Start sign-in again.");
   expect(closes()).toBe(1);
 });
 
@@ -154,7 +154,9 @@ test.each(["cancel", "shutdown", "deadline"] as const)(
     else deadline.abort();
     finishCleanup();
     await stop;
-    await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
+    await expect(complete).rejects.toThrow(
+      reason === "deadline" ? "Start sign-in again." : "Antigravity sign-in failed.",
+    );
   },
 );
 
