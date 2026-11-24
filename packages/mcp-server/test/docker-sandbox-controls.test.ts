@@ -26,7 +26,6 @@ import { type ControlOptions, dispatchControlCommand, handleControlRequest } fro
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
-import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -146,7 +145,7 @@ async function invoke<T = Record<string, unknown>>(
   args: Record<string, unknown>,
   controller = controls,
 ): Promise<NoInfer<T>> {
-  const reply = await controller.invoke(who, name, args);
+  const reply = await controller.invoke(who, name, args, name === "send" ? {} : undefined);
   if (!reply.handled) throw Error("Docker request not handled");
   return reply.result as T;
 }
@@ -823,8 +822,8 @@ test("normal Docker send continues the saved native conversation and retries exa
   await service.prompt(f.actor, f.sandbox.id, first);
   const promptId = randomUUID();
   let deliveries = 0;
-  const send = createDockerNormalSend(sql, key, {
-    enabled: true,
+  const controller = createDockerSandboxControls(sql, key, {
+    sendEnabled: true,
     clock: {
       now: () => 0,
       async wait() {
@@ -834,7 +833,6 @@ test("normal Docker send continues the saved native conversation and retries exa
       },
     },
   });
-  const controller = createDockerSandboxControls(sql, key, { send });
   const args = { id: f.sandbox.id, request_id: randomUUID(), prompt: "continue" };
   const result = await invoke(caller(f.actor), "send", args, controller);
   expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
@@ -906,11 +904,10 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
       });
     },
   };
-  const send = createDockerNormalSend(sql, key, { enabled: true, clock });
-  const controller = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock });
+  const controller = createDockerSandboxControls(sql, key, { sendEnabled: true, resume: bootstrap, clock });
   const args = { id: f.sandbox.id, request_id: randomUUID(), prompt: "continue after stop" };
   // An unknown outcome retries the same bound resume, not a second host instruction.
-  const pending = createDockerSandboxControls(sql, key, { send, resume: bootstrap, clock, timeoutMs: 0 });
+  const pending = createDockerSandboxControls(sql, key, { sendEnabled: true, resume: bootstrap, clock, timeoutMs: 0 });
   await rejected(invoke(caller(f.actor), "send", args, pending), "conflict");
   const result = await invoke(caller(f.actor), "send", args, controller);
   expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
@@ -1149,7 +1146,7 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
     f.sandbox.id,
   ]);
   const controller = createDockerSandboxControls(sql, key, {
-    send: createDockerNormalSend(sql, key, { enabled: true }),
+    sendEnabled: true,
     resume: bootstrap,
   });
   try {

@@ -57,10 +57,10 @@ export interface TemplateRuntime {
     body: Record<string, unknown>,
     admission: {
       beforeReserve(tx: Sql): Promise<void>;
-      beforeStart(): Promise<void>;
+      id: string;
+      scheduled: boolean;
     },
   ): Promise<DockerLaunchResult>;
-  beforeDockerStart?(): Promise<void>;
   beforeDockerReserve?(tx: Sql, sandboxId: string): Promise<void>;
 }
 type Header = {
@@ -96,6 +96,7 @@ type Manifest = {
 };
 type RequestRow = {
   id: string;
+  client_key: string;
   digest: string;
   manifest: Manifest;
   sandbox_id: string;
@@ -699,10 +700,76 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
       };
     }
+    async function admitDocker(row: RequestRow) {
+      const m = row.manifest;
+      const placement = m.definition;
+      if (
+        !usesHostPlacement(placement) ||
+        !runtime!.launchDocker ||
+        !m.host ||
+        input.repo !== undefined ||
+        size !== undefined
+      )
+        unavailable("environment_admission_unavailable");
+      await runtime!.launchDocker(
+        {
+          ...launchRequest(m),
+          org,
+          provider: "docker",
+          hostId: placement.hostId,
+          ...(placement.snapshotId === undefined ? {} : { snapshotId: placement.snapshotId }),
+          credentialVersion: m.account.version,
+          requestId: row.sandbox_id,
+          variables: placement.variables,
+          secrets: placement.secrets ?? [],
+        },
+        {
+          id: row.id,
+          scheduled: runtime!.scheduled === true,
+          beforeReserve: async (tx) => {
+            await revalidateInTransaction(tx, actor, org, m);
+            if (runtime!.beforeDockerReserve) await runtime!.beforeDockerReserve(tx, row.sandbox_id);
+            else await runtime!.options?.beforeFork?.(row.sandbox_id);
+            const changed = await tx.query(
+              `update public.template_launch_requests set state='allocating',updated_at=now()
+               where id=$1 and state='claimed' returning id`,
+              [row.id],
+            );
+            if (!changed.rows.length) unavailable("environment_admission_unavailable");
+          },
+        },
+      );
+      return dockerAdmissionReceipt(row);
+    }
+
+    function dockerAdmissionReceipt(row: RequestRow) {
+      return {
+        requestId: row.id,
+        state: "succeeded",
+        id: row.sandbox_id,
+        provider: "docker",
+        status: "starting",
+        manifest: row.manifest,
+      };
+    }
+
     async function resume(row: RequestRow, admittedActor?: GoldenActor): Promise<Record<string, unknown>> {
       const active = runtime!;
       const previous = await replay(row, bodyDigest, active);
       const m = row.manifest;
+      if (usesHostPlacement(m.definition)) {
+        if (row.state === "claimed") return admitDocker(row);
+        if (row.state === "allocating" && !row.result) {
+          const failed = await sql.query(
+            `select 1 from public.jobs where sandbox_id=$1 and kind='launch' and state='failed'
+             and outcome ? 'docker_actor_epoch'`,
+            [row.sandbox_id],
+          );
+          if (failed.rows.length) return { ...previous, state: "failed", reason: "launch_unavailable" };
+          return dockerAdmissionReceipt(row);
+        }
+        return previous;
+      }
       if (
         active.scheduled ||
         !m.golden ||
@@ -753,111 +820,77 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     const m = request.manifest;
     let allocating = false;
     try {
-      const beforeReserve = async (tx: Sql) => {
-        await revalidateInTransaction(tx, actor, org, m);
-        if (runtime.beforeDockerReserve) await runtime.beforeDockerReserve(tx, request.sandbox_id);
-        else await runtime.options?.beforeFork?.(request.sandbox_id);
-        await tx.query("update public.template_launch_requests set state='allocating',updated_at=now() where id=$1", [
-          request.id,
-        ]);
-        allocating = true;
-      };
-      const result = usesHostPlacement(def)
-        ? await (async () => {
-            if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
-              unavailable("environment_admission_unavailable");
-            return runtime.launchDocker(
-              {
-                ...launchRequest(m),
-                org,
-                provider: "docker",
-                hostId: def.hostId,
-                ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
-                credentialVersion: m.account.version,
-                requestId: request.sandbox_id,
-                variables: def.variables,
-                secrets: def.secrets ?? [],
+      if (usesHostPlacement(def)) return await admitDocker(request);
+      const result = await (async () => {
+        const g = m.golden;
+        if (!g) unavailable("environment_admission_unavailable");
+        const provider = await runtime.provider(g);
+        return launchSandbox(
+          provider,
+          {
+            ...runtime.stores,
+            goldens: {
+              ...runtime.stores.goldens,
+              findByName: async () => [g],
+            },
+          },
+          selection.a,
+          {
+            ...launchRequest(m),
+            golden: g.name,
+            provider: g.provider,
+            ...(size === undefined ? {} : { size }),
+            ...(input.repo === undefined ? {} : { repo: input.repo as string }),
+            ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
+          },
+          {
+            ...runtime.options,
+            credentialVersion: m.account.version,
+            newId: () => request.sandbox_id,
+            beforeFork: async (sandboxId) => {
+              await revalidate(actor, org, m);
+              // Validate the full decrypted payload before any provider allocation.
+              // Discard plaintext after this check; final start resolves current authority again.
+              await resolveEnvironment(selection.a, m);
+              await runtime.options?.beforeFork?.(sandboxId);
+            },
+            templateSnapshotAdmission: {
+              admit: async () => {
+                await transaction(async (tx) => {
+                  const current = await revalidateInTransaction(tx, actor, org, m);
+                  const snapshot = g.providerSnapshotId;
+                  if (
+                    !snapshot ||
+                    current?.id !== g.id ||
+                    current.providerSnapshotId !== snapshot ||
+                    current.providerSandboxId !== g.providerSandboxId
+                  )
+                    unavailable("environment_snapshot_unavailable");
+                  // The golden read holds FOR SHARE through commit. Take the
+                  // retirement lock too, since another golden can share this handle.
+                  await tx.query("select public.lock_golden_snapshot($1,$2)", [g.provider, snapshot]);
+                  if (await snapshotSealed(tx, g.provider, snapshot)) unavailable("environment_snapshot_unavailable");
+                  await tx.query(
+                    "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
+                    [request.id],
+                  );
+                });
+                allocating = true;
               },
-              {
-                beforeReserve,
-                beforeStart: async () => {
-                  await revalidate(actor, org, m);
-                  await runtime.beforeDockerStart?.();
-                },
+              confirmAbsence: () => {
+                allocating = false;
               },
-            );
-          })()
-        : await (async () => {
-            const g = m.golden;
-            if (!g) unavailable("environment_admission_unavailable");
-            const provider = await runtime.provider(g);
-            return launchSandbox(
-              provider,
-              {
-                ...runtime.stores,
-                goldens: {
-                  ...runtime.stores.goldens,
-                  findByName: async () => [g],
-                },
-              },
-              selection.a,
-              {
-                ...launchRequest(m),
-                golden: g.name,
-                provider: g.provider,
-                ...(size === undefined ? {} : { size }),
-                ...(input.repo === undefined ? {} : { repo: input.repo as string }),
-                ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
-              },
-              {
-                ...runtime.options,
-                credentialVersion: m.account.version,
-                newId: () => request.sandbox_id,
-                beforeFork: async (sandboxId) => {
-                  await revalidate(actor, org, m);
-                  // Validate the full decrypted payload before any provider allocation.
-                  // Discard plaintext after this check; final start resolves current authority again.
-                  await resolveEnvironment(selection.a, m);
-                  await runtime.options?.beforeFork?.(sandboxId);
-                },
-                templateSnapshotAdmission: {
-                  admit: async () => {
-                    await transaction(async (tx) => {
-                      const current = await revalidateInTransaction(tx, actor, org, m);
-                      const snapshot = g.providerSnapshotId;
-                      if (
-                        !snapshot ||
-                        current?.id !== g.id ||
-                        current.providerSnapshotId !== snapshot ||
-                        current.providerSandboxId !== g.providerSandboxId
-                      )
-                        unavailable("environment_snapshot_unavailable");
-                      // The golden read holds FOR SHARE through commit. Take the
-                      // retirement lock too, since another golden can share this handle.
-                      await tx.query("select public.lock_golden_snapshot($1,$2)", [g.provider, snapshot]);
-                      if (await snapshotSealed(tx, g.provider, snapshot))
-                        unavailable("environment_snapshot_unavailable");
-                      await tx.query(
-                        "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
-                        [request.id],
-                      );
-                    });
-                    allocating = true;
-                  },
-                  confirmAbsence: () => {
-                    allocating = false;
-                  },
-                },
-                beforeStart: async (p, s) => {
-                  await revalidate(actor, org, m);
-                  await runtime.options?.beforeStart?.(p, s);
-                  if (def.variables.length || def.secrets?.length) {
-                    await resolveEnvironment(selection.a, m);
-                  }
-                },
-              },
-            );
-          })();
+            },
+            beforeStart: async (p, s) => {
+              await revalidate(actor, org, m);
+              await runtime.options?.beforeStart?.(p, s);
+              if (def.variables.length || def.secrets?.length) {
+                await resolveEnvironment(selection.a, m);
+              }
+            },
+          },
+        );
+      })();
       const { sandbox } = result;
       const receiptTransport = isSandboxProvider(sandbox.provider)
         ? HOST_CAPABILITIES[sandbox.provider].templateReceiptTransport
@@ -893,6 +926,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
       const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
+      if (usesHostPlacement(def) && !refused && !refusalReason(error)) throw error;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const failureCode =
         refused || error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
@@ -1021,6 +1055,60 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     }
     return { harness: definition.harness, modelAccount: definition.modelAccount };
   }
-  return { command, validateBindingInTransaction };
+  async function revalidateDockerLaunch(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    sandboxId: string,
+    pin: { id: string; scheduled: boolean },
+  ) {
+    const row = (
+      await tx.query<RequestRow>(
+        `select * from public.template_launch_requests where id=$1 and sandbox_id=$2 and actor_id=$3
+       and org_id=$4 and state='allocating'`,
+        [pin.id, sandboxId, actor.userId, actor.orgId],
+      )
+    ).rows[0];
+    if (!row || !usesHostPlacement(row.manifest.definition)) unavailable("environment_admission_unavailable");
+    if (pin.scheduled) {
+      const grant = await tx.query(
+        `select 1 from public.routine_runs run join public.routines r on r.id=run.routine_id
+         join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
+         where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
+         and (r.scope='personal' or m.role='admin')`,
+        [row.client_key, actor.userId, actor.orgId],
+      );
+      if (!grant.rows.length) throw new VaultError("forbidden", "Routine owner authorization changed.");
+    }
+    await revalidateInTransaction(tx, { userId: actor.userId, orgs: [actor] }, actor.orgId, row.manifest);
+  }
+
+  async function completeDockerLaunch(
+    tx: Sql,
+    requestId: string,
+    sandboxId: string,
+    receipt: { epoch: string; promptId?: string; conversationId?: string },
+  ) {
+    await tx.query(
+      `update public.template_launch_requests r set state='succeeded',updated_at=now(),
+         result=$3::jsonb || jsonb_build_object(
+           'provider',s.provider,'status',s.status,'providerSandboxId',s.provider_sandbox_id,
+           'manifest',r.manifest || jsonb_build_object('skillReceipts',coalesce(s.skills,'[]'::jsonb)))
+       from public.sandboxes s where r.id=$1 and r.sandbox_id=$2 and s.id=r.sandbox_id and r.state='allocating'`,
+      [
+        requestId,
+        sandboxId,
+        JSON.stringify({
+          requestId,
+          id: sandboxId,
+          state: "succeeded",
+          runtime: { kind: "armada", epoch: receipt.epoch },
+          promptId: receipt.promptId ?? null,
+          conversationId: receipt.conversationId ?? null,
+        }),
+      ],
+    );
+  }
+
+  return { command, validateBindingInTransaction, revalidateDockerLaunch, completeDockerLaunch };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

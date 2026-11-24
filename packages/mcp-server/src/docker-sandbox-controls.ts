@@ -31,10 +31,10 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
 import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
-import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { DOCKER_DISPATCH_REQUEST, DOCKER_SEND_REFUSAL } from "./docker-send-request-schema.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
@@ -138,7 +138,7 @@ export function createDockerSandboxControls(
     timeoutMs?: number;
     prepareMcp?: RuntimeMcp["prepare"];
     prepareSnapshotGitHub?: RuntimeGitHub["prepareLaunch"];
-    send?: ReturnType<typeof createDockerNormalSend>;
+    sendEnabled?: boolean;
     resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
     /** Final output capture before a user stop (tests inject the runtime reader). */
     outputs?: Parameters<typeof captureDockerStopOutputs>[3];
@@ -863,19 +863,109 @@ export function createDockerSandboxControls(
       truncated: result.truncated,
     };
   }
+  async function send(caller: Caller, row: Row, args: Record<string, unknown>, claim?: RuntimeTurnClaim) {
+    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    if (!options.sendEnabled) throw failure("unavailable", "Docker send is not enabled.");
+    if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
+    const parsed = DOCKER_DISPATCH_REQUEST.safeParse(args);
+    if (!parsed.success) throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
+    const input = parsed.data;
+    const assertClaim =
+      claim &&
+      (async (tx?: Sql) => {
+        if (!(await claim.canDispatch(tx))) throw failure("conflict", "Queued Docker turn lease is no longer current.");
+      });
+    await assertClaim?.();
+    const deadline = clock.now() + (options.timeoutMs ?? 25_000);
+    const previous = (
+      await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+        [row.id, `docker_prompt_${input.request_id}`],
+      )
+    ).rows[0];
+    if (!["ready", "running"].includes(row.status)) {
+      if (previous || !["stopped", "starting"].includes(row.status))
+        throw failure("conflict", "Docker sandbox must be running before send. Use a new request_id for a new turn.");
+      if (row.status === "starting") {
+        const pendingResume = await sql.query(
+          `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
+           and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
+          [row.id, input.request_id, caller.userId],
+        );
+        if (!pendingResume.rows.length)
+          throw failure(
+            "unavailable",
+            "Docker sandbox resume is pending. Retry identical input with the same request_id.",
+          );
+      }
+      await resume(caller, row, input.request_id, claim);
+      row = await visible(caller, row.id);
+      if (!["ready", "running"].includes(row.status))
+        throw failure("conflict", "Docker sandbox resume is still pending.");
+    }
+    await assertClaim?.();
+    await options.prepareMcp?.(caller, row.id, undefined, assertClaim);
+    let conversationId = row.conversation_ids.at(-1);
+    if (conversationId === undefined && !previous) {
+      const launch = (
+        await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+          "select request_enc from public.docker_launch_manifests where sandbox_id=$1",
+          [row.id],
+        )
+      ).rows[0];
+      if (launch) {
+        const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
+        conversationId = manifest.conversationId ?? manifest.promptId;
+      }
+    }
+    if (previous) conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
+    if (!previous) {
+      await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id, assertClaim);
+      await options.github?.prepareTurn(caller, row.id, assertClaim);
+    }
+    if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id, assertClaim);
+    for (;;) {
+      let result: Awaited<ReturnType<typeof runtime.prompt>>;
+      try {
+        result = await runtime.prompt(
+          { userId: caller.userId, orgId: row.org_id },
+          row.id,
+          {
+            requestId: input.request_id,
+            text: input.prompt,
+            ...(conversationId === undefined ? {} : { conversationId: conversationId as string }),
+          },
+          undefined,
+          assertClaim,
+        );
+      } catch {
+        throw failure(
+          "conflict",
+          "Docker prompt admission unavailable. Retry identical input with the same request_id.",
+        );
+      }
+      if (result.state === "admitted")
+        return {
+          id: row.id,
+          requestId: input.request_id,
+          runtime: { kind: "armada" as const, epoch: result.epoch },
+          ...result.receipt,
+        };
+      if (clock.now() >= deadline)
+        throw failure(
+          "unavailable",
+          "Docker prompt admission pending. Retry identical input with the same request_id.",
+        );
+      await clock.wait(Math.min(250, deadline - clock.now()));
+    }
+  }
+
   return {
-    /** Worker-only idle observation: queued server admissions must not hide the native journal's settled state. */
-    async canDispatchQueued(caller: Caller, id: string): Promise<boolean> {
-      const row = await visible(caller, id);
-      if (!usesHostLaunch(row.provider) || row.owner_id !== caller.userId || !["ready", "running"].includes(row.status))
-        return false;
-      return (await status(caller, row, undefined, false)).settled;
-    },
     async invoke(
       caller: Caller,
       name: string,
       args: Record<string, unknown>,
-      claim?: RuntimeTurnClaim,
+      queued?: { claim?: RuntimeTurnClaim },
     ): Promise<{ handled: false } | { handled: true; result: object }> {
       if (
         ![
@@ -927,21 +1017,8 @@ export function createDockerSandboxControls(
           if (["steer", "interrupt", "exec"].includes(name))
             return { handled: true as const, result: await control(caller, row, name, args) };
           if (name === "send") {
-            if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
-            return {
-              handled: true as const,
-              result: await options.send.send(
-                caller,
-                args,
-                row,
-                async () => {
-                  await resume(caller, row, args.request_id as string | undefined, claim);
-                  return visible(caller, row.id);
-                },
-                undefined,
-                claim,
-              ),
-            };
+            if (!queued) throw failure("unavailable", "Docker send requires the account turn queue.");
+            return { handled: true as const, result: await send(caller, row, args, queued.claim) };
           }
           if (name === "resume")
             return { handled: true as const, result: await resume(caller, row, args.request_id as string | undefined) };
@@ -959,9 +1036,6 @@ export function createDockerSandboxControls(
                   );
           return { handled: true as const, result };
         };
-        // Runtime commands record themselves at the shared command boundary (runtime.<op>) and
-        // status/logs only read Armada's database: only host-side controls get a Docker record, and
-        // only when they admit new work (a retried request_id is answered from the database).
         return DOCKER_HOST_CONTROLS.has(name)
           ? await observeProviderCall("docker", name, dispatch, undefined, {
               replayable: true,
@@ -969,7 +1043,6 @@ export function createDockerSandboxControls(
             })
           : await dispatch();
       } catch (error) {
-        // ToolError is Armada request validation (Docker send admission) with public guidance.
         if (error instanceof ProviderError || error instanceof ToolError || error instanceof DockerHostUpgradeRequired)
           throw error;
         if (error instanceof DockerRetentionEnded)

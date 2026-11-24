@@ -33,7 +33,6 @@ import { requireDatabaseSchema } from "./database-schema.ts";
 import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
-import { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createEventFeed } from "./event-feed.ts";
@@ -389,28 +388,21 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeResume,
     sandboxArmadaAccess.restoreEnrolled,
   );
-  const makeDockerControls = (dispatchQueued: boolean) =>
+  const makeDockerControls = () =>
     createDockerSandboxControls(sql, config.encryptionKey, {
       prepareMcp: runtimeMcp.prepare,
       ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
       ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
       ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-      send: createDockerNormalSend(sql, config.encryptionKey, {
-        dispatchQueued,
-        prepareMcp: runtimeMcp.prepare,
-        ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
-        enabled: dockerEnabled && Boolean(dockerBootstrap),
-        ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-      }),
+      sendEnabled: dockerEnabled && Boolean(dockerBootstrap),
     });
-  const dockerControls = env.ARMADA_DOCKER_HOSTS === "1" ? makeDockerControls(false) : undefined;
+  const dockerControls = env.ARMADA_DOCKER_HOSTS === "1" ? makeDockerControls() : undefined;
   const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           enabled: dockerLaunchEnabled,
-          deferLaunch: true,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
@@ -634,12 +626,7 @@ export async function createServerServices(env: Record<string, string | undefine
     templates,
     data,
     configureAccountDispatch: () => {
-      accountTurns.setDispatch(
-        createQueuedSandboxDispatch({
-          ...control,
-          ...(dockerControls ? { dockerControls: makeDockerControls(true) } : {}),
-        }),
-      );
+      accountTurns.setDispatch(createQueuedSandboxDispatch(control));
     },
   };
 }
