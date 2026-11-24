@@ -3,7 +3,6 @@ import type { RuntimeSessionScope } from "./runtime-enrolment.ts";
 
 const commandPattern = /^workspace_(?:health_[a-f0-9-]{36}_[0-9]+|[0-9]+_(?:repository|init)_[0-9]+_[0-9]+)$/;
 
-/** Emit only launch-owned command identities and numeric timings, never command or reply contents. */
 export function logWorkspaceCommand(
   { sandboxId, epoch }: RuntimeSessionScope,
   commandId: string,
@@ -24,12 +23,9 @@ export function logWorkspaceCommand(
         ...timings,
       }),
     );
-  } catch {
-    // Diagnostics must not interfere with delivery or acknowledgements.
-  }
+  } catch {}
 }
 
-/** Use the runtime's own timestamps: journal upload may lag execution or arrive in one batch. */
 export function logWorkspaceExecution(scope: RuntimeSessionScope, event: AgentEvent) {
   if (event.kind !== "other" || event.type !== "armada/workspaceStep") return;
   const match = /^workspace_(workspace_([0-9]+)_(?:repository|init)_[0-9]+_[0-9]+)_(running|finished|failed)$/.exec(
@@ -47,7 +43,5 @@ export function logWorkspaceExecution(scope: RuntimeSessionScope, event: AgentEv
         runtimeAtMs: event.at,
       }),
     );
-  } catch {
-    // Diagnostics must not interfere with the journal ACK.
-  }
+  } catch {}
 }

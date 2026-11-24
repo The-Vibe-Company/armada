@@ -72,8 +72,6 @@ export function observeRequest<T extends Response | undefined>(
     const status = response?.status ?? 101;
     const requestLog = log ?? requestLogForStatus(status);
     const pathname = request ? new URL(request.url).pathname : undefined;
-    // Distinguish the runtime executable from harness downloads. This measures origin
-    // response preparation; Bun sends the file body after the handler returns.
     const artifactDigest =
       request?.method === "GET" && pathname
         ? /^\/api\/runtime\/artifacts\/([a-f0-9]{64})$/.exec(pathname)?.[1]

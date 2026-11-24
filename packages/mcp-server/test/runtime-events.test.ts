@@ -1568,11 +1568,7 @@ test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the 
 test("workspace execution timestamps are logged only for freshly committed events", async () => {
   const f = await fixture();
   const active = await f.enrol();
-  const lines: Record<string, unknown>[] = [];
-  const info = spyOn(console, "info").mockImplementation((line) => {
-    const entry = JSON.parse(line);
-    if (entry.event === "runtime_workspace_execution") lines.push(entry);
-  });
+  const info = spyOn(console, "info");
   try {
     const events = (["running", "finished"] as const).map((status, index) => ({
       sequence: index + 1,
@@ -1585,6 +1581,9 @@ test("workspace execution timestamps are logged only for freshly committed event
     }));
     expect((await f.publish(active, events)).status).toBe(200);
     expect((await f.publish(active, events)).status).toBe(200);
+    const lines = info.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .filter((entry) => entry.event === "runtime_workspace_execution");
     expect(lines).toMatchObject([
       {
         sandboxId: f.id,

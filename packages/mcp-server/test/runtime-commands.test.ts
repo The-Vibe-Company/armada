@@ -1842,15 +1842,11 @@ test("workspace health diagnostics separate delivery, result commit, and readbac
   const active = await f.enrol();
   const bridge = f.bridge();
   const requestId = `workspace_health_${crypto.randomUUID()}_${active.epoch}`;
-  const lines: Record<string, unknown>[] = [];
-  const info = spyOn(console, "info").mockImplementation((line) => {
-    const entry = JSON.parse(line);
-    if (entry.event === "runtime_workspace_command" && entry.commandId === requestId) lines.push(entry);
-  });
+  const info = spyOn(console, "info");
   try {
     f.onWait(async () => {
       const poll = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, bridge);
-      expect((await poll.json()).command.requestId).toBe(requestId);
+      expect(await poll.json()).toMatchObject({ command: { requestId } });
       const reply = await f.request(
         "results",
         active.runtimeToken,
@@ -1866,6 +1862,9 @@ test("workspace health diagnostics separate delivery, result commit, and readbac
       expect(reply.status).toBe(200);
     });
     await bridge.call(f.people.owner, f.command(requestId), { expectedEpoch: active.epoch });
+    const lines = info.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .filter((entry) => entry.event === "runtime_workspace_command" && entry.commandId === requestId);
     expect(lines.map(({ stage }) => stage)).toEqual(["admitted", "sent_poll", "result_committed", "observed"]);
     expect(lines.at(-1)).toMatchObject({ sandboxId: f.id, epoch: active.epoch, observedAtMs: 54_000, resultReads: 2 });
     expect(JSON.stringify(lines)).not.toContain("not-for-logs");

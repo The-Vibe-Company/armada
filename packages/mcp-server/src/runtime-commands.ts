@@ -403,7 +403,7 @@ export function createRuntimeCommands(
           await recordDockerPromptAccepted(tx, scope.sandboxId, generation, accepted);
         await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
       }
-      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
+      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: row.request_id };
     });
     const committed = time.now();
     logWorkspaceCommand({ sandboxId, epoch: receipt.epoch }, receipt.requestId, "result_committed", committed, {
