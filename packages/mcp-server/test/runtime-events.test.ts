@@ -376,6 +376,7 @@ test("private archive grants and bounded event validation refuse malformed batch
           )
         ).rows[0]?.allowed,
       ).toBe(false);
+    f.queries.length = 0;
     for (const sequence of [0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])
       expect((await f.publish(active, [{ sequence, event: f.other("bad") }])).status).toBe(400);
     expect(
@@ -390,6 +391,7 @@ test("private archive grants and bounded event validation refuse malformed batch
       ).status,
     ).toBe(413);
     expect((await f.publish(active, [], { padding: "x".repeat(1048576) })).status).toBe(413);
+    expect(f.queries).toHaveLength(0);
     const unsupported = await f.publish(active, [], {
       nativeAuth: { authJson: "not-auth-material", expectedRevision: 0 },
     });

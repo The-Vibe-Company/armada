@@ -24,7 +24,7 @@ export function createServerRequestDrain(
   let draining = false;
   const requests = new Set<Promise<unknown>>();
   const fetch = (request: Request) => {
-    if (draining) return observeRequest(drainRefusal, log);
+    if (draining) return observeRequest(drainRefusal, log, request);
     const pending = handler(request).then((response) => {
       // Gateway POST tools use SSE responses: the handler can return before the
       // admitted tool finishes. GET notification streams instead end at MCP close.

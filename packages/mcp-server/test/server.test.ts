@@ -221,6 +221,17 @@ describe("http", () => {
   });
 });
 
+test("HTTP request logs use a fixed route template in place of request path parameters and query values", async () => {
+  const lines: string[] = [];
+  const { handler } = await start({ log: (line) => lines.push(line) });
+  const response = await handler(new Request(`${PUBLIC_URL}/mcp/gateway/private-connection?query=private-value`));
+  expect(response.status).toBe(404);
+  expect(lines).toHaveLength(1);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ event: "http_request", path: "/mcp/gateway/:connectionId" });
+  expect(lines[0]).not.toContain("private-connection");
+  expect(lines[0]).not.toContain("private-value");
+});
+
 describe("when the auth lookup fails", () => {
   test("a SQL session membership failure is a 503 with a sanitized diagnostic", async () => {
     const lines: string[] = [];
@@ -245,6 +256,12 @@ describe("when the auth lookup fails", () => {
       event: "operator_failure",
       requestId: response.headers.get("x-request-id"),
       phase: "mcp.authentication",
+    });
+    expect(JSON.parse(lines[1]!)).toMatchObject({
+      event: "http_request",
+      requestId: response.headers.get("x-request-id"),
+      path: "/mcp",
+      status: 503,
     });
     for (const text of [lines[0] ?? "", await response.text()]) {
       expect(text).not.toContain(jwt);

@@ -888,7 +888,7 @@
     "packages/mcp-server/test/runtime-checkpoint.test.ts": 3,
     "packages/mcp-server/test/runtime-commands.test.ts": 24,
     "packages/mcp-server/test/runtime-docker-authority.test.ts": 7,
-    "packages/mcp-server/test/runtime-enrolment-postgres.release.ts": 3,
+    "packages/mcp-server/test/runtime-enrolment-postgres.release.ts": 2,
     "packages/mcp-server/test/runtime-enrolment.test.ts": 2,
     "packages/mcp-server/test/runtime-events.test.ts": 15,
     "packages/mcp-server/test/runtime-followup.test.ts": 6,
