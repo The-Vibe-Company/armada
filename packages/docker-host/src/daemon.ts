@@ -98,6 +98,7 @@ export interface Api {
       skipSnapshots?: boolean;
       waitSeconds?: number;
       running?: string[];
+      preferStartup?: boolean;
     },
   ): Promise<DockerHostPollResponse & { retainedStopProof?: true | undefined }>;
   result(state: State, receipt: Receipt, expired?: true, retained?: true): Promise<void>;
@@ -291,6 +292,7 @@ export type TickOptions = {
   sandboxes?: ReadonlySet<string>;
   snapshots?: ReadonlySet<string>;
   deferUncertain?: ReadonlySet<string>;
+  preferStartup?: boolean;
   restoreConflicts?: Map<string, string>;
   dispatch?: (job: Job, work: Promise<void>) => void;
 };
@@ -369,7 +371,10 @@ export async function runJobs(
       }
       const finishedBefore = finished;
       const excluded = new Set(deferUncertain.keys());
-      for (const [id, isCleanup] of deferUncertain) if (!isCleanup) deferUncertain.delete(id);
+      const preferStartup =
+        deferUncertain.size >= MAX_POLL_EXCLUSIONS - running.size &&
+        [...deferUncertain.values()].some((isCleanup) => isCleanup);
+      for (const [id, isCleanup] of deferUncertain) if (preferStartup || !isCleanup) deferUncertain.delete(id);
       let outcome: TickOutcome;
       let phase: IterationPhase = "admission";
       try {
@@ -380,14 +385,12 @@ export async function runJobs(
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
           deferUncertain: excluded,
+          preferStartup,
           restoreConflicts,
           dispatch(job, work) {
             const done = work
               .catch((error) => {
-                if (
-                  isUncertainDockerFailure(job.operation, error) &&
-                  deferUncertain.size < MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS
-                )
+                if (isUncertainDockerFailure(job.operation, error) && deferUncertain.size < MAX_POLL_EXCLUSIONS)
                   deferUncertain.set(job.requestId, job.operation !== "restore");
                 loop.failed?.("job", "job", error);
               })
@@ -549,6 +552,7 @@ async function admitLocked(
         : {
             waitSeconds: options.waitSeconds,
             running: excludedRequestIds,
+            ...(options.preferStartup ? { preferStartup: true } : {}),
           }),
     });
   } catch (error) {

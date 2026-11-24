@@ -3,10 +3,11 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/src/docker-host-protocol.ts";
-import type {
-  DockerHostPollRequest,
-  DockerHostPollResponse,
-  DockerHostResultRequest,
+import {
+  DOCKER_HOST_PREFER_STARTUP_HEADER,
+  type DockerHostPollRequest,
+  type DockerHostPollResponse,
+  type DockerHostResultRequest,
 } from "../../core/src/docker-host-wire.ts";
 import {
   createDockerMachineExecutor,
@@ -191,6 +192,7 @@ export function httpApi(
     timeoutMs = 8_000,
     signal?: AbortSignal,
     onResponse?: (response: Response) => void,
+    headers?: Record<string, string>,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -203,6 +205,7 @@ export function httpApi(
         ...(endpoint === "poll"
           ? { "x-armada-docker-host-delete-physical": "1", "x-armada-docker-host-restore": "1" }
           : {}),
+        ...headers,
       },
       body: JSON.stringify(body),
     });
@@ -307,10 +310,19 @@ export function httpApi(
     async poll(state, options) {
       async function poll(body: DockerHostPollRequest, timeoutMs?: number) {
         let retainedStopProof = false;
-        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs, undefined, (response) => {
-          stopIdentitySupported = response.headers.get("x-armada-docker-stop-identity") === "1";
-          retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
-        })) as DockerHostPollResponse;
+        const result = (await post(
+          state.server,
+          "poll",
+          state.hostToken,
+          body,
+          timeoutMs,
+          undefined,
+          (response) => {
+            stopIdentitySupported = response.headers.get("x-armada-docker-stop-identity") === "1";
+            retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
+          },
+          options?.preferStartup ? { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" } : undefined,
+        )) as DockerHostPollResponse;
         if (
           inventory &&
           !inventoryStop.signal.aborted &&

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDescriptor } from "../../core/src/docker-host-job.ts";
 import { dockerMachineJobId } from "../../core/src/docker-host-job.ts";
+import { DOCKER_HOST_PREFER_STARTUP_HEADER } from "../../core/src/docker-host-wire.ts";
 import { createDockerMachineExecutor, DockerMachineError } from "../../core/src/docker-machine.ts";
 import {
   type Api,
@@ -2337,41 +2338,57 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
 });
 
-test("ambiguous stops yield the mailbox to unrelated work", async () => {
-  const { store, api, executor, job } = fixture("stop");
-  const unrelated = fixture().job;
-  const queue = [job, fixture("stop").job, unrelated];
-  let failed = Promise.withResolvers<void>();
-  let stopped = false;
-  let polls = 0;
-  api.poll = async (_state, options) => {
-    stopped = ++polls === queue.length;
-    return { job: queue.find((entry) => !options?.running?.includes(entry.requestId)) ?? null, held: true };
-  };
-  executor.stop = async () => {
-    throw new DockerMachineError("docker_failed");
-  };
-  executor.create = async () => {};
-  const completed: string[] = [];
-  api.result = async (_state, receipt) => {
-    completed.push(receipt.requestId);
-  };
-  await runJobs(store, api, executor, {
-    stopping: () => stopped,
-    async beforeTick() {
-      if (polls === 0) return;
-      await failed.promise;
-      failed = Promise.withResolvers<void>();
-      await Promise.resolve();
-    },
-    failed: () => failed.resolve(),
-    sleep: async () => {
-      throw Error("Unexpected idle");
-    },
-    now: () => 0,
-  });
-  expect(completed).toEqual([unrelated.requestId]);
-});
+test.each(["create", "bootstrap"] as const)(
+  "a full uncertain cleanup exclusion window still yields to unrelated %s work",
+  async (operation) => {
+    const { store, api, executor } = fixture("stop");
+    const unrelated = fixture("create", operation === "bootstrap" ? bootstrapDescriptor() : undefined).job;
+    const cleanups = Array.from({ length: 17 }, () => fixture("stop").job);
+    const queue = [...cleanups, unrelated];
+    let settled = Promise.withResolvers<void>();
+    let stopped = false;
+    let polls = 0;
+    const attempted: string[] = [];
+    const completed: string[] = [];
+    api.poll = async (_state, options) => {
+      stopped = ++polls === queue.length + 1;
+      expect(options?.running?.length).toBeLessThanOrEqual(16);
+      const eligible = queue.filter(
+        (entry) => !completed.includes(entry.requestId) && !options?.running?.includes(entry.requestId),
+      );
+      const startup = options?.preferStartup
+        ? eligible.find((entry) => entry.operation === "create" || entry.operation === "bootstrap")
+        : undefined;
+      return { job: startup ?? eligible[0] ?? null, held: true };
+    };
+    executor.stop = async (request) => {
+      attempted.push(request.sandboxId);
+      throw new DockerMachineError("docker_failed");
+    };
+    executor.create = async () => {};
+    executor.startRuntime = async () => {};
+    api.result = async (_state, receipt) => {
+      completed.push(receipt.requestId);
+      settled.resolve();
+    };
+    await runJobs(store, api, executor, {
+      stopping: () => stopped,
+      async beforeTick() {
+        if (polls === 0) return;
+        await settled.promise;
+        settled = Promise.withResolvers<void>();
+        await Promise.resolve();
+      },
+      failed: () => settled.resolve(),
+      sleep: async () => {
+        throw new Error("Unexpected idle");
+      },
+      now: () => 0,
+    });
+    expect(completed).toEqual([unrelated.requestId]);
+    expect(attempted.filter((id) => id === cleanups[0]?.request.sandboxId)).toHaveLength(2);
+  },
+);
 
 test("runJobs admits the job a held poll returns once its sandbox's running job completed during the hold", async () => {
   const request = {
@@ -2487,12 +2504,14 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
 
 test("native held polls report running work without retrying a refused request", async () => {
   const f = fixture();
+  const startupPreferences: (string | null)[] = [];
   const bodies: Record<string, unknown>[] = [];
   const api = httpApi(
     Object.assign(
       async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
         bodies.push(body);
+        startupPreferences.push(new Headers(init?.headers).get(DOCKER_HOST_PREFER_STARTUP_HEADER));
         if ("waitSeconds" in body) return new Response(null, { status: 400 });
         return Response.json({ job: null });
       },
@@ -2502,9 +2521,11 @@ test("native held polls report running work without retrying a refused request",
   );
   const running = crypto.randomUUID();
   await expect(
-    api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running] }),
+    api.poll(await f.store.load(), { skipSnapshots: true, waitSeconds: 20, running: [running], preferStartup: true }),
   ).rejects.toThrow();
   expect(bodies).toHaveLength(1);
+  expect(startupPreferences).toEqual(["1"]);
+  expect(bodies[0]).not.toHaveProperty("preferStartup");
   expect(bodies[0]).toMatchObject({ waitSeconds: 20, running: [running], resumeClaimProtocol: 1 });
   expect(bodies[0]).not.toHaveProperty("skipSnapshots");
 });
