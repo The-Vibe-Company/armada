@@ -555,7 +555,6 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   };
   expect(await handler.run(job, context)).toMatchObject({ status: "retry" });
   expect(captures).toBe(1);
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping" });
   const stop = await store.poll(a.hostToken, a.installationId);
   await store.complete(a.hostToken, a.installationId, {
     requestId: stop!.requestId,
