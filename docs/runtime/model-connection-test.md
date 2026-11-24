@@ -45,29 +45,6 @@ and [Messages API](https://platform.claude.com/docs/en/api/messages), using the
 existing gateway-compatible anthropic-version 2023-06-01 documented in the
 [Claude gateway setup](https://code.claude.com/docs/en/llm-gateway-connect).
 
-## Coordinator staging check
-
-1. Deploy rebuilt runtime with the server. Launch an ordinary Modal sandbox
-   using an owner-held Foundry/gateway connection as in the existing connection
-   docs. Obtain its current RunnerAccess (`url`, `connectToken`, `grant`) from
-   the server's authorized Modal access resolver; keep it private. Add the
-   matching logical runner `sandboxId` (`machine.info.id`, e.g. `modal_<uuid>`,
-   not the host physical `sb-...` ID or the separate Armada database row UUID), selected `harness` and deployment `model` to
-   that private JSON input (outside the repo). Do not pass tokens in arguments.
-2. Run `ARMADA_MODEL_CONNECTION_SMOKE=use_staging_runner bun scripts/smoke-model-connection.ts < /path/to/private-runner-access.json`.
-   Expect exactly MODEL_CONNECTION_OK, with one tiny request observed at the
-   owner endpoint. Repeat for Foundry base URL with/without /responses and each
-   supported Claude auth mechanism. Do not send requests to production.
-3. With a new sandbox bound to a deliberately invalid key, expect smoke failure;
-   an authorized RPC inspector must see real HTTP401 and a recognized safe code,
-   never key/response text. Wrong model may yield HTTP404/DeploymentNotFound.
-   Wrong/expired grant and extra URL/key fields must refuse before outbound I/O.
-4. Check that session prompts/events are unchanged and runtime checkpoint still
-   completes. Delete private access files afterwards.
-
-Prerequisites: current API-key connection bootstrap and updated runtime artifact.
-No migration/new settings. Workers hold no owner credentials or staging access.
-
 ## Public server and CLI surface
 
 The server exposes authenticated `POST /api/v1/sandbox/test-model-connection`
