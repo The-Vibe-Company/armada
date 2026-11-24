@@ -388,15 +388,15 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeResume,
     sandboxArmadaAccess.restoreEnrolled,
   );
-  const makeDockerControls = () =>
-    createDockerSandboxControls(sql, config.encryptionKey, {
-      prepareMcp: runtimeMcp.prepare,
-      ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch } : {}),
-      ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
-      ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-      sendEnabled: dockerEnabled && Boolean(dockerBootstrap),
-    });
-  const dockerControls = env.ARMADA_DOCKER_HOSTS === "1" ? makeDockerControls() : undefined;
+  const dockerControls =
+    env.ARMADA_DOCKER_HOSTS === "1"
+      ? createDockerSandboxControls(sql, config.encryptionKey, {
+          prepareMcp: runtimeMcp.prepare,
+          ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch, github: runtimeGitHub } : {}),
+          ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          sendEnabled: dockerEnabled && Boolean(dockerBootstrap),
+        })
+      : undefined;
   const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"

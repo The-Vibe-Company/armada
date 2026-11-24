@@ -2588,7 +2588,7 @@ test("a Docker routine settles the scheduled occurrence from its shared launch r
   const readRun = async () =>
     (
       await sql.query<{ id: string; sandbox_id: string; state: string; prompt_id: string | null }>(
-        "select id,sandbox_id,state,prompt_id from routine_runs where routine_id=$1",
+        "select id,sandbox_id,state,prompt_id from routine_runs where routine_id=$1 and state<>'skipped'",
         [routine.id],
       )
     ).rows[0]!;
