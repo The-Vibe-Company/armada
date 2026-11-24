@@ -183,31 +183,6 @@ stop proof; auth never enters the journal archive or usage.
 
 ## Validation
 
-These local checks do not allocate provider compute:
-
-```sh
-ARMADA_DIALOUT_SMOKE=local_native bun scripts/smoke-runtime-dialout.ts
-ARMADA_DIALOUT_SMOKE=local_native bun scripts/smoke-runtime-dialout.ts --http-only
-ARMADA_RUNTIME_HARNESS_SMOKE=local_native bun scripts/smoke-runtime-harness.ts
-```
-
-On isolated Linux with Bun 1.4.2, build dependencies and openssl, expect compiled
-health over WSS and HTTPS fallback, cold verified CLI installation, warm offline
-startup, fresh enrolment per process and checkpoint/teardown. Fixtures are not
-real model calls. The selected-harness smoke also checks actual Codex version and
-app-server initialize. Foreign-architecture builds alone are not native proof.
-
-The compiled model smoke is separately **billable**; supply a staging API key
-through its documented environment, never argv:
-
-```sh
-ARMADA_COMPILED_SMOKE=create_real_inference bun scripts/validate-runtime-compiled.ts
-```
-
-Optional `ARMADA_COMPILED_SMOKE_MODEL` selects the model. Require COMPILED_OK,
-reported turn usage and successful checkpoint. If cleanup cannot quiesce native
-children, inspect/discard the isolated host rather than claiming it is clean.
-
 The following Boat protocol diagnostics are historical operator tools, not
 staging or release acceptance. Boat is not part of the release gate; print
 `boat: not part of the release gate`. Any on-demand Boat verification is
@@ -217,20 +192,10 @@ These diagnostics require a disposable active Boat sandbox,
 current member owner, no real work and secure environment:
 `ARMADA_STAGING_DATABASE_URL`, `ARMADA_STAGING_ENCRYPTION_KEY`,
 `ARMADA_STAGING_URL`, `ARMADA_STAGING_SANDBOX_ID`, `ARMADA_STAGING_OWNER_ID`.
-They **replace runtime authority**; the event check also requires a fresh archive
-and writes synthetic usage. Run only the needed diagnostic:
+They **replace runtime authority**.
 
-```sh
-ARMADA_RUNTIME_ENROLMENT_SMOKE=use_disposable_staging_sandbox bun scripts/smoke-runtime-enrolment.ts
-ARMADA_RUNTIME_COMMAND_SMOKE=use_disposable_staging_sandbox bun scripts/smoke-runtime-commands.ts
-ARMADA_RUNTIME_SOCKET_SMOKE=use_disposable_staging_sandbox bun scripts/smoke-runtime-sockets.ts
-ARMADA_RUNTIME_EVENT_SMOKE=use_disposable_staging_sandbox bun scripts/smoke-runtime-events.ts
-```
-
-Require one-use/replay rejection, stable command/result ACKs, WSS plus old-epoch
-closure and duplicate-safe event/usage commit, respectively. Stop/delete the test
-sandbox afterwards. The legacy publication diagnostic additionally needs a dedicated
-exclusive staging subscription holder with no prompt:
+The remaining legacy publication diagnostic needs a dedicated exclusive staging
+subscription holder with no prompt:
 `ARMADA_RUNTIME_NATIVE_AUTH_SMOKE=use_disposable_staging_subscription bun scripts/smoke-runtime-native-auth.ts`.
 It republishes unchanged auth, not an OAuth refresh; normal stop/release/reconnect
 cleanup is required and the holder must not be repurposed for real work.

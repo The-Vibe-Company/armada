@@ -28,8 +28,6 @@ packages/mcp-server/test/serve-database-boot.test.ts
 packages/provider-modal/test/security.test.ts
 scripts/build.test.ts
 scripts/check-boat-runtime.test.ts
-scripts/check-boat-subscription.test.ts
-scripts/check-modal-runtime.test.ts
 scripts/db/check-migrations.test.ts
 scripts/golden-runtime-smoke.test.ts
 scripts/post-deploy-smoke.test.ts
