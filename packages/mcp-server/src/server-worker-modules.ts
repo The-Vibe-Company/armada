@@ -210,11 +210,9 @@ export const outputModule: ServerModule = ({ mounts }) => {
 export const delegatedAccessModule: ServerModule = ({ workers }) => {
   workers.managed.set("delegated-access", ({ delegatedAccess }) => delegatedAccess.childWorker);
 };
-export const dockerModule: ServerModule = ({ mounts, workers, shutdown }) => {
+export const dockerModule: ServerModule = ({ mounts, workers }) => {
   mounts.push(dockerMounts);
-  workers.beforeListen.push(({ dockerLaunch }) => dockerLaunch?.startBackground());
   workers.managed.set("docker-cleanup", dockerCleanupLane);
-  shutdown.closeDocker = ({ dockerLaunch }) => dockerLaunch?.close();
 };
 export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);

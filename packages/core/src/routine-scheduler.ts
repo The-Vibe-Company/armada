@@ -54,6 +54,7 @@ type Run = {
   lease_id: string | null;
 };
 type Claim = {
+  docker?: boolean;
   reason?: string | null;
   id: string;
   state: string;
@@ -116,10 +117,15 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   async function templateClaim(run: Run): Promise<Claim | undefined> {
     return (
       await sql.query<Claim>(
-        `select c.id,c.state,c.reason,case when c.state='failed' then s.id else c.sandbox_id end as sandbox_id,
+        `select c.id,c.manifest#>>'{definition,provider}'='docker' as docker,
+         case when j.state='failed' then 'failed' else c.state end as state,
+         case when j.state='failed' then 'launch_unavailable' else c.reason end as reason,
+         case when c.state='failed' then s.id else c.sandbox_id end as sandbox_id,
          c.result->>'promptId' as prompt_id,c.result->>'conversationId' as conversation_id
          from public.template_launch_requests c
          left join public.sandboxes s on c.state='failed' and s.id=c.sandbox_id and s.org_id=c.org_id and s.owner_id=c.actor_id
+         left join public.jobs j on c.state='allocating' and j.sandbox_id=c.sandbox_id
+           and j.kind='launch' and j.outcome ? 'docker_actor_epoch'
          where c.org_id=$1 and c.actor_id=$2 and c.client_key=$3`,
         [run.org_id, run.owner_id, run.request_key],
       )
@@ -134,8 +140,10 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   }
   async function dispatch(run: Run, signal: AbortSignal) {
     const existing = await templateClaim(run);
-    if (existing) return reconcile(run, existing);
-    if (run.state === "reconciling") return settle(run, "reconciling", undefined, "launch_uncertain");
+    const unallocatedDocker = existing?.docker && existing.state === "claimed";
+    if (existing && !unallocatedDocker) return reconcile(run, existing);
+    if (run.state === "reconciling" && !unallocatedDocker)
+      return settle(run, "reconciling", undefined, "launch_uncertain");
     const input = (
       await sql.query<{ template_id: string; template_revision: number; prompt: string; ttl_seconds: number }>(
         "select * from public.routine_run_inputs where run_id=$1",
@@ -170,8 +178,8 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
             // A preflight can outlive its lease while another replica concludes that no claim
             // exists. Fence that stale caller at the provider boundary, not just history publication.
             const current = await tx.query(
-              "select id from public.routine_runs where id=$1 and state='admitted' and lease_id=$2",
-              [run.id, run.lease_id],
+              "select id from public.routine_runs where id=$1 and (state='admitted' or ($3 and state='reconciling')) and lease_id=$2 and lease_until>clock_timestamp() for update",
+              [run.id, run.lease_id, Boolean(unallocatedDocker)],
             );
             if (!current.rows.length) throw Error("Routine launch admission expired.");
           },
