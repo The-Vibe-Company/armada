@@ -61,8 +61,13 @@ If the updated wrapper reports github_credentials_http_denied, investigate the
 server credential route's authorization/binding; http_unavailable points to
 non-authorization HTTP failure (including missing route/gateway).
 invalid_json/invalid_token distinguish successful HTTP with an incompatible body.
-github_credentials_unavailable denotes transport failure. broker_denied means an
-old broker or a denied local IPC operation; verify the runtime/image version.
+`github_credentials_fetch_failed` indicates failure before HTTP response headers
+arrive. `github_credentials_body_failed` indicates failure while reading a
+successful response body. The corresponding `_timeout` codes indicate the
+broker's acquisition deadline expired during that stage.
+`github_credentials_redaction_failed` means the broker could not register the
+token for redaction and withheld it. For `broker_denied`, inspect the local IPC
+operation and verify the runtime/image version.
 For a missing checkout retain the accepted launch request's repository selection
 and completion/failure status for operator inspection of the encrypted manifest.
 Production reproduction, if needed, is coordinator-only; this change has not
