@@ -220,8 +220,6 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         const scoped = scopedRuntimeSql(tx);
         async function requireStableSandbox() {
           const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
-          // A previously delivered Machine bootstrap can enrol while we acquire the lock.
-          // The adapter validates the existing bootstrap and current-generation enrolment.
           const enrolledDuringReplay = machine && known && snapshot.status === "starting" && current.status === "ready";
           const expected = enrolledDuringReplay ? { ...snapshot, status: "ready" } : snapshot;
           if (JSON.stringify(current) !== JSON.stringify(expected) || (turnClaim && current.stopRequestedAt !== null))

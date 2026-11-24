@@ -1613,7 +1613,6 @@ test("launch keeps the runtime grant when enrolment races Machine bootstrap repl
       ...sql,
       async query(query, values) {
         if (enrolDuringReplay && values?.[0] === f.body.requestId && query.includes("bound_operation='bootstrap'")) {
-          // The bootstrap service has read the starting snapshot but has yet to lock it.
           enrolDuringReplay = false;
           await f.step();
         }
@@ -1625,9 +1624,9 @@ test("launch keeps the runtime grant when enrolment races Machine bootstrap repl
   );
   const launch = f.service(sql, true, 10000, officialImage, true, bootstrapService);
   await launch.launch(f.caller, f.body);
-  await launch.runClaim(); // Allocate and ACK the container.
+  await launch.runClaim();
   f.setDrive(false);
-  await launch.runClaim(); // Commit bootstrap without delivering it.
+  await launch.runClaim();
   expect(f.session()).toBeUndefined();
   await sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
 
