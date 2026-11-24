@@ -94,7 +94,7 @@ export const readSelectedDockerHosts = cache(async (): Promise<DockerHostsState>
 export async function hostListForPage(): Promise<DockerHostList | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), HOST_LIST_DEADLINE_MS);
+    timer = setTimeout(() => resolve(null), 2_000);
   });
   try {
     return await Promise.race([
