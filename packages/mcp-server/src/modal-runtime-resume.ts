@@ -1,4 +1,5 @@
-import { PROVIDER_LIMITS, type ProviderTarget } from "@armada/core/server";
+import { capabilities } from "@armada/core/machine-capabilities";
+import type { ProviderTarget } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import type { Caller } from "./caller.ts";
 import { type RuntimeResumeOptions, runtimeResumePlacement } from "./runtime-resume-placement.ts";
@@ -16,7 +17,7 @@ export function modalRuntimeResume(
     },
     admissionError: "modal_resume_admission_changed",
     binding: ["modal", "dialout"],
-    maxTtlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds,
+    maxTtlSeconds: capabilities("modal").maxTtlSeconds,
     restore: (host, sandbox, ttlSeconds, signal, checkpoint, observe) => {
       if (sandbox.lifecycleGeneration === undefined) throw Error("modal_resume_generation_required");
       return host.resumeRuntime(

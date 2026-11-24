@@ -1,6 +1,6 @@
+import { capabilities } from "@armada/core/machine-capabilities";
 import {
   failureDiagnostic,
-  PROVIDER_LIMITS,
   type Provider,
   ProviderError,
   SANDBOX_STOP_MARGIN_SECONDS,
@@ -33,7 +33,7 @@ export async function extendSandbox(
   ttlSeconds: number,
   renewLeases?: () => Promise<void>,
 ) {
-  const max = PROVIDER_LIMITS[sandbox.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS;
+  const max = capabilities(sandbox.provider).maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS;
   const refuse = (message: string): never => {
     throw new ProviderError({ provider: provider.id, code: "invalid_request", retryable: false, message });
   };

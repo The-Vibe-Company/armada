@@ -7,9 +7,9 @@ import {
   type LaunchProviderOption,
   MACHINE_SIZES,
   MODEL_CATALOG,
-  PROVIDER_LIMITS,
   SANDBOX_PROVIDERS,
 } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import type { ControlOptions } from "./control-options.ts";
 import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 
@@ -33,7 +33,7 @@ export const launchOptions = {
   ttl: {
     defaultSeconds: DEFAULT_LAUNCH_TTL_SECONDS,
     maxSeconds: Object.fromEntries(
-      SANDBOX_PROVIDERS.map((provider) => [provider, PROVIDER_LIMITS[provider].maxTtlSeconds]),
+      SANDBOX_PROVIDERS.map((provider) => [provider, capabilities(provider).maxTtlSeconds]),
     ),
   },
 } as const;

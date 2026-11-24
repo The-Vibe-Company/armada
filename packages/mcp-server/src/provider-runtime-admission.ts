@@ -5,7 +5,7 @@ import {
   type SandboxPlacementProviderId,
   type SandboxProviderId,
 } from "@armada/core";
-import { capabilities } from "@armada/core/server";
+import { capabilities } from "@armada/core/machine-capabilities";
 
 export const runtimeBridgeProfiles = {
   boat: {

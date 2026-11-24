@@ -1,6 +1,7 @@
 import {
   failureDiagnostic,
   isFinalPromptStatus,
+  isSandboxProvider,
   type MemberRole,
   type Provider,
   ProviderError,
@@ -45,7 +46,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
     if (
       !sandbox ||
       (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
-      !["boat", "modal"].includes(sandbox.provider) ||
+      !isSandboxProvider(sandbox.provider) ||
       !runtimeHarnessSupported(sandbox.provider, sandbox.harness) ||
       sandbox.provider !== target.provider ||
       (typeof apiKey !== "string" && apiKey.id !== sandbox.provider) ||
