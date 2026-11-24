@@ -3,15 +3,12 @@ import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } f
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
-  HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
-  type LaunchOptions,
   type LaunchOptionsResponse,
   MACHINE_SIZES,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
-  type Provider,
   ProviderError,
   resolveBoatKey,
   resolveCredentials,
@@ -19,27 +16,21 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { launchEnvelope, modalLaunchReceipt, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
-import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
+import { modalLaunchReceipt, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
+import { createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import type { PGlite } from "@electric-sql/pglite";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
-import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createOrdinaryLaunchReceipts, ordinaryLaunchFingerprint } from "../src/ordinary-launch-receipts.ts";
+import { withBoatManagementIdentity } from "../src/observed-boat.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
-import { createRuntimeCommands } from "../src/runtime-commands.ts";
-import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
-import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { createRuntimeHistory } from "../src/runtime-history.ts";
-import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
-import { fakeBoat } from "./support.ts";
+import { bunLikeSql, fakeBoat } from "./support.ts";
 
 const KEY = Buffer.alloc(32, 5).toString("base64");
 const STAN = "11111111-1111-4111-8111-111111111111";
@@ -47,115 +38,6 @@ const ADA = "22222222-2222-4222-8222-222222222222";
 const TOKEN_SECRET = "claude_private_token";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
 const controlDatabase = rowOnlyConnection();
-
-// The HTTP contract owns classification: real SQL resolution and launch, not a mocked classifier.
-for (const failure of [
-  "credential_refused",
-  "provider_unavailable",
-  "dependency_unavailable",
-  "outcome_unknown",
-  "rate_limited",
-  "payment_required",
-] as const) {
-  test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
-    await withServer(async ({ db, options }) => {
-      const org = await options.store.createOrg("Failures", STAN);
-      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
-        await encryptSecret("provider-key", KEY),
-        org.id,
-      ]);
-      await db.query(
-        "insert into credentials(scope,owner_id,kind,value_enc,status) values('user',$1,'claude_oauth',$2,$3)",
-        [STAN, await encryptSecret("model-key", KEY), failure === "credential_refused" ? "revoked" : "active"],
-      );
-      await db.query(
-        "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'web','org',$2,$3,$4::jsonb)",
-        [
-          org.id,
-          STAN,
-          `a${"b".repeat(62)}`,
-          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
-        ],
-      );
-      const boat = fakeBoat();
-      boat.provider.fork = async () => {
-        throw new ProviderError({
-          provider: "boat",
-          code: failure === "rate_limited" || failure === "payment_required" ? failure : "unavailable",
-          ...(failure === "rate_limited"
-            ? {
-                status: 429,
-                retryAfterSeconds: 120,
-                details: {
-                  window: "day",
-                  nextStartAt: "2026-11-12T08:08:00.000Z",
-                  message: "private-upstream-canary",
-                },
-              }
-            : {}),
-          message: "credential_refused expired revoked (not a classification input)",
-          retryable: true,
-          ...(failure === "provider_unavailable" ? { status: 503 } : {}),
-        });
-      };
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude" }),
-        }),
-        {
-          ...options,
-          ...(failure === "dependency_unavailable"
-            ? {}
-            : {
-                providerFor: () => {
-                  if (failure === "provider_unavailable")
-                    throw new ProviderError({
-                      provider: "boat",
-                      code: "unavailable",
-                      message: "Provider discovery failed.",
-                      retryable: true,
-                      status: 503,
-                    });
-                  return boat.provider;
-                },
-              }),
-        },
-      );
-      expect(response?.status).toBe(
-        failure === "credential_refused"
-          ? 422
-          : failure === "provider_unavailable"
-            ? 502
-            : failure === "rate_limited"
-              ? 429
-              : failure === "payment_required"
-                ? 402
-                : 503,
-      );
-      const payload = await response?.json();
-      expect(payload).toMatchObject({ error: { code: failure } });
-      if (failure === "rate_limited") {
-        expect(payload).toMatchObject({
-          error: {
-            message: expect.stringContaining("plan start limit per day"),
-            details: {
-              provider: "boat",
-              window: "day",
-              nextStartAt: "2026-11-12T08:08:00.000Z",
-              retryAfterSeconds: 120,
-            },
-          },
-        });
-        expect(JSON.stringify(payload)).not.toContain("private-upstream-canary");
-      }
-      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
-    });
-  });
-}
 
 test("Skillpack connection reports only visible metadata and never advertises unsupported authorization", async () => {
   await withServer(async ({ options }) => {
@@ -1007,8 +889,13 @@ describe("control API", () => {
           createdAt: new Date().toISOString(),
         });
         const boat = fakeBoat();
-        // Registration must work with the production server role, not just the database owner.
-        await db.exec("set role service_role");
+        options.admitModalLaunch = await modalAdmissionFixture(
+          bunLikeSql(db),
+          KEY,
+          options.store,
+          undefined,
+          withBoatManagementIdentity(boat.provider, "org", org),
+        );
         const launch = (body: Record<string, unknown>) =>
           handleControlRequest(
             new Request("https://armada.test/api/v1/sandbox/launch", {
@@ -1049,13 +936,10 @@ describe("control API", () => {
         if (!response) throw new Error("missing response");
         expect(response.status).toBe(200);
         const text = await response.text();
-        expect(JSON.parse(text).sandbox).toMatchObject({
-          provider: "boat",
-          providerSandboxId: "bx_1",
-        });
-        expect(boat.forks).toHaveLength(1);
+        expect(modalLaunchReceipt.parse(JSON.parse(text)).sandbox.status).toBe("starting");
+        expect(boat.forks).toHaveLength(0);
         expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
-          { provider_sandbox_id: "bx_1" },
+          { provider_sandbox_id: null },
         ]);
         if (repo !== undefined)
           expect((await db.query("select repository_dir from sandboxes")).rows).toEqual([{ repository_dir: "web" }]);
@@ -1070,7 +954,7 @@ describe("control API", () => {
     });
   }
 
-  test.each(["codex", "antigravity"] as const)("%s refusal precedes opening the Boat provider", async (harness) => {
+  test.each(["codex", "antigravity"] as const)("%s refusal precedes Boat provider dispatch", async (harness) => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("RuntimeAccount", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: org, name: "RuntimeAccount", role: "admin" });
@@ -1083,9 +967,17 @@ describe("control API", () => {
           JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
         ],
       );
-      const openProvider = (): never => {
-        throw Error("An account refusal must precede provider initialization");
+      const host = fakeBoat();
+      host.provider.backendIdentity = async () => {
+        throw Error("Credential checks must precede Boat dispatch.");
       };
+      options.admitModalLaunch = await modalAdmissionFixture(
+        bunLikeSql(db),
+        KEY,
+        options.store,
+        undefined,
+        host.provider,
+      );
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
@@ -1100,30 +992,13 @@ describe("control API", () => {
             idempotencyKey: "unbound-account-launch",
           }),
         }),
-        {
-          ...options,
-          providerFor: openProvider,
-          providers: { resolve: async () => openProvider() },
-          ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(db as unknown as Sql),
-          launch: {
-            boatRuntimeDefault: {
-              policy: { start: async () => openProvider() },
-              provider: async () => openProvider(),
-              credentials: {
-                async resolve() {
-                  return { env: { OPENAI_API_KEY: "fixture_key" }, secrets: [], codexAuthJson: false };
-                },
-              },
-              connections: { async validate() {}, async bind() {} },
-            },
-          },
-        },
+        options,
       );
-      expect(response?.status).toBe(harness === "codex" ? 409 : 400);
+      expect(response?.status).toBe(harness === "codex" ? 404 : 400);
       expect(await response?.json()).toMatchObject({
         error:
           harness === "codex"
-            ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
+            ? { code: "missing_credential" }
             : { message: expect.stringContaining("Unknown agent 'antigravity'") },
       });
     });
@@ -1152,11 +1027,11 @@ describe("control API", () => {
       );
       const boat = fakeBoat();
       const provider = { ...boat.provider, managementIdentity: async () => ({ scope: "org" as const, ownerId: org }) };
+      options.admitModalLaunch = await modalAdmissionFixture(bunLikeSql(db), KEY, options.store, undefined, provider);
       const keyed = {
         ...options,
         providerFor: () => provider,
         providers: { resolve: async () => provider },
-        ordinaryLaunchReceipts: createOrdinaryLaunchReceipts(db as unknown as Sql),
       };
       const call = (route: string, body: Record<string, unknown>, user = STAN) =>
         handleControlRequest(
@@ -1185,42 +1060,15 @@ describe("control API", () => {
       expect(first?.status).toBe(200);
       const body = await first!.json();
       publishedResponse("sandbox/launch").parse(body);
-      const receipt = launchEnvelope.parse(body);
-      const { sandbox: launched } = receipt;
-      expect(launched.externalRef).toBe("tender:1");
-      expect(receipt.sandbox).not.toHaveProperty("boatId");
-      if (!receipt.golden) throw Error("Expected a golden launch receipt.");
-      expect(receipt.golden).not.toHaveProperty("boatSnapshotId");
-      expect(receipt.golden).not.toHaveProperty("boatSandboxId");
-      const oldReceipt = {
-        ...receipt,
-        sandbox: { ...receipt.sandbox, boatId: receipt.sandbox.providerSandboxId },
-        golden: {
-          ...receipt.golden,
-          boatSnapshotId: receipt.golden.providerSnapshotId,
-          boatSandboxId: receipt.golden.providerSandboxId,
-        },
-      };
-      const { idempotencyKey: _key, ...originalRequest } = request;
-      const fingerprint = ordinaryLaunchFingerprint({
-        surface: "control",
-        route: "native",
-        request: originalRequest,
-        goldenId: launched.goldenId,
-      });
-      await db.query("update ordinary_launch_receipts set response=$2::jsonb,fingerprint=$3 where id=$1", [
-        launched.id,
-        JSON.stringify(oldReceipt),
-        fingerprint,
-      ]);
-      delete keyed.launch;
+      const { sandbox: launched } = modalLaunchReceipt.parse(body);
+      expect(launched.status).toBe("starting");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
       expect(await replay!.json()).toEqual(body);
-      expect(boat.forks).toHaveLength(1);
+      expect(boat.forks).toHaveLength(0);
       const changed = await call("sandbox/launch", { ...request, externalRef: "tender:2" });
       expect(changed?.status).toBe(409);
-      expect(boat.forks).toHaveLength(1);
+      expect(boat.forks).toHaveLength(0);
       const status = await call("sandbox/status", { id: launched.id, recorded: true });
       expect(await status!.json()).toMatchObject({ id: launched.id, externalRef: "tender:1" });
       type Page = { total: number; sandboxes: { id: string; externalRef?: string }[] };
@@ -1844,10 +1692,8 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
       ],
     );
     options.providerFor = () => fakeBoat().provider;
-    options.providers = {
-      resolve: async () => {
-        throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
-      },
+    options.admitModalLaunch = async () => {
+      throw new VaultError("credential_busy", "The model account is unavailable. Check its current credentials.");
     };
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
     const response = (await handleControlRequest(
@@ -1868,81 +1714,6 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
     });
   });
 });
-
-for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as const) {
-  test(`ordinary private launch returns closed Skillpack ${scenario} failure without starting a harness`, async () => {
-    await withServer(async ({ db, options }) => {
-      const org = await options.store.createOrg("Private launch", STAN);
-      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
-        await encryptSecret("synthetic-provider-key", KEY),
-        org.id,
-      ]);
-      await db.query(
-        "insert into credentials(scope,owner_id,kind,name,value_enc) values('user',$1,'openai','model',$2)",
-        [STAN, await encryptSecret("synthetic-model-key", KEY)],
-      );
-      if (scenario !== "missing") {
-        await db.query(
-          "insert into credentials(scope,owner_id,kind,name,value_enc) values('org',$1,'skillpack','org skills',$2)",
-          [org.id, await encryptSecret("cmp_pat_" + "a".repeat(48), KEY)],
-        );
-        await db.query(
-          "insert into credentials(scope,owner_id,kind,name,value_enc,status) values('user',$1,'skillpack','own skills',$2,$3)",
-          [
-            STAN,
-            scenario === "unreadable-personal"
-              ? new Uint8Array([1, 2, 3])
-              : await encryptSecret("cmp_pat_" + "b".repeat(48), KEY),
-            scenario === "revoked-personal" ? "revoked" : "active",
-          ],
-        );
-      }
-      await db.query(
-        "insert into goldens(org_id,owner_id,name,visibility,boat_snapshot_id,config) values($1,$2,'private-launch','org','snapshot',$3::jsonb)",
-        [
-          org.id,
-          STAN,
-          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
-        ],
-      );
-      const fake = fakeBoat();
-      options.providerFor = () => fake.provider;
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            provider: "boat",
-            golden: "private-launch",
-            harness: "codex",
-            skills: ["notes@1.0.0"],
-            prompt: "start",
-          }),
-        }),
-        options,
-      );
-      const failure = await response!.json();
-      expect(response!.status).toBeGreaterThanOrEqual(400);
-      expect(failure).toMatchObject({
-        error: {
-          details: {
-            reason:
-              scenario === "missing"
-                ? "skillpack_credential_missing"
-                : scenario === "revoked-personal"
-                  ? "skillpack_credential_refused"
-                  : "skillpack_credential_unreadable",
-            stage: "credential",
-          },
-        },
-      });
-      expect(fake.prompts).toHaveLength(0);
-      expect(JSON.stringify(failure)).not.toContain("cmp_pat_");
-    });
-  });
-}
 
 test("CLI/API connection checks require the owner and current bound revision, exposing only closed runtime diagnostics", async () => {
   await withServer(async ({ db, options, cli }) => {
@@ -2165,663 +1936,6 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(calls).toBe(afterBoat);
   });
 });
-
-test("versioned runtime launch is explicit/default-off and never selects native fork credentials or prompt", async () => {
-  await withServer(async ({ db, options }) => {
-    delete options.launch;
-    const org = await options.store.createOrg("Runtime", STAN);
-    options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-    await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
-      await encryptSecret("fixture-boat-key", KEY),
-      org.id,
-    ]);
-    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2)", [
-      STAN,
-      await encryptSecret("fixture-model-key", KEY),
-    ]);
-    await db.query(
-      "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'runtime-golden','org',$2,$3,$4::jsonb)",
-      [
-        org.id,
-        STAN,
-        `a${"b".repeat(62)}`,
-        JSON.stringify({
-          repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
-          init: ["must not run"],
-        }),
-      ],
-    );
-    const host = fakeBoat();
-    const authority = createRuntimeEnrolments(
-      {
-        query: (q, v) => db.query(q, v),
-        transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-      },
-      KEY,
-    );
-    let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
-    let native = 0,
-      starts = 0;
-    options.providerFor = () => {
-      native++;
-      return host.provider;
-    };
-    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-    const request = (route: string, body: object) =>
-      handleControlRequest(
-        new Request(`https://armada.test/api/v1/${route}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify(body),
-        }),
-        options,
-      );
-    const body = {
-      golden: "runtime-golden",
-      org: org.id,
-      provider: "boat",
-      harness: "codex",
-      prompt: "reply",
-      boatRuntime: true,
-      runtimeVersion: 1,
-    };
-    expect((await request("sandbox/launch", body))?.status).toBe(503);
-    expect(
-      (await request("sandbox/launch", { golden: body.golden, org: body.org, provider: "boat", harness: "codex" }))
-        ?.status,
-    ).toBe(503);
-    expect(host.forks).toHaveLength(0);
-    const connection = "44444444-4444-4444-8444-444444444444";
-    let mcpPrepared = false,
-      expectedForks = 0;
-    const skillPin = "example/tool@1.0.0";
-    let skillsInstalled = false;
-    options.connections = {
-      async defaults() {
-        throw Error("No native MCP defaults");
-      },
-      async validate() {
-        throw Error("No native MCP validation");
-      },
-      async bind() {
-        throw Error("No native MCP binding");
-      },
-      async prepare() {
-        throw Error("No native MCP setup");
-      },
-    };
-    options.runtimeMcp = {
-      async prepare() {
-        throw Error("Lifecycle port must own MCP preparation");
-      },
-      async preflight() {
-        throw Error("No staging probe during product launch");
-      },
-      connections: {
-        async defaults() {
-          return [connection];
-        },
-        async validate(_actor, ids) {
-          expect(ids).toEqual([connection]);
-          expect(host.forks).toHaveLength(expectedForks);
-        },
-        async bind(_id, ids) {
-          expect(ids).toEqual([connection]);
-        },
-        async prepare(_provider, sandbox, _actor, signal) {
-          expect(starts).toBe(1);
-          expect(sandbox.id).toBeDefined();
-          expect(signal?.aborted).toBe(false);
-          mcpPrepared = true;
-        },
-      },
-    };
-    options.runtimeHostFor = () => host.provider;
-    options.boatRuntimeLaunch = {
-      async start(input) {
-        starts++;
-        session = await authority.enrol(
-          (await authority.issue({ ownerId: STAN, sandboxId: input.sandbox.id, configuration: {} })).enrolmentToken,
-        );
-        expect(input.sandbox.boatRuntime).toBe(true);
-        expect(input.credentials.env.OPENAI_API_KEY).toBe("fixture-model-key");
-        return {
-          epoch: "1",
-          async prepareWorkspace() {
-            return { status: "not_connected" as const };
-          },
-          async installSkills(references, key) {
-            expect(references).toEqual([skillPin]);
-            expect(key).toBeNull();
-            skillsInstalled = true;
-            return [
-              {
-                reference: skillPin,
-                version: "1.0.0",
-                skillId: connection,
-                checksum: `sha256:${"a".repeat(64)}`,
-                origin: "https://skillpack.app/v1",
-              },
-            ];
-          },
-          async prompt() {
-            expect(skillsInstalled).toBe(true);
-            expect(mcpPrepared).toBe(true);
-            return { promptId: "runtime-initial", conversationId: "runtime-conversation", status: "queued" };
-          },
-        };
-      },
-    };
-    for (const bad of [
-      { ...body, runtimeVersion: 0 },
-      { ...body, boatRuntime: false },
-      { ...body, harness: "unknown_harness" },
-      { ...body, provider: "modal" },
-      { ...body, provider: undefined },
-      { ...body, connections: "invalid" },
-      { ...body, skills: ["not-a-pin"] },
-      { ...body, modalTransport: "dialout" },
-    ]) {
-      const invalid = await request("sandbox/launch", bad);
-      expect(invalid?.status).toBe(400);
-      expect(await invalid?.json()).toMatchObject({ error: { code: "invalid" } });
-    }
-    expect(host.forks).toHaveLength(0);
-    const response = await request("sandbox/launch", { ...body, skills: [skillPin] });
-    expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({
-      runtime: { kind: "armada", epoch: "1" },
-      sandbox: { boatRuntime: true, skills: [{ reference: skillPin }] },
-      promptId: "runtime-initial",
-    });
-    if (!session) throw Error("missing enrolled runtime");
-    const active = session;
-    const append = () =>
-      createRuntimeEvents(authority, KEY).route(
-        new Request("https://armada.test/api/runtime/events", {
-          method: "POST",
-          headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
-          body: JSON.stringify({
-            sandboxId: active.sandboxId,
-            generation: active.epoch,
-            events: [
-              {
-                sequence: 1,
-                event: {
-                  id: "first",
-                  at: 1,
-                  kind: "prompt",
-                  promptId: "runtime-initial",
-                  text: "reply",
-                  status: "finished",
-                },
-              },
-            ],
-          }),
-        }),
-      );
-    // Launch completion advances observation generation, but MUST NOT revoke the
-    // just-enrolled runtime before its first asynchronous outbox upload.
-    expect((await append())?.status).toBe(200);
-    expect(
-      (await db.query("select sequence from runtime_events where sandbox_id=$1", [active.sandboxId])).rows,
-    ).toHaveLength(1);
-    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [active.sandboxId]);
-    expect((await append())?.status).toBe(401);
-    expect(starts).toBe(1);
-    expect(native).toBe(0);
-    expect(host.forks).toHaveLength(1);
-    expect(host.forks[0]?.env).toEqual({});
-    expect(host.prompts).toHaveLength(0);
-    expect(host.execs).toHaveLength(0);
-    // An ordinary, unchanged client request obeys the deployment default too.
-    const noNative = async (): Promise<never> => {
-      throw Error("No native fallback");
-    };
-    options.launch = {
-      boatRuntimeDefault: {
-        policy: options.boatRuntimeLaunch!,
-        provider: async () => host.provider,
-        credentials: { resolve: noNative },
-        connections: { validate: noNative, bind: noNative },
-      },
-    };
-    const discovery = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
-    expect(discovery.providers.find((provider) => provider.id === "boat")?.capabilities.launch).toBe(true);
-    expect(discovery.boatRuntime).not.toHaveProperty("defaultPath");
-    expect(discovery.modalRuntime).not.toHaveProperty("defaultPath");
-    const account = (
-      await db.query<{ id: string; version: number }>(
-        "select id,version from credentials where owner_id=$1 and kind='openai'",
-        [STAN],
-      )
-    ).rows[0]!;
-    let workspacePrepared = false;
-    options.launch.boatRuntimeDefault = {
-      provider: async () => host.provider,
-      credentials: {
-        async resolve() {
-          return {
-            env: { OPENAI_API_KEY: "fixture-model-key" },
-            secrets: ["fixture-model-key"],
-            codexAuthJson: false,
-            binding: { credentialId: account.id, credentialVersion: account.version },
-          };
-        },
-      },
-      connections: {
-        async validate() {},
-        async bind() {},
-        async prepare() {
-          expect(workspacePrepared).toBe(true);
-        },
-      },
-      policy: {
-        async start({ sandbox }) {
-          const ticket = await authority.issue({ ownerId: STAN, sandboxId: sandbox.id, configuration: {} });
-          const enrolled = await authority.enrol(ticket.enrolmentToken);
-          return {
-            epoch: enrolled.epoch,
-            async prepareWorkspace(g) {
-              expect(g.config.repos).toHaveLength(1);
-              workspacePrepared = true;
-              return { status: "not_connected" as const };
-            },
-            async prompt() {
-              expect(workspacePrepared).toBe(true);
-              return { promptId: "default-initial", conversationId: "default-conversation", status: "queued" as const };
-            },
-          };
-        },
-      },
-    };
-    const defaulted = await request("sandbox/launch", {
-      golden: body.golden,
-      provider: body.provider,
-      org: body.org,
-      harness: "codex",
-      credentialId: account.id,
-    });
-    expect(defaulted?.status).toBe(200);
-    expect(await defaulted?.json()).toMatchObject({
-      runtime: { kind: "armada", epoch: "1" },
-      sandbox: { boatRuntime: true, status: "ready", conversationIds: [] },
-    });
-    expect(host.forks).toHaveLength(2);
-    expect(host.forks[1]?.env).toEqual({});
-    expect(host.execs).toHaveLength(0);
-    expect(host.prompts).toHaveLength(0);
-    delete options.launch;
-    const explicitOnly = (await (await request("launch/options", {}))?.json()) as LaunchOptionsResponse;
-    expect(explicitOnly.boatRuntime?.enabled).toBe(true);
-    expect(explicitOnly.providers.find((provider) => provider.id === "boat")?.capabilities.launch).toBe(false);
-    // Actual startup timeout -> launch failure persistence -> public logs response.
-    expectedForks = 2;
-    options.boatRuntimeLaunch = {
-      async start(input) {
-        let now = 0;
-        await createRuntimeStartup(
-          authority,
-          {
-            bootstrap: async () => {},
-            health: async () => {
-              throw Error("health must not run without enrolment");
-            },
-          },
-          {
-            now: () => now,
-            wait: async () => {
-              now += 1000;
-            },
-          },
-        )({
-          ownerId: STAN,
-          sandboxId: input.sandbox.id,
-          providerSandboxId: input.sandbox.providerSandboxId,
-          serverUrl: "https://armada.test",
-          cacheDir: "/unused",
-          artifact: { sha256: "a".repeat(64), bytes: 1 },
-          configuration: { selectedHarness: "codex" },
-          readinessTimeoutMs: 1000,
-        });
-        throw Error("Expected timeout");
-      },
-    };
-    expect((await request("sandbox/launch", body))?.status).toBeGreaterThanOrEqual(400);
-    const failed = (
-      await db.query<{ id: string; status_reason: string }>(
-        "select id,status_reason from sandboxes where status='failed'",
-      )
-    ).rows[0];
-    if (!failed) throw Error("failure was not persisted");
-    expect(failed.status_reason).toContain("startup failed (enrolment)");
-    const sql: Sql = {
-      query: (q, v) => db.query(q, v),
-      transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-    };
-    options.logs = async (caller, id) => ({
-      providerSandboxId: "unused",
-      provider: { events: ({ sandboxId: _, ...page }) => createRuntimeHistory(sql, KEY)(caller, id, page) } as Provider,
-    });
-    expect(await (await request("logs/read", { id: failed.id, follow: true }))?.json()).toMatchObject({
-      events: [],
-      source: "armada-runtime",
-      runtimeFailure: { status: "failed", reason: failed.status_reason },
-    });
-  });
-});
-
-// Public HTTP admission owns the opt-in: no allocation when disabled/malformed,
-// and no native agent/configuration fallback on the accepted model-only path.
-test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
-  "Enrolled golden launch prepares default MCP and skills before its first prompt ($entry)",
-  async ({ harness, entry }) => {
-    const ordinary = entry.startsWith("ordinary");
-    const scoped = entry.startsWith("ordinary-scoped");
-    const idle = false;
-    const boat = entry === "ordinary-scoped-boat";
-    const provider = boat ? "boat" : "modal";
-    const runtimeFields = boat ? { boatRuntime: true } : { modalTransport: "dialout" };
-    await withServer(async ({ db, options }) => {
-      const org = await options.store.createOrg("Modal runtime", STAN);
-      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      await db.query(
-        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,$3::public.credential_kind,$2)",
-        [STAN, await encryptSecret("fixture-model-key", KEY), "openai"],
-      );
-      await db.query(
-        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-       values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
-        [org.id, STAN],
-      );
-      if (boat)
-        await db.query(
-          `insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config)
-           values($1,'boat-runtime','org',$2,$3,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}]}')`,
-          [org.id, STAN, `a${"b".repeat(62)}`],
-        );
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      const request = (body: object) =>
-        handleControlRequest(
-          new Request("https://armada.test/api/v1/sandbox/launch", {
-            method: "POST",
-            headers: { authorization: `Bearer ${bearer}` },
-            body: JSON.stringify(body),
-          }),
-          options,
-        );
-      const body = {
-        org: org.id,
-        golden: `${provider}-runtime`,
-        provider,
-        harness,
-        ...(idle ? {} : { prompt: "reply" }),
-        ...(scoped ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
-        ...(!ordinary ? { runtimeVersion: 1, modalTransport: "dialout" } : {}),
-      };
-      const fake = fakeBoat();
-      const host = {
-        ...fake.provider,
-        id: provider,
-        harnesses: [...fake.provider.harnesses, "opencode" as const],
-        capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
-      };
-      const sql: Sql = {
-        query: (q, v) => db.query(q, v),
-        transaction: (work) => db.transaction((tx) => work(tx)),
-      };
-      const enrolments = createRuntimeEnrolments(sql, KEY);
-      const { createSandboxArmadaAccess } = await import("../src/sandbox-armada-access.ts");
-      const { DelegatedAuthority } = await import("@armada/core/server");
-      const authority = new DelegatedAuthority(sql, async () => {});
-      let token = "";
-      let referenceInstalled = false;
-      const admit = () => authority.admit(token, { method: "finish" }, async (_tx, principal) => principal.ownerId);
-      if (scoped)
-        options.sandboxArmadaAccess = createSandboxArmadaAccess({
-          sql,
-          encryptionKey: KEY,
-          publicUrl: "https://armada.test",
-          commands: {
-            enqueue: createRuntimeCommands(enrolments, KEY).enqueue,
-            async call(_owner, command, delivery) {
-              expect(referenceInstalled).toBe(true);
-              expect(command.op).toBe("installOrchestratorEpoch");
-              if (command.op !== "installOrchestratorEpoch") throw Error("Unexpected runtime operation");
-              token = command.token;
-              return {
-                status: 200,
-                epoch: delivery?.expectedEpoch ?? "1",
-                requestId: command.requestId,
-                body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
-              };
-            },
-          },
-        });
-      let starts = 0;
-      let mcpPrepared = false;
-      let skillsInstalled = false;
-      let workspacePrepared = false;
-      const skill = "team/runtime-skill@1.2.3";
-      const receipt = {
-        reference: skill,
-        version: "1.2.3",
-        skillId: "11111111-1111-4111-8111-111111111111",
-        checksum: `sha256:${"a".repeat(64)}`,
-        origin: "https://skillpack.app/v1",
-      };
-      options.skillDefaults = createSkillDefaultsService({
-        query: (q, v) => db.query(q, v),
-        transaction: (work) => db.transaction((tx) => work(tx)),
-      });
-      await options.skillDefaults.command({ userId: STAN, orgs: [{ orgId: org.id }] }, "set", {
-        org: org.id,
-        scope: "personal",
-        skills: [skill],
-      });
-      const connection = crypto.randomUUID();
-      options.providerFor = () => {
-        if (boat) return native;
-        throw Error("No Boat provider for Modal");
-      };
-      if (!ordinary) expect((await request(body))?.status).toBe(503);
-      expect(fake.forks).toHaveLength(0);
-      options.modalRuntimeHostFor = async (target) => {
-        expect(target.modalTransport).toBe("dialout");
-        if (scoped) expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
-        return host;
-      };
-      const native = {
-        ...host,
-        async fork() {
-          throw Error("No native fork under runtime default");
-        },
-      };
-      if (ordinary) options.providers = { resolve: async () => native };
-      const runtimePolicy: NonNullable<ControlOptions["modalRuntimeLaunch"]> = {
-        ...(boat
-          ? boatRuntimeLaunch({
-              sql,
-              encryptionKey: KEY,
-              serverUrl: "https://armada.test",
-              manifest: {},
-              architecture: "x64",
-            })
-          : { supportsScopedAccess: true }),
-        async start(input) {
-          starts++;
-          expect(input.sandbox).toMatchObject({ provider, ...runtimeFields });
-          if (scoped) expect(input.sandbox.visibility).toBe("private");
-          await enrolments.enrol(
-            (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
-          );
-          return {
-            async installScopedReference(request) {
-              expect(mcpPrepared).toBe(true);
-              expect(request.command).toContain("/.agents/skills/armada-tools/SKILL.md");
-              referenceInstalled = true;
-              return { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-            },
-            async installSkills(references, key) {
-              expect(references).toEqual([skill]);
-              expect(key).toBeNull();
-              expect(workspacePrepared).toBe(true);
-              expect(mcpPrepared).toBe(false);
-              skillsInstalled = true;
-              return [receipt];
-            },
-            epoch: "1",
-            async prepareWorkspace() {
-              expect(mcpPrepared).toBe(false);
-              expect(skillsInstalled).toBe(false);
-              workspacePrepared = true;
-              return { status: "not_connected" as const };
-            },
-            prompt: async () => {
-              expect(idle).toBe(false);
-              if (scoped) await expect(admit()).resolves.toBe(STAN);
-              expect(mcpPrepared).toBe(true);
-              expect(skillsInstalled).toBe(true);
-              return { promptId: "modal-initial", conversationId: "modal-conversation", status: "running" };
-            },
-          };
-        },
-      };
-      options.modalRuntimeLaunch = runtimePolicy;
-      if (!ordinary)
-        for (const bad of [
-          { ...body, skipSkillDefaults: "invalid" },
-          { ...body, skills: "invalid" },
-          { ...body, connections: ["invalid"] },
-          { ...body, harness: "unknown" },
-          { ...body, modalTransport: undefined },
-        ])
-          expect((await request(bad))?.status).toBe(400);
-      expect(fake.forks).toHaveLength(0);
-      options.runtimeMcp = {
-        async preflight() {
-          throw Error("No live preflight in launch");
-        },
-        async prepare() {
-          throw Error("Connection lifecycle owns preparation");
-        },
-        connections: {
-          async defaults() {
-            return [connection];
-          },
-          async validate(_actor, ids) {
-            expect(ids).toEqual([connection]);
-            expect(fake.forks).toHaveLength(0);
-          },
-          async bind(_id, ids) {
-            expect(ids).toEqual([connection]);
-          },
-          async prepare(_provider, sandbox) {
-            expect(starts).toBe(1);
-            expect(sandbox).toMatchObject({ ...runtimeFields, provider, skills: [receipt] });
-            mcpPrepared = true;
-          },
-        },
-      };
-      let boatPlacementTarget: unknown;
-      if (ordinary) {
-        if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
-        options.launch = {
-          [boat ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
-            policy: runtimePolicy,
-            credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
-            connections: options.runtimeMcp.connections,
-            provider: async (actor, golden) => {
-              if (boat) {
-                boatPlacementTarget = golden;
-                return host;
-              }
-              return options.modalRuntimeHostFor!(
-                { ...golden, modalTransport: "dialout" },
-                { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
-              );
-            },
-          } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
-        };
-      }
-      const response = await request(body);
-      if (response?.status !== 200) throw Error(JSON.stringify(await response?.json()));
-      expect(response?.status).toBe(200);
-      const launched = launchEnvelope.parse(await response?.json());
-      expect(launched).toMatchObject({
-        runtime: { kind: "armada", epoch: "1" },
-        sandbox: { provider, ...runtimeFields, skills: [receipt] },
-        promptId: idle ? null : "modal-initial",
-        ...(scoped ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
-      });
-      if (scoped) await expect(admit()).resolves.toBe(STAN);
-      if (boat) expect(boatPlacementTarget).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
-      expect(starts).toBe(1);
-      expect(fake.forks).toHaveLength(1);
-      expect(fake.prompts).toHaveLength(0);
-      expect(fake.execs).toHaveLength(0);
-
-      if (scoped && !idle) {
-        const parent = await options.data!({
-          userId: STAN,
-          orgs: [{ orgId: org.id, role: "admin" }],
-          via: "service",
-        }).sandboxes.get(launched.sandbox.id);
-        if (!parent?.credentialId || !parent.credentialVersion || !parent.model)
-          throw Error("Scoped launch must retain its bound account and model");
-        const { createSandboxAccessServices } = await import("../src/sandbox-access-services.ts");
-        const credentials = launchCredentials(options.store, KEY);
-        const childPlacement: NonNullable<LaunchOptions["boatRuntimeDefault"]> = {
-          credentials,
-          connections: { async validate() {}, async bind() {} },
-          provider: async () => host,
-          policy: {
-            async start({ sandbox }) {
-              expect(sandbox).toMatchObject({ visibility: "private", ...runtimeFields });
-              const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
-              const active = await enrolments.enrol(ticket.enrolmentToken);
-              return {
-                epoch: active.epoch,
-                async prepareWorkspace() {
-                  return { status: "not_connected" };
-                },
-                async prompt() {
-                  throw Error("The delegated child has no initial prompt");
-                },
-              };
-            },
-          },
-        };
-        const children = createSandboxAccessServices({
-          sql,
-          credentials,
-          connections: undefined,
-          providers: {
-            resolve: async () => {
-              throw Error("Child launch must use enrolled placement");
-            },
-          },
-          encryptionKey: KEY,
-          scopedMcpUrl: "https://armada.test",
-          runtimePlacements: { [provider]: childPlacement },
-        });
-        const child = await children.childWorker.launch(token, "enrolled-child", {
-          goldenId: parent.goldenId,
-          harness: "codex",
-          credentialId: parent.credentialId,
-          credentialVersion: parent.credentialVersion,
-          model: parent.model,
-        });
-        expect(child.state).toBe("succeeded");
-        expect(
-          (await sql.query("select orchestrator_id from orchestrator_children where sandbox_id=$1", [child.sandboxId]))
-            .rows,
-        ).toEqual([{ orchestrator_id: parent.id }]);
-        expect(fake.forks).toHaveLength(2);
-      }
-    });
-  },
-);
 
 test.each(["rest", "explicit", "mcp"] as const)("public %s Modal launch admits before allocating", async (surface) => {
   await withServer(async ({ db, options }) => {

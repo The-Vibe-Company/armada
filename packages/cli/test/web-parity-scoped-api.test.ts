@@ -7,9 +7,10 @@ import { encryptSecret } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSqlData } from "../../mcp-server/src/data.ts";
-import { enrolledLaunchPolicy } from "../../mcp-server/test/launch-runtime.fixture.ts";
+import { withBoatManagementIdentity } from "../../mcp-server/src/observed-boat.ts";
+import { modalAdmissionFixture } from "../../mcp-server/test/modal-admission.fixture.ts";
 import { rowOnlyConnection } from "../../mcp-server/test/row-only-database.ts";
-import { fakeBoat, ENCRYPTION_KEY as key } from "../../mcp-server/test/support.ts";
+import { bunLikeSql, fakeBoat, ENCRYPTION_KEY as key } from "../../mcp-server/test/support.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
@@ -332,9 +333,13 @@ test("CLI retires launch visibility without changing source golden authority", a
   const f = await fixture();
   try {
     const boat = fakeBoat();
-    f.options.launch = { runtime: enrolledLaunchPolicy(f.db) };
-    f.options.providerFor = boat.providerFor;
-    delete f.options.providers;
+    f.options.admitModalLaunch = await modalAdmissionFixture(
+      bunLikeSql(f.db),
+      key,
+      f.options.store,
+      undefined,
+      withBoatManagementIdentity(boat.provider, "org", org),
+    );
     await f.db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
       await encryptSecret("fixture-boat-key", key),
       org,
@@ -356,7 +361,7 @@ test("CLI retires launch visibility without changing source golden authority", a
     ]);
     expect(launched.code).toBe(0);
     const dto = JSON.parse(launched.out);
-    expect(dto).toMatchObject({ golden: { name: "first" }, sandbox: { provider: "boat" } });
+    expect(dto.sandbox).toMatchObject({ status: "starting" });
     expect(dto).not.toHaveProperty("visibility");
     expect(launched.err).toContain("deprecated and ignored");
     expect(
@@ -369,7 +374,7 @@ test("CLI retires launch visibility without changing source golden authority", a
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
     const text = await f.cli(["new", "first", "--provider", "boat", "--agent", "codex", "--visibility", "private"]);
     expect(text.code).toBe(0);
-    expect(text.out).toContain("enforced by the server");
+    expect(text.out).toContain("Status: starting");
     expect(text.out).not.toContain("(private)");
     expect(text.out).not.toContain("first (org)");
   } finally {

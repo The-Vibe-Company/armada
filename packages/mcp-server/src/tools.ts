@@ -12,7 +12,6 @@ import type { SandboxView, ScopedData } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { registerAgentTools } from "./mcp-operation-projection.ts";
-import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { createModalJobReader, SandboxLogReader } from "./runtime-history.ts";
 import { configureTools } from "./sandbox-tool-handlers.ts";
@@ -47,7 +46,6 @@ export interface ToolContext {
   sleep(ms: number): Promise<void>;
   launch?: LaunchOptions;
   admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
-  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   connections?: LaunchStores["connections"];
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;

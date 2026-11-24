@@ -121,9 +121,8 @@ export const launch = {
   name: "launch",
   toolName: "launch",
   mcpDescription:
-    "Launches from a Boat or Modal golden. Modal returns a sandbox ID and starting status as soon as admitted. " +
+    "Launches from a Boat or Modal golden. Returns a sandbox ID and starting status as soon as admitted. " +
     "The worker prepares the sandbox and starts the optional first prompt after enrolment. " +
-    "Boat returns launch details after startup. " +
     "Personal sessions may use an org slug or UUID. For scoped tokens, omit `org` or use the scoped org UUID.",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },

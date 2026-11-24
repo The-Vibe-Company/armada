@@ -149,6 +149,16 @@ export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId:
   return rows.length > 0;
 }
 
+export async function clearRefusedBoatCreate(tx: Sql, job: Job) {
+  const { rows } = await tx.query(
+    `update public.jobs set outcome=outcome-'modal_machine'
+     where id=$1 and lease_epoch=$2 and outcome #>> '{modal_machine,entry,phase}'='creating'
+     returning id`,
+    [job.id, job.lease_epoch],
+  );
+  return rows.length === 1;
+}
+
 // WARNING: Record the replay token inside the fenced ticket issuance transaction.
 export async function recordModalBootstrapTicket(
   tx: Sql,
@@ -157,16 +167,18 @@ export async function recordModalBootstrapTicket(
   encryptionKey: string,
   machineId: string,
   handoff: ModalLaunchHandoff | undefined,
+  boatKeyDigest?: string,
+  boatAuthority?: { scope: string; backendId: string },
 ) {
   const sealed = await encryptSecret(token, encryptionKey);
   const { rows } = await tx.query(
     `update public.jobs set outcome=outcome ||
-       jsonb_build_object('bootstrap_ticket_enc',$2::text,
-         'modal_handoff',coalesce(outcome->'modal_handoff',$3::jsonb))
+       jsonb_strip_nulls(jsonb_build_object('bootstrap_ticket_enc',$2::text,'boat_authority_sha256',$6::text,'boat_authority',$7::jsonb,
+         'modal_handoff',coalesce(outcome->'modal_handoff',$3::jsonb)))
      where id=$1 and lease_epoch=$4 and lease_until>clock_timestamp()
        and outcome #>> '{modal_machine,entry,machineId}'=$5
        and (outcome->'modal_handoff' is not null
-         or ($3::jsonb is not null and outcome->'bootstrap_ticket_enc' is null))
+         or (($3::jsonb is not null or $6::text is not null) and outcome->'bootstrap_ticket_enc' is null))
      returning id`,
     [
       job.id,
@@ -174,6 +186,8 @@ export async function recordModalBootstrapTicket(
       handoff ? JSON.stringify(handoff) : null,
       job.lease_epoch,
       machineId,
+      boatKeyDigest ?? null,
+      boatAuthority ? JSON.stringify(boatAuthority) : null,
     ],
   );
   return rows.length === 1;
@@ -380,7 +394,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
          outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
-                                 then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
+                                 then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' - 'boat_authority_sha256' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
          and (j.generation is distinct from $5 or $6 <> 'stale_generation') returning j.id`,
       [...claimKey(job, owner), generation, reason],
@@ -690,9 +704,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end ||
                            case when $5 = 'queued' and outcome ? 'modal_handoff'
                                 then jsonb_build_object('modal_handoff', outcome->'modal_handoff')
+                                else '{}'::jsonb end ||
+                           case when $5 = 'queued' and outcome ? 'boat_authority_sha256'
+                                then jsonb_build_object('boat_authority_sha256', outcome->'boat_authority_sha256', 'boat_authority', outcome->'boat_authority')
                                 else '{}'::jsonb end
                          when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
-                           then outcome - 'bootstrap_ticket_enc' - 'modal_handoff'
+                           then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' - 'boat_authority_sha256'
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,

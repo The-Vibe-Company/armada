@@ -24,7 +24,6 @@ import type { Invitations } from "./invitations.ts";
 import type { McpControlOptions } from "./mcp-control.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
-import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { ProviderValidator } from "./org-provider.ts";
 import type { ProviderMetadataFor } from "./provider-metadata.ts";
 import type { RequestTiming } from "./request-timing.ts";
@@ -74,8 +73,7 @@ export interface ControlOptions {
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   modalRuntimeHostFor?: (target: import("@armada/core").ProviderTarget, caller: Caller) => Promise<Provider>;
   modalRuntimeLaunch?: NonNullable<LaunchOptions["runtime"]>;
-  boatRuntimeLaunch?: NonNullable<LaunchOptions["boatRuntime"]>;
-  runtimeHostFor?: (apiKey: string) => Provider;
+  boatLaunchEnabled?: boolean;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
   timing?: RequestTiming;
   modalJobReader?: ReturnType<typeof import("./runtime-history.ts").createModalJobReader>;
@@ -104,7 +102,6 @@ export interface ControlOptions {
   vault?: VaultStore;
   launch?: LaunchOptions;
   admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
-  ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   store: VaultStore;
   encryptionKey: string | undefined;
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };

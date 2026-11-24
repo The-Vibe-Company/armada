@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configFromEnv, dashboardOrigin } from "../src/config.ts";
+import { boatDeploymentId, configFromEnv, dashboardOrigin } from "../src/config.ts";
 import { readStartupConfiguration } from "../src/startup-configuration.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
@@ -16,6 +16,12 @@ const ENV = {
   ARMADA_MODAL_DIALOUT: "1",
   ARMADA_MODAL_RUNTIME_MANIFEST: "/opt/runtime.json",
 };
+
+test("Boat deployment identity defaults to the public origin and supports an override", () => {
+  expect(boatDeploymentId(undefined, "https://STAGING.example.com:443/")).toBe("https://staging.example.com");
+  expect(boatDeploymentId(" ", "https://prod.example.com")).toBe("https://prod.example.com");
+  expect(boatDeploymentId(" explicit-boat-id ", "https://prod.example.com")).toBe("explicit-boat-id");
+});
 
 describe("config", () => {
   test("Modal startup requires dial-out and a manifest", () => {

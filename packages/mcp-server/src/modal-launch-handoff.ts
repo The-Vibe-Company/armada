@@ -89,7 +89,7 @@ export async function installModalLaunchHandoff(tx: Sql, { scope, record }: Moda
 }
 
 export function unresolvedModalLaunch(sandbox: string) {
-  return `(${sandbox}.provider='modal' and exists(
+  return `((${sandbox}.provider='modal' or ${sandbox}.boat_runtime) and exists(
     select 1 from public.jobs launch
     where launch.kind='launch' and launch.state in ('queued','leased')
       and launch.sandbox_id=${sandbox}.id and launch.generation=${sandbox}.lifecycle_generation
