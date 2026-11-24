@@ -115,10 +115,10 @@ export async function withJobLease<T>(
   });
 }
 
-export async function recordStopCapture(tx: Sql, jobId: string, output: unknown) {
-  await tx.query("update public.jobs set outcome=jsonb_build_object('output',$2::jsonb) where id=$1", [
+export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<string, unknown>) {
+  await tx.query("update public.jobs set outcome=coalesce(outcome,'{}'::jsonb)||$2::jsonb where id=$1", [
     jobId,
-    JSON.stringify(output),
+    JSON.stringify(outcome),
   ]);
 }
 

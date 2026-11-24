@@ -53,6 +53,7 @@ import {
 } from "./runtime-reconciliation-conflict.ts";
 import {
   completeSandboxDeletion,
+  enqueueModalStop,
   expireAfterExtension,
   finishLaunchFailure,
   finishLaunchSuccess,
@@ -82,6 +83,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   ownerStop?: true;
+  queueModalStop?: true;
   ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -1099,6 +1101,12 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
+              if (
+                patch.queueModalStop &&
+                (!patch.activityToken ||
+                  !(await enqueueModalStop(tx, id, row.generation, { kind: "activity", token: patch.activityToken })))
+              )
+                throw new Error("Modal stop admission lost the exact target.");
             }
             return updated;
           });

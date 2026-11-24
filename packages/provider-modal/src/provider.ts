@@ -27,7 +27,7 @@ import type {
   SshPreparation,
 } from "./ports.ts";
 import type { RuntimeTicket } from "./runtime-bootstrap.ts";
-import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
+import { createRuntimeLifecycle, type ModalRuntimeStop } from "./runtime-lifecycle.ts";
 import { createRuntimeCapture } from "./runtime-work.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
 import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
@@ -67,12 +67,7 @@ export interface ModalProviderOptions extends ModalConnection {
 }
 export interface ModalProvider extends Provider {
   startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
-  stopRuntime(input: {
-    sandboxId: string;
-    physicalGeneration: string;
-    epoch: string;
-    watermark: number;
-  }): Promise<void>;
+  runtimeStopMachine: ModalRuntimeStop;
   resumeRuntime(
     input: {
       sandboxId: string;

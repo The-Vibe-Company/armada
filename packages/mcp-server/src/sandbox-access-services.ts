@@ -114,7 +114,6 @@ export function createSandboxAccessServices(input: {
     };
     const scoped = createSqlData(sql)(caller).sandboxes;
     if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
-    const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -164,6 +163,21 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
+    if (saved.modalTransport === "dialout") {
+      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+      await stopStore.update(saved.id, {
+        ...stopAdmission,
+        queueModalStop: true,
+        status: stoppingStatus,
+        stopRequested: true,
+        statusReason,
+        advanceGeneration: true,
+        activityToken: crypto.randomUUID(),
+        expectedGeneration: saved.lifecycleGeneration,
+      });
+      return;
+    }
+    const provider = await resolveProvider();
     await sandboxActivity(
       stopStore,
       saved,

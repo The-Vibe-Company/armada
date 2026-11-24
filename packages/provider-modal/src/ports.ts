@@ -1,4 +1,12 @@
-import type { Harness, HarnessCapabilities, MachineSize, ModalBinding, SandboxInfo, SnapshotInfo } from "@armada/core";
+import type {
+  Harness,
+  HarnessCapabilities,
+  MachineSize,
+  ModalBinding,
+  SandboxInfo,
+  SnapshotInfo,
+  Sql,
+} from "@armada/core";
 import type { Image, ModalClient, Sandbox } from "modal";
 
 export interface Scope {
@@ -91,6 +99,7 @@ export interface ModalStore {
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
+  saveStop(tx: Sql, row: Machine): Promise<void>;
   image(name: string): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;
   removeImage(name: string): Promise<void>;

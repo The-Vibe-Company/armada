@@ -16,6 +16,7 @@ import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
@@ -129,9 +130,12 @@ export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is 
   and (provider='modal' or runtime_transport is distinct from 'dialout')
   and provider_sandbox_id=$2::text and provider::text=$6::text
   and lifecycle_generation=$4::bigint
-  and (($5::text='activity' and activity_lease_id=$3::uuid and activity_until>clock_timestamp())
-    or ($5::text='reconcile' and reconcile_lease=$3::uuid and reconcile_lease_until>clock_timestamp()
-      and (activity_until is null or activity_until<=clock_timestamp())))
+  and (($5::text='activity' and activity_lease_id::text=$3::text and activity_until>clock_timestamp())
+    or ($5::text='reconcile' and reconcile_lease::text=$3::text and reconcile_lease_until>clock_timestamp()
+      and (activity_until is null or activity_until<=clock_timestamp()))
+    or ($5::text='job' and exists(select 1 from public.jobs j where j.id=split_part($3::text,':',1)::uuid and j.lease_epoch::text=split_part($3::text,':',2) and j.sandbox_id=sandboxes.id
+      and j.generation=sandboxes.lifecycle_generation and j.kind='stop' and j.state='leased'
+      and j.lease_until>clock_timestamp())))
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
 export const STOP_EPOCH = `id=$1::uuid
@@ -576,6 +580,69 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
+export async function enqueueModalStop(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  lease?: { kind: "activity" | "reconcile"; token: string },
+) {
+  const {
+    rows: [target],
+  } = await tx.query<{ org_id: string }>(
+    `select org_id from public.sandboxes where id=$1 and lifecycle_generation=$2
+     and provider='modal' and runtime_transport='dialout' and status in ('stopping','failed') and stopped_at is null`,
+    [sandboxId, generation],
+  );
+  if (!target) return false;
+  await createJobsStore(tx).enqueue(
+    "stop",
+    sandboxId,
+    Number(generation),
+    "modal-stop",
+    null,
+    {
+      orgId: target.org_id,
+      deadline: new Date(Date.now() + 120_000),
+      maxAttempts: 8,
+    },
+    tx,
+  );
+  if (lease) {
+    const columns =
+      lease.kind === "activity"
+        ? { id: "activity_lease_id", until: "activity_until" }
+        : { id: "reconcile_lease", until: "reconcile_lease_until" };
+    const result = await tx.query(
+      `update public.sandboxes set ${columns.id}=null,${columns.until}=null
+       where id=$1 and lifecycle_generation=$2 and ${columns.id}=$3 returning id`,
+      [sandboxId, generation, lease.token],
+    );
+    if (!result.rows.length) throw new Error("Modal stop admission lost its lease handoff.");
+  }
+  return true;
+}
+
+export async function settleModalStop(tx: Sql, sandboxId: string, generation: string, status: "stopping" | "failed") {
+  if (status === "stopping") {
+    const result = await transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration: generation,
+      fromStates: ["stopping"],
+      toState: "stopped",
+      actor: "lifecycle_runner",
+      code: "owner_stop_settled",
+      effects: [],
+    });
+    if (result.kind === "conflict") throw new Error("Modal stop settlement changed generation.");
+  }
+  const applied = await tx.query(
+    `update public.sandboxes set stopped_at=coalesce(stopped_at,clock_timestamp()),stop_requested_at=null
+    where id=$1 and lifecycle_generation=$2 and status in ('failed','stopped') returning id`,
+    [sandboxId, generation],
+  );
+  if (!applied.rows.length) throw new Error("Modal stop exit lost its generation.");
+}
+
 export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, generation: string, requestId: string) {
   const locked = await tx.query(
     `select id from public.sandboxes s where id=$1 and lifecycle_generation=$2
@@ -595,7 +662,7 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
     [sandboxId, requestId, generation],
   );
   if (!checkpoint) return { kind: "conflict" } satisfies SandboxTransitionResult;
-  return transitionSandbox(tx, {
+  const result = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
     fromStates: ["ready", "running"],
@@ -604,6 +671,8 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
     code: checkpoint.merge_stop ? "runtime_checkpoint_work_merged" : "runtime_checkpoint_idle_paused",
     effects: [],
   });
+  if (result.kind === "applied") await enqueueModalStop(tx, sandboxId, result.generation);
+  return result;
 }
 
 export async function recordFailedModalLaunchExit(tx: Sql, sandboxId: string, generation: number, provider = "modal") {
@@ -1334,6 +1403,9 @@ export function createSandboxLifecycle(
                 and r.receipt is null and r.activated_at is not null
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
+          and not exists(select 1 from public.jobs j where j.sandbox_id=candidate.id
+            and j.generation=candidate.lifecycle_generation and j.kind='stop'
+            and candidate.provider='modal' and j.state in ('queued','leased','failed'))
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")}
           -- This transition and the cleanup job commit together.
@@ -1729,6 +1801,7 @@ export function createSandboxLifecycle(
                 where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
                   and status in ('starting','ready','running','stopping','failed')
                   and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
+                  and (provider<>'modal' or not $4 or expires_at<=clock_timestamp())
                   and (not $5 or (boat_runtime and status in ('ready','running') and stop_requested_at is null
                     and deleted_at is null and provider_sandbox_id=$6 and extract(epoch from expires_at)=$7::numeric))
                   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
@@ -1748,23 +1821,34 @@ export function createSandboxLifecycle(
                 ],
               );
               if (!current) return false;
-              if (current.status !== "ready" && current.status !== "running") return true;
-              const result = await transitionSandbox(tx, {
-                sandboxId: row.id,
-                expectedGeneration: row.lifecycle_generation,
-                fromStates: [current.status],
-                toState: "stopping",
-                actor: "reconciler",
-                code: current.code,
-                effects: [],
-                settlement: {
-                  lease: token,
-                  statusReason: current.status_reason,
-                  stopRequestedAt: current.stop_requested_at,
-                  stoppedAt: current.stopped_at,
-                },
-              });
-              if (result.kind === "conflict") throw stopConflict;
+              const modal = providerId === "modal" && row.runtime_transport === "dialout";
+              if (
+                current.status === "ready" ||
+                current.status === "running" ||
+                (modal && current.status === "starting")
+              ) {
+                const result = await transitionSandbox(tx, {
+                  sandboxId: row.id,
+                  expectedGeneration: row.lifecycle_generation,
+                  fromStates: [current.status],
+                  toState: "stopping",
+                  actor: "reconciler",
+                  code: current.code,
+                  effects: [],
+                  settlement: {
+                    lease: token,
+                    statusReason: current.status_reason,
+                    stopRequestedAt: current.stop_requested_at,
+                    stoppedAt: current.stopped_at,
+                  },
+                });
+                if (result.kind === "conflict") throw stopConflict;
+              }
+              if (modal) {
+                if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, { kind: "reconcile", token })))
+                  throw stopConflict;
+                return false;
+              }
               return true;
             })
             .catch((failure: unknown) => {

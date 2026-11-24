@@ -11,6 +11,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -1105,28 +1106,34 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
       if (phase !== "active") throw Error("Only active compute can preserve work");
       return { status: "clean" };
     },
-    stop: async () => {
-      if (phase === "active")
-        expect(
-          (
-            await db.query(
-              "select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1",
-              [id],
-            )
-          ).rows,
-        ).toEqual([
-          { actor: "reconciler", code: "expired", generation: 1, from_status: "running", to_status: "stopping" },
-        ]);
-      expect(
-        (
-          await db.query(
-            "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
-            [id],
-          )
-        ).rows,
-      ).toEqual([{ captured: phase === "active" }]);
-      stopped = true;
-    },
+    runtimeStopMachine: async () => ({
+      target: { machineId: "compute", generation: 3 },
+      stopped,
+      machine: {
+        stop: async () => {
+          if (phase === "active")
+            expect(
+              (
+                await db.query(
+                  "select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1",
+                  [id],
+                )
+              ).rows,
+            ).toEqual([
+              { actor: "reconciler", code: "expired", generation: 1, from_status: "running", to_status: "stopping" },
+            ]);
+          expect(
+            (
+              await db.query(
+                "select coalesce(preservation_stop_generation=stop_generation,false) as captured from sandboxes where id=$1",
+                [id],
+              )
+            ).rows,
+          ).toEqual([{ captured: phase === "active" }]);
+          stopped = true;
+        },
+      },
+    }),
     quiesce: async () => {
       throw Error("No tunnel quiesce");
     },
@@ -1136,6 +1143,8 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
   } as unknown as import("@armada/core").Provider;
   const worker = createSandboxLifecycle(sql, async () => provider);
   expect(await worker.reconcileOne()).toBe(true);
+  expect(stopped).toBe(false);
+  expect((await runClaimedStop(sql, async () => provider)).result.status).toBe("done");
   expect(stopped).toBe(true);
   expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
     status: "stopped",
