@@ -19,7 +19,7 @@ next-env.d.ts
 test-results/
 playwright-report/
 
-# All Eyes On Me: run state, captures and reports stay on the machine (docs/aeom.md)
+# All Eyes On Me: run state, captures and reports stay on the machine
 .aeom/runs/
 .aeom/captures/
 .aeom/reports/
