@@ -339,7 +339,6 @@ export class HarnessState {
   }
   private async seal(identity?: CheckpointIdentity) {
     const manifest = await this.verifySaved();
-    // A replay may already have a saved manifest and no live transcript directories.
     await Promise.all(
       ["antigravity", "antigravity-tmp"].map((name) => rm(join(this.root, name), { recursive: true, force: true })),
     );
