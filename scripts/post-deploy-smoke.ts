@@ -731,18 +731,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       if (requireSandboxUuid && (typeof id !== "string" || !SANDBOX_ID.test(id)))
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       const input = body as { provider?: string; externalRef?: string };
-      if (
-        sandboxLaunch &&
-        input.provider === "docker" &&
-        (result?.sandbox?.provider !== "docker" || result.sandbox.externalRef !== input.externalRef)
-      )
+      const admission = receipt && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
+      if (sandboxLaunch && input.provider === "docker" && !admission)
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       // Keep the trusted handle even when other receipt fields fail validation.
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
         if (provider === "boat") fail("invalid_response");
-        const admission = receipt && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
         if (!admission && provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
@@ -2389,7 +2385,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const admissionProvider =
-        receipt &&
+        (receipt || keyedDockerLaunch) &&
         url.endsWith("/sandbox/launch") &&
         requestKey === key &&
         response.ok &&
@@ -2402,8 +2398,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         keyedLaunch &&
         (!response.ok ||
           provider !== body.provider ||
-          result?.sandbox?.provider !== body.provider ||
-          (keyedDockerLaunch && result?.sandbox?.externalRef !== key));
+          (!admissionProvider && result?.sandbox?.provider !== body.provider) ||
+          (keyedDockerLaunch && admissionProvider !== "docker"));
       if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,

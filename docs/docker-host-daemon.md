@@ -116,20 +116,18 @@ unless you select a host-local snapshot with the `--golden SNAPSHOT_UUID` flag.
 Docker uses its own host limits and snapshot builds.
 [Morph model accounts](morph.md) and [per-account simultaneous-agent limits](named-model-credentials.md)
 also apply to Docker launches.
-The server composes durable create, existing enrolment
-and artifact bootstrap, runtime health and first-prompt admission. It returns the
-shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
-status, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
-when runtime information is available and is null otherwise. The `promptId` and
-`conversationId` fields are null when their IDs are unavailable. Read the prompt
-output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
+Armada returns `{ "sandbox": { "id": "...", "status": "starting" } }`
+once it commits the launch job. The job allocates the container, bootstraps the
+runtime and sends the initial prompt after enrolment. Read the prompt and
+conversation IDs through `/api/v1/sandbox/status` and output through
+`/api/v1/logs/read`.
 
 Store the `idempotencyKey` before launch and use the returned `sandbox.id`
 for sandbox operations. Identical retries resume the original phase IDs.
 Changed input conflicts. A timeout is an unknown outcome, not permission to allocate a replacement.
 The request and receipt are encrypted in a service-only ledger; no model secret
-is copied into it. A completed retry returns its original admission receipt with
-current sandbox metadata (even after stop/delete), never restarts the sandbox.
+is copied into it. A completed retry returns the original sandbox ID and
+current status (even after stop/delete), never restarts the sandbox.
 
 The API-only CLI uses the same normal route, not the private preview. Normal
 API requests, CLI launches and dashboard forms do not accept an image selector.
@@ -1202,11 +1200,11 @@ still runs. No production mutation or deployment was performed by this change.
 
 ### Diagnosing an immediate normal-launch refusal (#2239)
 
-Normal CLI launch goes through `sandbox/launch` in `control.ts`, then
+Normal CLI launch goes through `sandbox/launch` in `launch-control.ts`, then
 `docker-normal-launch.ts`: retained receipt lookup, official image, personal
 account defaults, membership/actor epoch, credential resolution, skill/MCP
 defaults, and finally the transaction that reserves the sandbox and queues
-the host create job. Only after that commit can the daemon see work.
+the shared launch job. The job dispatches host work after admission commits.
 The former outer catch silently wrapped dependency exceptions and most
 `LaunchError` credential refusals in a receipt-bearing `unavailable` error;
 `api-failure.ts` projected that as `outcome_unknown`, even before allocation.

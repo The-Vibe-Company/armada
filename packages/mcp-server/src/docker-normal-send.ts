@@ -112,7 +112,7 @@ export function createDockerNormalSend(
       if (conversationId === undefined && !previous) {
         const launch = (
           await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-            "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+            "select request_enc from public.docker_launch_manifests where sandbox_id=$1",
             [row.id],
           )
         ).rows[0];

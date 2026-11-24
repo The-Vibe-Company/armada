@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
 import type { GoldenActor, LaunchCredentialResolver, Sql } from "@armada/core";
 import { DockerRetentionEnded, dockerWorkspaceReclaimedMessage, HARNESS_KINDS } from "@armada/core";
+import type { MachineIdentity } from "@armada/core/server";
 import { decryptSecret } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
-import { type BootstrapDescriptor, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
+import { type BootstrapDescriptor, dockerMachineJobId, parseDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { admitDockerCapacity, DockerHostDraining, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
+import { DockerMachinePending } from "./docker-machine-adapter.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import type { JobContext } from "./jobs/runner.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
@@ -105,6 +109,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
     requestId: string,
     resume = false,
     turnClaim?: RuntimeTurnClaim,
+    machine?: { target: MachineIdentity; context: JobContext },
   ) {
     try {
       if (options.enabled !== true || !uuid.test(requestId) || !sql.transaction) deny();
@@ -125,6 +130,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       const url = new URL(serverUrl);
       if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
         deny();
+      if (machine) requestId = dockerMachineJobId(snapshot.generation, "bootstrap");
       const known = await phase(sql, sandboxId, resume ? requestId : undefined);
       if (!known) {
         const acknowledged = await sql.query(
@@ -255,6 +261,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         }
         if (!turnClaim) await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
         const current = await requireStableSandbox();
+        if (machine && (!(await machine.context.canDispatch(tx)) || current.stopRequestedAt !== null)) deny();
         const original = await tx.query(
           `select 1 from public.docker_host_jobs j join public.mcp_actor_epochs e
              on e.org_id=$3 and e.user_id=$2 and e.epoch=j.bound_actor_epoch
@@ -328,7 +335,26 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           });
           descriptor = { serverUrl: url.origin, artifact: projected.artifact, enrolmentToken: ticket.enrolmentToken };
         }
-        await createDockerHostStore(scoped, key).enqueueSandbox(actor, sandboxId, {
+        const hostStore = createDockerHostStore(scoped, key);
+        if (machine) {
+          const adapter = hostStore.machine({
+            actor,
+            hostId: current.hostId,
+            installationId: current.installationId,
+            bootstrapDescriptor: descriptor,
+          });
+          try {
+            await adapter.bootstrap({
+              ...machine.target,
+              bindingRef: createHash("sha256").update(descriptor.enrolmentToken).digest("hex"),
+              signal: machine.context.signal,
+            });
+          } catch (error) {
+            if (!(error instanceof DockerMachinePending) || error.outcome !== "pending") throw error;
+          }
+          return { requestId, operation: "bootstrap" as const, state: existing?.outcome ?? "pending" };
+        }
+        await hostStore.enqueueSandbox(actor, sandboxId, {
           requestId,
           operation: resume ? "resume" : "bootstrap",
           bootstrapDescriptor: descriptor,
@@ -376,6 +402,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
     }
   }
   return {
+    bootstrapMachine: (actor: Actor, target: MachineIdentity, context: JobContext) =>
+      bootstrap(actor, target.sandboxId, target.sandboxId, false, undefined, { target, context }),
     bootstrap: (actor: Actor, sandboxId: string, requestId: string) => bootstrap(actor, sandboxId, requestId),
     resume: (actor: Actor, sandboxId: string, requestId: string, claim?: RuntimeTurnClaim) =>
       bootstrap(actor, sandboxId, requestId, true, claim),

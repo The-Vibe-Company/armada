@@ -154,7 +154,7 @@ export function createRuntimeGitHub(options: {
     }
     const docker = (
       await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string; actor_epoch: string }>(
-        `select d.request_enc,d.request_hash,d.actor_epoch::text from public.docker_launch_requests d
+        `select d.request_enc,d.request_hash,d.actor_epoch::text from public.docker_launch_manifests d
        join public.sandboxes s on s.id=d.sandbox_id join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
        where s.id=$1 and s.provider='docker' and d.actor_epoch=e.epoch`,
         [id],
@@ -396,7 +396,7 @@ export function createRuntimeGitHub(options: {
   async function prepareTurn(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
     const launch = (
       await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+        `select d.request_enc from public.docker_launch_manifests d join public.sandboxes s on s.id=d.sandbox_id
        where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
       )

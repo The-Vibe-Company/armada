@@ -22,7 +22,7 @@ export function createDockerPromptWorker(sql: Sql, key: string, options: Paramet
         await sql.query<QueuedDockerPrompt & { org_id: string; role: "admin" | "member" }>(
           `update public.docker_queued_prompts q set status='dispatching',worker_id=$1,worker_expires_at=now()+interval '30 seconds'
         where q.position=(select p.position from public.docker_queued_prompts p join public.sandboxes s on s.id=p.sandbox_id
-          join public.docker_launch_requests d on d.sandbox_id=s.id join public.members m on m.user_id=p.owner_id and m.org_id=s.org_id
+          join public.docker_launch_manifests d on d.sandbox_id=s.id join public.members m on m.user_id=p.owner_id and m.org_id=s.org_id
           join public.mcp_actor_epochs e on e.user_id=m.user_id and e.org_id=m.org_id and e.epoch=p.actor_epoch
           where p.status in ('queued','dispatching') and (p.worker_expires_at is null or p.worker_expires_at<=now())
           and d.result_enc is not null and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>now()

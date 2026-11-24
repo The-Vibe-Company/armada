@@ -31,7 +31,6 @@ import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
-import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
 import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
 import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
@@ -284,9 +283,8 @@ export const launchRoutes = defineRoutes("launch", {
       if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
       const { idempotencyKey, ...request } = launch;
       const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
-      return canonicalLaunchResponse(
-        await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId }),
-      );
+      const { sandbox } = await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId });
+      return { sandbox: { id: sandbox.id, status: sandbox.status } };
     }
     if ("id" in launch) {
       const template = launch;
