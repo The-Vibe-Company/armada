@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 function start(options: Parameters<typeof harness>[0] = {}) {
-  const pending = database().then((fixture) => harness(options, fixture));
+  const pending = database().then((fixture) => harness({ enrolledLaunch: true, ...options }, fixture));
   pendingServer = pending;
   return pending.then((server) => {
     if (pendingServer !== pending) throw new Error("Server fixture teardown has started");

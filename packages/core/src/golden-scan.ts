@@ -213,8 +213,11 @@ export async function scanGoldenSandbox(
   if (result.exitCode === 97) {
     reportScanMatches(result.stdout, context?.buildId);
     const location = safeScanLocation(result.stdout, context?.repositories ?? []);
+    const recovery = location?.configuredGitObject
+      ? ' If you verified the match is a historical false positive and do not need older commits, set history: "shallow" for this repository in the snapshot config and rebuild.'
+      : "";
     const message = location
-      ? `Secret scan found token-shaped material: ${location}. Remove credentials from repositories and setup before rebuilding; the golden was not saved.`
+      ? `Secret scan found token-shaped material: ${location.description}. Remove credentials from repositories and setup before rebuilding; the golden was not saved.${recovery}`
       : "Secret scan found token-shaped material on disk. Remove credentials from repositories and setup before rebuilding; the golden was not saved.";
     throw new GoldenError("setup_failed", message, { safeMessage: message });
   }
@@ -266,7 +269,10 @@ function validateRepositoryDirs(directories: readonly string[]): void {
 }
 
 /** No filenames, provider payloads or matched values are accepted by this closed diagnostic protocol. */
-function safeScanLocation(stdout: string, repositories: readonly string[]): string | undefined {
+function safeScanLocation(
+  stdout: string,
+  repositories: readonly string[],
+): { description: string; configuredGitObject: boolean } | undefined {
   for (const line of stdout.slice(0, 8192).split("\n").slice(0, 64)) {
     const match =
       /^ARMADA_SCAN_LOCATION (0|[1-9]|1[0-6]) (file_content|path_name|git_object) (-|[a-f0-9]{40}|[a-f0-9]{64}) (-|[a-f0-9]{40}|[a-f0-9]{64})$/.exec(
@@ -278,10 +284,16 @@ function safeScanLocation(stdout: string, repositories: readonly string[]): stri
     const where = index === 0 ? "outside configured repositories" : `repository ${repositories[index - 1]}`;
     if (match[2] === "git_object") {
       if (match[3] === "-") continue;
-      return `${where}, git object ${match[3]}${match[4] !== "-" ? `, commit ${match[4]}` : ""}`;
+      return {
+        description: `${where}, git object ${match[3]}${match[4] !== "-" ? `, commit ${match[4]}` : ""}`,
+        configuredGitObject: index !== 0,
+      };
     }
     if (match[3] !== "-" || match[4] !== "-") continue;
-    return `${where}, ${match[2] === "file_content" ? "file content" : "path name"}`;
+    return {
+      description: `${where}, ${match[2] === "file_content" ? "file content" : "path name"}`,
+      configuredGitObject: false,
+    };
   }
   return undefined;
 }

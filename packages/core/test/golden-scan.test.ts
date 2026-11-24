@@ -71,3 +71,26 @@ test("a token-shaped repository name is not eligible for public scan diagnostics
   );
   expect(calls).toEqual([]);
 });
+
+test.each([
+  ["1 git_object " + "a".repeat(40) + " -", true],
+  ["0 git_object " + "a".repeat(40) + " -", false],
+  ["1 file_content - -", false],
+])("only a Git object in a configured repository gets history recovery guidance (%s)", async (record, hasHint) => {
+  const rejection = scanGoldenSandbox(
+    provider({ exitCode: 97, stdout: "ARMADA_SCAN_LOCATION " + record }, []),
+    "builder",
+    { repositories: ["armada"] },
+  );
+  const guidance = 'history: "shallow"';
+  if (hasHint) {
+    await expect(rejection).rejects.toMatchObject({
+      code: "setup_failed",
+      safeMessage: expect.stringContaining(guidance),
+    });
+  } else {
+    const error = await rejection.catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "setup_failed" });
+    expect(String(error)).not.toContain(guidance);
+  }
+});

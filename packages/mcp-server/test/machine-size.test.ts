@@ -3,13 +3,14 @@ import { createSqlGoldenStore, parseGoldenConfig } from "@armada/core";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
 
 const database = rowOnlyDatabase();
 
 test("size policies use live org admin/private owner authority, persist without provider work, and validate repository identity", async () => {
-  const server = await harness({}, await database());
+  const server = await harness({ enrolledLaunch: true }, await database());
   try {
     const { db, people } = server;
     const control = {
@@ -93,7 +94,7 @@ test("size policies use live org admin/private owner authority, persist without 
 });
 
 test("canonical HTTP launch validates sizes and applies overrides or golden defaults", async () => {
-  const server = await harness({}, await database());
+  const server = await harness({ enrolledLaunch: true }, await database());
   try {
     const { db, people } = server;
     const control = {
@@ -103,6 +104,7 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
       encryptionKey: ENCRYPTION_KEY,
       data: createSqlData(db),
       providerFor: server.boat.providerFor,
+      launch: { runtime: enrolledLaunchPolicy(db) },
     };
     const token = await server.token(people.member);
     const launch = async (body: Record<string, unknown>) =>
