@@ -277,8 +277,8 @@ async function SandboxesContent({ searchParams }: Props) {
             return {
               id: sandbox.id,
               content: (
-                <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-4 py-[11px] hover:bg-muted/40 lg:grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] lg:items-center">
-                  <div className="min-w-0">
+                <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-4 py-[11px] hover:bg-muted/40 md:max-lg:grid-cols-[repeat(2,minmax(0,1fr))_auto] lg:grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] lg:items-center">
+                  <div className="min-w-0 md:max-lg:col-span-2">
                     <SandboxName sandbox={sandbox} snapshot={snapshots.get(sandbox.id)} />
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <SandboxState
@@ -301,7 +301,7 @@ async function SandboxesContent({ searchParams }: Props) {
                       <p className="mt-1 text-xs text-muted-foreground">{sandbox.statusMessage}</p>
                     )}
                   </div>
-                  <div className="min-w-0 max-lg:col-start-1">
+                  <div className="min-w-0 max-md:col-start-1">
                     <p className="text-[13px]">{HARNESS_LABELS[sandbox.harness]}</p>
                     <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
                       {sandbox.canOpen
@@ -310,7 +310,7 @@ async function SandboxesContent({ searchParams }: Props) {
                       {sandbox.canOpen && sandbox.reasoningEffort ? ` · ${sandbox.reasoningEffort}` : ""}
                     </p>
                   </div>
-                  <div className="min-w-0 max-lg:col-start-1">
+                  <div className="min-w-0 max-md:col-start-1">
                     <span className="mb-0.5 block text-xs text-muted-foreground lg:hidden">Snapshot</span>
                     <p className="truncate font-mono text-[13px]" title={snapshots.get(sandbox.id)}>
                       {snapshots.get(sandbox.id) ?? "–"}
@@ -319,7 +319,7 @@ async function SandboxesContent({ searchParams }: Props) {
                       <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} />
                     </p>
                   </div>
-                  <div className="flex min-w-0 items-center gap-2 text-[13px] max-lg:col-start-1">
+                  <div className="flex min-w-0 items-center gap-2 text-[13px] max-md:col-start-1">
                     <span
                       aria-hidden="true"
                       className="flex size-[22px] shrink-0 items-center justify-center rounded-full border bg-muted text-[9.5px] font-semibold text-muted-foreground"
@@ -328,7 +328,7 @@ async function SandboxesContent({ searchParams }: Props) {
                     </span>
                     <span className="truncate">{displayUser(directory, sandbox.ownerId, viewer.id)}</span>
                   </div>
-                  <div className="min-w-0 text-[13px] text-muted-foreground max-lg:col-start-1">
+                  <div className="min-w-0 text-[13px] text-muted-foreground max-md:col-start-1">
                     <p>
                       <span className="lg:hidden">Lifetime: </span>
                       {sandbox.status === "stopped" ? "Retained" : (life.remaining ?? life.lifetime ?? "Not recorded")}
@@ -336,7 +336,7 @@ async function SandboxesContent({ searchParams }: Props) {
                     <LifecycleHint view={{ ...life, remaining: null }} />
                     <CostCell cost={sandbox.canOpen ? costs.get(sandbox.id) : undefined} />
                   </div>
-                  <div className="relative z-10 flex items-center justify-end gap-1 max-lg:col-start-2 max-lg:row-start-1">
+                  <div className="relative z-10 flex items-center justify-end gap-1 max-md:col-start-2 max-lg:row-start-1 md:max-lg:col-start-3">
                     <SandboxRowMenu id={sandbox.id} name={sandboxListName(sandbox)} canOpen={sandbox.canOpen} />
                   </div>
                 </article>
@@ -362,7 +362,7 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata; snapshot?: str
         // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
         className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
-        <span className="min-w-0 break-words whitespace-normal" title={name}>
+        <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" title={name}>
           {name}
         </span>
         <LinkPendingIcon />
@@ -370,7 +370,7 @@ function SandboxName({ sandbox }: { sandbox: SandboxListMetadata; snapshot?: str
     );
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 text-sm text-muted-foreground" data-restricted>
-      <span className="min-w-0 break-words whitespace-normal" title={name}>
+      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" title={name}>
         {name}
       </span>
       <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />

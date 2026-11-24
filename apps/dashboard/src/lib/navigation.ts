@@ -58,13 +58,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 ];
 
 /** Whether `pathname` is `href` or a page under it. */
-export const isActiveLink = (pathname: string, href: string) => {
-  const canonical =
-    pathname === "/hosts" || pathname.startsWith("/hosts/")
-      ? pathname.replace(/^\/hosts/, "/providers/cloud")
-      : pathname;
-  return canonical === href || canonical.startsWith(`${href}/`);
-};
+export const isActiveLink = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 /**
  * Whether the sidebar shows anything about organizations: the switcher only to someone who belongs to more than one,
@@ -83,10 +77,6 @@ export function organizationSwitchDestination(
 ): string {
   const pathname = section.startsWith("/") ? section : `/${section}`;
   const aliases: Record<string, string> = {
-    setup: "/providers/cloud",
-    hosts: "/providers/cloud",
-    environments: "/snapshots",
-    goldens: "/snapshots",
     credentials: "/harness",
     connections: "/tools",
   };
