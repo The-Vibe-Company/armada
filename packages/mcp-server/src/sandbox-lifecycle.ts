@@ -2507,9 +2507,9 @@ export function createSandboxLifecycle(
           terminal = true;
           if (requireMissingObservation) physicalExit = true;
         } else {
-          if (providerId === "modal" && row.runtime_transport === "dialout" && row.status === "stopping") {
+          if (!native && row.status === "stopping") {
             const phase = observing ? "observe" : stopDispatched ? "stop" : resolved ? "prepare" : "resolve_provider";
-            recordOperatorFailure(`sandbox.lifecycle.modal.${phase}`, caught, { sandboxId: row.id });
+            recordOperatorFailure(`sandbox.lifecycle.${providerId}.${phase}`, caught, { sandboxId: row.id });
           }
           error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
         }
