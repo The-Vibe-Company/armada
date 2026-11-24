@@ -808,7 +808,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         let receipt: Receipt;
         for (;;) {
           await live();
-          const ready = await runtime.ready(actor, request.requestId, manifest.healthId);
+          const ready = await runtime.ready(actor, request.requestId, manifest.healthId).catch(async (error) => {
+            await live().catch(() => {});
+            throw error;
+          });
           if (ready.state === "ready") {
             receipt = { epoch: ready.epoch };
             break;
