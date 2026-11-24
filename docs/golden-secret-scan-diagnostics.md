@@ -27,15 +27,19 @@ surface/location-class counts remain in operator logs. Raw file contents,
 filenames, provider stdout/stderr and unrecognized diagnostic records are not
 copied into public messages.
 
-The scan still inspects full history, including unreachable objects. A token-shaped
-fixture removed from the working tree may therefore still reject the build when
-its blob exists in history. No value allow-list, scanner exclusion, shallow-clone
-default or history rewrite is introduced by this diagnostic change.
+The scan checks the working tree and the Git object database because the
+snapshot retains both. It reads stored blobs, commits and tags, including
+unreachable objects. A fixture removed from the working tree can still reject
+the build if its blob remains in the object database. Treat an unverified
+match as a potential credential. If it is real, revoke it and remove it from
+the source before rebuilding.
 
 ## Explicit per-repository short history (owner approved)
 
-The owner approved a short-history checkout in #1755. Set this field on only the
-repository whose old history is not needed:
+When a Git object in a configured repository is flagged, the scan error points
+to the short-history checkout approved in #1755. Use it when you have verified
+that the match is a historical false positive and the snapshot does not need
+that repository's older commits:
 
 ```json
 {
