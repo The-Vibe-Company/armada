@@ -122,11 +122,6 @@ test("every published route refuses a body over its published limit with its pub
         throw new Error("Unexpected provider lookup");
       },
     },
-    credentials: {
-      resolve: async () => {
-        throw new Error("Unexpected credential lookup");
-      },
-    },
     connections: undefined,
     encryptionKey: Buffer.alloc(32).toString("base64"),
     scopedMcpUrl: "https://armada.test/api/v1/orchestrator-tools/mcp",

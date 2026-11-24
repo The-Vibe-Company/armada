@@ -1,20 +1,10 @@
 import { expect, test } from "bun:test";
-import {
-  createSqlGoldenStore,
-  createSqlVaultStore,
-  decryptSecret,
-  encryptSecret,
-  type GoldenActor,
-  launchSandbox,
-  type Sql,
-} from "@armada/core/server";
-import { createSqlData } from "../src/data.ts";
+import { createSqlVaultStore, decryptSecret, encryptSecret, type GoldenActor, type Sql } from "@armada/core/server";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSubscriptionBroker } from "../src/subscription-broker.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY } from "./support.ts";
 
 const database = rowOnlyDatabase();
 
@@ -85,43 +75,17 @@ test("three subscription launches prompt despite historical sandbox rows and sha
     expect(JSON.stringify(credentials.usagePricing)).not.toContain("access-before");
     expect(credentials.env.ARMADA_CODEX_AUTH_JSON).toBeUndefined();
     expect(JSON.stringify(credentials.env)).not.toContain("refresh-before");
-    const boat = fakeBoat();
-    const stores = {
-      goldens: createSqlGoldenStore(db),
-      sandboxes: createSqlData(db)({
-        userId: actor.userId,
-        via: "service",
-        orgs: [{ orgId: actor.orgId, role: actor.role }],
-      }).sandboxes,
-      credentials: resolver,
-    };
     const ids: string[] = [];
     for (let index = 0; index < 3; index++) {
-      const launched = await launchSandbox(
-        boat.provider,
-        stores,
-        actor,
-        {
-          golden: "shared",
-          harness: "codex",
-          credentialId: account.id,
-          prompt: `Reply to subscription launch ${index + 1}`,
-        },
-        { runtime: enrolledLaunchPolicy(db) },
+      const sandboxId = crypto.randomUUID();
+      await db.query(
+        `insert into sandboxes(id,org_id,owner_id,golden_id,provider_sandbox_id,status,harness,credential_id,credential_version,expires_at)
+         select $1,$2,$3,g.id,$4,'ready','codex',$5,1,now()+interval '1 hour'
+         from goldens g where g.org_id=$2 and g.name='shared'`,
+        [sandboxId, actor.orgId, actor.userId, `subscription-${index}`, account.id],
       );
-      ids.push(launched.sandbox.id);
-      expect(launched.sandbox).toMatchObject({
-        credentialId: account.id,
-        credentialVersion: 1,
-        status: "running",
-      });
-      expect(launched.promptId).toBe(`prompt_${index + 1}`);
+      ids.push(sandboxId);
     }
-    expect(boat.prompts.map(({ sandboxId, text }) => ({ sandboxId, text: text.split("\n\n", 1)[0] }))).toEqual([
-      { sandboxId: "bx_1", text: "Reply to subscription launch 1" },
-      { sandboxId: "bx_2", text: "Reply to subscription launch 2" },
-      { sandboxId: "bx_3", text: "Reply to subscription launch 3" },
-    ]);
     for (const id of ids) await resolver.assertTurn!(actor, id, false);
     const request = (index: number, revision?: number) =>
       new Request("https://armada.example/api/internal/model/access", {

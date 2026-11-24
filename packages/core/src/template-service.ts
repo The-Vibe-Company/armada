@@ -7,37 +7,26 @@ import { HARNESS_KINDS } from "./credentials.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
+import type { LaunchOptions, LaunchRequest, LaunchStores } from "./golden-launch-admission.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isHarness, runtimeHarnessSupported } from "./harnesses.ts";
-import { type LaunchOptions, type LaunchRequest, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
-import {
-  assertLaunchSecretBindings,
-  LaunchSecretRefusal,
-  RuntimeLaunchSecretRefusal,
-  resolveLaunchSecrets,
-} from "./launch-secrets.ts";
+import { assertLaunchSecretBindings, LaunchSecretRefusal, resolveLaunchSecrets } from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
 import { capabilities } from "./machine-capabilities.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
 import { resolveModelChoice } from "./models.ts";
 import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
-import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
 import { isExternalRef } from "./sandbox.ts";
-import {
-  HOST_CAPABILITIES,
-  isSandboxPlacementProvider,
-  isSandboxProvider,
-  ProviderRoutingError,
-} from "./sandbox-provider.ts";
+import { isSandboxPlacementProvider } from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { validateSkillPins } from "./skillpack.ts";
 import type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
-import { VaultError } from "./vault-error.ts";
+import { VaultError, type VaultErrorCode } from "./vault-error.ts";
 
 export class DockerTemplateAdmissionRefused extends Error {
   constructor(
@@ -51,7 +40,6 @@ export class DockerTemplateAdmissionRefused extends Error {
 
 export interface TemplateRuntime {
   stores: LaunchStores;
-  provider(golden: GoldenRecord): Promise<Provider>;
   /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
   explicitModal?: true;
@@ -62,7 +50,7 @@ export interface TemplateRuntime {
     request: LaunchRequest,
     pin: { id: string; credentialVersion: number; revalidate(tx: Sql): Promise<void> },
   ): Promise<ModalLaunchReceipt>;
-  options?: LaunchOptions;
+  options?: Pick<LaunchOptions, "runtime" | "boatRuntime">;
   launchDocker?(
     body: Record<string, unknown>,
     admission: {
@@ -71,7 +59,7 @@ export interface TemplateRuntime {
       scheduled: boolean;
     },
   ): Promise<DockerLaunchResult>;
-  fenceDockerAdmission?(tx: Sql, sandboxId?: string): Promise<void>;
+  fenceAdmission?(tx: Sql, sandboxId?: string): Promise<void>;
 }
 type Header = {
   id: string;
@@ -105,6 +93,8 @@ type Manifest = {
   requestKey: string;
 };
 type RequestRow = {
+  actor_id: string;
+  org_id: string;
   id: string;
   client_key: string;
   digest: string;
@@ -213,10 +203,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!m) throw new VaultError("forbidden", "Template access denied.");
     return { userId: actor.userId, orgId: org, role: m.role };
   }
-  async function header(tx: Sql, actor: GoldenActor, templateId: string, write = false) {
+  async function header(tx: Sql, actor: GoldenActor, templateId: string, write = false, worker = false) {
     const h = (
       await tx.query<Header>(
-        "select * from public.launch_templates where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) for update",
+        `select * from public.launch_templates where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) ${worker ? "for share nowait" : "for update"}`,
         [templateId, actor.orgId, actor.userId],
       )
     ).rows[0];
@@ -242,10 +232,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     goldenId: string,
     provider: unknown,
     launchAdmission = false,
+    worker = false,
   ) {
     const row = (
       await tx.query<GoldenRow>(
-        `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share`,
+        `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share${worker ? " nowait" : ""}`,
         [goldenId, actor.orgId, actor.userId],
       )
     ).rows[0];
@@ -276,6 +267,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     def: TemplateDefinition,
     enforceModelScope = true,
     expectedConnections?: Manifest["connections"],
+    worker = false,
   ) {
     let g: GoldenRecord | null = null;
     let host: Manifest["host"];
@@ -309,7 +301,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         if (!snapshot) unavailable("environment_snapshot_unavailable");
       }
     } else {
-      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
+      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope, worker);
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
       if (await snapshotSealed(tx, g.provider, g.providerSnapshotId)) unavailable("environment_snapshot_unavailable");
     }
@@ -548,11 +540,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     id(input.id);
     const key = input.requestKey;
     if (typeof key !== "string") invalid();
-    const routineKey = key.startsWith("routine:");
     const validKey = runtime.explicitModal
       ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
       : templateLaunchFields.requestKey.safeParse(key).success;
-    if (!validKey) invalid();
+    if (!validKey || key.startsWith("routine:") !== Boolean(runtime.scheduled)) invalid();
+    if (runtime.scheduled && !runtime.fenceAdmission) unavailable("environment_admission_unavailable");
     if (input.revision !== undefined) integer(input.revision);
     if (!templateLaunchFields.prompt.safeParse(input.prompt).success) invalid();
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
@@ -591,13 +583,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     });
     const def = selection.r.definition;
     if (!runtimeHarnessSupported(def.provider, def.harness)) unavailable("environment_admission_unavailable");
-    if (
-      !runtime.scheduled &&
-      isSandboxProvider(def.provider) &&
-      HOST_CAPABILITIES[def.provider].goldenLaunchAdmission &&
-      routineKey
-    )
-      invalid();
     // Host launches record no external reference; refuse rather than drop it.
     if (input.externalRef !== undefined && usesHostPlacement(def)) unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
@@ -623,7 +608,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       (account.id !== credentials.binding.credentialId || account.version !== credentials.binding.credentialVersion)
     )
       unavailable("model_account_version_changed");
-    let claimed = false;
     const request = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -693,7 +677,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             [org, a.userId, key],
           )
         ).rows[0]!;
-      claimed = true;
       return result;
     });
     function launchRequest(m: Manifest) {
@@ -739,8 +722,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             scheduled: runtime!.scheduled === true,
             beforeReserve: async (tx) => {
               await revalidateInTransaction(tx, actor, org, m);
-              if (runtime!.fenceDockerAdmission) await runtime!.fenceDockerAdmission(tx, row.sandbox_id);
-              else await runtime!.options?.beforeFork?.(row.sandbox_id);
+              if (runtime!.fenceAdmission) await runtime!.fenceAdmission(tx, row.sandbox_id);
               const changed = await tx.query(
                 `update public.template_launch_requests set state='allocating',updated_at=now()
                where id=$1 and state='claimed' returning id`,
@@ -764,7 +746,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
           manifest: m,
         };
         const changed = await transaction(async (tx) => {
-          await runtime!.fenceDockerAdmission?.(tx);
+          await runtime!.fenceAdmission?.(tx);
           return tx.query(
             `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
              where id=$1 and state='claimed' returning id`,
@@ -809,217 +791,73 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         }
         return previous;
       }
-      if (
-        active.scheduled ||
-        !m.golden ||
-        !HOST_CAPABILITIES[m.golden.provider].goldenLaunchAdmission ||
-        row.state !== "claimed" ||
-        row.result
-      )
-        return previous;
-      if (routineKey) invalid();
+      if (!m.golden || row.state !== "claimed" || row.result) return previous;
       if (!active.admitModal) unavailable("environment_admission_unavailable");
       const a = admittedActor ?? (await transaction((tx) => member(tx, actor, org)));
-      const receipt = await active.admitModal(
-        a,
-        m.golden,
-        {
-          golden: m.golden.name,
-          provider: m.golden.provider,
-          ...launchRequest(m),
-          ...(size === undefined ? {} : { size }),
-          ...(input.repo === undefined ? {} : { repo: input.repo as string }),
-          ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
-        },
-        {
-          id: row.id,
-          credentialVersion: m.account.version,
-          revalidate: async (tx) => {
-            await revalidateInTransaction(tx, actor, org, m);
+      const g = m.golden;
+      try {
+        await active.admitModal(
+          a,
+          g,
+          {
+            golden: g.name,
+            provider: g.provider,
+            ...launchRequest(m),
+            ...(size === undefined ? {} : { size }),
+            ...(input.repo === undefined ? {} : { repo: input.repo as string }),
+            ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
           },
-        },
-      );
-      return {
-        requestId: row.id,
-        envelope: { sandbox: { id: receipt.sandbox.id, status: "starting" } },
-        state: "succeeded",
-        id: receipt.sandbox.id,
-        provider: "modal",
-        status: "starting",
-        manifest: m,
-      };
-    }
-    if (
-      !claimed ||
-      (!runtime.scheduled &&
-        request.manifest.golden &&
-        HOST_CAPABILITIES[request.manifest.golden.provider].goldenLaunchAdmission)
-    )
-      return resume(request, selection.a);
-    const m = request.manifest;
-    let allocating = false;
-    try {
-      const result = usesHostPlacement(def)
-        ? { dockerReceipt: await admitDocker(request) }
-        : await (async () => {
-            const g = m.golden;
-            if (!g) unavailable("environment_admission_unavailable");
-            const provider = await runtime.provider(g);
-            return launchSandbox(
-              provider,
-              {
-                ...runtime.stores,
-                goldens: {
-                  ...runtime.stores.goldens,
-                  findByName: async () => [g],
-                },
-              },
-              selection.a,
-              {
-                ...launchRequest(m),
-                golden: g.name,
-                provider: g.provider,
-                ...(size === undefined ? {} : { size }),
-                ...(input.repo === undefined ? {} : { repo: input.repo as string }),
-                ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
-              },
-              {
-                ...runtime.options,
-                credentialVersion: m.account.version,
-                newId: () => request.sandbox_id,
-                beforeFork: async (sandboxId) => {
-                  await revalidate(actor, org, m);
-                  // Validate the full decrypted payload before any provider allocation.
-                  // Discard plaintext after this check; final start resolves current authority again.
-                  await resolveEnvironment(selection.a, m);
-                  await runtime.options?.beforeFork?.(sandboxId);
-                },
-                templateSnapshotAdmission: {
-                  admit: async () => {
-                    await transaction(async (tx) => {
-                      const current = await revalidateInTransaction(tx, actor, org, m);
-                      const snapshot = g.providerSnapshotId;
-                      if (
-                        !snapshot ||
-                        current?.id !== g.id ||
-                        current.providerSnapshotId !== snapshot ||
-                        current.providerSandboxId !== g.providerSandboxId
-                      )
-                        unavailable("environment_snapshot_unavailable");
-                      // The golden read holds FOR SHARE through commit. Take the
-                      // retirement lock too, since another golden can share this handle.
-                      await tx.query("select public.lock_golden_snapshot($1,$2)", [g.provider, snapshot]);
-                      if (await snapshotSealed(tx, g.provider, snapshot))
-                        unavailable("environment_snapshot_unavailable");
-                      await tx.query(
-                        "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
-                        [request.id],
-                      );
-                    });
-                    allocating = true;
-                  },
-                  confirmAbsence: () => {
-                    allocating = false;
-                  },
-                },
-                beforeStart: async (p, s) => {
-                  await revalidate(actor, org, m);
-                  await runtime.options?.beforeStart?.(p, s);
-                  if (def.variables.length || def.secrets?.length) {
-                    await resolveEnvironment(selection.a, m);
-                  }
-                },
-              },
-            );
-          })();
-      if ("dockerReceipt" in result) return result.dockerReceipt;
-      const { sandbox } = result;
-      const receiptTransport = isSandboxProvider(sandbox.provider)
-        ? HOST_CAPABILITIES[sandbox.provider].templateReceiptTransport
-        : undefined;
-      const output = {
-        requestId: request.id,
-        ...("runtime" in result && result.runtime ? { runtime: result.runtime } : {}),
-        state: "succeeded",
-        id: result.sandbox.id,
-        provider: result.sandbox.provider,
-        ...(receiptTransport && "modalTransport" in sandbox && sandbox.modalTransport === receiptTransport
-          ? { modalTransport: receiptTransport }
-          : {}),
-        providerSandboxId: result.sandbox.providerSandboxId,
-        ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
-        promptId: result.promptId ?? null,
-        conversationId: result.conversationId ?? null,
-        status: result.sandbox.status,
-        // Keep the admitted DB manifest immutable. The durable completed result
-        // adds verified receipts from the launch, not caller-supplied pins.
-        manifest: { ...m, skillReceipts: result.sandbox.skills ?? [] },
-      };
-      // The launch has returned a receipt. Only this deterministic publication is
-      // safe to retry: never fork or prompt again after an uncertain response.
-      const publish = () =>
-        sql.query(
-          "update public.template_launch_requests set state='succeeded',result=$2::text::jsonb,updated_at=now() where id=$1",
-          [request.id, JSON.stringify(output)],
+          {
+            id: row.id,
+            credentialVersion: m.account.version,
+            revalidate: async (tx) => {
+              await revalidateInTransaction(tx, actor, org, m);
+              const secrets = await resolveLaunchSecrets(tx, a, m.definition.secrets ?? [], encryptionKey);
+              try {
+                validateReadableVariables({ ...m.variables, ...secrets });
+              } catch {
+                unavailable("environment_limits_exceeded");
+              }
+              await active.fenceAdmission?.(tx, row.sandbox_id);
+            },
+          },
         );
-      await publish().catch(publish);
-      return output;
-    } catch (error) {
-      // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
-      const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
-      const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
-      if (usesHostPlacement(def)) throw error;
-      const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
-      const failureCode =
-        refused || error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
-          ? error.code
-          : !allocating && error instanceof LaunchError
-            ? error.code
-            : undefined;
-      const safeReason = refused
-        ? (failureCode ?? "launch_unavailable")
-        : (secretRefusal?.reason ??
-          refusalReason(error) ??
-          failureCode ??
-          (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
-      // A publication may have committed even if both acknowledgements were lost.
-      // Keep its durable success intact; same-key replay reads the saved receipt.
-      // Only public typed errors carry a display message. Never publish arbitrary
-      // exceptions or guest initialization output. Preserve the exact refusal on replay.
-      const message =
-        error instanceof VaultError ||
-        error instanceof ProviderError ||
-        error instanceof GoldenError ||
-        error instanceof ProviderRoutingError
-          ? error.message
-          : error instanceof LaunchError &&
-              ["no_credentials", "credential_refused", "unsupported", "invalid_request"].includes(error.code)
-            ? error.message
-            : safeReason.startsWith("skillpack_")
-              ? skillRefusalMessage(safeReason)
-              : undefined;
-      const output = {
-        requestId: request.id,
-        state,
-        id: request.sandbox_id,
-        reason: safeReason,
-        ...(message ? { message } : {}),
-        ...(secretRefusal ? { code: secretRefusal.code } : {}),
-        ...(runtime.explicitModal && state === "failed" && failureCode ? { failureCode } : {}),
-        manifest: m,
-      };
-      await sql.query(
-        "update public.template_launch_requests set state=$2,reason=$3,result=$4::text::jsonb,updated_at=now() where id=$1 and result is null",
-        [
-          request.id,
-          state,
-          safeReason,
-          state === "failed" || safeReason.startsWith("skillpack_") ? JSON.stringify(output) : null,
-        ],
-      );
-      if (secretRefusal) throw secretRefusal;
-      return output;
+      } catch (error) {
+        if (
+          !(error instanceof GoldenError || error instanceof VaultError || error instanceof LaunchError) ||
+          error.code === "unavailable" ||
+          error.code === "outcome_unknown"
+        )
+          throw error;
+        const reason = refusalReason(error) ?? error.code;
+        await transaction(async (tx) => {
+          await active.fenceAdmission?.(tx);
+          await tx.query(
+            `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
+             where id=$1 and state='claimed' and result is null`,
+            [
+              row.id,
+              reason,
+              JSON.stringify({
+                requestId: row.id,
+                state: "failed",
+                id: row.sandbox_id,
+                reason,
+                failureCode: error.code,
+                manifest: m,
+                ...(error instanceof VaultError ? { message: error.message, vaultCode: error.code } : {}),
+              }),
+            ],
+          );
+        });
+      }
+      const current = (
+        await sql.query<RequestRow>("select * from public.template_launch_requests where id=$1", [row.id])
+      ).rows[0];
+      if (!current || current.state === "claimed") unavailable("environment_admission_unavailable");
+      return replay(current, bodyDigest, active);
     }
+    return resume(request, selection.a);
   }
   async function replay(row: RequestRow, bodyDigest: string, runtime: TemplateRuntime) {
     if (row.digest !== bodyDigest)
@@ -1033,6 +871,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       (row.reason === "secret_unavailable" || row.reason === "secret_version_changed")
     )
       throw new LaunchSecretRefusal(row.reason);
+    if (!runtime.scheduled && row.state === "failed" && row.result?.vaultCode && typeof row.result.message === "string")
+      throw new VaultError(row.result.vaultCode as VaultErrorCode, row.result.message);
     const output = row.result ?? {
       requestId: row.id,
       state: row.state,
@@ -1047,9 +887,15 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     };
     return output;
   }
-  async function revalidateInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, m: Manifest) {
+  async function revalidateInTransaction(
+    tx: Sql,
+    actor: ApplicationVaultActor,
+    org: string,
+    m: Manifest,
+    worker = false,
+  ) {
     const a = await member(tx, actor, org);
-    const h = await header(tx, a, m.templateId);
+    const h = await header(tx, a, m.templateId, false, worker);
     if ((await epoch(tx, a)) !== m.actorEpoch) unavailable("authorization_changed");
     const resolved = await references(
       tx,
@@ -1058,29 +904,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       { ...m.definition, modelAccount: m.account },
       false,
       m.connections,
+      worker,
     );
     if (canonical(resolved.host) !== canonical(m.host)) unavailable("environment_binding_changed");
     return resolved.golden;
-  }
-  async function revalidate(actor: ApplicationVaultActor, org: string, m: Manifest) {
-    await transaction((tx) => revalidateInTransaction(tx, actor, org, m));
-  }
-  async function resolveEnvironment(actor: { userId: string; orgId: string }, m: Manifest) {
-    const values = { ...m.variables, ...(await resolveSecrets(actor, m.definition)) };
-    try {
-      return validateReadableVariables(values);
-    } catch {
-      // Closed diagnostic only: never include keys, values or a decryption error.
-      unavailable("environment_limits_exceeded");
-    }
-  }
-  // Resolve only into a short-lived provider call; never put plaintext in the durable manifest.
-  async function resolveSecrets(actor: { userId: string; orgId: string }, def: TemplateDefinition) {
-    if (!def.secrets?.length) return {};
-    return transaction(async (tx) => {
-      await member(tx, { userId: actor.userId, orgs: [{ orgId: actor.orgId }] }, actor.orgId);
-      return resolveLaunchSecrets(tx, actor, def.secrets ?? [], encryptionKey);
-    });
   }
   async function validateBindingInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, templateId: string) {
     const a = await member(tx, actor, org);
@@ -1129,6 +956,28 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       await revalidateInTransaction(tx, { userId: actor.userId, orgs: [actor] }, actor.orgId, row.manifest);
   }
 
+  async function revalidateGoldenJob(tx: Sql, sandboxId: string, receiptId: string) {
+    const row = (
+      await tx.query<RequestRow>(
+        "select * from public.template_launch_requests where sandbox_id=$1 and id=$2 and state='succeeded'",
+        [sandboxId, receiptId],
+      )
+    ).rows[0];
+    if (!row) unavailable("environment_admission_unavailable");
+    if (row.client_key.startsWith("routine:")) {
+      const grant = await tx.query(
+        `select 1 from public.routine_runs run join public.routines r on r.id=run.routine_id
+         join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
+         where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
+         and (r.scope='personal' or m.role='admin') for share of r,m nowait`,
+        [row.client_key, row.actor_id, row.org_id],
+      );
+      if (!grant.rows.length) throw new VaultError("forbidden", "Routine owner authorization changed.");
+    }
+    const actor = { userId: row.actor_id, orgs: [{ orgId: row.org_id }] };
+    await revalidateInTransaction(tx, actor, row.org_id, row.manifest, true);
+  }
+
   async function completeDockerLaunch(
     tx: Sql,
     requestId: string,
@@ -1147,6 +996,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     );
   }
 
-  return { command, validateBindingInTransaction, revalidateDockerLaunch, completeDockerLaunch };
+  return { command, validateBindingInTransaction, revalidateDockerLaunch, revalidateGoldenJob, completeDockerLaunch };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

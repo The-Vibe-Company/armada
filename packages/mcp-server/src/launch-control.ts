@@ -10,7 +10,6 @@ import {
 } from "@armada/core/contract";
 import {
   type GoldenActor,
-  type GoldenRecord,
   goldenForLaunch,
   LaunchError,
   type ModelChoice,
@@ -28,11 +27,10 @@ import { scopedOrg } from "./control-caller.ts";
 import { UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
-import { providerForGolden } from "./golden-control.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
-import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -190,11 +188,6 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
           ) => options.dockerLaunch!.launch(caller, body, admission),
         }
       : {}),
-    provider: (golden: GoldenRecord) => {
-      if (!launch.runtime && !launch.boatRuntime && !goldenRuntimePlacement(launch, golden.provider))
-        throw new VaultError("unavailable", "Runtime launch is unavailable for this golden.");
-      return providerForGolden(options, caller, golden);
-    },
     options: launch,
   } satisfies TemplateRuntime;
 }

@@ -12843,7 +12843,10 @@
                           ]
                         },
                         "providerSandboxId": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         },
                         "goldenId": {
                           "type": "string",

@@ -54,7 +54,6 @@ type Run = {
   lease_id: string | null;
 };
 type Claim = {
-  docker?: boolean;
   reason?: string | null;
   id: string;
   state: string;
@@ -117,15 +116,23 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   async function templateClaim(run: Run): Promise<Claim | undefined> {
     return (
       await sql.query<Claim>(
-        `select c.id,c.manifest#>>'{definition,provider}'='docker' as docker,
-         case when j.state='failed' then 'failed' else c.state end as state,
-         case when j.state='failed' then 'launch_unavailable' else c.reason end as reason,
+        `select c.id,
+         case when j.state='failed' or t.state='failed' or q.state='failed' then 'failed'
+              when j.id is not null and t.id is not null and q.request_id is null then 'allocating'
+              else c.state end as state,
+         case when j.state='failed' or t.state='failed' or q.state='failed'
+              then 'launch_unavailable' else c.reason end as reason,
          case when c.state='failed' then s.id else c.sandbox_id end as sandbox_id,
-         c.result->>'promptId' as prompt_id,c.result->>'conversationId' as conversation_id
+         coalesce(q.request_id::text,c.result->>'promptId') as prompt_id,
+         c.result->>'conversationId' as conversation_id
          from public.template_launch_requests c
          left join public.sandboxes s on c.state='failed' and s.id=c.sandbox_id and s.org_id=c.org_id and s.owner_id=c.actor_id
-         left join public.jobs j on c.state='allocating' and j.sandbox_id=c.sandbox_id
-           and j.kind='launch' and j.outcome ? 'docker_actor_epoch'
+         left join public.jobs j on j.sandbox_id=c.sandbox_id and j.org_id=c.org_id
+           and j.request_owner_id=c.actor_id and j.kind='launch' and j.generation=1
+         left join public.jobs t on t.sandbox_id=j.sandbox_id and t.org_id=j.org_id
+           and t.generation=j.generation and t.kind='launch_initial_turn'
+         left join public.account_turn_queue q on q.sandbox_id=t.sandbox_id and q.request_id=t.id
+           and q.owner_id=c.actor_id and q.org_id=c.org_id and q.queued_generation=t.generation
          where c.org_id=$1 and c.actor_id=$2 and c.client_key=$3`,
         [run.org_id, run.owner_id, run.request_key],
       )
@@ -140,10 +147,9 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
   }
   async function dispatch(run: Run, signal: AbortSignal) {
     const existing = await templateClaim(run);
-    const unallocatedDocker = existing?.docker && existing.state === "claimed";
-    if (existing && !unallocatedDocker) return reconcile(run, existing);
-    if (run.state === "reconciling" && !unallocatedDocker)
-      return settle(run, "reconciling", undefined, "launch_uncertain");
+    const unallocated = existing?.state === "claimed";
+    if (existing && !unallocated) return reconcile(run, existing);
+    if (run.state === "reconciling" && !unallocated) return settle(run, "reconciling", undefined, "launch_uncertain");
     const input = (
       await sql.query<{ template_id: string; template_revision: number; prompt: string; ttl_seconds: number }>(
         "select * from public.routine_run_inputs where run_id=$1",
@@ -179,7 +185,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
             // exists. Fence that stale caller at the provider boundary, not just history publication.
             const current = await tx.query(
               "select id from public.routine_runs where id=$1 and (state='admitted' or ($3 and state='reconciling')) and lease_id=$2 and lease_until>clock_timestamp() for update",
-              [run.id, run.lease_id, Boolean(unallocatedDocker)],
+              [run.id, run.lease_id, Boolean(unallocated)],
             );
             if (!current.rows.length) throw Error("Routine launch admission expired.");
           },

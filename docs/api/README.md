@@ -50,8 +50,11 @@ and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
 Modal launches also include the frozen manifest at `sandbox.templateManifest`.
 The separate `templates/launch` operation returns a durable template receipt.
-Docker host-placement templates return `status: "starting"` before host allocation.
+Boat, Modal, and Docker templates return `status: "starting"` before provider allocation.
 Use the same request key to read the completed receipt or follow the sandbox ID in status and logs.
+Routines use the same launch job and track the original first turn. A scoped child
+launch returns a succeeded admission receipt with the sandbox ID. Scoped read can
+return a starting sandbox with a null provider ID while allocation is pending.
 
 For Boat and Modal snapshot launches and for Docker launches, use
 `credentialId` to select a model account. The account’s simultaneous-agent

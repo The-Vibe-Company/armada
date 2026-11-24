@@ -88,7 +88,6 @@ export interface HostCapabilities {
   readonly requiresPinnedGoldenBinding: boolean;
   readonly canonicalGoldenAdoption: boolean;
   readonly goldenLaunchAdmission?: "job";
-  readonly templateReceiptTransport?: "dialout";
   readonly startRateLimit?: { readonly status: number; readonly detailsProvider: "boat" };
   readonly snapshotSourceBusyCode?: string;
   readonly builderImageFailureCode?: string;
@@ -127,6 +126,7 @@ export interface HostCapabilities {
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
+    goldenLaunchAdmission: "job",
     requiresPinnedGoldenBinding: false,
     canonicalGoldenAdoption: true,
     startRateLimit: { status: 429, detailsProvider: "boat" },
@@ -146,7 +146,6 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     requiresPinnedGoldenBinding: true,
     canonicalGoldenAdoption: false,
     goldenLaunchAdmission: "job",
-    templateReceiptTransport: "dialout",
     snapshotSourceBusyCode: "snapshot_source_busy",
     builderImageFailureCode: "modal_builder_image_failed",
     goldenBuilderBaseline: "preinstalled-as-user",

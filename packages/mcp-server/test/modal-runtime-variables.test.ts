@@ -1,7 +1,6 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
-import { isRecord } from "@armada/core";
 import { pinnedModalLaunchReceipt } from "@armada/core/contract";
 import {
   createApplicationVault,
@@ -12,10 +11,7 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
-import * as boatProvider from "@armada/provider-boat";
-import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
-import { boatRuntimeActivation } from "../src/boat-runtime-activation.ts";
-import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createGoldenRuntimeEnvironment } from "../src/golden-runtime-environment.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -26,11 +22,9 @@ import {
   readRuntimeTemplateEnvironment,
   runtimeConfigurationWithVariables,
 } from "../src/runtime-readable-variables.ts";
-import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { sqlOver } from "../src/sql.ts";
-import { runtimeWakes } from "../src/wake-bus.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
-import { publishedFailure, publishedResponse } from "./published-response.ts";
+import { publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -227,14 +221,13 @@ async function fixture(
     };
   };
   if (entry === "default") enableDefault();
-  if (provider === "modal")
-    options.admitModalLaunch = await modalAdmissionFixture(
-      sql,
-      ENCRYPTION_KEY,
-      options.store,
-      { orgId: people.org, userId: people.owner, visibility: "private", binding },
-      host,
-    );
+  options.admitModalLaunch = await modalAdmissionFixture(
+    sql,
+    ENCRYPTION_KEY,
+    options.store,
+    provider === "modal" ? { orgId: people.org, userId: people.owner, visibility: "private", binding } : undefined,
+    { ...host, managementIdentity: async () => ({ scope: "user", ownerId: people.owner }) },
+  );
   const create = async (def: unknown = definition) =>
     (
       await templates.command(caller, "create", {
@@ -382,285 +375,6 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
   expect(f.starts).toEqual([]);
 });
 
-function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledged = true) {
-  const policy = boatRuntimeActivation({
-    sql: f.sql,
-    encryptionKey: ENCRYPTION_KEY,
-    serverUrl: "https://armada.test",
-    architecture: "x64",
-    manifest: {
-      protocol: 1,
-      platform: "linux",
-      libc: "glibc",
-      architecture: "x64",
-      runtime: { sha256: "a".repeat(64), bytes: 1 },
-      harnesses: { codex: { files: [{ path: "bin/codex" }] } },
-    },
-  });
-  f.options.launch!.boatRuntimeDefault!.policy = policy;
-  const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
-  const handled: RunnerRequest["op"][] = [];
-  let unsubscribe = () => {};
-  let work = Promise.resolve();
-  let bootstrapDeadline: number | undefined;
-  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only external Boat SSH bootstrap to exercise the real launch adapter without a provider or process.
-  const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
-    const active = await f.authority.enrol(request.enrolmentToken);
-    const configuration = active.configuration;
-    const grant = isRecord(configuration) ? configuration.grant : undefined;
-    if (!isRecord(grant) || typeof grant.expiresAt !== "number") throw Error("Missing bootstrap command deadline.");
-    bootstrapDeadline = grant.expiresAt;
-    expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
-    unsubscribe = runtimeWakes.subscribe(`socket:${active.sandboxId}`, () => {
-      work = work.then(async () => {
-        const { command } = await commands.next(active.runtimeToken, active.epoch);
-        if (!command) return;
-        let result: Record<string, unknown>;
-        switch (command.op) {
-          case "health":
-            result = { ready: true, generation: active.epoch, workspaceVersion: 1 };
-            break;
-          case "configureReadableVariables":
-            f.deliveries.push(command);
-            result = { acknowledged };
-            break;
-          case "workspaceExec":
-            result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
-            break;
-          case "prompt":
-            result = { promptId: "prompt-1", conversationId: "conversation", status: "queued" };
-            break;
-          case "getPrompt":
-            result = { promptId: command.promptId, status: "finished", done: true };
-            break;
-          default:
-            throw Error("Unexpected fake runtime command.");
-        }
-        await commands.complete(active.runtimeToken, active.epoch, {
-          epoch: active.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: { version: 1, requestId: command.requestId, result },
-        });
-        handled.push(command.op);
-      });
-    });
-  });
-  return {
-    policy,
-    handled,
-    get bootstrapDeadline() {
-      return bootstrapDeadline;
-    },
-    async close() {
-      bootstrap.mockRestore();
-      unsubscribe();
-      await work;
-    },
-  };
-}
-
-test("Boat launch publishes the bootstrap command deadline for the live runtime epoch", async () => {
-  const f = await fixture("codex", "boat");
-  const template = await f.create();
-  const boat = fakeBoatRuntimeSink(f);
-  try {
-    const response = await f.api(f.request(template.id));
-    expect(response.status).toBe(200);
-    const { id } = (await response.json()) as { id: string };
-    const deadline = await f.authority.withOwner(id, f.people.owner, async (_tx, scope) =>
-      scope.commandGrantExpiresAt?.getTime(),
-    );
-    expect(boat.bootstrapDeadline).toBeGreaterThan(0);
-    expect(deadline).toBe(boat.bootstrapDeadline!);
-  } finally {
-    await boat.close();
-  }
-});
-
-test.each(["health", "configureReadableVariables"] as const)(
-  "queued startup rolls back %s when the dispatch claim expires before command commit",
-  async (operation) => {
-    const f = await fixture("codex", "boat", "explicit", true);
-    const secret = await f.application.command(f.caller, "secret", "set", {
-      org: f.people.org,
-      scope: "personal",
-      name: "APP_TOKEN",
-      value: "fixture",
-    });
-    const template = await f.create({
-      ...f.definition,
-      secrets: [{ key: "APP_TOKEN", secretId: (secret.item as { id: string }).id, version: 1 }],
-    });
-    const sink = fakeBoatRuntimeSink(f);
-    const launch = f.options.launch!.boatRuntimeDefault!;
-    const { policy } = sink;
-    let expired = false;
-    let persistedBeforeCleanup: boolean | undefined;
-    launch.policy = {
-      ...policy,
-      async start(input) {
-        const hasCommand = async (tx: Sql) =>
-          (
-            await tx.query(
-              "select 1 from runtime_commands where sandbox_id=$1 and (request_id like 'boat_variables_%')=$2",
-              [input.sandbox.id, operation === "configureReadableVariables"],
-            )
-          ).rows.length > 0;
-        try {
-          return await policy.start({
-            ...input,
-            async assertDispatch(tx) {
-              if (tx) expired ||= await hasCommand(tx);
-              if (expired) throw Error("Dispatch claim expired.");
-            },
-          });
-        } finally {
-          persistedBeforeCleanup = await hasCommand(f.sql);
-        }
-      },
-    };
-    try {
-      await f.api(f.request(template.id));
-    } finally {
-      await sink.close();
-    }
-    expect(sink.handled).not.toContain(operation);
-    expect(expired).toBe(true);
-    expect(persistedBeforeCleanup).toBe(false);
-  },
-);
-
-test.each(["boat"] as ("boat" | "modal")[])(
-  "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
-  async (provider) => {
-    const f = await fixture("codex", provider, "explicit", true);
-    const canary = `v${crypto.randomUUID().slice(0, 6)}`;
-    const secret = (
-      await f.db.query<{ id: string }>(
-        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
-      )
-    ).rows[0]!;
-    const template = await f.create({
-      ...f.definition,
-      secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-    });
-    const boat = provider === "boat" ? fakeBoatRuntimeSink(f) : undefined;
-    try {
-      const { prompt, ...args } = f.request(template.id);
-      const request = boat ? { ...args, prompt } : args;
-      const reply = await f.api(request);
-      expect(reply.status).toBe(200);
-      const receipt = await reply.text();
-      expect(receipt.includes(canary)).toBe(false);
-      const launch = JSON.parse(receipt);
-      const id = provider === "modal" ? launch.sandbox.id : launch.id;
-      if (boat) {
-        expect(boat.handled.slice(0, 3)).toEqual(["health", "configureReadableVariables", "health"]);
-        expect(boat.handled.at(-1)).toBe("prompt");
-        expect(f.physical.forks[0]?.env).toEqual({});
-      }
-      expect(f.deliveries).toHaveLength(1);
-      const command = f.deliveries[0];
-      expect(command).toMatchObject({
-        op: "configureReadableVariables",
-        sandboxId: id,
-        harness: "codex",
-        secretKeys: ["APP_TOKEN"],
-      });
-      if (command?.op !== "configureReadableVariables") throw Error("Missing configuration");
-      expect(command.variables.APP_TOKEN === canary).toBe(true);
-      expect(command.variables.APP_REGION).toBe("original\n$(not-a-command)");
-      const stored = (
-        await f.db.query<{ request_enc: Uint8Array; result_enc: Uint8Array }>(
-          "select request_enc,result_enc from runtime_commands where request_id=$1",
-          [command.requestId],
-        )
-      ).rows[0]!;
-      expect(Buffer.from(stored.request_enc).includes(canary)).toBe(false);
-      expect(Buffer.from(stored.result_enc).includes(canary)).toBe(false);
-      expect((await f.api(request)).status).toBe(200);
-      expect(f.deliveries).toHaveLength(1);
-
-      await f.db.query("delete from runtime_commands where sandbox_id=$1 and request_id=$2", [id, command.requestId]);
-      const hasConfiguration = async (tx: typeof f.sql) =>
-        (
-          await tx.query("select 1 from runtime_commands where sandbox_id=$1 and request_id=$2", [
-            id,
-            command.requestId,
-          ])
-        ).rows.length > 0;
-      await expect(
-        f.options.runtimeSend!(
-          f.caller,
-          { id, request_id: crypto.randomUUID(), prompt: "do work" },
-          {
-            async canDispatch(tx) {
-              return !(await hasConfiguration(tx ?? f.sql));
-            },
-            async handoffGeneration() {
-              throw new Error("Running send does not advance generation.");
-            },
-          },
-        ),
-      ).rejects.toThrow("Queued runtime turn lease is no longer current.");
-      expect(await hasConfiguration(f.sql)).toBe(false);
-      expect(f.deliveries).toHaveLength(1);
-
-      await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
-      const send = f.options.runtimeSend!;
-      await expect(send(f.caller, { id, request_id: crypto.randomUUID(), prompt: "do work" })).rejects.toMatchObject({
-        code: "conflict",
-        message: "Template launch refused: secret_unavailable.",
-      });
-      expect((await f.db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
-        { activity_lease_id: null },
-      ]);
-      await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
-      const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
-      const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
-      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, commands);
-      const runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, undefined, resume);
-      queue.setDispatch((caller, input) =>
-        dispatchControlCommand("sandbox/send", caller, { ...input }, { ...f.options, runtimeSend }),
-      );
-      const requestId = crypto.randomUUID();
-      expect(await queue.accept(f.caller, { id, request_id: requestId, prompt: "do work" })).toMatchObject({
-        status: "queued",
-      });
-      expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-      await queue.drain();
-      expect(await queue.status(f.caller, id, requestId)).toMatchObject({ failed: true });
-    } finally {
-      await boat?.close();
-    }
-  },
-);
-
-test("Boat launch withholds the first prompt when the runtime rejects secret configuration", async () => {
-  const f = await fixture("codex", "boat");
-  const secret = (
-    await f.db.query<{ id: string }>(
-      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const template = await f.create({
-    ...f.definition,
-    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-  });
-  const boat = fakeBoatRuntimeSink(f, false);
-  try {
-    const reply = await f.api(f.request(template.id));
-    expect(reply.status).toBe(200);
-    expect(await reply.json()).toMatchObject({ state: "reconciling" });
-    expect(boat.handled).toEqual(["health", "configureReadableVariables"]);
-  } finally {
-    await boat.close();
-  }
-});
-
 test.each(["modal", "boat"] as const)(
   "%s uses the vault conflict refusal for a pinned secret that is no longer available to its launcher",
   async (provider) => {
@@ -682,43 +396,6 @@ test.each(["modal", "boat"] as const)(
     expect(f.physical.forks).toHaveLength(0);
   },
 );
-
-test("Boat launch returns the vault conflict after allocation and on replay", async () => {
-  const f = await fixture("codex", "boat", "default", true);
-  const secret = (
-    await f.db.query<{ id: string }>(
-      "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-      [f.people.org, f.people.owner, await encryptSecret(crypto.randomUUID(), ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const template = await f.create({
-    ...f.definition,
-    secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
-  });
-  const changeVersionAfterFork = (host: import("@armada/core").Provider) => ({
-    ...host,
-    async fork(request: Parameters<typeof host.fork>[0]) {
-      const child = await host.fork(request);
-      await f.db.query("update application_secrets set version=2 where id=$1", [secret.id]);
-      return child;
-    },
-  });
-  const runtime = f.options.launch!.boatRuntimeDefault!;
-  const resolveHost = runtime.provider;
-  runtime.provider = async (actor, golden) => changeVersionAfterFork(await resolveHost(actor, golden));
-  const request = f.request(template.id);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await f.api(request);
-    expect(response.status).toBe(409);
-    expect(publishedFailure().parse(await response.json())).toMatchObject({
-      error: { code: "conflict", message: "Template launch refused: secret_version_changed." },
-    });
-  }
-  expect(f.physical.forks).toHaveLength(1);
-  expect(f.physical.stops).toHaveLength(1);
-  expect(f.deliveries).toHaveLength(0);
-  expect(f.prompts()).toBe(0);
-});
 
 test.each(["modal", "boat"] as const)(
   "frozen %s environment rejects reserved keys and invalid secret bindings even if internal storage is corrupted",
@@ -804,7 +481,7 @@ for (const harness of ["codex", "claude"] as const)
     const first = await f.api(request);
     expect(first.status).toBe(200);
     const launched = (await first.json()) as { id: string };
-    expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
+    expect(launched).toMatchObject({ provider: "boat", status: "starting" });
     await f.application.command(f.caller, "variable", "update", {
       org: f.people.org,
       id: f.variableId,
@@ -824,6 +501,6 @@ for (const harness of ["codex", "claude"] as const)
     const replay = await f.api(request);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(launched);
-    expect(f.physical.forks).toHaveLength(1);
-    expect(f.starts).toHaveLength(1);
+    expect(f.physical.forks).toHaveLength(0);
+    expect(f.starts).toHaveLength(0);
   });

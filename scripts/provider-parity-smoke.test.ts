@@ -2274,6 +2274,8 @@ const productionBoatEnv = {
 };
 const productionBoatArgs = ["--production-boat", "--only", "boat"];
 
+const productionBoatSandboxId = "4b2cdfe5-8310-4964-8dbb-1fcbfb46a553";
+
 function productionBoatFixture(
   fault?:
     | "foreign_provider"
@@ -2288,6 +2290,7 @@ function productionBoatFixture(
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   const lines: string[] = [];
   let status = "ready";
+  let externalRef: string | undefined;
   let memory = "";
   const turns: string[] = [];
   let journalWrites = 0;
@@ -2309,7 +2312,7 @@ function productionBoatFixture(
       expect(init.redirect).toBe("error");
       const { path, body } = parityRequest(url, init);
       calls.push({ path, body });
-      if (body.id !== undefined) expect(body.id).toBe("new-production-boat");
+      if (body.id !== undefined) expect(body.id).toBe(productionBoatSandboxId);
       switch (path) {
         case "golden/list":
           return Response.json({
@@ -2353,9 +2356,14 @@ function productionBoatFixture(
           if (fault === "deadline_exhausted") clock += 35 * 60_000;
           expect(body.provider).toBe("boat");
           if (fault === "ambiguous_launch") throw new Error("lost launch acknowledgement");
-          return Response.json({
-            sandbox: { id: "new-production-boat", provider: fault === "foreign_provider" ? "modal" : "boat" },
-          });
+          if (fault === "foreign_provider")
+            return Response.json({ sandbox: { id: productionBoatSandboxId, provider: "modal" } });
+          externalRef = String(body.externalRef);
+          return Response.json({ sandbox: { id: productionBoatSandboxId, status: "starting" } });
+        case "sandbox/list":
+          if (externalRef === undefined) return Response.json({ sandboxes: [] });
+          expect(body.externalRef).toBe(externalRef);
+          return Response.json({ sandboxes: [{ id: productionBoatSandboxId, provider: "boat", externalRef, status }] });
         case "sandbox/send":
           status = "ready";
           if (String(body.prompt).includes("Remember this token"))
@@ -2381,8 +2389,10 @@ function productionBoatFixture(
           });
         case "sandbox/status":
           return Response.json({
-            id: "new-production-boat",
+            id: productionBoatSandboxId,
             status,
+            settled: true,
+            statusMessage: null,
             usage: {
               turnCount: turns.length,
               turns: turns.map((promptId) => ({
@@ -2419,7 +2429,7 @@ function productionBoatFixture(
             );
           if (fault === "delete_failed") return Response.json({ error: { code: "forbidden" } }, { status: 403 });
           status = "deleted";
-          return Response.json({ id: "new-production-boat", status });
+          return Response.json({ id: productionBoatSandboxId, status });
         default:
           throw new Error(`Unexpected production route ${path}`);
       }
@@ -2500,14 +2510,17 @@ for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_
     expect(fake.journalWrites()).toBe(0);
     const report = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"provider_parity"')) ?? "{}");
     if (fault === "foreign_provider" || fault === "ambiguous_launch") {
-      expect(fake.calls.map((call) => call.path)).toEqual(["launch/options", "golden/list", "sandbox/launch"]);
+      const paths = fake.calls.map((call) => call.path);
+      expect(paths.slice(0, 3)).toEqual(["launch/options", "golden/list", "sandbox/launch"]);
+      if (fault === "ambiguous_launch") expect([...new Set(paths.slice(3))]).toEqual(["sandbox/list"]);
+      else expect(paths).toHaveLength(3);
       expect(report.features.launch.boat.status).toBe("fail");
       expect(fake.lines.some((line) => line.includes('"step":"parity_cleanup"'))).toBe(false);
     } else {
       expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
       expect(fake.calls.some((call) => call.path === sandboxDeletePath)).toBe(true);
       const cleanup = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_cleanup"')) ?? "{}");
-      expect(cleanup).toMatchObject({ provider: "boat", id: "new-production-boat", deleted: fault === undefined });
+      expect(cleanup).toMatchObject({ provider: "boat", id: productionBoatSandboxId, deleted: fault === undefined });
       expect(report.features.cleanup.boat.status).toBe(fault ? "fail" : "pass");
       for (const step of [
         "launch",

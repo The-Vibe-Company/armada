@@ -1,5 +1,6 @@
 import type { DockerSandboxStatus, Provider } from "@armada/core";
 import { promptOutcome, type RoutineTaskState } from "@armada/core/server";
+import type { AccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 import type { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
@@ -9,6 +10,7 @@ export async function observeRoutinePrompt(
   caller: Caller,
   turn: { sandboxId: string; promptId: string; conversationId?: string | null; signal?: AbortSignal },
   ports: {
+    accountTurns?: Pick<AccountTurnQueue, "status">;
     docker?: Pick<ReturnType<typeof createDockerSandboxControls>, "invoke">;
     get(id: string): Promise<SandboxView | null>;
     provider(sandbox: SandboxView): Promise<Provider>;
@@ -22,10 +24,12 @@ export async function observeRoutinePrompt(
   }
   const sandbox = await ports.get(turn.sandboxId);
   if (!sandbox || sandbox.status === "deleted") return "unknown";
+  const queued = await ports.accountTurns?.status(caller, turn.sandboxId, turn.promptId);
+  if (queued && "failed" in queued) return queued.failed ? "failed" : "running";
   const result = await promptOutcome(await ports.provider(sandbox), {
     ...(turn.signal ? { signal: turn.signal } : {}),
     sandboxId: sandbox.providerSandboxId,
-    promptId: turn.promptId,
+    promptId: queued?.nativePromptId ?? turn.promptId,
     ...(turn.conversationId ? { conversationId: turn.conversationId } : {}),
   });
   return result.state;

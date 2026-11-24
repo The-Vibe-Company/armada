@@ -992,10 +992,30 @@ test("Modal admission rolls back and returns a conflict when a selected MCP row 
   expect((await admitModalLaunch(sql, launchEncryptionKey, input)).sandbox.status).toBe("starting");
 });
 
-test.each(["active secret", "revoked secret", "changed snapshot", "changed connection"] as const)(
-  "pinned Modal admission handles %s before dispatch",
-  async (status) => {
+const pinnedAdmissionCases = [
+  ["modal", "active secret"],
+  ["modal", "revoked secret"],
+  ["modal", "changed snapshot"],
+  ["modal", "changed connection"],
+  ["boat", "active secret"],
+  ["boat", "changed builder"],
+] as const;
+
+test.each(pinnedAdmissionCases)(
+  "pinned %s template admission handles %s inside the receipt transaction before provider dispatch",
+  async (provider, status) => {
     const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
+    const boat =
+      provider === "boat"
+        ? (
+            await db.query<{ id: string; provider_snapshot_id: string; provider_sandbox_id: string }>(
+              "select id,provider_snapshot_id,provider_sandbox_id from goldens where owner_id=$1 and provider='boat'",
+              [people.owner],
+            )
+          ).rows[0]
+        : undefined;
+    const goldenId = boat?.id ?? input.sandbox.goldenId;
+    const snapshot = boat?.provider_snapshot_id ?? input.allocation.source.ref;
     const sandboxId = crypto.randomUUID();
     const connectionId = await launchConnection(db, people);
     await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
@@ -1009,22 +1029,22 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
       rows: [secret],
     } = await db.query<{ id: string }>(
       `insert into application_secrets(org_id,owner_id,scope,name,value_enc)
-     values($1,$2,'personal','APP_TOKEN',$3) returning id`,
+       values($1,$2,'personal','APP_TOKEN',$3) returning id`,
       [people.org, people.owner, await encryptSecret("fixture", launchEncryptionKey)],
     );
     const {
       rows: [receipt],
     } = await db.query<{ id: string }>(
       `with template as (
-       insert into launch_templates(org_id,owner_id,scope,name)
-       values($1,$2,'personal','pinned-modal') returning id
-     ), revision as (
-       insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
-       select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
-     )
-     insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
-                                          manifest,golden_operation_fence_id,sandbox_id)
-     select $1,$2,'pinned',repeat('a',64),template_id,id,$3,$4,$5 from revision returning id`,
+         insert into launch_templates(org_id,owner_id,scope,name)
+         values($1,$2,'personal','pinned-modal') returning id
+       ), revision as (
+         insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+         select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+       )
+       insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
+                                            manifest,golden_operation_fence_id,sandbox_id)
+       select $1,$2,'pinned',repeat('a',64),template_id,id,$3,$4,$5 from revision returning id`,
       [
         people.org,
         people.owner,
@@ -1033,15 +1053,17 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
           actorId: people.owner,
           actorEpoch: actor?.epoch ?? 0,
           golden: {
-            id: input.sandbox.goldenId,
-            provider: "modal",
-            providerSnapshotId: input.allocation.source.ref,
+            id: goldenId,
+            provider,
+            providerSnapshotId: snapshot,
             config: workspaceConfig,
-            modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
+            ...(boat
+              ? { providerSandboxId: status === "changed builder" ? "stale-builder" : boat.provider_sandbox_id }
+              : { modal: { workspace: "workspace", environment: "main", appId: "ap-test" } }),
           },
           account: { id: openaiCredentialId, version: 1 },
           definition: {
-            provider: "modal",
+            provider,
             harness: input.sandbox.harness,
             model: input.sandbox.model,
             reasoningEffort: input.sandbox.reasoningEffort,
@@ -1060,7 +1082,9 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
     const pinned = {
       ...launch,
       templateReceiptId: receipt!.id,
-      sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
+      sandbox: { ...input.sandbox, goldenId, credentialId: openaiCredentialId, credentialVersion: 1 },
+      allocation: { ...input.allocation, source: { kind: "snapshot" as const, ref: snapshot } },
+      ...(boat ? { boat: { scope: "user" as const, backendId: "fake-boat-account" } } : {}),
     };
     const admit = () => admitModalLaunch(sql, launchEncryptionKey, pinned);
     if (status !== "active secret") {
@@ -1070,14 +1094,16 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
       } else if (status === "changed connection") {
         await db.query("update mcp_grants set version=version+1 where connection_id=$1", [connectionId]);
         await expect(admit()).rejects.toMatchObject({ code: "conflict" });
+      } else if (status === "changed builder") {
+        await expect(admit()).rejects.toMatchObject({ code: "conflict" });
       } else {
         await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [pinned.sandbox.goldenId]);
         await db.query(
           `insert into modal_images(scope,name,source_id,record)
-           select scope,'replacement',source_id,record from modal_images where name='snapshot'`,
+             select scope,'replacement',source_id,record from modal_images where name='snapshot'`,
         );
         pinned.allocation = { ...pinned.allocation, source: { kind: "snapshot", ref: "replacement" } };
-        await expect(admit()).rejects.toThrow("Frozen Modal template snapshot or App binding changed.");
+        await expect(admit()).rejects.toThrow("Frozen template snapshot or provider binding changed.");
       }
       expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
       expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
@@ -1114,7 +1140,7 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
         state: "succeeded",
         id: sandboxId,
         status: "starting",
-        provider: "modal",
+        provider,
         manifest: { resolvedSkills: ["example/tool@1.0.0"] },
       },
     });
@@ -1130,7 +1156,7 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
       (
         await db.query(
           `select s.application_secret_tainted,s.provider_sandbox_id,r.id as receipt_id
-     from sandboxes s join template_launch_requests r on r.sandbox_id=s.id`,
+       from sandboxes s join template_launch_requests r on r.sandbox_id=s.id`,
         )
       ).rows,
     ).toEqual([{ application_secret_tainted: true, provider_sandbox_id: null, receipt_id: receipt!.id }]);

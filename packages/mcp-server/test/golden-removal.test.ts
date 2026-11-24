@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { createSqlGoldenStore, launchSandbox } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { fakeBoat } from "./support.ts";
 
 const getFixture = rowOnlyDatabase();
 
@@ -89,139 +86,15 @@ describe("golden removal authority", () => {
   });
 });
 
-describe("golden removal during launch", () => {
-  test("actual launch admission blocks removal during fork; lost provider outcomes never retire artifacts", async () => {
-    const { db, people, openaiCredentialId } = await getFixture();
-    const caller: Caller = { userId: people.admin, orgs: [{ orgId: people.org, role: "admin" }], via: "supabase" };
-    const data = createSqlData(db)(caller);
-    const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
-    const boat = fakeBoat();
-    let admitted!: () => void;
-    const reached = new Promise<void>((resolve) => {
-      admitted = resolve;
-    });
-    let proceed!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      proceed = resolve;
-    });
-    const fork = boat.provider.fork.bind(boat.provider);
-    boat.provider.fork = async (request) => {
-      admitted();
-      await blocked;
-      return fork(request);
-    };
-    const launch = launchSandbox(
-      boat.provider,
-      {
-        goldens: data.goldens,
-        sandboxes: data.sandboxes,
-        credentials: {
-          resolve: async () => ({
-            env: {},
-            secrets: [],
-            codexAuthJson: false,
-            binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
-          }),
-        },
-      },
-      { userId: people.admin, orgId: people.org, role: "admin" },
-      { golden: "shared", harness: "claude" },
-      { runtime: enrolledLaunchPolicy(db) },
-    );
-    await reached;
-    await expect(data.removeGolden!(golden.id)).rejects.toMatchObject({ code: "conflict" });
-    proceed();
-    const launched = await launch;
-    await data.removeGolden!(golden.id);
-    expect((await data.sandboxes.get(launched.sandbox.id))?.providerSandboxId).toBe(launched.sandbox.providerSandboxId);
-    await expect(
-      launchSandbox(
-        boat.provider,
-        {
-          goldens: data.goldens,
-          sandboxes: data.sandboxes,
-          credentials: {
-            resolve: async () => ({
-              env: {},
-              secrets: [],
-              codexAuthJson: false,
-              binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
-            }),
-          },
-        },
-        { userId: people.admin, orgId: people.org, role: "admin" },
-        { golden: "shared", harness: "claude" },
-        { runtime: enrolledLaunchPolicy(db) },
-      ),
-    ).rejects.toMatchObject({ code: "not_found" });
-    expect(boat.forks).toHaveLength(1);
-    const privateGolden = (
-      await createSqlData(db)({
-        userId: people.owner,
-        orgs: [{ orgId: people.org, role: "member" }],
-        via: "supabase",
-      }).goldens.findByName(people.org, "mine")
-    )[0]!;
-    const ownerData = createSqlData(db)({
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-      via: "supabase",
-    });
-    const unknownBoat = fakeBoat();
-    const physicalFork = unknownBoat.provider.fork.bind(unknownBoat.provider);
-    unknownBoat.provider.fork = async (request) => {
-      await physicalFork(request);
-      throw new Error("provider response lost");
-    };
-    await expect(
-      launchSandbox(
-        unknownBoat.provider,
-        {
-          goldens: ownerData.goldens,
-          sandboxes: ownerData.sandboxes,
-          credentials: {
-            resolve: async () => ({
-              env: {},
-              secrets: [],
-              codexAuthJson: false,
-              binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
-            }),
-          },
-        },
-        { userId: people.owner, orgId: people.org, role: "member" },
-        { golden: "mine", harness: "claude" },
-        { runtime: enrolledLaunchPolicy(db) },
-      ),
-    ).rejects.toMatchObject({ code: "outcome_unknown" });
-    expect(unknownBoat.forks).toHaveLength(1);
-    expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
-    expect((await db.query("select golden_id, snapshot_id from ordinary_launch_snapshot_intents")).rows).toEqual([
-      { golden_id: privateGolden.id, snapshot_id: privateGolden.providerSnapshotId },
-    ]);
-    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.owner]);
-    await expect(db.query("select remove_golden($1)", [privateGolden.id])).rejects.toThrow("unresolved");
-  });
-});
-
 describe("JWT fence authority", () => {
   test("JWTs cannot forge or release service fences, including after revocation or demotion", async () => {
-    const { db, people, openaiCredentialId } = await getFixture();
-    const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
+    const { db, people } = await getFixture();
     const data = createSqlData(db)({
       userId: people.admin,
       orgs: [{ orgId: people.org, role: "admin" }],
       via: "supabase",
     });
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
-    const boat = fakeBoat();
-    const credentials = {
-      resolve: async () => ({
-        env: {},
-        secrets: [],
-        codexAuthJson: false,
-        binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
-      }),
-    };
     const release = await data.goldens.beginOperation!(golden.id, {
       snapshotId: golden.providerSnapshotId,
       sandboxId: golden.providerSandboxId,
@@ -275,26 +148,6 @@ describe("JWT fence authority", () => {
     expect((await db.query("select id from golden_operation_fences order by id")).rows).toEqual(fences.rows);
     await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [people.org, people.admin]);
 
-    await db.query("select set_config('request.jwt.claim.sub',$1,false)", [people.admin]);
-    await db.exec("set role authenticated");
-    try {
-      await expect(
-        launchSandbox(
-          boat.provider,
-          {
-            goldens: createSqlGoldenStore(db),
-            sandboxes: data.sandboxes,
-            credentials,
-          },
-          actor,
-          { golden: "shared", harness: "claude" },
-          { runtime: enrolledLaunchPolicy(db) },
-        ),
-      ).rejects.toMatchObject({ code: "conflict" });
-      expect(boat.forks).toHaveLength(0);
-    } finally {
-      await db.exec("reset role");
-    }
     await expect(data.removeGolden!(golden.id)).rejects.toMatchObject({ code: "conflict" });
   });
 });

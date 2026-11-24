@@ -18,8 +18,7 @@ import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/cont
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
-import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
-import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
+import { createModalResumePolicy, modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
@@ -606,7 +605,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
             throw Error("Fixture ends at bootstrap invocation");
           },
         }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
-      policy: modalRuntimeLaunch({
+      policy: createModalResumePolicy({
         sql: f.sql,
         encryptionKey: ENCRYPTION_KEY,
         serverUrl: PUBLIC_URL,
@@ -1548,7 +1547,7 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
         vault: createSqlVaultStore(f.sql),
         key: ENCRYPTION_KEY,
         hostFor: async () => host,
-        policy: modalRuntimeLaunch({
+        policy: createModalResumePolicy({
           sql: f.sql,
           encryptionKey: ENCRYPTION_KEY,
           serverUrl: "https://armada.example",
