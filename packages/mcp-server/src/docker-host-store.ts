@@ -43,7 +43,7 @@ import {
   hostResourcePolicy,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { supportsDockerHostProtocol } from "./docker-host-version.ts";
+import { dockerHostVersionStatus, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import {
   createDockerMachineAdapter,
   type DockerMachineMailbox,
@@ -1141,6 +1141,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
+          versionStatus: dockerHostVersionStatus(host.daemon_version),
           protocol: host.daemon_protocol,
           upgradeRequired: !supportsDockerHostProtocol(host.daemon_protocol),
         }));

@@ -25,7 +25,7 @@ import { launchAccounts, listSelectedAccounts } from "@/lib/data/model-accounts"
 import { type ProviderSetup, readProviderSetup } from "@/lib/data/provider-setup";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import type { Membership } from "@/lib/data/viewer";
-import { type DockerHost, HOSTS_PATH, hostState, sandboxCount } from "@/lib/docker-hosts";
+import { type DockerHost, HOSTS_PATH, hostState, hostVersionWarning, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { CLOUD_PROVIDERS_LABEL, DOCKER_HOSTS_LABEL } from "@/lib/labels";
 import type { LaunchAccounts } from "@/lib/model-accounts";
@@ -327,17 +327,19 @@ function row(
       ? API_FAILURE_HELP.docker_host_upgrade_required
       : null;
   const upgradeLabel = "Daemon update required";
+  const versionWarning = hostVersionWarning(host);
   return {
     key: host.id,
     name,
     bucket: state.bucket,
     search: [name, host.id, host.state, host.version ?? ""].join(" "),
     mark: <HostMark />,
-    meta: host.version ? `Docker · ${host.version}` : "Docker host",
+    meta: `Docker · ${host.version ?? "Unknown version"}${targetVersion ? ` · Target ${targetVersion}` : ""}`,
     subtitle: seen ? `Seen ${seen}` : "Never seen",
     state: (
       <div className="space-y-1">
         <StateCell tone={state.tone} label={state.label} data-host-state={host.state} />
+        {versionWarning && <span className="block text-xs text-amber-700 dark:text-amber-400">{versionWarning}</span>}
         {upgrade && <span className="text-xs text-amber-700 dark:text-amber-400">{upgradeLabel}</span>}
       </div>
     ),
@@ -361,6 +363,7 @@ function row(
           <p id={`host-${host.id}-title`} tabIndex={-1} className="text-sm outline-none">
             {state.detail}
           </p>
+          {versionWarning && <p className="text-sm">{versionWarning}</p>}
           {upgrade && <p className="text-sm">{upgrade}</p>}
         </PanelSection>
         <PanelSection title="Launch">

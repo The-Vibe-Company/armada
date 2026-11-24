@@ -4,6 +4,7 @@ import {
   parseDockerMemory,
   validDockerHostResources,
 } from "@armada/core";
+import { isDockerHostVersionStatus } from "@armada/core/docker";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 
@@ -45,7 +46,7 @@ const optionalDate = (value: unknown): value is string | null => value === null 
 
 function parseHost(value: unknown): DockerHost | null {
   if (!isRecord(value)) return null;
-  const { id, name, state, createdAt, lastSeenAt, revokedAt, sandboxes, version } = value;
+  const { id, name, state, createdAt, lastSeenAt, revokedAt, sandboxes, version, versionStatus } = value;
   if (
     typeof id !== "string" ||
     !UUID.test(id) ||
@@ -78,6 +79,7 @@ function parseHost(value: unknown): DockerHost | null {
     (value.canManageLimits !== undefined && typeof value.canManageLimits !== "boolean") ||
     (value.protocol !== null && (!Number.isSafeInteger(value.protocol) || Number(value.protocol) < 0)) ||
     typeof value.upgradeRequired !== "boolean" ||
+    (versionStatus !== undefined && !isDockerHostVersionStatus(versionStatus)) ||
     (value.limitsSupported !== undefined && typeof value.limitsSupported !== "boolean") ||
     (value.running !== undefined && (!Number.isSafeInteger(value.running) || Number(value.running) < 0)) ||
     (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
@@ -103,6 +105,7 @@ function parseHost(value: unknown): DockerHost | null {
     ...(value.canManageLimits === undefined ? {} : { canManageLimits: value.canManageLimits as boolean }),
     protocol: value.protocol as number | null,
     upgradeRequired: value.upgradeRequired,
+    ...(versionStatus === undefined ? {} : { versionStatus }),
     ...(value.limitsSupported === undefined ? {} : { limitsSupported: value.limitsSupported as boolean }),
     ...(value.running === undefined ? {} : { running: value.running as number }),
     ...(value.resources === undefined
@@ -260,6 +263,12 @@ export function connectedHostName(list: DockerHostList, hostId: string): string 
   const host = list.hosts.find((candidate) => candidate.id === hostId);
   if (!host || host.state === "pending" || host.state === "revoked") return null;
   return hostName(host);
+}
+
+export function hostVersionWarning(host: Pick<DockerHost, "versionStatus">) {
+  if (host.versionStatus === "outdated") return "Outdated daemon";
+  if (host.versionStatus === "ahead") return "Daemon newer than target";
+  return null;
 }
 
 /** A row's fact: what runs there and which daemon runs it. */

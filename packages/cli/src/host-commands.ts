@@ -10,6 +10,7 @@ import {
   isRecord as record,
   validDockerHostResources,
 } from "@armada/core";
+import { isDockerHostVersionStatus } from "@armada/core/docker";
 import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
@@ -39,6 +40,7 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
       ) ||
       (host.protocol !== null && (!Number.isSafeInteger(host.protocol) || Number(host.protocol) < 0)) ||
       typeof host.upgradeRequired !== "boolean" ||
+      (host.versionStatus !== undefined && !isDockerHostVersionStatus(host.versionStatus)) ||
       !(host.version === undefined || host.version === null || typeof host.version === "string") ||
       (host.running !== undefined && (!Number.isSafeInteger(host.running) || Number(host.running) < 0)) ||
       (host.resources !== undefined && host.resources !== null && !validDockerHostResources(host.resources)) ||
@@ -123,8 +125,11 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
       auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
       for (const host of result.hosts) {
         const resources = dockerHostResourceDisplay(host);
+        const version = host.version?.trim() || "unknown";
+        const versionWarning =
+          host.versionStatus === "outdated" ? "outdated" : host.versionStatus === "ahead" ? "newer than target" : null;
         auth.out(
-          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${host.version ?? "unknown"}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
+          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${version}${versionWarning ? ` (${versionWarning})` : ""}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
         );
         if (host.state === "draining") auth.out(`Draining: ${DOCKER_HOST_DRAINING_MESSAGE}\n`);
         if (hostId === undefined)

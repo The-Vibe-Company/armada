@@ -22,6 +22,13 @@ export interface DockerHostResourceSummary {
   heldBack?: number;
   mode: "automatic" | "manual";
 }
+const DOCKER_HOST_VERSION_STATUSES = ["unknown", "current", "outdated", "ahead"] as const;
+export type DockerHostVersionStatus = (typeof DOCKER_HOST_VERSION_STATUSES)[number];
+
+export function isDockerHostVersionStatus(value: unknown): value is DockerHostVersionStatus {
+  return DOCKER_HOST_VERSION_STATUSES.some((status) => status === value);
+}
+
 export interface DockerHostSummary {
   id: string;
   name: string | null;
@@ -32,6 +39,7 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
+  versionStatus?: DockerHostVersionStatus;
   /** Last accepted daemon protocol, or null before its first protocol-aware poll. */
   protocol: number | null;
   upgradeRequired: boolean;
