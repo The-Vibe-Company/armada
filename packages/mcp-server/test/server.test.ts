@@ -1480,8 +1480,8 @@ describe("tools", () => {
     expect(launched.data.sandbox).toMatchObject({ ...choice, status: "ready" });
     expect(boat.prompts).toHaveLength(0);
 
-    const saved = await createSqlSandboxStore(db).get(String(launchSandboxId(launched.data)));
-    expect(saved).toMatchObject(choice);
+    const saved = await db.query('select model, reasoning_effort as "reasoningEffort" from sandboxes');
+    expect(saved.rows).toEqual([choice]);
     const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", ...choice });
     await call(mcp, "send", { id, prompt: "first" });
     await call(mcp, "stop", { id });
