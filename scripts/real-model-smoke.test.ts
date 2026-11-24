@@ -269,7 +269,15 @@ test.each([
       }
     },
   });
-  expect(passed).toBe(false);
+  // The Docker real-model lane is advisory until #4033: its failure is reported but does not fail the run.
+  expect(passed).toBe(true);
+  expect(receipts).toContainEqual({
+    case: 1,
+    lane: "real-model",
+    provider: "docker",
+    step: "real_model_advisory",
+    issue: 4033,
+  });
   expect(receipts.filter((row) => row.step === "readiness_diagnostic")).toEqual([
     {
       case: 1,
