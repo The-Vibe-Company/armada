@@ -1035,30 +1035,46 @@ test("Modal admission rolls back and returns a conflict when a selected MCP row 
   expect((await admitModalLaunch(sql, launchEncryptionKey, input)).sandbox.status).toBe("starting");
 });
 
-test.each(["active secret", "revoked secret", "changed snapshot", "changed connection"] as const)(
-  "pinned Modal admission handles %s before dispatch",
-  async (status) => {
-    const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
-    const sandboxId = crypto.randomUUID();
-    const connectionId = await launchConnection(db, people);
-    await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
-    const {
-      rows: [actor],
-    } = await db.query<{ epoch: number }>("select epoch::int from mcp_actor_epochs where org_id=$1 and user_id=$2", [
-      people.org,
-      people.owner,
-    ]);
-    const {
-      rows: [secret],
-    } = await db.query<{ id: string }>(
-      `insert into application_secrets(org_id,owner_id,scope,name,value_enc)
+test.each([
+  ["modal", "active secret"],
+  ["modal", "revoked secret"],
+  ["modal", "changed snapshot"],
+  ["modal", "changed connection"],
+  ["boat", "active secret"],
+  ["boat", "changed builder"],
+] as const)("pinned %s admission handles %s before dispatch", async (provider, status) => {
+  const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
+  const boat =
+    provider === "boat"
+      ? (
+          await db.query<{ id: string; provider_snapshot_id: string; provider_sandbox_id: string }>(
+            "select id,provider_snapshot_id,provider_sandbox_id from goldens where owner_id=$1 and provider='boat'",
+            [people.owner],
+          )
+        ).rows[0]
+      : undefined;
+  const goldenId = boat?.id ?? input.sandbox.goldenId;
+  const snapshot = boat?.provider_snapshot_id ?? input.allocation.source.ref;
+  const sandboxId = crypto.randomUUID();
+  const connectionId = await launchConnection(db, people);
+  await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
+  const {
+    rows: [actor],
+  } = await db.query<{ epoch: number }>("select epoch::int from mcp_actor_epochs where org_id=$1 and user_id=$2", [
+    people.org,
+    people.owner,
+  ]);
+  const {
+    rows: [secret],
+  } = await db.query<{ id: string }>(
+    `insert into application_secrets(org_id,owner_id,scope,name,value_enc)
      values($1,$2,'personal','APP_TOKEN',$3) returning id`,
-      [people.org, people.owner, await encryptSecret("fixture", launchEncryptionKey)],
-    );
-    const {
-      rows: [receipt],
-    } = await db.query<{ id: string }>(
-      `with template as (
+    [people.org, people.owner, await encryptSecret("fixture", launchEncryptionKey)],
+  );
+  const {
+    rows: [receipt],
+  } = await db.query<{ id: string }>(
+    `with template as (
        insert into launch_templates(org_id,owner_id,scope,name)
        values($1,$2,'personal','pinned-modal') returning id
      ), revision as (
@@ -1068,121 +1084,126 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
      insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
                                           manifest,golden_operation_fence_id,sandbox_id)
      select $1,$2,'pinned',repeat('a',64),template_id,id,$3,$4,$5 from revision returning id`,
-      [
-        people.org,
-        people.owner,
-        {
-          version: 1,
-          actorId: people.owner,
-          actorEpoch: actor?.epoch ?? 0,
-          golden: {
-            id: input.sandbox.goldenId,
-            provider: "modal",
-            providerSnapshotId: input.allocation.source.ref,
-            config: workspaceConfig,
-            modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
-          },
-          account: { id: openaiCredentialId, version: 1 },
-          definition: {
-            provider: "modal",
-            harness: input.sandbox.harness,
-            model: input.sandbox.model,
-            reasoningEffort: input.sandbox.reasoningEffort,
-            variables: [],
-            secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
-          },
-          connections: [{ id: connectionId, version: 1, generation: 1 }],
-          resolvedSkills: ["example/tool@1.0.0"],
-          variables: {},
+    [
+      people.org,
+      people.owner,
+      {
+        version: 1,
+        actorId: people.owner,
+        actorEpoch: actor?.epoch ?? 0,
+        golden: {
+          id: goldenId,
+          provider,
+          providerSnapshotId: snapshot,
+          config: workspaceConfig,
+          ...(boat
+            ? { providerSandboxId: status === "changed builder" ? "stale-builder" : boat.provider_sandbox_id }
+            : { modal: { workspace: "workspace", environment: "main", appId: "ap-test" } }),
         },
-        crypto.randomUUID(),
-        sandboxId,
-      ],
-    );
-    const { request: _ordinary, ...launch } = input;
-    const pinned = {
-      ...launch,
-      templateReceiptId: receipt!.id,
-      sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
-    };
-    const admit = () => admitModalLaunch(sql, launchEncryptionKey, pinned);
-    if (status !== "active secret") {
-      if (status === "revoked secret") {
-        await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
-        await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
-      } else if (status === "changed connection") {
-        await db.query("update mcp_grants set version=version+1 where connection_id=$1", [connectionId]);
-        await expect(admit()).rejects.toMatchObject({ code: "conflict" });
-      } else {
-        await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [pinned.sandbox.goldenId]);
-        await db.query(
-          `insert into modal_images(scope,name,source_id,record)
+        account: { id: openaiCredentialId, version: 1 },
+        definition: {
+          provider,
+          harness: input.sandbox.harness,
+          model: input.sandbox.model,
+          reasoningEffort: input.sandbox.reasoningEffort,
+          variables: [],
+          secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
+        },
+        connections: [{ id: connectionId, version: 1, generation: 1 }],
+        resolvedSkills: ["example/tool@1.0.0"],
+        variables: {},
+      },
+      crypto.randomUUID(),
+      sandboxId,
+    ],
+  );
+  const { request: _ordinary, ...launch } = input;
+  const pinned = {
+    ...launch,
+    templateReceiptId: receipt!.id,
+    sandbox: { ...input.sandbox, goldenId, credentialId: openaiCredentialId, credentialVersion: 1 },
+    allocation: { ...input.allocation, source: { kind: "snapshot" as const, ref: snapshot } },
+    ...(boat ? { boat: { scope: "user" as const, backendId: "fake-boat-account" } } : {}),
+  };
+  const admit = () => admitModalLaunch(sql, launchEncryptionKey, pinned);
+  if (status !== "active secret") {
+    if (status === "revoked secret") {
+      await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
+      await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
+    } else if (status === "changed connection") {
+      await db.query("update mcp_grants set version=version+1 where connection_id=$1", [connectionId]);
+      await expect(admit()).rejects.toMatchObject({ code: "conflict" });
+    } else if (status === "changed builder") {
+      await expect(admit()).rejects.toMatchObject({ code: "conflict" });
+    } else {
+      await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [pinned.sandbox.goldenId]);
+      await db.query(
+        `insert into modal_images(scope,name,source_id,record)
            select scope,'replacement',source_id,record from modal_images where name='snapshot'`,
-        );
-        pinned.allocation = { ...pinned.allocation, source: { kind: "snapshot", ref: "replacement" } };
-        await expect(admit()).rejects.toThrow("Frozen Modal template snapshot or App binding changed.");
-      }
-      expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
-      expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
-      return;
+      );
+      pinned.allocation = { ...pinned.allocation, source: { kind: "snapshot", ref: "replacement" } };
+      await expect(admit()).rejects.toThrow("Frozen template snapshot or provider binding changed.");
     }
-    const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
-    const receiptState = async () =>
-      (
-        await db.query<{ state: string; result: { envelope: unknown } | null }>(
-          "select state,result from template_launch_requests where id=$1",
-          [receipt!.id],
-        )
-      ).rows[0];
-    const interrupted: Sql = {
-      ...sql,
-      transaction: (work) =>
-        sql.transaction!(async (tx) => {
-          await work(tx);
-          throw new Error("Admission interrupted before commit");
-        }),
-    };
-    await expect(admitModalLaunch(interrupted, launchEncryptionKey, pinned)).rejects.toThrow(
-      "Admission interrupted before commit",
-    );
-    expect(await receiptState()).toEqual({ state: "claimed", result: null });
     expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
     expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
-    expect(await admit()).toEqual(accepted);
-    const published = await receiptState();
-    expect(published).toMatchObject({
+    return;
+  }
+  const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
+  const receiptState = async () =>
+    (
+      await db.query<{ state: string; result: { envelope: unknown } | null }>(
+        "select state,result from template_launch_requests where id=$1",
+        [receipt!.id],
+      )
+    ).rows[0];
+  const interrupted: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!(async (tx) => {
+        await work(tx);
+        throw new Error("Admission interrupted before commit");
+      }),
+  };
+  await expect(admitModalLaunch(interrupted, launchEncryptionKey, pinned)).rejects.toThrow(
+    "Admission interrupted before commit",
+  );
+  expect(await receiptState()).toEqual({ state: "claimed", result: null });
+  expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
+  expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+  expect(await admit()).toEqual(accepted);
+  const published = await receiptState();
+  expect(published).toMatchObject({
+    state: "succeeded",
+    result: {
+      requestId: receipt!.id,
       state: "succeeded",
-      result: {
-        requestId: receipt!.id,
-        state: "succeeded",
-        id: sandboxId,
-        status: "starting",
-        provider: "modal",
-        manifest: { resolvedSkills: ["example/tool@1.0.0"] },
-      },
-    });
-    expect(published?.result?.envelope).toEqual(accepted);
-    expect(await admit()).toEqual(accepted);
-    expect(await receiptState()).toEqual(published);
-    const setup = await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
-    expect(setup?.payload).toMatchObject({ skills: ["example/tool@1.0.0"] });
-    expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
-      { sandbox_id: sandboxId, connection_id: connectionId },
-    ]);
-    expect(
-      (
-        await db.query(
-          `select s.application_secret_tainted,s.provider_sandbox_id,r.id as receipt_id
+      id: sandboxId,
+      status: "starting",
+      provider,
+      manifest: { resolvedSkills: ["example/tool@1.0.0"] },
+    },
+  });
+  expect(published?.result?.envelope).toEqual(accepted);
+  expect(await admit()).toEqual(accepted);
+  expect(await receiptState()).toEqual(published);
+  const setup = await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
+  expect(setup?.payload).toMatchObject({ skills: ["example/tool@1.0.0"] });
+  expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
+    { sandbox_id: sandboxId, connection_id: connectionId },
+  ]);
+  expect(
+    (
+      await db.query(
+        `select s.application_secret_tainted,s.provider_sandbox_id,r.id as receipt_id
      from sandboxes s join template_launch_requests r on r.sandbox_id=s.id`,
-        )
-      ).rows,
-    ).toEqual([{ application_secret_tainted: true, provider_sandbox_id: null, receipt_id: receipt!.id }]);
-    expect((await db.query("select kind from jobs where sandbox_id=$1 order by kind", [sandboxId])).rows).toEqual([
-      { kind: "launch" },
-      { kind: MODAL_INITIAL_TURN },
-    ]);
-  },
-);
+      )
+    ).rows,
+  ).toEqual([{ application_secret_tainted: true, provider_sandbox_id: null, receipt_id: receipt!.id }]);
+  expect((await db.query("select kind from jobs where sandbox_id=$1 order by kind", [sandboxId])).rows).toEqual([
+    { kind: "launch" },
+    { kind: MODAL_INITIAL_TURN },
+  ]);
+});
 
 test("Modal admission commits an unbound sandbox, scoped job and encrypted turn intent before a claim", async () => {
   const { sql, db, input, store } = await modalAdmissionFixture();

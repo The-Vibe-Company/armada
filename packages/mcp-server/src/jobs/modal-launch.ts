@@ -184,18 +184,19 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     id: string;
     sandbox_id: string;
     digest: string;
-    state: string;
-    has_result: boolean;
+    available: boolean;
     template_scope: string;
-    frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal" | "config"> | null;
-    sandbox_exists: boolean;
+    frozen_golden: Pick<
+      GoldenRecord,
+      "id" | "provider" | "providerSandboxId" | "providerSnapshotId" | "modal" | "config"
+    > | null;
     frozen_connections: unknown;
     frozen_skills: unknown;
   }>(
-    `select r.id,r.sandbox_id,r.digest,r.state,r.result is not null as has_result,
-            t.scope as template_scope,r.manifest->'golden' as frozen_golden,
-            r.manifest->'connections' as frozen_connections, r.manifest->'resolvedSkills' as frozen_skills,
-            exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
+    `select r.id,r.sandbox_id,r.digest,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
+            r.manifest->'connections' as frozen_connections,r.manifest->'resolvedSkills' as frozen_skills,
+            r.state='claimed' and r.result is null
+              and not exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as available
      from public.template_launch_requests r
      join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
      join public.members m on m.org_id=r.org_id and m.user_id=r.actor_id
@@ -216,7 +217,6 @@ export async function admitModalLaunch(
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox: plannedSandbox, allocation, request, templateReceiptId, armadaAccess } = input;
   const provider = input.boat ? "boat" : "modal";
-  if (input.boat && templateReceiptId) throw new Error("Boat template job admission is unavailable.");
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
@@ -254,7 +254,7 @@ export async function admitModalLaunch(
             throw new GoldenError("conflict", "Modal template launch reservation conflicts with an existing job.");
           return { sandbox: { id: sandboxId, status: existing.status ?? "deleted" } };
         }
-        if (reservation.state !== "claimed" || reservation.has_result || reservation.sandbox_exists)
+        if (!reservation.available)
           throw new GoldenError("conflict", "Modal template launch reservation is no longer available.");
       }
       const {
@@ -263,11 +263,11 @@ export async function admitModalLaunch(
         visibility: "org" | "private";
         config: unknown;
         provider_snapshot_id: string | null;
-        modal_workspace: string;
-        modal_environment: string;
-        modal_app_id: string;
+        provider_sandbox_id: string;
+        modal: { workspace: string; environment: string; appId: string };
       }>(
-        `select g.visibility, g.config, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
+        `select g.visibility,g.config,g.provider_snapshot_id,g.provider_sandbox_id,
+                jsonb_build_object('workspace',g.modal_workspace,'environment',g.modal_environment,'appId',g.modal_app_id) as modal
          from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
          where g.id=$1 and g.org_id=$2 and g.provider::text=$4 and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
@@ -277,21 +277,20 @@ export async function admitModalLaunch(
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
       const snapshot = allocation.source.ref;
-      const modal = {
-        workspace: golden.modal_workspace,
-        environment: golden.modal_environment,
-        appId: golden.modal_app_id,
-      };
+      const { modal } = golden;
       if (reservation) {
         const frozen = reservation.frozen_golden;
         if (
           frozen?.id !== plannedSandbox.goldenId ||
+          frozen.provider !== provider ||
           frozen.providerSnapshotId !== snapshot ||
-          frozen.modal?.workspace !== modal.workspace ||
-          frozen.modal.environment !== modal.environment ||
-          frozen.modal.appId !== modal.appId
+          (input.boat
+            ? frozen.providerSandboxId !== golden.provider_sandbox_id
+            : frozen.modal?.workspace !== modal.workspace ||
+              frozen.modal?.environment !== modal.environment ||
+              frozen.modal?.appId !== modal.appId)
         ) {
-          throw new GoldenError("conflict", "Frozen Modal template snapshot or App binding changed.");
+          throw new GoldenError("conflict", "Frozen template snapshot or provider binding changed.");
         }
       }
       if (golden.provider_snapshot_id === snapshot)
@@ -389,7 +388,7 @@ export async function admitModalLaunch(
       if (armadaAccess && scopedCredential)
         await registerSandboxArmadaParent(tx, actor, sandboxId, sandbox.goldenId, scopedCredential, armadaAccess);
       if (reservation) {
-        const { bindings } = await readRuntimeTemplateEnvironment(tx, actor, sandboxId, "modal");
+        const { bindings } = await readRuntimeTemplateEnvironment(tx, actor, sandboxId, provider);
         await assertLaunchSecretBindings(tx, actor, bindings, reservation.template_scope === "org");
         if (bindings.length) await taintStartingModalSandbox(tx, sandboxId, generation);
         const pins = pinnedMcpConnections.safeParse(reservation.frozen_connections);
@@ -430,7 +429,7 @@ export async function admitModalLaunch(
           requestId: reservation.id,
           state: "succeeded",
           id: sandboxId,
-          provider: "modal",
+          provider,
           status: envelope.sandbox.status,
           envelope,
         };
