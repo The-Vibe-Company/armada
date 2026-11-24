@@ -186,10 +186,7 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
       ? {
           launchDocker: (
             body: Record<string, unknown>,
-            admission: {
-              beforeReserve(tx: import("@armada/core").Sql): Promise<void>;
-              beforeStart(): Promise<void>;
-            },
+            admission: Parameters<NonNullable<TemplateRuntime["launchDocker"]>>[1],
           ) => options.dockerLaunch!.launch(caller, body, admission),
         }
       : {}),

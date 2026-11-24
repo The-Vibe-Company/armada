@@ -39,6 +39,16 @@ import { validateSkillPins } from "./skillpack.ts";
 import type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
 import { VaultError } from "./vault-error.ts";
 
+export class DockerTemplateAdmissionRefused extends Error {
+  constructor(
+    readonly reason: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
 export interface TemplateRuntime {
   stores: LaunchStores;
   provider(golden: GoldenRecord): Promise<Provider>;
@@ -57,11 +67,11 @@ export interface TemplateRuntime {
     body: Record<string, unknown>,
     admission: {
       beforeReserve(tx: Sql): Promise<void>;
-      beforeStart(): Promise<void>;
+      id: string;
+      scheduled: boolean;
     },
   ): Promise<DockerLaunchResult>;
-  beforeDockerStart?(): Promise<void>;
-  beforeDockerReserve?(tx: Sql, sandboxId: string): Promise<void>;
+  fenceDockerAdmission?(tx: Sql, sandboxId?: string): Promise<void>;
 }
 type Header = {
   id: string;
@@ -96,6 +106,7 @@ type Manifest = {
 };
 type RequestRow = {
   id: string;
+  client_key: string;
   digest: string;
   manifest: Manifest;
   sandbox_id: string;
@@ -699,10 +710,105 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
       };
     }
+    async function admitDocker(row: RequestRow) {
+      const m = row.manifest;
+      const placement = m.definition;
+      try {
+        if (
+          !usesHostPlacement(placement) ||
+          !runtime!.launchDocker ||
+          !m.host ||
+          input.repo !== undefined ||
+          size !== undefined
+        )
+          unavailable("environment_admission_unavailable");
+        await runtime!.launchDocker(
+          {
+            ...launchRequest(m),
+            org,
+            provider: "docker",
+            hostId: placement.hostId,
+            ...(placement.snapshotId === undefined ? {} : { snapshotId: placement.snapshotId }),
+            credentialVersion: m.account.version,
+            requestId: row.sandbox_id,
+            variables: placement.variables,
+            secrets: placement.secrets ?? [],
+          },
+          {
+            id: row.id,
+            scheduled: runtime!.scheduled === true,
+            beforeReserve: async (tx) => {
+              await revalidateInTransaction(tx, actor, org, m);
+              if (runtime!.fenceDockerAdmission) await runtime!.fenceDockerAdmission(tx, row.sandbox_id);
+              else await runtime!.options?.beforeFork?.(row.sandbox_id);
+              const changed = await tx.query(
+                `update public.template_launch_requests set state='allocating',updated_at=now()
+               where id=$1 and state='claimed' returning id`,
+                [row.id],
+              );
+              if (!changed.rows.length) unavailable("environment_admission_unavailable");
+            },
+          },
+        );
+      } catch (error) {
+        const reason =
+          refusalReason(error) ?? (error instanceof DockerTemplateAdmissionRefused ? error.reason : undefined);
+        if (!reason) throw error;
+        const failure = {
+          requestId: row.id,
+          state: "failed",
+          id: row.sandbox_id,
+          reason,
+          message:
+            error instanceof DockerTemplateAdmissionRefused || error instanceof VaultError ? error.message : undefined,
+          manifest: m,
+        };
+        const changed = await transaction(async (tx) => {
+          await runtime!.fenceDockerAdmission?.(tx);
+          return tx.query(
+            `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
+             where id=$1 and state='claimed' returning id`,
+            [row.id, reason, JSON.stringify(failure)],
+          );
+        });
+        if (changed.rows.length) return failure;
+        const current = (
+          await sql.query<RequestRow>("select * from public.template_launch_requests where id=$1", [row.id])
+        ).rows[0];
+        if (!current) throw error;
+        return resume(current);
+      }
+      return dockerAdmissionReceipt(row);
+    }
+
+    function dockerAdmissionReceipt(row: RequestRow) {
+      return {
+        requestId: row.id,
+        state: "succeeded",
+        id: row.sandbox_id,
+        provider: "docker",
+        status: "starting",
+        manifest: row.manifest,
+      };
+    }
+
     async function resume(row: RequestRow, admittedActor?: GoldenActor): Promise<Record<string, unknown>> {
       const active = runtime!;
       const previous = await replay(row, bodyDigest, active);
       const m = row.manifest;
+      if (usesHostPlacement(m.definition)) {
+        if (row.state === "claimed") return admitDocker(row);
+        if (row.state === "allocating" && !row.result) {
+          const failed = await sql.query(
+            `select 1 from public.jobs where sandbox_id=$1 and kind='launch' and state='failed'
+             and outcome ? 'docker_actor_epoch'`,
+            [row.sandbox_id],
+          );
+          if (failed.rows.length) return { ...previous, state: "failed", reason: "launch_unavailable" };
+          return dockerAdmissionReceipt(row);
+        }
+        return previous;
+      }
       if (
         active.scheduled ||
         !m.golden ||
@@ -753,40 +859,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     const m = request.manifest;
     let allocating = false;
     try {
-      const beforeReserve = async (tx: Sql) => {
-        await revalidateInTransaction(tx, actor, org, m);
-        if (runtime.beforeDockerReserve) await runtime.beforeDockerReserve(tx, request.sandbox_id);
-        else await runtime.options?.beforeFork?.(request.sandbox_id);
-        await tx.query("update public.template_launch_requests set state='allocating',updated_at=now() where id=$1", [
-          request.id,
-        ]);
-        allocating = true;
-      };
       const result = usesHostPlacement(def)
-        ? await (async () => {
-            if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
-              unavailable("environment_admission_unavailable");
-            return runtime.launchDocker(
-              {
-                ...launchRequest(m),
-                org,
-                provider: "docker",
-                hostId: def.hostId,
-                ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
-                credentialVersion: m.account.version,
-                requestId: request.sandbox_id,
-                variables: def.variables,
-                secrets: def.secrets ?? [],
-              },
-              {
-                beforeReserve,
-                beforeStart: async () => {
-                  await revalidate(actor, org, m);
-                  await runtime.beforeDockerStart?.();
-                },
-              },
-            );
-          })()
+        ? { dockerReceipt: await admitDocker(request) }
         : await (async () => {
             const g = m.golden;
             if (!g) unavailable("environment_admission_unavailable");
@@ -858,6 +932,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
               },
             );
           })();
+      if ("dockerReceipt" in result) return result.dockerReceipt;
       const { sandbox } = result;
       const receiptTransport = isSandboxProvider(sandbox.provider)
         ? HOST_CAPABILITIES[sandbox.provider].templateReceiptTransport
@@ -893,6 +968,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       // Once dispatch might have occurred, no timeout/exception proves absence. Never resend.
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
       const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
+      if (usesHostPlacement(def)) throw error;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
       const failureCode =
         refused || error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
@@ -1021,6 +1097,56 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     }
     return { harness: definition.harness, modelAccount: definition.modelAccount };
   }
-  return { command, validateBindingInTransaction };
+  async function revalidateDockerLaunch(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    sandboxId: string,
+    pin: { id: string; scheduled: boolean },
+    revalidateReferences = false,
+  ) {
+    const row = (
+      await tx.query<RequestRow>(
+        `select c.* from public.template_launch_requests c
+         join public.launch_templates t on t.id=c.template_id and t.org_id=c.org_id
+         where c.id=$1 and c.sandbox_id=$2 and c.actor_id=$3 and c.org_id=$4 and c.state='allocating'
+         and t.status='active' and (t.scope='org' or t.owner_id=c.actor_id)
+         ${revalidateReferences ? "" : "for share of t nowait"}`,
+        [pin.id, sandboxId, actor.userId, actor.orgId],
+      )
+    ).rows[0];
+    if (!row || !usesHostPlacement(row.manifest.definition)) unavailable("environment_admission_unavailable");
+    if (pin.scheduled) {
+      const grant = await tx.query(
+        `select 1 from public.routine_runs run join public.routines r on r.id=run.routine_id
+         join public.members m on m.org_id=r.org_id and m.user_id=run.owner_id
+         where run.request_key=$1 and run.owner_id=$2 and run.org_id=$3
+         and (r.scope='personal' or m.role='admin') for share of r,m nowait`,
+        [row.client_key, actor.userId, actor.orgId],
+      );
+      if (!grant.rows.length) throw new VaultError("forbidden", "Routine owner authorization changed.");
+    }
+    if (revalidateReferences)
+      await revalidateInTransaction(tx, { userId: actor.userId, orgs: [actor] }, actor.orgId, row.manifest);
+  }
+
+  async function completeDockerLaunch(
+    tx: Sql,
+    requestId: string,
+    sandboxId: string,
+    receipt: { epoch: string; promptId?: string; conversationId?: string },
+  ) {
+    await tx.query(
+      `update public.template_launch_requests r set state='succeeded',updated_at=now(),
+         result=jsonb_build_object('requestId',r.id,'id',s.id,'state','succeeded',
+           'provider',s.provider,'status',s.status,'providerSandboxId',s.provider_sandbox_id,
+           'runtime',jsonb_build_object('kind','armada','epoch',$3::text),
+           'promptId',$4::text,'conversationId',$5::text,
+           'manifest',r.manifest || jsonb_build_object('skillReceipts',s.skills))
+       from public.sandboxes s where r.id=$1 and r.sandbox_id=$2 and s.id=r.sandbox_id and r.state='allocating'`,
+      [requestId, sandboxId, receipt.epoch, receipt.promptId ?? null, receipt.conversationId ?? null],
+    );
+  }
+
+  return { command, validateBindingInTransaction, revalidateDockerLaunch, completeDockerLaunch };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

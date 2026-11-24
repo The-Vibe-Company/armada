@@ -81,7 +81,8 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Modal REST and MCP launches and ordinary Docker REST launches return a sandbox ID and `starting` before allocation.
   Follow that ID with status or logs to find the first prompt after enrolment.
   For template launches, check `"requestId" in result`
-  before reading the receipt. Use the shared `SendInput` for follow-up prompts.
+  before reading the receipt. A Docker host-placement template returns `starting` before allocation.
+  Use its sandbox ID with status or logs to follow startup. Use the shared `SendInput` for follow-up prompts.
   Ordinary Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
   With `armada new --provider docker`, pass the saved key as `--idempotency-key`.
