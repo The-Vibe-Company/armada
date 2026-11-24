@@ -13,16 +13,8 @@ server/runtime image through the normal process. Do not deploy or apply migratio
 from a worker. Set trusted server `ARMADA_BOAT_RUNTIME_MANIFEST` to the matching
 `/opt/armada/runtime-manifests/x64.json` (or arm64 on that architecture).
 The normal image publishes runtime/harness bytes automatically; no manual copy.
-Leave `ARMADA_BOAT_AGENT_PATH` unset to use the runtime default. Server startup
-in runtime mode requires valid installed runtime artifacts. On validation failure,
-the startup error names `ARMADA_BOAT_RUNTIME_MANIFEST` and `ARMADA_RUNTIME_ARTIFACT_DIR`.
-
-`POST /api/v1/launch/options` reports `boatRuntime.defaultPath` and
-`boatRuntime.enabled`, plus capability versions for diagnostics, follow-up,
-checkpoint, resume, GitHub and MCP. To verify the ordinary launch path, require
-`boatRuntime.defaultPath:"runtime"` and `boatRuntime.enabled:true`, then use an
-ordinary Boat launch without `runtimeVersion` or `boatRuntime` overrides. The
-explicit launch below checks runtime availability independently of the selector.
+Boat launches use the enrolled runtime. Startup requires valid installed runtime artifacts.
+`POST /api/v1/launch/options` reports `boatRuntime.enabled` and capability versions.
 Preflight the versions required by your check **before** allocating. Disabling
 new launches does not remove existing runtime read/cleanup routing.
 
@@ -309,19 +301,13 @@ This procedure is not evidence of deployed acceptance or permission to flip defa
 
 ## Environment-wide Boat default
 
-Use the trusted server setting `ARMADA_BOAT_AGENT_PATH=runtime` or leave it
-unset. Ordinary API, CLI, dashboard, MCP `sandbox_launch`, template, and routine
-launches share this server default. Validate the effective value through
-`launch/options.boatRuntime.defaultPath`.
-
 Startup requires the image's matching
 `/opt/armada/runtime-manifests/<arch>.json` (or the trusted manifest override)
 and the published runtime and harness artifacts in `ARMADA_RUNTIME_ARTIFACT_DIR`.
 Each artifact must be a regular file named by its manifest digest with the
 declared byte count.
 
-For rollback, follow the [release rollback procedure](releasing.md). The
-native setting on this release cannot restore the retired cwd and MCP wrappers.
+For rollback, follow the [release rollback procedure](releasing.md).
 
 ### Workspace preparation and launch limits
 
@@ -628,11 +614,9 @@ sandbox just for this check; Boat is never included in staging acceptance.
 
 ### Verifying the ordinary launch path
 
-The existing coordinator checker accepts `--ordinary`. This requires
-`launch/options.boatRuntime.defaultPath:runtime` **before allocation**, then calls
+The coordinator checker accepts `--ordinary`. It checks runtime availability before allocation, then calls
 ordinary `sandbox/launch` without `runtimeVersion` or `boatRuntime` opt-in fields.
-It does not change a server setting. Missing/native defaults refuse without a
-launch; a native receipt or non-runtime history fails the existing proof checks.
+A native receipt or non-runtime history fails the proof checks.
 Timing output labels `launchPath:ordinary` so explicit opt-in evidence cannot be
 mistaken for evidence of the ordinary default path. Without this flag the existing
 explicit opt-in launch is unchanged.
@@ -666,9 +650,7 @@ release migration path and deploy matching server/runtime artifacts first.
 Use `sandbox/launch` with `runtimeVersion:1`, `boatRuntime:true`,
 `provider:"boat"`, `harness:"opencode"` and an authorized OpenCode account/model.
 `launch/options.boatRuntime.opencodeVersion:1` advertises explicit runtime support.
-Ordinary launches also select the shared runtime when OpenCode support is
-installed, including deployments with the native Boat default. The dashboard
-offers OpenCode when launch discovery advertises the harness and OpenCode runtime
+The dashboard offers OpenCode when launch discovery advertises the harness and OpenCode runtime
 support. Missing or older runtime support disables the choice with an
 explanation. The launch action rereads server options before submitting the
 ordinary launch, and the server enforces runtime admission.
@@ -686,10 +668,7 @@ performed by this worker.
 ### Custom model endpoints on Boat (#2051)
 
 Custom Claude gateways and Codex Responses endpoints (including Morph and Azure)
-select the shared Armada runtime on Boat even when ordinary launches remain native.
-The server must contain the existing Boat runtime manifest and compiled artifacts;
-missing artifacts refuse before allocation and recommend Modal or a Docker host.
-No deployment-wide native/runtime default change is required.
+use the shared Armada runtime on Boat.
 
 The old refusal was a delivery-path restriction, not evidence of blocked Boat
 egress: native Boat agent APIs do not consume Armada's endpoint descriptors.
@@ -718,22 +697,11 @@ existing authorized resources: on a server with OpenCode runtime support,
 open a ready Boat snapshot, choose OpenCode and its usable
 account/model, then launch. Require persisted `boatRuntime:true`, an archived
 runtime answer and normal follow-up. No default flip is authorized by this check.
-A native-default deployment with current OpenCode runtime support also offers
-the harness. On an older or unavailable runtime, verify OpenCode is disabled
-with its reason. A stale open form or forged availability field must not
-bypass the action's new discovery read; the server still enforces native refusal
-and never falls back. Boat remains outside staging and the release gate. No real
-launch, provider call or deployment was performed by this worker.
+On an older or unavailable runtime, verify OpenCode is disabled with its reason.
+The action rereads discovery before submitting the launch. Boat remains outside
+staging and the release gate.
 
 ## Automatic OpenCode admission (#2105)
-
-Ordinary CLI, dashboard and MCP OpenCode launches on Boat automatically select
-`boatEndpointRuntime` when its artifacts are installed, even with the native
-server default. Claude and Codex retain their existing defaults (including
-custom-endpoint runtime selection). There is no new flag or server-default flip.
-Without installed artifacts, OpenCode refuses before allocation with an explicit
-runtime requirement. Discovery advertises OpenCode on Boat when this automatic
-path is installed; `defaultPath` still describes the general Claude/Codex default.
 
 Coordinator-only production acceptance after normal release: plain-launch
 OpenCode on a Boat snapshot with a Morph account and then an OpenCode-compatible

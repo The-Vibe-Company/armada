@@ -330,7 +330,6 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   if (path.endsWith("/launch/options"))
     return Response.json({
       modalRuntime: {
-        defaultPath: defects.includes("ordinary-default-off") ? "native" : "runtime",
         enabled: !defects.includes("disabled"),
         followupVersion: defects.includes("old-followup") && !claude && !opencode && !idle && !ordinary ? 0 : 1,
         claudeVersion: defects.includes("claude-old-version") ? 0 : 1,

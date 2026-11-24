@@ -100,6 +100,9 @@ const env = {
   PORT: String(port),
 };
 const artifactDir = await mkdtemp(join(tmpdir(), "armada-startup-"));
+const pin = { sha256: "a".repeat(64), bytes: 1 };
+const harness = { archive: pin, files: ["artifact"] };
+await Bun.write(join(artifactDir, pin.sha256), "a");
 const manifestPath = join(artifactDir, "runtime.json");
 await Bun.write(
   manifestPath,
@@ -109,7 +112,8 @@ await Bun.write(
     libc: "glibc",
     architecture: "x64",
     runtime: { sha256: "a".repeat(64), bytes: 1 },
-    harnesses: {},
+    harnesses: { claude: harness, codex: harness },
+    opencode: pin,
   }),
 );
 try {
@@ -119,7 +123,7 @@ try {
   let listenerStarted = false;
   const warmingEnv = {
     ...env,
-    ARMADA_BOAT_AGENT_PATH: "native",
+    ARMADA_BOAT_RUNTIME_MANIFEST: manifestPath,
     ARMADA_MODAL_DIALOUT: "1",
     ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
     ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,

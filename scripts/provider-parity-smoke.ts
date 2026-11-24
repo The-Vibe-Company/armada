@@ -1624,7 +1624,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         modalRuntime?: { opencodeMcpProofVersion?: number };
         boatRuntime?: {
           opencodeVersion?: number;
-          defaultPath?: string;
           enabled?: boolean;
           opencodeMcpProofVersion?: number;
           checkpointVersion?: number;
@@ -1640,18 +1639,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         (feature === "mcp" || feature === "mcp-resume") &&
         (!option.harnesses.includes("opencode") ||
           options.boatRuntime?.enabled !== true ||
-          options.boatRuntime.defaultPath !== "runtime" ||
           options.boatRuntime.opencodeVersion !== 1)
       ) {
         record(feature, c.provider, "not-run", "boat_opencode_runtime_not_advertised");
         continue;
       }
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
-      if (
-        c.provider === "boat" &&
-        c.harness === "opencode" &&
-        (options.boatRuntime?.opencodeVersion !== 1 || options.boatRuntime.defaultPath !== "runtime")
-      )
+      if (c.provider === "boat" && c.harness === "opencode" && options.boatRuntime?.opencodeVersion !== 1)
         throw new Error("boat_opencode_runtime_not_advertised");
       if (feature === "client-stop" || (!feature && c.clientStop === true)) {
         const missing = (["stop", "resume", "followupPrompts", "logs", "status"] as const).find(

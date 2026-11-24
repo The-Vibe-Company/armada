@@ -41,63 +41,6 @@ export async function sshStdinCheckout(
   await sshExchange(provider, input, deps, false, input.timeoutMs);
 }
 
-/** Private fixed-path hydration; no auth value enters exec argv or command journals. */
-export async function sshHydrateAuthState(
-  provider: Provider,
-  sandboxId: string,
-  authJson: string,
-  deps: SshExecDeps = {},
-): Promise<void> {
-  const { authPath: path, managedNativeAuthWriter } = launchInfrastructure(provider.id);
-  if (!path || Buffer.byteLength(authJson) > 65536) throw Error("Private native hydration is unavailable.");
-  try {
-    const value = JSON.parse(authJson);
-    if (
-      !value.tokens ||
-      typeof value.tokens.refresh_token !== "string" ||
-      typeof value.tokens.access_token !== "string" ||
-      typeof value.tokens.account_id !== "string"
-    )
-      throw Error();
-    const script = [
-      "set +x",
-      "node <<'ARMADA_PRIVATE_HYDRATE'",
-      "const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');",
-      "const target=" + JSON.stringify(path) + ";",
-      "let fd,tmp;",
-      "try {",
-      " const text=JSON.parse(process.env.ARMADA_GIT_TOKEN).authJson; delete process.env.ARMADA_GIT_TOKEN;",
-      " if(typeof text!=='string'||Buffer.byteLength(text)>65536)throw Error('invalid'); JSON.parse(text);",
-      " const home=fs.lstatSync('/home/user'); if(home.isSymbolicLink()||!home.isDirectory())throw Error('unsafe');",
-      " const parts=path.dirname(target).split('/').filter(Boolean);",
-      " for(let n=1;n<=parts.length;n++){const dir='/'+parts.slice(0,n).join('/');",
-      "  try{const st=fs.lstatSync(dir);if(st.isSymbolicLink()||!st.isDirectory())throw Error('unsafe');}",
-      "  catch(e){if(e.code!=='ENOENT')throw e;fs.mkdirSync(dir,{mode:0o700});fs.chownSync(dir,home.uid,home.gid);}}",
-      " try{const st=fs.lstatSync(target);if(st.isSymbolicLink()||!st.isFile())throw Error('unsafe');}catch(e){if(e.code!=='ENOENT')throw e;}",
-      " tmp=path.join(path.dirname(target),'.armada-auth-'+crypto.randomUUID());",
-      " fd=fs.openSync(tmp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);",
-      " fs.writeFileSync(fd,text);fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;",
-      " fs.chownSync(tmp,home.uid,home.gid);fs.renameSync(tmp,target);tmp=undefined;",
-      ...(managedNativeAuthWriter
-        ? [
-            " const marker=path.join(path.dirname(target),'.armada-managed-native'); const mf=fs.openSync(marker,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_NOFOLLOW,0o600); try{fs.writeFileSync(mf,'active');fs.ftruncateSync(mf,6);fs.fsyncSync(mf);fs.fchownSync(mf,home.uid,home.gid);}finally{fs.closeSync(mf);}",
-          ]
-        : []),
-      " const dir=fs.openSync(path.dirname(target),fs.constants.O_RDONLY|fs.constants.O_DIRECTORY);try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}",
-      "}catch{process.exitCode=1;}finally{",
-      " if(fd!==undefined)fs.closeSync(fd);if(tmp)try{fs.unlinkSync(tmp);}catch{}",
-      " const pub=process.env.ARMADA_SSH_PUBLIC_KEY;if(pub)for(const home of ['/home/user','/root']){try{",
-      "  const file=home+'/.ssh/authorized_keys',st=fs.lstatSync(file);if(st.isSymbolicLink()||!st.isFile())continue;",
-      "  fs.writeFileSync(file,fs.readFileSync(file,'utf8').split('\\n').filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});",
-      " }catch{}}}",
-      "ARMADA_PRIVATE_HYDRATE",
-    ].join("\n");
-    await sshExchange(provider, { sandboxId, token: JSON.stringify({ authJson }), script }, deps, false, 30000);
-  } catch {
-    throw Error("Private native auth hydration failed.");
-  }
-}
-
 /** Boat native bridge admission; pause lets it close its private writer before capture. */
 export async function sshNativeAuthAdmission(
   provider: Pick<Provider, "id" | "sshKey">,

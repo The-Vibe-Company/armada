@@ -820,16 +820,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   await runtime.options?.beforeFork?.(sandboxId);
                 },
                 templateSnapshotAdmission: {
-                  validatePlacement: (selectedProvider, enrolled) => {
-                    if (
-                      !enrolled &&
-                      (def.variables.length || def.secrets?.length) &&
-                      !selectedProvider.configureReadableVariables
-                    )
-                      unavailable(
-                        def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable",
-                      );
-                  },
                   admit: async () => {
                     await transaction(async (tx) => {
                       const current = await revalidateInTransaction(tx, actor, org, m);
@@ -861,14 +851,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                   await revalidate(actor, org, m);
                   await runtime.options?.beforeStart?.(p, s);
                   if (def.variables.length || def.secrets?.length) {
-                    const variables = await resolveEnvironment(selection.a, m);
-                    // Enrolled runtimes receive frozen readables privately before their driver starts.
-                    if (s.runtimeTransport !== "dialout" && !s.boatRuntime)
-                      await p.configureReadableVariables!({
-                        sandboxId: s.providerSandboxId,
-                        harness: def.harness,
-                        variables,
-                      });
+                    await resolveEnvironment(selection.a, m);
                   }
                 },
               },

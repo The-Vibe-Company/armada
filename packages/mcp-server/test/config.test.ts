@@ -18,13 +18,6 @@ const ENV = {
 };
 
 describe("config", () => {
-  test("Boat launch selection is one strict server setting, runtime by default and native for explicit rollback", () => {
-    expect(configFromEnv(ENV).boatAgentPath).toBe("runtime");
-    for (const mode of ["native", "runtime"] as const)
-      expect(configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode }).boatAgentPath).toBe(mode);
-    for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
-      expect(() => configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode })).toThrow("ARMADA_BOAT_AGENT_PATH");
-  });
   test("Modal startup requires dial-out and a manifest", () => {
     for (const missing of [
       { ARMADA_MODAL_DIALOUT: undefined },
@@ -150,23 +143,19 @@ test.each([
   throw new Error(`Expected startup to reject ${name}`);
 });
 
-test.each([
-  ["ARMADA_BOAT_RUNTIME_MANIFEST", {}],
-  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "native" }],
-] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
+test("startup rejects an unusable Boat runtime manifest", async () => {
   await expect(
-    readStartupConfiguration({
-      ...ENV,
-      ...settings,
-      [name]: "/nonexistent/manifest.json",
-    }),
-  ).rejects.toThrow(name);
+    readStartupConfiguration({ ...ENV, ARMADA_BOAT_RUNTIME_MANIFEST: "/nonexistent/manifest.json" }),
+  ).rejects.toThrow("ARMADA_BOAT_RUNTIME_MANIFEST");
 });
 
 describe("startup with a valid Modal manifest", () => {
   async function readWithManifest(overrides: Record<string, string>) {
     const dir = await mkdtemp(join(tmpdir(), "armada-config-"));
     try {
+      const pin = { sha256: "a".repeat(64), bytes: 1 };
+      const harness = { archive: pin, files: ["artifact"] };
+      await Bun.write(join(dir, pin.sha256), "a");
       const path = join(dir, "runtime.json");
       await Bun.write(
         path,
@@ -176,12 +165,13 @@ describe("startup with a valid Modal manifest", () => {
           libc: "glibc",
           architecture: "x64",
           runtime: { sha256: "a".repeat(64), bytes: 1 },
-          harnesses: {},
+          harnesses: { claude: harness, codex: harness },
+          opencode: pin,
         }),
       );
       return await readStartupConfiguration({
         ...ENV,
-        ARMADA_BOAT_AGENT_PATH: "native",
+        ARMADA_BOAT_RUNTIME_MANIFEST: path,
         ARMADA_RUNTIME_ARTIFACT_DIR: dir,
         ARMADA_MODAL_RUNTIME_MANIFEST: path,
         ...overrides,

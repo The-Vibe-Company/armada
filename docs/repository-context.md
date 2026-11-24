@@ -26,30 +26,15 @@ including for a launch without a prompt. It does not restrict filesystem access.
 
 The selection is stored before any prompt in immutable `sandboxes.repository_dir`. Existing metadata validation remains in `20261110020000_sandbox_repository_context.sql`; `20261110050000_repository_native_cwd_comment.sql` corrects its column description without editing the prior migration. Later edits to the snapshot cannot change an existing sandbox's selected repository.
 
-## Runtime and native behavior
+## Runtime behavior
 
-For Boat and Modal snapshot launches using the Armada runtime, sandbox configuration sets the
-working directory to `/home/user/<configured-dir>` from the stored
-`repositoryDir`. With no selection, the runtime starts in `/home/user`.
-
-On the native path, the provider must support repository working-directory
-preparation.
-
-After pulls/init and before either the first prompt **or returning an idle sandbox as ready**, launch calls the public provider method:
-
-```ts
-prepareNativeHarnessCwd({ sandboxId, harness, cwd: `${GOLDEN_ROOT}/${repositoryDir}` })
-```
-
-A selected repository requires that real preparation capability. An unavailable capability is rejected before fork; failed preparation fails/stops the launch rather than pretending the cwd was changed. Omitted selection retains legacy provider behavior and makes no preparation call.
-
-Boat repository context uses the enrolled runtime. The native cwd wrappers retired in #2745.
-
-Use the provider that owns the snapshot.
+Boat and Modal snapshot launches set the Armada runtime working directory to
+`/home/user/<configured-dir>` from the stored `repositoryDir`. With no selection,
+the runtime starts in `/home/user`. Use the provider that owns the snapshot.
 
 ## Owner-boundary regressions
 
-The former cross-transport test `repository-context-api.test.ts` was removed in #2622: its single five-second test started PGlite and replayed CLI, HTTP, MCP and SQL, and failed the merge queue intermittently. Its behaviours are owned at cheaper boundaries: `packages/core/test/launch.test.ts` (idle launch persists the selected repository and prepares cwd before returning; explicit repo prepares each harness before its first prompt; explicit selectors are validated after authorization and before allocation; preparation failure stops the sandbox and never prompts), `packages/core/test/database.test.ts` (repository context must name a configured repo and stays immutable after a golden edit), and `packages/mcp-server/test/server.test.ts` (an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn).
+The former cross-transport test `repository-context-api.test.ts` was removed in #2622: its single five-second test started PGlite and replayed CLI, HTTP, MCP and SQL, and failed the merge queue intermittently. Its behaviours are owned at cheaper boundaries: `packages/core/test/launch.test.ts` (runtime admission persists the selected repository and prepares the workspace before publication and inference; explicit selectors are validated after authorization and before allocation), `packages/core/test/database.test.ts` (repository context must name a configured repo and stays immutable after a golden edit), and `packages/mcp-server/test/server.test.ts` (an idle launch keeps its model and effort for every send, across stop, and an override lasts one turn).
 
 Upstream `launch-workdir.test.ts` owns legacy owner/repo resolution and ambiguity.
 

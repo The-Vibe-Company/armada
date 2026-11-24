@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import {
   createSqlGoldenStore,
-  createSqlSandboxStore,
   createSqlVaultStore,
   decryptSecret,
   encryptSecret,
@@ -9,9 +8,11 @@ import {
   launchSandbox,
   type Sql,
 } from "@armada/core/server";
+import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSubscriptionBroker } from "../src/subscription-broker.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -87,22 +88,27 @@ test("three subscription launches prompt despite historical sandbox rows and sha
     const boat = fakeBoat();
     const stores = {
       goldens: createSqlGoldenStore(db),
-      sandboxes: createSqlSandboxStore(db),
-      credentials: {
-        ...resolver,
-        // Only the private SSH delivery is replaced; launch still resolves and
-        // admits the real account before allocating and dispatching each prompt.
-        hydrateNative: async () => true,
-      },
+      sandboxes: createSqlData(db)({
+        userId: actor.userId,
+        via: "service",
+        orgs: [{ orgId: actor.orgId, role: actor.role }],
+      }).sandboxes,
+      credentials: resolver,
     };
     const ids: string[] = [];
     for (let index = 0; index < 3; index++) {
-      const launched = await launchSandbox(boat.provider, stores, actor, {
-        golden: "shared",
-        harness: "codex",
-        credentialId: account.id,
-        prompt: `Reply to subscription launch ${index + 1}`,
-      });
+      const launched = await launchSandbox(
+        boat.provider,
+        stores,
+        actor,
+        {
+          golden: "shared",
+          harness: "codex",
+          credentialId: account.id,
+          prompt: `Reply to subscription launch ${index + 1}`,
+        },
+        { runtime: enrolledLaunchPolicy(db) },
+      );
       ids.push(launched.sandbox.id);
       expect(launched.sandbox).toMatchObject({
         credentialId: account.id,

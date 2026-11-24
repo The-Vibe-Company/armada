@@ -180,7 +180,6 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
     ...launchOptions,
     providers: launchProviderOptions(options.docker, boatLaunch),
     modalRuntime: {
-      defaultPath: "runtime",
       enabled: Boolean(options.modalRuntimeLaunch),
       followupVersion: options.runtimeSend ? 1 : 0,
       idleLaunchVersion: options.admitModalLaunch && options.runtimeSend ? 1 : 0,
@@ -210,7 +209,6 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
           : 0,
     },
     boatRuntime: {
-      ...(boatLaunch ? { defaultPath: "runtime" as const } : {}),
       diagnosticsVersion: 1,
       followupVersion: options.runtimeSend ? 1 : 0,
       checkpointVersion: options.runtimeCheckpoint ? 1 : 0,

@@ -8,9 +8,7 @@ import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 
 interface LaunchStartContext {
   actor: GoldenActor;
-  launchId: string;
   record: SandboxRecord;
-  providerSandboxId: string;
   signal: AbortSignal;
   progress(stage: LaunchInitializationStage): void;
   runtimeStarted(): void;
@@ -20,7 +18,6 @@ interface LaunchStartContext {
 }
 
 export interface LaunchStrategy {
-  kind: "native" | "enrolled";
   forkEnv(plan: LaunchPlan): HarnessCredentials["env"];
   recordFields(
     plan: LaunchPlan,
