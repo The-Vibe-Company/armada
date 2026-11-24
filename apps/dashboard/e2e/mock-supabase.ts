@@ -2907,7 +2907,7 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ account: accountDto(row) });
   }
   if (!target) return controlFail(400, "invalid", "Name the account.");
-  if (route === "creds/accounts/limits") {
+  if (route === "creds/accounts/limits" && body.model === undefined) {
     target.maxAgents = body.maxAgents;
     return json({ account: accountDto(target) });
   }

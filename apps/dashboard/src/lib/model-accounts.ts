@@ -321,6 +321,15 @@ export function checkAccountName(raw: unknown): { ok: true; value: string } | { 
   return { ok: true, value };
 }
 
+export const MAX_ACCOUNT_AGENTS = 2_147_483_647;
+
+export function parseAccountAgentLimit(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  return /^[1-9][0-9]*$/.test(trimmed) && value <= MAX_ACCOUNT_AGENTS ? value : undefined;
+}
+
 /** The kind's label when it adds something: a migrated account is often named after its kind already. */
 export function kindNote(account: Pick<ModelAccount, "kind" | "name">): string | null {
   const label = KIND_INFO[account.kind].label;

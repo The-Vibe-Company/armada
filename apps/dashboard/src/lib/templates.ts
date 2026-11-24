@@ -10,10 +10,10 @@ import {
   templateRefusalHelp,
   validateSkillPins,
 } from "@armada/core";
-import { dashboardHarnessModels } from "@/lib/model-picker";
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import { accountProblem, accountsFor, type LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
+import { dashboardHarnessModels } from "./model-picker.ts";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 import { skillLaunchFailure } from "./skills";
 

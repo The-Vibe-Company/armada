@@ -18,6 +18,7 @@ import {
   HARNESS_PATH,
   KIND_INFO,
   modelAccountFailure,
+  parseAccountAgentLimit,
 } from "@/lib/model-accounts";
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import {
@@ -132,7 +133,10 @@ async function completeGoogleSignIn(context: Scoped, data: FormData, maxAgents: 
     } catch (error) {
       if (!(error instanceof ControlError)) throw error;
       refresh();
-      return fail(`${account.name} was saved. Reload Models to check its limit and default settings.`);
+      return {
+        ...fail(`${account.name} was saved. Open the account in Models to check its agent limit and default settings.`),
+        accountSaved: true as const,
+      };
     }
   }
   return finishAccountSetup(context, data, account);
@@ -152,8 +156,9 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!name.ok) return fail(name.error);
   const method = kind === "antigravity" ? antigravityMethod(data.get("antigravityMethod")) : undefined;
   if (kind === "antigravity" && !method) return fail("Choose an Antigravity connection method.");
-  const maxAgents = formAgentLimit(data);
-  if (maxAgents === undefined) return fail("Maximum agents must be a positive integer, or empty for unlimited.");
+  const maxAgents = parseAccountAgentLimit(formString(data, "maxAgents"));
+  if (maxAgents === undefined)
+    return fail("Enter a maximum of 1 to 2,147,483,647 agents, or leave it empty for unlimited.");
   if (method === "google") return completeGoogleSignIn(context, data, maxAgents);
   const raw =
     method === "gemini-api-key"
@@ -199,7 +204,10 @@ async function finishAccountSetup(
         error.status === 401
           ? "Sign in again, then reload Models."
           : "Reload Models and check the saved account before adding another.";
-      return fail(`${saved.name} was saved; its default setting is unconfirmed. ${recovery}`);
+      return {
+        ...fail(`${saved.name} was saved, but its default setting is unconfirmed. ${recovery}`),
+        accountSaved: true as const,
+      };
     }
     return done(`${saved.name} saved as the default ${KIND_INFO[saved.kind].harnessLabel} account.`);
   }
@@ -335,19 +343,13 @@ export async function testAccountConnection(_previous: ActionResult | null, data
   }
 }
 
-function formAgentLimit(data: FormData): number | null | undefined {
-  const raw = formString(data, "maxAgents").trim();
-  if (!raw) return null;
-  const value = Number(raw);
-  return /^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(value) ? value : undefined;
-}
-
 export async function updateAccountLimits(_previous: ActionResult | null, data: FormData) {
   const context = await scoped(data);
   if (!isScoped(context)) return context;
   const id = formString(data, "id");
-  const maxAgents = formAgentLimit(data);
-  if (!isUuid(id) || maxAgents === undefined) return fail("Enter a positive integer, or leave empty for unlimited.");
+  const maxAgents = parseAccountAgentLimit(formString(data, "maxAgents"));
+  if (!isUuid(id) || maxAgents === undefined)
+    return fail("Enter a maximum of 1 to 2,147,483,647 agents, or leave it empty for unlimited.");
   try {
     const saved = await context.control.limits({
       ...target(context, id),

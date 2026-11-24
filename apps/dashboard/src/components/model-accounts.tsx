@@ -94,6 +94,7 @@ import {
   HARNESS_PATH,
   KIND_INFO,
   kindNote,
+  MAX_ACCOUNT_AGENTS,
   MAX_ACCOUNT_NAME,
   type ModelAccount,
   monthlyApiSpendLabel,
@@ -991,6 +992,7 @@ function AgentLimitField({
         name="maxAgents"
         type="number"
         min="1"
+        max={MAX_ACCOUNT_AGENTS}
         step="1"
         defaultValue={defaultValue}
         value={value}
@@ -1612,10 +1614,14 @@ export function AddAccountDialog({
   const [name, setName] = useState("");
   const [maxAgents, setMaxAgents] = useState(initialKind === "morph" ? "2" : "");
   const router = useRouter();
+  const toast = useToast();
   const id = useId();
   const info = KIND_INFO[kind];
   const google = kind === "antigravity" && method === "google";
-  const saveError = !signInError && !saving && state && state !== dismissedSaveResult && !state.ok ? state : null;
+  const saveError =
+    !signInError && !saving && state && state !== dismissedSaveResult && !state.ok && !("accountSaved" in state)
+      ? state
+      : null;
   const recoveryLink = "text-sm underline underline-offset-2 disabled:text-muted-foreground";
   const changeMethod = (next: typeof method) => {
     setMethod(next);
@@ -1689,12 +1695,16 @@ export function AddAccountDialog({
     : null;
 
   useEffect(() => {
-    if (!state?.ok) return;
+    if (!state) return;
+    if (!state.ok) {
+      if (!("accountSaved" in state)) return;
+      toast({ tone: "destructive", title: state.error });
+    }
     setOpen(false);
     setLogin(null);
     setCode("");
     setGeneration((value) => value + 1);
-  }, [state]);
+  }, [state, toast]);
 
   // Read only safe metadata. Capture a baseline so an existing namesake cannot close the dialog.
   useEffect(() => {
