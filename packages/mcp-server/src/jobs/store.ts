@@ -284,7 +284,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           if (rows.length) return job;
         }
         if (retiring && (await retireClaim(tx, job, owner, sandbox?.generation ?? null))) {
-          // The terminal job still owns the idempotency key, so backfill cannot recover this receipt.
+          // WARNING: The terminal job still owns the idempotency key, so backfill cannot recover this receipt.
           await failTurnReceipt(tx, sandboxId, requestId, true);
           failedStaleReceipt = true;
         }
