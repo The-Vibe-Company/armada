@@ -13,6 +13,7 @@ import {
   type TemplateRuntime,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -70,7 +71,7 @@ async function fixture() {
       },
     },
     provider: async () => boat.provider,
-    options: { sleep: async () => {} },
+    options: { runtime: enrolledLaunchPolicy(sql) },
   };
   const launches: Record<string, unknown>[] = [];
   const launch = async (
