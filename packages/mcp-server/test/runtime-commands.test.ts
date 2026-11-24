@@ -1836,3 +1836,42 @@ test("authenticated boot and turn diagnostics retain their initiating request ID
     },
   ]);
 });
+
+test("workspace health diagnostics distinguish delivery, acknowledgement, and replay", async () => {
+  const f = await fixture(54_000);
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const requestId = `workspace_health_${crypto.randomUUID()}_${active.epoch}`;
+  const info = spyOn(console, "info");
+  try {
+    f.onWait(async () => {
+      const poll = await f.request("poll", active.runtimeToken, active.epoch, { epoch: active.epoch }, bridge);
+      expect(await poll.json()).toMatchObject({ command: { requestId } });
+      const reply = await f.request(
+        "results",
+        active.runtimeToken,
+        active.epoch,
+        {
+          epoch: active.epoch,
+          requestId,
+          status: 200,
+          body: { version: 1, requestId, result: { privateValue: "not-for-logs" } },
+        },
+        bridge,
+      );
+      expect(reply.status).toBe(200);
+    });
+    await bridge.call(f.people.owner, f.command(requestId), { expectedEpoch: active.epoch });
+    const lines = info.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .filter((entry) => entry.event === "runtime_workspace_command" && entry.commandId === requestId);
+    expect(lines.map(({ stage }) => stage)).toEqual(["admitted", "sent_poll", "result_acknowledged", "observed"]);
+    expect(lines.at(-1)).toMatchObject({ sandboxId: f.id, epoch: active.epoch, observedAtMs: 54_000, resultReads: 2 });
+    expect(JSON.stringify(lines)).not.toContain("not-for-logs");
+    info.mockClear();
+    await bridge.call(f.people.owner, f.command(requestId), { expectedEpoch: active.epoch });
+    expect(info.mock.calls.map(([line]) => JSON.parse(line).stage)).toEqual(["admission_replayed", "observed"]);
+  } finally {
+    info.mockRestore();
+  }
+});

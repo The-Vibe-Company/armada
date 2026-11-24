@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installRuntimeArtifact } from "../../agent-runtime/src/artifact-cache.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeArtifactRoute, createRuntimeArtifactSetRoute } from "../src/runtime-artifacts.ts";
 
 // Owner boundary: real route + filesystem cache, fake transport only (no sockets, clocks or inference).
@@ -106,6 +107,26 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
     expect(head?.headers.get("content-length")).toBe("5");
     expect(await head?.text()).toBe("");
     expect(await (await route(request(path)))?.text()).toBe("bytes");
+
+    const lines: string[] = [];
+    const get = request(`${path}?ignored=not-for-logs`);
+    const download = await observeRequest(
+      async () => (await route(get)) ?? undefined,
+      (line) => lines.push(line),
+      get,
+    );
+    expect(await download?.text()).toBe("bytes");
+    expect(JSON.parse(lines[0]!)).toMatchObject({ path: "/api/runtime/artifacts/:digest", artifactDigest: digest });
+    expect(lines[0]).not.toContain("not-for-logs");
+    const rejectedDigest = "b".repeat(64);
+    const missing = request(`/api/runtime/artifacts/${rejectedDigest}`);
+    const rejected = await observeRequest(
+      async () => (await route(missing)) ?? undefined,
+      (line) => lines.push(line),
+      missing,
+    );
+    expect(rejected?.status).toBe(404);
+    expect(lines[1]).not.toContain(rejectedDigest);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

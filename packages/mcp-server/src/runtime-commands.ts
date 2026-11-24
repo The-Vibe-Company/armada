@@ -16,6 +16,7 @@ import {
 } from "./runtime-authority-extension.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { logWorkspaceCommand } from "./runtime-workspace-diagnostics.ts";
 import { recordDockerPromptAccepted, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
@@ -300,6 +301,7 @@ export function createRuntimeCommands(
     return withNext(token, epoch, async (value) => value);
   }
   async function complete(token: string, epoch: string, value: unknown) {
+    const started = time.now();
     if (
       !record(value) ||
       value.epoch !== epoch ||
@@ -401,7 +403,11 @@ export function createRuntimeCommands(
           await recordDockerPromptAccepted(tx, scope.sandboxId, generation, accepted);
         await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
       }
-      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
+      return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: row.request_id };
+    });
+    const acknowledged = time.now();
+    logWorkspaceCommand({ sandboxId, epoch: receipt.epoch }, receipt.requestId, "result_acknowledged", acknowledged, {
+      durationMs: acknowledged - started,
     });
     runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
     runtimeWakes.notify(`socket:${sandboxId}`);
@@ -528,7 +534,8 @@ export function createRuntimeCommands(
           throw new RuntimeCommandRefused();
         const signal = options.signal ?? new AbortController().signal;
         signal.throwIfAborted();
-        const deadline = time.now() + timeout;
+        const started = time.now();
+        const deadline = started + timeout;
         const admitted = await enqueueCommand(
           ownerId,
           request,
@@ -539,32 +546,55 @@ export function createRuntimeCommands(
         );
         provider = admitted.provider;
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
-        while (true) {
-          signal.throwIfAborted();
-          // A result may commit while the read still has a pending snapshot.
-          let woken = false;
-          const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
-            woken = true;
-          });
-          const response = await result(
-            ownerId,
-            request.sandboxId,
-            request.requestId,
-            admitted.epoch,
-            request.op === "extendCommandAuthority" ? options.assertClaim : undefined,
-          ).finally(unsubscribe);
-          signal.throwIfAborted();
-          if (response.state === "finished") {
-            if (options.strictDeadline && time.now() >= deadline) throw new RuntimeCommandPending();
-            return response.reply;
+        const scope = { sandboxId: request.sandboxId, epoch: admitted.epoch };
+        const admittedAt = time.now();
+        logWorkspaceCommand(scope, request.requestId, admitted.fresh ? "admitted" : "admission_replayed", admittedAt, {
+          durationMs: admittedAt - started,
+        });
+        let resultReads = 0;
+        let resultReadMs = 0;
+        let observed = false;
+        try {
+          while (true) {
+            signal.throwIfAborted();
+            // A result may commit while the read still has a pending snapshot.
+            let woken = false;
+            const unsubscribe = runtimeWakes.subscribe(wakeKey, () => {
+              woken = true;
+            });
+            const readAt = time.now();
+            resultReads++;
+            const response = await result(
+              ownerId,
+              request.sandboxId,
+              request.requestId,
+              admitted.epoch,
+              request.op === "extendCommandAuthority" ? options.assertClaim : undefined,
+            ).finally(() => {
+              unsubscribe();
+              resultReadMs += time.now() - readAt;
+            });
+            signal.throwIfAborted();
+            if (response.state === "finished") {
+              if (options.strictDeadline && time.now() >= deadline) throw new RuntimeCommandPending();
+              observed = true;
+              return response.reply;
+            }
+            if (response.state !== "pending") throw new RuntimeCommandConflict();
+            // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
+            noteAdmission();
+            const remaining = deadline - time.now();
+            if (remaining <= 0) throw new RuntimeCommandPending();
+            const interval = request.op === "readOutputs" && request.part ? 100 : 250;
+            if (!woken) await runtimeWakes.wait(wakeKey, signal, Math.min(interval, remaining), time.wait.bind(time));
           }
-          if (response.state !== "pending") throw new RuntimeCommandConflict();
-          // Waiting on a live reply is runtime work even for a retried ID; a stored reply is not.
-          noteAdmission();
-          const remaining = deadline - time.now();
-          if (remaining <= 0) throw new RuntimeCommandPending();
-          const interval = request.op === "readOutputs" && request.part ? 100 : 250;
-          if (!woken) await runtimeWakes.wait(wakeKey, signal, Math.min(interval, remaining), time.wait.bind(time));
+        } finally {
+          const ended = time.now();
+          logWorkspaceCommand(scope, request.requestId, observed ? "observed" : "wait_ended", ended, {
+            durationMs: ended - admittedAt,
+            resultReads,
+            resultReadMs,
+          });
         }
       },
       (reply) => {
@@ -608,7 +638,16 @@ export function createRuntimeCommands(
             },
           );
           const remaining = deadline - time.now();
-          if (response.command || remaining <= 0) return Response.json(response, { headers });
+          if (response.command) {
+            logWorkspaceCommand(
+              { sandboxId: response.command.sandboxId, epoch: response.epoch },
+              response.command.requestId,
+              "sent_poll",
+              time.now(),
+            );
+            return Response.json(response, { headers });
+          }
+          if (remaining <= 0) return Response.json(response, { headers });
           await wake?.wait(request.signal, Math.min(1000, remaining), time.wait.bind(time));
         } finally {
           wake?.close();
