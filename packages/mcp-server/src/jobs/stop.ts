@@ -7,7 +7,6 @@ import { recordDockerCleanupReceipt, transitionSandbox } from "../sandbox-lifecy
 import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
 import type { JobKind, JobResult } from "./runner.ts";
 import { createJobsStore, recordStopCapture } from "./store.ts";
-
 export interface DockerStopIntent {
   actor: { userId: string; orgId: string };
   actorEpoch: string;
@@ -48,7 +47,6 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
         if (outcome === "refused") return { status: "fail", reason: "stop_receipt_refused" };
         return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
-
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
       if (!job.outcome) {
         const stage = async (tx: Sql, output: StagedOutput) => {
