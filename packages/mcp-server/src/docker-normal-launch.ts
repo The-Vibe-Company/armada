@@ -72,6 +72,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { recordDeferredDockerLaunchFailure } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -1012,14 +1013,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         )
           phase = error.message;
         if (workerId && !stopping) {
-          // Only the live lease may record a terminal failure. No exception or command output crosses this boundary.
-          await sql.query(
-            `update public.sandboxes s set status='failed',status_reason=$3
-              from public.docker_launch_requests d where s.id=$1 and d.sandbox_id=s.id and d.worker_id=$2
-              and d.worker_expires_at>now() and d.result_enc is null and s.status in ('starting','ready','running')
-              and s.stop_requested_at is null and s.deleted_at is null
-              and not exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$4)`,
-            [request.requestId, workerId, phase, `docker_prompt_${manifest.promptId}`],
+          const generation = String(state.row.lifecycle_generation);
+          await transaction((tx) =>
+            recordDeferredDockerLaunchFailure(
+              tx,
+              request.requestId,
+              generation,
+              workerId,
+              `docker_prompt_${manifest.promptId}`,
+              phase,
+            ),
           );
         }
         throw error;
