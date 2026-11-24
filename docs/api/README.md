@@ -310,11 +310,9 @@ the send cannot be replayed, so send your own.
 Steer receipts report `in-place` or `restart`, depending on the runtime harness.
 
 Supply a stable request UUID for sends, as `request_id` on backend requests
-and `requestId` on viewer requests. The account turn queue deduplicates by
-request ID for sends it admits, including native sends with a pinned model
-account. Direct runtime sends use the request ID for replay with identical
-input. Direct native dispatch has no request-ID deduplication. Inspect
-status before retrying an uncertain send.
+and `requestId` on viewer requests. The account turn queue deduplicates admitted
+sends by ID. Direct runtime sends also support replay with identical input.
+Inspect status before retrying an uncertain send.
 
 The sandbox states are `starting`, `ready`, `running`, `stopping`, `stopped`,
 `failed` and `deleted`. A turn has its own state. Send can return `queued`

@@ -350,7 +350,7 @@ test("a settled receipt still exports metadata after historical history-only ret
   expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
 });
 
-test.each(["full", "metadata", "tainted"])("runtime OTLP archive export with %s policy", async (mode) => {
+test.each(["full", "settled", "delivered", "tainted", "template"])("runtime OTLP export policy: %s", async (mode) => {
   const { db, people } = await database();
   const id = crypto.randomUUID();
   await db.query(
@@ -367,9 +367,10 @@ test.each(["full", "metadata", "tainted"])("runtime OTLP archive export with %s 
       }),
     ],
   );
-  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,$3,$2)", [
     people.org,
     await encryptConfig(),
+    mode === "settled" ? "metadata" : "full",
   ]);
   const archive: AgentEvent[] = [
     events[0]!,
@@ -410,9 +411,23 @@ test.each(["full", "metadata", "tainted"])("runtime OTLP archive export with %s 
       [id, index + 2002, index === 0 ? "turn" : null, await encryptSecret(JSON.stringify(event), key)],
     );
   await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
-  if (mode === "metadata")
+  if (mode === "delivered")
     await db.query("update org_langfuse set content_mode='metadata' where org_id=$1", [people.org]);
   if (mode === "tainted") await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
+  if (mode === "settled") await db.query("update org_langfuse set content_mode='full' where org_id=$1", [people.org]);
+  if (mode === "template") {
+    await db.exec("set session_replication_role=replica");
+    try {
+      await db.query(
+        `insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,golden_operation_fence_id,sandbox_id,state)
+         select org_id,owner_id,'fixture',repeat('a',64),gen_random_uuid(),gen_random_uuid(),
+           '{"definition":{"secrets":[{"key":"APP"}]}}',gen_random_uuid(),id,'succeeded' from sandboxes where id=$1`,
+        [id],
+      );
+    } finally {
+      await db.exec("set session_replication_role=origin");
+    }
+  }
   const requests: Request[] = [];
   const exporter = createLangfuse(db, key, (async (url, init) => {
     requests.push(url instanceof Request ? new Request(url, init) : new Request(String(url), init));
