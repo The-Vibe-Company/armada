@@ -77,4 +77,3 @@ cache writes retain null / unknown cost. The existing archive/projection rollbac
 test still proves ACK follows atomic commit. Canonical smoke cases reject absent
 usage/admission, wrong counters and resumed repricing, and explicitly distinguish
 unknown cost from zero. No real provider/model call is made by these tests.
-
