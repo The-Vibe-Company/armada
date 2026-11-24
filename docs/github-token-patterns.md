@@ -1,5 +1,7 @@
 # GitHub access in long-running workspaces: source survey
 
+> Historical context for the retired provider-run GitHub path. Enrolled sandboxes receive GitHub configuration through the Armada runtime.
+
 Reviewed 2026-11-10 for #879. Links pin inspected commits, not moving branches.
 This distinguishes **automatic credential acquisition** from supplying a token
 once. No helper can mutate an existing process's environment: survival means a

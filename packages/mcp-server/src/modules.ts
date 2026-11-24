@@ -19,13 +19,13 @@ import { sandboxRestRoutes } from "./sandbox-rest-controls.ts";
 import { controlMountModule, scriptedModelModule, triggerModule } from "./server-mounts.ts";
 import { registerServer } from "./server-registration.ts";
 import {
+  delegatedAccessModule,
   dockerModule,
   invitationModule,
   jobsModule,
   mcpBackgroundModule,
   mcpModule,
   modalModule,
-  nativeModule,
   outputModule,
   routineModule,
   runtimeModule,
@@ -68,7 +68,7 @@ export const { controlRoutes, assembleServer } = registerServer([
   triggerModule,
   jobsModule,
   outputModule,
-  nativeModule,
+  delegatedAccessModule,
   mcpBackgroundModule,
   dockerModule,
   runtimeModule,

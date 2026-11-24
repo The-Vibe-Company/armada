@@ -167,9 +167,9 @@ test("published launch request keeps golden, pinned Modal template and Docker so
     expect(launch.safeParse({ ...golden, provider, org: "team" }).success).toBe(true);
   }
   expect(launch.safeParse({ ...golden, provider: "boat", boatRuntime: true, runtimeVersion: 1 }).success).toBe(true);
-  expect(
-    launch.safeParse({ ...golden, provider: "modal", runtimeTransport: "dialout", runtimeVersion: 1 }).success,
-  ).toBe(true);
+  expect(launch.safeParse({ ...golden, provider: "modal", modalTransport: "dialout", runtimeVersion: 1 }).success).toBe(
+    true,
+  );
   expect(launch.safeParse({ ...golden, provider: "modal", boatRuntime: true, runtimeVersion: 1 }).success).toBe(false);
   const template = {
     org,
@@ -178,7 +178,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
     idempotencyKey: "probe".padEnd(16, "_"),
     provider: "modal",
     harness: "codex",
-    runtimeTransport: "dialout",
+    modalTransport: "dialout",
     runtimeVersion: 1,
   };
   expect(launch.safeParse(template).success).toBe(true);

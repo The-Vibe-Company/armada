@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlVaultStore, decryptSecret, type Sql, type VaultStore } from "@armada/core/server";
+import { decryptSecret, type VaultStore } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-import { createGitHubRuntime } from "../src/github-runtime.ts";
 
 test("control maps oversized JSON to 413 while preserving parser errors and valid auth.json uploads", async () => {
   const userId = crypto.randomUUID();
@@ -65,36 +64,4 @@ test("control maps oversized JSON to 413 while preserving parser errors and vali
   if (!written?.valueEnc) throw new Error("Credential did not reach the account store");
   expect(written.userId).toBe(userId);
   expect(await decryptSecret(written.valueEnc, key)).toBe(value);
-});
-
-test("private broker keeps oversized input indistinguishable from other denials", async () => {
-  const sql: Sql = {
-    async query<T>() {
-      return { rows: [{ sandbox_id: "unused", binding: { githubApp: "offline" } }] as T[] };
-    },
-  };
-  const runtime = createGitHubRuntime({
-    sql,
-    github: {
-      encryptionKey: undefined,
-      app: { clientId: "offline", clientSecret: "offline" },
-      store: createSqlVaultStore(sql),
-    },
-    origin: "https://armada.test",
-    providerForSandbox: async () => {
-      throw new Error("Must not reach provider");
-    },
-  });
-  for (const body of ["x".repeat(1025), "{"]) {
-    const response = await runtime.route(
-      new Request("https://armada.test/api/internal/github/credentials", {
-        method: "POST",
-        headers: { authorization: `Bearer armada_gh_${"a".repeat(64)}` },
-        body,
-      }),
-    );
-    expect(response?.status).toBe(403);
-    expect(await response?.text()).toBe("");
-    expect(response?.headers.get("cache-control")).toBe("no-store");
-  }
 });

@@ -91,12 +91,6 @@ conversation and model/effort fields are unchanged, and rotates it when any of
 those choices change. Runtime-backed composers keep the model/effort pinned to
 launch, including Boat/Modal runtimes, not only Docker.
 
-Native providers accept the field for request-shape compatibility, but do not
-implement durable UUID deduplication. A repeated native request can run again;
-this change does not add native replay guarantees. Deploy the accepting server
-before these updated clients: older servers reject UUIDs on native sends.
-
-
 ## Docker checkpointed merge stop and ordinary-send wake
 
 Docker starts a new automatic checkpoint only after verified merged work.

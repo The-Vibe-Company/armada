@@ -54,10 +54,6 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "isolated": [
         {
-          "name": "steer-recovery",
-          "sweep": false,
-        },
-        {
           "name": "modal-inventory",
           "sweep": true,
         },
@@ -69,7 +65,6 @@ test("server assembly preserves worker lane order and isolation", () => {
       "managed": [
         "sandbox-lifecycle",
         "jobs",
-        "native-prompts",
         "delegated-access",
         "docker-cleanup",
         "account-turns",

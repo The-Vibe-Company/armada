@@ -30,7 +30,7 @@ export function runtimeResumePlacement<H extends Provider>(
     host(caller: Caller, sandbox: Sandbox): Promise<H>;
     retained(current: SandboxInfo): void;
     admissionError: string;
-    binding?: readonly [provider: string, runtimeTransport: string];
+    binding?: readonly [provider: string, modalTransport: string];
     maxTtlSeconds: number;
     restore(
       host: H,

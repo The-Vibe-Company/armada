@@ -1,5 +1,5 @@
-import { describeNativeFailure } from "./native-failure.ts";
 import { type FailureDiagnostic, failureDiagnostic } from "./operator-failure.ts";
+import { describePromptFailure } from "./prompt-failure.ts";
 
 const classes: ReadonlySet<string> = new Set([
   "Error",
@@ -31,7 +31,7 @@ function isHarnessReason(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length <= 96 &&
-    (runnerReasons.has(value) || describeNativeFailure(value) !== null)
+    (runnerReasons.has(value) || describePromptFailure(value) !== null)
   );
 }
 

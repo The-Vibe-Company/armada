@@ -22,11 +22,6 @@ coordinator scripts that manage several sandboxes from one directory. In JSON,
 read `providerSandboxId` for provider display metadata and `providerSnapshotId`
 for a golden's provider snapshot. Use the Armada `id` for sandbox commands.
 
-The coordinator drain command `bun scripts/ops/drain-native.ts --provider boat`
-serves the Boat cohort. Confirm zero native Boat rows before merging retirement
-of the native cwd and Claude MCP wrappers. Boat repository context and Claude
-MCP require the enrolled runtime.
-
 ## 1. Establish identity and scope
 
 Run `armada info --setup --json` for identity, organization, server, GitHub,
@@ -175,6 +170,9 @@ On MCP, use `send` with `steer: true` and the instruction in `prompt`,
 target the sandbox by ID. To wait for settlement and stop only if still idle,
 use `stop` with `after: true` and optional `timeout_seconds`. A receipt with
 `timedOut: true` means this call did not request a stop.
+
+Steer receipts report `in-place` when the active turn accepts the message, or
+`restart` when delivery continues the conversation in a replacement turn.
 
 Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A

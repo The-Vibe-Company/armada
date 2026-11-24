@@ -36,7 +36,6 @@ import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
-import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 import { ToolError } from "./tool-error.ts";
 
 type Entry = {
@@ -195,7 +194,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           preservationNote: target.preservation_note,
           expiresAt: target.expires_at,
           boatRuntime: target.boat_runtime,
-          runtimeTransport: target.runtime_transport,
+          modalTransport: target.runtime_transport,
         },
         new Date(),
       );
@@ -275,14 +274,13 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
           `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
-           and deleted_at is null and expires_at>now() and not native_drain_pending
+           and deleted_at is null and expires_at>now()
            and (status='stopping' or (stop_requested_at is null
              and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})))) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
-          throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         if (locked.status === "stopping") {
           // WARNING: Reading the journal before taking the lock can miss a concurrent stop admission.
           const pending = await tx.query(
@@ -314,7 +312,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             preservationNote: locked.preservation_note as string | null,
             expiresAt: locked.expires_at as string | null,
             boatRuntime: !!locked.boat_runtime,
-            runtimeTransport: locked.runtime_transport as string | null,
+            modalTransport: locked.runtime_transport as string | null,
           },
           new Date(),
         );

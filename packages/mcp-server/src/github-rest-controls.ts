@@ -53,36 +53,15 @@ export async function dispatchGitHubRestControl(
   return result;
 
   async function run(sandboxId: string) {
-    const { caller, data, runtimeGitHub } = context;
+    const { caller, runtimeGitHub } = context;
     if (contract.name === "readRuntimeGitHubStatus") {
       if (!runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
       return runtimeGitHub.status(caller, sandboxId);
     }
     const routed = await context.dockerControls?.invoke(caller, "github_refresh", { id: sandboxId });
     if (routed?.handled) return routed.result;
-    const found = await data.sandboxes.get(sandboxId);
-    if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
-    if (found.boatRuntime || found.runtimeTransport === "dialout") {
-      if (!runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
-      return runtimeGitHub.prepare(caller, sandboxId);
-    }
-    if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    const provider = await context.provider(found);
-    if (found.ownerId !== caller.userId)
-      throw new ToolError("forbidden", "Only the sandbox owner may repair GitHub access.");
-    if (provider.id !== "boat")
-      throw new ToolError("unsupported", "Use the next prompt to reconcile this provider's managed GitHub runtime.");
-    const machine = await provider.get(found.providerSandboxId);
-    if (!["ready", "running"].includes(machine.state))
-      throw new ToolError("conflict", "GitHub repair requires a running sandbox.");
-    if (!context.launchCredentials.refreshGitHub)
-      throw new ToolError("unavailable", "GitHub repair is not configured.");
-    const result = await context.launchCredentials.refreshGitHub(
-      { userId: found.ownerId, orgId: found.orgId, role: "member" },
-      provider,
-      found.providerSandboxId,
-    );
-    return { id: found.id, status: "connected" as const, login: result.login };
+    if (!runtimeGitHub) throw new ToolError("unsupported", "Runtime GitHub is unavailable.");
+    return runtimeGitHub.prepare(caller, sandboxId);
   }
 }
 

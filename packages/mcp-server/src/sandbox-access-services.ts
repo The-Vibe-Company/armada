@@ -17,13 +17,11 @@ import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
-import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated, launchSandboxChild } from "./sandbox-access-child-launch.ts";
 import {
-  ChildMessageNotDispatched,
   type ChildOperation,
   createSandboxChildren,
   type SandboxChildExecutor,
@@ -88,7 +86,7 @@ export function createSandboxAccessServices(input: {
         return input.providers.resolve(
           {
             id: saved.id,
-            ...(saved.runtimeTransport ? { runtimeTransport: saved.runtimeTransport } : {}),
+            ...(saved.modalTransport ? { modalTransport: saved.modalTransport } : {}),
             ...(saved.boatRuntime ? { boatRuntime: saved.boatRuntime } : {}),
             provider: saved.provider,
             orgId,
@@ -105,7 +103,7 @@ export function createSandboxAccessServices(input: {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
     if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
     const retained =
-      saved.runtimeTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
+      saved.modalTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
       throw new DelegatedAccessError("conflict");
     if (saved.status === "stopped" || (saved.status === "failed" && saved.stoppedAt)) return;
@@ -268,75 +266,12 @@ export function createSandboxAccessServices(input: {
       };
     },
     async message(operation, text) {
-      const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+      const { saved } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
-      if (saved.runtimeTransport || saved.boatRuntime) {
-        if (!input.runtimeSend) throw new DelegatedAccessError("unavailable");
-        await input.runtimeSend(
-          { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
-          { id: saved.id, prompt: text, request_id: operation.id },
-        );
-        return;
-      }
-      await input.credentials.assertTurn?.(actor, saved.id, saved.status === "stopped");
-      const provider = await resolveProvider();
-      const scoped = createSqlData(sql)({
-        via: "service",
-        userId: operation.ownerId,
-        orgs: [{ orgId: operation.orgId, role: "member" }],
-      }).sandboxes;
-      // Explicit new work cancels the pending stop epoch under the same activity
-      // fences used by ordinary send, so an older receipt cannot cover this turn.
-      // Clear the previous report under the same fence as ordinary send, so publishing
-      // the new prompt identity cannot re-announce the earlier turn's outcome.
-      await sandboxActivity(
-        {
-          ...scoped,
-          async update(id, patch) {
-            if (!patch.advanceGeneration) return scoped.update(id, patch);
-            try {
-              await scoped.update(id, {
-                ...patch,
-                nativeChildSend: { fromState: saved.status, placement: saved.providerSandboxId },
-              });
-            } catch (cause) {
-              throw new ChildMessageNotDispatched("Native child send admission failed.", { cause });
-            }
-          },
-        },
-        saved,
-        { statusReason: null, stopRequested: false, clearTaskOutcome: true },
-        async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: saved.providerSandboxId,
-            harness: saved.harness,
-            text,
-            signal,
-            ...(saved.model ? { model: saved.model } : {}),
-            ...(saved.reasoningEffort ? { reasoningEffort: saved.reasoningEffort } : {}),
-            ...(saved.conversationIds.at(-1) ? { conversationId: saved.conversationIds.at(-1)! } : {}),
-          });
-          // Register the accepted identity exactly like ordinary send, so the native
-          // receipt worker and lifecycle reconciliation settle (and export) this turn.
-          await scoped.recordNativePrompt?.(saved.id, saved.providerSandboxId, receipt.promptId);
-          try {
-            await stores.sandboxes.recordTurnModel?.(saved.id, receipt.promptId, saved.model);
-          } catch (error) {
-            // The accepted prompt continues; the structured line carries the request and sandbox IDs.
-            recordOperatorFailure("sandbox_access.send.turn_model_record", error, { sandboxId: saved.id });
-          }
-          const patch: ServerSandboxPatch = {
-            nativeSendReceipt: { fromState: "running", placement: saved.providerSandboxId },
-            statusReason: null,
-            taskPromptId: receipt.promptId,
-            rearmDeadline: true,
-            conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
-          };
-          return {
-            result: undefined,
-            patch,
-          };
-        },
+      if (!input.runtimeSend) throw new DelegatedAccessError("unavailable");
+      await input.runtimeSend(
+        { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
+        { id: saved.id, prompt: text, request_id: operation.id },
       );
     },
     async extend(operation, ttlSeconds) {

@@ -66,7 +66,7 @@ test("three subscription launches prompt despite historical sandbox rows and sha
       await gate;
       return Response.json({ access_token: "access-after", refresh_token: "refresh-after" });
     }) as typeof fetch;
-    const ownership = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
+    const ownership = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, {
       origin: "https://armada.example",
       fetch: vendor,
     });

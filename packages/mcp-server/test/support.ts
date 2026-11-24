@@ -13,6 +13,7 @@ import type {
   ExecResult,
   ForkRequest,
   Harness,
+  PromptReceipt,
   PromptRequest,
   PromptStatus,
   Provider,
@@ -172,7 +173,7 @@ export function fakeBoat() {
     backendIdentity: async () => ({ id: "test-boat-account" }),
     harnesses: ["claude", "codex"] as Harness[],
     capabilities: {
-      claude: { steer: "native", ...harnessFeatures, ...extra },
+      claude: { steer: "in-place", ...harnessFeatures, ...extra },
       codex: { steer: "restart", ...harnessFeatures, ...extra },
     },
     async fork(request: ForkRequest) {
@@ -267,7 +268,10 @@ export function fakeBoat() {
     async delete() {
       return { status: "pending" };
     },
-  } as unknown as Provider;
+  } as unknown as Provider & {
+    prompt(request: PromptRequest): Promise<PromptReceipt>;
+    quiesce?: Provider["interrupt"];
+  };
 
   return {
     provider,
@@ -288,7 +292,7 @@ export function fakeBoat() {
       execOutput = output;
       execOutputWhen = when;
     },
-    providerFor(key: string): Provider {
+    providerFor(key: string) {
       keys.push(key);
       return provider;
     },

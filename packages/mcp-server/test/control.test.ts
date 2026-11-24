@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, memorySessionStore, sha256Hex } from "@armada/auth";
 import {
-  API_FAILURE_HELP,
   DEFAULT_LAUNCH_TTL_SECONDS,
   encryptSecret,
-  GitHubHydrationError,
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
@@ -29,7 +27,7 @@ import { run } from "../../cli/src/run.ts";
 import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
+import { createOrdinaryLaunchReceipts, ordinaryLaunchFingerprint } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -772,78 +770,17 @@ describe("armada org and armada account against the control API", () => {
 });
 
 describe("control API", () => {
-  // A private hydration refusal from the launch credential resolver must keep its closed phase.
-  test("GitHub refresh preserves the closed hydration failure over HTTP", async () => {
-    await withServer(async ({ db, options }) => {
-      const org = await options.store.createOrg("GitHub repair", STAN);
-      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      const golden = await db.query<{ id: string }>(
-        "insert into goldens(org_id, owner_id, name, visibility, config) values($1,$2,'repair','org',$3::jsonb) returning id",
-        [org.id, STAN, JSON.stringify({ repos: [], init: [] })],
-      );
-      const sandbox = await db.query<{ id: string }>(
-        "insert into sandboxes(org_id, owner_id, golden_id, boat_id, harness, status) values($1,$2,$3,'bx_repair','claude','ready') returning id",
-        [org.id, STAN, golden.rows[0]!.id],
-      );
-      await db.query(
-        `insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at)
-         values($1,7,'owner',$2,$3,$4)`,
-        [
-          STAN,
-          await encryptSecret("synthetic-refresh", KEY),
-          await encryptSecret("synthetic-access", KEY),
-          new Date(Date.now() + 60_000),
-        ],
-      );
-      const boat = fakeBoat();
-      boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
-      let hydrationAttempts = 0;
-      boat.provider.sshKey = async () => {
-        hydrationAttempts++;
-        throw new GitHubHydrationError("sudo");
-      };
-      options.providers = { resolve: async () => boat.provider };
-      options.github = {
-        app: { clientId: "fixture", clientSecret: "fixture" },
-        fetch: (async () => Response.json({ id: 7, login: "owner", name: null })) as unknown as typeof fetch,
-      };
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/github/refresh", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
-          },
-          body: JSON.stringify({ id: sandbox.rows[0]!.id }),
-        }),
-        options,
-      );
-      expect(hydrationAttempts).toBe(1);
-      expect(response?.status).toBe(503);
-      expect(await response?.json()).toEqual({
-        error: {
-          code: "github_hydration_failed",
-          message: API_FAILURE_HELP.github_hydration_failed,
-          details: { phase: "sudo" },
-        },
-      });
-    });
-  });
-
   test("uncertain retained provider outcomes preserve only recovery metadata", async () => {
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Provider failure", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      const golden = await db.query<{ id: string }>(
+      await db.query(
         "insert into goldens(org_id, owner_id, name, visibility, config) values($1,$2,'failure','org',$3::jsonb) returning id",
         [
           org.id,
           STAN,
           JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
         ],
-      );
-      const sandbox = await db.query<{ id: string }>(
-        "insert into sandboxes(org_id, owner_id, golden_id, boat_id, harness, status) values($1,$2,$3,'bx_failure','claude','ready') returning id",
-        [org.id, STAN, golden.rows[0]!.id],
       );
       options.providerFor = () => fakeBoat().provider;
       options.providers = {
@@ -876,28 +813,6 @@ describe("control API", () => {
           details: { keepSource: true, sourceSandboxId: "retained-source" },
         },
       });
-      // Retained resource evidence and lost mutation receipts both require reconciliation.
-      const boat = fakeBoat();
-      let dispatched = 0;
-      boat.provider.get = async (id) => ({ id, name: "failure", state: "ready", providerState: "ready", labels: {} });
-      boat.provider.prompt = async () => {
-        dispatched++;
-        throw new ProviderError({ provider: "boat", code: "unavailable", message: "Lost receipt", retryable: true });
-      };
-      options.providers = { resolve: async () => boat.provider };
-      const send = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/send", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
-          },
-          body: JSON.stringify({ id: sandbox.rows[0]!.id, prompt: "continue" }),
-        }),
-        options,
-      );
-      expect(dispatched).toBe(1);
-      expect(send?.status).toBe(503);
-      expect(await send?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
     });
   });
 
@@ -1283,9 +1198,17 @@ describe("control API", () => {
           boatSandboxId: receipt.golden.providerSandboxId,
         },
       };
-      await db.query("update ordinary_launch_receipts set response=$2::jsonb where id=$1", [
+      const { idempotencyKey: _key, ...originalRequest } = request;
+      const fingerprint = ordinaryLaunchFingerprint({
+        surface: "control",
+        route: "native",
+        request: originalRequest,
+        goldenId: launched.goldenId,
+      });
+      await db.query("update ordinary_launch_receipts set response=$2::jsonb,fingerprint=$3 where id=$1", [
         launched.id,
         JSON.stringify(oldReceipt),
+        fingerprint,
       ]);
       delete keyed.launch;
       const replay = await call("sandbox/launch", request);
@@ -2394,7 +2317,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, provider: undefined },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },
-      { ...body, runtimeTransport: "dialout" },
+      { ...body, modalTransport: "dialout" },
     ]) {
       const invalid = await request("sandbox/launch", bad);
       expect(invalid?.status).toBe(400);
@@ -2595,7 +2518,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
     const idle = false;
     const boat = entry === "ordinary-scoped-boat";
     const provider = boat ? "boat" : "modal";
-    const runtimeFields = boat ? { boatRuntime: true } : { runtimeTransport: "dialout" };
+    const runtimeFields = boat ? { boatRuntime: true } : { modalTransport: "dialout" };
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -2631,7 +2554,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
         harness,
         ...(idle ? {} : { prompt: "reply" }),
         ...(scoped ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
-        ...(!ordinary ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
+        ...(!ordinary ? { runtimeVersion: 1, modalTransport: "dialout" } : {}),
       };
       const fake = fakeBoat();
       const host = {
@@ -2701,7 +2624,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
       if (!ordinary) expect((await request(body))?.status).toBe(503);
       expect(fake.forks).toHaveLength(0);
       options.modalRuntimeHostFor = async (target) => {
-        expect(target.runtimeTransport).toBe("dialout");
+        expect(target.modalTransport).toBe("dialout");
         if (scoped) expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
         return host;
       };
@@ -2768,7 +2691,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
           { ...body, skills: "invalid" },
           { ...body, connections: ["invalid"] },
           { ...body, harness: "unknown" },
-          { ...body, runtimeTransport: undefined },
+          { ...body, modalTransport: undefined },
         ])
           expect((await request(bad))?.status).toBe(400);
       expect(fake.forks).toHaveLength(0);
@@ -2811,7 +2734,7 @@ test.each([{ harness: "codex" as const, entry: "ordinary-scoped-boat" }])(
                 return host;
               }
               return options.modalRuntimeHostFor!(
-                { ...golden, runtimeTransport: "dialout" },
+                { ...golden, modalTransport: "dialout" },
                 { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
               );
             },
@@ -2930,7 +2853,7 @@ test.each(["rest", "explicit", "mcp"] as const)("public %s Modal launch admits b
       harness: "codex",
       prompt: "reply",
       idempotencyKey: "modal-admission-probe",
-      ...(surface === "explicit" ? { runtimeVersion: 1, runtimeTransport: "dialout" } : {}),
+      ...(surface === "explicit" ? { runtimeVersion: 1, modalTransport: "dialout" } : {}),
       ...(surface === "rest" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
     };
     const run = async () => {
@@ -3020,7 +2943,7 @@ test("pinned Modal launch resolves personal org references and respects scoped t
             provider: "modal",
             harness: "codex",
             runtimeVersion: 1,
-            runtimeTransport: "dialout",
+            modalTransport: "dialout",
             prompt: "Probe",
             ...overrides,
           }),

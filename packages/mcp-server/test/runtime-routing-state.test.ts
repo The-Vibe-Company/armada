@@ -10,10 +10,7 @@ import {
 import { createSqlData } from "../src/data.ts";
 import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import { providerRegistry } from "../src/http.ts";
-import {
-  createHistoricalSandboxProviderResolver,
-  createMcpSandboxProviderResolver,
-} from "../src/mcp-sandbox-provider.ts";
+import { createMcpSandboxProviderResolver } from "../src/mcp-sandbox-provider.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -99,8 +96,8 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
     // guard cannot masquerade as runtime target rejection.
     await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id });
     expect(
-      (await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, runtimeTransport: "dialout" }))
-        .runtimeTransport,
+      (await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, modalTransport: "dialout" }))
+        .modalTransport,
     ).toBe("dialout");
     await expect(
       f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, boatRuntime: true }),
@@ -179,8 +176,7 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
   };
   await factory.resolve(target, { userId: people.owner });
   await createMcpSandboxProviderResolver(sql, factory)(record.id);
-  await createHistoricalSandboxProviderResolver(factory)(sql, record.id);
-  expect(calls).toEqual(["runtime", "runtime", "runtime"]);
+  expect(calls).toEqual(["runtime", "runtime"]);
   const { boatRuntime: choice, ...nativeTarget } = target;
   void choice;
   await factory.resolve(nativeTarget, { userId: people.owner });

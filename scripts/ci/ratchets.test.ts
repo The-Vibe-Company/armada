@@ -148,6 +148,10 @@ test("allows native-path deletions and uses the architecture metric's scope", ()
     ["apps/dashboard/src/launch.tsx", source],
     ["packages/agent-runtime/src/harness.ts", source],
     ["scripts/metrics/example.ts", source],
+    [
+      server + "ordinary-launch-receipts.ts",
+      'const fields = {\n  ordinaryRoute: "native",\n  modalTransportField: "runtimeTransport",\n};',
+    ],
     [server + "launch.test.ts", source],
     [server + "launch.generated.ts", source],
   ]);

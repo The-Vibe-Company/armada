@@ -19,7 +19,7 @@ const pinnedModal = () =>
   client.launch({
     provider: "modal",
     runtimeVersion: 1,
-    runtimeTransport: "dialout",
+    modalTransport: "dialout",
     harness: "codex",
     id: "revision-owner-template-id",
     revision: 1,

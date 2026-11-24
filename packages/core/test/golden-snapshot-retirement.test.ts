@@ -94,7 +94,6 @@ async function fixture(
     stop: forbiddenVMAction,
     delete: forbiddenVMAction,
     exec: forbiddenVMAction,
-    prompt: forbiddenVMAction,
     id: placement,
     harnesses: ["claude", "codex"],
     backendIdentity: async () => ({ id: account }),

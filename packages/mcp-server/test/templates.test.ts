@@ -16,11 +16,9 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { resetMigratedDatabaseRows } from "../../../scripts/test-support/migrated-database.ts";
-import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
@@ -115,17 +113,6 @@ async function fixture() {
     provider: async () => provider,
     options: {
       runtime: enrolledLaunchPolicy(sql),
-      async beforeStart(host, sandbox) {
-        const request = (
-          await sql.query<{ id: string }>("select id from template_launch_requests where sandbox_id=$1", [sandbox.id])
-        ).rows[0]!;
-        await service.prepare(
-          host,
-          sandbox.providerSandboxId,
-          { userId: sandbox.ownerId, orgId: sandbox.orgId },
-          request.id,
-        );
-      },
     },
   };
   const create = async (user = people.owner, scope = "personal", def: unknown = definition) =>
@@ -228,7 +215,7 @@ test("immutable revisions enforce personal/org ownership, optimistic publication
   }
 });
 
-test("template launch freezes selection before allocation, delivers readable values after init, replays once and follows later rebuilds", async () => {
+test("template launch freezes selection before allocation, replays once and follows later rebuilds", async () => {
   const f = await fixture();
   try {
     const t = (await f.create()).item as LaunchTemplate;
@@ -268,9 +255,6 @@ test("template launch freezes selection before allocation, delivers readable val
     expect(f.boat.forks[0]!.from).toBe(before);
     expect(f.boat.forks[0]!.env).not.toHaveProperty("APP_REGION");
     expect(f.boat.execs.some((e) => e.command.includes("not-a-command"))).toBe(false);
-    expect(f.configured).toEqual([
-      { sandboxId: result.providerSandboxId, harness: "codex", variables: { APP_REGION: "europe\n$(not-a-command)" } },
-    ]);
     expect(f.boat.prompts[0]).toMatchObject({ model: "gpt-5.4", reasoningEffort: "high" });
     expect(await f.launch(t.id)).toEqual(result);
     expect(f.boat.forks).toHaveLength(1);
@@ -810,165 +794,6 @@ test("pre-dispatch launch refusals preserve idempotency without a snapshot refer
   }
 });
 
-test("later readable preparation survives variable edits, template tombstones and role changes", async () => {
-  const f = await fixture();
-  try {
-    const template = (await f.create()).item as LaunchTemplate;
-    const launched = await f.launch(template.id);
-    await f.vault.command(f.actor(), "variable", "update", {
-      org: f.people.org,
-      id: f.variableId,
-      expectedVersion: 1,
-      value: "replacement",
-    });
-    await f.service.command(f.actor(), "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
-    await f.db.query("update members set role='admin' where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
-    const lifecycle = createMcpLifecycle({
-      sql: f.sql,
-      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-      encryptionKey: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-      prepareReadableVariables: f.service.prepare,
-    });
-    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-      userId: f.people.owner,
-      orgId: f.people.org,
-    });
-    expect(f.configured).toHaveLength(2);
-    expect(f.configured[1]).toMatchObject({ variables: { APP_REGION: "europe\n$(not-a-command)" } });
-    await f.provider.prompt({
-      sandboxId: launched.providerSandboxId as string,
-      harness: "codex",
-      text: "Continue with frozen values",
-    });
-    await expect(
-      lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-        userId: f.people.member,
-        orgId: f.people.org,
-      }),
-    ).rejects.toThrow("No authorized Armada sandbox");
-    await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
-    await expect(
-      f.service.prepare(
-        f.provider,
-        launched.providerSandboxId as string,
-        { userId: f.people.owner, orgId: f.people.org },
-        launched.requestId as string,
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(f.configured).toHaveLength(2);
-  } finally {
-    await f.close();
-  }
-});
-
-test("ordinary prompt admission performs no additional template queries or provider bootstrap", async () => {
-  const f = await fixture();
-  try {
-    const ordinarySandboxId = crypto.randomUUID();
-    const providerSandboxId = `bx_ordinary_${ordinarySandboxId}`;
-    await f.db.query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-       values($1,$2,$3,$4,'boat',$5,'codex','running')`,
-      [ordinarySandboxId, f.goldenId, f.people.org, f.people.owner, providerSandboxId],
-    );
-    const options = {
-      sql: f.sql,
-      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-      encryptionKey: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-    };
-    const ordinary = createMcpLifecycle(options);
-    const withTemplates = createMcpLifecycle({ ...options, prepareReadableVariables: f.service.prepare });
-    const actor = { userId: f.people.owner, orgId: f.people.org };
-    f.queries.length = 0;
-    expect(await ordinary.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
-    const baseline = f.queries.length;
-    f.queries.length = 0;
-    expect(await withTemplates.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
-    expect(f.queries).toHaveLength(baseline);
-    expect(f.configured).toHaveLength(0);
-    // A fresh read sees a newly admitted template; there is no negative process cache.
-    const template = (await f.create()).item as LaunchTemplate;
-    const fromTemplate = await f.launch(template.id);
-    await withTemplates.beforePrompt(f.provider, fromTemplate.providerSandboxId as string, actor);
-    expect(f.configured).toHaveLength(2);
-  } finally {
-    await f.close();
-  }
-});
-
-test("a replacement runner receives frozen readable values before its next turn", async () => {
-  const f = await fixture();
-  const generations: { runner: Runner; journal: Journal }[] = [];
-  try {
-    const generation = (name: string) => {
-      let readables: Record<string, string> = {};
-      const driver: Driver = {
-        configureReadableVariables: (variables) => {
-          readables = variables;
-        },
-        start: () => {
-          throw new Error("The test only prepares a turn");
-        },
-        close: async () => {},
-      };
-      const journal = new Journal(":memory:", (s) => s);
-      const grant = {
-        token: crypto.randomUUID(),
-        sandboxId: "runtime",
-        generation: name,
-        expiresAt: Number.MAX_SAFE_INTEGER,
-      };
-      const runner = new Runner(journal, grant, { codex: driver });
-      generations.push({ runner, journal });
-      return { runner, grant, readables: () => readables };
-    };
-    let active = generation("first");
-    // The runtime's readable-variables suite owns native subprocess environment delivery.
-    f.provider.configureReadableVariables = async (input) => {
-      const request = input as { harness: string; variables: Record<string, string> };
-      const result = await active.runner.handle(
-        new Request("https://private-runner", {
-          method: "POST",
-          headers: { [AUTH_HEADER]: active.grant.token },
-          body: JSON.stringify({
-            version: 1,
-            requestId: crypto.randomUUID(),
-            op: "configureReadableVariables",
-            ...request,
-            sandboxId: active.grant.sandboxId,
-          }),
-        }),
-      );
-      if (result.status !== 200) throw Error("Native readable bootstrap refused");
-    };
-    const template = (await f.create()).item as LaunchTemplate;
-    const launched = await f.launch(template.id);
-    expect(launched.state).toBe("succeeded");
-    active = generation("replacement");
-    expect(active.readables()).toEqual({}); // A fresh physical runner has no retained application environment.
-    const lifecycle = createMcpLifecycle({
-      sql: f.sql,
-      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-      encryptionKey: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-      prepareReadableVariables: f.service.prepare,
-    });
-    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-      userId: f.people.owner,
-      orgId: f.people.org,
-    });
-    expect(active.readables()).toEqual({ APP_REGION: "europe\n$(not-a-command)" });
-  } finally {
-    for (const g of generations) {
-      await g.runner.close();
-      g.journal.close();
-    }
-    await f.close();
-  }
-});
-
 // Contract: installation evidence survives request replay, without mutating the
 // admission manifest. Physical transports are covered by the install owners.
 test("template skills retain verified receipts and closed refusals without replaying installs", async () => {
@@ -1091,114 +916,6 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
       code: "invalid",
     });
     expect(f.boat.forks).toHaveLength(2);
-  } finally {
-    await f.close();
-  }
-});
-
-// Publication owns reference authorization; no raw secret fixture is needed at this boundary.
-test("secret references authorize delivery without persisting values and revoke later turns", async () => {
-  const f = await fixture();
-  try {
-    const canary = crypto.randomUUID() + crypto.randomUUID();
-    // Generate in memory; assert booleans so a failing assertion never prints the value.
-    const secretId = (
-      await f.db.query<{ id: string }>(
-        "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
-        [f.people.org, f.people.owner, await encryptSecret(canary, ENCRYPTION_KEY)],
-      )
-    ).rows[0]!.id;
-    const binding = { key: "APP_TOKEN", secretId, version: 1 };
-    const def = { ...f.definition, variables: [], secrets: [binding] };
-    const created = await f.create(f.people.owner, "personal", def);
-    const templateId = (created.item as LaunchTemplate).id;
-    const read = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId });
-    expect((read.revision as { definition: unknown }).definition).toEqual({
-      ...def,
-      goldenBinding: null,
-      skills: [],
-    });
-    for (const user of [f.people.member, f.people.admin]) {
-      await expect(f.create(user, "personal", def)).rejects.toThrow("secret_unavailable");
-    }
-    await expect(f.create(f.people.admin, "org", def)).rejects.toThrow("secret_unavailable");
-    for (const secrets of [
-      [binding, binding],
-      [{ ...binding, key: "OPENAI_API_KEY" }],
-      ...["NEXT_PUBLIC_", "VITE_", "PUBLIC_"].map((prefix) => [{ ...binding, key: prefix + "TOKEN" }]),
-      [{ ...binding, value: "not-accepted" }],
-      [{ ...binding, version: 0 }],
-    ]) {
-      await expect(f.create(f.people.owner, "personal", { ...def, secrets })).rejects.toMatchObject({
-        code: "invalid",
-      });
-    }
-    await expect(
-      f.create(f.people.owner, "personal", {
-        ...f.definition,
-        secrets: [{ ...binding, key: "APP_REGION" }],
-      }),
-    ).rejects.toMatchObject({ code: "invalid" });
-    const launched = await f.launch(templateId);
-    expect(launched.state).toBe("succeeded");
-    expect(JSON.stringify(launched).includes(canary)).toBe(false);
-    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
-    const request = (
-      await f.db.query<{ id: string; manifest: unknown }>("select id,manifest from template_launch_requests")
-    ).rows[0]!;
-    expect(JSON.stringify(request.manifest).includes(canary)).toBe(false);
-    f.configured.length = 0;
-    const lifecycle = createMcpLifecycle({
-      sql: f.sql,
-      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-      encryptionKey: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-      prepareReadableVariables: f.service.prepare,
-    });
-    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-      userId: f.people.owner,
-      orgId: f.people.org,
-    });
-    expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
-    const { configureReadableVariables: _configure, ...withoutDelivery } = f.provider;
-    await expect(
-      f.service.prepare(
-        withoutDelivery,
-        launched.providerSandboxId as string,
-        { userId: f.people.owner, orgId: f.people.org },
-        request.id,
-      ),
-    ).rejects.toThrow("secret_delivery_unavailable");
-    await f.db.query("update application_secrets set version=2 where id=$1", [secretId]);
-    await expect(f.create(f.people.owner, "personal", def)).rejects.toThrow("secret_version_changed");
-    await expect(
-      f.service.prepare(
-        f.provider,
-        launched.providerSandboxId as string,
-        { userId: f.people.owner, orgId: f.people.org },
-        request.id,
-      ),
-    ).rejects.toThrow("secret_version_changed");
-    await f.db.query("update application_secrets set scope='org' where id=$1", [secretId]);
-    const updated = { ...def, secrets: [{ ...binding, version: 2 }] };
-    await f.create(f.people.admin, "org", updated);
-    const published = await f.service.command(f.actor(), "publish", {
-      org: f.people.org,
-      id: templateId,
-      expectedRevision: 1,
-      definition: updated,
-    });
-    expect((published.item as LaunchTemplate).currentRevision).toBe(2);
-    const old = await f.service.command(f.actor(), "get", { org: f.people.org, id: templateId, revision: 1 });
-    expect((old.revision as { definition: { secrets: unknown } }).definition.secrets).toEqual([binding]);
-    for (const change of [
-      "expires_at=now()-interval '1 minute'",
-      "expires_at=null,status='revoked',value_enc=null",
-      "status='deleted'",
-    ]) {
-      await f.db.query(`update application_secrets set ${change} where id=$1`, [secretId]);
-      await expect(f.create(f.people.owner, "personal", updated)).rejects.toThrow("secret_unavailable");
-    }
   } finally {
     await f.close();
   }

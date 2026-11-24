@@ -1,6 +1,6 @@
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from "../packages/core/src/docker-api.ts";
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
-import { describeNativeFailure, promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { describePromptFailure, promptFailureReason } from "../packages/core/src/prompt-failure.ts";
 import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
@@ -1138,7 +1138,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       typeof reason === "string" &&
       (reason.startsWith("Authentication failed. ") ||
         promptFailureReason(reason) === promptFailureReason("authentication_failed") ||
-        describeNativeFailure(reason)?.title === "Authentication failed");
+        describePromptFailure(reason)?.title === "Authentication failed");
     let id: string | undefined;
     let passed = false;
     const sandbox = <T>(action: string, body: object = {}, timeoutMs?: number) =>

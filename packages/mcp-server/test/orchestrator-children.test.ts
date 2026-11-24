@@ -13,7 +13,6 @@ import { createSqlData, DataError } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
 import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
@@ -631,7 +630,7 @@ test.each([
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "reconciling-child",
-      runtimeTransport: "dialout",
+      modalTransport: "dialout",
       goldenId: golden.id,
       orgId: p.org,
       ownerId: p.owner,
@@ -1462,7 +1461,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         async resolve(target, caller) {
           if (!hostAvailable) throw Error("Modal App is unavailable");
           expect(target.id).toBeDefined();
-          expect(target.runtimeTransport).toBe("dialout");
+          expect(target.modalTransport).toBe("dialout");
           expect(target.visibility).toBe("private");
           expect(target.sourceGoldenVisibility).toBe("org");
           expect(caller.userId).toBe(p.owner);
@@ -1529,7 +1528,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
             async start({ sandbox }) {
               logicalId = sandbox.id;
               physicalId = sandbox.providerSandboxId;
-              expect(sandbox.runtimeTransport).toBe("dialout");
+              expect(sandbox.modalTransport).toBe("dialout");
               expect(sandbox.credentialId).toBe(selection.credentialId);
               expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
               expect(sandbox.visibility).toBe("private");
@@ -1900,197 +1899,6 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"];
-test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
-  const { close, db, sql, p, id, token, golden } = await fixture(
-    "running",
-    "anthropic",
-    "boat",
-    (code) => scenario === "abort" && code === "native_child_send_admitted",
-  );
-  try {
-    const fake = fakeBoat();
-    const provider = {
-      ...fake.provider,
-      async prompt(request: Parameters<typeof fake.provider.prompt>[0]) {
-        const receipt = await fake.provider.prompt(request);
-        if (scenario === "lost response") throw Error("Lost child prompt response");
-        return receipt;
-      },
-    };
-    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
-    const services = createSandboxAccessServices({
-      sql,
-      providers: { resolve: async () => provider },
-      credentials:
-        scenario !== "stale"
-          ? credentials
-          : {
-              ...credentials,
-              async assertTurn(_actor, sandboxId) {
-                await db.query("update sandboxes set status='running' where id=$1", [sandboxId]);
-              },
-            },
-      connections: undefined,
-      encryptionKey: ENCRYPTION_KEY,
-      scopedMcpUrl: "https://armada.example/mcp",
-    });
-    const physical = await fake.provider.fork({
-      from: "test",
-      name: "child",
-      ttlSeconds: 3600,
-      env: {},
-      noEnv: true,
-    });
-    const child = await createSqlSandboxStore(sql).insert({
-      id: crypto.randomUUID(),
-      provider: "boat",
-      providerSandboxId: physical.id,
-      goldenId: golden.id,
-      orgId: p.org,
-      ownerId: p.owner,
-      harness: "codex",
-      status: scenario === "lost response" ? "running" : "ready",
-      model: "m",
-      reasoningEffort: "high",
-    });
-    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-    await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
-      p.org,
-      await encryptSecret("{}", ENCRYPTION_KEY),
-    ]);
-    // A previous blocked report must not be re-announced under the follow-up's prompt identity.
-    await db.query(
-      `update sandboxes set task_prompt_id='prior',task_outcome='{"state":"blocked","reason":"agent_blocked"}'::jsonb where id=$1`,
-      [child.id],
-    );
-    await db.query(
-      "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
-      [p.org, new Uint8Array([1])],
-    );
-    if (scenario === "settlement abort")
-      await db.exec("alter table sandboxes add constraint reject_child_prompt check (task_prompt_id <> 'prompt_1')");
-    async function laterPreservationHandoff() {
-      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [child.id]);
-      await db.query(
-        `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,activity_lease_id=null,activity_until=null,
-         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
-       where id=$1`,
-        [child.id],
-      );
-      await db.query(
-        `insert into sandbox_native_preservation_receipts
-         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
-       select id,lifecycle_generation,1,lifecycle_generation,1,
-         jsonb_build_object('completedPrompts',(
-           select jsonb_agg(p.prompt_id) from native_webhook_prompts p
-           where p.sandbox_id=sandboxes.id and p.completed_at is not null
-         ))
-       from sandboxes where id=$1`,
-        [child.id],
-      );
-      return db.query(
-        "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
-        [child.id],
-      );
-    }
-    const lines: string[] = [];
-    let receipt: Awaited<ReturnType<typeof services.childWorker.message>> | undefined;
-    await observeRequest(
-      async () => {
-        receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
-        return new Response();
-      },
-      (line) => lines.push(line),
-    );
-    if (!receipt) throw Error("Missing child receipt.");
-    if (scenario === "lost response" || scenario === "settlement abort") {
-      expect(receipt.state).toBe("uncertain");
-      expect(fake.prompts).toHaveLength(1);
-      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "ineligible" }]);
-      return;
-    }
-    if (scenario !== "accepted") {
-      expect(receipt.state).toBe("failed");
-      expect(lines.map((line) => JSON.parse(line))).toContainEqual(
-        expect.objectContaining({
-          event: "operator_failure",
-          phase: "scoped.child_message.execution",
-          code: "child_dispatch_not_admitted",
-          refusalCode: scenario === "stale" ? "sandbox_not_ready" : "native_admission_error",
-          operationId: receipt.id,
-          sandboxId: child.id,
-        }),
-      );
-      expect(fake.prompts).toHaveLength(0);
-      expect(
-        (
-          await db.query(
-            "select status,lifecycle_generation::int,activity_lease_id,task_prompt_id from sandboxes where id=$1",
-            [child.id],
-          )
-        ).rows,
-      ).toEqual([
-        {
-          status: scenario === "stale" ? "running" : "ready",
-          lifecycle_generation: 1,
-          activity_lease_id: null,
-          task_prompt_id: "prior",
-        },
-      ]);
-      expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
-      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
-      return;
-    }
-    expect(receipt.state).toBe("succeeded");
-    expect(
-      (
-        await db.query(
-          "select actor,code,from_status,to_status,generation::int from sandbox_transitions where sandbox_id=$1",
-          [child.id],
-        )
-      ).rows,
-    ).toEqual([
-      {
-        actor: "native_turn",
-        code: "native_child_send_admitted",
-        from_status: "ready",
-        to_status: "running",
-        generation: 2,
-      },
-    ]);
-    expect(
-      (
-        await db.query<{ type: string }>(
-          "select payload->>'type' as type from outbound_webhook_deliveries where payload->>'promptId'='prompt_1'",
-        )
-      ).rows,
-    ).toEqual([]);
-    expect(fake.prompts).toHaveLength(1);
-    const promptId = "prompt_1";
-    expect(
-      (await db.query<{ task_prompt_id: string }>("select task_prompt_id from sandboxes where id=$1", [child.id]))
-        .rows[0]?.task_prompt_id,
-    ).toBe(promptId);
-    fake.finish(physical.id, promptId, "finished");
-    const native = createNativeWebhookPrompts(sql, async () => fake.provider);
-    // The earlier report's receipt is also registered; drain both.
-    while (await native.reconcileOne(new AbortController().signal));
-    expect(
-      (
-        await db.query<{ terminal_status: string }>(
-          "select terminal_status from langfuse_turn_exports where sandbox_id=$1 and prompt_id=$2",
-          [child.id, promptId],
-        )
-      ).rows,
-    ).toEqual([{ terminal_status: "finished" }]);
-    expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
-  } finally {
-    if (scenario === "settlement abort")
-      await db.exec("alter table sandboxes drop constraint if exists reject_child_prompt");
-    await close();
-  }
-});
 
 test("the event feed grants a scoped bearer access only to its authorized child", async () => {
   const f = await fixture();

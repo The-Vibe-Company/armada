@@ -363,7 +363,7 @@ export function createRuntimeResume(
             receipt.promptId,
             admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
           );
-          if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
+          if (found.modalTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
             [found.id, requestId, JSON.stringify(receipt)],
@@ -458,7 +458,7 @@ export function createRuntimeResume(
               );
             await prepareGitHub?.(caller, found.id, commandGuard);
             await prepareMcp?.(caller, found.id, signal, commandGuard);
-            if (found.boatRuntime || found.runtimeTransport === "dialout")
+            if (found.boatRuntime || found.modalTransport === "dialout")
               await restoreScopedAccess?.(
                 caller.userId,
                 found.id,
@@ -549,7 +549,7 @@ export function createRuntimeResume(
             found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
           const retained = Boolean(
             (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
-              (found.runtimeTransport === "dialout" &&
+              (found.modalTransport === "dialout" &&
                 runtime?.activation_confirmed &&
                 !runtime.live &&
                 runtime.epoch === admitted.op.source_epoch),

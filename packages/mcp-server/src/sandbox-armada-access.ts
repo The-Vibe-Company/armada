@@ -9,12 +9,11 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createBoatOrchestratorProvider } from "./boat-delegated-access-provider.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
-import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
+import { createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
 
 const enrolledPlacement =
   "((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))";
@@ -73,9 +72,6 @@ export function createSandboxArmadaAccess(input: {
     new DelegatedAuthority(store, async (tx, account) => {
       await resolveCredentials(createSqlVaultStore(tx), input.encryptionKey, account);
     });
-  const authority = authorityFor(sql);
-  const native = (provider: Provider) =>
-    provider.id === "boat" ? createBoatOrchestratorProvider(provider, input.encryptionKey) : provider;
   async function scope(provider: Provider, providerId: string, sandboxId?: string) {
     return (
       await sql.query<{
@@ -98,46 +94,6 @@ export function createSandboxArmadaAccess(input: {
         [provider.id, providerId, sandboxId ?? null],
       )
     ).rows[0];
-  }
-  async function install(provider: Provider, id: string) {
-    const parent = await scope(provider, id);
-    if (!parent) return;
-    if (parent.enrolled) throw new VaultError("conflict", "Scoped runtime access requires enrolled delivery.");
-    const target = native(provider);
-    const physical = await target.get(id);
-    if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
-      throw new VaultError("unavailable", "Delegated access requires an active native generation.");
-    // Native delivery requires quiescence. Reuse a still-acknowledged grant for
-    // this incarnation instead of revoking an active turn's tools when a later
-    // ordinary send is refused as busy. Stop/rebind/expiry invalidate this check.
-    const current = await sql.query(
-      `select d.id from public.orchestrator_delegations d
-       join public.armada_access_parents p on p.id=d.orchestrator_id
-       join public.sandboxes s on s.id=p.sandbox_id
-       join public.members m on m.org_id=p.org_id and m.user_id=p.owner_id
-       where p.id=$1 and p.kind='sandbox' and p.state='ready' and d.epoch=p.authority_epoch
-       and d.acknowledged_at is not null and d.revoked_at is null and d.expires_at>now()
-       and d.native_generation=$2 and s.orchestrator_native_generation=$2
-       and d.golden_ids=p.golden_ids and d.account_ids=p.credential_ids
-       and s.status in ('starting','ready','running') and s.stop_requested_at is null`,
-      [parent.id, physical.physicalGeneration],
-    );
-    if (current.rows.length) return;
-    await authority.installEpoch(
-      parent.id,
-      createDelegatedTransport({
-        provider: target,
-        providerSandboxId: id,
-        physicalGeneration: physical.physicalGeneration,
-        lifecycleGeneration: String(parent.lifecycle_generation),
-        mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
-      }),
-      {
-        scopes: [...workerScopes],
-        goldenIds: parent.golden_ids,
-        credentialIds: parent.credential_ids,
-      },
-    );
   }
   async function restoreEnrolled(
     ownerId: string,
@@ -238,83 +194,36 @@ export function createSandboxArmadaAccess(input: {
       harness: sandbox.harness,
       skillRevision: "0".repeat(40),
     };
-    if (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout") {
-      if (!input.commands || !runtime) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
-      await bootstrapSandboxAccess(provider, {
-        ...bootstrap,
-        exec: runtime.exec,
-        configureAuthority: async () => {
-          const generation = await enrolments.withOwner(sandbox.id, actor.userId, async (tx, scope) => {
-            if (scope.epoch !== runtime.epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
-            const row = (
-              await tx.query<{ generation: string }>(
-                `select lifecycle_generation::text as generation from public.sandboxes s
+    if (!input.commands || !runtime) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
+    await bootstrapSandboxAccess(provider, {
+      ...bootstrap,
+      exec: runtime.exec,
+      configureAuthority: async () => {
+        const generation = await enrolments.withOwner(sandbox.id, actor.userId, async (tx, scope) => {
+          if (scope.epoch !== runtime.epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
+          const row = (
+            await tx.query<{ generation: string }>(
+              `select lifecycle_generation::text as generation from public.sandboxes s
                  where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and ${enrolledPlacement}
                  and visibility='private' and golden_id=$5 and credential_id=$6`,
-                [sandbox.id, actor.orgId, provider.id, sandbox.providerSandboxId, sandbox.goldenId, credentialId],
-              )
-            ).rows[0];
-            if (!row) throw new VaultError("conflict", "The scoped runtime placement changed.");
-            await register(tx);
-            return row.generation;
-          });
-          await restoreEnrolled(actor.userId, sandbox.id, runtime.epoch, generation, runtime.signal);
-        },
-      });
-      return;
-    }
-    if (!sql.transaction) throw new VaultError("unavailable", "Scoped access requires a transaction.");
-    await sql.transaction(async (tx) => {
-      const eligible = await tx.query(
-        "select id from public.sandboxes where id=$1 and not native_drain_pending for update",
-        [sandbox.id],
-      );
-      if (!eligible.rows.length) throw new VaultError("conflict", "Sandbox is unavailable for scoped access.");
-      await register(tx);
-    });
-    await bootstrapSandboxAccess(native(provider), {
-      ...bootstrap,
-      configureAuthority: () => install(provider, sandbox.providerSandboxId),
+              [sandbox.id, actor.orgId, provider.id, sandbox.providerSandboxId, sandbox.goldenId, credentialId],
+            )
+          ).rows[0];
+          if (!row) throw new VaultError("conflict", "The scoped runtime placement changed.");
+          await register(tx);
+          return row.generation;
+        });
+        await restoreEnrolled(actor.userId, sandbox.id, runtime.epoch, generation, runtime.signal);
+      },
     });
   }
   async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete", sandboxId?: string) {
     const parent = await scope(provider, id, sandboxId);
     if (!parent) return;
-    await scrubParent(provider, id, parent, cleanup);
-  }
-  async function scrubParent(
-    provider: Provider,
-    id: string,
-    parent: NonNullable<Awaited<ReturnType<typeof scope>>>,
-    cleanup?: "stop" | "delete",
-  ) {
-    if (parent.enrolled) {
-      if (cleanup && (parent.terminal || (cleanup === "stop" && parent.stop_requested))) return;
-      throw new VaultError("conflict", "Scoped runtime cleanup requires a lifecycle stop or terminal state.");
-    }
-    await authority.revoke(parent.id);
-    const target = native(provider);
-    const physical = await target.get(id);
-    if (physical.state === "stopped") return;
-    if (!physical.physicalGeneration || !target.quiesceOrchestrator)
-      throw new VaultError("unavailable", "Delegated access cannot be safely checkpointed.");
-    await target.quiesceOrchestrator({ sandboxId: id, physicalGeneration: physical.physicalGeneration });
-    await authority.scrubBeforeCheckpoint(
-      parent.id,
-      createDelegatedTransport({
-        provider: target,
-        providerSandboxId: id,
-        physicalGeneration: physical.physicalGeneration,
-        lifecycleGeneration: String(parent.lifecycle_generation),
-        mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
-      }),
-    );
+    if (cleanup && (parent.terminal || (cleanup === "stop" && parent.stop_requested))) return;
+    throw new VaultError("conflict", "Scoped runtime cleanup requires a lifecycle stop or terminal state.");
   }
   return {
-    beforePrompt: install,
-    beforeSnapshot: scrub,
-    beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>
-      scrub(provider, placement, "delete", sandboxId),
     restoreEnrolled,
     prepare,
     wrap(provider: Provider): Provider {

@@ -50,7 +50,7 @@ test("Modal stored observations route stopped dial-out answers through the archi
     const sandbox = await createSqlData(sql)(caller).sandboxes.insert({
       id: crypto.randomUUID(),
       provider: "modal",
-      runtimeTransport: "dialout",
+      modalTransport: "dialout",
       providerSandboxId: "modal-stored-host",
       goldenId: golden.id,
       orgId: people.org,
@@ -119,7 +119,7 @@ test("Modal stored observations route stopped dial-out answers through the archi
     const target: ProviderTarget = {
       id: sandbox.id,
       provider: "modal",
-      runtimeTransport: "dialout",
+      modalTransport: "dialout",
       orgId: people.org,
       visibility: "private",
       modal: binding,

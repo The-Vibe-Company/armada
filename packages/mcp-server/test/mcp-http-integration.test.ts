@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { McpConnectionDto } from "@armada/core";
-import { createSqlVaultStore, type Provider, type SandboxRecord, type Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
 import { endpoint } from "../../mcp-gateway/src/index.ts";
 import { configFromEnv } from "../src/config.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
@@ -25,22 +25,6 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
     const encryptionKey = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
     integration = createMcpHttpIntegration({
       sql: db,
-      // Dependencies are present as in production, but off must never acquire/install.
-      github: {
-        store: {
-          ...createSqlVaultStore(db),
-          async getGitHubConnection(): Promise<never> {
-            throw Error("Default-off automatic legacy preparation must not read connections");
-          },
-        },
-        get app(): never {
-          throw Error("Managed GitHub runtime must remain off");
-        },
-        encryptionKey,
-      },
-      providerForSandbox: async () => {
-        throw Error("No managed provider lookup while off");
-      },
       encryptionKey,
       dashboardUrl: "https://dashboard.example",
       publicUrl: "https://armada.example",
@@ -78,33 +62,6 @@ test("HTTP connection control keeps credentials private, scopes organizations, a
       "insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status) values($1,$2,$3,$4,'bx_route','claude','ready')",
       [sandboxId, goldenId, org, user],
     );
-    const provider = new Proxy({ id: "boat" } as Provider, {
-      get(target, key) {
-        if (key === "id") return target.id;
-        throw Error("Off path must not touch guest tools, broker or sockets");
-      },
-    });
-    const runtimeSandbox: SandboxRecord = {
-      id: sandboxId,
-      orgId: org,
-      ownerId: user,
-      providerSandboxId: "bx_route",
-      provider: "boat",
-      goldenId,
-      harness: "claude",
-      status: "ready",
-      conversationIds: [],
-      createdAt: new Date().toISOString(),
-      stoppedAt: null,
-      deletedAt: null,
-      statusReason: null,
-      repositoryDir: null,
-      model: null,
-      reasoningEffort: null,
-    };
-    await integration.connections.prepare?.(provider, runtimeSandbox, { userId: user, orgId: org, role: "admin" });
-    await integration.beforePrompt(provider, "bx_route", { userId: user, orgId: org });
-    await integration.reconcileSandbox(provider, runtimeSandbox);
     expect(
       await integration.route(
         new Request("https://armada.example/api/internal/github/credentials", {

@@ -299,12 +299,6 @@ export {
   type ModelOption,
   resolveModelChoice,
 } from "./models.ts";
-export {
-  describeNativeFailure,
-  describeSandboxFailure,
-  dockerSandboxFailureReason,
-  promptFailureReason,
-} from "./native-failure.ts";
 export { OFFICIAL_SANDBOX_IMAGE, officialSandboxImage } from "./official-sandbox-image.ts";
 export {
   CONNECTION_MODEL_ID,
@@ -325,6 +319,12 @@ export {
 } from "./outcome.ts";
 export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 export { MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";
+export {
+  describePromptFailure,
+  describeSandboxFailure,
+  dockerSandboxFailureReason,
+  promptFailureReason,
+} from "./prompt-failure.ts";
 export {
   type AgentEvent,
   type CreateGoldenRequest,

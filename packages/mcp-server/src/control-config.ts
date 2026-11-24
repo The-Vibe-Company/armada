@@ -24,7 +24,6 @@ import { providerRegistry } from "./http.ts";
 import { Invitations, invitationMailFromEnv } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
-import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
@@ -63,22 +62,11 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     ),
   });
   const templates = createTemplateService(sql, encryptionKey);
-  const lifecycle = () =>
-    createMcpLifecycle({
-      sql,
-      registry,
-      encryptionKey,
-      origin: need("ARMADA_PUBLIC_URL"),
-      prepareReadableVariables: templates.prepare,
-    });
   const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
-  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }) =>
+  const providerFor = (apiKey: string) =>
     createObservedBoatProvider({
       apiKey,
       ...(boatDeploymentId ? { deploymentId: boatDeploymentId } : {}),
-      beforePrompt: async (provider, id) => {
-        if (caller) await lifecycle().beforePrompt(provider, id, caller);
-      },
     });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () =>
@@ -98,7 +86,6 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const modelAuth = createModelAuthOwnership(
     sql,
     encryptionKey,
-    undefined,
     undefined,
     env.ARMADA_PUBLIC_URL
       ? {

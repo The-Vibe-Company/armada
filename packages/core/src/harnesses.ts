@@ -27,7 +27,7 @@ export const HARNESS_CATALOG = {
     skillpackTool: "claude-code",
     credentialKinds: ["claude_oauth", "anthropic", "morph"],
     boatProvider: "claude-code",
-    capabilities: { ...COMMON_CAPABILITIES, steer: "native" },
+    capabilities: { ...COMMON_CAPABILITIES, steer: "in-place" },
   },
   codex: {
     label: "Codex",

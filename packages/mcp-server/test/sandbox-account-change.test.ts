@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Harness, HarnessCredentials, Sql } from "@armada/core";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 
-function fixture(status = "stopped", provider = "boat", runtimeTransport: string | null = "dialout") {
+function fixture(status = "stopped", provider = "boat", modalTransport: string | null = "dialout") {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID(),
     id = crypto.randomUUID();
@@ -14,7 +14,7 @@ function fixture(status = "stopped", provider = "boat", runtimeTransport: string
     org_id: org,
     provider,
     harness: "codex" as Harness,
-    runtime_transport: runtimeTransport,
+    runtime_transport: modalTransport,
     boat_runtime: provider === "boat",
     model: "gpt-test",
     status,
@@ -100,17 +100,6 @@ test("a concurrent binding winner is not overwritten after stopping", async () =
       f.row.credential_id = crypto.randomUUID();
     }),
   ).rejects.toMatchObject({ code: "conflict" });
-  expect(f.writes).toHaveLength(0);
-});
-
-test("an account change rechecks strict-stop ownership after quiescing", async () => {
-  const f = fixture("ready");
-  await expect(
-    f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, async () => {
-      await f.quiesce();
-      f.markStrictStop();
-    }),
-  ).rejects.toMatchObject({ code: "conflict", message: "Native sandbox preservation is pending." });
   expect(f.writes).toHaveLength(0);
 });
 

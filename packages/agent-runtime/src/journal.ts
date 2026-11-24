@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { describeNativeFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
+import { describePromptFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
@@ -178,7 +178,7 @@ const maskJsonText: (
         path === "reason" &&
         (original === "runner_restarted_outcome_unknown" ||
           original === "native_auth_state_unacknowledged" ||
-          describeNativeFailure(original) !== null))
+          describePromptFailure(original) !== null))
     )
       return original;
     return !mask || (context !== undefined && protocolText[context].has(path))

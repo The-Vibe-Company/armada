@@ -6,7 +6,6 @@ import { startInvitationWorker } from "./invitations.ts";
 import { createModalInitialTurnJob, MODAL_INITIAL_TURN } from "./jobs/modal-launch.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
-import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "./retention-maintenance.ts";
 import { startRoutineWorker } from "./routine-worker.ts";
@@ -26,11 +25,7 @@ export function createWorkerServices(services: ServerServices) {
   const { sql, providers } = services;
   const lifecycleProvider = createMcpSandboxProviderResolver(sql, providers);
   const lifecycle = createSandboxLifecycle(sql, lifecycleProvider);
-  const nativePrompts = createNativeWebhookPrompts(
-    sql,
-    createMcpSandboxProviderResolver(sql, providers, { terminalObservation: true }),
-  );
-  return { ...services, lifecycle, lifecycleProvider, nativePrompts };
+  return { ...services, lifecycle, lifecycleProvider };
 }
 
 type WorkerServices = ReturnType<typeof createWorkerServices>;
@@ -207,8 +202,7 @@ export const jobsModule: ServerModule = ({ workers }) => {
 export const outputModule: ServerModule = ({ mounts }) => {
   mounts.push(outputMounts);
 };
-export const nativeModule: ServerModule = ({ workers }) => {
-  workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);
+export const delegatedAccessModule: ServerModule = ({ workers }) => {
   workers.managed.set("delegated-access", ({ delegatedAccess }) => delegatedAccess.childWorker);
 };
 export const dockerModule: ServerModule = ({ mounts, workers, shutdown }) => {
@@ -221,7 +215,6 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("account-turns", ({ accountTurns }) => accountTurns);
   workers.managed.set("runtime-idle", idleLane);
-  workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };
 const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServices) => {

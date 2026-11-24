@@ -108,6 +108,29 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
   };
 }
 
+// WARNING: These discriminators are part of existing receipt hashes. Changing them invalidates replay.
+const controlReceiptFields = {
+  ordinaryRoute: "native",
+  modalTransportField: "runtimeTransport",
+};
+
+export function controlLaunchReceiptPayload(
+  body: Record<string, unknown>,
+  goldenId: string,
+  runtime: boolean | "modal",
+) {
+  const { idempotencyKey: _key, modalTransport, ...request } = body;
+  return {
+    surface: "control",
+    route: runtime === "modal" ? "modal-runtime" : runtime ? "boat-runtime" : controlReceiptFields.ordinaryRoute,
+    request: {
+      ...request,
+      ...(modalTransport === undefined ? {} : { [controlReceiptFields.modalTransportField]: modalTransport }),
+    },
+    goldenId,
+  };
+}
+
 export function ordinaryLaunchFingerprint(payload: unknown) {
   return createHash("sha256").update(canonical(payload)).digest("hex");
 }

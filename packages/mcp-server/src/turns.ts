@@ -2,7 +2,6 @@ import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
-  isSandboxProvider,
   type ModelRateLimit,
   modelRateLimit,
   observedPromptOutcome,
@@ -20,7 +19,6 @@ import {
   turnModelEvidence,
   usageUnavailableReason,
 } from "@armada/core";
-import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
 import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
@@ -150,7 +148,6 @@ export async function readStatus(
       | (TurnModelEvidence & {
           terminalOutcome?: PromptOutcome;
           rateLimit?: ModelRateLimit | null;
-          nativeExhaustionRecorded?: true;
         })
       | null;
     const retained =
@@ -165,7 +162,6 @@ export async function readStatus(
     let rateLimit: ModelRateLimit | null = null;
     let outcome: PromptOutcome;
     let evidence: TurnModelEvidence;
-    let terminalEvents: readonly AgentEvent[] | undefined;
     let cacheOutcome = false;
     // Terminal observations survive provider history retention. Never substitute the sandbox default.
     if (retained?.terminalOutcome) {
@@ -217,38 +213,16 @@ export async function readStatus(
           requestedModel: recorded?.requestedModel ?? null,
           complete,
         });
-        terminalEvents = events;
         cacheOutcome =
           !stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
       }
     }
-    // Retained terminal reports can predate health recording. Keep their outcome and use the original source time.
     try {
-      let nativeExhaustionRecorded = retained?.nativeExhaustionRecorded;
-      if (
-        !nativeExhaustionRecorded &&
-        isSandboxProvider(sandbox.provider) &&
-        !sandbox.boatRuntime &&
-        !sandbox.runtimeTransport &&
-        outcome.state === "failed" &&
-        outcome.limit?.resetsAt &&
-        Date.parse(outcome.limit.resetsAt) > options.now.getTime() &&
-        store.recordNativeExhaustion
-      ) {
-        const events = terminalEvents ?? (await readPromptEvents(provider, request)).events;
-        const exhaustion = nativeExhaustionEvidence(events, target.promptId, outcome.limit, options.now.getTime());
-        if (exhaustion) {
-          await store.recordNativeExhaustion(sandbox.id, target.promptId, exhaustion.limit, exhaustion.at);
-          nativeExhaustionRecorded = true;
-          cacheOutcome ||= !!retained;
-        }
-      }
       if (cacheOutcome) {
         await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
           ...evidence,
           terminalOutcome: outcome,
           rateLimit,
-          ...(nativeExhaustionRecorded ? { nativeExhaustionRecorded } : {}),
         });
       }
     } catch {
@@ -312,45 +286,18 @@ export async function readStatus(
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.
   if (stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
-  const nativeExit =
-    !runtime &&
-    isSandboxProvider(sandbox.provider) &&
-    ((next === "stopped" && info.state === "stopped") || (next === "failed" && info.physicalExitConfirmed === true));
-  if (next !== sandbox.status || reason !== sandbox.statusReason || (nativeExit && sandbox.stoppedAt === null)) {
-    const nativeDiagnostic = !runtime && isSandboxProvider(sandbox.provider) && !nativeExit && next === sandbox.status;
+  if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: ServerSandboxPatch = {
+      status: next,
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
+      ...(next === "stopped" || (next === "failed" && info.physicalExitConfirmed)
+        ? { stoppedAt: (info.stoppedAt ?? options.now).toISOString() }
+        : {}),
+      ...((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")
+        ? { providerObservation: { fromState: sandbox.status } }
+        : {}),
     };
-    if (nativeDiagnostic) {
-      patch.nativeDiagnostic = {
-        state: sandbox.status,
-        placement: sandbox.providerSandboxId,
-        previousReason: sandbox.statusReason,
-      };
-    } else {
-      patch.status = next;
-      if (next === "stopped" || (next === "failed" && info.physicalExitConfirmed)) {
-        patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-      } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-      if (
-        nativeExit ||
-        (!runtime && isSandboxProvider(sandbox.provider) && (next === "starting" || next === "stopping")) ||
-        (!runtime && isSandboxProvider(sandbox.provider) && sandbox.status === "stopped" && next === "failed") ||
-        ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
-        (!runtime &&
-          (sandbox.status === "stopped" ||
-            sandbox.status === "failed" ||
-            sandbox.status === "ready" ||
-            sandbox.status === "running") &&
-          next !== sandbox.status &&
-          (next === "ready" || next === "running"))
-      )
-        patch.providerObservation = {
-          fromState: sandbox.status,
-          ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
-        };
-    }
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
