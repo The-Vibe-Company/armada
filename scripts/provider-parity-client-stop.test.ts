@@ -127,6 +127,7 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
+              if (provider === "docker") return Response.json({ sandbox: { id: id[provider], status: "starting" } });
               return Response.json({ sandbox: { id: id[provider], provider, externalRef: body.externalRef } });
             case "sandbox/send": {
               const n = (turns.get(provider) ?? 0) + 1;
@@ -154,6 +155,8 @@ for (const mode of [
                 ],
               });
             }
+            case "sandbox/list":
+              return Response.json({ sandboxes: [{ ...body, id: id[provider], provider, status: "ready" }] });
             case "sandbox/status":
               if (
                 mode === "post_status_refused" &&

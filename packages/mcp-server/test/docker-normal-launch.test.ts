@@ -187,6 +187,8 @@ async function fixture(
     failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
+  let acknowledgeFirstPrompt: ((uncertain: boolean) => Promise<unknown>) | undefined;
+  let deferFirstPrompt = false;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   const promptReceipts = new Map<string, typeof receipt>();
   const jobs: unknown[] = [],
@@ -207,7 +209,7 @@ async function fixture(
       if (drive) await stepRuntime();
     },
   };
-  async function step(machineBootstrap = true) {
+  async function step(machineBootstrap = true, deferEnrolment = false) {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
     if (
       await hosts.mayHaveWork(
@@ -246,7 +248,7 @@ async function fixture(
     if (job) {
       jobs.push(job);
       if (job.operation === "stop" || job.operation === "delete") session = undefined;
-      if (job.operation === "bootstrap" || job.operation === "resume")
+      if (!deferEnrolment && (job.operation === "bootstrap" || job.operation === "resume"))
         session = await authority.enrol(job.bootstrap.enrolmentToken);
       const failed = failCreate && job.operation === "create";
       await hosts.complete(host.hostToken, installationId, {
@@ -309,6 +311,25 @@ async function fixture(
             command.requestId,
             options.distinctPromptIds && promptReceipts.size ? { ...receipt, promptId: randomUUID() } : receipt,
           );
+        if (command.op === "prompt" && deferFirstPrompt) {
+          const { runtimeToken, epoch } = session;
+          acknowledgeFirstPrompt = (uncertain) =>
+            commands.complete(runtimeToken, epoch, {
+              epoch,
+              requestId: command.requestId,
+              status: uncertain ? 409 : 200,
+              body: {
+                version: 1,
+                requestId: command.requestId,
+                ...(uncertain
+                  ? { error: "request_outcome_unknown" }
+                  : { result: promptReceipts.get(command.requestId)! }),
+              },
+            });
+          deferFirstPrompt = false;
+          drive = false;
+          throw Error("synthetic worker loss while the runtime owns the first turn");
+        }
         if (command.op === "exec")
           checkoutStatuses.push(
             (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [body.requestId]))
@@ -554,6 +575,10 @@ async function fixture(
       }
     },
     step,
+    deferFirstPrompt: () => {
+      deferFirstPrompt = true;
+    },
+    acknowledgeFirstPrompt: (uncertain: boolean) => acknowledgeFirstPrompt!(uncertain),
     setDrive(value: boolean) {
       drive = value;
     },
@@ -2089,6 +2114,23 @@ test("revocation between worker read and mailbox admission refuses the old launc
   expect((await counts(f))?.jobs).toBe(0);
 });
 
+test("revoking the admitted actor rejects a previously delivered bootstrap ticket", async () => {
+  const f = await fixture();
+  const launch = f.service(sql, true, 10000, officialImage, true);
+  await launch.launch(f.caller, f.body);
+  await launch.runClaim();
+  f.setDrive(false);
+  await launch.runClaim();
+  await f.step(true, true);
+  const bootstrap = f.jobs.at(-1) as { operation: string; bootstrap: { enrolmentToken: string } };
+  expect(bootstrap.operation).toBe("bootstrap");
+  await sql.query("update mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+    f.actor.orgId,
+    f.actor.userId,
+  ]);
+  await expect(authority.enrol(bootstrap.bootstrap.enrolmentToken)).rejects.toThrow();
+});
+
 test("a stale worker cannot enqueue runtime setup after enrolment", async () => {
   const f = await fixture();
   const launch = f.service(sql, true, 10000, officialImage, true);
@@ -2173,45 +2215,57 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
   await server.close();
 });
 
-test("deferred launch reconciles an uncertain first-prompt receipt without marking it failed or dispatching twice", async () => {
+test.each([false, true])("deadline recovery preserves the first turn (uncertain ACK: %s)", async (uncertain) => {
   const f = await fixture();
-  let failed = false;
-  const interrupted: Sql = {
-    ...sql,
-    transaction: async (work) => {
-      if (!sql.transaction) throw Error("transaction required");
-      return sql.transaction((tx) =>
-        work({
-          query: (q, v) => {
-            if (
-              !failed &&
-              q.startsWith("update public.jobs set outcome=") &&
-              String(v?.[1]).includes("docker_receipt")
-            ) {
-              failed = true;
-              throw Error("synthetic lost receipt publication");
-            }
-            return tx.query(q, v);
-          },
-        }),
-      );
-    },
-  };
-  const server = f.service(interrupted, true, 10000, officialImage, true);
-  const pending = await server.launch(f.caller, f.body);
-  expect(pending.github).toEqual({
-    status: "unavailable",
-    message: "GitHub preparation has not completed for this launch.",
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
   });
-  await server.runClaim();
-  await server.runClaim();
-  await server.runClaim();
-  expect(failed).toBe(true);
-  expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("starting");
-  const recovered = f.service(sql, true, 10000, officialImage, true);
-  await recovered.drain();
-  expect((await recovered.launch(f.caller, f.body)).promptId).toBe(f.receipt.promptId);
+  const followupId = randomUUID();
+  expect(
+    await controls.invoke(f.caller, "send", {
+      id: f.body.requestId,
+      request_id: followupId,
+      prompt: "Follow up",
+    }),
+  ).toMatchObject({ handled: true, result: { status: "queued" } });
+  f.deferFirstPrompt();
+  await server.drain();
   expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
+  await sql.query(
+    "update jobs set run_after=now(),deadline_at=now()-interval '1 second' where sandbox_id=$1 and kind='launch'",
+    [f.body.requestId],
+  );
+  const recovered = f.service(sql, true, 10000, officialImage, true);
+  await recovered.runClaim();
+  expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
+  await recovered.drainQueued();
+  expect((await sql.query("select status from docker_queued_prompts where request_id=$1", [followupId])).rows).toEqual([
+    { status: "queued" },
+  ]);
+  await f.acknowledgeFirstPrompt(uncertain);
+  await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
+  await recovered.runClaim();
+  const final = await recovered.launch(f.caller, f.body);
+  expect(final.sandbox.status).toBe(uncertain ? "starting" : "running");
+  if (!uncertain) {
+    expect(final.conversationId).toBe(f.receipt.conversationId);
+    expect(final.promptId).toBe(f.receipt.promptId);
+    expect(
+      (await sql.query("select conversation_ids,task_prompt_id from sandboxes where id=$1", [f.body.requestId])).rows,
+    ).toEqual([{ conversation_ids: [f.receipt.conversationId], task_prompt_id: f.receipt.promptId }]);
+  }
+  expect(await authority.withSession(f.session()!.runtimeToken, f.session()!.epoch, async () => true)).toBe(true);
+  expect(
+    (
+      await sql.query(
+        "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+        [f.body.requestId],
+      )
+    ).rows,
+  ).toHaveLength(1);
   await server.close();
   await recovered.close();
 });

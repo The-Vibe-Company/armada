@@ -92,9 +92,15 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
 ))`;
 
-export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Promise<T>) {
+export async function withJobLease<T>(
+  sql: Sql,
+  job: Job,
+  write: (tx: Sql) => Promise<T>,
+  lockPrerequisites?: (tx: Sql) => Promise<unknown>,
+) {
   if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
   return sql.transaction(async (tx) => {
+    await lockPrerequisites?.(tx);
     const { rows: sandboxes } = await tx.query(
       "select id from public.sandboxes where id=$1 and lifecycle_generation=$2 for update",
       [job.sandbox_id, job.generation],

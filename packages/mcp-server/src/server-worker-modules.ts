@@ -82,17 +82,26 @@ const jobsLane: LaneFactory = ({
     jobs,
     {
       delete: modal.launchCleanupJob,
-      launch: {
-        concurrency: modalLaunchJob?.concurrency ?? 8,
-        run(job, context) {
-          if (dockerLaunch && job.outcome && typeof job.outcome === "object" && "docker_actor_epoch" in job.outcome)
-            return dockerLaunch.run(job, context);
-          return (
-            modalLaunchJob?.run(job, context) ??
-            Promise.resolve({ status: "fail", reason: "launch_provider_unavailable" })
-          );
-        },
-      },
+      ...(modalLaunchJob || dockerLaunch
+        ? {
+            launch: {
+              concurrency: modalLaunchJob?.concurrency ?? 8,
+              run(job, context) {
+                if (
+                  dockerLaunch &&
+                  job.outcome &&
+                  typeof job.outcome === "object" &&
+                  "docker_actor_epoch" in job.outcome
+                )
+                  return dockerLaunch.run(job, context);
+                return (
+                  modalLaunchJob?.run(job, context) ??
+                  Promise.resolve({ status: "fail", reason: "launch_provider_unavailable" })
+                );
+              },
+            },
+          }
+        : {}),
       ...(config.encryptionKey
         ? {
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(

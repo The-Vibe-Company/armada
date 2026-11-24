@@ -58,7 +58,7 @@ import { DockerMachinePending } from "./docker-machine-adapter.ts";
 import { createDockerPromptWorker } from "./docker-prompt-worker.ts";
 import { dockerRepositoryCheckout } from "./docker-repository-checkout.ts";
 import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservation-sql.ts";
-import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { createDockerRuntimeLifecycle, projectDockerPromptReceipt } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import type { Job, JobContext } from "./jobs/runner.ts";
@@ -74,7 +74,7 @@ import {
   recordOperatorDiagnostic,
 } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
-import { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeCommands, readDockerPromptReceipt } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
@@ -790,7 +790,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         const assertClaim =
           worker &&
           (async (tx: Sql) => {
-            if (!(await worker.context.canDispatch(tx))) throw failure("unavailable");
+            const { docker_actor_epoch: admittedEpoch } = worker.job.outcome as { docker_actor_epoch: string };
+            if ((await member(tx, actor)).epoch !== admittedEpoch || !(await worker.context.canDispatch(tx)))
+              throw failure("unavailable");
           });
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         async function live() {
@@ -1204,19 +1206,86 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     const role = membership.rows[0]?.role;
     const settleInactive = async () => {
       if ((job.outcome as { docker_receipt?: string }).docker_receipt) return { status: "done" as const };
-      if (!context.signal.aborted && job.generation)
-        await withJobLease(sql, job, async (tx) => {
-          if (
-            await failDockerStartup(
-              tx,
-              request.requestId,
-              job.generation!,
-              "docker_startup_failed",
-              DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+      const generation = job.generation;
+      if (!context.signal.aborted && generation) {
+        const reconciled = await withJobLease(
+          sql,
+          job,
+          async (tx) => {
+            const commandId = `docker_prompt_${manifest.promptId}`;
+            const prior = (
+              await tx.query<{
+                epoch: string;
+                result_enc: Uint8Array<ArrayBuffer> | null;
+                request_enc: Uint8Array<ArrayBuffer>;
+                owner_id: string;
+                model: string;
+                conversation_ids: string[];
+              }>(
+                `select c.epoch::text,c.result_enc,c.request_enc,s.owner_id,s.model,s.conversation_ids
+               from public.runtime_commands c join public.runtime_enrolments e
+                 on e.sandbox_id=c.sandbox_id and e.epoch=c.epoch and e.lifecycle_generation=$3
+               join public.sandboxes s on s.id=c.sandbox_id
+               where c.sandbox_id=$1 and c.request_id=$2 and e.runtime_hash is not null
+                 and s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at>clock_timestamp()`,
+                [request.requestId, commandId, generation],
+              )
+            ).rows[0];
+            if (prior && role) {
+              if (!prior.result_enc) return "pending";
+              const reply = JSON.parse(await decryptSecret(prior.result_enc, key));
+              if (["request_outcome_unknown", "runtime_result_unavailable"].includes(reply.body?.error))
+                return "pending";
+              const receipt = readDockerPromptReceipt(reply, prior.epoch, commandId);
+              const { conversationId } = JSON.parse(await decryptSecret(prior.request_enc, key)).input;
+              if (
+                receipt &&
+                (conversationId === undefined || receipt.conversationId === conversationId) &&
+                (prior.conversation_ids.length === 0 ||
+                  (prior.conversation_ids.length === 1 && prior.conversation_ids[0] === receipt.conversationId))
+              ) {
+                await projectDockerPromptReceipt(
+                  scopedRuntimeSql(tx),
+                  { userId: prior.owner_id, orgId: request.org },
+                  request.requestId,
+                  prior.model,
+                  commandId,
+                  prior.epoch,
+                  receipt,
+                  prior.conversation_ids.length === 0,
+                );
+                const { promptId, conversationId } = receipt;
+                const encrypted = await encryptSecret(
+                  JSON.stringify({ epoch: prior.epoch, promptId, conversationId }),
+                  key,
+                );
+                await recordDockerLaunchEvidence(tx, job.id, {
+                  docker_receipt: Buffer.from(encrypted).toString("hex"),
+                });
+                return "published";
+              }
+            }
+            if (
+              await failDockerStartup(
+                tx,
+                request.requestId,
+                generation,
+                "docker_startup_failed",
+                DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+              )
             )
-          )
-            await cancelDockerLaunchMailbox(tx, request.requestId, job.generation!);
-        });
+              await cancelDockerLaunchMailbox(tx, request.requestId, generation);
+          },
+          (tx) =>
+            tx.query("select id from public.docker_hosts where id=$1 and org_id=$2 for update", [
+              request.hostId,
+              request.org,
+            ]),
+        );
+        if (reconciled === "published") return { status: "done" as const };
+        if (reconciled === "pending")
+          return { status: "retry" as const, after: new Date(Date.now() + 1000), unattempted: true as const };
+      }
       return { status: "fail" as const, reason: "docker_launch_inactive" };
     };
     if (!role || !(await context.canDispatch())) return settleInactive();
