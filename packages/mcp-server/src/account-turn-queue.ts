@@ -284,7 +284,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
           throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         if (locked.status === "stopping") {
-          // Read the journal after locking so a concurrent stop admission's committed transition is visible.
+          // WARNING: Reading the journal before taking the lock can miss a concurrent stop admission.
           const pending = await tx.query(
             `select 1 from public.sandboxes s where id=$1 and expires_at>clock_timestamp() and ${IDLE_STOP_PENDING}`,
             [input.id],

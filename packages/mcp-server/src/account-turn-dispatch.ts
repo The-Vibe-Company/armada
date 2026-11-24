@@ -25,12 +25,11 @@ function deferredDockerLaunch(sandbox: string, pending = false) {
 export const LAUNCH_PENDING = `(exists(select 1 from public.jobs setup
   where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state in ('queued','leased')) or ${deferredDockerLaunch("s", true)})`;
 
-// The reason alone also labels some explicit retained stops.
 function idleStopPending(sandbox: string) {
   return `(${sandbox}.status='stopping' and ${sandbox}.stop_requested_at is not null
     and ${sandbox}.status_reason is not distinct from 'idle_paused'
-    and ((${sandbox}.provider='boat' and ${sandbox}.boat_runtime is true)
-      or (${sandbox}.provider='modal' and ${sandbox}.runtime_transport is not distinct from 'dialout'))
+    and ((${sandbox}.provider is not distinct from 'boat' and ${sandbox}.boat_runtime is true)
+      or (${sandbox}.provider is not distinct from 'modal' and ${sandbox}.runtime_transport is not distinct from 'dialout'))
     and exists (
       select 1 from (
         select to_status, actor, code, generation from public.sandbox_transitions
