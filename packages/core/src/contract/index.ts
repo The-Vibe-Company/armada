@@ -21,6 +21,7 @@ import { skillpackOperations } from "./skillpack.ts";
 import { tokenOperations } from "./tokens.ts";
 
 export { accountOperations } from "./accounts.ts";
+export { type DockerHostVersionStatus, isDockerHostVersionStatus } from "./docker-host.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
   type DockerLaunchInput,

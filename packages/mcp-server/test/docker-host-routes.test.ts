@@ -469,6 +469,18 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
   await db.query(`update docker_hosts set created_at=$1`, [timestamp]);
   await db.query(`update docker_hosts set last_seen_at=now() where id in ($1,$2)`, [online.hostId, revoked.hostId]);
   await db.query(`update docker_hosts set last_seen_at=now()-interval '61 seconds' where id=$1`, [offline.hostId]);
+  for (const [id, version] of [
+    [online.hostId, "11.0.0"],
+    [offline.hostId, VERSION],
+    [neverSeen.hostId, "9999.0.0"],
+    [revoked.hostId, "11.0.0 unknown"],
+  ]) {
+    await db.query(`update docker_hosts set daemon_version=$1,daemon_protocol=$2 where id=$3`, [
+      version,
+      DOCKER_HOST_PROTOCOL - 1,
+      id,
+    ]);
+  }
   // Retained stopped sandboxes remain counted; deleted rows do not.
   async function sandbox(host: typeof online, status: "starting" | "stopped" | "deleted") {
     const id = randomUUID(),
@@ -537,10 +549,20 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     running: 0,
     resources: null,
     version: null,
+    versionStatus: "unknown",
     protocol: null,
     upgradeRequired: true,
   });
-  expect(byId.get(online.hostId)?.state).toBe("online");
+  expect(byId.get(online.hostId)).toMatchObject({
+    state: "online",
+    version: "11.0.0",
+    protocol: DOCKER_HOST_PROTOCOL - 1,
+    upgradeRequired: false,
+    versionStatus: "outdated",
+  });
+  expect(byId.get(offline.hostId)?.versionStatus).toBe("current");
+  expect(byId.get(neverSeen.hostId)?.versionStatus).toBe("ahead");
+  expect(byId.get(revoked.hostId)?.versionStatus).toBe("unknown");
   expect(byId.get(online.hostId)?.sandboxes).toBe(2);
   expect(byId.get(offline.hostId)?.state).toBe("offline");
   expect(byId.get(offline.hostId)?.sandboxes).toBe(1);
@@ -569,6 +591,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
       "stoppedSandboxBytes",
       "upgradeRequired",
       "version",
+      "versionStatus",
     ]);
     for (const value of [host.createdAt, host.lastSeenAt, host.revokedAt]) {
       if (value !== null) expect(new Date(value).toISOString()).toBe(value);

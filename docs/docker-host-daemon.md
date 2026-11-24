@@ -788,7 +788,11 @@ reports its installed release for display. Bump the protocol when removing
 or renaming an operation or field, changing a field's type or meaning, making
 an optional field required, or changing authentication. Optional fields and
 operations an older daemon never receives leave the protocol unchanged. The host list exposes the protocol
-from its last accepted poll and whether an upgrade is required.
+from its last accepted poll and whether an upgrade is required. The list also
+compares the reported daemon release against `targetVersion`, the release pinned
+by `install.json`. The `versionStatus` field is `current`, `outdated`, `ahead`, or
+`unknown` for an absent or unrecognized release. The CLI and dashboard show a
+release mismatch even while the host protocol is supported.
 
 Before deploying the first server release with this requirement, finish active
 host builds and install the daemon from that release candidate on each managed

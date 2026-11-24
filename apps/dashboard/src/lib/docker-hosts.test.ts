@@ -10,6 +10,7 @@ import {
   hostName,
   hostNameInput,
   hostState,
+  hostVersionWarning,
   isRouteAbsent,
   parseDockerHostList,
   parseHostRegistration,
@@ -291,4 +292,15 @@ test("Docker disk observations preserve missing, unknown and zero without accept
     expect(parse({ diskFreeBytes: value })?.hosts[0]?.diskFreeBytes).toBe(value);
   for (const value of [-1, 0.5, "free", Number.MAX_SAFE_INTEGER + 1])
     expect(parse({ diskFreeBytes: value })).toMatchObject({ hosts: [], skipped: 1 });
+});
+
+test("a protocol-compatible host shows the server's outdated daemon warning", () => {
+  const list = parseDockerHostList({
+    placement: true,
+    targetVersion: "12.0.0",
+    hosts: [host({ version: "11.0.0", protocol: 1, upgradeRequired: false, versionStatus: "outdated" })],
+  });
+  expect(hostVersionWarning(list!.hosts[0]!)).toBe("Outdated daemon");
+  expect(hostVersionWarning(host({ versionStatus: "unknown" }))).toBe("Unrecognized daemon version");
+  expect(hostVersionWarning(host({ version: null, versionStatus: "unknown" }))).toBeNull();
 });
