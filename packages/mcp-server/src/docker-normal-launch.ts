@@ -36,6 +36,7 @@ import {
   createSqlMcpRegistry,
   createSqlSandboxStore,
   createTemplateService,
+  DockerTemplateAdmissionRefused,
   decryptSecret,
   encryptSecret,
   failureDiagnostic,
@@ -554,9 +555,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (state.row && state.receipt)
         return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
-      const { bootstrap } = options;
-      if (options.enabled !== true || !bootstrap) throw failure("unavailable");
-      if (state.manifest) return { ...plan, kind: "active" as const, bootstrap, fresh: null };
+      if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
+      if (state.manifest) return { ...plan, kind: "active" as const, fresh: null };
       const snapshotRepositories = source?.config.repos;
       // Prepare credentials before reservation so the transaction only evaluates frozen candidate revisions.
       reason = "credential_resolution";
@@ -626,7 +626,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       return {
         ...plan,
         kind: "active" as const,
-        bootstrap,
         fresh: { resolved, binding, manifest, modelChoice, pool, accounts },
       };
     };
@@ -771,10 +770,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const { docker_actor_epoch: admittedEpoch } = worker.job.outcome as { docker_actor_epoch: string };
           if ((await member(tx, actor)).epoch !== admittedEpoch || !(await worker.context.canDispatch(tx)))
             throw failure("unavailable");
+          if (manifest.template)
+            await templates.revalidateDockerLaunch(tx, actor, request.requestId, manifest.template);
         };
         const assertTemplate = () =>
           manifest.template &&
-          transaction((tx) => templates.revalidateDockerLaunch(tx, actor, request.requestId, manifest.template!));
+          transaction((tx) => templates.revalidateDockerLaunch(tx, actor, request.requestId, manifest.template!, true));
         await assertTemplate();
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         const live = async () => {
@@ -799,7 +800,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           await clock.wait(Math.min(250, deadline - clock.now()));
         }
-        await startMachine(actor, request, state.row, worker);
+        await startMachine(actor, request, state.row, worker, assertClaim);
         reason = "runtime_readiness";
         let receipt: Receipt;
         for (;;) {
@@ -1079,6 +1080,14 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             : "dependency_unavailable",
       });
       if (!dispatchPossible) {
+        if (admission) {
+          const publicError = error instanceof ProviderError || error instanceof VaultError;
+          throw new DockerTemplateAdmissionRefused(
+            publicError ? error.code : "launch_unavailable",
+            publicError ? error.message : "Docker template launch failed before dispatch.",
+            { cause: error },
+          );
+        }
         if (error instanceof ProviderError) {
           const { resourceReceipt: _receipt, keepSource: _source, ...details } = error.details ?? {};
           throw new ProviderError({
@@ -1107,6 +1116,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     request: Request,
     row: Row,
     { job, context }: { job: Job; context: JobContext },
+    assertClaim: (tx: Sql) => Promise<void>,
   ) {
     const { requestId: sandboxId, hostId, image, snapshotId } = request;
     const generation = Number(job.generation);
@@ -1124,11 +1134,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     if (placement.enrolled) return;
     const source = snapshotId ? { kind: "snapshot" as const, ref: snapshotId } : { kind: "image" as const, ref: image };
     const scope = { actor, hostId, installationId: placement.docker_installation_id };
-    const { docker_actor_epoch: admittedEpoch } = job.outcome as { docker_actor_epoch: string };
-    const machine = createDockerHostStore(sql, key).machine({
-      ...scope,
-      canDispatch: async (tx, currentEpoch) => currentEpoch === admittedEpoch && context.canDispatch(tx),
-    });
+    const canDispatch: JobContext["canDispatch"] = async (tx) => {
+      if (!tx) return context.canDispatch();
+      await assertClaim(tx);
+      return true;
+    };
+    const machine = createDockerHostStore(sql, key).machine({ ...scope, canDispatch });
     const incarnation = { sandboxId, generation, signal: context.signal };
     const observed = await machine.observe(incarnation);
     const targetMachine =
@@ -1140,7 +1151,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             size: null,
             computeTtlSeconds: row.effective_ttl_seconds,
           });
-    await options.bootstrap!.bootstrapMachine(actor, targetMachine, context);
+    await options.bootstrap!.bootstrapMachine(actor, targetMachine, { ...context, canDispatch });
     throw new DockerMachinePending("pending");
   }
 
@@ -1215,9 +1226,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 });
                 if (manifest.template)
                   await templates.completeDockerLaunch(tx, manifest.template.id, request.requestId, {
+                    ...receipt,
                     epoch: prior.epoch,
-                    promptId,
-                    conversationId,
                   });
                 return "published";
               }

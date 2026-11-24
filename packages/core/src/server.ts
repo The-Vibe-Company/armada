@@ -148,6 +148,7 @@ export { sshHydrateGitHubToken } from "./ssh-github-token.ts";
 export { sshReadableVariables } from "./ssh-readable-variables.ts";
 export {
   createTemplateService,
+  DockerTemplateAdmissionRefused,
   TEMPLATE_LAUNCH_FIELDS,
   type TemplateRuntime,
   type TemplateService,

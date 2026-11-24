@@ -34,7 +34,6 @@ import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
-import { DOCKER_DISPATCH_REQUEST, DOCKER_SEND_REFUSAL } from "./docker-send-request-schema.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
@@ -47,7 +46,6 @@ import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
-import { ToolError } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -867,9 +865,8 @@ export function createDockerSandboxControls(
     const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
     if (!options.sendEnabled) throw failure("unavailable", "Docker send is not enabled.");
     if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
-    const parsed = DOCKER_DISPATCH_REQUEST.safeParse(args);
-    if (!parsed.success) throw new ToolError("invalid_request", DOCKER_SEND_REFUSAL);
-    const input = parsed.data;
+    if (typeof args.request_id !== "string" || typeof args.prompt !== "string") throw invalid();
+    const { request_id: requestId, prompt } = args;
     const assertClaim =
       claim &&
       (async (tx?: Sql) => {
@@ -880,7 +877,7 @@ export function createDockerSandboxControls(
     const previous = (
       await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
         "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-        [row.id, `docker_prompt_${input.request_id}`],
+        [row.id, `docker_prompt_${requestId}`],
       )
     ).rows[0];
     if (!["ready", "running"].includes(row.status)) {
@@ -890,7 +887,7 @@ export function createDockerSandboxControls(
         const pendingResume = await sql.query(
           `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
            and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
-          [row.id, input.request_id, caller.userId],
+          [row.id, requestId, caller.userId],
         );
         if (!pendingResume.rows.length)
           throw failure(
@@ -898,7 +895,7 @@ export function createDockerSandboxControls(
             "Docker sandbox resume is pending. Retry identical input with the same request_id.",
           );
       }
-      await resume(caller, row, input.request_id, claim);
+      await resume(caller, row, requestId, claim);
       row = await visible(caller, row.id);
       if (!["ready", "running"].includes(row.status))
         throw failure("conflict", "Docker sandbox resume is still pending.");
@@ -922,32 +919,31 @@ export function createDockerSandboxControls(
     if (!previous) {
       await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id, assertClaim);
       await options.github?.prepareTurn(caller, row.id, assertClaim);
+      if (row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id, assertClaim);
     }
-    if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id, assertClaim);
     for (;;) {
-      let result: Awaited<ReturnType<typeof runtime.prompt>>;
-      try {
-        result = await runtime.prompt(
+      const result = await runtime
+        .prompt(
           { userId: caller.userId, orgId: row.org_id },
           row.id,
           {
-            requestId: input.request_id,
-            text: input.prompt,
+            requestId: requestId,
+            text: prompt,
             ...(conversationId === undefined ? {} : { conversationId: conversationId as string }),
           },
           undefined,
           assertClaim,
-        );
-      } catch {
-        throw failure(
-          "conflict",
-          "Docker prompt admission unavailable. Retry identical input with the same request_id.",
-        );
-      }
+        )
+        .catch(() => {
+          throw failure(
+            "conflict",
+            "Docker prompt admission unavailable. Retry identical input with the same request_id.",
+          );
+        });
       if (result.state === "admitted")
         return {
           id: row.id,
-          requestId: input.request_id,
+          requestId: requestId,
           runtime: { kind: "armada" as const, epoch: result.epoch },
           ...result.receipt,
         };
@@ -1043,8 +1039,7 @@ export function createDockerSandboxControls(
             })
           : await dispatch();
       } catch (error) {
-        if (error instanceof ProviderError || error instanceof ToolError || error instanceof DockerHostUpgradeRequired)
-          throw error;
+        if (error instanceof ProviderError || error instanceof DockerHostUpgradeRequired) throw error;
         if (error instanceof DockerRetentionEnded)
           throw new ProviderError({
             provider: "docker",

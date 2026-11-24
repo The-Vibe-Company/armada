@@ -27,6 +27,7 @@ import {
   createSqlMcpRegistry,
   createSqlVaultStore,
   createTemplateService,
+  DockerTemplateAdmissionRefused,
   decryptSecret,
   encryptSecret,
   type TemplateRuntime,
@@ -1188,6 +1189,7 @@ test("Docker sends through the production-wired account queue key a legacy body,
   expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
   const generated = await rows();
   expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(false);
   const keyed: SendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
   const receipt = await sdk.send(keyed);
   expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
@@ -1222,11 +1224,20 @@ test.each([false, true])(
     const originalId = dockerLaunchRequestId(key, f.actor.userId, org, body.idempotencyKey);
     if (historical) {
       await f.service().launch(f.caller, { ...fields, org, requestId: originalId, externalRef: body.externalRef });
-      await sql.query("update docker_launch_requests set async_launch=true where sandbox_id=$1", [originalId]);
+      await sql.query(
+        `with historical as (delete from public.jobs where sandbox_id=$1 and kind='launch' returning *)
+        insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc,async_launch)
+        select sandbox_id,(outcome->>'docker_actor_epoch')::bigint,request_digest,payload_enc,
+          decode(outcome->>'docker_receipt','hex'),true from historical`,
+        [originalId],
+      );
       const migration = await Bun.file(
         new URL("../../../supabase/migrations/20261124200501_docker_ordinary_launch_jobs.sql", import.meta.url),
       ).text();
       await sql.query(migration.slice(migration.indexOf("insert into public.jobs"), migration.indexOf("-- Setup")));
+      expect(
+        (await sql.query("select sandbox_id from jobs where sandbox_id=$1 and kind='launch'", [originalId])).rows,
+      ).toEqual([{ sandbox_id: originalId }]);
     }
     const admitted = modalLaunchReceipt.parse(await post("sandbox/launch", body));
     try {
@@ -2380,9 +2391,10 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 
 // Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
 // replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
-test.each([false, true])(
-  "Docker templates freeze pins and replay one host/snapshot allocation (snapshot=%s)",
-  async (fromSnapshot) => {
+test.each(["host", "snapshot", "revoked"])(
+  "Docker template launch follows the shared reservation and authority checks (%s)",
+  async (scenario) => {
+    const fromSnapshot = scenario === "snapshot";
     const db = database();
     const f = fromSnapshot ? await snapshotFixture() : await fixture();
     const snapshotId = fromSnapshot ? await seedReadySnapshot(f) : undefined;
@@ -2444,6 +2456,15 @@ test.each([false, true])(
     const admitted = await templates.command(f.caller, "launch", input, runtime);
     expect(admitted).toMatchObject({ state: "succeeded", provider: "docker", status: "starting" });
     expect(f.jobs).toHaveLength(0);
+    if (scenario === "revoked") {
+      let checks = 0;
+      await f.service().runClaim(async (tx) => {
+        if (!tx && ++checks === 2) await templates.command(f.caller, "delete", { org: f.actor.orgId, id });
+        return true;
+      });
+      expect((await counts(f))?.jobs).toBe(0);
+      return;
+    }
     await f.service().drain();
     const result = await templates.command(f.caller, "launch", input, runtime);
     expect(result).toMatchObject({
@@ -2537,13 +2558,9 @@ test("Docker template placement refuses inaccessible, revoked and replaced host 
       },
       runtime,
     );
-    if (change === "issuer_removed") {
-      await expect(launch).rejects.toThrow("before dispatch");
-    } else {
-      const result = await launch;
-      expect(result.state).toBe("failed");
-      if (change === "replaced") expect(result.reason).toBe("environment_binding_changed");
-    }
+    const result = await launch;
+    expect(result.state).toBe("failed");
+    if (change === "replaced") expect(result.reason).toBe("environment_binding_changed");
     expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
   }
 });
@@ -2608,7 +2625,7 @@ test("a Docker routine settles the scheduled occurrence from its shared launch r
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
 });
 
-test("a lost Docker template response replays its durable starting receipt and never redispatches its key", async () => {
+test.each(["lost_response", "superseded_refusal"])("Docker template replay after %s", async (scenario) => {
   const f = await fixture();
   const templates = createTemplateService(sql, key);
   const stores = createSqlData(sql)(f.caller);
@@ -2627,8 +2644,13 @@ test("a lost Docker template response replays its durable starting receipt and n
     launchDocker: async (body, admission) => {
       dispatches++;
       f.body.requestId = body.requestId as typeof f.body.requestId;
-      await f.service().launch(f.caller, body, admission);
-      throw Error("response lost after actual normal launch committed");
+      if (scenario === "superseded_refusal" && dispatches === 1) {
+        await templates.command(f.caller, "launch", input, runtime);
+        throw new DockerTemplateAdmissionRefused("host_full", "Docker host capacity unavailable.");
+      }
+      const receipt = await f.service().launch(f.caller, body, admission);
+      if (scenario === "lost_response") throw Error("response lost after actual normal launch committed");
+      return receipt;
     },
   };
   const input = {
@@ -2637,13 +2659,15 @@ test("a lost Docker template response replays its durable starting receipt and n
     requestKey: "lost-response",
     prompt: f.body.prompt,
   };
-  await expect(templates.command(f.caller, "launch", input, runtime)).rejects.toThrow();
+  const start = templates.command(f.caller, "launch", input, runtime);
+  if (scenario === "lost_response") await expect(start).rejects.toThrow();
+  else expect(await start).toMatchObject({ status: "starting" });
   expect(await templates.command(f.caller, "launch", input, runtime)).toMatchObject({
     state: "succeeded",
     status: "starting",
     id: f.body.requestId,
   });
-  expect(dispatches).toBe(1);
+  expect(dispatches).toBe(scenario === "lost_response" ? 1 : 2);
   expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 0 });
 });
 

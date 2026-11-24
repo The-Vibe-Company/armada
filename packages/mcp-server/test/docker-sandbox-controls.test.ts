@@ -36,7 +36,6 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { ToolError } from "../src/tool-error.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
@@ -839,12 +838,6 @@ test("normal Docker send continues the saved native conversation and retries exa
   expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
   expect(deliveries).toBe(1);
   await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
-  // Request validation keeps its own public guidance instead of generic provider launch help.
-  const override = await invoke(caller(f.actor), "send", { ...args, model: "different" }, controller).catch(
-    (error: unknown) => error,
-  );
-  expect(override).toBeInstanceOf(ToolError);
-  expect(override).toMatchObject({ code: "invalid_request" });
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
 
