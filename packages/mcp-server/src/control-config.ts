@@ -1,4 +1,5 @@
 import { createSqlAuthStore } from "@armada/auth";
+import { HOST_CAPABILITIES } from "@armada/core";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -143,7 +144,9 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     data: createSqlData(sql),
     providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
     goldenTarget: async (target, caller) =>
-      target.provider === "boat" ? { ...target, modal: null } : modalIntegration().goldenTarget(target, caller),
+      HOST_CAPABILITIES[target.provider].requiresPinnedGoldenBinding
+        ? modalIntegration().goldenTarget(target, caller)
+        : { ...target, modal: null },
     goldenBuilds: new GoldenBuildJobs({
       sql,
       encryptionKey,
