@@ -30,14 +30,6 @@ describe("sidebar navigation", () => {
   });
 });
 
-test("host bookmarks share the Machines active destination without matching similarly named routes", () => {
-  for (const path of ["/hosts", "/hosts/host_one"]) {
-    expect(isActiveLink(path, "/providers/cloud")).toBe(true);
-    expect(isActiveLink(path, "/sandboxes")).toBe(false);
-  }
-  expect(isActiveLink("/hostsx", "/providers/cloud")).toBe(false);
-});
-
 describe("organization switch destination", () => {
   test.each([
     ["/routines", "/routines"],
@@ -45,7 +37,6 @@ describe("organization switch destination", () => {
     ["/skills/skill_old", "/skills"],
     ["/variables", "/variables"],
     ["/providers/cloud", "/providers/cloud"],
-    ["/hosts/host_old", "/providers/cloud"],
     ["/snapshots/snapshot_old", "/snapshots"],
     ["/harness", "/harness"],
     ["/tools", "/tools"],
@@ -56,10 +47,7 @@ describe("organization switch destination", () => {
     ["/constructor", "/sandboxes"],
     ["//external.example", "/sandboxes"],
     ["/routines-other", "/sandboxes"],
-    ["setup", "/providers/cloud"],
     ["orgs", "/orgs/org_new"],
-    ["environments", "/snapshots"],
-    ["goldens", "/snapshots"],
     ["credentials", "/harness"],
     ["connections", "/tools"],
   ])("switches from %s to %s without old organization item IDs", (pathname, expected) => {

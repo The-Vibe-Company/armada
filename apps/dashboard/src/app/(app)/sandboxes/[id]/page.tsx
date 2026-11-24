@@ -188,77 +188,56 @@ export default async function SandboxPage({ params }: Props) {
   ];
 
   return (
-    <div data-fit-viewport className="space-y-3 md:space-y-4">
-      <ShellPageActions>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <ShellPageActions slot="status">
-              <SandboxState
-                viewerOwns={owner}
-                status={sandbox.publicStatus}
-                statusMessage={sandbox.status_reason}
-                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-                idlePaused={sandbox.status_reason === "idle_paused"}
-                expiresAt={sandbox.expires_at}
-              />
-            </ShellPageActions>
-            {sandbox.publicStatus === "running" && sandbox.status_reason && sandbox.status_reason !== "idle_paused" && (
-              <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
-            )}
-            {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
-            <span className="text-xs text-muted-foreground">
-              <RowCost cost={cost} />
-            </span>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {configured &&
-              (sandbox.status === "ready" || sandbox.status === "running") &&
-              (owner || org?.role === "admin") &&
-              sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
-            {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
-          </div>
-        </div>
-      </ShellPageActions>
+    <ThreadLayout
+      sandbox={sandbox}
+      lifetime={life.remaining ?? life.lifetime}
+      header={
+        <>
+          <ShellPageActions>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
+                <ShellPageActions slot="status">
+                  <SandboxState
+                    viewerOwns={owner}
+                    status={sandbox.publicStatus}
+                    statusMessage={sandbox.status_reason}
+                    readyLabel={
+                      parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"
+                    }
+                    idlePaused={sandbox.status_reason === "idle_paused"}
+                    expiresAt={sandbox.expires_at}
+                  />
+                </ShellPageActions>
+                {sandbox.publicStatus === "running" &&
+                  sandbox.status_reason &&
+                  sandbox.status_reason !== "idle_paused" && (
+                    <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
+                  )}
+                {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
+                <span className="text-xs text-muted-foreground">
+                  <RowCost cost={cost} />
+                </span>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {configured &&
+                  (sandbox.status === "ready" || sandbox.status === "running") &&
+                  (owner || org?.role === "admin") &&
+                  sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
+                {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
+              </div>
+            </div>
+          </ShellPageActions>
 
-      {life.notice && (
-        <p className="text-sm text-muted-foreground">
-          {life.notice.title} · {life.notice.text}
-        </p>
-      )}
-      <SandboxAttention sandbox={sandbox} viewer={viewer} />
-
-      <div
-        data-fit="body"
-        className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
-      >
-        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          <SandboxChat
-            sandboxId={sandbox.id}
-            currentConversation={sandbox.conversation_ids.at(-1)}
-            initialStatus={sandbox.publicStatus}
-            provider={sandbox.provider}
-            preservationNote={sandbox.preservation_note}
-            pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
-            initialIdlePaused={sandbox.status_reason === "idle_paused"}
-            statusReason={sandbox.status_reason}
-            expiresAt={sandbox.expires_at}
-            initialUsageRevision={usageRevision(sandbox.usage_turns)}
-            live={isActiveStatus(sandbox.status)}
-            harness={sandbox.harness}
-            catalog={MODEL_CATALOG}
-            launchedModel={sandbox.model}
-            configured={configured}
-          />
-          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
-            <span>{sandbox.model ?? "Provider default"}</span>
-            <span>
-              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
-            </span>
-            <span>{life.remaining ?? life.lifetime}</span>
-            <span>⌘ / Ctrl + Enter to send</span>
-          </footer>
-        </div>
-        <SandboxDetailsPanel>
+          {life.notice && (
+            <p className="text-sm text-muted-foreground">
+              {life.notice.title} · {life.notice.text}
+            </p>
+          )}
+          <SandboxAttention sandbox={sandbox} viewer={viewer} />
+        </>
+      }
+      details={
+        <>
           <section className="space-y-4 text-sm" aria-label="About">
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
             <Facts
@@ -397,9 +376,27 @@ export default async function SandboxPage({ params }: Props) {
               <AppliedConnections applied={applied} />
             </div>
           </details>
-        </SandboxDetailsPanel>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <SandboxChat
+        sandboxId={sandbox.id}
+        currentConversation={sandbox.conversation_ids.at(-1)}
+        initialStatus={sandbox.publicStatus}
+        provider={sandbox.provider}
+        preservationNote={sandbox.preservation_note}
+        pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
+        initialIdlePaused={sandbox.status_reason === "idle_paused"}
+        statusReason={sandbox.status_reason}
+        expiresAt={sandbox.expires_at}
+        initialUsageRevision={usageRevision(sandbox.usage_turns)}
+        live={isActiveStatus(sandbox.status)}
+        harness={sandbox.harness}
+        catalog={MODEL_CATALOG}
+        launchedModel={sandbox.model}
+        configured={configured}
+      />
+    </ThreadLayout>
   );
 }
 
@@ -462,95 +459,57 @@ function DockerSandbox({
     ["Conversations", String(sandbox.conversation_ids.length)],
   ];
   return (
-    <div data-fit-viewport data-docker-sandbox className="space-y-3 md:space-y-4">
-      <ShellPageActions>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <ShellPageActions slot="status">
-              <SandboxState
-                viewerOwns={sandbox.owner_id === viewer.id}
-                status={sandbox.publicStatus}
-                statusMessage={sandbox.status_reason}
-                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-                idlePaused={sandbox.status_reason === "idle_paused"}
-                expiresAt={sandbox.expires_at}
-              />
-            </ShellPageActions>
-          </div>
-          <span className="text-xs text-muted-foreground">
-            <RowCost cost={cost} />
-          </span>
-          {configured && (
-            <SandboxActions
-              sandboxId={sandbox.id}
-              status={sandbox.status}
-              canStop={!reasons.stop}
-              canDelete={!reasons.delete}
-              stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
-            />
-          )}
-        </div>
-      </ShellPageActions>
+    <ThreadLayout
+      sandbox={sandbox}
+      lifetime={life.remaining ?? life.lifetime}
+      docker
+      header={
+        <>
+          <ShellPageActions>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
+                <ShellPageActions slot="status">
+                  <SandboxState
+                    viewerOwns={sandbox.owner_id === viewer.id}
+                    status={sandbox.publicStatus}
+                    statusMessage={sandbox.status_reason}
+                    readyLabel={
+                      parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"
+                    }
+                    idlePaused={sandbox.status_reason === "idle_paused"}
+                    expiresAt={sandbox.expires_at}
+                  />
+                </ShellPageActions>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                <RowCost cost={cost} />
+              </span>
+              {configured && (
+                <SandboxActions
+                  sandboxId={sandbox.id}
+                  status={sandbox.status}
+                  canStop={!reasons.stop}
+                  canDelete={!reasons.delete}
+                  stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
+                />
+              )}
+            </div>
+          </ShellPageActions>
 
-      {life.notice && (
-        <p className="text-sm text-muted-foreground">
-          {life.notice.title} · {life.notice.text}
-        </p>
-      )}
-      <SandboxAttention sandbox={sandbox} viewer={viewer} />
+          {life.notice && (
+            <p className="text-sm text-muted-foreground">
+              {life.notice.title} · {life.notice.text}
+            </p>
+          )}
+          <SandboxAttention sandbox={sandbox} viewer={viewer} />
 
-      <p className="text-sm text-muted-foreground">{life.remaining} · Docker host sandboxes have a fixed time limit.</p>
-      <div
-        data-fit="body"
-        className="grid items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
-      >
-        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
-            <SandboxAccountChoice
-              sandboxId={sandbox.id}
-              status={sandbox.status}
-              alreadyBound={sandbox.credential_id !== null}
-              owner
-              {...(choices ? { choices } : {})}
-              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
-            />
-          )}
-          {reasons.logs ? (
-            <Alert data-docker-conversation-unavailable role="status">
-              <ContainerIcon />
-              <AlertTitle>Conversation unavailable</AlertTitle>
-              <AlertDescription>{reasons.logs}</AlertDescription>
-            </Alert>
-          ) : (
-            <SandboxChat
-              sandboxId={sandbox.id}
-              currentConversation={sandbox.conversation_ids.at(-1)}
-              initialStatus={sandbox.publicStatus}
-              provider={sandbox.provider}
-              preservationNote={sandbox.preservation_note}
-              initialIdlePaused={sandbox.status_reason === "idle_paused"}
-              statusReason={sandbox.status_reason}
-              expiresAt={sandbox.expires_at}
-              initialUsageRevision={usageRevision(sandbox.usage_turns)}
-              live={isActiveStatus(sandbox.status)}
-              harness={sandbox.harness}
-              catalog={MODEL_CATALOG}
-              launchedModel={sandbox.model}
-              configured={configured}
-              composerUnavailable={reasons.followupPrompts}
-              pinnedModel
-            />
-          )}
-          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
-            <span>{sandbox.model ?? "Provider default"}</span>
-            <span>
-              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
-            </span>
-            <span>{life.remaining ?? life.lifetime}</span>
-            <span>⌘ / Ctrl + Enter to send</span>
-          </footer>
-        </div>
-        <SandboxDetailsPanel>
+          <p className="text-sm text-muted-foreground">
+            {life.remaining} · Docker host sandboxes have a fixed time limit.
+          </p>
+        </>
+      }
+      details={
+        <>
           {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -637,7 +596,83 @@ function DockerSandbox({
               </CardContent>
             </Card>
           )}
-        </SandboxDetailsPanel>
+        </>
+      }
+    >
+      {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
+        <SandboxAccountChoice
+          sandboxId={sandbox.id}
+          status={sandbox.status}
+          alreadyBound={sandbox.credential_id !== null}
+          owner
+          {...(choices ? { choices } : {})}
+          harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
+        />
+      )}
+      {reasons.logs ? (
+        <Alert data-docker-conversation-unavailable role="status">
+          <ContainerIcon />
+          <AlertTitle>Conversation unavailable</AlertTitle>
+          <AlertDescription>{reasons.logs}</AlertDescription>
+        </Alert>
+      ) : (
+        <SandboxChat
+          sandboxId={sandbox.id}
+          currentConversation={sandbox.conversation_ids.at(-1)}
+          initialStatus={sandbox.publicStatus}
+          provider={sandbox.provider}
+          preservationNote={sandbox.preservation_note}
+          initialIdlePaused={sandbox.status_reason === "idle_paused"}
+          statusReason={sandbox.status_reason}
+          expiresAt={sandbox.expires_at}
+          initialUsageRevision={usageRevision(sandbox.usage_turns)}
+          live={isActiveStatus(sandbox.status)}
+          harness={sandbox.harness}
+          catalog={MODEL_CATALOG}
+          launchedModel={sandbox.model}
+          configured={configured}
+          composerUnavailable={reasons.followupPrompts}
+          pinnedModel
+        />
+      )}
+    </ThreadLayout>
+  );
+}
+
+function ThreadLayout({
+  sandbox,
+  lifetime,
+  docker,
+  header,
+  details,
+  children,
+}: {
+  sandbox: Pick<SandboxDetail, "model" | "provider" | "harness">;
+  lifetime: string | null | undefined;
+  docker?: boolean;
+  header: ReactNode;
+  details: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div data-fit-viewport data-docker-sandbox={docker || undefined} className="space-y-3 md:space-y-4">
+      {header}
+      <div
+        data-fit="body"
+        className="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
+      >
+        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
+          {children}
+          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
+            <span>{sandbox.model ?? "Provider default"}</span>
+            <span>
+              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
+            </span>
+            <span>{lifetime}</span>
+            <span>⌘ / Ctrl + Enter to send</span>
+          </footer>
+        </div>
+        <SandboxDetailsPanel>{details}</SandboxDetailsPanel>
       </div>
     </div>
   );

@@ -4,7 +4,7 @@ import type { MemberRole } from "@armada/core";
 import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ChangeEvent, type KeyboardEvent, startTransition, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type KeyboardEvent, startTransition, useEffect, useId, useRef, useState } from "react";
 import { switchOrganization } from "@/app/actions/selected-org";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
@@ -44,8 +44,8 @@ export function OrgSwitcher({
 }
 
 // A switch revalidates the layout and redirects, which mounts the shell anew: the selector that had focus is gone,
-// so its replacement takes the focus back (a keyboard user keeps their place). Only the mount that shows the org
-// switched to takes it, and any mount clears it: a switch that never landed cannot steal focus later.
+// so its visible replacement takes the focus back (a keyboard user keeps their place). A visible mount clears it
+// even on a different org: a switch that never landed cannot steal focus later.
 let refocusOn: string | null = null;
 
 // Keys that step a closed select through its options in place (Windows and Linux), firing a change at each step.
@@ -64,10 +64,13 @@ function SelectedOrg({
 }) {
   const [result, switchTo, pending] = useMutationState(switchOrganization);
   const select = useRef<HTMLSelectElement>(null);
+  const selectId = useId();
   useEffect(() => {
+    const element = select.current;
+    if (!element?.getClientRects().length) return;
     const focus = refocusOn === selected;
     refocusOn = null;
-    if (focus) select.current?.focus();
+    if (focus) element.focus();
   }, [selected]);
   // The organization asked for, until its switch settles: shown meanwhile, and no second switch starts.
   const [target, setTarget] = useState<string | null>(null);
@@ -119,18 +122,18 @@ function SelectedOrg({
     } else if (event.key === "Escape" && draft) setDraft(null);
   }
 
-  const described = [draft && "active-org-hint", error && "active-org-error"].filter(Boolean).join(" ");
+  const described = [draft && `${selectId}-hint`, error && `${selectId}-error`].filter(Boolean).join(" ");
   return (
     <div className="relative space-y-1.5 rounded-lg px-1.5 py-1 hover:bg-[var(--raised)]">
       <div className="flex items-center gap-2.5">
         <BrandMark />
         <div className="min-w-0 flex-1">
-          <Label htmlFor="active-org" className="sr-only">
+          <Label htmlFor={selectId} className="sr-only">
             Active organization
           </Label>
           <NativeSelect
             ref={select}
-            id="active-org"
+            id={selectId}
             name="org"
             value={target ?? draft ?? selected}
             onChange={choose}
@@ -162,7 +165,7 @@ function SelectedOrg({
         </div>
       </div>
       {draft && (
-        <p id="active-org-hint" className="px-0 text-xs text-muted-foreground md:px-2">
+        <p id={`${selectId}-hint`} className="px-0 text-xs text-muted-foreground md:px-2">
           Press Enter to switch.
         </p>
       )}
@@ -170,7 +173,7 @@ function SelectedOrg({
         {busy ? "Switching organization…" : ""}
       </p>
       {error && (
-        <p id="active-org-error" role="alert" className="text-sm text-destructive">
+        <p id={`${selectId}-error`} role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
