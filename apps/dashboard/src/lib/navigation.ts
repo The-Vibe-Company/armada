@@ -16,10 +16,7 @@ export type NavIcon =
   | "models"
   | "settings";
 
-/** A destination behind a server opt-in: the entry appears only once the server says it offers it. */
-export type NavOptIn = "dockerHosts";
-
-type NavLink = { href: string; label: string; icon: NavIcon; optIn?: NavOptIn; adminOnly?: boolean };
+type NavLink = { href: string; label: string; icon: NavIcon; adminOnly?: boolean };
 type NavGroup = { label: string; links: readonly NavLink[] };
 
 export const NAV_GROUPS: readonly NavGroup[] = [

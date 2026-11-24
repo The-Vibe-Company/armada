@@ -45,7 +45,7 @@ import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
 import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { launchTimingFact } from "@/lib/launch-timing";
-import { formatDuration, lifecycleView, readLifecycle } from "@/lib/lifecycle";
+import { formatDuration, type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { parsePullRequests } from "@/lib/pull-requests";
@@ -192,49 +192,13 @@ export default async function SandboxPage({ params }: Props) {
       sandbox={sandbox}
       lifetime={life.remaining ?? life.lifetime}
       header={
-        <>
-          <ShellPageActions>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-                <ShellPageActions slot="status">
-                  <SandboxState
-                    viewerOwns={owner}
-                    status={sandbox.publicStatus}
-                    statusMessage={sandbox.status_reason}
-                    readyLabel={
-                      parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"
-                    }
-                    idlePaused={sandbox.status_reason === "idle_paused"}
-                    expiresAt={sandbox.expires_at}
-                  />
-                </ShellPageActions>
-                {sandbox.publicStatus === "running" &&
-                  sandbox.status_reason &&
-                  sandbox.status_reason !== "idle_paused" && (
-                    <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
-                  )}
-                {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
-                <span className="text-xs text-muted-foreground">
-                  <RowCost cost={cost} />
-                </span>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                {configured &&
-                  (sandbox.status === "ready" || sandbox.status === "running") &&
-                  (owner || org?.role === "admin") &&
-                  sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
-                {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
-              </div>
-            </div>
-          </ShellPageActions>
-
-          {life.notice && (
-            <p className="text-sm text-muted-foreground">
-              {life.notice.title} · {life.notice.text}
-            </p>
-          )}
-          <SandboxAttention sandbox={sandbox} viewer={viewer} />
-        </>
+        <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} cost={cost}>
+          {configured &&
+            (sandbox.status === "ready" || sandbox.status === "running") &&
+            (owner || org?.role === "admin") &&
+            sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
+          {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
+        </ThreadHeader>
       }
       details={
         <>
@@ -464,49 +428,17 @@ function DockerSandbox({
       lifetime={life.remaining ?? life.lifetime}
       docker
       header={
-        <>
-          <ShellPageActions>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-                <ShellPageActions slot="status">
-                  <SandboxState
-                    viewerOwns={sandbox.owner_id === viewer.id}
-                    status={sandbox.publicStatus}
-                    statusMessage={sandbox.status_reason}
-                    readyLabel={
-                      parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"
-                    }
-                    idlePaused={sandbox.status_reason === "idle_paused"}
-                    expiresAt={sandbox.expires_at}
-                  />
-                </ShellPageActions>
-              </div>
-              <span className="text-xs text-muted-foreground">
-                <RowCost cost={cost} />
-              </span>
-              {configured && (
-                <SandboxActions
-                  sandboxId={sandbox.id}
-                  status={sandbox.status}
-                  canStop={!reasons.stop}
-                  canDelete={!reasons.delete}
-                  stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
-                />
-              )}
-            </div>
-          </ShellPageActions>
-
-          {life.notice && (
-            <p className="text-sm text-muted-foreground">
-              {life.notice.title} · {life.notice.text}
-            </p>
+        <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} cost={cost}>
+          {configured && (
+            <SandboxActions
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              canStop={!reasons.stop}
+              canDelete={!reasons.delete}
+              stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
+            />
           )}
-          <SandboxAttention sandbox={sandbox} viewer={viewer} />
-
-          <p className="text-sm text-muted-foreground">
-            {life.remaining} · Docker host sandboxes have a fixed time limit.
-          </p>
-        </>
+        </ThreadHeader>
       }
       details={
         <>
@@ -636,6 +568,77 @@ function DockerSandbox({
         />
       )}
     </ThreadLayout>
+  );
+}
+
+function ThreadHeader({
+  sandbox,
+  viewer,
+  life,
+  cost,
+  children,
+}: {
+  sandbox: SandboxDetail;
+  viewer: Viewer;
+  life: LifecycleView;
+  cost: ReturnType<typeof costOfRow>;
+  children: ReactNode;
+}) {
+  const docker = sandbox.provider === "docker";
+  const rowCost = (
+    <span className="text-xs text-muted-foreground">
+      <RowCost cost={cost} />
+    </span>
+  );
+  return (
+    <>
+      <ShellPageActions>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
+            <ShellPageActions slot="status">
+              <SandboxState
+                viewerOwns={sandbox.owner_id === viewer.id}
+                status={sandbox.publicStatus}
+                statusMessage={sandbox.status_reason}
+                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
+                idlePaused={sandbox.status_reason === "idle_paused"}
+                expiresAt={sandbox.expires_at}
+              />
+            </ShellPageActions>
+            {!docker && (
+              <>
+                {sandbox.publicStatus === "running" &&
+                  sandbox.status_reason &&
+                  sandbox.status_reason !== "idle_paused" && (
+                    <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
+                  )}
+                {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
+                {rowCost}
+              </>
+            )}
+          </div>
+          {docker ? (
+            <>
+              {rowCost}
+              {children}
+            </>
+          ) : (
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{children}</div>
+          )}
+        </div>
+      </ShellPageActions>
+      {life.notice && (
+        <p className="text-sm text-muted-foreground">
+          {life.notice.title} · {life.notice.text}
+        </p>
+      )}
+      <SandboxAttention sandbox={sandbox} viewer={viewer} />
+      {docker && (
+        <p className="text-sm text-muted-foreground">
+          {life.remaining} · Docker host sandboxes have a fixed time limit.
+        </p>
+      )}
+    </>
   );
 }
 

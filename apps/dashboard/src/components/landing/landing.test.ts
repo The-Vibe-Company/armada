@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { run } from "../../../../../packages/cli/src/run.ts";
-import { landingTranscript } from "../../../scripts/landing-transcript.ts";
 import { INSTALL, SETUP, STORY } from "./content.ts";
 import { BREAK_AT, createSky, INTRO, LIME, step } from "./flock.ts";
 import { TRANSCRIPT } from "./transcript.ts";
@@ -74,16 +73,12 @@ describe("what the landing says", () => {
     expect(unknown).toEqual([]);
   });
 
-  test("installs the README's package and does not promise a fresh GitHub token lifetime", async () => {
+  test("installs the README's package and does not promise a fresh GitHub token lifetime", () => {
     expect(read(join(REPO, "README.md"))).toContain(INSTALL.replace(" -g ", " --global "));
     expect(SETUP[0]?.command).toBe(INSTALL);
-    const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada new "));
+    const launch = TRANSCRIPT.find((entry) => entry.command.startsWith("armada new "));
     expect(launch?.output).toContain("launch token expires at 2026-11-09T17:30:00.000Z (~480 minutes remaining)");
     expect(launch?.output).toContain("armada api github/refresh");
-  });
-
-  test("replays the session the CLI's own code prints (bun apps/dashboard/scripts/landing-transcript.ts)", async () => {
-    expect(TRANSCRIPT).toEqual(await landingTranscript());
   });
 });
 

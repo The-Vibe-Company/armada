@@ -29,7 +29,7 @@ import { isSelectedOrganization, selectedOrganization } from "@/lib/data/selecte
 import { listSelectedTemplates, lookupsFrom } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { requireViewer } from "@/lib/data/viewer";
-import { dockerHarnesses, dockerLaunchBlocker } from "@/lib/docker-launch";
+import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
 import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { createGateway, GatewayError } from "@/lib/gateway";
@@ -580,6 +580,7 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
     orgId: selected.org.id,
     targets,
     templates,
+    dockerLimits: dockerOption && hosts.some((host) => host.state !== "revoked") ? dockerUnavailable(dockerOption) : [],
     build: {
       orgName: selected.org.name,
       isAdmin: selected.role === "admin",
