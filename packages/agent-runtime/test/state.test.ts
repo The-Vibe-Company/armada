@@ -163,13 +163,16 @@ test("checkpoint discards the private Antigravity profile and scratch without re
     await state.restore();
     const profile = join(root, "antigravity");
     const scratch = join(root, "antigravity-tmp");
-    await mkdir(join(profile, "antigravity-acp"), { recursive: true });
-    await writeFile(join(profile, "antigravity-acp", "antigravity-oauth-token"), "fixture-private-material");
-    await mkdir(scratch);
-    await state.checkpoint();
-    await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(profile)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    const identity = { sandboxId: "private-antigravity", generation: "1" };
+    for (const phase of ["first", "replay"]) {
+      await mkdir(join(profile, "antigravity-acp"), { recursive: true });
+      await writeFile(join(profile, "antigravity-acp", "antigravity-oauth-token"), `fixture-${phase}-material`);
+      await mkdir(scratch);
+      await state.checkpoint(identity);
+      await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(profile)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
