@@ -1,7 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { sha256Hex } from "@armada/auth";
-import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import {
+  createSqlSandboxStore,
+  createSqlVaultStore,
+  DelegatedAuthority,
+  decryptSecret,
+  encryptSecret,
+  resolveBoatKey,
+  type Sql,
+} from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
@@ -342,14 +350,39 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       }
       if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       if (sandbox.boat_runtime && sandbox.status === "starting") {
-        const { rows } = await tx.query<{ expired: boolean }>(
-          `select not (j.state in ('queued','leased') and j.deadline_at>clock_timestamp()
-                         and j.attempts<=j.max_attempts) as expired
-           from public.jobs j where j.sandbox_id=$1 and j.kind='launch' and j.generation=$2
-             and j.outcome->>'bootstrap_ticket_enc' is not null`,
+        const { rows } = await tx.query<{
+          expired: boolean;
+          key_digest: string;
+          owner_id: string;
+          org_id: string;
+          visibility: "org" | "private";
+        }>(
+          `select j.outcome->>'boat_authority_sha256' as key_digest,s.owner_id,s.org_id,s.source_golden_visibility as visibility,
+                  not (j.state in ('queued','leased') and j.deadline_at>clock_timestamp()
+                         and j.attempts<=j.max_attempts and exists(
+                           select 1 from public.credentials c
+                           where c.id=s.credential_id and c.version=s.credential_version and c.status='active'
+                             and (c.expires_at is null or c.expires_at>clock_timestamp())
+                             and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
+                           for share of c nowait
+                         )) as expired
+           from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+           where j.sandbox_id=$1 and j.kind='launch' and j.generation=$2
+             and j.payload_enc is not null
+             and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id`,
           [sandbox.id, sandbox.lifecycle_generation],
         );
-        if (rows.some((row) => row.expired)) throw new RuntimeEnrolmentDenied();
+        for (const launch of rows) {
+          if (launch.expired) throw new RuntimeEnrolmentDenied();
+          const { key, scope } = await resolveBoatKey(createSqlVaultStore(tx), encryptionKey, {
+            userId: launch.owner_id,
+            orgId: launch.org_id,
+            visibility: launch.visibility,
+          }).catch(() => {
+            throw new RuntimeEnrolmentDenied();
+          });
+          if ((await sha256Hex(JSON.stringify([scope, key]))) !== launch.key_digest) throw new RuntimeEnrolmentDenied();
+        }
       }
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (

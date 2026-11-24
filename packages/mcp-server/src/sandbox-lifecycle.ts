@@ -385,7 +385,7 @@ export async function publishRuntimeReadiness(
              and j.org_id=s.org_id and j.request_owner_id=s.owner_id
              and j.generation=s.lifecycle_generation and j.state in ('queued','leased')
              and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
-             and j.outcome->>'bootstrap_ticket_enc' is not null
+             and j.outcome->>'boat_authority_sha256' is not null
          ))
        )`,
     [sandboxId, enrolment === "retained", generation],
@@ -1327,7 +1327,7 @@ export function createSandboxLifecycle(
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")}
           -- This transition and the cleanup job commit together.
-          and not (candidate.provider='modal' and candidate.status='failed' and exists(
+          and not ((candidate.provider='modal' or candidate.boat_runtime) and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure
             where failure.sandbox_id=candidate.id and failure.generation=candidate.lifecycle_generation
               and failure.actor='lifecycle_runner' and failure.code=$5

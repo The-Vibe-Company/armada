@@ -247,7 +247,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         const { rows: sandboxes } = await tx.query(
           `select id from public.sandboxes
            where id=$1 and lifecycle_generation=$2 and org_id=$3 and owner_id=$4
-             and provider='modal' and runtime_transport='dialout' and provider_sandbox_id is not null
+             and (runtime_transport='dialout' or boat_runtime) and provider_sandbox_id is not null
              and status in ('ready','running') and stop_requested_at is null and deleted_at is null
              and expires_at>clock_timestamp() for update`,
           [input.id, initialLaunch.generation, target.org_id, caller.userId],

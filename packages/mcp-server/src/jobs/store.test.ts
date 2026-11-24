@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMemoryAuthStore } from "@armada/auth";
+import { createMemoryAuthStore, sha256Hex } from "@armada/auth";
 import { HARNESSES } from "@armada/core";
 import { modalLaunchReceipt } from "@armada/core/contract";
 import {
@@ -7,6 +7,7 @@ import {
   decryptSecret,
   encryptSecret,
   GoldenError,
+  resolveBoatKey,
   type Sql,
   setCredential,
 } from "@armada/core/server";
@@ -18,7 +19,7 @@ import {
   scopeKey,
 } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
-import { fakeBoat } from "../../test/support.ts";
+import { ENCRYPTION_KEY, fakeBoat } from "../../test/support.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
@@ -464,27 +465,47 @@ test("a replacement Boat launch worker adopts an allocation after a lost reply",
       [people.owner],
     )
   ).rows[0]!;
+  const account = (
+    await db.query<{ id: string; version: number }>(
+      "select id,version from credentials where owner_id=$1 and kind='claude_oauth'",
+      [people.owner],
+    )
+  ).rows[0]!;
   const {
     sandbox: { id: sandboxId },
-  } = await admitModalLaunch(sql, launchEncryptionKey, {
+  } = await admitModalLaunch(sql, ENCRYPTION_KEY, {
     ...input,
     boat: { scope: "user", backendId: "account" },
-    sandbox: { ...input.sandbox, goldenId: golden.id },
+    sandbox: {
+      ...input.sandbox,
+      goldenId: golden.id,
+      credentialId: account.id,
+      credentialVersion: account.version,
+      harness: "claude",
+      model: "claude-sonnet-4-6",
+    },
     allocation: { ...input.allocation, source: { kind: "snapshot", ref: golden.provider_snapshot_id } },
   });
-  const jobs = createJobsStore(sql, launchEncryptionKey);
-  const enrolments = createRuntimeEnrolments(sql, launchEncryptionKey);
+  const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+  const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const { key, scope } = await resolveBoatKey(createSqlVaultStore(sql), ENCRYPTION_KEY, {
+    userId: people.owner,
+    orgId: people.org,
+    visibility: "private",
+  });
+  const boatKeyDigest = await sha256Hex(JSON.stringify([scope, key]));
   const machine = { sandboxId, generation: 1, machineId: "boat-worker" };
   const unsupported = async () => {
     throw Error("Unexpected lifecycle operation");
   };
   let allocations = 0;
+  let delayedTicket: string | undefined;
   async function run() {
     const owner = crypto.randomUUID();
     const job = (await jobs.claim("launch", owner, 30, 1))!;
     const context = { signal: new AbortController().signal, canDispatch: async () => true };
     const plan = () => ({
-      boat: true as const,
+      boat: boatKeyDigest,
       bindingRef: job.id,
       allocation: { ...input.allocation, size: null },
       canUseModalCredential: async () => true,
@@ -506,19 +527,29 @@ test("a replacement Boat launch worker adopts an allocation after a lost reply",
           return { kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const;
         },
         async bootstrap(request: typeof machine) {
+          const lifecycle = createSandboxLifecycle(sql, unsupported);
+          expect(await lifecycle.reconcileOne(new AbortController().signal)).toBe(false);
           const configuration = await ticket(request, Date.now() + 3_600_000);
-          if (configuration) await enrolments.enrol(configuration.enrolmentToken);
+          delayedTicket = configuration?.enrolmentToken;
         },
         resume: unsupported,
         stop: unsupported,
         delete: unsupported,
       }),
     });
-    await jobs.complete(job, owner, await runModalLaunch(sql, launchEncryptionKey, job, context, plan, "boat"));
+    await jobs.complete(job, owner, await runModalLaunch(sql, ENCRYPTION_KEY, job, context, plan, "boat"));
   }
   await expect(run()).rejects.toThrow("Lost Boat create reply.");
-  await db.query("update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1", [sandboxId]);
+  await db.query(
+    "update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1 and kind='launch'",
+    [sandboxId],
+  );
   await run();
+  if (!delayedTicket) throw Error("Boat bootstrap did not receive a ticket.");
+  await db.query("update credentials set expires_at=now() where id=$1", [account.id]);
+  await expect(enrolments.enrol(delayedTicket)).rejects.toThrow("runtime_enrolment_denied");
+  await db.query("update credentials set expires_at=null where id=$1", [account.id]);
+  await enrolments.enrol(delayedTicket);
   expect((await db.query("select status,provider_sandbox_id from sandboxes where id=$1", [sandboxId])).rows).toEqual([
     { status: "ready", provider_sandbox_id: machine.machineId },
   ]);

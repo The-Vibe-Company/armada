@@ -1,4 +1,5 @@
-import { createSqlVaultStore, resolveBoatKey, type Sql, type VaultStore } from "@armada/core/server";
+import { sha256Hex } from "@armada/auth";
+import { createSqlVaultStore, resolveBoatKey, type Sql } from "@armada/core/server";
 import { createBoatMachine } from "@armada/provider-boat";
 import { createObservedBoatProvider } from "../observed-boat.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
@@ -13,12 +14,11 @@ import type { Job, JobContext } from "./runner.ts";
 
 export function boatLaunchJobs(options: {
   sql: Sql;
-  store: VaultStore;
   encryptionKey: string;
   deploymentId: string;
   prepareTicket: Parameters<typeof import("./modal-launch.ts").createModalLaunchJob>[3];
 }) {
-  const { sql, store, encryptionKey, deploymentId, prepareTicket } = options;
+  const { sql, encryptionKey, deploymentId, prepareTicket } = options;
   async function target(job: Job) {
     const {
       rows: [row],
@@ -36,9 +36,10 @@ export function boatLaunchJobs(options: {
     if (!row) throw new Error("Boat launch target is unavailable.");
     return row;
   }
-  async function placement(sandbox: Awaited<ReturnType<typeof target>>, authority: BoatAuthority) {
+  async function placement(job: Job, authority: BoatAuthority) {
+    const sandbox = await target(job);
     const resolve = (tx?: Sql) =>
-      resolveBoatKey(tx ? createSqlVaultStore(tx) : store, encryptionKey, {
+      resolveBoatKey(createSqlVaultStore(tx ?? sql), encryptionKey, {
         userId: sandbox.ownerId,
         orgId: sandbox.orgId,
         visibility: sandbox.sourceVisibility,
@@ -47,9 +48,12 @@ export function boatLaunchJobs(options: {
     const host = createObservedBoatProvider({ apiKey: key, deploymentId }, sandbox.id);
     if (scope !== authority.scope || (await host.backendIdentity?.())?.id !== authority.backendId)
       throw new Error("Boat launch authority changed.");
+    const machine = (ticket: Parameters<typeof createBoatMachine>[2], authorize: () => Promise<void>) =>
+      createBoatMachine({ apiKey: key, deploymentId }, host, ticket, authorize);
     return {
-      host,
-      options: { apiKey: key, deploymentId },
+      sandbox,
+      machine,
+      keyDigest: await sha256Hex(JSON.stringify([scope, key])),
       async current(tx?: Sql) {
         const current = await resolve(tx);
         return current.scope === scope && current.key === key;
@@ -60,16 +64,14 @@ export function boatLaunchJobs(options: {
     launch(job: Job, context: JobContext) {
       const prepare = async () => {
         const { allocation, boat } = boatLaunchPayload.parse(job.payload);
-        const sandbox = await target(job);
-        const binding = await placement(sandbox, boat);
+        const binding = await placement(job, boat);
         return {
-          boat: true as const,
+          boat: binding.keyDigest,
           allocation,
           bindingRef: job.id,
-          machine: (ticket: Parameters<typeof createBoatMachine>[2], authorize: () => Promise<void>) =>
-            createBoatMachine(binding.options, binding.host, ticket, authorize),
+          machine: binding.machine,
           canUseModalCredential: binding.current,
-          prepareRuntimeTicket: () => prepareTicket(sandbox),
+          prepareRuntimeTicket: () => prepareTicket(binding.sandbox),
         };
       };
       return runModalLaunch(sql, encryptionKey, job, context, prepare, "boat");
@@ -77,10 +79,8 @@ export function boatLaunchJobs(options: {
     cleanup(job: Job, context: JobContext) {
       return runFailedModalLaunchDelete(sql, job, context, undefined, async (authorize) => {
         const authority = boatAuthority.parse((job.payload as { boat?: unknown }).boat);
-        const binding = await placement(await target(job), authority);
-        return createBoatMachine(
-          binding.options,
-          binding.host,
+        const binding = await placement(job, authority);
+        return binding.machine(
           async () => null,
           async () => {
             if (!(await binding.current())) throw new Error("Boat cleanup authority changed.");

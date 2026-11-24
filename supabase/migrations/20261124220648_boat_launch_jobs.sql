@@ -19,15 +19,13 @@ drop trigger sandboxes_provider_guard on public.sandboxes;
 create trigger sandboxes_provider_guard before insert on public.sandboxes
 for each row execute function public.sandboxes_provider_guard();
 create trigger sandboxes_provider_update_guard before update on public.sandboxes
-for each row when (not public.is_boat_launch_binding(old, new))
-execute function public.sandboxes_provider_guard();
+for each row when (not public.is_boat_launch_binding(old, new)) execute function public.sandboxes_provider_guard();
 
 drop trigger sandboxes_guard on public.sandboxes;
 create trigger sandboxes_guard before insert on public.sandboxes
 for each row execute function public.sandboxes_guard();
 create trigger sandboxes_update_guard before update on public.sandboxes
-for each row when (not public.is_boat_launch_binding(old, new))
-execute function public.sandboxes_guard();
+for each row when (not public.is_boat_launch_binding(old, new)) execute function public.sandboxes_guard();
 
 create function public.guard_boat_launch_binding() returns trigger
 language plpgsql set search_path = '' as $$
@@ -64,40 +62,49 @@ create trigger boat_launch_unbound_guard after insert on public.sandboxes
 for each row when (new.provider='boat' and new.boat_runtime and new.provider_sandbox_id is null)
 execute function public.guard_boat_launch_binding();
 create trigger boat_launch_bind_guard before update on public.sandboxes
-for each row when (public.is_boat_launch_binding(old, new))
-execute function public.guard_boat_launch_binding();
+for each row when (public.is_boat_launch_binding(old, new)) execute function public.guard_boat_launch_binding();
 
 -- Apply after stopping predecessor ingress and draining its synchronous admissions.
 lock table public.ordinary_launch_receipts, public.ordinary_launch_snapshot_intents in share mode nowait;
 
 do $$
+declare
+  migrated bigint;
 begin
   if exists (select 1 from public.ordinary_launch_snapshot_intents where provider = 'boat') then
     raise exception 'Boat launch backfill blocked by unresolved snapshot intents';
   end if;
+
+  insert into public.jobs (
+    kind, sandbox_id, generation, idem_key, org_id, request_owner_id, request_digest,
+    state, deadline_at, max_attempts, outcome, created_at
+  )
+  select 'launch', r.id, 1,
+    format('["request","%s","launch","%s",%s]', r.org_id, r.owner_id,
+      to_json(format('["ordinary",%s]', to_json(r.request_key)))),
+    r.org_id, r.owner_id, r.fingerprint,
+    case when r.response #>> '{sandbox,id}' = r.id::text and r.failure is null then 'done' else 'failed' end,
+    r.created_at, 1,
+    case
+      when r.failure is not null then jsonb_build_object('receipt','refused','failure',r.failure)
+      when r.response #>> '{sandbox,id}' = r.id::text then '{"receipt":"accepted"}'::jsonb
+      else '{"receipt":"unknown"}'::jsonb
+    end, r.created_at
+  from public.ordinary_launch_receipts r
+  where r.authority #>> '{target,provider}' = 'boat'
+  on conflict (idem_key) do update set state=excluded.state, outcome=excluded.outcome
+  where jobs.kind=excluded.kind and jobs.sandbox_id=excluded.sandbox_id and jobs.org_id=excluded.org_id
+    and jobs.request_owner_id=excluded.request_owner_id and jobs.request_digest=excluded.request_digest
+    and jobs.generation=1 and jobs.payload_enc is null and (
+      (jobs.state='failed' and jobs.outcome='{"receipt":"unknown"}'::jsonb)
+      or (jobs.state=excluded.state and jobs.outcome=excluded.outcome)
+    );
+  get diagnostics migrated = row_count;
+  if migrated <> (select count(*) from public.ordinary_launch_receipts where authority #>> '{target,provider}'='boat') then
+    raise exception 'Boat launch backfill conflicts with an existing receipt';
+  end if;
 end;
 $$;
 
-insert into public.jobs (
-  kind, sandbox_id, generation, idem_key, org_id, request_owner_id, request_digest,
-  state, deadline_at, max_attempts, outcome, created_at
-)
-select 'launch', r.id, 1,
-  format('["request","%s","launch","%s",%s]', r.org_id, r.owner_id,
-    to_json(format('["ordinary",%s]', to_json(r.request_key)))),
-  r.org_id, r.owner_id, r.fingerprint,
-  case when r.response #>> '{sandbox,id}' = r.id::text and r.failure is null then 'done' else 'failed' end,
-  r.created_at, 1,
-  case
-    when r.failure is not null then jsonb_build_object('receipt','refused','failure',r.failure)
-    when r.response #>> '{sandbox,id}' = r.id::text then '{"receipt":"accepted"}'::jsonb
-    else '{"receipt":"unknown"}'::jsonb
-  end, r.created_at
-from public.ordinary_launch_receipts r
-where r.authority #>> '{target,provider}' = 'boat'
-on conflict (idem_key) do update set state=excluded.state, outcome=excluded.outcome
-where jobs.kind=excluded.kind and jobs.sandbox_id=excluded.sandbox_id and jobs.org_id=excluded.org_id
-  and jobs.request_owner_id=excluded.request_owner_id and jobs.request_digest=excluded.request_digest
-  and jobs.payload_enc is null and jobs.state='failed' and jobs.outcome='{"receipt":"unknown"}'::jsonb;
 
 commit;

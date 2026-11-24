@@ -45,12 +45,11 @@ configured Codex account:
 
 The CLI emits the API receipt with `--json`, for example
 `armada new review --provider modal --agent codex --json`.
-Read the Armada ID from `sandbox.id`. Public Modal golden launches through REST
+Read the Armada ID from `sandbox.id`. Public Boat and Modal golden launches through REST
 and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
 Modal launches also include the frozen manifest at `sandbox.templateManifest`.
 The separate `templates/launch` operation returns a durable template receipt.
-Boat keeps the full launch envelope.
 
 For Boat and Modal snapshot launches and for Docker launches, use
 `credentialId` to select a model account. The account’s simultaneous-agent
@@ -70,9 +69,8 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   Authorized status and list reads and webhooks return it.
 - After a dropped response or HTTP 503 `outcome_unknown`, keep the original
   key and body. Both providers check that the caller can still see the named
-  golden. Modal looks up the receipt before preparing any new launch. Boat also
-  checks the provider account and allocation authority before reading its
-  receipt. A removed golden can return `not_found`. Recreating it under the
+  golden. Armada looks up the receipt before preparing any new launch.
+  A removed golden can return `not_found`. Recreating it under the
   same name changes its ID and returns HTTP 409 `conflict`.
 - When a replay returns one of these errors, never launch with a new key. Look
   up recorded sandboxes with `POST /api/v1/sandbox/list` and

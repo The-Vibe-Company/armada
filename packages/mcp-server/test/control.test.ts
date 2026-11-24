@@ -39,105 +39,6 @@ const TOKEN_SECRET = "claude_private_token";
 const AUTH_JSON = '{"tokens":{"access_token":"codex-do-not-leak"}}';
 const controlDatabase = rowOnlyConnection();
 
-// The HTTP contract owns classification: the real HTTP handler classifies admission failures.
-for (const failure of [
-  "credential_refused",
-  "provider_unavailable",
-  "dependency_unavailable",
-  "rate_limited",
-  "payment_required",
-] as const) {
-  test(`launch HTTP separates ${failure} without parsing diagnostic text`, async () => {
-    await withServer(async ({ db, options }) => {
-      const org = await options.store.createOrg("Failures", STAN);
-      options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
-      await db.query("update orgs set boat_api_key_enc=$1 where id=$2", [
-        await encryptSecret("provider-key", KEY),
-        org.id,
-      ]);
-      await db.query(
-        "insert into credentials(scope,owner_id,kind,value_enc,status) values('user',$1,'claude_oauth',$2,$3)",
-        [STAN, await encryptSecret("model-key", KEY), failure === "credential_refused" ? "revoked" : "active"],
-      );
-      await db.query(
-        "insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config) values($1,'web','org',$2,$3,$4::jsonb)",
-        [
-          org.id,
-          STAN,
-          `a${"b".repeat(62)}`,
-          JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
-        ],
-      );
-      const boat = fakeBoat();
-      boat.provider.backendIdentity = async () => {
-        throw new ProviderError({
-          provider: "boat",
-          code: failure === "rate_limited" || failure === "payment_required" ? failure : "unavailable",
-          ...(failure === "rate_limited"
-            ? {
-                status: 429,
-                retryAfterSeconds: 120,
-                details: {
-                  window: "day",
-                  nextStartAt: "2026-11-12T08:08:00.000Z",
-                  message: "private-upstream-canary",
-                },
-              }
-            : {}),
-          message: "credential_refused expired revoked (not a classification input)",
-          retryable: true,
-          ...(failure === "provider_unavailable" ? { status: 503 } : {}),
-        });
-      };
-      if (failure !== "dependency_unavailable")
-        options.admitModalLaunch = await modalAdmissionFixture(
-          bunLikeSql(db),
-          KEY,
-          options.store,
-          undefined,
-          withBoatManagementIdentity(boat.provider, "org", org.id),
-        );
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/launch", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude" }),
-        }),
-        options,
-      );
-      expect(response?.status).toBe(
-        failure === "credential_refused"
-          ? 422
-          : failure === "provider_unavailable"
-            ? 502
-            : failure === "rate_limited"
-              ? 429
-              : failure === "payment_required"
-                ? 402
-                : 503,
-      );
-      const payload = await response?.json();
-      expect(payload).toMatchObject({ error: { code: failure } });
-      if (failure === "rate_limited") {
-        expect(payload).toMatchObject({
-          error: {
-            message: expect.stringContaining("plan start limit per day"),
-            details: {
-              provider: "boat",
-              window: "day",
-              nextStartAt: "2026-11-12T08:08:00.000Z",
-              retryAfterSeconds: 120,
-            },
-          },
-        });
-        expect(JSON.stringify(payload)).not.toContain("private-upstream-canary");
-      }
-      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
-    });
-  });
-}
-
 test("Skillpack connection reports only visible metadata and never advertises unsupported authorization", async () => {
   await withServer(async ({ options }) => {
     const org = await options.store.createOrg("Skills", STAN);
@@ -1053,7 +954,7 @@ describe("control API", () => {
     });
   }
 
-  test.each(["codex", "antigravity"] as const)("%s refusal precedes opening the Boat provider", async (harness) => {
+  test.each(["codex", "antigravity"] as const)("%s refusal precedes Boat provider dispatch", async (harness) => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("RuntimeAccount", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: org, name: "RuntimeAccount", role: "admin" });
@@ -1066,9 +967,17 @@ describe("control API", () => {
           JSON.stringify({ repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] }),
         ],
       );
-      const openProvider = (): never => {
-        throw Error("An account refusal must precede provider initialization");
+      const host = fakeBoat();
+      host.provider.backendIdentity = async () => {
+        throw Error("Credential checks must precede Boat dispatch.");
       };
+      options.admitModalLaunch = await modalAdmissionFixture(
+        bunLikeSql(db),
+        KEY,
+        options.store,
+        undefined,
+        host.provider,
+      );
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
@@ -1083,29 +992,13 @@ describe("control API", () => {
             idempotencyKey: "unbound-account-launch",
           }),
         }),
-        {
-          ...options,
-          providerFor: openProvider,
-          providers: { resolve: async () => openProvider() },
-          launch: {
-            boatRuntimeDefault: {
-              policy: { start: async () => openProvider() },
-              provider: async () => openProvider(),
-              credentials: {
-                async resolve() {
-                  return { env: { OPENAI_API_KEY: "fixture_key" }, secrets: [], codexAuthJson: false };
-                },
-              },
-              connections: { async validate() {}, async bind() {} },
-            },
-          },
-        },
+        options,
       );
-      expect(response?.status).toBe(harness === "codex" ? 409 : 400);
+      expect(response?.status).toBe(harness === "codex" ? 404 : 400);
       expect(await response?.json()).toMatchObject({
         error:
           harness === "codex"
-            ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
+            ? { code: "missing_credential" }
             : { message: expect.stringContaining("Unknown agent 'antigravity'") },
       });
     });

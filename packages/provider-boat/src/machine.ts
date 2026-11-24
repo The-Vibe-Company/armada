@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { MACHINE_SIZE_CATALOG, type Provider } from "@armada/core";
 import { type Machine, type MachineIdentity, type MachineIncarnation, ProviderError } from "@armada/core/server";
 import { BoatApi, Configuration, type Sandbox } from "@boatdev/sdk";
-import { invalidRequest, toProviderError } from "./errors.ts";
+import { invalidRequest, toProviderError, unexpectedAnswer } from "./errors.ts";
 import type { BoatProviderOptions } from "./provider.ts";
 import { startBoatRuntime } from "./runtime-bootstrap.ts";
 
@@ -91,7 +91,7 @@ export function createBoatMachine(
         : api.create({ idempotencyKey, createSandboxRequest: { ...body, from: source } }, transport),
     );
     if (!sandbox?.id || (restore && sandbox.id === source) || !matches(sandbox, labels(request)))
-      throw invalidRequest("Boat allocation identity is unconfirmed.");
+      throw unexpectedAnswer("allocation identity");
     return identity(request, sandbox.id);
   }
   async function stopCompute(request: MachineIdentity & { signal?: AbortSignal }) {

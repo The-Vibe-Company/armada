@@ -311,7 +311,6 @@ export async function createServerServices(env: Record<string, string | undefine
     boat && boatDeploymentId
       ? boatLaunchJobs({
           sql,
-          store,
           encryptionKey: config.encryptionKey,
           deploymentId: boatDeploymentId,
           prepareTicket: prepareLaunchTicket,

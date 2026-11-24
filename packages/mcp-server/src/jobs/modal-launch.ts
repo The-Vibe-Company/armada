@@ -23,6 +23,7 @@ import {
   failureDiagnostic,
   GOLDEN_ROOT,
   GoldenError,
+  isNonMutatingProviderRefusal,
   LaunchError,
   type Machine,
   type MachineIdentity,
@@ -86,6 +87,7 @@ import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import {
   adoptObservedModalAllocation,
   ConflictingJobRequest,
+  clearRefusedBoatCreate,
   createJobsStore,
   jobRequestKey,
   recordModalBootstrapTicket,
@@ -778,7 +780,7 @@ interface ModalPlacementPlan {
   canUseModalCredential(tx: Sql): Promise<boolean>;
 }
 type BoatLaunchPlan = {
-  boat: true;
+  boat: string;
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine(
@@ -1136,7 +1138,7 @@ export async function runModalLaunch(
                   encryptionKey,
                   request.machineId,
                   handoff,
-                  provider === "boat",
+                  "boat" in plan ? plan.boat : undefined,
                 ))
               )
                 throw new ModalBootstrapRefused("Modal launch changed before handoff.");
@@ -1282,6 +1284,11 @@ async function dispatchModalLaunch(
          where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
            and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
            and s.status='starting'
+           and (s.provider<>'boat' or exists(
+             select 1 from public.credentials c where c.id=s.credential_id and c.version=s.credential_version
+               and c.status='active' and (c.expires_at is null or c.expires_at>clock_timestamp())
+               and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
+           ))
          for share of m`,
       [sandboxId, job.id, "boat" in plan ? "boat" : "modal"],
     );
@@ -1390,8 +1397,14 @@ async function dispatchModalLaunch(
       )
         return deferred;
     }
-    allocated =
-      observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
+    try {
+      allocated =
+        observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
+    } catch (error) {
+      const refused = boat && job.attempts === 1 && isNonMutatingProviderRefusal(error);
+      if (!refused || !(await withJobLease(sql, job, (tx) => clearRefusedBoatCreate(tx, job)))) throw error;
+      return { kind: "reconcile", observation: { kind: "absent" } } as const;
+    }
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
       throw new Error("Modal launch changed the machine incarnation.");
     const bound = await beforeProviderMutation(context, observed?.kind === "present", () =>
