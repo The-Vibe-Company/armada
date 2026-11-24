@@ -4,7 +4,6 @@ import { capabilities } from "@armada/core/machine-capabilities";
 import { ServerConfigError } from "./server-config-error.ts";
 
 export interface ServerConfig {
-  boatAgentPath: "native" | "runtime";
   sandboxExtensionHeadroomSeconds: number;
   port: number;
   /** Managed GitHub wrappers/broker are opt-in while the runtime is under repair. */
@@ -126,9 +125,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     throw new ServerConfigError(
       "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",
     );
-  const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "runtime";
-  if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
-    throw new ServerConfigError("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
+
   if (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim())
     throw new ServerConfigError("Modal requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.");
 
@@ -145,7 +142,6 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   const development = env.NODE_ENV === "development";
 
   return {
-    boatAgentPath,
     sandboxExtensionHeadroomSeconds,
     port,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",

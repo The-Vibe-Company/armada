@@ -11,22 +11,19 @@ export const runtimeBridgeProfiles = {
   boat: {
     placement: "boat-runtime",
     launchDefault: "boatRuntimeDefault",
-    endpointDefault: "boatEndpointRuntime",
     hostPorts: true,
     repeatPinnedSettings: true,
   },
   modal: {
     placement: "dialout",
     launchDefault: "modalRuntimeDefault",
-    endpointDefault: undefined,
     hostPorts: false,
     repeatPinnedSettings: false,
   },
 } as const satisfies Record<SandboxProviderId, object>;
 
 export function goldenRuntimePlacement(options: LaunchOptions, provider: SandboxProviderId) {
-  const { launchDefault, endpointDefault } = runtimeBridgeProfiles[provider];
-  return options[launchDefault] ?? (endpointDefault ? options[endpointDefault] : undefined);
+  return options[runtimeBridgeProfiles[provider].launchDefault];
 }
 
 const missingMachineStopPolicy = {

@@ -93,9 +93,8 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
   read `sandbox.id`. With `templates/launch` or `armada template launch`, use
   `requestKey` or `--request-key` and read the template receipt.
-- Ordinary Modal launches use the enrolled runtime. To confirm the deployed
-  launch path, check `modalRuntime.defaultPath` in the authenticated response to
-  `POST /api/v1/launch/options`.
+- Ordinary Boat and Modal launches use the enrolled runtime. Check provider availability in
+  the authenticated response to `POST /api/v1/launch/options`.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account

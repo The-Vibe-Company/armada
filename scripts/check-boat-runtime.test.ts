@@ -8,8 +8,7 @@ test.each([
   "ordinary",
   "ordinary-idle",
   "ordinary-claude-resume",
-  "ordinary-native-default",
-  "ordinary-unknown-default",
+  "ordinary-unavailable",
   "ordinary-native-receipt",
   "ordinary-wrong-source",
   "idle",
@@ -108,7 +107,7 @@ process.on('exit',()=>{console.log('COUNTERS '+JSON.stringify({launches,stops}))
 globalThis.fetch=async(url,options)=>{
  if(new Headers(options.headers).get('authorization')!=='Bearer '+process.env.ARMADA_TOKEN)throw Error('bad auth transport');
  const path=new URL(url).pathname,body=JSON.parse(options.body);
- if(path.endsWith('/launch/options'))return Response.json({boatRuntime:{defaultPath:${mode === "ordinary-unknown-default" ? "undefined" : JSON.stringify(mode === "ordinary-native-default" ? "native" : "runtime")},enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2},skillsVersion:1,workspaceVersion:${mode === "old-workspace" ? 0 : 1}}});
+ if(path.endsWith('/launch/options'))return Response.json({providers:[{id:"boat",capabilities:{launch:${mode !== "ordinary-unavailable"}}}],boatRuntime:{enabled:${mode !== "disabled"},diagnosticsVersion:${mode === "old-diagnostics" ? 0 : 1},followupVersion:${mode === "old-followup" ? 0 : 1},checkpointVersion:${mode === "old-checkpoint" ? 0 : 1},resumeVersion:${mode === "old-resume" ? 0 : 1},githubVersion:${mode === "old-github" ? 0 : 1},mcpVersion:${mode === "old-mcp" ? 1 : 2},skillsVersion:1,workspaceVersion:${mode === "old-workspace" ? 0 : 1}}});
  if(path.endsWith('/golden/list'))return Response.json({goldens:[{id:'wrong',name:'fixture',orgId:'org',provider:'modal'},{id:'golden',name:'fixture',orgId:'org',provider:'boat',config:{repos:[{}],init:['setup']}}]});
  if(path.endsWith('/skills/defaults/get')){defaultReads++;if(body.org!=='org'||(body.scope==='golden'?body.goldenId!=='golden':Object.hasOwn(body,'goldenId')))throw Error('wrong defaults scope');return Response.json({skills:${mode === "skills-empty"}?[]:({golden:['catalog/notes@1.0.0','catalog/other@1.0.0'],org:['notes@2.0.0'],personal:[]}[body.scope])});}
  if(path.endsWith('/sandbox/status')){skillStatuses++;return Response.json({skills:${mode === "skills-status"}?receipts.slice(1):receipts,...(${usage}?{usage:projectedUsage()}:{})});}
@@ -244,12 +243,11 @@ globalThis.fetch=async(url,options)=>{
     }
     expect(out + err).not.toContain(token);
     expect(out + err).not.toContain(privateArgument);
-    if (["ordinary-native-default", "ordinary-unknown-default"].includes(mode))
-      expect(out + err).toContain("Ordinary Boat launch requires server runtime default; no launch attempted.");
+    if (mode === "ordinary-unavailable") expect(err).toContain("Ordinary Boat launch is unavailable");
     if (mode === "mcp-invalid-json")
       expect(out + err).toContain("MCP args must be valid non-secret JSON; no launch attempted.");
     expect(out).toContain(
-      `COUNTERS ${JSON.stringify({ launches: ["ordinary-native-default", "ordinary-unknown-default", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["ordinary-native-default", "ordinary-unknown-default", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["ordinary-claude-resume", "idle-resume", "claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
+      `COUNTERS ${JSON.stringify({ launches: ["ordinary-unavailable", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : 1, stops: ["ordinary-unavailable", "invalid-harness", "disabled", "old-diagnostics", "old-followup", "old-checkpoint", "old-resume", "old-github", "github-preflight-denied", "old-mcp", "mcp-preflight-denied", "mcp-invalid-json", "mcp-no-default", "skills-empty", "old-workspace"].includes(mode) ? 0 : ["ordinary-claude-resume", "idle-resume", "claude-resume", "resume", "resume-lost", "bad-resume"].includes(mode) || combined || mcpResume || skillResume || usageResume || workspaceResume ? 2 : 1 })}`,
     );
     if (
       [

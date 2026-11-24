@@ -62,7 +62,6 @@ export type Defect =
   | "opencode-old-version"
   | "opencode-variables-bad-exit"
   | "opencode-variables-truncated"
-  | "ordinary-default-off"
   | "ordinary-missing-transport"
   | "ordinary-template-missing-transport"
   | "replayed-answer"
@@ -319,23 +318,6 @@ const expected = {
     defaultReads: 3,
     goldenReads: 1,
     adjustedSkillStatuses: 14,
-  },
-  ordinaryDefaultOff: {
-    stderrContains: ["Ordinary Modal default is not dial-out"],
-    success: false,
-    counters: {
-      launches: 0,
-      stops: 0,
-      checkpoints: 0,
-      resumes: 0,
-      sends: 0,
-    },
-    combinedExcludes: ["fixture-token", "private transport diagnostics"],
-    stdoutExcludes: ['"answer":"verified"'],
-    proofs: {
-      resume: false,
-      githubAfterResume: false,
-    },
   },
   ordinaryMissingTransport: {
     success: false,
@@ -1900,12 +1882,6 @@ export const scenarios: Scenario[] = [
     args: ["--resume", "--ordinary", "--github", "--mcp", "--skills", "--variables", "--usage"],
     defects: [],
     expected: expected.ordinaryUsageVariablesSkillsMcpGithubResume,
-  },
-  {
-    label: "ordinary-default-off",
-    args: ["--ordinary"],
-    defects: ["old-followup", "ordinary-default-off"],
-    expected: expected.ordinaryDefaultOff,
   },
   {
     label: "ordinary-missing-transport",

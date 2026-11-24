@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { createSqlData } from "../../mcp-server/src/data.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
+import { enrolledLaunchPolicy } from "../../mcp-server/test/launch-runtime.fixture.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
@@ -12,7 +14,6 @@ import {
 import { beginGoldenOperation, createSqlGoldenStore, type Sql } from "../src/golden-store.ts";
 import { type LaunchStores, launchSandbox } from "../src/launch.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
-import { createSqlSandboxStore } from "../src/sandbox.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 import { migratedDatabase } from "./support/database.ts";
 import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
@@ -238,12 +239,23 @@ test("stale golden admission cannot fork a superseded revision", async () => {
     credentials: {
       resolve: async () => {
         await f.store.setSnapshot(f.golden.id, f.next);
-        return { env: {}, secrets: [], codexAuthJson: false };
+        return {
+          env: {},
+          secrets: [],
+          codexAuthJson: false,
+          binding: { credentialId: f.actor.userId, credentialVersion: 1 },
+        };
       },
     },
   } as LaunchStores;
   await expect(
-    launchSandbox(f.provider, stores, f.actor, { golden: "retire", harness: "claude" }),
+    launchSandbox(
+      f.provider,
+      stores,
+      f.actor,
+      { golden: "retire", harness: "claude" },
+      { runtime: enrolledLaunchPolicy(db) },
+    ),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(forks).toBe(0);
   const release = await beginGoldenOperation(db, f.golden.id, { snapshotId: f.next, sandboxId: null });
@@ -317,15 +329,32 @@ test("retirement preserves the exact source snapshot of a registered ordinary la
   const db = database();
   const f = await fixture(db);
   const { provider } = fakeBoat();
+  const account = crypto.randomUUID();
+  await db.query(
+    "insert into credentials (id,scope,owner_id,kind,value_enc) values ($1,'user',$2,'claude_oauth','fixture')",
+    [account, f.actor.userId],
+  );
   const child = await launchSandbox(
     provider,
     {
       goldens: f.store,
-      sandboxes: createSqlSandboxStore(db),
-      credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+      sandboxes: createSqlData(db)({
+        userId: f.actor.userId,
+        via: "service",
+        orgs: [{ orgId: f.actor.orgId, role: f.actor.role }],
+      }).sandboxes,
+      credentials: {
+        resolve: async () => ({
+          env: {},
+          secrets: [],
+          codexAuthJson: false,
+          binding: { credentialId: account, credentialVersion: 1 },
+        }),
+      },
     },
     f.actor,
     { golden: "retire", harness: "claude" },
+    { runtime: enrolledLaunchPolicy(db) },
   );
   await f.publish();
 

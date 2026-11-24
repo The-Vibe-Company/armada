@@ -24,8 +24,8 @@ const usageMode = process.argv.includes("--usage");
 const usageCheck = createRuntimeUsageCheck(credentialId);
 let usageProof: ReturnType<typeof usageCheck.verify> | undefined;
 interface Reply {
+  providers?: { id: string; capabilities: { launch: boolean } }[];
   boatRuntime?: {
-    defaultPath?: "native" | "runtime";
     enabled?: boolean;
     diagnosticsVersion?: number;
     followupVersion?: number;
@@ -82,8 +82,10 @@ if (options.boatRuntime?.enabled !== true || options.boatRuntime.diagnosticsVers
   throw Error(
     "Use the armada-server origin with experimental Boat runtime diagnostics v1 enabled; no launch attempted.",
   );
-if (ordinaryMode && options.boatRuntime.defaultPath !== "runtime")
-  throw Error("Ordinary Boat launch requires server runtime default; no launch attempted.");
+
+if (ordinaryMode && !options.providers?.some((provider) => provider.id === "boat" && provider.capabilities.launch))
+  throw Error("Ordinary Boat launch is unavailable; no launch attempted.");
+
 const workspaceMode = process.argv.includes("--workspace");
 const workspaceSteps = new Map<string, string>();
 const workspaceEvents = new Set<string>();

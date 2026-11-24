@@ -140,7 +140,6 @@ export { type PrivateDelegatedSshReceipt, sshDelegatedReceipt } from "./ssh-dele
 export {
   type SshExecDeps,
   shellQuote,
-  sshHydrateAuthState,
   sshNativeAuthAdmission,
   sshPrivateAuthState,
   sshStdinCheckout,

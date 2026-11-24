@@ -9,9 +9,7 @@ import {
   createTemplateService,
   encryptSecret,
   goldenForLaunch,
-  installSkill,
   type LaunchTemplate,
-  PrivateSkillError,
   ProviderError,
   type Sql,
   type TemplateRuntime,
@@ -115,7 +113,20 @@ async function fixture() {
       },
     },
     provider: async () => provider,
-    options: { sleep: async () => {} },
+    options: {
+      runtime: enrolledLaunchPolicy(sql),
+      async beforeStart(host, sandbox) {
+        const request = (
+          await sql.query<{ id: string }>("select id from template_launch_requests where sandbox_id=$1", [sandbox.id])
+        ).rows[0]!;
+        await service.prepare(
+          host,
+          sandbox.providerSandboxId,
+          { userId: sandbox.ownerId, orgId: sandbox.orgId },
+          request.id,
+        );
+      },
+    },
   };
   const create = async (user = people.owner, scope = "personal", def: unknown = definition) =>
     await service.command(actor(user), "create", {
@@ -509,7 +520,7 @@ test("Template REST validates authoring and launch requests", async () => {
     const store = createSqlVaultStore(f.sql);
     const options: ControlOptions = {
       launch: {
-        boatEndpointRuntime: {
+        boatRuntimeDefault: {
           policy: enrolledLaunchPolicy(f.sql),
           provider: async () => f.provider,
           credentials: launchCredentials(store, ENCRYPTION_KEY),
@@ -723,9 +734,9 @@ test("reference revocation during initialization stops the allocated sandbox bef
   const f = await fixture();
   try {
     const t = (await f.create()).item as LaunchTemplate;
-    const exec = f.provider.exec;
+    const start = f.runtime.options!.runtime!.start;
     let changed = false;
-    f.provider.exec = async (request) => {
+    f.runtime.options!.runtime!.start = async (input) => {
       if (!changed) {
         changed = true;
         await f.vault.command(f.actor(), "variable", "update", {
@@ -735,7 +746,7 @@ test("reference revocation during initialization stops the allocated sandbox bef
           value: "changed-during-init",
         });
       }
-      return exec(request);
+      return start(input);
     };
     const result = await f.launch(t.id);
     expect(result).toMatchObject({ state: "reconciling", reason: "variable_version_changed" });
@@ -974,35 +985,19 @@ test("template skills retain verified receipts and closed refusals without repla
       checksum,
       origin: "https://skillpack.app/v1",
     };
-    const exec = f.provider.exec;
-    f.provider.exec = async (r) => {
-      const result = await exec(r);
-      if (!result.detached && r.command.includes("skillpack install"))
-        result.stdout = JSON.stringify({
-          lockfileVersion: 3,
-          workspaces: {
-            "catalog:example": {
-              apiUrl: "https://skillpack.app/v1",
-              skills: {
-                review: {
-                  version: "1.0.0",
-                  catalogReference: "example/review",
-                  pinned: "1.0.0",
-                  skillId: publicId,
-                  checksum,
-                  targets: [{ tool: "codex", version: "1.0.0", packageChecksum: checksum }],
-                },
-              },
-            },
-          },
-        });
-      return result;
-    };
+    const start = f.runtime.options!.runtime!.start;
     let installs = 0;
-    f.runtime.stores.credentials.installPrivateSkill = async () => {
-      installs++;
-      return privateReceipt;
-    };
+    f.runtime.stores.credentials.skillpackKey = async () => "fixture-key";
+    f.runtime.options!.runtime!.start = async (input) => ({
+      ...(await start(input)),
+      async installSkills() {
+        installs++;
+        return [
+          { reference: skills[0]!, version: "1.0.0", skillId: publicId, checksum, origin: "https://skillpack.app/v1" },
+          privateReceipt,
+        ];
+      },
+    });
     const t = (await f.create(undefined, undefined, { ...f.definition, skills })).item as LaunchTemplate;
     const result = await f.launch(t.id);
     expect(result.state).toBe("succeeded");
@@ -1023,66 +1018,12 @@ test("template skills retain verified receipts and closed refusals without repla
     expect(installs).toBe(1);
     expect(f.boat.forks).toHaveLength(1);
 
-    f.runtime.stores.credentials.installPrivateSkill = async () => {
-      throw new PrivateSkillError("skillpack_credential_missing");
-    };
+    f.runtime.stores.credentials.skillpackKey = async () => null;
     const refused = await f.launch(t.id, "missing-key");
     expect(refused.reason).toBe("skillpack_credential_missing");
     expect(f.boat.prompts).toHaveLength(1);
     expect(await f.launch(t.id, "missing-key")).toEqual(refused);
     expect(f.boat.forks).toHaveLength(2);
-
-    f.provider.exec = async (r) =>
-      r.command.includes("skillpack install")
-        ? {
-            detached: false,
-            exitCode: 7,
-            stdout: "untrusted guest output",
-            stderr: "",
-            timedOut: false,
-            truncated: false,
-          }
-        : exec(r);
-    const unavailable = await f.launch(t.id, "public-unavailable");
-    expect(unavailable.reason).toBe("skillpack_skill_unavailable");
-    expect(JSON.stringify(unavailable)).not.toContain("untrusted guest output");
-    expect(f.boat.prompts).toHaveLength(1);
-    f.provider.exec = async (r) =>
-      r.command.includes("skillpack install")
-        ? {
-            detached: false,
-            exitCode: 127,
-            stdout: "secret guest detail",
-            stderr: "secret guest detail",
-            timedOut: false,
-            truncated: false,
-          }
-        : exec(r);
-    for (const [reason, warnings, action] of [
-      ["skillpack_cli_unavailable", [], "armada snapshot update"],
-      ["skillpack_download_unavailable", ["skillpack_download_unavailable"], "allow GitHub release egress"],
-    ] as const) {
-      await f.db.query("update goldens set build_warnings=$2::text[] where id=$1", [
-        f.goldenId,
-        `{${warnings.join(",")}}`,
-      ]);
-      let directMessage = "";
-      try {
-        await installSkill(f.provider, "direct", "/home/user/repo", "codex", skills[0]!, warnings);
-      } catch (error) {
-        directMessage = (error as Error).message;
-      }
-      const refusal = await f.launch(t.id, reason);
-      expect(refusal).toMatchObject({ reason, message: directMessage });
-      expect(refusal.message).toContain(action);
-      expect(JSON.stringify(refusal)).not.toContain("secret guest detail");
-      expect(await f.launch(t.id, reason)).toEqual(refusal);
-      const stored = await f.db.query<{ result: { message: string } }>(
-        "select result from template_launch_requests where client_key=$1",
-        [reason],
-      );
-      expect(stored.rows[0]?.result.message).toBe(directMessage);
-    }
   } finally {
     await f.close();
   }
@@ -1109,17 +1050,23 @@ test("template admission freezes merged defaults and explicit overrides; opt-out
       skills: ["shared@3.0.0", "personal@1.0.0"],
     });
     const installed: string[] = [];
-    f.runtime.stores.credentials.installPrivateSkill = async (_provider, input) => {
-      installed.push(input.reference);
-      return {
-        reference: input.reference,
-        version: input.reference.split("@")[1]!,
-        skillId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        workspaceId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-        checksum: `sha256:${"a".repeat(64)}`,
-        origin: "https://skillpack.app/v1",
-      };
-    };
+    const start = f.runtime.options!.runtime!.start;
+    f.runtime.stores.credentials.skillpackKey = async () => "fixture-key";
+    f.runtime.options!.runtime!.start = async (input) => ({
+      ...(await start(input)),
+      installSkills: async (references) =>
+        references.map((reference) => {
+          installed.push(reference);
+          return {
+            reference: reference,
+            version: reference.split("@")[1]!,
+            skillId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            workspaceId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            checksum: `sha256:${"a".repeat(64)}`,
+            origin: "https://skillpack.app/v1",
+          };
+        }),
+    });
     const t = (await f.create(undefined, undefined, { ...f.definition, skills: ["shared@4.0.0", "template@1.0.0"] }))
       .item as LaunchTemplate;
     const result = await f.launch(t.id, "merged", { skills: ["shared@5.0.0"] });
@@ -1214,9 +1161,6 @@ test("secret references authorize delivery without persisting values and revoke 
     });
     expect((f.configured.at(-1) as { variables: Record<string, string> }).variables.APP_TOKEN === canary).toBe(true);
     const { configureReadableVariables: _configure, ...withoutDelivery } = f.provider;
-    f.runtime.provider = async () => withoutDelivery;
-    const unsupported = await f.launch(templateId, "unsupported-provider");
-    expect(unsupported.reason).toBe("secret_delivery_unavailable");
     await expect(
       f.service.prepare(
         withoutDelivery,

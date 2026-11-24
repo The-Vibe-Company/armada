@@ -60,18 +60,16 @@ for (const scenario of [
   { mode: "opencode_wrong_server", boat: true },
   { mode: "opencode_no_native", boat: true },
   { mode: "opencode", boat: true },
-  { mode: "opencode_valid", boat: true, nativeDefault: true },
   { mode: "opencode_resume_valid", boat: true, missingCheckpointVersion: true },
   { mode: "opencode_resume_valid", boat: true, invalidCheckpoint: "ack" },
   { mode: "opencode_resume_valid", boat: true, invalidCheckpoint: "epoch" },
 ] as const) {
   const boat = typeof scenario === "object";
   const mode = boat ? scenario.mode : scenario;
-  const nativeDefault = boat && "nativeDefault" in scenario;
   const missingCheckpointVersion = boat && "missingCheckpointVersion" in scenario;
   const invalidCheckpoint = boat && "invalidCheckpoint" in scenario ? scenario.invalidCheckpoint : undefined;
   const providers = boat ? ["boat"] : ["modal", "docker"];
-  test(`MCP canary parity: ${boat ? "production Boat " : ""}${mode}${nativeDefault ? " native default" : ""}${missingCheckpointVersion ? " missing checkpoint version" : ""}${invalidCheckpoint ? ` invalid checkpoint ${invalidCheckpoint}` : ""}`, async () => {
+  test(`MCP canary parity: ${boat ? "production Boat " : ""}${mode}${missingCheckpointVersion ? " missing checkpoint version" : ""}${invalidCheckpoint ? ` invalid checkpoint ${invalidCheckpoint}` : ""}`, async () => {
     const binding = {
       connectionId: "10000000-0000-4000-8000-000000000002",
       tool: "parity_probe",
@@ -138,7 +136,6 @@ for (const scenario of [
                   : {}),
                 boatRuntime: {
                   enabled: true,
-                  defaultPath: nativeDefault ? "native" : "runtime",
                   opencodeVersion: 1,
                   ...(mode.startsWith("opencode_") ? { opencodeMcpProofVersion: 1 } : {}),
                   checkpointVersion: missingCheckpointVersion ? 0 : 1,
@@ -432,7 +429,7 @@ for (const scenario of [
       },
       [...(boat ? ["--production-boat", "--only", "boat"] : []), "--feature", deep ? "mcp-resume" : "mcp"],
     );
-    if (nativeDefault || missingCheckpointVersion || invalidCheckpoint) {
+    if (missingCheckpointVersion || invalidCheckpoint) {
       const report = lines
         .map((line) => {
           try {

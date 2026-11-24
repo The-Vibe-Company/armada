@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createSqlGoldenStore, launchSandbox } from "@armada/core/server";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
+import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -90,7 +91,7 @@ describe("golden removal authority", () => {
 
 describe("golden removal during launch", () => {
   test("actual launch admission blocks removal during fork; lost provider outcomes never retire artifacts", async () => {
-    const { db, people } = await getFixture();
+    const { db, people, openaiCredentialId } = await getFixture();
     const caller: Caller = { userId: people.admin, orgs: [{ orgId: people.org, role: "admin" }], via: "supabase" };
     const data = createSqlData(db)(caller);
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
@@ -114,10 +115,18 @@ describe("golden removal during launch", () => {
       {
         goldens: data.goldens,
         sandboxes: data.sandboxes,
-        credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+        credentials: {
+          resolve: async () => ({
+            env: {},
+            secrets: [],
+            codexAuthJson: false,
+            binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
+          }),
+        },
       },
       { userId: people.admin, orgId: people.org, role: "admin" },
       { golden: "shared", harness: "claude" },
+      { runtime: enrolledLaunchPolicy(db) },
     );
     await reached;
     await expect(data.removeGolden!(golden.id)).rejects.toMatchObject({ code: "conflict" });
@@ -131,10 +140,18 @@ describe("golden removal during launch", () => {
         {
           goldens: data.goldens,
           sandboxes: data.sandboxes,
-          credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+          credentials: {
+            resolve: async () => ({
+              env: {},
+              secrets: [],
+              codexAuthJson: false,
+              binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
+            }),
+          },
         },
         { userId: people.admin, orgId: people.org, role: "admin" },
         { golden: "shared", harness: "claude" },
+        { runtime: enrolledLaunchPolicy(db) },
       ),
     ).rejects.toMatchObject({ code: "not_found" });
     expect(boat.forks).toHaveLength(1);
@@ -162,10 +179,18 @@ describe("golden removal during launch", () => {
         {
           goldens: ownerData.goldens,
           sandboxes: ownerData.sandboxes,
-          credentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
+          credentials: {
+            resolve: async () => ({
+              env: {},
+              secrets: [],
+              codexAuthJson: false,
+              binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
+            }),
+          },
         },
         { userId: people.owner, orgId: people.org, role: "member" },
         { golden: "mine", harness: "claude" },
+        { runtime: enrolledLaunchPolicy(db) },
       ),
     ).rejects.toMatchObject({ code: "outcome_unknown" });
     expect(unknownBoat.forks).toHaveLength(1);
@@ -180,7 +205,7 @@ describe("golden removal during launch", () => {
 
 describe("JWT fence authority", () => {
   test("JWTs cannot forge or release service fences, including after revocation or demotion", async () => {
-    const { db, people } = await getFixture();
+    const { db, people, openaiCredentialId } = await getFixture();
     const actor = { userId: people.admin, orgId: people.org, role: "admin" as const };
     const data = createSqlData(db)({
       userId: people.admin,
@@ -189,7 +214,14 @@ describe("JWT fence authority", () => {
     });
     const golden = (await data.goldens.findByName(people.org, "shared"))[0]!;
     const boat = fakeBoat();
-    const credentials = { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) };
+    const credentials = {
+      resolve: async () => ({
+        env: {},
+        secrets: [],
+        codexAuthJson: false,
+        binding: { credentialId: openaiCredentialId, credentialVersion: 1 },
+      }),
+    };
     const release = await data.goldens.beginOperation!(golden.id, {
       snapshotId: golden.providerSnapshotId,
       sandboxId: golden.providerSandboxId,
@@ -256,6 +288,7 @@ describe("JWT fence authority", () => {
           },
           actor,
           { golden: "shared", harness: "claude" },
+          { runtime: enrolledLaunchPolicy(db) },
         ),
       ).rejects.toMatchObject({ code: "conflict" });
       expect(boat.forks).toHaveLength(0);

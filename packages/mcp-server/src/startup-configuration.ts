@@ -41,8 +41,7 @@ export async function readStartupConfiguration(env: Record<string, string | unde
 
   const boat = await readBoatRuntimeManifest(
     env.ARMADA_BOAT_RUNTIME_MANIFEST ?? `/opt/armada/runtime-manifests/${process.arch}.json`,
-    config.boatAgentPath,
-    config.boatAgentPath === "runtime" ? env.ARMADA_RUNTIME_ARTIFACT_DIR : undefined,
+    env.ARMADA_RUNTIME_ARTIFACT_DIR,
   );
 
   const manifest = await readManifest(env.ARMADA_MODAL_RUNTIME_MANIFEST, "ARMADA_MODAL_RUNTIME_MANIFEST");

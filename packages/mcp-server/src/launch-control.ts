@@ -288,8 +288,7 @@ export function launchTemplate(
 export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
   const stores = options.data?.(caller);
   if (!stores) return undefined;
-  const boatPlacement = goldenRuntimePlacement(options.launch ?? {}, "boat");
-  const launch = { ...options.launch, ...(boatPlacement ? { boatRuntimeDefault: boatPlacement } : {}) };
+  const launch = options.launch ?? {};
   return {
     stores: {
       goldens: stores.goldens,

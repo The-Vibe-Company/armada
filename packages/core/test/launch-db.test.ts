@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { createSqlData } from "../../mcp-server/src/data.ts";
 import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
+import { enrolledLaunchPolicy } from "../../mcp-server/test/launch-runtime.fixture.ts";
 import {
   createSqlGoldenStore,
   createSqlSandboxStore,
@@ -13,7 +15,6 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/index.ts";
-import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
 const TOKEN = "claude_database_token";
 
@@ -27,7 +28,6 @@ describe("launch database", () => {
     async (outcome) => {
       const db = launchDatabase.get();
       const people = await fixture(db);
-      const { createSqlData } = await import("../../mcp-server/src/data.ts");
       const commitLost = new Error("admission commit acknowledgement lost");
       const sql: Sql =
         outcome === "commit-unknown"
@@ -87,12 +87,17 @@ describe("launch database", () => {
               }
             : {}),
           credentials: {
-            resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
+            resolve: async () => ({
+              env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
+              secrets: [TOKEN],
+              codexAuthJson: false,
+              binding: { credentialId: people.claudeCredential, credentialVersion: 1 },
+            }),
           },
         },
         actor(people, "owner"),
         { golden: "mine", harness: "claude" },
-        { newId: () => id },
+        { newId: () => id, runtime: enrolledLaunchPolicy(db) },
       );
       if (outcome === "registered") {
         expect((await launch).sandbox.id).toBe(id);
@@ -117,13 +122,17 @@ describe("launch database", () => {
     },
   );
 
-  test.each(["ready", "running", "failed", "stale", "same-generation restart", "receipt rollback"] as const)(
+  test.each(["ready", "running", "failed", "stale", "receipt rollback"] as const)(
     "core SQL launch settles %s with its registered generation",
     async (outcome) => {
       const db = launchDatabase.get();
       const people = await fixture(db);
       const { provider } = fakeBoat();
-      const sandboxes = createSqlSandboxStore(db);
+      const sandboxes = createSqlData(db)({
+        userId: people.owner,
+        via: "service",
+        orgs: [{ orgId: people.org, role: "member" }],
+      }).sandboxes;
       const id = crypto.randomUUID();
       const stopped: string[] = [];
       provider.stop = async ({ sandboxId }) => {
@@ -162,6 +171,7 @@ describe("launch database", () => {
                 env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
                 secrets: [TOKEN],
                 codexAuthJson: false,
+                binding: { credentialId: people.claudeCredential, credentialVersion: 1 },
               }),
             },
           },
@@ -169,17 +179,9 @@ describe("launch database", () => {
           { golden: "mine", harness: "claude", ...(prompted ? { prompt: "go" } : {}) },
           {
             newId: () => id,
+            runtime: enrolledLaunchPolicy(db),
             async onRegistered() {
               if (outcome === "stale") await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
-              if (outcome === "same-generation restart") {
-                await sandboxes.update(id, { status: "ready", expectedGeneration: 1 });
-                const result = await db.query(
-                  `select applied from sandbox_transition($1,1,array['ready']::sandbox_status[],'starting',
-                    'lifecycle_runner','native_provider_phase','[]',null,null,null,null,null)`,
-                  [id],
-                );
-                expect(result.rows).toEqual([{ applied: true }]);
-              }
             },
           },
         );
@@ -187,20 +189,15 @@ describe("launch database", () => {
           expect((await launch).sandbox.status).toBe(outcome);
         } else {
           const message =
-            outcome === "stale" || outcome === "same-generation restart"
-              ? "settlement is stale"
+            outcome === "stale"
+              ? "Runtime readiness publication is stale"
               : outcome === "receipt rollback"
                 ? "injected receipt failure"
                 : "Initialization failed";
           await expect(launch).rejects.toThrow(message);
         }
         expect(stopped).toHaveLength(outcome === "failed" || outcome === "receipt rollback" ? 1 : 0);
-        const expectedStatus =
-          outcome === "stale" || outcome === "same-generation restart"
-            ? "starting"
-            : outcome === "receipt rollback"
-              ? "failed"
-              : outcome;
+        const expectedStatus = outcome === "stale" ? "starting" : outcome === "receipt rollback" ? "failed" : outcome;
         expect(
           (await db.query("select status,task_prompt_id,conversation_ids from sandboxes where id=$1", [id])).rows,
         ).toEqual([
@@ -220,32 +217,15 @@ describe("launch database", () => {
         ).toEqual(
           outcome === "stale"
             ? []
-            : outcome === "same-generation restart"
-              ? [
-                  {
-                    from_status: "starting",
-                    to_status: "ready",
-                    actor: "lifecycle_runner",
-                    code: "unleased_native_launch",
-                    generation: 1,
-                  },
-                  {
-                    from_status: "ready",
-                    to_status: "starting",
-                    actor: "lifecycle_runner",
-                    code: "native_provider_phase",
-                    generation: 1,
-                  },
-                ]
-              : [
-                  {
-                    from_status: "starting",
-                    to_status: expectedStatus,
-                    actor: outcome === "running" ? "native_turn" : "lifecycle_runner",
-                    code: "unleased_native_launch",
-                    generation: 1,
-                  },
-                ],
+            : [
+                {
+                  from_status: "starting",
+                  to_status: expectedStatus,
+                  actor: expectedStatus === "failed" ? "lifecycle_runner" : "runtime_enrolment",
+                  code: expectedStatus === "failed" ? "launch_failed" : "runtime_enrolled",
+                  generation: expectedStatus === "failed" ? 2 : 1,
+                },
+              ],
         );
       } finally {
         if (outcome === "receipt rollback")
@@ -260,86 +240,39 @@ describe("launch database", () => {
     const db = launchDatabase.get();
     try {
       const people = await fixture(db);
-      const goldens = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };
       const sandboxes = createSqlSandboxStore(db);
       const boat = fakeBoat();
       const credentials = {
-        resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
-      };
-      // Keep golden visibility and subsequent sandbox reads under the user role,
-      // but model physical registration and accepted turn receipts through the server connection.
-      const stores = {
-        goldens,
-        credentials,
-        sandboxes: {
-          ...sandboxes,
-          async update(id: string, patch: Parameters<typeof sandboxes.update>[1]) {
-            // The API-only client cannot write trusted provider receipts. The
-            // launch service records them; raw user-role updates below still
-            // exercise the sandbox's actual grants and RLS independently.
-            await db.exec("savepoint server_receipt");
-            try {
-              await db.exec("set local role service_role");
-              await sandboxes.update(id, patch);
-              await db.exec("release savepoint server_receipt");
-            } catch (error) {
-              await db.exec("rollback to savepoint server_receipt; release savepoint server_receipt");
-              throw error;
-            } finally {
-              await db.exec("set local role authenticated");
-            }
-          },
-          async insert(input: Parameters<typeof sandboxes.insert>[0]) {
-            await db.exec("savepoint server_registration");
-            try {
-              await db.exec("set local role service_role");
-              const row = await sandboxes.insert(input);
-              await db.exec("release savepoint server_registration");
-              return row;
-            } catch (error) {
-              await db.exec("rollback to savepoint server_registration; release savepoint server_registration");
-              throw error;
-            } finally {
-              await db.exec("set local role authenticated");
-            }
-          },
-        },
-      };
-
-      const mine = await asUser(db, people.owner, () =>
-        launchSandbox(boat.provider, stores, actor(people, "owner"), {
-          golden: "mine",
-          harness: "claude",
-          prompt: "go",
+        resolve: async () => ({
+          env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
+          secrets: [TOKEN],
+          codexAuthJson: false,
+          binding: { credentialId: people.claudeCredential, credentialVersion: 1 },
         }),
-      );
+      };
+      const serviceData = createSqlData(db);
+      const launch = (who: "owner" | "member", request: Parameters<typeof launchSandbox>[3]) => {
+        const selected = actor(people, who);
+        const stores = serviceData({ userId: selected.userId, orgs: [selected], via: "service" });
+        return launchSandbox(boat.provider, { ...stores, credentials }, selected, request, {
+          runtime: enrolledLaunchPolicy(db),
+        });
+      };
+      const mine = await launch("owner", { golden: "mine", harness: "claude", prompt: "go" });
       expect(mine.sandbox).toMatchObject({ ownerId: people.owner, harness: "claude", status: "running" });
       await expect(
         asUser(db, people.owner, () => sandboxes.update(mine.sandbox.id, { taskPromptId: "forged-receipt" })),
       ).rejects.toThrow(/permission denied/);
-      expect(boat.forks[0]).toMatchObject({ noEnv: true, env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } });
+      expect(boat.forks[0]).toMatchObject({ noEnv: true, env: {} });
 
-      await expect(
-        asUser(db, people.member, () =>
-          launchSandbox(boat.provider, stores, actor(people, "member"), { golden: "mine", harness: "claude" }),
-        ),
-      ).rejects.toThrow(/No golden named 'mine'/);
+      await expect(launch("member", { golden: "mine", harness: "claude" })).rejects.toThrow(/No golden named 'mine'/);
       expect(boat.forks).toHaveLength(1);
 
-      const shared = await asUser(db, people.member, () =>
-        launchSandbox(boat.provider, stores, actor(people, "member"), { golden: "shared", harness: "claude" }),
-      );
+      const shared = await launch("member", { golden: "shared", harness: "claude" });
       expect(shared.sandbox).toMatchObject({ ownerId: people.member, status: "ready", conversationIds: [] });
 
-      const privateFork = await asUser(db, people.member, () =>
-        launchSandbox(boat.provider, stores, actor(people, "member"), {
-          golden: "shared",
-          harness: "claude",
-          visibility: "private",
-        }),
-      );
+      const privateFork = await launch("member", { golden: "shared", harness: "claude", visibility: "private" });
       const sandboxId = privateFork.sandbox.id;
-      const serviceData = (await import("../../mcp-server/src/data.ts")).createSqlData(db);
       const visible = (userId: string) =>
         asUser(db, userId, async () =>
           (await db.query<{ id: string }>("select id from sandboxes")).rows.map((row) => row.id),
@@ -494,6 +427,7 @@ function fakeBoat() {
 
 async function fixture(db: PGlite) {
   const people = {
+    claudeCredential: crypto.randomUUID(),
     org: crypto.randomUUID(),
     owner: crypto.randomUUID(),
     member: crypto.randomUUID(),
@@ -507,6 +441,10 @@ async function fixture(db: PGlite) {
     `insert into members (org_id, user_id, role) values
       ($1, $2, 'member'), ($1, $3, 'member'), ($1, $4, 'admin')`,
     [people.org, people.owner, people.member, people.admin],
+  );
+  await db.query(
+    "insert into credentials (id,scope,owner_id,kind,value_enc) values ($1,'org',$2,'claude_oauth','fixture')",
+    [people.claudeCredential, people.org],
   );
   const config = JSON.stringify({
     repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
