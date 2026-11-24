@@ -28,7 +28,7 @@ function requestLogForStatus(status: number) {
   return console.info;
 }
 
-function requestPath(request: Request): string {
+function requestPath(request: Request) {
   try {
     return redactForLog(decodeURIComponent(new URL(request.url).pathname));
   } catch {
