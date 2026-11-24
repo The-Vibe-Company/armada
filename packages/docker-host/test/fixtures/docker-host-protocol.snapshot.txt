@@ -98,6 +98,7 @@ export type DockerHostJob = {
     operation: "buildSnapshot";
     build: DockerSnapshotBuildDescriptor;
 });
+export declare function dockerMachineJobId(generation: string, operation: "bootstrap" | "stop" | "delete" | "deletePhysical"): string;
 export declare function parseDockerHostJob(value: unknown): DockerHostJob;
 export declare function canonicalDockerHostJob(value: unknown): string;
 
