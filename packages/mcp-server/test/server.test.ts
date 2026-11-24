@@ -412,6 +412,7 @@ describe("tools", () => {
       golden: { name: "shared" },
       sandbox: { harness: "claude", status: "running" },
       promptId: "prompt_1",
+      helper: { status: "supported", protocol: 1, capabilities: ["diagnose"] },
     });
     expect(boat.forks[0]).toMatchObject({ noEnv: true, env: {} });
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
@@ -1479,8 +1480,8 @@ describe("tools", () => {
     expect(launched.data.sandbox).toMatchObject({ ...choice, status: "ready" });
     expect(boat.prompts).toHaveLength(0);
 
-    const saved = await call(mcp, "status", { id: launchSandboxId(launched.data) });
-    expect(saved.data).toMatchObject(choice);
+    const saved = await createSqlSandboxStore(db).get(String(launchSandboxId(launched.data)));
+    expect(saved).toMatchObject(choice);
     const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", ...choice });
     await call(mcp, "send", { id, prompt: "first" });
     await call(mcp, "stop", { id });
