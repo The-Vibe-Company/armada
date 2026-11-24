@@ -2016,12 +2016,6 @@ staging host UUID in `hostId`, and an authorized real Codex
 image. Use the named scripted account only in `scriptedModelAccountId` on
 the Modal case.
 
-The Docker Codex lane is advisory until
-[#4033](https://github.com/The-Vibe-Company/armada/issues/4033) is fixed (owner decision, 2026-11-24).
-It still runs and prints every step. A failure adds a `real_model_advisory`
-receipt and does not fail the smoke, so it does not block a release. The Modal
-lane still gates. Restore the Docker gate in the #4033 fix.
-
 | Lane | Model | Coverage |
 | --- | --- | --- |
 | Modal Codex authentication | real | Launch, one plain prompt, completed turn with non-empty completed assistant message, stop |

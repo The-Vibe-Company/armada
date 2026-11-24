@@ -16,10 +16,10 @@ export async function startServer(env: Record<string, string | undefined>, optio
   control.eventStreamShutdown = eventStreamShutdown.signal;
   control.stopAdmissionShutdown = eventStreamShutdown.signal;
   const assembly = assembleServer(services);
-  let configureDockerArchiveTimeout: ((request: Request) => void) | undefined;
+  let configureRequestTimeout: ((request: Request, seconds: number) => void) | undefined;
   const handler = createHandler({
     ...services.handlerOptions,
-    routes: assembly.mounts((request) => configureDockerArchiveTimeout?.(request)),
+    routes: assembly.mounts((request, seconds) => configureRequestTimeout?.(request, seconds)),
   });
   assembly.startBeforeListen();
   const requestDrain = createServerRequestDrain(handler, options.logError);
@@ -63,8 +63,8 @@ export async function startServer(env: Record<string, string | undefined>, optio
   control.configureStopRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
-  // Archive validation and encrypted chunk publication have their own bounded deadline.
-  configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);
+  // Held Docker polls and archive uploads set their own bounded ingress timeouts.
+  configureRequestTimeout = (request, seconds) => server.timeout(ingressRequest(request), seconds);
   services.configureAccountDispatch();
   const workers = assembly.planWorkers().start();
   installServerShutdown(server, {

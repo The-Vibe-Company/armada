@@ -11,6 +11,7 @@ import type {
 import {
   createDockerMachineExecutor,
   type DockerMachineCli,
+  DockerMachineError,
   type DockerMachineRequest,
 } from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
@@ -155,12 +156,25 @@ class HostRequestDenied extends Error {
     super("Host request denied");
   }
 }
+export function hostFailureClass(error: unknown) {
+  if (error instanceof HostRequestDenied) return "HostRequestDenied";
+  if (error instanceof DockerMachineError) return "DockerMachineError";
+  if (error instanceof DOMException) {
+    if (error.name === "AbortError" || error.name === "TimeoutError") return error.name;
+    return "DOMException";
+  }
+  if (error instanceof SyntaxError) return "SyntaxError";
+  if (error instanceof TypeError) return "TypeError";
+  return error instanceof Error ? "Error" : "Unknown";
+}
+
+type InventoryPhase = "inventory_scan" | "inventory_upload";
 export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
-  inventory?: { cli: DockerMachineCli; failed(): void },
+  inventory?: { cli: DockerMachineCli; failed(phase: InventoryPhase, error: unknown): void },
 ): Api & {
   stopInventory(): Promise<void>;
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
@@ -225,20 +239,26 @@ export function httpApi(
   const inventoryStop = new AbortController();
   let inventoryReport: Promise<void> | undefined;
   let nextInventoryAt = 0;
-  async function reportInventory(cli: DockerMachineCli, state: State, deploymentId: string) {
+  async function reportInventory(reporter: NonNullable<typeof inventory>, state: State, deploymentId: string) {
     const signal = inventoryStop.signal;
-    const containers = await Array.fromAsync(
-      createDockerContainerInventory(cli, state, deploymentId).listInventory(signal),
-    );
-    signal.throwIfAborted();
-    await post(
-      state.server,
-      "container-inventory",
-      state.hostToken,
-      { installationId: state.installationId, containers },
-      undefined,
-      signal,
-    );
+    let phase: InventoryPhase = "inventory_scan";
+    try {
+      const containers = await Array.fromAsync(
+        createDockerContainerInventory(reporter.cli, state, deploymentId).listInventory(signal),
+      );
+      signal.throwIfAborted();
+      phase = "inventory_upload";
+      await post(
+        state.server,
+        "container-inventory",
+        state.hostToken,
+        { installationId: state.installationId, containers },
+        undefined,
+        signal,
+      );
+    } catch (error) {
+      if (!signal.aborted) reporter.failed(phase, error);
+    }
   }
 
   return {
@@ -301,14 +321,10 @@ export function httpApi(
           const deploymentId =
             result.containerInventoryDeploymentId ??
             `${serverOrigin(state.server)}/${state.hostId}/${state.installationId}`;
-          inventoryReport = reportInventory(inventory.cli, state, deploymentId)
-            .catch(() => {
-              if (!inventoryStop.signal.aborted) inventory.failed();
-            })
-            .finally(() => {
-              nextInventoryAt = performance.now() + 60_000;
-              inventoryReport = undefined;
-            });
+          inventoryReport = reportInventory(inventory, state, deploymentId).finally(() => {
+            nextInventoryAt = performance.now() + 60_000;
+            inventoryReport = undefined;
+          });
         }
         return { ...result, retainedStopProof: retainedStopProof ? (true as const) : undefined };
       }

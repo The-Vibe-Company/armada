@@ -283,7 +283,9 @@ export function createPhysicalExpirySweep(store: Store, executor: Executor) {
 }
 
 export type TickOutcome = "worked" | "held" | "busy" | "idle";
+type IterationPhase = "admission" | "poll" | "resume_claim" | "job_decode" | "job";
 export type TickOptions = {
+  phase?: (phase: IterationPhase) => void;
   waitSeconds?: number;
   running?: ReadonlySet<string>;
   sandboxes?: ReadonlySet<string>;
@@ -330,6 +332,7 @@ export async function tick(
     options.dispatch(step.job, step.work());
     return "worked";
   }
+  options.phase?.("job");
   await step.work();
   return "worked";
 }
@@ -347,7 +350,7 @@ export async function runJobs(
     stopping(): boolean;
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
-    failed?(what: "tick" | "job"): void;
+    failed?(what: "tick" | "job", phase: IterationPhase, error: unknown): void;
     now?: () => number;
   },
 ): Promise<void> {
@@ -368,8 +371,12 @@ export async function runJobs(
       const excluded = new Set(deferUncertain.keys());
       for (const [id, isCleanup] of deferUncertain) if (!isCleanup) deferUncertain.delete(id);
       let outcome: TickOutcome;
+      let phase: IterationPhase = "admission";
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
+          phase(next) {
+            phase = next;
+          },
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
           deferUncertain: excluded,
@@ -382,7 +389,7 @@ export async function runJobs(
                   deferUncertain.size < MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS
                 )
                   deferUncertain.set(job.requestId, job.operation !== "restore");
-                loop.failed?.("job");
+                loop.failed?.("job", "job", error);
               })
               .finally(() => {
                 running.delete(job.requestId);
@@ -397,8 +404,8 @@ export async function runJobs(
             if (job.operation === "buildSnapshot") live.snapshots.add(job.requestId);
           },
         });
-      } catch {
-        loop.failed?.("tick");
+      } catch (error) {
+        loop.failed?.("tick", phase, error);
         outcome = "idle";
       }
       if (loop.stopping()) break;
@@ -533,7 +540,7 @@ async function admitLocked(
   if (reload) await store.save(state);
   lock.release();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
-  let pollError: unknown;
+  let pollFailure: { phase: "poll" | "resume_claim"; error: unknown } | undefined;
   try {
     polled = await api.poll(state, {
       skipSnapshots,
@@ -545,7 +552,7 @@ async function admitLocked(
           }),
     });
   } catch (error) {
-    pollError = error;
+    pollFailure = { phase: "poll", error };
   } finally {
     lock.release = await acquire(store);
   }
@@ -598,7 +605,7 @@ async function admitLocked(
     try {
       await api.claim?.(state, claim.requestId, claim.accepted);
     } catch (error) {
-      pollError = error;
+      pollFailure = { phase: "resume_claim", error };
     }
   }
   const claimed = new Set<string>();
@@ -845,7 +852,7 @@ async function admitLocked(
     await store.save(ledger);
   }
 
-  if (polled?.retainedStopProof && !pollError) {
+  if (polled?.retainedStopProof && !pollFailure) {
     const pending = state.receipts.filter((receipt) => receipt.retentionProofPending);
     const after = pending.findIndex((receipt) => receipt.requestId === state.retentionProofAfter);
     const report = [...pending.slice(after + 1), ...pending.slice(0, after + 1)].find(
@@ -972,13 +979,19 @@ async function admitLocked(
     await store.save(latest);
     Object.assign(state, latest);
   }
-  if (pollError) throw pollError;
-  if (!polled) throw pollError ?? new Error("Host poll unavailable");
+  if (pollFailure) {
+    options.phase?.(pollFailure.phase);
+    throw pollFailure.error;
+  }
+  if (!polled) throw new Error("Host poll unavailable");
   if (!polled.job) {
     await store.save(state);
     return polled.held && !unacknowledged ? "held" : "idle";
   }
-  if (!job) throw new Error("Invalid host job");
+  if (!job) {
+    options.phase?.("job_decode");
+    throw new Error("Invalid host job");
+  }
   const machineKey = generationKey(job.request);
   const restoreKey = job.operation === "restore" ? generationKey(job.predecessor.request) : undefined;
   const restoreOwner = (key: string) => {

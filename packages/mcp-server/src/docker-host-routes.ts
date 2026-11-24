@@ -120,7 +120,7 @@ export function createDockerHostRoutes(
     snapshots?: DockerSnapshots;
     clock?: DockerHostPollClock;
     log?: (line: string) => void;
-    configureArchiveTimeout?: (request: Request) => void;
+    configureRequestTimeout?: (request: Request, seconds: number) => void;
   } = {},
 ) {
   const clock = options.clock ?? pollClock;
@@ -211,7 +211,7 @@ export function createDockerHostRoutes(
         if (request.body && request.headers.get("content-type") !== "application/x-tar") throw new InvalidInput();
         if (request.body && uploadingOutputs) return new Response(null, { status: 503, headers });
         if (request.body) {
-          options.configureArchiveTimeout?.(request);
+          options.configureRequestTimeout?.(request, 45);
           uploadingOutputs = true;
         }
         try {
@@ -350,10 +350,10 @@ export function createDockerHostRoutes(
         const deadlines = "deadlines" in body ? deadlinesOf(body.deadlines) : undefined;
         // A daemon may opt into a held poll: the response waits until a job or an
         // unacknowledged resume claim exists, so a launch never waits out the
-        // daemon's idle period, and the host still needs no inbound port (#2561).
+        // daemon's idle period. The ingress deadline also budgets for final database reads.
         const wait = body.waitSeconds;
         if (wait !== undefined && (!Number.isSafeInteger(wait) || Number(wait) < 1)) throw new InvalidInput();
-        const holdUntil = clock.now() + Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS) * 1000;
+        const holdSeconds = Math.min(Number(wait ?? 0), DOCKER_HOST_POLL_HOLD_SECONDS);
         // Machine operations the daemon is still executing. Their sandboxes stay
         // serial; jobs of other sandboxes are handed out while they run.
         const running = body.running;
@@ -364,6 +364,8 @@ export function createDockerHostRoutes(
             running.some((item) => typeof item !== "string" || !uuid.test(item)))
         )
           throw new InvalidInput();
+        if (holdSeconds > 0) options.configureRequestTimeout?.(request, holdSeconds + 10);
+        const holdUntil = clock.now() + holdSeconds * 1000;
         const { hostId, retentionSeconds } = await store.retentionForHost(
           token,
           installationId,

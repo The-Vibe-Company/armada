@@ -269,14 +269,7 @@ test.each([
       }
     },
   });
-  expect(passed).toBe(true);
-  expect(receipts).toContainEqual({
-    case: 1,
-    lane: "real-model",
-    provider: "docker",
-    step: "real_model_advisory",
-    issue: 4033,
-  });
+  expect(passed).toBe(false);
   expect(receipts.filter((row) => row.step === "readiness_diagnostic")).toEqual([
     {
       case: 1,

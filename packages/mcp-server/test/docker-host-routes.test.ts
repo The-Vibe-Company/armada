@@ -845,13 +845,14 @@ test("a held host poll returns a locally enqueued job with the clock frozen", as
 
 test("a held host poll answers as soon as work appears and never beyond its hold", async () => {
   let time = 0;
+  let idleDeadline = 10_000;
   let polls = 0;
   let probes = 0;
   let readyAt = Number.POSITIVE_INFINITY;
   let refused = false;
   let retentionWrites = 0;
   const running: (readonly string[])[] = [];
-  const job = { requestId: randomUUID(), operation: "stop" };
+  const job = { requestId: randomUUID(), operation: "create" };
   const store = {
     async retentionForHost() {
       retentionWrites++;
@@ -871,6 +872,9 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     },
   } as unknown as ReturnType<typeof createDockerHostStore>;
   const route = createDockerHostRoutes(store, async () => ({ ok: false as const }), {
+    configureRequestTimeout(_request: Request, seconds: number) {
+      idleDeadline = time + seconds * 1000;
+    },
     clock: {
       now: () => time,
       async wait(ms) {
@@ -879,6 +883,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
     },
   });
   const poll = async (extra: Record<string, unknown>) => {
+    idleDeadline = time + 10_000;
     const response = await route(
       new Request("https://staging.example/api/docker-host/poll", {
         method: "POST",
@@ -890,18 +895,19 @@ test("a held host poll answers as soon as work appears and never beyond its hold
         body: JSON.stringify({ installationId: randomUUID(), version: "2.51.0", ...extra }),
       }),
     );
+    expect(time).toBeLessThan(idleDeadline);
     if (!response) throw new Error("Expected Docker host route");
     return { status: response.status, body: response.status === 200 ? await response.json() : null };
   };
   const inFlight = randomUUID();
-  readyAt = 2000;
+  readyAt = 12_000;
   expect(await poll({ waitSeconds: 20, running: [inFlight] })).toMatchObject({
     status: 200,
     body: { held: true, job },
   });
   // Rechecks are read-only probes; the full poll repeats only once one hits.
-  expect([polls, probes, time]).toEqual([2, 2, 2000]);
-  expect(running).toEqual([[inFlight], [inFlight], [inFlight], [inFlight]]);
+  expect([polls, probes, time]).toEqual([2, 12, 12_000]);
+  expect(running).toEqual(Array.from({ length: 14 }, () => [inFlight]));
   // Nothing arrives: the hold is capped at 20 seconds, whatever was asked,
   // and an idle hold runs the full (writing) poll only once.
   [polls, probes, time, readyAt] = [0, 0, 0, Number.POSITIVE_INFINITY];

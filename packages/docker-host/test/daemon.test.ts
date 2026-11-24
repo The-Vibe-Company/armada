@@ -19,7 +19,25 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
+import { fileStore, hostFailureClass, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
+
+test("the daemon reports the poll failure class and phase without its message", async () => {
+  const { store, api, executor } = fixture();
+  const failures: unknown[] = [];
+  api.poll = async () => {
+    throw new TypeError("private transport detail");
+  };
+  await runJobs(store, api, executor, {
+    stopping: () => failures.length > 0,
+    sleep: async () => {
+      throw new Error("The loop should stop after reporting the failure");
+    },
+    failed(kind, phase, error) {
+      failures.push({ kind, phase, errorClass: hostFailureClass(error) });
+    },
+  });
+  expect(failures).toEqual([{ kind: "tick", phase: "poll", errorClass: "TypeError" }]);
+});
 
 function fail(): never {
   throw new Error("missing receipt");
