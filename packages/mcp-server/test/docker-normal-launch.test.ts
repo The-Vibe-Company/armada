@@ -207,9 +207,20 @@ async function fixture(
       if (drive) await stepRuntime();
     },
   };
-  async function step() {
+  async function step(machineBootstrap = true) {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
-    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], pollResumeClaims, false, false, true)) {
+    if (
+      await hosts.mayHaveWork(
+        host.hostToken,
+        installationId,
+        false,
+        [],
+        pollResumeClaims,
+        false,
+        false,
+        machineBootstrap,
+      )
+    ) {
       if (pollResumeClaims) {
         for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
           await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
@@ -229,7 +240,7 @@ async function fixture(
         false,
         false,
         false,
-        true,
+        machineBootstrap,
       );
     }
     if (job) {
@@ -445,17 +456,17 @@ async function fixture(
     });
     const jobs = createJobsStore(sql, key);
     const workerId = randomUUID();
-    async function runClaim() {
+    async function runClaim(canDispatch = async (_tx?: Sql) => true) {
       const job = await jobs.claim("launch", workerId, 30, 1);
       if (!job) return false;
       const result = await launch.run(job, {
         signal: new AbortController().signal,
-        canDispatch: async (tx) => (await jobs.inspect(job, workerId, tx)) === "dispatch",
+        canDispatch: async (tx) => (await canDispatch(tx)) && (await jobs.inspect(job, workerId, tx)) === "dispatch",
         handoffGeneration: async () => {
           throw Error("Unexpected launch generation handoff.");
         },
       });
-      await jobs.complete(job, workerId, result);
+      if (!(await jobs.complete(job, workerId, result))) await jobs.retireStale(job, workerId, "no_dispatch");
       if (result.status !== "retry" || !drive) return false;
       await step();
       await db.query("update public.jobs set run_after=now() where id=$1", [job.id]);
@@ -542,6 +553,7 @@ async function fixture(
         pollResumeClaims = false;
       }
     },
+    step,
     setDrive(value: boolean) {
       drive = value;
     },
@@ -1218,7 +1230,7 @@ test.each([false, true])(
       await f.service().launch(f.caller, { ...fields, org, requestId: originalId, externalRef: body.externalRef });
       await sql.query("update docker_launch_requests set async_launch=true where sandbox_id=$1", [originalId]);
       const migration = await Bun.file(
-        new URL("../../../supabase/migrations/20261124200500_docker_ordinary_launch_jobs.sql", import.meta.url),
+        new URL("../../../supabase/migrations/20261124200501_docker_ordinary_launch_jobs.sql", import.meta.url),
       ).text();
       await sql.query(migration.slice(migration.indexOf("insert into public.jobs"), migration.indexOf("-- Setup")));
     }
@@ -2046,6 +2058,83 @@ test("send refreshes the first conversation when its ready row predates launch r
     op: "prompt",
     input: { conversationId: f.receipt.conversationId, text: "Continue the just-published conversation" },
   });
+});
+
+test("revocation between worker read and mailbox admission refuses the old launch", async () => {
+  const f = await fixture();
+  let revoked = false;
+  const launch = f.service(
+    {
+      ...sql,
+      async query(query, params) {
+        const result = await sql.query(query, params);
+        if (!revoked && query.includes("select s.docker_installation_id,")) {
+          revoked = true;
+          await sql.query("update mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+            f.actor.orgId,
+            f.actor.userId,
+          ]);
+        }
+        return result as Awaited<ReturnType<typeof sql.query>>;
+      },
+    } as Sql,
+    true,
+    10000,
+    officialImage,
+    true,
+  );
+  await launch.launch(f.caller, f.body);
+  await launch.runClaim();
+  expect(revoked).toBe(true);
+  expect((await counts(f))?.jobs).toBe(0);
+});
+
+test("a stale worker cannot enqueue runtime setup after enrolment", async () => {
+  const f = await fixture();
+  const launch = f.service(sql, true, 10000, officialImage, true);
+  await launch.launch(f.caller, f.body);
+  await launch.runClaim();
+  await launch.runClaim();
+  expect(f.session()).toBeDefined();
+  await launch.runClaim(async (tx) => !tx);
+  expect((await counts(f))?.commands).toBe(0);
+});
+
+test.each([false, true])(
+  "launch deadline blocks daemon pickup and settles the reservation (after create=%s)",
+  async (allocated) => {
+    const f = await fixture();
+    const launch = f.service(sql, true, 10000, officialImage, true);
+    await launch.launch(f.caller, f.body);
+    if (allocated) await launch.runClaim();
+    f.setDrive(false);
+    await launch.runClaim();
+    await sql.query(
+      "update jobs set deadline_at=now()-interval '1 second',run_after=now() where sandbox_id=$1 and kind='launch'",
+      [f.body.requestId],
+    );
+    await f.step();
+    expect(f.jobs).toHaveLength(allocated ? 1 : 0);
+    await launch.runClaim();
+    expect((await launch.launch(f.caller, f.body)).sandbox.status).toBe("failed");
+    const cancelled = await sql.query(
+      "select bound_operation from docker_host_jobs where bound_sandbox_id=$1 and cancelled_at is not null",
+      [f.body.requestId],
+    );
+    expect(cancelled.rows).toEqual([{ bound_operation: allocated ? "bootstrap" : "create" }]);
+  },
+);
+
+test("a daemon incapable of Machine bootstrap cannot receive a Machine launch create", async () => {
+  const f = await fixture();
+  const launch = f.service(sql, true, 10000, officialImage, true);
+  await launch.launch(f.caller, f.body);
+  f.setDrive(false);
+  await launch.runClaim();
+  await f.step(false);
+  expect(f.jobs).toHaveLength(0);
+  await f.step();
+  expect(f.jobs).toHaveLength(1);
 });
 
 test("stop after accepted starting launch bypasses queued startup and settles without allocating or prompting", async () => {

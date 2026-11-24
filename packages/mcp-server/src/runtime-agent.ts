@@ -324,6 +324,7 @@ export function createRuntimeAgent(
       step: { phase: "repository" | "init"; index: number; attempt: number },
       epoch: string,
       signal?: AbortSignal,
+      assertClaim?: (tx: Sql) => Promise<void>,
     ) {
       target(request.sandboxId);
       if (request.detached) throw refusal("invalid_request");
@@ -351,6 +352,7 @@ export function createRuntimeAgent(
           )
             throw refusal("unavailable");
         },
+        assertClaim,
       );
       return result;
     },
@@ -360,6 +362,7 @@ export function createRuntimeAgent(
       epoch: string,
       signal?: AbortSignal,
       requestId?: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
     ): Promise<SkillReceipt[]> {
       await invoke<{ ready?: unknown; generation?: unknown; skillsVersion?: unknown }>(
         { ...identity(requestId ? `${requestId}_health` : undefined), op: "health" },
@@ -370,6 +373,7 @@ export function createRuntimeAgent(
           if (health.ready !== true || health.generation !== epoch || health.skillsVersion !== 1)
             throw new PrivateSkillError("skillpack_transport_failed", "transport");
         },
+        assertClaim,
       );
       const result = await invoke<{ receipts: SkillReceipt[]; failure?: { reason?: unknown } }>(
         {
@@ -416,6 +420,7 @@ export function createRuntimeAgent(
               throw new PrivateSkillError("skillpack_receipt_invalid", "receipt");
           }
         },
+        assertClaim,
       );
       return result.receipts.map(({ reference, version, skillId, checksum, origin, workspaceId }) => ({
         reference,

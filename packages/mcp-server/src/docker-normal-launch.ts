@@ -50,7 +50,7 @@ import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerHostStore } from "./docker-host-store.ts";
+import { cancelDockerLaunchMailbox, createDockerHostStore } from "./docker-host-store.ts";
 import { dockerPoolOpenCodeModel, resolveDockerLaunchAccount } from "./docker-launch-account.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { dockerLaunchRequestHash, matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
@@ -78,7 +78,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
+import { failDockerStartup, recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -787,6 +787,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
         reason = "machine_start";
+        const assertClaim =
+          worker &&
+          (async (tx: Sql) => {
+            if (!(await worker.context.canDispatch(tx))) throw failure("unavailable");
+          });
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         async function live() {
           if (worker && !(await worker.context.canDispatch())) throw failure("unavailable");
@@ -833,10 +838,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         let receipt: Receipt;
         for (;;) {
           await live();
-          const ready = await runtime.ready(actor, request.requestId, manifest.healthId).catch(async (error) => {
-            await live().catch(() => {});
-            throw error;
-          });
+          const ready = await runtime
+            .ready(actor, request.requestId, manifest.healthId, worker?.job.generation ?? undefined, assertClaim)
+            .catch(async (error) => {
+              await live().catch(() => {});
+              throw error;
+            });
           if (ready.state === "ready") {
             receipt = { epoch: ready.epoch };
             break;
@@ -845,12 +852,12 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         reason = "runtime_environment";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
-        await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId);
+        await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId, assertClaim);
         reason = "github_preparation";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
         if (!manifest.request.repos && manifest.snapshotConfig?.repos.length) {
           receipt.github = options.github
-            ? await options.github.prepareLaunch(caller, request.requestId)
+            ? await options.github.prepareLaunch(caller, request.requestId, assertClaim)
             : {
                 status: "not_connected",
                 message: "GitHub is not connected; public snapshot repositories refresh anonymously.",
@@ -894,7 +901,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             },
             async (command, step) => {
               await live();
-              return agent.workspaceExec(command, step, receipt.epoch);
+              return agent.workspaceExec(command, step, receipt.epoch, worker?.context.signal, assertClaim);
             },
             receipt.github?.status === "connected",
           );
@@ -908,7 +915,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         }
         if (manifest.request.repos) {
           if (!options.github) throw failure("unavailable");
-          const github = await options.github.prepare(caller, request.requestId);
+          const github = await options.github.prepare(caller, request.requestId, undefined, assertClaim);
           receipt.github = { status: "connected", login: github.login };
           reason = "repository_checkout";
           phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
@@ -925,6 +932,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
             },
             receipt.epoch,
+            assertClaim,
           );
           for (;;) {
             await live();
@@ -971,14 +979,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               defaults,
             },
           );
-          const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);
+          const receipts = await agent.installSkills(
+            selections.skills,
+            skillKey,
+            receipt.epoch,
+            worker?.context.signal,
+            undefined,
+            assertClaim,
+          );
           await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
             if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+            await assertClaim?.(tx);
             await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(request.requestId, receipts);
           });
         }
         reason = "mcp_preparation";
-        if (options.mcp) await options.mcp.prepare(caller, request.requestId);
+        if (options.mcp) await options.mcp.prepare(caller, request.requestId, worker?.context.signal, assertClaim);
         else if (selections?.connections.length) throw failure("unavailable");
         reason = "runtime_epoch_validation";
         await live();
@@ -1009,6 +1025,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 ...(conversationId === undefined ? {} : { conversationId }),
               },
               receipt.epoch,
+              assertClaim,
             );
             if (result.state === "admitted") {
               if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
@@ -1154,7 +1171,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     if (placement.enrolled) return;
     const source = snapshotId ? { kind: "snapshot" as const, ref: snapshotId } : { kind: "image" as const, ref: image };
     const scope = { actor, hostId, installationId: placement.docker_installation_id };
-    const machine = createDockerHostStore(sql, key).machine({ ...scope, canDispatch: context.canDispatch });
+    const { docker_actor_epoch: admittedEpoch } = job.outcome as { docker_actor_epoch: string };
+    const machine = createDockerHostStore(sql, key).machine({
+      ...scope,
+      canDispatch: async (tx, currentEpoch) => currentEpoch === admittedEpoch && context.canDispatch(tx),
+    });
     const incarnation = { sandboxId, generation, signal: context.signal };
     const observed = await machine.observe(incarnation);
     const targetMachine =
@@ -1181,7 +1202,24 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       [job.id],
     );
     const role = membership.rows[0]?.role;
-    if (!role || !(await context.canDispatch())) return { status: "fail" as const, reason: "docker_launch_inactive" };
+    const settleInactive = async () => {
+      if ((job.outcome as { docker_receipt?: string }).docker_receipt) return { status: "done" as const };
+      if (!context.signal.aborted && job.generation)
+        await withJobLease(sql, job, async (tx) => {
+          if (
+            await failDockerStartup(
+              tx,
+              request.requestId,
+              job.generation!,
+              "docker_startup_failed",
+              DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+            )
+          )
+            await cancelDockerLaunchMailbox(tx, request.requestId, job.generation!);
+        });
+      return { status: "fail" as const, reason: "docker_launch_inactive" };
+    };
+    if (!role || !(await context.canDispatch())) return settleInactive();
     const { image: _image, credentialId, credentialVersion, prompt, ...body } = request;
     try {
       const result = await continueRequest(manifest.correlationId, () =>
@@ -1210,12 +1248,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         ? { status: "done" as const }
         : { status: "retry" as const, after: new Date(Date.now() + 1000), unattempted: true as const };
     } catch {
+      if (!(await context.canDispatch())) return settleInactive();
       const retry = await sql.query(
         `select 1 from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$2
           and s.status in ('starting','ready','running') and s.stop_requested_at is null`,
         [job.sandbox_id, job.generation],
       );
-      return retry.rows.length && (await context.canDispatch())
+      return retry.rows.length
         ? { status: "retry" as const, after: new Date(Date.now() + 1000) }
         : { status: "fail" as const, reason: "docker_launch_failed" };
     }
