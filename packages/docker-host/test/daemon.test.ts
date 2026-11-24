@@ -2350,6 +2350,7 @@ test.each(["create", "bootstrap"] as const)(
     let polls = 0;
     const attempted: string[] = [];
     const completed: string[] = [];
+    let cleanupsBeforeStartup = 0;
     api.poll = async (_state, options) => {
       stopped = ++polls === queue.length + 1;
       expect(options?.running?.length).toBeLessThanOrEqual(16);
@@ -2368,6 +2369,7 @@ test.each(["create", "bootstrap"] as const)(
     executor.create = async () => {};
     executor.startRuntime = async () => {};
     api.result = async (_state, receipt) => {
+      cleanupsBeforeStartup = attempted.length;
       completed.push(receipt.requestId);
       settled.resolve();
     };
@@ -2386,6 +2388,7 @@ test.each(["create", "bootstrap"] as const)(
       now: () => 0,
     });
     expect(completed).toEqual([unrelated.requestId]);
+    expect(cleanupsBeforeStartup).toBe(16);
     expect(attempted.filter((id) => id === cleanups[0]?.request.sandboxId)).toHaveLength(2);
   },
 );
