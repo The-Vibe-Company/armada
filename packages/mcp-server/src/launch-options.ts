@@ -11,7 +11,7 @@ import {
 } from "@armada/core";
 import { capabilities } from "@armada/core/machine-capabilities";
 import type { ControlOptions } from "./control-options.ts";
-import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
+import { goldenRuntimePlacement, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
 /**
  * `POST /api/v1/launch/options`: what a launch may choose, read from the server's own catalogs so an API-only client
@@ -130,7 +130,9 @@ export function launchProviderOptions(
       id: "boat",
       enabled: true,
       launchSources: ["golden"],
-      harnesses: boatRuntime ? [...HARNESSES] : ["claude", "codex"],
+      harnesses: boatRuntime
+        ? HARNESSES.filter((harness) => runtimeHarnessSupported("boat", harness))
+        : ["claude", "codex"],
       capabilities: { ...supported, launch: boatRuntime },
       unsupportedReasons: boatRuntime ? {} : { launch: "Armada runtime launch is unavailable for Boat." },
     },
@@ -146,7 +148,7 @@ export function launchProviderOptions(
       id: "docker",
       enabled: hosts,
       launchSources: capabilities.goldens ? ["golden", "image"] : ["image"],
-      harnesses: ["codex", "claude", "opencode"],
+      harnesses: [...HARNESSES],
       capabilities,
       unsupportedReasons,
     },

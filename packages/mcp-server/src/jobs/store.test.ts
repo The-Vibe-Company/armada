@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
+import { HARNESSES } from "@armada/core";
 import { modalLaunchReceipt } from "@armada/core/contract";
-import { createSqlVaultStore, decryptSecret, encryptSecret, GoldenError, type Sql } from "@armada/core/server";
+import {
+  createSqlVaultStore,
+  decryptSecret,
+  encryptSecret,
+  GoldenError,
+  type Sql,
+  setCredential,
+} from "@armada/core/server";
 import {
   createModalProvider,
   createSqlModalStore,
@@ -10,6 +18,7 @@ import {
   scopeKey,
 } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
+import { fakeBoat } from "../../test/support.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
@@ -17,7 +26,9 @@ import { createQueuedSandboxDispatch } from "../control.ts";
 import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
+import { launchRoute } from "../launch-control.ts";
 import { launchCredentials } from "../launch-credentials.ts";
+import { createModalLaunchAdmission } from "../modal-launch-admission.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime-checkpoint.ts";
@@ -28,6 +39,7 @@ import { createRuntimeFollowup } from "../runtime-followup.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
+import { runtimeConfigurationWithVariables } from "../runtime-readable-variables.ts";
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
 import { extendSandbox } from "../sandbox-extend.ts";
@@ -1180,21 +1192,64 @@ type ModalLaunchStep =
 
 function modalTestArtifactManifest(digit: string) {
   return {
+    protocol: 1,
+    platform: "linux",
+    libc: "glibc",
+    architecture: "x64",
     runtime: { sha256: digit.repeat(64), bytes: 1 },
     harnesses: { codex: { archive: { sha256: digit.repeat(63) + "0", bytes: 2 } } },
   };
 }
 
-async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmissionFixture>>) {
+async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmissionFixture>>, account?: string) {
   const f = initial ?? (await fixture());
-  const id = initial
-    ? (
-        await admitModalLaunch(f.sql, launchEncryptionKey, {
-          ...initial.input,
-          sandbox: { ...initial.input.sandbox, credentialId: f.openaiCredentialId, credentialVersion: 1 },
-        })
-      ).sandbox.id
-    : await unboundModalSandbox(f);
+  const vault = createSqlVaultStore(f.sql);
+  const credentials = launchCredentials(vault, launchEncryptionKey);
+  const caller: Caller = { via: "service", userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }] };
+  const id = account
+    ? await (async () => {
+        const fail = () => {
+          throw Error("Launch must go through the Modal job");
+        };
+        const response = await launchRoute(
+          {
+            data: createSqlData(f.sql),
+            providerFor: fail,
+            store: vault,
+            encryptionKey: launchEncryptionKey,
+            admitModalLaunch: createModalLaunchAdmission(
+              f.sql,
+              {
+                policy: { start: fail },
+                provider: async () => ({ ...fakeBoat().provider, id: "modal", harnesses: HARNESSES }),
+                credentials,
+                connections: { async validate() {}, async bind() {} },
+              },
+              {},
+              (input) => admitModalLaunch(f.sql, launchEncryptionKey, input),
+            ),
+          },
+          caller,
+          {
+            provider: "modal",
+            golden: "modal-admission",
+            harness: "antigravity",
+            credentialId: account,
+            model: "default",
+            prompt: "Reply once",
+            org: f.people.org,
+          },
+        );
+        return modalLaunchReceipt.parse(response).sandbox.id;
+      })()
+    : initial
+      ? (
+          await admitModalLaunch(f.sql, launchEncryptionKey, {
+            ...initial.input,
+            sandbox: { ...initial.input.sandbox, credentialId: f.openaiCredentialId, credentialVersion: 1 },
+          })
+        ).sandbox.id
+      : await unboundModalSandbox(f);
   await f.db.query(
     `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
      values($1,'owner','user',$2,'test','ap-test','main')`,
@@ -1388,7 +1443,29 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
               },
             };
           },
-          async (target) => ({ ...(await prepareRuntimeTicket()), ...modalLaunchTicketGuard(target) }),
+          async (target) => ({
+            ...(await prepareRuntimeTicket()),
+            ...(account
+              ? await runtimeConfigurationWithVariables(
+                  jobsSql,
+                  {
+                    actor: { orgId: target.orgId, userId: target.ownerId, role: "member" },
+                    sandbox: target,
+                    credentials: await credentials.resolve(
+                      { orgId: target.orgId, userId: target.ownerId, role: "member" },
+                      target.harness,
+                      target.credentialId ?? undefined,
+                      target.credentialVersion ?? undefined,
+                    ),
+                    manifest: artifactManifest,
+                    architecture: "x64",
+                  },
+                  "modal",
+                  "modal_runtime_empty_v1",
+                )
+              : {}),
+            ...modalLaunchTicketGuard(target),
+          }),
         )
       : {
           concurrency: 1,
@@ -1525,6 +1602,40 @@ async function modalFirstTurnLane(
     modal: { launchCleanupJob: { concurrency: 1 } },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
+
+test("Modal launches Antigravity with a selected account confined to private enrolment", async () => {
+  const admission = await modalAdmissionFixture();
+  const vault = createSqlVaultStore(admission.sql);
+  const key = "fixture-private-gemini-value";
+  await setCredential(vault, launchEncryptionKey, admission.people.owner, {
+    scope: "user",
+    org: undefined,
+    kind: "antigravity",
+    value: key,
+  });
+  const account = (await vault.credentials("user", admission.people.owner)).find(({ kind }) => kind === "antigravity");
+  if (!account?.id) throw Error("Missing Antigravity account");
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission, account.id);
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(
+    (await f.db.query("select state,outcome from jobs where sandbox_id=$1 and kind='launch'", [id])).rows,
+  ).toMatchObject([{ state: "done" }]);
+  const { antigravityCredential, ...configuration } = activeRuntime().configuration as Record<string, unknown>;
+  expect(antigravityCredential).toEqual({ method: "gemini-api-key", apiKey: key });
+  expect(configuration.selectedHarness).toBe("antigravity");
+  const rows = (
+    await f.db.query(
+      "select s.harness,s.model,s.credential_id,j.payload_enc,j.outcome from sandboxes s join jobs j on j.sandbox_id=s.id where s.id=$1",
+      [id],
+    )
+  ).rows;
+  expect(rows).toContainEqual(
+    expect.objectContaining({ harness: "antigravity", model: "default", credential_id: account.id }),
+  );
+  expect(JSON.stringify([configuration, rows])).not.toContain(key);
+});
 
 test("JWT inventory keeps an enrolled Modal sandbox starting while launch setup is queued", async () => {
   const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());

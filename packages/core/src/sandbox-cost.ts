@@ -68,7 +68,7 @@ const PER_MILLION = 1_000_000;
  * independently of pricing completeness. Missing counters are never priced as zero.
  */
 export function turnCost(turn: TurnTokenUsage, harness: Harness): TurnCost {
-  const price = modelPrice(turn.model);
+  const price = harness === "antigravity" ? null : modelPrice(turn.model);
   const subset = harness === "codex";
   const cached = turn.cachedTokens;
   const cacheWrite = turn.cacheWriteTokens ?? null;

@@ -117,6 +117,7 @@ for await (const line of lines) {
           text = JSON.stringify({
             argv: process.argv.slice(2),
             key: process.env.GEMINI_API_KEY === "fixture-gemini-value",
+            region: process.env.APP_REGION,
             isolated: ![
               "GOOGLE_FIXTURE",
               "GCLOUD_PROJECT",

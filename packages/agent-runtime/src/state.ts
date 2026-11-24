@@ -339,9 +339,13 @@ export class HarnessState {
   }
   private async seal(identity?: CheckpointIdentity) {
     const manifest = await this.verifySaved();
+    await Promise.all(
+      ["antigravity", "antigravity-tmp"].map((name) => rm(join(this.root, name), { recursive: true, force: true })),
+    );
     const live = await Promise.all(HARNESSES.map((h) => this.exists(join(this.root, h))));
     if (!live.some(Boolean)) {
-      if (manifest && (identity === undefined || sameCheckpointIdentity(manifest.identity, identity))) return;
+      if (manifest && (identity === undefined || sameCheckpointIdentity(manifest.identity, identity)))
+        return this.syncDirectory(this.root);
       throw Error("checkpoint_state_ambiguous");
     }
     const stage = join(this.root, "session-state.next");

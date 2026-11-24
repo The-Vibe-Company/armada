@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Driver, HarnessState, Journal, Runner, type RunnerRequest } from "@armada/agent-runtime";
-import { createSqlSandboxStore, encryptSecret, type Sql } from "@armada/core/server";
+import { createSqlSandboxStore, encryptSecret, type Harness, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -65,7 +65,7 @@ export async function runtimeFixtureGolden(
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
   provider: "boat" | "modal" = "boat",
-  harness: "codex" | "claude" | "opencode" = "codex",
+  harness: Harness = "codex",
   idle = false,
   commandGrantExpiresAt?: number,
   placement?: { goldenId: string; providerSandboxId: string },
@@ -91,14 +91,21 @@ export async function runtimeFixture(
       people.org,
       await encryptSecret("offline-opencode-key", ENCRYPTION_KEY),
     ]);
+  if (harness === "antigravity")
+    await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'antigravity',$2)", [
+      people.org,
+      await encryptSecret('{"method":"gemini-api-key","apiKey":"fixture-gemini"}', ENCRYPTION_KEY),
+    ]);
   const defaults =
     harness === "opencode"
       ? { model: "opencode/fixture", reasoningEffort: "default" }
-      : { model: "gpt-5.4", reasoningEffort: "high" };
+      : harness === "antigravity"
+        ? { model: "default", reasoningEffort: "default" }
+        : { model: "gpt-5.4", reasoningEffort: "high" };
   const account = (
     await db.query<{ id: string; version: number }>(
       "select id,version from credentials where kind=$2::public.credential_kind and owner_id=$1",
-      [people.org, harness === "claude" ? "claude_oauth" : harness === "opencode" ? "opencode" : "openai"],
+      [people.org, harness === "claude" ? "claude_oauth" : harness === "codex" ? "openai" : harness],
     )
   ).rows[0]!;
   const goldenId = placement?.goldenId ?? (await runtimeFixtureGolden(db, people, provider));

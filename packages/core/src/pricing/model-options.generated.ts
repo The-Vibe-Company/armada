@@ -71,6 +71,28 @@ export const GENERATED_HARNESS_MODELS = {
       },
     ],
   },
+  antigravity: {
+    defaultModel: "default",
+    defaultReasoningEffort: "default",
+    reasoningEfforts: ["default"],
+    models: [
+      {
+        id: "default",
+        label: "Account default",
+        reasoningEfforts: ["default"],
+      },
+      {
+        id: "gemini-2.5-pro",
+        label: "Gemini 2.5 Pro (confirm on staging)",
+        reasoningEfforts: ["default"],
+      },
+      {
+        id: "gemini-2.5-flash",
+        label: "Gemini 2.5 Flash (confirm on staging)",
+        reasoningEfforts: ["default"],
+      },
+    ],
+  },
 } as const;
 export const MORPH_MODEL_IDS = ["morph-kimik31", "morph-dsv41flash", "morph-dsv41flash-1017"] as const;
 export const MORPH_ENDPOINTS = {

@@ -5,6 +5,7 @@ import {
   goldenForLaunch,
   LaunchError,
   launchSandbox,
+  requireRuntimeHarness,
   resolveModelChoice,
   resolveRepositoryDir,
   VaultError,
@@ -60,6 +61,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
     resolveModelChoice(args.harness, { model: args.model, reasoningEffort: args.reasoningEffort });
     const actor = await launchActor(context, args.golden, args.org);
     const chosen: GoldenRecord = await goldenForLaunch(data.goldens, actor, args.golden, args.provider);
+    requireRuntimeHarness(chosen.provider, args.harness);
     resolveRepositoryDir(chosen, args.repo);
     timing.checkpoint("admission");
     const request = {

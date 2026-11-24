@@ -1,4 +1,4 @@
-import { isSandboxProvider, mapHarnesses, type Provider, ProviderError } from "@armada/core";
+import { HARNESSES, isSandboxProvider, mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeBridgeProfiles, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
@@ -64,9 +64,7 @@ export function createRuntimeProvider(
   }));
   return {
     id: host.id,
-    harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
-      runtimeHarnessSupported(host.id, harness),
-    ),
+    harnesses: HARNESSES.filter((harness) => runtimeHarnessSupported(host.id, harness)),
     capabilities,
     ...(host.managementIdentity ? { managementIdentity: host.managementIdentity.bind(host) } : {}),
     ...(host.backendIdentity ? { backendIdentity: host.backendIdentity.bind(host) } : {}),

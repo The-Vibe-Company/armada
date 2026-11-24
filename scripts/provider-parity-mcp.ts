@@ -1,3 +1,4 @@
+import type { Harness } from "../packages/core/src/harnesses.ts";
 import type { AgentEvent, ToolCall } from "../packages/core/src/provider.ts";
 import type { EnvironmentDigestIo } from "./provider-parity-environment-digest.ts";
 
@@ -48,7 +49,7 @@ export async function prepareMcpProbe(
   template: { id: string; revision: number },
   binding: McpProbeBinding,
   io: EnvironmentDigestIo,
-  harness: "codex" | "claude" | "opencode",
+  harness: Harness,
 ) {
   if (!isMcpProbeBinding(binding)) fail("invalid_mcp_binding");
   const connectionId = binding.connectionId.toLowerCase();

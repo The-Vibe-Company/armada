@@ -1,7 +1,8 @@
 "use client";
 
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
-import { MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
+import { HARNESSES, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
+import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -543,14 +544,15 @@ function LaunchForm({
   loadingError,
 }: LaunchProps) {
   const id = useId();
+  const offeredHarnesses = (harnesses ?? HARNESSES).filter((id) => runtimeHarnessSupported(provider, id));
   const [harness, setHarness] = useState<Harness>(
-    harnesses?.includes("claude") ? "claude" : (harnesses?.[0] ?? "claude"),
+    offeredHarnesses.includes("claude") ? "claude" : (offeredHarnesses[0] ?? "claude"),
   );
   const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, harness).credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
   // Late discovery can rule out the initial snapshot agent. Preserve the form and its retry key.
   const boatOpenCodeDisabled = provider === "boat" && !boatOpenCodeAvailable;
-  const nextHarness = launchHarnessForSource(harness, harnesses, boatOpenCodeDisabled);
+  const nextHarness = launchHarnessForSource(harness, offeredHarnesses, boatOpenCodeDisabled);
   if (nextHarness !== harness) {
     setHarness(nextHarness);
     setCredential(initialLaunchSelection(accounts, catalog, nextHarness).credentialId);
@@ -667,7 +669,7 @@ function LaunchForm({
                   }}
                   accounts={accounts}
                   catalog={catalog}
-                  allowedHarnesses={harnesses}
+                  allowedHarnesses={offeredHarnesses}
                   boatOpenCodeDisabled={boatOpenCodeDisabled}
                   open={modelOpen}
                   onOpenChange={setModelOpen}

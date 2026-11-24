@@ -10,6 +10,7 @@ test.each([
     '{"tokens":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","account_id":"a"}}',
     "staging",
   ],
+  ["antigravity", "antigravity", '{"token":{"access_token":"fixture-access","refresh_token":"fixture-refresh"}}', ""],
 ])("native %s import publishes a named account without echoing secrets", async (harness, kind, value, org) => {
   const output: string[] = [];
   const requests: Request[] = [];
@@ -23,13 +24,27 @@ test.each([
     return Response.json({ account: { id: "account-id", kind, name: "Personal" } });
   }) as typeof fetch;
   expect(
-    await accountCommand(["import", harness, "--name", "Personal", ...(org ? ["--org", org] : [])], {
-      auth,
-      readFile: async () => {
-        throw Error("not used");
+    await accountCommand(
+      [
+        "import",
+        harness,
+        "--name",
+        "Personal",
+        ...(org ? ["--org", org] : []),
+        ...(harness === "antigravity" ? ["--file", "token.json"] : []),
+      ],
+      {
+        auth,
+        readFile: async (path) => {
+          expect(path).toBe("token.json");
+          return value;
+        },
+        readStdin: async () => {
+          if (harness === "antigravity") throw Error("Token import must use the file");
+          return value;
+        },
       },
-      readStdin: async () => value,
-    }),
+    ),
   ).toBe(0);
   expect(requests).toHaveLength(1);
   const request = requests[0];
@@ -40,7 +55,7 @@ test.each([
     ...(org ? { org } : {}),
     kind,
     name: "Personal",
-    value,
+    value: harness === "antigravity" ? JSON.stringify({ method: "google", token: JSON.parse(value).token }) : value,
   });
   expect(output.join("")).not.toContain(value);
   expect(output.join("")).not.toContain("synthetic-access");
@@ -79,4 +94,66 @@ test("incomplete native Codex authentication never reaches the Armada publicatio
     }),
   ).rejects.toThrow("no refresh token");
   expect(requests).toBe(0);
+});
+
+test("Antigravity account input never accepts credentials as arguments or echoes a malformed token file", async () => {
+  const auth = productionAuthIo({ out: () => {}, err: () => {} }, { ARMADA_TOKEN: "fixture-armada" });
+  auth.fetch = async () => {
+    throw Error("Unexpected credential request");
+  };
+  const fail = async () => {
+    throw Error("Unexpected credential read");
+  };
+  const key = "fixture-private-value";
+  for (const verb of ["add", "import"]) {
+    await expect(accountCommand([verb, "antigravity", key], { auth, readStdin: fail, readFile: fail })).rejects.toThrow(
+      `Run armada account ${verb}`,
+    );
+  }
+  const result = await accountCommand(["import", "antigravity", "--name", "Google", "--file", "token.json"], {
+    auth,
+    readStdin: fail,
+    readFile: async () => JSON.stringify({ token: { access_token: key } }),
+  }).catch((error: unknown) => String(error));
+  expect(result).toContain("Invalid Antigravity credential");
+  expect(result).not.toContain(key);
+});
+
+test("Antigravity account add publishes a key read from a private file", async () => {
+  const output: string[] = [];
+  const auth = productionAuthIo(
+    { out: (text) => output.push(text), err: (text) => output.push(text) },
+    {
+      ARMADA_URL: "https://armada.example",
+      ARMADA_TOKEN: "fixture-armada",
+    },
+  );
+  const apiKey = "fixture-gemini-key";
+  let posted = false;
+  auth.fetch = async (input, init) => {
+    const req = new Request(String(input), init);
+    expect(new URL(req.url).pathname).toBe("/api/v1/creds/accounts/set");
+    expect(await req.json()).toEqual({
+      scope: "user",
+      kind: "antigravity",
+      name: "Gemini",
+      value: JSON.stringify({ method: "gemini-api-key", apiKey }),
+    });
+    posted = true;
+    return Response.json({ ok: true });
+  };
+  expect(
+    await accountCommand(["add", "antigravity", "--name", "Gemini", "--file", "gemini.key"], {
+      auth,
+      readFile: async (path) => {
+        expect(path).toBe("gemini.key");
+        return apiKey;
+      },
+      readStdin: async () => {
+        throw Error("Must read the explicitly selected file");
+      },
+    }),
+  ).toBe(0);
+  expect(posted).toBe(true);
+  expect(output.join("")).not.toContain(apiKey);
 });

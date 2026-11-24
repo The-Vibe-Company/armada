@@ -14,7 +14,7 @@ export default sandboxOperation({
 List visible sandboxes after Armada login and server authorization.
 Status: starting, ready, running, stopping, stopped, failed or deleted.
 Deleted sandboxes are excluded by default; request --status deleted to include them.
---agent and --harness are aliases; use only one (claude, codex or opencode).
+--agent and --harness are aliases; use only one (${HARNESSES.join(" or ")}).
 --ref matches the external reference supplied at launch.
 --golden filters by snapshot UUID. --owner accepts a user UUID or me.
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.

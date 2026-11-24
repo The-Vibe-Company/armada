@@ -1,6 +1,6 @@
 "use client";
 
-import type { Harness } from "@armada/core";
+import { HARNESSES, type Harness } from "@armada/core";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
@@ -176,7 +176,7 @@ export function LaunchSentence({
       <LaunchChip label={summary} title="Model" warning={warning} open={open} onOpenChange={changeOpen}>
         <fieldset className="flex flex-wrap gap-1 border-b p-2 text-sm">
           <legend className="sr-only">Agent</legend>
-          {(["claude", "codex", "opencode"] as const).map((agent) => {
+          {HARNESSES.map((agent) => {
             const reason = launchHarnessBlocker(agent, allowedHarnesses, boatOpenCodeDisabled);
             return (
               <label

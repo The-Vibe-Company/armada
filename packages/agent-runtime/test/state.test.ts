@@ -156,17 +156,23 @@ test("checkpoint transcript copies mask embedded short application values and pr
   }
 });
 
-test("checkpoint leaves the Antigravity profile outside the saved native state", async () => {
+test("checkpoint discards the private Antigravity profile and scratch without retaining a transcript", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-state-"));
   const state = new HarnessState(root, createRedactor([]));
   try {
     await state.restore();
     const profile = join(root, "antigravity");
-    await mkdir(join(profile, "projects"), { recursive: true });
-    await writeFile(join(profile, "projects", "session.jsonl"), "{}\n");
-    await state.checkpoint();
-    await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readFile(join(profile, "projects", "session.jsonl"), "utf8")).toBe("{}\n");
+    const scratch = join(root, "antigravity-tmp");
+    const identity = { sandboxId: "private-antigravity", generation: "1" };
+    for (const phase of ["first", "replay"]) {
+      await mkdir(join(profile, "antigravity-acp"), { recursive: true });
+      await writeFile(join(profile, "antigravity-acp", "antigravity-oauth-token"), `fixture-${phase}-material`);
+      await mkdir(scratch);
+      await state.checkpoint(identity);
+      await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(profile)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

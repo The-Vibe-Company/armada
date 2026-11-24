@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { VERSION } from "@armada/core";
+import { HARNESSES, VERSION } from "@armada/core";
 import { run } from "../src/run.ts";
 
 for (const command of [
@@ -61,6 +61,15 @@ for (const command of [
     expect(await help("-h")).toBe(stdout);
     if (command === "--help") {
       expect(stdout.startsWith(`armada ${VERSION}: `)).toBe(true);
+    }
+    if (command === "new" || command === "--help") {
+      const launchAgentLists = [...stdout.matchAll(/^(?: +|Usage: )armada new .*?--agent ([\w|-]+)/gm)].map(
+        ([, agents]) => agents,
+      );
+      expect(launchAgentLists).toEqual([HARNESSES.join("|"), HARNESSES.join("|")]);
+    }
+    if (command === "ls") {
+      expect(stdout).toContain(`use only one (${HARNESSES.join(" or ")}).`);
     }
     expect(command === "--help" ? stdout.replace(`armada ${VERSION}: `, "armada VERSION: ") : stdout).toMatchSnapshot();
   });

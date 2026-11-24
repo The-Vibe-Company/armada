@@ -20,6 +20,7 @@ import {
   resolveSkillpackCredential,
   toHarnessCredentials,
 } from "@armada/core";
+import { antigravitySecrets, parseAntigravityValue } from "@armada/core/antigravity-credential";
 
 import { createUsagePricingContext, PrivateSkillError, VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
@@ -300,7 +301,9 @@ export async function exposedSecrets(
     for (const row of await reader.credentials(scope, owner)) {
       if (!SECRET_KINDS.includes(row.kind)) continue;
       const value = await decryptSecret(new Uint8Array(row.valueEnc), encryptionKey);
-      if (row.kind === "morph" && value.trimStart().startsWith("{")) {
+      if (row.kind === "antigravity") {
+        values.push(value, ...antigravitySecrets(parseAntigravityValue(value)));
+      } else if (row.kind === "morph" && value.trimStart().startsWith("{")) {
         try {
           const { apiKey } = JSON.parse(parseCredentialValue(row.kind, value));
           values.push(value, apiKey);

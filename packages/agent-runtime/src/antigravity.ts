@@ -87,6 +87,7 @@ export class AntigravityDriver implements Driver {
     root: string;
     cwd: string;
     credential: AntigravityCredential;
+    readableVariables?: Record<string, string>;
     journal: Pick<Journal, "registerApplicationSecrets">;
   }) {
     const { credential, root } = options;
@@ -130,6 +131,19 @@ export class AntigravityDriver implements Driver {
       authenticationRequiredLine: "Open the following link to authenticate the ACP server: ",
       modelSelection: "config-option",
     });
+    this.configureReadableVariables(options.readableVariables ?? {});
+  }
+
+  configureReadableVariables(variables: Record<string, string>) {
+    if (
+      Object.keys(variables).some(
+        (key) =>
+          /^(AGY_|GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_)/.test(key) ||
+          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER)$/.test(key),
+      )
+    )
+      throw Error("invalid_request");
+    this.acp.configureReadableVariables(variables);
   }
 
   start(context: DriverContext) {

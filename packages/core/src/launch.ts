@@ -1,5 +1,5 @@
 import { LAUNCH_CREDENTIAL_BINDING_GUIDANCE } from "./api-failure.ts";
-import { HARNESSES, type Harness } from "./contract.ts";
+import type { Harness } from "./contract.ts";
 import { type HarnessCredentials, redact } from "./credentials.ts";
 import type { GitHubStatus } from "./github.ts";
 import {
@@ -11,7 +11,7 @@ import {
   waitReady,
 } from "./golden.ts";
 import { GoldenError, type GoldenRepo, initCommand, pullCommand } from "./golden-config.ts";
-import { HARNESS_CAPABILITIES } from "./harnesses.ts";
+import { HARNESSES, isHarness, runtimeHarnessSupported } from "./harnesses.ts";
 import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { goldenLaunchPlacements } from "./launch-placement.ts";
@@ -269,6 +269,14 @@ function modalLaunchTiming(startedAt: number) {
   };
 }
 
+export function requireRuntimeHarness(provider: SandboxProviderId, harness: Harness) {
+  if (!runtimeHarnessSupported(provider, harness))
+    throw new LaunchError(
+      "invalid_request",
+      `Unknown agent '${harness}'. Use one of: ${HARNESSES.filter((id) => runtimeHarnessSupported(provider, id)).join(", ")}.`,
+    );
+}
+
 /** Validate a golden launch before resolving accounts or placement. */
 export function validateGoldenLaunchRequest(request: LaunchRequest): void {
   validateLaunchSkillPins(request.skills ?? []);
@@ -300,6 +308,7 @@ async function resolveGoldenLaunch(
   const golden = await goldenForLaunch(stores.goldens, actor, request.golden, request.provider);
   if (golden.visibility === "private" && golden.ownerId !== actor.userId)
     throw new GoldenError("not_found", `No golden named '${golden.name}'.`);
+  requireRuntimeHarness(golden.provider, request.harness);
   const launchPlacement = goldenLaunchPlacements[golden.provider];
   const defaultRuntime = !options.runtime && !options.boatRuntime ? launchPlacement.runtimeDefault(options) : undefined;
   if (defaultRuntime) {
@@ -312,23 +321,13 @@ async function resolveGoldenLaunch(
   const runtime = options.runtime ?? options.boatRuntime;
   if (!runtime) throw new LaunchError("invalid_request", "Runtime configuration is unavailable.");
   const harness = checkHarness(provider, request.harness);
-  if (
-    !["boat", "modal"].includes(provider.id) ||
-    (harness !== "codex" && harness !== "claude" && harness !== "opencode") ||
-    options.privateParent
-  )
-    throw new LaunchError(
-      "invalid_request",
-      "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
-    );
+  if (!["boat", "modal"].includes(provider.id) || options.privateParent)
+    throw new LaunchError("invalid_request", "The runtime supports ordinary Boat or Modal workers only.");
   if (!runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = validateGoldenLaunchPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
   const choice = resolveModelChoice(harness, request);
-  if (!HARNESS_CAPABILITIES[harness]?.reasoningEffort) {
-    throw new LaunchError("invalid_request", `${provider.id} cannot set a reasoning effort for ${harness}.`);
-  }
 
   request = {
     ...request,
@@ -866,7 +865,7 @@ function messageOf(error: unknown): string {
 
 function checkHarness(provider: Provider, harness: string): Harness {
   if (
-    !(HARNESSES as readonly string[]).includes(harness) ||
+    !isHarness(harness) ||
     (!(provider.harnesses as readonly string[]).includes(harness) &&
       !(provider.id === "boat" && harness === "opencode"))
   ) {
@@ -875,7 +874,7 @@ function checkHarness(provider: Provider, harness: string): Harness {
       `Unknown agent '${harness}'. Use one of: ${provider.harnesses.join(", ")}.`,
     );
   }
-  return harness as Harness;
+  return harness;
 }
 
 /** Check optional helper requirements against the golden's current snapshot. */

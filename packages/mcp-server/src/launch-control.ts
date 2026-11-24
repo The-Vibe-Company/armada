@@ -15,6 +15,7 @@ import {
   LaunchError,
   launchSandbox,
   type ModelChoice,
+  requireRuntimeHarness,
   resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
@@ -95,6 +96,7 @@ async function launchGolden(
   const data = options.data(caller);
   const actor = await launchActor(data, caller, name, body.org, options.store);
   const golden = await goldenForLaunch(data.goldens, actor, name, body.provider);
+  requireRuntimeHarness(golden.provider, harness);
   resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");

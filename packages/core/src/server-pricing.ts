@@ -94,7 +94,7 @@ export function priceTurn(
   cacheWriteTtl: "5m" | "30m" | "other" | null = null,
 ): PricedTurn {
   // Copy so neither a subsequent connection edit nor caller mutation changes this result's provenance.
-  const frozen = snapshot ? { ...snapshot, rates: { ...snapshot.rates } } : null;
+  const frozen = snapshot && harness !== "antigravity" ? { ...snapshot, rates: { ...snapshot.rates } } : null;
   const unknown = (reason: PricedTurn["unknown"]): PricedTurn => ({ usd: null, unknown: reason, snapshot: frozen });
   if (
     !frozen ||
@@ -157,7 +157,7 @@ export function createUsagePricingContext(input: {
 }): UsagePricingContext {
   const provider = input.harness === "claude" ? "anthropic" : "openai";
   const prices: Record<string, PriceSnapshot> = {};
-  if (!input.customEndpoint && input.harness !== "opencode") {
+  if (!input.customEndpoint && (input.harness === "claude" || input.harness === "codex")) {
     for (const key of Object.keys(catalog.snapshot.models)) {
       if (!key.startsWith(`${provider}/`)) continue;
       const model = key.slice(provider.length + 1);
@@ -166,7 +166,7 @@ export function createUsagePricingContext(input: {
     }
   }
   // Connection overrides are exact-model and tied to the admitted credential version.
-  if (input.credentialId && input.credentialVersion !== undefined) {
+  if (input.harness !== "antigravity" && input.credentialId && input.credentialVersion !== undefined) {
     for (const [model, rates] of Object.entries(input.modelPrices ?? {})) {
       const snapshot = resolvePrice({
         provider,

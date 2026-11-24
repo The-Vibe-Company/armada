@@ -12,11 +12,13 @@ import {
   isRecord as record,
   type SandboxRecord,
 } from "@armada/core";
+import { parseAntigravityCredential } from "@armada/core/antigravity-credential";
 import { VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { runtimeConfigurationFailure, runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
 
 const allowedCredentials = {
+  antigravity: new Set<string>(),
   claude: new Set(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_ENDPOINT_ENV]),
   opencode: new Set(["OPENCODE_API_KEY", OPENCODE_ENDPOINT_ENV]),
   codex: new Set(["OPENAI_API_KEY", CODEX_ENDPOINT_ENV, CODEX_AUTH_ENV, "ARMADA_SERVER_CODEX"]),
@@ -108,6 +110,7 @@ export async function runtimeConfiguration(
     const harnessArtifact = manifest.harnesses[sandbox.harness];
     if (
       sandbox.harness !== "opencode" &&
+      sandbox.harness !== "antigravity" &&
       (!record(harnessArtifact) || !Array.isArray(harnessArtifact.files) || !harnessArtifact.files.length)
     )
       throw Error();
@@ -137,6 +140,8 @@ export async function runtimeConfiguration(
       opencodeEnv.OPENCODE_API_KEY = credentials.env.OPENCODE_API_KEY;
       const endpoint = credentials.env[OPENCODE_ENDPOINT_ENV];
       if (endpoint) opencodeEnv[OPENCODE_ENDPOINT_ENV] = JSON.stringify(parseOpenCodeEndpoint(JSON.parse(endpoint)));
+    } else if (sandbox.harness === "antigravity") {
+      if (credentials.codexAuthJson) throw Error();
     } else if (credentials.codexAuthJson) {
       if (key || endpoint || !modelAuth) throw Error();
       const native = await modelAuth.state.read(actor, binding.credentialId, binding.credentialVersion, sandbox.id);
@@ -177,6 +182,9 @@ export async function runtimeConfiguration(
         // Retained sessions must not revive upstream defaults before current-epoch delivery.
         ...(emptyMcpRevision ? { mcp: { revision: emptyMcpRevision, servers: {} } } : {}),
         ...auth,
+        ...(sandbox.harness === "antigravity"
+          ? { antigravityCredential: parseAntigravityCredential(credentials.antigravityCredential) }
+          : {}),
       },
     };
   } catch {

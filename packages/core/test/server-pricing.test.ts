@@ -127,6 +127,14 @@ test("admission books freeze exact provider rates and basis without guessing cus
   });
   expect(opencode.prices).toEqual({});
   expect(opencode.basis).toBe("api_equivalent");
+  expect(
+    createUsagePricingContext({
+      harness: "antigravity",
+      credentialKind: "antigravity",
+      customEndpoint: false,
+    }).prices,
+  ).toEqual({});
+  expect(priceTurn(turn, "antigravity", override())).toEqual({ usd: null, unknown: "price", snapshot: null });
   const custom = createUsagePricingContext({
     harness: "codex",
     credentialKind: "openai",

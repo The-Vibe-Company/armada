@@ -11,12 +11,14 @@ const turn = (model: string | null, input: number | null, cached: number | null,
 });
 
 describe("model prices", () => {
-  test("public launch suggestions and Fable have prices; custom connection model IDs remain unpriced", () => {
-    const offered = Object.values(MODEL_CATALOG).flatMap((harness) => harness.models.map((model) => model.id));
-    for (const id of [...offered, "claude-fable-5-2"]) {
-      if (id.startsWith("armada/")) expect(modelPrice(id)).toBeNull();
-      else expect(modelPrice(id)).not.toBeNull();
+  test("public launch suggestions only have prices where rates are known", () => {
+    for (const [harness, { models }] of Object.entries(MODEL_CATALOG)) {
+      for (const { id } of models) {
+        if (harness === "antigravity" || id.startsWith("armada/")) expect(modelPrice(id)).toBeNull();
+        else expect(modelPrice(id)).not.toBeNull();
+      }
     }
+    expect(modelPrice("claude-fable-5-2")).not.toBeNull();
   });
 
   test("a context-window suffix or a dated snapshot resolves to the model; anything else is unknown", () => {
@@ -41,6 +43,10 @@ describe("cost", () => {
     const cost = turnCost(turn("gpt-6.1-sol", 1_000_000, 600_000, 100_000), "codex");
     expect(cost).toMatchObject({ inputTokens: 1_000_000, cachedTokens: 600_000 });
     expect(cost.usd).toBeCloseTo(0.8 + 0.06 + 1, 10);
+    expect(turnCost(turn("gpt-6.1-sol", 1_000_000, 600_000, 100_000), "antigravity")).toMatchObject({
+      unknown: "price",
+      usd: null,
+    });
   });
 
   test("an unknown model or a missing counter is unknown, never zero, and left out of the total", () => {

@@ -1,4 +1,10 @@
 import { accountIneligibility } from "./account-pool.ts";
+import {
+  type AntigravityCredential,
+  antigravitySecrets,
+  parseAntigravityCredential,
+  parseAntigravityValue,
+} from "./antigravity-credential.ts";
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
 import type { Harness, Visibility } from "./contract.ts";
@@ -30,6 +36,7 @@ export interface CredentialBinding {
 }
 
 export interface HarnessCredentials {
+  antigravityCredential?: AntigravityCredential;
   /** Server-only pricing metadata from the same sealed/bound account; never harness configuration. */
   modelPrices?: ModelPriceOverrides;
   morphModels?: readonly string[];
@@ -54,6 +61,8 @@ export interface HarnessCredentials {
 export function toHarnessCredentials(resolved: ResolvedCredentials, github?: GitHubAccess): HarnessCredentials {
   const env = { ...resolved.env };
   const secrets = Object.values(resolved.env);
+  const antigravityCredential = resolved.antigravityCredential;
+  if (antigravityCredential) secrets.push(...antigravitySecrets(antigravityCredential));
   const auth = resolved.files[0]?.content;
   if (auth !== undefined) {
     env[CODEX_AUTH_ENV] = auth;
@@ -63,6 +72,7 @@ export function toHarnessCredentials(resolved: ResolvedCredentials, github?: Git
     ...(resolved.binding ? { binding: resolved.binding } : {}),
     ...(resolved.modelPrices ? { modelPrices: resolved.modelPrices } : {}),
     ...(resolved.morphModels ? { morphModels: resolved.morphModels } : {}),
+    ...(antigravityCredential ? { antigravityCredential } : {}),
     env,
     secrets,
     codexAuthJson: auth !== undefined,
@@ -132,7 +142,16 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
     normalizeValue: (value) => JSON.stringify(modalPairJson(parseModalTokenPair(value))),
   },
   skillpack: { name: "skillpack", label: "Skillpack personal access token", singleton: true },
-  antigravity: { label: "Antigravity" },
+  antigravity: {
+    name: "antigravity",
+    label: "Antigravity",
+    normalizeValue: (value) =>
+      JSON.stringify(
+        value.startsWith("{")
+          ? parseAntigravityValue(value)
+          : parseAntigravityCredential({ method: "gemini-api-key", apiKey: value }),
+      ),
+  },
 };
 
 /**
@@ -433,6 +452,7 @@ async function findStoredCredential(
 }
 
 export interface ResolvedCredentials {
+  antigravityCredential?: AntigravityCredential;
   modelPrices?: ModelPriceOverrides;
   morphModels?: readonly string[];
   binding?: CredentialBinding;
@@ -618,6 +638,9 @@ function open(sealed: Uint8Array, encryptionKey: string | undefined): Promise<st
 
 function deliver(kind: CredentialKind, scope: CredentialScope, value: string, harness: Harness): ResolvedCredentials {
   const source = { kind, scope };
+  if (kind === "antigravity") {
+    return { antigravityCredential: parseAntigravityValue(value), env: {}, files: [], sources: [source] };
+  }
   if (kind === "morph") {
     const { apiKey, models } = parseMorphAccount(value);
     if (harness === "opencode") {

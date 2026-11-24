@@ -14,7 +14,7 @@ export type UnknownCodesExcluded = Assert<Equal<Extract<"arbitrary_failure", Fai
 
 const client = new Armada({ token: code });
 const boat = () => client.launch({ provider: "boat", golden: "worker", harness: "codex" });
-const modal = () => client.launch({ provider: "modal", golden: "worker", harness: "codex" });
+const modal = () => client.launch({ provider: "modal", golden: "worker", harness: "antigravity", model: "default" });
 const pinnedModal = () =>
   client.launch({
     provider: "modal",

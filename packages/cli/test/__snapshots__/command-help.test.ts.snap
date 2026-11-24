@@ -39,7 +39,7 @@ Usage:
   armada host ls [HOST] [--org UUID] [--json]
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
   armada host rm UUID [--org UUID]
-  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
+  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode|antigravity [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
   armada info --setup [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
   armada completion bash|zsh|fish           Print a shell completion script
@@ -56,7 +56,7 @@ Usage:
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
   armada snapshot show --build JOB_ID [--json]
   armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]
-  armada new <snapshot> --agent claude|codex|opencode ["prompt"] [--model <id>] [--reasoning-effort <level>]
+  armada new <snapshot> --agent claude|codex|opencode|antigravity ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
@@ -67,8 +67,8 @@ Usage:
                                            otherwise use your personal or organization default.
                                            --repo selects the agent's initial working directory, including when idle.
                                            Defaults:
-                                           claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default
-  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
+                                           claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default, antigravity default default
+  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
@@ -128,7 +128,7 @@ Example: armada api org/list
 `;
 
 exports[`armada new help preserves its output 1`] = `
-"Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
+"Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode|antigravity ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
 Find snapshots with armada snapshot ls; select an organization with --org or armada login --org NAME|UUID.
@@ -148,7 +148,7 @@ Boat/Modal options:
   --org <org> --json                     Organization selector and machine output.
 
 Docker form:
-  armada new [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
+  armada new [prompt] --provider docker --agent claude|codex|opencode|antigravity [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
     [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
@@ -156,8 +156,8 @@ Docker form:
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
 A snapshot cannot be combined with --repo.
-Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
-OpenCode is also supported on Modal and Docker.
+Boat supports Claude, Codex and OpenCode with the server runtime.
+Modal and Docker also support Antigravity.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
 Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
@@ -187,7 +187,7 @@ exports[`armada ls help preserves its output 1`] = `
 List visible sandboxes after Armada login and server authorization.
 Status: starting, ready, running, stopping, stopped, failed or deleted.
 Deleted sandboxes are excluded by default; request --status deleted to include them.
---agent and --harness are aliases; use only one (claude, codex or opencode).
+--agent and --harness are aliases; use only one (claude or codex or opencode or antigravity).
 --ref matches the external reference supplied at launch.
 --golden filters by snapshot UUID. --owner accepts a user UUID or me.
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
@@ -338,7 +338,7 @@ Manage model credentials, GitHub access or your personal Armada session.
   ls            List credential metadata.
   add           Store a credential kind.
   login codex|antigravity   Connect a model account in your browser.
-  import        Import native Claude or Codex credentials securely.
+  import        Import native Claude, Codex or Antigravity credentials securely.
   default       Select a default model account by ID.
   limits        Set an account or model concurrency cap.
   rm            Remove a named account by ID or a credential with --kind.
@@ -364,6 +364,7 @@ exports[`armada account import claude help preserves its output 1`] = `
 "Usage: armada account import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
 Import an existing native credential after Armada login; no native login is started.
 Claude: run claude setup-token locally. Codex: supply native auth JSON.
+Antigravity: pass --file with a Google token file from the native CLI.
 Read the credential from stdin/hidden input or a private --file, never command arguments.
 Use --name to create; replacement requires --id and a positive integer --expected-version.
 Set the account cap with --max-agents N or --unlimited.
@@ -376,6 +377,7 @@ Example: armada account import claude --name personal --file /private/native-cre
 exports[`armada account add help preserves its output 1`] = `
 "Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
 Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
+For a Gemini API key, use armada account add antigravity --name NAME [--file PATH].
 OpenAI custom endpoints also accept --api-version where supported.
 Official Azure addresses make a tiny billable request per deployment before storing the account.
 Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
