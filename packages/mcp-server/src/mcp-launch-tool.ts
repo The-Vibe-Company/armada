@@ -1,10 +1,8 @@
-import { HOST_CAPABILITIES, ProviderRoutingError } from "@armada/core";
-import { launch, launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
+import { ProviderRoutingError } from "@armada/core";
+import { launch, modalLaunchReceipt } from "@armada/core/contract";
 import {
   type GoldenRecord,
   goldenForLaunch,
-  LaunchError,
-  launchSandbox,
   requireRuntimeHarness,
   resolveModelChoice,
   resolveRepositoryDir,
@@ -13,8 +11,6 @@ import {
 import * as z from "zod";
 import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
-import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
-import { goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { observeGoldenLaunch } from "./request-timing.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolContext } from "./tools.ts";
@@ -32,24 +28,11 @@ const mcpLaunchArguments = z.looseObject({}).meta({
   }),
 });
 
-const launchOutput = z.union([modalLaunchReceipt, launchEnvelope]);
-const mcpLaunchOutput = z
-  .looseObject({})
-  .superRefine((value, ctx) => {
-    if (!launchOutput.safeParse(value).success) ctx.addIssue({ code: "custom", message: "Invalid launch receipt" });
-  })
-  .meta({
-    anyOf: launchOutput.options.map((variant) => {
-      const { $schema: _dialect, ...schema } = z.toJSONSchema(variant);
-      return schema;
-    }),
-  });
-
 export const mcpLaunchContract = {
   title: "Launch an agent",
   description: launch.mcpDescription,
   input: mcpLaunchArguments,
-  output: mcpLaunchOutput,
+  output: modalLaunchReceipt,
 };
 
 export function runMcpLaunch(context: ToolContext, input: unknown) {
@@ -84,99 +67,19 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
       ...(args.externalRef === undefined ? {} : { externalRef: args.externalRef }),
     };
     const payload = { ...args, goldenId: chosen.id };
-    if (HOST_CAPABILITIES[chosen.provider].goldenLaunchAdmission) {
-      if (!context.admitModalLaunch)
-        throw new ProviderRoutingError(
-          "provider_routing_unavailable",
-          chosen.provider,
-          "Modal launch admission is unavailable.",
-        );
-      return context.admitModalLaunch(
-        actor,
-        chosen,
-        { ...data, ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}) },
-        request,
-        args.idempotencyKey === undefined ? undefined : { request: { key: args.idempotencyKey, payload } },
+    if (!context.admitModalLaunch)
+      throw new ProviderRoutingError(
+        "provider_routing_unavailable",
+        chosen.provider,
+        "Golden launch admission is unavailable.",
       );
-    }
-    const prepare = async () => {
-      const account = await prepareGoldenLaunchAccount(
-        actor,
-        chosen,
-        args,
-        context.launchCredentials,
-        context.launch ?? {},
-      );
-      timing.checkpoint("account_resolution");
-      const provider = account.placement
-        ? await account.placement.provider(actor, chosen)
-        : await context.provider(chosen);
-      if (provider.id !== chosen.provider)
-        throw new ToolError("invalid", "Runtime placement must retain the golden provider.");
-      timing.checkpoint("provider_resolution");
-      return { ...account, provider };
-    };
-    let prepared: ReturnType<typeof prepare> | undefined;
-    const prepareOnce = () => (prepared ??= prepare());
-    const dispatch = async (receiptId?: string) => {
-      const { provider, credentials, options, placement } = await prepareOnce();
-      const connections = placement?.connections ?? context.connections;
-      timing.checkpoint("receipt_admission");
-      const result = await launchSandbox(
-        provider,
-        {
-          ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}),
-          goldens: data.goldens,
-          sandboxes: data.sandboxes,
-          credentials,
-          ...(connections ? { connections } : {}),
-        },
-        actor,
-        request,
-        { ...options, ...(receiptId ? { newId: () => receiptId } : {}) },
-      );
-      timing.checkpoint("shared_launcher");
-      timing.launched(result.sandbox);
-      return goldenLaunchResponse(result);
-    };
-    if (!context.ordinaryLaunchReceipts) {
-      if (args.idempotencyKey) throw new ToolError("invalid", "Durable launch receipts are not configured.");
-      return dispatch();
-    }
-    const receipts = context.ordinaryLaunchReceipts;
-    const key = args.idempotencyKey ?? crypto.randomUUID();
-    const saved = args.idempotencyKey ? await receipts.replay(actor, key, payload) : undefined;
-    const receipt = saved ? saved.response : await admit();
-    const envelope = launchEnvelope.safeParse(receipt);
-    if (!envelope.success)
-      throw new LaunchError(
-        "outcome_unknown",
-        "The saved launch receipt cannot be returned. Inspect the original sandbox through list. Do not use a new key.",
-      );
-    return publicLaunchReceipt(envelope.data);
-
-    async function admit() {
-      const { provider } = await prepareOnce();
-      const authority = {
-        target: {
-          provider: chosen.provider,
-          orgId: chosen.orgId,
-          visibility: chosen.visibility,
-          modal: chosen.modal,
-        },
-        management:
-          (await provider.managementIdentity?.()) ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin management authority.");
-          })(),
-        backendId:
-          (await provider.backendIdentity?.())?.id ??
-          (() => {
-            throw new ToolError("invalid", "Provider cannot pin allocation authority.");
-          })(),
-      };
-      return receipts.run(actor, key, payload, dispatch, authority);
-    }
+    return context.admitModalLaunch(
+      actor,
+      chosen,
+      { ...data, ...(context.skillDefaults ? { skillDefaults: context.skillDefaults } : {}) },
+      request,
+      args.idempotencyKey === undefined ? undefined : { request: { key: args.idempotencyKey, payload } },
+    );
   });
 }
 

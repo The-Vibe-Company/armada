@@ -94,6 +94,7 @@ import {
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 export interface ModalLaunchAdmission {
+  boat?: BoatAuthority;
   orgId: string;
   ownerId: string;
   request?: { key: string; payload: unknown };
@@ -112,6 +113,12 @@ export interface ModalLaunchAdmission {
   deadline: Date;
   maxAttempts: number;
 }
+
+export const boatAuthority = z.object({
+  scope: z.enum(["org", "user"]),
+  backendId: z.string().min(1),
+});
+export type BoatAuthority = z.infer<typeof boatAuthority>;
 
 type ArchivedLaunchReceipt =
   | { receipt: "accepted" | "unknown" }
@@ -145,6 +152,7 @@ export async function replayModalLaunch(
   actor: GoldenActor,
   goldenId: string,
   request: NonNullable<ModalLaunchAdmission["request"]>,
+  provider = "modal",
 ) {
   const { orgId, userId } = actor;
   const {
@@ -153,11 +161,11 @@ export async function replayModalLaunch(
     `select j.sandbox_id,${publicSandboxStatusSql} as status,s.golden_id,j.outcome,j.request_digest
      from public.jobs j
      join public.members m on m.org_id=j.org_id and m.user_id=j.request_owner_id
-     join public.goldens g on g.id=$4 and g.org_id=j.org_id and g.provider='modal' and g.removed_at is null
+     join public.goldens g on g.id=$4 and g.org_id=j.org_id and g.provider::text=$5 and g.removed_at is null
        and (g.visibility='org' or g.owner_id=j.request_owner_id)
      left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
      where j.idem_key=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
-    [jobRequestKey(orgId, "launch", userId, ordinaryModalKey(request.key)), orgId, userId, goldenId],
+    [jobRequestKey(orgId, "launch", userId, ordinaryModalKey(request.key)), orgId, userId, goldenId, provider],
   );
   if (!receipt) return;
   if (receipt.request_digest !== ordinaryLaunchFingerprint(request.payload))
@@ -205,6 +213,8 @@ export async function admitModalLaunch(
 ) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox: plannedSandbox, allocation, request, templateReceiptId, armadaAccess } = input;
+  const provider = input.boat ? "boat" : "modal";
+  if (input.boat && templateReceiptId) throw new Error("Boat template job admission is unavailable.");
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
@@ -257,10 +267,10 @@ export async function admitModalLaunch(
       }>(
         `select g.visibility, g.config, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
          from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
-         where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
+         where g.id=$1 and g.org_id=$2 and g.provider::text=$4 and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
          for update of g for share of m`,
-        [plannedSandbox.goldenId, orgId, ownerId],
+        [plannedSandbox.goldenId, orgId, ownerId, provider],
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
@@ -283,16 +293,17 @@ export async function admitModalLaunch(
         }
       }
       if (golden.provider_snapshot_id === snapshot)
-        await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
-      const sourceScope = scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal });
-      const {
-        rows: [image],
-      } = await tx.query<{ image_id: string }>(
-        `select record->>'imageId' as image_id from public.modal_images
-         where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
-           and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null`,
-        [sourceScope, snapshot],
-      );
+        await tx.query("select public.lock_golden_snapshot($1, $2)", [provider, snapshot]);
+      const image = input.boat
+        ? { image_id: snapshot }
+        : (
+            await tx.query<{ image_id: string }>(
+              `select record->>'imageId' as image_id from public.modal_images
+             where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
+               and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null`,
+              [scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal }), snapshot],
+            )
+          ).rows[0];
       const jobId = await store.enqueue(
         "launch",
         sandboxId,
@@ -305,7 +316,7 @@ export async function admitModalLaunch(
             source: { kind: "snapshot", ref: image?.image_id },
           },
           snapshot,
-          modal,
+          ...(input.boat ? { boat: input.boat } : { modal }),
         },
         {
           orgId,
@@ -329,8 +340,8 @@ export async function admitModalLaunch(
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
       const { rows: sealed } = await tx.query(
-        "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
-        [snapshot],
+        "select 1 from public.golden_snapshot_retirements where provider::text=$2 and old_snapshot=$1 and sealed",
+        [snapshot, provider],
       );
       if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
       if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
@@ -368,6 +379,7 @@ export async function admitModalLaunch(
           ownerId,
           generation,
           snapshot,
+          provider,
           visibility,
         },
         sandbox,
@@ -476,6 +488,7 @@ export function createModalInitialTurnJob(
         .query<{
           org_id: string;
           owner_id: string;
+          provider: "boat" | "modal";
           role: MemberRole;
           provider_sandbox_id: string;
           repository_dir: string | null;
@@ -484,14 +497,14 @@ export function createModalInitialTurnJob(
           epoch: string | null;
           accepted: boolean;
         }>(
-          `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.repository_dir, s.harness, launch.state, runtime.epoch::text as epoch,
+          `select s.org_id, s.owner_id, s.provider, m.role, s.provider_sandbox_id, s.repository_dir, s.harness, launch.state, runtime.epoch::text as epoch,
                 exists(select 1 from public.account_turn_queue q
                        where q.sandbox_id=s.id and q.request_id=intent.id
                          and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
                 ) as accepted
          from public.jobs intent
          join public.sandboxes s on s.id=intent.sandbox_id and s.lifecycle_generation=intent.generation
-           and s.org_id=intent.org_id and s.provider='modal'
+           and s.org_id=intent.org_id and (s.runtime_transport='dialout' or s.boat_runtime)
          join public.jobs launch on launch.sandbox_id=s.id and launch.generation=intent.generation
            and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id and launch.kind='launch'
            and launch.id=$2
@@ -525,7 +538,7 @@ export function createModalInitialTurnJob(
       };
       const endEnvironment = timePhase("environment");
       try {
-        await environment.deliver("modal", actor, sandboxId, epoch, context.signal, async (tx) => {
+        await environment.deliver(target.provider, actor, sandboxId, epoch, context.signal, async (tx) => {
           await assertClaim(tx);
           const { rows } = await tx.query(
             "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
@@ -576,7 +589,7 @@ export function createModalInitialTurnJob(
         actor.userId,
         {
           id: sandboxId,
-          provider: "modal",
+          provider: target.provider,
           harness: target.harness,
           repositoryDir: target.repository_dir,
           providerSandboxId: target.provider_sandbox_id,
@@ -602,7 +615,7 @@ export function createModalInitialTurnJob(
         const workspace = runtimeWorkspace(
           {
             actor,
-            host: { id: "modal" },
+            host: { id: target.provider },
             sandbox: { id: sandboxId, providerSandboxId: target.provider_sandbox_id },
             credentials: { secrets: [] },
             signal: context.signal,
@@ -756,20 +769,32 @@ type PrepareModalTicket = ModalMachineRuntime["resolveRuntimeTicket"];
 type ModalTicket = NonNullable<Awaited<ReturnType<PrepareModalTicket>>>;
 type IssueRuntimeTicket = Parameters<ReturnType<typeof createRuntimeEnrolments>["issue"]>[0];
 
-interface ModalLaunchPlan {
+interface ModalPlacementPlan {
   placement: ModalLaunchPlacement;
   computeExpiresAt: Date;
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
   canUseModalCredential(tx: Sql): Promise<boolean>;
+}
+type BoatLaunchPlan = {
+  boat: true;
+  allocation: ModalLaunchAllocation;
+  bindingRef: string;
+  machine(
+    ticket: (request: MachineIdentity, expiresAt: number) => Promise<ModalTicket | null>,
+    authorize: () => Promise<void>,
+  ): Machine;
+  canUseModalCredential(tx: Sql): Promise<boolean>;
+};
+type ModalLaunchPlan = (ModalPlacementPlan | BoatLaunchPlan) & {
   prepareRuntimeTicket(request: Parameters<PrepareModalTicket>[0]): Promise<
     Omit<ModalTicket, "enrolmentToken"> &
       Pick<IssueRuntimeTicket, "ownerId"> & {
         configuration: IssueRuntimeTicket["configuration"] & { grant: { expiresAt: number } };
       } & Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
   >;
-}
+};
 
 type OpenModalMachine = (
   app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
@@ -810,13 +835,16 @@ export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
   };
 }
 
-const launchPayload = z.object({
+const launchAllocation = z.object({
   allocation: z.object({
     source: z.object({ kind: z.literal("snapshot"), ref: z.string().min(1) }),
     size: z.enum(MACHINE_SIZES).nullable(),
     computeTtlSeconds: z.number().int().positive(),
   }),
   snapshot: z.string().min(1),
+});
+export const boatLaunchPayload = launchAllocation.extend({ boat: boatAuthority });
+const launchPayload = launchAllocation.extend({
   modal: z.object({ workspace: z.string().min(1), environment: z.string().min(1), appId: z.string().min(1) }),
 });
 
@@ -936,6 +964,7 @@ export async function runModalLaunch(
   job: Job,
   context: DispatchContext,
   preparePlan: () => ModalLaunchPlan | undefined | Promise<ModalLaunchPlan | undefined>,
+  provider = "modal",
 ) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
@@ -971,9 +1000,9 @@ export async function runModalLaunch(
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
        left join public.runtime_enrolments e on e.sandbox_id=s.id and e.lifecycle_generation=s.lifecycle_generation
          and s.provider_sandbox_id is not null
-       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+       where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status in ('starting','ready','running') and s.deleted_at is null`,
-      [sandboxId, job.id],
+      [sandboxId, job.id, provider],
     );
     return receipt;
   };
@@ -1009,9 +1038,9 @@ export async function runModalLaunch(
               s.stop_requested_at is not null as stop_requested
        from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id and j.generation=s.lifecycle_generation
-       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+       where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status='starting' and s.deleted_at is null`,
-      [sandboxId, job.id],
+      [sandboxId, job.id, provider],
     );
     return row;
   };
@@ -1045,8 +1074,10 @@ export async function runModalLaunch(
     ticketIssued: pending.ticket_issued,
     replayingTicket: Boolean(pending.check_after && pending.bootstrap_ticket_enc),
   };
+  const applyPlan = (plan: ModalLaunchPlan, resolve: Parameters<typeof dispatchModalLaunch>[5]) =>
+    dispatchModalLaunch(sql, job, context, plan, targetIncarnation, resolve);
   const dispatch = plan
-    ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation, handoff) => {
+    ? await applyPlan(plan, async (request, preparation, handoff, physicalExpiry) => {
         const { ownerId, configuration, lockPrerequisites, checkAccountPin, ...prepared } = preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
@@ -1061,7 +1092,7 @@ export async function runModalLaunch(
               await checkAccountPin(locked);
               const receipt = await readEnrolment(locked);
               if (!receipt?.check_after || !(await context.canDispatch(locked))) return false;
-              if (!receipt.handoff_staged)
+              if (provider === "modal" && !receipt.handoff_staged)
                 throw new ModalBootstrapRefused("Modal bootstrap replay lacks a prepared handoff.");
               const refreshed = await enrolments.refreshModalBootstrapManifest(
                 locked,
@@ -1077,8 +1108,8 @@ export async function runModalLaunch(
           });
           return current ? { ...prepared, enrolmentToken } : null;
         }
-        if (!handoff && !pending.handoff_staged) return null;
-        const commandGrantExpiresAt = plan.computeExpiresAt.getTime();
+        if (provider === "modal" && !handoff && !pending.handoff_staged) return null;
+        const commandGrantExpiresAt = physicalExpiry ?? ("boat" in plan ? NaN : plan.computeExpiresAt.getTime());
         if (!Number.isFinite(commandGrantExpiresAt) || commandGrantExpiresAt < configuration.grant.expiresAt)
           throw new Error("Modal compute deadline does not cover the initial runtime grant.");
         try {
@@ -1098,7 +1129,15 @@ export async function runModalLaunch(
             },
             async recordIssued(tx, enrolmentToken) {
               if (
-                !(await recordModalBootstrapTicket(tx, job, enrolmentToken, encryptionKey, request.machineId, handoff))
+                !(await recordModalBootstrapTicket(
+                  tx,
+                  job,
+                  enrolmentToken,
+                  encryptionKey,
+                  request.machineId,
+                  handoff,
+                  provider === "boat",
+                ))
               )
                 throw new ModalBootstrapRefused("Modal launch changed before handoff.");
             },
@@ -1146,7 +1185,10 @@ export async function runModalLaunch(
   if (
     (target.provider_sandbox_id && target.journaled_id && target.provider_sandbox_id !== target.journaled_id) ||
     (known && observed && known !== observed) ||
-    (!known && (target.has_intent ? !observed || observation?.receipt?.operation !== "create" : observed !== null))
+    (!known &&
+      (target.has_intent
+        ? !observed || observation?.kind !== "present" || observation.receipt?.operation !== "create"
+        : observed !== null))
   ) {
     return {
       status: "retry",
@@ -1182,7 +1224,11 @@ export async function runModalLaunch(
         sandboxId,
         generation,
         "modal-launch-failure",
-        { launchJobId: job.id, machineId: known ?? observed },
+        {
+          launchJobId: job.id,
+          machineId: known ?? observed,
+          ...(provider === "boat" ? { boat: boatLaunchPayload.parse(job.payload).boat } : {}),
+        },
         {
           orgId: target.org_id,
           deadline: new Date(Date.now() + DELETE_DISPATCH_BUDGET_MS),
@@ -1216,6 +1262,7 @@ async function dispatchModalLaunch(
     request: Parameters<PrepareModalTicket>[0],
     preparation: Awaited<ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>>,
     handoff: ModalLaunchHandoff | undefined,
+    physicalExpiry?: number,
   ) => ReturnType<PrepareModalTicket>,
 ) {
   const { signal, canDispatch } = context;
@@ -1232,11 +1279,11 @@ async function dispatchModalLaunch(
       `select s.provider_sandbox_id from public.sandboxes s
          join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-         where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+         where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
            and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
            and s.status='starting'
          for share of m`,
-      [sandboxId, job.id],
+      [sandboxId, job.id, "boat" in plan ? "boat" : "modal"],
     );
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx))) return row;
   };
@@ -1250,13 +1297,14 @@ async function dispatchModalLaunch(
   let recoveredAllocation = false;
   let ticketResolutionStarted = false;
   const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
-  const machine = createModalMachine({
-    ...plan.machine,
-    journal: createJobsStore(sql).modalLaunchJournal(
-      job,
-      async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
-    ),
-    async resolveRuntimeTicket(request) {
+  const journal = createJobsStore(sql).modalLaunchJournal(
+    job,
+    async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
+  );
+  const boat = "boat" in plan;
+  const modalTicket = {
+    async resolveRuntimeTicket(request: Parameters<PrepareModalTicket>[0]) {
+      if ("boat" in plan) throw new Error("Modal ticket preparation requires Modal placement.");
       ticketResolutionStarted = true;
       if (ticketIssued && !handoffStaged)
         throw new ModalBootstrapRefused("Modal bootstrap ticket lacks a prepared handoff.");
@@ -1291,7 +1339,20 @@ async function dispatchModalLaunch(
         throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
       return ticket;
     },
-  });
+  };
+  const machine = boat
+    ? plan.machine(
+        async (request, expiry) => {
+          ticketResolutionStarted = true;
+          if (awaitingEnrolment && !replayingTicket) return null;
+          const preparation = await plan.prepareRuntimeTicket({ ...request, bindingRef: plan.bindingRef });
+          return resolveRuntimeTicket({ ...request, bindingRef: plan.bindingRef }, preparation, undefined, expiry);
+        },
+        async () => {
+          if (!(await target())) throw new ModalBootstrapRefused("Boat launch dispatch is no longer authorized.");
+        },
+      )
+    : createModalMachine({ ...plan.machine, journal, ...modalTicket });
   const reconcile = async () => ({ kind: "reconcile", observation: await machine.observe(incarnation) }) as const;
 
   const current = reconciliationOnly ? undefined : await beforeProviderMutation(context, recovering, target);
@@ -1316,6 +1377,19 @@ async function dispatchModalLaunch(
     signal.throwIfAborted();
     if (observed?.kind === "present" && observed.receipt?.operation !== "create")
       return { kind: "dispatch_deferred" } as const;
+    if (boat && observed?.kind !== "present") {
+      const entry = await journal.read(plan.bindingRef);
+      if (
+        !entry &&
+        !(await journal.compareAndSet(plan.bindingRef, undefined, {
+          revision: 1,
+          operation: "create",
+          phase: "creating",
+          intent: plan.bindingRef,
+        }))
+      )
+        return deferred;
+    }
     allocated =
       observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
@@ -1323,9 +1397,12 @@ async function dispatchModalLaunch(
     const bound = await beforeProviderMutation(context, observed?.kind === "present", () =>
       withJobLease(sql, job, async (tx) => {
         if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
-        if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
+        if (
+          (boat || observed?.kind === "present") &&
+          !(await adoptObservedModalAllocation(tx, job, allocated.machineId))
+        )
           return false;
-        return bindModalLaunchMachine(tx, allocated);
+        return bindModalLaunchMachine(tx, allocated, boat ? "boat" : "modal");
       }),
     );
     if (bound === "deferred") return deferred;
@@ -1405,11 +1482,12 @@ export function createModalLaunchCleanupJob(sql: Sql, openMachine: OpenModalMach
   } satisfies JobKind;
 }
 
-async function runFailedModalLaunchDelete(
+export async function runFailedModalLaunchDelete(
   sql: Sql,
   job: Job,
   context: DispatchContext,
-  prepareMachine: () => Promise<ModalMachineRuntime>,
+  prepareMachine: (() => Promise<ModalMachineRuntime>) | undefined,
+  openBoat?: (authorize: () => Promise<void>) => Promise<Machine>,
 ) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
@@ -1439,7 +1517,7 @@ async function runFailedModalLaunchDelete(
        join public.jobs launch on launch.id=$3 and launch.kind='launch' and launch.state='failed'
          and launch.sandbox_id=s.id and launch.generation=s.lifecycle_generation
          and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id
-       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+       where s.id=$1 and s.provider::text=$6 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status='failed' and s.deleted_at is null and s.stop_requested_at is null
          and launch.outcome->>'reason'=$5
          and (s.provider_sandbox_id is null or s.provider_sandbox_id=$4)
@@ -1449,7 +1527,7 @@ async function runFailedModalLaunchDelete(
              and (launch.outcome #>> '{evidence,modal_machine,entry,machineId}'=$4
                or (launch.outcome #>> '{evidence,modal_machine,entry,phase}'='creating' and $4 is not null)))
          )`,
-      [sandboxId, job.id, launchJobId, machineId, MODAL_LAUNCH_FAILURE],
+      [sandboxId, job.id, launchJobId, machineId, MODAL_LAUNCH_FAILURE, openBoat ? "boat" : "modal"],
     );
     return rows[0];
   };
@@ -1460,7 +1538,7 @@ async function runFailedModalLaunchDelete(
   context.signal.throwIfAborted();
   const confirmed = {
     status: "done",
-    commit: (tx) => recordFailedModalLaunchExit(tx, sandboxId, generation),
+    commit: (tx) => recordFailedModalLaunchExit(tx, sandboxId, generation, openBoat ? "boat" : "modal"),
   } satisfies JobResult;
   if (machineId === null || current.deleted) return confirmed;
 
@@ -1468,6 +1546,18 @@ async function runFailedModalLaunchDelete(
   const mayDispatch = () => withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
   const dispatchRevoked = new Error("Modal cleanup dispatch is no longer authorized.");
   const unconfirmed = { status: "fail", reason: "modal_launch_cleanup_unconfirmed" } satisfies JobResult;
+  const target = { sandboxId, generation, machineId, signal: context.signal };
+  if (openBoat) {
+    const machine = await openBoat(async () => {
+      if (!(await mayDispatch())) throw dispatchRevoked;
+    });
+    const observed = await machine.observe(target);
+    if (observed.kind === "absent" || (observed.kind === "present" && observed.phase === "stopped")) return confirmed;
+    if (!(await mayDispatch())) return unconfirmed;
+    await machine.delete({ ...target, scope: "physical-only" });
+    return confirmed;
+  }
+  if (!prepareMachine) throw new Error("Launch cleanup has no Machine placement.");
   let options: ModalMachineRuntime;
   try {
     options = await prepareMachine();
@@ -1489,7 +1579,6 @@ async function runFailedModalLaunchDelete(
     },
     journal: createJobsStore(sql).modalFailedLaunchJournal(job, launchJobId, isCurrent, context.canDispatch),
   });
-  const target = { sandboxId, generation, machineId, signal: context.signal };
   const dispatch = await mayDispatch();
   context.signal.throwIfAborted();
   if (dispatch) {

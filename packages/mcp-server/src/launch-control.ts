@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Harness, HOST_CAPABILITIES, launchFailureHelp, type VaultStore } from "@armada/core";
+import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
 import {
   controlRouteKey,
   type LaunchInput,
@@ -13,10 +13,8 @@ import {
   type GoldenRecord,
   goldenForLaunch,
   LaunchError,
-  launchSandbox,
   type ModelChoice,
   requireRuntimeHarness,
-  resolveBoatKey,
   resolveModelChoice,
   resolveOrg,
   resolveRepositoryDir,
@@ -31,11 +29,9 @@ import { UUID } from "./control-input.ts";
 import type { ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { providerForGolden } from "./golden-control.ts";
-import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
-import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
-import { withBoatManagementIdentity } from "./observed-boat.ts";
+import { canonicalLaunchResponse } from "./launch-response-schemas.ts";
 import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
 import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
@@ -44,8 +40,6 @@ import { ToolApiError } from "./tool-api.ts";
 
 type LaunchControlOptions = Pick<
   ControlOptions,
-  | "boatRuntimeLaunch"
-  | "runtimeHostFor"
   | "data"
   | "providerFor"
   | "providers"
@@ -60,7 +54,6 @@ type LaunchControlOptions = Pick<
   | "launch"
   | "dockerLaunch"
   | "admitModalLaunch"
-  | "ordinaryLaunchReceipts"
 >;
 
 type GoldenLaunchRequest = Extract<LaunchInput, { golden: string }>;
@@ -82,12 +75,7 @@ async function launchGolden(
   timing: GoldenLaunchTiming,
 ) {
   const modalRuntime = runtime === "modal";
-  const runtimePolicy = runtime === true ? options.boatRuntimeLaunch : undefined;
-  const runtimeHost = runtime === true ? options.runtimeHostFor : undefined;
-  if (runtime === true && (!runtimePolicy || !runtimeHost))
-    throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
-  if (!options.data || !options.providerFor)
-    throw new VaultError("unavailable", "Launching is not configured on this server.");
+  if (!options.data) throw new VaultError("unavailable", "Launching is not configured on this server.");
   const { connections, idempotencyKey, golden: name, repo, harness, credentialId } = body;
   const maxActiveChildren = typeof body.armadaAccess === "object" ? body.armadaAccess.maxActiveChildren : undefined;
   const armadaAccess = body.armadaAccess ? (maxActiveChildren === undefined ? {} : { maxActiveChildren }) : undefined;
@@ -125,126 +113,17 @@ async function launchGolden(
   };
   const payload = controlLaunchReceiptPayload(body, golden.id, runtime);
   timing.checkpoint("admission");
-  if (HOST_CAPABILITIES[golden.provider].goldenLaunchAdmission) {
-    if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
-    const receipt = await options.admitModalLaunch(
-      actor,
-      golden,
-      { ...data, ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}) },
-      launchRequest,
-      {
-        ...(idempotencyKey === undefined ? {} : { request: { key: idempotencyKey, payload } }),
-        ...(armadaAccess ? { armadaAccess } : {}),
-      },
-    );
-    return receipt;
-  }
-  if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
-    throw new VaultError("unavailable", "Durable launch receipts are not configured; idempotencyKey is refused.");
-  const target = armadaAccess
-    ? { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility }
-    : golden;
-  const launchOptions: import("@armada/core").LaunchOptions = {
-    ...options.launch,
-    ...(runtimePolicy ? { runtime: runtimePolicy } : {}),
-  };
-  const credentials = launchCredentials(
-    options.store,
-    options.encryptionKey,
-    runtime || !options.github
-      ? undefined
-      : {
-          store: options.store,
-          app: options.github.app,
-          ...(options.github?.fetch ? { fetch: options.github.fetch } : {}),
-          ...(options.github?.now ? { now: options.github.now } : {}),
-        },
-    options.modelAuth,
-    runtime && options.github ? { ...options.github, store: options.store } : undefined,
+  if (!options.admitModalLaunch) throw new VaultError("unavailable", "Golden launch admission is unavailable.");
+  return options.admitModalLaunch(
+    actor,
+    golden,
+    { ...data, ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}) },
+    launchRequest,
+    {
+      ...(idempotencyKey === undefined ? {} : { request: { key: idempotencyKey, payload } }),
+      ...(armadaAccess ? { armadaAccess } : {}),
+    },
   );
-  const prepare = async () => {
-    const account = await prepareGoldenLaunchAccount(
-      actor,
-      golden,
-      { harness, credentialId },
-      credentials,
-      launchOptions,
-    );
-    timing.checkpoint("account_resolution");
-    const provider = account.placement
-      ? await account.placement.provider(actor, target)
-      : runtimeHost
-        ? await resolveBoatKey(options.store, options.encryptionKey, {
-            userId: caller.userId,
-            orgId: actor.orgId,
-            visibility: golden.visibility,
-          }).then(({ key, scope }) =>
-            withBoatManagementIdentity(runtimeHost(key), scope, scope === "org" ? actor.orgId : caller.userId),
-          )
-        : await providerForGolden(options, caller, target);
-    if (provider.id !== golden.provider)
-      throw new LaunchError("invalid_request", "Runtime placement must retain the golden provider.");
-    timing.checkpoint("provider_resolution");
-    return { ...account, provider };
-  };
-  let prepared: ReturnType<typeof prepare> | undefined;
-  const prepareOnce = () => (prepared ??= prepare());
-  // The receipt id becomes the sandbox id, so a retried key answers with the same sandbox.
-  const dispatch = async (receiptId?: string) => {
-    const account = await prepareOnce();
-    const connectionLifecycle = account.placement?.connections ?? options.runtimeMcp?.connections;
-    timing.checkpoint("receipt_admission");
-    const result = await launchSandbox(
-      account.provider,
-      {
-        ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
-        goldens: data.goldens,
-        sandboxes: data.sandboxes,
-        ...(connectionLifecycle ? { connections: connectionLifecycle } : {}),
-        credentials: account.credentials,
-      },
-      actor,
-      launchRequest,
-      {
-        ...account.options,
-        ...(receiptId ? { newId: () => receiptId } : {}),
-        ...(armadaAccess
-          ? {
-              privateVisibility: true as const,
-              beforeStart: async (provider, sandbox, enrolled) => {
-                await options.launch?.beforeStart?.(provider, sandbox, enrolled);
-                await options.sandboxArmadaAccess?.prepare(provider, sandbox, actor, armadaAccess, enrolled);
-              },
-            }
-          : {}),
-      },
-    );
-    timing.checkpoint("shared_launcher");
-    timing.launched(result.sandbox);
-    return {
-      ...goldenLaunchResponse(result),
-      ...(armadaAccess
-        ? { armadaAccess: { enabled: true as const, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
-        : {}),
-    };
-  };
-  if (idempotencyKey === undefined) return dispatch();
-  const receipts = options.ordinaryLaunchReceipts!;
-  const saved = await receipts.replay<Awaited<ReturnType<typeof dispatch>>>(actor, idempotencyKey, payload);
-  if (saved) return publicLaunchReceipt(saved.response);
-  const { provider } = await prepareOnce();
-  const management = await provider.managementIdentity?.();
-  const backendId = (await provider.backendIdentity?.())?.id;
-  if (!management || !backendId)
-    throw new VaultError("unavailable", "This launch path cannot pin allocation authority; idempotencyKey is refused.");
-  const authority = {
-    target: { provider: target.provider, orgId: target.orgId, visibility: target.visibility, modal: target.modal },
-    management,
-    backendId,
-  };
-  // Same key and same request replays the recorded answer; a different request under the key is refused.
-  const receipt = await receipts.run(actor, idempotencyKey, payload, dispatch, authority);
-  return publicLaunchReceipt(receipt);
 }
 
 export async function launchActor(
@@ -473,8 +352,6 @@ export const launchRoutes = defineRoutes("launch", {
           throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
         return launchRoute(options, caller, launch, "modal");
       }
-      if (!options.boatRuntimeLaunch || !options.runtimeHostFor)
-        throw new VaultError("unavailable", "Experimental Boat runtime launch is not configured.");
       return launchRoute(options, caller, launch, true);
     }
     return launchRoute(options, caller, launch);

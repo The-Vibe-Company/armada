@@ -126,6 +126,7 @@ export async function recordModalBootstrapTicket(
   encryptionKey: string,
   machineId: string,
   handoff: ModalLaunchHandoff | undefined,
+  boat = false,
 ) {
   const sealed = await encryptSecret(token, encryptionKey);
   const { rows } = await tx.query(
@@ -135,7 +136,7 @@ export async function recordModalBootstrapTicket(
      where id=$1 and lease_epoch=$4 and lease_until>clock_timestamp()
        and outcome #>> '{modal_machine,entry,machineId}'=$5
        and (outcome->'modal_handoff' is not null
-         or ($3::jsonb is not null and outcome->'bootstrap_ticket_enc' is null))
+         or (($3::jsonb is not null or $6::boolean) and outcome->'bootstrap_ticket_enc' is null))
      returning id`,
     [
       job.id,
@@ -143,6 +144,7 @@ export async function recordModalBootstrapTicket(
       handoff ? JSON.stringify(handoff) : null,
       job.lease_epoch,
       machineId,
+      boat,
     ],
   );
   return rows.length === 1;

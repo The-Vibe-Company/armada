@@ -54,17 +54,18 @@ export async function insertStartingModalSandbox(
     generation: number;
     visibility: "org" | "private";
     snapshot: string;
+    provider?: "boat" | "modal";
   },
   sandbox: ModalLaunchSandbox,
 ) {
-  const { sandboxId, orgId, ownerId, generation, visibility, snapshot } = target;
+  const { sandboxId, orgId, ownerId, generation, visibility, snapshot, provider = "modal" } = target;
   await tx.query(
     `insert into public.sandboxes
        (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
         visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
-        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged, machine_size, resource_project)
-     values ($1,$2,$3,$3,$4,'modal','starting','dialout',$5,$6,$7,$8,$9,$10,$11,$12,
-             now()+$12::integer*interval '1 second',$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb)`,
+        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged, machine_size, resource_project, boat_runtime)
+     values ($1,$2,$3,$3,$4,$19::public.sandbox_provider,'starting',case when $19::public.sandbox_provider='modal' then 'dialout' end,$5,$6,$7,$8,$9,$10,$11,$12,
+             now()+$12::integer*interval '1 second',$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb,$19::public.sandbox_provider='boat')`,
     [
       sandboxId,
       orgId,
@@ -84,6 +85,7 @@ export async function insertStartingModalSandbox(
       sandbox.stopWhenWorkMerged ?? true,
       JSON.stringify(sandbox.machineSize),
       sandbox.resourceProject ? JSON.stringify(sandbox.resourceProject) : null,
+      provider,
     ],
   );
   await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
@@ -101,13 +103,15 @@ export async function taintStartingModalSandbox(tx: Sql, sandboxId: string, gene
   if (!rows.length) throw new Error("Modal launch exposure restrictions could not be applied.");
 }
 
-export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
+export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity, provider = "modal") {
   const { rows } = await tx.query(
-    `update public.sandboxes set provider_sandbox_id=$3
-     where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'
+    `update public.sandboxes set provider_sandbox_id=$3,
+         boat_id=case when provider='boat' then $3 else boat_id end
+     where id=$1 and lifecycle_generation=$2 and provider::text=$4
+       and (runtime_transport='dialout' or boat_runtime)
        and status='starting' and stop_requested_at is null and deleted_at is null
        and provider_sandbox_id is null returning id`,
-    [machine.sandboxId, machine.generation, machine.machineId],
+    [machine.sandboxId, machine.generation, machine.machineId, provider],
   );
   return rows.length === 1;
 }
@@ -376,6 +380,13 @@ export async function publishRuntimeReadiness(
            and j.bound_operation='create' and j.outcome='completed'
          )))
          or launch.id is not null
+         or (s.provider='boat' and s.boat_runtime and not $2::boolean and exists(
+           select 1 from public.jobs j where j.kind='launch' and j.sandbox_id=s.id
+             and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+             and j.generation=s.lifecycle_generation and j.state in ('queued','leased')
+             and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
+             and j.outcome->>'bootstrap_ticket_enc' is not null
+         ))
        )`,
     [sandboxId, enrolment === "retained", generation],
   );
@@ -595,13 +606,13 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
   });
 }
 
-export async function recordFailedModalLaunchExit(tx: Sql, sandboxId: string, generation: number) {
+export async function recordFailedModalLaunchExit(tx: Sql, sandboxId: string, generation: number, provider = "modal") {
   const { rows } = await tx.query(
     `update public.sandboxes set stopped_at=coalesce(stopped_at, clock_timestamp())
-     where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'
+     where id=$1 and lifecycle_generation=$2 and provider::text=$4 and (runtime_transport='dialout' or boat_runtime)
        and status='failed' and status_reason=$3 and deleted_at is null and stop_requested_at is null
      returning id`,
-    [sandboxId, generation, MODAL_LAUNCH_FAILURE],
+    [sandboxId, generation, MODAL_LAUNCH_FAILURE, provider],
   );
   if (!rows.length) throw new Error("Failed Modal launch exit target changed.");
 }
@@ -678,9 +689,9 @@ export async function requestStartingModalStop(
   sandbox: SandboxRecord,
   signal?: AbortSignal,
 ) {
-  const { id: sandboxId, lifecycleGeneration: generation, status, modalTransport } = sandbox;
+  const { id: sandboxId, lifecycleGeneration: generation, status, modalTransport, boatRuntime } = sandbox;
   if (
-    modalTransport !== "dialout" ||
+    (modalTransport !== "dialout" && !boatRuntime) ||
     generation === undefined ||
     (status !== "starting" && !isFailedModalLaunch(sandbox))
   )
@@ -695,8 +706,8 @@ export async function requestStartingModalStop(
        from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
        join public.jobs j on j.sandbox_id=s.id and j.generation=$4 and j.kind='launch' and j.payload_enc is not null
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
-       where s.id=$3 and s.org_id=any($1::uuid[]) and s.provider='modal'
-         and s.runtime_transport='dialout' for share of m`,
+       where s.id=$3 and s.org_id=any($1::uuid[])
+         and (s.runtime_transport='dialout' or s.boat_runtime) for share of m`,
       params,
     );
     if (!launch) return null;

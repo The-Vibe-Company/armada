@@ -456,6 +456,75 @@ async function modalAdmissionFixture(visibility: "org" | "private" = "private") 
   return { ...f, input };
 }
 
+test("a replacement Boat launch worker adopts an allocation after a lost reply", async () => {
+  const { db, sql, input, people } = await modalAdmissionFixture();
+  const golden = (
+    await db.query<{ id: string; provider_snapshot_id: string }>(
+      "select id,provider_snapshot_id from goldens where owner_id=$1 and provider='boat'",
+      [people.owner],
+    )
+  ).rows[0]!;
+  const {
+    sandbox: { id: sandboxId },
+  } = await admitModalLaunch(sql, launchEncryptionKey, {
+    ...input,
+    boat: { scope: "user", backendId: "account" },
+    sandbox: { ...input.sandbox, goldenId: golden.id },
+    allocation: { ...input.allocation, source: { kind: "snapshot", ref: golden.provider_snapshot_id } },
+  });
+  const jobs = createJobsStore(sql, launchEncryptionKey);
+  const enrolments = createRuntimeEnrolments(sql, launchEncryptionKey);
+  const machine = { sandboxId, generation: 1, machineId: "boat-worker" };
+  const unsupported = async () => {
+    throw Error("Unexpected lifecycle operation");
+  };
+  let allocations = 0;
+  async function run() {
+    const owner = crypto.randomUUID();
+    const job = (await jobs.claim("launch", owner, 30, 1))!;
+    const context = { signal: new AbortController().signal, canDispatch: async () => true };
+    const plan = () => ({
+      boat: true as const,
+      bindingRef: job.id,
+      allocation: { ...input.allocation, size: null },
+      canUseModalCredential: async () => true,
+      prepareRuntimeTicket: async () => ({
+        ownerId: people.owner,
+        configuration: { grant: { expiresAt: 1 } },
+        serverUrl: "https://armada.test",
+        artifact: { sha256: "", bytes: 1 },
+        cacheDir: "/fixture",
+        lockPrerequisites: async () => {},
+        checkAccountPin: async () => {},
+      }),
+      machine: (ticket: (request: typeof machine, expiry: number) => Promise<{ enrolmentToken: string } | null>) => ({
+        async create() {
+          allocations++;
+          throw Error("Lost Boat create reply.");
+        },
+        async observe() {
+          return { kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const;
+        },
+        async bootstrap(request: typeof machine) {
+          const configuration = await ticket(request, Date.now() + 3_600_000);
+          if (configuration) await enrolments.enrol(configuration.enrolmentToken);
+        },
+        resume: unsupported,
+        stop: unsupported,
+        delete: unsupported,
+      }),
+    });
+    await jobs.complete(job, owner, await runModalLaunch(sql, launchEncryptionKey, job, context, plan, "boat"));
+  }
+  await expect(run()).rejects.toThrow("Lost Boat create reply.");
+  await db.query("update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1", [sandboxId]);
+  await run();
+  expect((await db.query("select status,provider_sandbox_id from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { status: "ready", provider_sandbox_id: machine.machineId },
+  ]);
+  expect(allocations).toBe(1);
+});
+
 test("Modal backfill preserves accepted, refused and unresolved ordinary keys without scheduling work", async () => {
   const { db, sql, input, store } = await modalAdmissionFixture();
   const { request: _request, ...unkeyed } = input;

@@ -30,7 +30,7 @@ export function createModalLaunchAdmission(
 ) {
   const launch: AdmitModalLaunch = async (actor, golden, stores, request, admission) => {
     if (admission?.request) {
-      const receipt = await replayModalLaunch(sql, actor, golden.id, admission.request);
+      const receipt = await replayModalLaunch(sql, actor, golden.id, admission.request, golden.provider);
       if (receipt) return receipt;
     }
     const provider = await placement.provider(actor, golden);
@@ -89,7 +89,12 @@ export function createModalLaunchAdmission(
     const binding = requireLaunchAccountBinding(plan.credentials.binding);
     const project = plan.resourceProject;
     checkpointGoldenLaunch("account_resolution");
+    const management = golden.provider === "boat" ? await provider.managementIdentity?.() : undefined;
+    const backendId = golden.provider === "boat" ? (await provider.backendIdentity?.())?.id : undefined;
+    if (golden.provider === "boat" && (!management || !backendId))
+      throw new VaultError("unavailable", "Boat launch authority is unavailable.");
     return admit({
+      ...(management && backendId ? { boat: { scope: management.scope, backendId } } : {}),
       ...(pool && prepared ? { accountPool: { pool, prepared } } : {}),
       orgId: actor.orgId,
       ownerId: actor.userId,

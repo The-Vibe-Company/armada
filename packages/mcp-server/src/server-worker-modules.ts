@@ -49,6 +49,7 @@ const jobsLane: LaneFactory = ({
   control,
   modal,
   modalLaunchJob,
+  launchCleanupJob,
   accountTurns,
 }) => {
   const prScan = githubApp
@@ -80,7 +81,7 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
-      delete: modal.launchCleanupJob,
+      delete: launchCleanupJob ?? modal.launchCleanupJob,
       ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
       ...(config.encryptionKey
         ? {
