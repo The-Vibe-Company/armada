@@ -7,6 +7,7 @@ import {
   GoldenBuildJobs,
   isNonMutatingProviderRefusal,
   OUTPUT_COLLECTOR,
+  outputEntryCollector,
 } from "@armada/core/server";
 import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
@@ -122,6 +123,7 @@ function fixture(
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
+  let manifestResult: { exitCode: number | null; stdout: string } | undefined;
   let failSnapshot = false;
   let loseTerminateResponse = false;
   let failCreate = false;
@@ -179,6 +181,18 @@ function fixture(
           exec: async (argv: string[], params: object) => {
             const command = { argv, params, stdin: [] as string[] };
             sdkCommands.push(command);
+            if (manifestResult && argv.includes(outputEntryCollector(null))) {
+              const { exitCode, stdout } = manifestResult;
+              return {
+                stdin: {
+                  close: async () => {
+                    if (exitCode === null) throw Error("private SDK detail");
+                  },
+                },
+                stdout: { readText: async () => stdout },
+                wait: async () => exitCode,
+              };
+            }
             let input: Record<string, unknown> | undefined;
             const closed = deferred();
             return {
@@ -357,6 +371,9 @@ function fixture(
       artifactVolume = volume;
     },
     sdkCommands,
+    setManifestResult(exitCode: number | null, stdout = "private collector detail") {
+      manifestResult = { exitCode, stdout };
+    },
     get provisioned() {
       return provisioned;
     },
@@ -2279,4 +2296,52 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBeNull();
   expect(f.creates).toBe(creates);
   expect(f.log.filter((x) => x === "outputs")).toHaveLength(1);
+});
+
+test.each([
+  { exitCode: null, step: "close_stdin" },
+  { exitCode: 5, step: "read_result" },
+  { exitCode: 4, step: "missing directory" },
+])("Modal manifest reports $step without SDK or collector text", async ({ exitCode, step }) => {
+  const f = fixture();
+  const fork = await activeWorker(f);
+  f.setManifestResult(exitCode);
+  const warn = spyOn(console, "warn");
+  try {
+    const result = f.provider.listOutputEntries!({ sandboxId: fork.id });
+    if (exitCode === null) await expect(result).rejects.toMatchObject({ code: "unknown" });
+    else
+      await expect(result).rejects.toMatchObject({
+        reason: exitCode === 4 ? "output_directory_missing" : "collector_failed",
+      });
+    expect(warn.mock.calls.map(([line]) => JSON.parse(line))).toEqual(
+      exitCode === 4
+        ? []
+        : [
+            {
+              event: "modal_output_collector_step_failed",
+              providerSandboxId: fork.id,
+              operation: "list_entries",
+              step,
+              ...(exitCode === null ? {} : { exitCode }),
+            },
+          ],
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test.each([
+  { stdout: "private collector detail", error: SyntaxError, message: "invalid collector JSON" },
+  { stdout: "{}", error: Error, message: "invalid_output" },
+  { stdout: " ".repeat(60_001), error: Error, message: "output_limit" },
+])("Modal preserves the decoder's $message classification", async ({ stdout, error, message }) => {
+  const f = fixture();
+  const fork = await activeWorker(f);
+  f.setManifestResult(0, stdout);
+  await expect(f.provider.listOutputEntries!({ sandboxId: fork.id })).rejects.toMatchObject({
+    name: error.name,
+    message,
+  });
 });
