@@ -389,6 +389,55 @@ test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout rep
 });
 
 test.each([
+  ["missing", "the managed Bun file or a parent directory is missing"],
+  [
+    "mode",
+    "the managed Bun is not executable, its directories are not traversable, or its path is group- or other-writable",
+  ],
+  ["owner", "the managed Bun path is not root-owned"],
+  ["symlink", "the managed Bun path contains a symlink"],
+  ["ffi", "Bun could not load Linux glibc through FFI"],
+  ["proc_fd", "the collector could not open a directory through /proc/self/fd"],
+  ["private-tool-stderr", "Verify the managed Bun executable"],
+])("SSH reports the safe collector check for exit 86 (%s)", async (reason, expected) => {
+  const spawn: any = (file: string) => {
+    const child: any = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = {
+      end: () =>
+        queueMicrotask(() => {
+          if (file === "ssh") {
+            child.stderr.emit(
+              "data",
+              `ARMADA_OUTPUT_COLLECTOR_FAILURE ${reason}\nARMADA_BUILD_FAILURE output_collector 86 0\n`,
+            );
+          }
+          child.emit("close", file === "ssh" ? 86 : 0);
+        }),
+    };
+    return child;
+  };
+  await expect(
+    sshStdinCheckout(
+      provider,
+      { sandboxId: "bx", token: "fixture", script: "unused" },
+      {
+        spawn,
+        chmod: async () => {},
+        writeFile: async () => {},
+        readPublicKey: async () => "ssh-ed25519 AAAA ephemeral",
+      },
+    ),
+  ).rejects.toMatchObject({
+    code: "build_failed",
+    safePhase: "output_collector",
+    safeMessage: expect.stringContaining(
+      `The sandbox output collector exited 86. ${reason === "private-tool-stderr" ? "" : "Failed check: "}${expected}`,
+    ),
+  });
+});
+
+test.each([
   ["ARMADA_GIT_FAILURE 2 auth_denied", "Could not clone acme/private: GitHub credentials were rejected."],
   ["ARMADA_GIT_FAILURE 2 repository_not_found", "GitHub could not find or authorize the repository."],
   ["ARMADA_GIT_FAILURE 2 branch_missing", "Ref 'feature/missing' was not found in acme/private."],

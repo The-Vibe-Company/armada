@@ -78,6 +78,7 @@ import { createSandboxAccessServices } from "./sandbox-access-services.ts";
 import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
+import { createSandboxListTurns } from "./sandbox-list-turns.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import sourceIdentity from "./source-identity.json";
 import { readStartupConfiguration } from "./startup-configuration.ts";
@@ -482,6 +483,7 @@ export async function createServerServices(env: Record<string, string | undefine
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
+    sandboxListTurns: createSandboxListTurns(sql, config.encryptionKey),
     sandboxBillingAccount: createSandboxBillingAccount(sql),
     credentialBindingRecovery: createSandboxAccountChange(sql, dockerCredentials),
     modelUsage: createModelUsageApi(sql),

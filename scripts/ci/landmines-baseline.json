@@ -15,7 +15,7 @@
     "apps/dashboard/src/app/(app)/orgs/[id]/setup/page.tsx": 1,
     "apps/dashboard/src/app/(app)/providers/cloud/page.tsx": 6,
     "apps/dashboard/src/app/(app)/sandboxes/[id]/page.tsx": 14,
-    "apps/dashboard/src/app/(app)/sandboxes/page.tsx": 12,
+    "apps/dashboard/src/app/(app)/sandboxes/page.tsx": 11,
     "apps/dashboard/src/app/(app)/skills/refresh.tsx": 1,
     "apps/dashboard/src/app/(app)/snapshots/page.tsx": 35,
     "apps/dashboard/src/app/(app)/templates/page.tsx": 5,
