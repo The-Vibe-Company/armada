@@ -373,9 +373,7 @@ export const sandboxOperations = {
           .string()
           .uuid()
           .optional()
-          .describe(
-            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
-          ),
+          .describe("Request UUID. Reuse it with identical input after uncertain delivery."),
         prompt: z.string().min(1).describe("The instruction."),
         model: modelInput,
         reasoning_effort: effortInput,
@@ -397,7 +395,7 @@ export const sandboxOperations = {
     destructive: true,
     errors: [...sandboxControlErrors, "no_running_turn"],
     description:
-      "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); " +
+      "Redirects the turn that is running now. delivery says how: in-place joins the turn (Claude Code); " +
       "restart interrupts it and continues the same conversation with this text (Codex). Refused when no " +
       "turn runs: use send then.",
     input: {
@@ -415,7 +413,7 @@ export const sandboxOperations = {
       id: z.string(),
       promptId: z.string(),
       conversationId: z.string(),
-      delivery: z.enum(["native", "restart"]),
+      delivery: z.enum(["in-place", "restart"]),
       mode: z.string().nullable(),
     },
   }),

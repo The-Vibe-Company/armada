@@ -197,7 +197,7 @@ export interface ProviderTarget {
   /** Explicit logical sandbox identity for a projected target that omits the sandbox record. */
   readonly sandboxId?: string;
   readonly boatRuntime?: true;
-  readonly runtimeTransport?: "dialout";
+  readonly modalTransport?: "dialout";
   provider: SandboxProviderId;
   orgId: string;
   visibility: Visibility;

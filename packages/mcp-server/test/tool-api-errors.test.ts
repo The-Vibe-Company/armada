@@ -2,7 +2,6 @@ import { expect, spyOn, test } from "bun:test";
 import { LaunchError, ProviderError } from "@armada/core";
 import { callSharedTool, ToolApiError } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { fakeBoat } from "./support.ts";
 
 function context(error: Error, conversationIds: readonly string[] = []): ToolContext {
   return {
@@ -134,16 +133,6 @@ test.each([
     message: "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
   });
   expect(provider).not.toHaveBeenCalled();
-});
-
-test("selector-free interrupt dispatches only to the current native conversation", async () => {
-  const ctx = context(new Error(), ["historical", "current"]);
-  const { provider } = fakeBoat();
-  const interrupt = spyOn(provider, "interrupt");
-  ctx.provider = async () => provider;
-
-  await callSharedTool(ctx, "interrupt", { id: "sandbox" });
-  expect(interrupt.mock.calls).toEqual([[{ sandboxId: "bx", conversationId: "current" }]]);
 });
 
 test.each(["steer", "interrupt"])("REST %s refuses a conversation selector before dispatch", async (operation) => {

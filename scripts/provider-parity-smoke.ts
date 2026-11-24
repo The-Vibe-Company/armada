@@ -1423,7 +1423,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           result.id !== id ||
           (action === "interrupt"
             ? result.interrupted !== true
-            : !["native", "restart"].includes(result.delivery ?? ""))
+            : !["in-place", "restart"].includes(result.delivery ?? ""))
         )
           throw new Error("invalid_control_receipt");
         if (action === "interrupt") {

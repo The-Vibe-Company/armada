@@ -17,7 +17,7 @@ interface RequestBody {
   idempotencyKey?: string;
   externalRef?: string;
   revision: number;
-  runtimeTransport: string;
+  modalTransport: string;
   runtimeVersion: number;
   scope: "golden" | "org" | "personal";
   skills: unknown[];
@@ -260,7 +260,7 @@ const templateReceipt = (body: RequestBody, idle: boolean) => ({
   status: idle ? "ready" : "running",
   id: sandboxId,
   provider: "modal",
-  ...(defects.includes("ordinary-template-missing-transport") ? {} : { runtimeTransport: "dialout" }),
+  ...(defects.includes("ordinary-template-missing-transport") ? {} : { modalTransport: "dialout" }),
   runtime: { kind: "armada", epoch: "1" },
   promptId: idle ? null : "prompt",
   conversationId: idle ? null : "conversation",
@@ -307,7 +307,7 @@ const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
       providerSandboxId: "modal-worker",
       status: receipt.status,
       goldenId: golden.id,
-      runtimeTransport: receipt.runtimeTransport,
+      modalTransport: receipt.modalTransport,
       externalRef: body.externalRef,
       skills: skillReceipts,
       templateManifest,
@@ -487,14 +487,14 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   if (path === "/api/v1/sandbox/launch" || path === "/api/v1/templates/launch") {
     if (
       path === "/api/v1/templates/launch" &&
-      ["runtimeVersion", "runtimeTransport"].some((key) => Object.hasOwn(body, key))
+      ["runtimeVersion", "modalTransport"].some((key) => Object.hasOwn(body, key))
     )
       throw Error("templates/launch rejects explicit runtime selection");
     if (variables) {
       if (path !== (ordinary ? "/api/v1/templates/launch" : "/api/v1/sandbox/launch"))
         throw Error("wrong pinned template launch route");
     } else if (path !== "/api/v1/sandbox/launch") throw Error("direct golden launch must use the canonical route");
-    if (ordinary && ["runtimeVersion", "runtimeTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))
+    if (ordinary && ["runtimeVersion", "modalTransport", "boatRuntime"].some((key) => Object.hasOwn(body, key)))
       throw Error("ordinary launch must not opt itself in");
     launches++;
     if (
@@ -504,7 +504,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
           ? ["provider", "harness"].some((key) => Object.hasOwn(body, key))
           : body.provider !== "modal" || body.harness !== (opencode ? "opencode" : claude ? "claude" : "codex")
         : body.provider !== "modal" ||
-          body.runtimeTransport !== "dialout" ||
+          body.modalTransport !== "dialout" ||
           body.runtimeVersion !== 1 ||
           body.harness !== (opencode ? "opencode" : claude ? "claude" : "codex")) ||
       body.ttlSeconds !== 900 ||
@@ -534,7 +534,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
         sandbox: {
           id: sandboxId,
           provider: "modal",
-          runtimeTransport: "dialout",
+          modalTransport: "dialout",
           status: "ready",
           conversationIds: [],
           goldenId: "golden-id",
@@ -553,7 +553,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       sandbox: {
         id: sandboxId,
         provider: "modal",
-        ...(defects.includes("ordinary-missing-transport") ? {} : { runtimeTransport: "dialout" }),
+        ...(defects.includes("ordinary-missing-transport") ? {} : { modalTransport: "dialout" }),
         goldenId: defects.includes("skills-wrong-golden") ? "foreign" : "golden-id",
         ...(skills && !defects.includes("skills-missing-launch") ? { skills: receipts } : {}),
       },

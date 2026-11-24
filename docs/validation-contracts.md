@@ -63,10 +63,7 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   opt-in container/image OS acceptance, not ordinary unit proof. They require
   `ARMADA_GOLDEN_OS_IMAGE` and remain on-demand acceptance checks; no provider
   or image build is introduced into PR CI. Run the Modal SSH probe with
-  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/provider-modal/test/ssh-os.probe.ts`. For the server GitHub SSH probe,
-  build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
-  and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
-  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
+  `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/provider-modal/test/ssh-os.probe.ts`.
 - The Boat integration probe is coordinator-only and uses Boat compute.
   With `BOAT_API_KEY` exported, run
   `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
@@ -467,13 +464,10 @@ inspection identify process boundaries.
 | File under `packages/mcp-server/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
 | `boat-orchestrator-private.test.ts` | Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets | Bash runs the emitted control and bridge scripts with local Node processes, a Unix socket, and temporary state. | 428.27 ms |
-| `control.test.ts` | control API > GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
 | `docker-host-install.test.ts` | installer publishes both build digests without credentials and refuses missing artifacts | POSIX sh checks the generated installer syntax. Route requests are in process. | 3.35 ms |
 | `docker-host-install.test.ts` | one-line installer verifies bytes, delivers the one-use token privately and confirms a poll | POSIX sh runs the installer with local command and artifact stubs for download, service, registration, and package runners. | 125.71 ms |
-| `github-boat.test.ts` | generated GitHub broker fits the private transport before SSH registration | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 91.77 ms |
 | `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
 | `managed-inspection.test.ts` | native argv sentinel inspection excludes its exec command and ancestors, but catches an actual native-looking child leak | A local Node wrapper invokes Bash to install the sentinel and inspect Linux procfs while fixture Node CLI processes supply argv. | 301.53 ms |
-| `mcp-native.test.ts` | an untouched golden snapshot does not require Node or modify public native configuration | Bash evaluates the scrub script with no Node on PATH and untouched public configuration. | 2.15 ms |
 | `orchestrator-bootstrap.test.ts` | built-in reference preserves conflicting files | An injected provider exec runs the built-in reference script in POSIX sh against temporary files. | 9.61 ms |
 | `serve-database-boot.test.ts` | startServer retries real Supavisor admission errors before serving and closes both pools on exhaustion | A fresh Bun fixture isolates the SQL and clock doubles and makes loopback HTTP requests against the composed server. | 701.26 ms |
 | `push-ledger.test.ts` | push evidence survives a pruned tracking ref and reports pushes that escaped the ledger | The helper runs POSIX sh and local Git to push, prune, and detect a push without ledger hooks. | 204.57 ms |
@@ -492,8 +486,7 @@ The unattributed-push gap case took 1,631.84 ms in the
 [archived unit shard](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/job/135567940848#logs).
 It sets up four local launch fixtures and exercises four push paths in one case.
 
-The other cases in `mcp-native.test.ts` execute the installer payload in a
-VM context or call the pin policy in process. The other
+The other
 `orchestrator-bootstrap.test.ts` cases inject the provider result or reject
 the request before execution. The Boat provider composition test injects its
 SSH spawn function. Explicit conformance and release probes are outside unit

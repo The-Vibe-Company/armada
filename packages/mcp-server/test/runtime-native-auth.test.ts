@@ -339,7 +339,7 @@ nativeTest("Boat guests share native-requested renewal across epoch replacement"
   let driver: CodexDriver | undefined;
   try {
     let renewals = 0;
-    const ownership = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
+    const ownership = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, {
       origin: "https://armada.example",
       fetch: (async (_url, init) => {
         expect(JSON.parse(String(init?.body)).refresh_token).toBe("synthetic-initial-refresh");
@@ -432,7 +432,7 @@ nativeTest("Boat guests share native-requested renewal across epoch replacement"
     expect(b.registered).toEqual(["synthetic-initial-access", "synthetic-refreshed-access"]);
     const replacement = await f.enrol();
     await expect(a.access(false)).rejects.toThrow("runtime_channel_revoked");
-    const restarted = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, undefined, {
+    const restarted = createModelAuthOwnership(f.sql, ENCRYPTION_KEY, undefined, {
       origin: "https://armada.example",
       fetch: (async (_url, _init) =>
         Response.json({ error: "unexpected resume renewal" }, { status: 500 })) as typeof fetch,

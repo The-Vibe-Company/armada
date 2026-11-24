@@ -1,15 +1,5 @@
 import { sandboxOperations } from "@armada/core/contract";
-import {
-  LaunchError,
-  type MemberRole,
-  type Provider,
-  ProviderError,
-  redact,
-  resolveModelChoice,
-  type SandboxStatus,
-  VaultError,
-} from "@armada/core/server";
-import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
+import { LaunchError, ProviderError, redact, type SandboxStatus, VaultError } from "@armada/core/server";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
@@ -29,11 +19,11 @@ import {
   RuntimeReconciliationConflict,
   SandboxStopTargetChanged,
 } from "./runtime-reconciliation-conflict.ts";
-import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
+import { sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 import { ToolError } from "./tool-error.ts";
-import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
+import { errorResult, unknownMutationOutcome } from "./tool-failure.ts";
 import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 import { isFailedModalLaunch, latestPrompt, readStatus } from "./turns.ts";
@@ -65,7 +55,7 @@ export function configureTools(
 
   const live = async (sandboxId: string, allowUnbound = false, known?: SandboxView, runtimeControl = false) => {
     const found = known ?? (await visible(sandboxId));
-    if ((found.boatRuntime || found.runtimeTransport === "dialout") && !allowUnbound && !runtimeControl)
+    if ((found.boatRuntime || found.modalTransport === "dialout") && !allowUnbound && !runtimeControl)
       throw new ToolError(
         "unsupported",
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
@@ -78,18 +68,9 @@ export function configureTools(
       provider: await context.provider(found),
     };
   };
-  const turnCredentials = (found: SandboxView) =>
-    context.launchCredentials.resolve(
-      { userId: caller.userId, orgId: found.orgId, role: "member" },
-      found.harness,
-      found.credentialId ?? undefined,
-      found.credentialVersion ?? undefined,
-    );
-  const prepareConnections = (provider: Provider, found: SandboxView, role: MemberRole) =>
-    context.connections?.prepare?.(provider, found, { userId: caller.userId, orgId: found.orgId, role });
   const liveControl = async (args: { id: string; request_id?: unknown }) => {
     const target = await live(args.id, false, undefined, true);
-    const enrolled = Boolean(target.sandbox.boatRuntime || target.sandbox.runtimeTransport === "dialout");
+    const enrolled = Boolean(target.sandbox.boatRuntime || target.sandbox.modalTransport === "dialout");
     if (args.request_id !== undefined && !enrolled)
       throw new ToolError("invalid_request", "request_id is supported only for runtime control.");
     if (enrolled && target.sandbox.ownerId !== caller.userId)
@@ -148,159 +129,9 @@ export function configureTools(
   async function dispatchSandbox(args: import("./runtime-followup.ts").RuntimeFollowupInput) {
     const routed = await context.dockerControls?.invoke(caller, "send", { ...args });
     if (routed?.handled) return routed.result as import("@armada/core").PromptReceipt & { id: string };
-    const selected = await visible(args.id);
-    if (selected.boatRuntime || selected.runtimeTransport === "dialout") {
-      if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
-      return context.runtimeSend(caller, args);
-    }
-
-    if (
-      (selected.statusReason === "idle_paused" || selected.statusReason === "work_merged") &&
-      (selected.status === "stopping" ||
-        !selected.expiresAt ||
-        Date.parse(selected.expiresAt) <= context.now().getTime())
-    )
-      throw new ToolError(
-        "conflict",
-        "Idle pause or merge stop is still finishing or its original deadline has expired; inspect status before sending.",
-      );
-    const { sandbox: found, provider } = await live(args.id, false, selected);
-    if (args.prompt.trim() === "") throw new ToolError("invalid_request", "The prompt is empty.");
-    let pricingContext: unknown;
-    if (found.credentialId)
-      pricingContext = (await measure("send_credentials", () => turnCredentials(found))).usagePricing ?? null;
-    if (data.sandboxes.captureUsagePricingContext)
-      pricingContext = (await data.sandboxes.captureUsagePricingContext(found.id)) ?? pricingContext;
-    const stored =
-      found.model !== null && found.reasoningEffort !== null
-        ? { model: found.model, reasoningEffort: found.reasoningEffort }
-        : undefined;
-
-    const choice =
-      args.model === undefined && args.reasoning_effort === undefined
-        ? stored
-        : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
-    const conversation = found.conversationIds.at(-1);
-    const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
-    if (retainsDiskOnStop(provider.id) && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
-      throw new ToolError("conflict", "Boat retained data has not been verified.");
-    if (machine.state === "stopped" && found.stoppedAt === null) {
-      await data.sandboxes.update(found.id, {
-        status: "stopped",
-        stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
-        ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
-        providerObservation: { fromState: found.status, providerRunPlacement: found.providerSandboxId },
-      });
-    }
-    await measure("send_turn_auth", async () =>
-      context.launchCredentials.assertTurn?.(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        found.id,
-        machine.state === "stopped",
-      ),
-    );
-    const generation = found.lifecycleGeneration;
-    let acknowledged = false;
-    const admission: Pick<ServerSandboxPatch, "nativeResumeAdmission" | "nativePromptAdmission"> =
-      machine.state === "stopped"
-        ? { nativeResumeAdmission: found.providerSandboxId }
-        : { nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId } };
-    return sandboxActivity(
-      data.sandboxes,
-      found,
-      {
-        clearTaskOutcome: true,
-        ...(args.request_id ? { queueRequestId: args.request_id } : {}),
-        renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
-        stopRequested: false,
-        ...admission,
-      },
-      async (signal, activityToken) => {
-        let activationOpened = machine.state === "stopped";
-        let admissionFailure: { error: unknown } | undefined;
-        const receipt = await measure("send_submit", () =>
-          provider
-            .prompt({
-              sandboxId: found.providerSandboxId,
-              harness: found.harness,
-              text: args.prompt,
-              signal,
-              ...(conversation ? { conversationId: conversation } : {}),
-              ...(choice ?? {}),
-              ...(generation !== undefined
-                ? {
-                    onResumeStage: async (stage) => {
-                      try {
-                        if (stage === "accepted") {
-                          if (!activationOpened) {
-                            await data.sandboxes.update(found.id, {
-                              nativeResumeAdmission: found.providerSandboxId,
-                              renewActivity: true,
-                              activityToken,
-                              expectedGeneration: generation + 1,
-                            });
-                            activationOpened = true;
-                          }
-                        } else if (activationOpened) {
-                          await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
-                        }
-                      } catch (error) {
-                        if (stage === "accepted") {
-                          admissionFailure = { error };
-                          throw error;
-                        }
-                      }
-                    },
-                  }
-                : {}),
-            })
-            .catch(async (error: unknown) => {
-              if (admissionFailure) throw admissionFailure.error;
-              if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
-                await data.sandboxes.update(found.id, {
-                  nativeRetentionRefusal: found.providerSandboxId,
-                  activityToken,
-                  expectedGeneration: generation + 1,
-                });
-              }
-              return unknownMutationOutcome(error);
-            }),
-        );
-        acknowledged = true;
-        await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, receipt.promptId, args.request_id);
-        try {
-          await data.sandboxes.recordTurnModel?.(found.id, receipt.promptId, choice?.model ?? null, pricingContext);
-        } catch (error) {
-          recordOperatorFailure("tool.send.turn_model_record", error, {
-            sandboxId: found.id,
-            ...(context.logError ? { log: context.logError } : {}),
-          });
-        }
-        const conversationIds = appendConversation(found.conversationIds, receipt.conversationId);
-        return {
-          patch: {
-            nativeSendReceipt: {
-              fromState: activationOpened ? "starting" : found.status,
-              placement: found.providerSandboxId,
-              ...(args.request_id ? { requestId: args.request_id } : {}),
-            },
-            taskPromptId: receipt.promptId,
-            statusReason: null,
-            conversationIds,
-            stoppedAt: null,
-            rearmDeadline: receipt.resumed === true && found.statusReason !== "idle_paused",
-          } satisfies ServerSandboxPatch,
-          result: {
-            id: found.id,
-            promptId: receipt.promptId,
-            conversationId: receipt.conversationId,
-            status: receipt.status,
-          },
-        };
-      },
-    )
-      .catch((error) => publicationFailure(error, acknowledged))
-      .finally(() => context.launchCredentials.releaseAdmission?.(found.id));
+    await visible(args.id);
+    if (!context.runtimeSend) throw new ToolError("unsupported", "Runtime follow-up is unavailable.");
+    return context.runtimeSend(caller, args);
   }
 
   const sendTool = tool("send", sandboxOperations.sendPrompt.tool, sendSandbox, true);
@@ -309,86 +140,17 @@ export function configureTools(
     "steer",
     sandboxOperations.steerSandbox.tool,
     async (args) => {
-      const { sandbox: found, provider, enrolled } = await liveControl(args);
+      const { sandbox: found, provider } = await liveControl(args);
       const delivery = provider.capabilities[found.harness]?.steer ?? "none";
       if (delivery === "none") throw new ToolError("unsupported", `${found.harness} cannot be steered here.`);
-      if (!enrolled && delivery === "restart" && found.credentialId) await turnCredentials(found);
-      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
-      const dispatchSteer = () =>
-        provider
-          .steer({
-            sandboxId: found.providerSandboxId,
-            ...(args.request_id ? { requestId: args.request_id } : {}),
-            text: args.text,
-            ...(conversationId ? { conversationId } : {}),
-          })
-          .catch(unknownMutationOutcome);
-      if (enrolled) {
-        const receipt = await dispatchSteer();
-        return { id: found.id, ...receipt, delivery, mode: receipt.mode ?? null };
-      }
-      const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
-      if (!member) throw new ToolError("forbidden", "No current organization membership.");
-      let acknowledged = false;
-      const admission: ServerSandboxPatch = {
-        clearTaskOutcome: true,
-        nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId },
-      };
-      return sandboxActivity(
-        data.sandboxes,
-        found,
-        admission,
-        async (signal) => {
-          await prepareConnections(provider, found, member.role);
-          signal.throwIfAborted();
-
-          const receipt = await dispatchSteer();
-          acknowledged = true;
-
-          const { taskPromptId, verifiedReplacement } = await steeredRun(
-            provider,
-            found,
-            receipt.promptId,
-            delivery,
-            signal,
-          );
-          if (taskPromptId) await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, taskPromptId);
-          else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
-          return {
-            patch: {
-              nativeSteerReceipt: { fromState: found.status, placement: found.providerSandboxId, verifiedReplacement },
-              statusReason: null,
-              taskPromptId,
-              conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
-            } satisfies ServerSandboxPatch,
-            result: {
-              id: found.id,
-              promptId: receipt.promptId,
-              conversationId: receipt.conversationId,
-              delivery,
-              mode: receipt.mode ?? null,
-            },
-          };
-        },
-        {
-          failurePatch(error) {
-            if (
-              error instanceof ProviderError &&
-              [
-                "no_running_turn",
-                "invalid_request",
-                "unauthorized",
-                "forbidden",
-                "not_found",
-                "provider_not_configured",
-                "sandbox_not_ready",
-              ].includes(error.code)
-            )
-              return {};
-            throw error;
-          },
-        },
-      ).catch((error) => publicationFailure(error, acknowledged));
+      const receipt = await provider
+        .steer({
+          sandboxId: found.providerSandboxId,
+          ...(args.request_id ? { requestId: args.request_id } : {}),
+          text: args.text,
+        })
+        .catch(unknownMutationOutcome);
+      return { id: found.id, ...receipt, delivery, mode: receipt.mode ?? null };
     },
     true,
   );
@@ -397,16 +159,14 @@ export function configureTools(
     "interrupt",
     sandboxOperations.interruptSandbox.tool,
     async (args) => {
-      const { sandbox: found, provider, enrolled } = await liveControl(args);
+      const { sandbox: found, provider } = await liveControl(args);
       if (!provider.capabilities[found.harness]?.interrupt) {
         throw new ToolError("unsupported", `${found.harness} cannot be interrupted here.`);
       }
-      const conversationId = enrolled ? undefined : found.conversationIds.at(-1);
       await provider
         .interrupt({
           sandboxId: found.providerSandboxId,
           ...(args.request_id ? { requestId: args.request_id } : {}),
-          ...(conversationId ? { conversationId } : {}),
         })
         .catch(unknownMutationOutcome);
       return { id: found.id, interrupted: true };
@@ -415,94 +175,44 @@ export function configureTools(
   );
 
   tool("exec", sandboxOperations.execSandbox.tool, async (args) => {
-    const { sandbox: found, provider, enrolled } = await liveControl(args);
+    const { sandbox: found, provider } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const fencedExec = !enrolled && found.provider === "boat";
-    const managedNative =
-      !enrolled &&
-      (await context.launchCredentials.assertExec?.(
-        { userId: found.ownerId, orgId: found.orgId, role: "member" },
-        found.id,
-      ));
-    let acknowledged = false;
-    let nativeExecCompleted = false;
-    const execute = async (signal?: AbortSignal) => {
-      const membership = caller.orgs.find((member) => member.orgId === found.orgId);
-      if (!membership) throw new ToolError("forbidden", "No current organization membership.");
-      if (!enrolled) await prepareConnections(provider, found, membership.role);
-      signal?.throwIfAborted();
-      const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
-      const readNativeSecrets = (phase: "before" | "after") =>
-        context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
-      const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
-      signal?.throwIfAborted();
-      const result = await provider
-        .exec({
-          sandboxId: found.providerSandboxId,
-          ...(args.request_id ? { requestId: args.request_id } : {}),
-          ...(signal ? { signal } : {}),
-          command: args.command,
-          cwd: args.cwd ?? "/home/user",
-          timeoutSeconds: args.timeout_seconds ?? 120,
-        })
-        .catch(unknownMutationOutcome);
-      acknowledged = true;
-      if (result.detached)
-        throw new ToolError(
-          "outcome_unknown",
-          "The command started in the background. Check sandbox status before retrying.",
-        );
-      try {
-        signal?.throwIfAborted();
-        const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
-        const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
-        const clip = (text: string) => {
-          const safe = redact(text, secrets);
-          return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
-        };
-        nativeExecCompleted =
-          fencedExec &&
-          result.detached === false &&
-          result.timedOut === false &&
-          Number.isSafeInteger(result.exitCode) &&
-          typeof result.truncated === "boolean";
-        return {
-          id: found.id,
-          exitCode: result.exitCode,
-          stdout: clip(result.stdout),
-          stderr: clip(result.stderr),
-          timedOut: result.timedOut,
-          truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
-        };
-      } catch (error) {
-        throw new LaunchError(
-          "outcome_unknown",
-          "The command ran but its result could not be safely published. Check sandbox status before retrying.",
-          { cause: error },
-        );
-      }
-    };
-    if (!fencedExec && !managedNative) {
-      return execute();
+    const result = await provider
+      .exec({
+        sandboxId: found.providerSandboxId,
+        ...(args.request_id ? { requestId: args.request_id } : {}),
+        command: args.command,
+        cwd: args.cwd ?? "/home/user",
+        timeoutSeconds: args.timeout_seconds ?? 120,
+      })
+      .catch(unknownMutationOutcome);
+    if (result.detached)
+      throw new ToolError(
+        "outcome_unknown",
+        "The command started in the background. Check sandbox status before retrying.",
+      );
+    try {
+      const secrets = await context.exposedSecrets(found.orgId);
+      const clip = (text: string) => {
+        const safe = redact(text, secrets);
+        return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
+      };
+      return {
+        id: found.id,
+        exitCode: result.exitCode,
+        stdout: clip(result.stdout),
+        stderr: clip(result.stderr),
+        timedOut: result.timedOut,
+        truncated: result.truncated || result.stdout.length > OUTPUT_LIMIT || result.stderr.length > OUTPUT_LIMIT,
+      };
+    } catch (error) {
+      throw new LaunchError(
+        "outcome_unknown",
+        "The command ran but its result could not be safely published. Check sandbox status before retrying.",
+        { cause: error },
+      );
     }
-
-    const admission: ServerSandboxPatch = fencedExec
-      ? { nativeExecAdmission: { provider: found.provider, placement: found.providerSandboxId } }
-      : {};
-    return sandboxActivity(
-      data.sandboxes,
-      found,
-      admission,
-      async (signal) => {
-        signal.throwIfAborted();
-        const result = await execute(fencedExec ? signal : undefined);
-        signal.throwIfAborted();
-        const patch: ServerSandboxPatch = nativeExecCompleted ? { nativeExecCompleted: true } : {};
-        return { result, patch };
-      },
-      { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
-    ).catch((error) => publicationFailure(error, acknowledged));
   });
 
   const stopTool = (() => {
@@ -700,13 +410,12 @@ export function configureTools(
         input: z.looseObject({
           ...sendTool.input,
           request_id: sendTool.input.request_id.describe(
-            "Required for runtime follow-up. Optional for runtime steer. Reuse with identical input after uncertain delivery. " +
-              "Native send accepts the field without deduplication. Omit it for native steer.",
+            "Request UUID. Reuse it with identical input after uncertain delivery.",
           ),
           [sendBranch.flag]: z
             .boolean()
             .optional()
-            .describe("Redirect the running turn. Delivery is native or a restart in the same conversation."),
+            .describe("Redirect the running turn. Delivery is in-place or a restart in the same conversation."),
         }),
         output: {
           ...sendTool.output,
@@ -789,30 +498,4 @@ export function configureTools(
   function invalidToolInput(name: string, message: string) {
     return errorResult(new ToolError("invalid_request", message), name, context.logError ?? console.error);
   }
-}
-
-async function steeredRun(
-  provider: Provider,
-  found: { providerSandboxId: string; taskPromptId?: string | null },
-  promptId: string,
-  delivery: "native" | "restart",
-  signal: AbortSignal,
-) {
-  try {
-    const run = await provider.getPrompt({ sandboxId: found.providerSandboxId, promptId, signal });
-    if (promptId && run.promptId === promptId)
-      return {
-        taskPromptId: promptId,
-        verifiedReplacement: Boolean(found.taskPromptId && found.taskPromptId !== promptId),
-      };
-  } catch {}
-
-  if (found.taskPromptId) {
-    try {
-      const latest = (await latestPrompt(provider, found.providerSandboxId, true, signal))?.promptId;
-      if (latest && (delivery === "native" || latest !== found.taskPromptId))
-        return { taskPromptId: latest, verifiedReplacement: false };
-    } catch {}
-  }
-  return { taskPromptId: "", verifiedReplacement: false };
 }

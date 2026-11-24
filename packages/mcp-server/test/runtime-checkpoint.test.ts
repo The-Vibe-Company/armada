@@ -76,7 +76,7 @@ async function enrolledCheckpointTarget() {
     visibility: "private",
     model: "gpt-5.4",
     reasoningEffort: "high",
-    runtimeTransport: "dialout",
+    modalTransport: "dialout",
     credentialId: account.id,
     credentialVersion: account.version,
   });
@@ -158,7 +158,7 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced", "cancelled
       throw Error("Scoped preparation must use the enrolled runtime");
     };
     const prepare = access.prepare(
-      { ...fakeBoat().provider, id: "modal", exec: nativeUnavailable, installOrchestratorEpoch: nativeUnavailable },
+      { ...fakeBoat().provider, id: "modal", exec: nativeUnavailable },
       row,
       { userId: people.owner, orgId: people.org, role: "member" },
       { maxActiveChildren: 1 },

@@ -36,7 +36,7 @@ export function createRuntimeHistory(
     const authorize = async () => {
       if (trusted) return trusted.authorize(caller, sandboxId);
       const row = await data(caller).sandboxes.get(sandboxId);
-      if (row?.boatRuntime !== true && row?.runtimeTransport !== "dialout") throw denied();
+      if (row?.boatRuntime !== true && row?.modalTransport !== "dialout") throw denied();
       return row;
     };
     await authorize();
@@ -107,7 +107,7 @@ export function createModalJobReader(sql: Sql, key: string) {
   const history = createRuntimeHistory(sql, key);
   const data = createSqlData(sql);
   return async (sandbox: SandboxView, caller: Caller) => {
-    if (sandbox.runtimeTransport !== "dialout" || sandbox.lifecycleGeneration === undefined) return null;
+    if (sandbox.modalTransport !== "dialout" || sandbox.lifecycleGeneration === undefined) return null;
     const current = async () => {
       const row = await data(caller).sandboxes.get(sandbox.id);
       if (!row) throw new VaultError("not_found", "No visible runtime sandbox.");
@@ -212,7 +212,7 @@ export function createModalLogReader(
   const history = createRuntimeHistory(sql, key);
   const jobReader = createModalJobReader(sql, key);
   const read: (sandbox: SandboxView, caller: Caller) => Promise<SandboxLogReader> = async (sandbox, caller) => {
-    if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
+    if (sandbox.modalTransport !== "dialout") return resolveProvider(sandbox, caller);
 
     let observation: Promise<Provider> | undefined;
     let followed: Awaited<ReturnType<typeof jobReader>> = null;

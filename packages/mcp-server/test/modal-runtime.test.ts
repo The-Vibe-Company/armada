@@ -48,7 +48,7 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
   const row = await store.insert({
     id: crypto.randomUUID(),
     provider: "modal",
-    runtimeTransport: "dialout",
+    modalTransport: "dialout",
     providerSandboxId: "modal-machine",
     goldenId: golden.id,
     orgId: people.org,
@@ -59,7 +59,7 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
     model: "opencode/fixture",
     reasoningEffort: "default",
   });
-  expect((await store.get(row.id))?.runtimeTransport).toBe("dialout");
+  expect((await store.get(row.id))?.modalTransport).toBe("dialout");
   expect((await sql.query("select runtime_transport from sandboxes where id=$1", [row.id])).rows).toEqual([
     { runtime_transport: "dialout" },
   ]);
@@ -97,7 +97,7 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
     host,
     {
       id: row.id,
-      runtimeTransport: "dialout",
+      modalTransport: "dialout",
       provider: "modal",
       orgId: people.org,
       visibility: "private",
@@ -136,7 +136,7 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   const row = await createSqlData(sql)(caller).sandboxes.insert({
     id: crypto.randomUUID(),
     provider: "modal",
-    runtimeTransport: "dialout",
+    modalTransport: "dialout",
     providerSandboxId: machine.id,
     goldenId: golden.id,
     orgId: people.org,

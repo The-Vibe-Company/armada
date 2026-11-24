@@ -132,7 +132,6 @@ Optional:
 | --- | --- |
 | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG` | The GitHub App: snapshot builds clone over the person's connection, and sandboxes get their GitHub identity. The server starts without them, but GitHub-backed snapshots cannot be built. See [github-app.md](github-app.md). |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | A scoped installation token for snapshot checkouts. See [golden-create.md](golden-create.md#server-environment). |
-| `ARMADA_GITHUB_RUNTIME_ENABLED` | Managed GitHub broker/wrappers; default off. Only exact `true` enables it. See [github-runtime.md](github-runtime.md) for existing-worker limitations. |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
 | `ARMADA_AUTH_PROVIDERS` | Social login offered to MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
 | `ARMADA_BOAT_DEPLOYMENT_ID` | Nonsecret Boat inventory identifier containing the environment and Armada server identity, for example `staging-armada-eu`. Use the same value across replicas and redeploys of one installation, and distinct values for installations sharing a Boat account. New managed Boat launches carry its digest in the `armada.deployment` label. An unset value leaves launches untagged. |

@@ -18,7 +18,7 @@ for (const operation of ["steer", "interrupt", "exec"] as const) {
     };
     const provider = {
       id: "boat",
-      capabilities: { claude: { steer: "native", interrupt: true } },
+      capabilities: { claude: { steer: "in-place", interrupt: true } },
       [operation]: async (request: unknown) => {
         requests.push(request);
         return operation === "steer"

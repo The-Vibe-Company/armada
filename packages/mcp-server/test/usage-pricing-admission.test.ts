@@ -1,11 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  createSqlGoldenStore,
-  createSqlVaultStore,
-  encryptSecret,
-  launchSandbox,
-  type Provider,
-} from "@armada/core/server";
+import { createSqlGoldenStore, createSqlVaultStore, encryptSecret, launchSandbox } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
@@ -69,7 +63,7 @@ test("Modal freezes a secret-free credential/catalog context before inference an
     let admitted: unknown;
     let prompts = 0;
     const fake = fakeBoat();
-    const provider: Provider = {
+    const provider: ReturnType<typeof fakeBoat>["provider"] = {
       ...fake.provider,
       id: "modal",
       async prompt(request) {

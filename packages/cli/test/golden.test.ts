@@ -347,7 +347,6 @@ function fakeCreateProvider(): Provider {
     deleteSnapshot: async () => {},
     fork: async () => ({ id: "bx_1", name: "box", state: "ready", providerState: "ready", labels: {} }),
     get: async () => ({ id: "bx_1", name: "box", state: "ready", providerState: "ready", labels: {} }),
-    prompt: async () => ({ promptId: "p", conversationId: "c", status: "queued" }),
     getPrompt: async () => ({ promptId: "p", status: "finished", done: true }),
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},

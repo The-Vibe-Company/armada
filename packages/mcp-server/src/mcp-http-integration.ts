@@ -2,16 +2,14 @@ import type { AuthStore } from "@armada/auth";
 import {
   createSqlMcpGrantPort,
   createSqlMcpInvalidationPort,
+  createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   decryptSecret,
   type McpConnectionInput,
   McpStdioError,
-  type Provider,
   parsePinnedMcpStdio,
   type Sql,
-  sshHydrateGitHubToken,
-  type TemplateService,
   VaultError,
 } from "@armada/core/server";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
@@ -27,11 +25,8 @@ import {
 import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
 import { createSqlData } from "./data.ts";
-import { createLegacyGitHubPreparation } from "./github-legacy.ts";
-import { createGitHubRuntime } from "./github-runtime.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
-import { createMcpLifecycle } from "./mcp-lifecycle.ts";
 import { boundedOAuthFetch, probeRemoteMcp, withMcpDiscoveryBudget } from "./mcp-probe.ts";
 
 const sha = async (v: string) =>
@@ -41,12 +36,6 @@ export function createMcpHttpIntegration(options: {
   sql: Sql;
   /** Server boot owns initial draining/backoff before periodic database work starts. */
   deferBackground?: boolean;
-  prepareReadableVariables?: TemplateService["prepare"];
-  /** Trusted server opt-in, never a request parameter. Defaults off. */
-  githubRuntimeEnabled?: boolean;
-  /** Default off until the coordinator verifies the legacy installer on a real Boat image. */
-  githubLegacyAutoPrepareEnabled?: boolean;
-  github?: import("@armada/core/server").GitHubResolveDeps;
   encryptionKey: string | undefined;
   publicUrl: string;
   dashboardUrl?: string;
@@ -57,35 +46,12 @@ export function createMcpHttpIntegration(options: {
   authStore: AuthStore;
   supabase: SupabaseProject;
   catalogAuthentication?: (serviceId: import("@armada/core").McpCatalogId) => Promise<string | undefined>;
-  /** Trusted persisted-identity resolver for renewing an ongoing physical VM turn. */
-  providerForSandbox?: (sandboxId: string) => Promise<Provider>;
 }) {
   const { sql } = options;
   const networkFetch = options.fetch ?? publicFetch;
   const oauthFetch = boundedOAuthFetch(networkFetch);
   const registry = createSqlMcpRegistry(sql, options.encryptionKey, {
     ...(options.catalogAuthentication ? { catalogAuthentication: options.catalogAuthentication } : {}),
-  });
-  const githubRuntime =
-    options.githubRuntimeEnabled === true && options.github && options.providerForSandbox
-      ? createGitHubRuntime({
-          sql,
-          github: options.github,
-          origin: new URL(options.publicUrl).origin,
-          providerForSandbox: options.providerForSandbox,
-        })
-      : undefined;
-  const prepareLegacyGitHub =
-    options.githubLegacyAutoPrepareEnabled === true && options.githubRuntimeEnabled !== true && options.github
-      ? createLegacyGitHubPreparation({ sql, github: options.github, hydrate: sshHydrateGitHubToken })
-      : undefined;
-  const lifecycle = createMcpLifecycle({
-    sql,
-    registry,
-    ...(options.prepareReadableVariables ? { prepareReadableVariables: options.prepareReadableVariables } : {}),
-    ...(githubRuntime ? { prepareGitHub: githubRuntime.prepare } : {}),
-    encryptionKey: options.encryptionKey,
-    origin: new URL(options.publicUrl).origin,
   });
   const grants = createSqlMcpGrantPort(sql);
   const store = createMcpOAuthStore(sql, options.encryptionKey);
@@ -520,37 +486,6 @@ export function createMcpHttpIntegration(options: {
       if (current) entry.lease.expiresAt = new Date(current.expires_at).getTime();
     }
   }
-  const renewalDue = new Map<string, number>();
-  let renewing: Promise<void> | undefined;
-  function renewActiveLeases(): Promise<void> {
-    if (renewing) return renewing;
-    const work = async () => {
-      if (!options.providerForSandbox) return;
-      for (const entry of activeLeases.values()) {
-        const id = entry.lease.sandboxId;
-        if (entry.lease.expiresAt > Date.now() + 300000 || (renewalDue.get(id) ?? 0) > Date.now()) continue;
-        const configured = (
-          await sql.query<{ configured: boolean }>(
-            "select configured from public.mcp_bootstraps where sandbox_id=$1::uuid",
-            [id],
-          )
-        ).rows[0]?.configured;
-        if (!configured) continue;
-        renewalDue.set(id, Date.now() + 60000);
-        try {
-          const provider = await options.providerForSandbox(id);
-          await lifecycle.renewLeases(provider, id);
-        } catch {
-          /* Do not extend on unknown physical state; other sandboxes remain unaffected. */
-        }
-        await refreshActiveExpiries(id);
-      }
-    };
-    renewing = work().finally(() => {
-      renewing = undefined;
-    });
-    return renewing;
-  }
   let draining: Promise<void> | undefined;
   function drainInvalidations(): Promise<void> {
     if (draining) return draining;
@@ -594,7 +529,6 @@ export function createMcpHttpIntegration(options: {
     timer = setInterval(() => {
       // Provider expiry I/O must never delay durable revoke/disable stream closure.
       void drainInvalidations().catch(() => gateway.close());
-      void renewActiveLeases().catch(() => gateway.close());
     }, 250);
     timer.unref();
   };
@@ -627,49 +561,16 @@ export function createMcpHttpIntegration(options: {
         return { status: result.status, ...(toolNames ? { toolNames } : {}) };
       },
     },
-    connections: {
-      ...lifecycle.connections,
-      renewLifetime: async (provider: Provider, sandboxId: string) => {
-        await lifecycle.connections.renewLifetime?.(provider, sandboxId);
-        await refreshActiveExpiries(sandboxId);
-      },
-      prepare: async (...args: Parameters<NonNullable<typeof lifecycle.connections.prepare>>) => {
-        await lifecycle.connections.prepare?.(...args);
-        await refreshActiveExpiries(args[1].id);
-      },
-    },
-    beforeResume: async (...args: Parameters<typeof lifecycle.beforeResume>) => {
-      const result = await lifecycle.beforeResume(...args);
-      await refreshActiveExpiries(result.sandboxId);
-      await drainInvalidations();
-      return result.shouldResume;
-    },
-    beforePrompt: async (...args: Parameters<typeof lifecycle.beforePrompt>) => {
-      const sandboxId = await lifecycle.beforePrompt(...args);
-      await refreshActiveExpiries(sandboxId);
-      await prepareLegacyGitHub?.(args[0], sandboxId);
-    },
-    beforeSnapshot: async (...args: Parameters<typeof lifecycle.beforeSnapshot>) => {
-      await lifecycle.beforeSnapshot(...args);
-      await drainInvalidations();
-    },
-    reconcileSandbox: async (...args: Parameters<typeof lifecycle.reconcile>) => {
-      await lifecycle.reconcile(...args);
-      await refreshActiveExpiries(args[1].id);
-    },
+    connections: createSqlMcpLaunchPort(sql, registry),
     drainInvalidations,
     startBackground,
-    renewActiveLeases,
     async close() {
       clearInterval(timer);
-      await Promise.allSettled([draining, renewing]);
+      await Promise.allSettled([draining]);
       await gateway.close();
       activeLeases.clear();
-      renewalDue.clear();
     },
     async route(request: Request): Promise<Response | null> {
-      const githubResponse = await githubRuntime?.route(request);
-      if (githubResponse) return githubResponse;
       const path = new URL(request.url).pathname;
       if (path === "/.well-known/armada-mcp-client.json") {
         // Bun sees HTTP behind TLS termination; keep the strict CIMD handler bound to

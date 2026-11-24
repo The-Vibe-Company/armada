@@ -218,7 +218,7 @@ async function connectGoldenRoute(options: GoldenControlOptions, caller: Caller,
 export async function providerForGolden(
   options: ProviderControlOptions,
   caller: Caller,
-  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility; runtimeTransport?: "dialout" },
+  golden: GoldenRecord & { sourceGoldenVisibility?: Visibility; modalTransport?: "dialout" },
 ): Promise<Provider> {
   if (options.providers) return options.providers.resolve(golden, caller);
   if (golden.provider !== "boat")

@@ -258,7 +258,7 @@ function fixture(
   };
   const client = fakeClient as unknown as ModalClient;
   const capabilities = {
-    steer: "native" as const,
+    steer: "in-place" as const,
     interrupt: true,
     resume: true,
     parallelConversations: true,

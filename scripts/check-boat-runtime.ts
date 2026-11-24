@@ -512,7 +512,7 @@ try {
     );
     if (operation === "steer") {
       if (
-        receipt.delivery !== (harness === "codex" ? "restart" : "native") ||
+        receipt.delivery !== (harness === "codex" ? "restart" : "in-place") ||
         receipt.promptId !== control.promptId ||
         receipt.conversationId !== launched.conversationId
       )

@@ -141,7 +141,7 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
       },
     } as unknown as ModalClient;
     const capabilities = {
-      steer: "native" as const,
+      steer: "in-place" as const,
       interrupt: true,
       resume: true,
       parallelConversations: true,

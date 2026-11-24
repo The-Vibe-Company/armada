@@ -5,11 +5,8 @@ import type {
   ExecRequest,
   ExecResult,
   ForkRequest,
-  InterruptRequest,
   Page,
-  PromptReceipt,
   PromptRequest,
-  PromptState,
   Provider,
   SandboxInfo,
   SandboxState,
@@ -17,18 +14,13 @@ import type {
   SnapshotRequest,
   SshConnection,
   SshKeyRequest,
-  SteerReceipt,
-  SteerRequest,
 } from "@armada/core";
 import {
   HARNESS_CAPABILITIES,
   HARNESS_CATALOG,
   HARNESSES,
   MACHINE_SIZE_CATALOG,
-  mapHarnesses,
   OUTPUT_MAX_BYTES,
-  PROMPT_STATUSES,
-  type PromptStatus,
   ProviderError,
   parseMachineSize,
   providerRateLimitDetails,
@@ -50,10 +42,6 @@ import {
   BoatApi,
   Configuration,
   type CreateSandboxRequest,
-  DeletionOperationKindEnum,
-  DeletionOperationResponseTypeEnum,
-  DeletionOperationStatusEnum,
-  type PromptRequestProviderEnum,
   type Sandbox,
   SandboxLastSnapshotStatusEnum,
   type SandboxListResponse,
@@ -67,14 +55,8 @@ import {
   VM_RESOURCE_MAX_FILE_BYTES,
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
-import { BoatRetentionUnconfirmed, invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
+import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
 import { RETAINED_OUTPUT_PATH, readRetainedOutputArchive } from "./retained-outputs.ts";
-
-/** Boat calls a prompt that is waiting for admission "sending". */
-function promptStatus(value: unknown): PromptStatus | undefined {
-  if (value === "sending") return "queued";
-  return (PROMPT_STATUSES as readonly unknown[]).includes(value) ? (value as PromptStatus) : undefined;
-}
 
 const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -86,7 +68,6 @@ const MAX_TTL_SECONDS = 2_592_000;
 export const BOAT_CAPABILITIES = Object.fromEntries(
   HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null).map((id) => [id, HARNESS_CAPABILITIES[id]]),
 ) as Pick<typeof HARNESS_CAPABILITIES, "claude" | "codex">;
-const BOAT_PROVIDER_NAME = mapHarnesses<PromptRequestProviderEnum | null>((descriptor) => descriptor.boatProvider);
 
 const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   starting: ["init", "provisioning", "provisioned", "cloning"],
@@ -189,15 +170,6 @@ export interface BoatProviderOptions {
   apiKey: string;
   /** Stable, nonsecret environment + server identity. Omit to leave inventory unbound. */
   deploymentId?: string;
-  /** Recheck/fence stopped authority before resume; false skips a stale observed resume. */
-  resumeRefused?: (provider: Provider, sandboxId: string) => Promise<void>;
-  beforeResume?: (provider: Provider, sandboxId: string) => Promise<boolean>;
-  /** Called only after explicit physical readiness, before Boat creates the native turn. */
-  beforeStop?: (provider: Provider, sandboxId: string) => Promise<void>;
-  afterPrompt?: (provider: Provider, sandboxId: string) => Promise<void>;
-  beforePrompt?: (provider: Provider, sandboxId: string) => Promise<void>;
-  /** Scrub Armada-owned transient configuration before the snapshot request, fail closed on I/O. */
-  beforeSnapshot?: (provider: Provider, sandboxId: string) => Promise<void>;
   baseUrl?: string;
   /** Seconds before boat stops a sandbox by itself, when a call names none. */
   defaultTtlSeconds?: number;
@@ -238,12 +210,6 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
-  observeSandboxDeletion(request: {
-    sandboxId: string;
-    generation: number;
-    operationId: string;
-    signal: AbortSignal;
-  }): Promise<DeleteReceipt>;
   /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
    * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
   listSandboxInventory(request?: {
@@ -257,9 +223,6 @@ export interface BoatProvider extends Provider {
   /** Terminal managed retirement only: caller must durably fence activation and
    * withhold unsynchronized native output before using this cloud-only port. */
   retireBestEffort?(sandboxId: string): Promise<void>;
-  conversations(
-    sandboxId: string,
-  ): Promise<readonly { id: string; running: boolean; lastHarness: string | null; lastModel: string | null }[]>;
 }
 
 const DEPLOYMENT_LABEL = "armada.deployment";
@@ -479,6 +442,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     return read(result.exitCode, result.stdout);
   }
 
+  const requiresRuntime = async (): Promise<never> => {
+    throw invalidRequest("Boat agent operations require an enrolled Armada runtime.");
+  };
   const provider: BoatProvider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
@@ -513,7 +479,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     },
 
     async snapshot(request: SnapshotRequest): Promise<SnapshotInfo> {
-      await options.beforeSnapshot?.(provider, request.sandboxId);
       const response = await call(() =>
         api.saveSavedSnapshot({ savedSnapshotSaveRequest: { sandboxId: request.sandboxId, name: request.name } }),
       );
@@ -744,31 +709,11 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
     async stopBestEffort(sandboxId: string): Promise<void> {
-      lifecycleTrace(sandboxId, "stop", "before_hook", "best_effort");
-      await options.beforeStop?.(provider, sandboxId);
       await archive(sandboxId);
     },
     async retireBestEffort(sandboxId: string): Promise<void> {
       await archive(sandboxId);
     },
-    async conversations(sandboxId: string) {
-      const response = await call(() => api.conversations({ sandboxId }, { signal: AbortSignal.timeout(10_000) }));
-      // Unknown activity cannot prove that it is safe to capture work or stop.
-      if (
-        response.conversations.some(
-          (conversation) =>
-            typeof conversation?.id !== "string" || !conversation.id || typeof conversation.running !== "boolean",
-        )
-      )
-        throw unexpectedAnswer("conversation activity");
-      return response.conversations.map(({ id, running, lastHarness, lastModel }) => ({
-        id,
-        running,
-        lastHarness,
-        lastModel,
-      }));
-    },
-
     async listSandboxInventory({ cursor, signal } = {}) {
       if (!deploymentId || !deploymentLabel) return { items: [], cursor: null };
       signal?.throwIfAborted();
@@ -797,132 +742,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         }
       }
       return page(items, response.pageInfo);
-    },
-
-    async prompt(request: PromptRequest): Promise<PromptReceipt> {
-      if (request.harness !== "claude" && request.harness !== "codex")
-        throw invalidRequest("This harness is not supported on Boat.");
-      // Boat accepted Fable but selected Sonnet before the first main API request (#1019).
-      // Refuse before resume/bootstrap/dispatch, including later turns; never substitute.
-      if (request.harness === "claude" && request.model === "claude-fable-5-2") {
-        throw invalidRequest(
-          "Claude Fable 5.2 is unavailable on Boat: the selected model was not honoured (model_selection_mismatch). Use another model or provider.",
-        );
-      }
-      let resumed = false;
-      const workflow = AbortSignal.timeout(90_000);
-      const signal = request.signal ? AbortSignal.any([workflow, request.signal]) : workflow;
-      signal.throwIfAborted();
-      if (request.text.trim() === "") throw invalidRequest("A prompt needs text.");
-      if (options.beforePrompt || options.beforeResume) {
-        let info = await provider.get(request.sandboxId, { signal });
-        if (info.state === "stopped") {
-          if (info.retainedSnapshot !== "usable") throw new BoatRetentionUnconfirmed();
-          await request.onResumeStage?.("accepted");
-          const shouldResume = await options.beforeResume?.(provider, request.sandboxId);
-          if (shouldResume !== false) {
-            try {
-              lifecycleTrace(request.sandboxId, "resume", "api_dispatch", "prompt");
-              await call(() => api.resume({ sandboxId: request.sandboxId }, { signal }));
-              await request.onResumeStage?.("provider_claimed");
-            } catch (error) {
-              const observed = await provider.get(request.sandboxId, { signal }).catch(() => null);
-              if (observed?.state === "stopped") await options.resumeRefused?.(provider, request.sandboxId);
-              if (!(error instanceof ProviderError) || error.status !== 409) throw error;
-              const concurrent = await provider.get(request.sandboxId, { signal });
-              if (!["starting", "ready", "running"].includes(concurrent.state)) throw error;
-            }
-          }
-          resumed = true;
-          info = await provider.get(request.sandboxId, { signal });
-        }
-        for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
-          signal.throwIfAborted();
-          await sleep(1000);
-          info = await provider.get(request.sandboxId, { signal });
-        }
-        if (info.state !== "ready" && info.state !== "running")
-          throw invalidRequest("Sandbox is not ready for a Boat prompt.");
-        if (resumed) await request.onResumeStage?.("machine_started");
-        signal.throwIfAborted();
-        await options.beforePrompt?.(provider, request.sandboxId);
-      }
-      if (resumed) await request.onResumeStage?.("harness_ready");
-      const response = await call(() =>
-        api.prompt(
-          {
-            sandboxId: request.sandboxId,
-            promptRequest: {
-              provider:
-                BOAT_PROVIDER_NAME[request.harness] ??
-                (() => {
-                  throw invalidRequest("This harness is not supported on Boat.");
-                })(),
-              prompt: request.text,
-              ...(request.conversationId ? { conversationId: request.conversationId } : { _new: true }),
-              ...(request.model ? { model: request.model } : {}),
-              ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
-              ...(request.fast !== undefined ? { fast: request.fast } : {}),
-            },
-          },
-          { signal },
-        ),
-      );
-      const conversationId = response.conversationId ?? response.promptRun?.conversationId;
-      if (!response.promptId || !conversationId) throw unexpectedAnswer("prompt receipt");
-      return {
-        promptId: response.promptId,
-        conversationId,
-        status: promptStatus(response.status) ?? "queued",
-        ...(resumed ? { resumed: true } : {}),
-      };
-    },
-
-    async getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState> {
-      request.signal?.throwIfAborted();
-      const deadline = AbortSignal.timeout(10_000);
-      const signal = request.signal ? AbortSignal.any([request.signal, deadline]) : deadline;
-      const response = await call(() => api.promptRunStatus(request, { signal }));
-      signal.throwIfAborted();
-      const run = response.promptRun;
-      const status = promptStatus(run?.status);
-      if (!run || status === undefined) throw unexpectedAnswer("prompt status");
-      if (run.done) await options.afterPrompt?.(provider, request.sandboxId);
-      return {
-        promptId: run.promptId,
-        status,
-        done: run.done,
-        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-      };
-    },
-
-    async steer(request: SteerRequest): Promise<SteerReceipt> {
-      if (request.text.trim() === "") throw invalidRequest("A steer needs text.");
-      const response = await call(() =>
-        api.steer({
-          sandboxId: request.sandboxId,
-          steerRequest: {
-            message: request.text,
-            ...(request.conversationId ? { conversation: request.conversationId } : {}),
-          },
-          ...(request.conversationId ? { conversation: request.conversationId } : {}),
-        }),
-      );
-      return {
-        conversationId: response.conversationId,
-        promptId: response.promptId,
-        ...(response.mode ? { mode: response.mode } : {}),
-      };
-    },
-
-    async interrupt(request: InterruptRequest): Promise<void> {
-      lifecycleTrace(request.sandboxId, "interrupt", "api_dispatch", "turns");
-      await call(() =>
-        api.interrupt({
-          sandboxId: request.sandboxId,
-          ...(request.conversationId ? { conversation: request.conversationId } : {}),
-        }),
-      );
     },
 
     async exec(request: ExecRequest): Promise<ExecResult> {
@@ -1051,34 +870,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       }
     },
 
-    async events() {
-      throw invalidRequest("Boat events require an enrolled Armada runtime.");
-    },
-
-    async quiesce(request) {
-      const active = (conversation: { id: string; running: boolean }) =>
-        (!request.conversationId || conversation.id === request.conversationId) && conversation.running;
-      // Idle reviewers have no turn to interrupt. Avoid making preservation
-      // depend on the harness accepting an unnecessary interruption.
-      const needsInterrupt = (await provider.conversations(request.sandboxId)).some(active);
-      lifecycleTrace(request.sandboxId, "quiesce", needsInterrupt ? "interrupt_needed" : "idle_no_interrupt", "turns");
-      if (!needsInterrupt) return;
-      await provider.interrupt(request);
-      const conversations = await provider.conversations(request.sandboxId);
-      lifecycleTrace(request.sandboxId, "quiesce", conversations.some(active) ? "pending" : "settled", "turns");
-      if (
-        conversations.some(
-          (conversation) =>
-            (!request.conversationId || conversation.id === request.conversationId) && conversation.running,
-        )
-      )
-        throw new ProviderError({
-          provider: PROVIDER_ID,
-          code: "sandbox_not_ready",
-          message: "Agent interruption is pending; refusing to stop before turns settle.",
-          retryable: true,
-        });
-    },
+    getPrompt: requiresRuntime,
+    steer: requiresRuntime,
+    interrupt: requiresRuntime,
+    events: requiresRuntime,
 
     async extendLifetime(request) {
       const before = await provider.get(request.sandboxId);
@@ -1100,27 +895,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {
-      lifecycleTrace(request.sandboxId, "stop", "before_hook", "ordinary");
-      await options.beforeStop?.(provider, request.sandboxId);
       lifecycleTrace(request.sandboxId, "stop", "api_dispatch", "ordinary");
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       lifecycleTrace(request.sandboxId, "stop", "api_accepted", "ordinary");
-    },
-
-    async observeSandboxDeletion({ sandboxId, operationId, signal }) {
-      const response = await call(() =>
-        api.getDeletionOperation({ operationId }, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }),
-      );
-      const operation = response.operation;
-      if (
-        response.ok !== true ||
-        response.type !== DeletionOperationResponseTypeEnum.DeletionOperation ||
-        operation?.id !== operationId ||
-        operation.kind !== DeletionOperationKindEnum.Sandbox ||
-        operation.targetId !== sandboxId
-      )
-        throw unexpectedAnswer("sandbox deletion operation");
-      return { status: operation.status === DeletionOperationStatusEnum.Completed ? "completed" : "pending" };
     },
 
     async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {

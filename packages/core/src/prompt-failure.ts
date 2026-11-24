@@ -2,7 +2,6 @@ import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from
 
 import { RUNTIME_STARTUP_FAILURES } from "./runtime-startup-failure.ts";
 
-/** Closed public explanations: never interpolate native error text. */
 const HELP: Record<string, { title: string; hint: string }> = {
   rate_limited: {
     title: "Provider limit reached",
@@ -56,7 +55,7 @@ const PHASES: Record<string, string> = {
   turn_start: "During the turn request.",
   initialization: "During agent initialization.",
 };
-export function describeNativeFailure(reason: string | null | undefined): { title: string; hint: string } | null {
+export function describePromptFailure(reason: string | null | undefined) {
   if (!reason) return null;
   const publicHelp = Object.values(HELP).find(
     (help) => reason === help.hint || reason === `${help.title}. ${help.hint}`,
@@ -74,20 +73,18 @@ export function describeNativeFailure(reason: string | null | undefined): { titl
   return phase ? { ...help, hint: `${PHASES[phase]} ${help.hint}` } : help;
 }
 
-/** Normalize public prompt diagnoses without exposing arbitrary native output. */
-export function promptFailureReason(message?: string): string {
+export function promptFailureReason(message?: string) {
   const help =
-    describeNativeFailure(message) ??
+    describePromptFailure(message) ??
     Object.values(HELP).find((help) => message === help.hint || message === `${help.title}. ${help.hint}`) ??
     HELP.harness_failed!;
   return `${help.title}. ${help.hint}`;
 }
 
-/** Closed sandbox-level explanations, including persisted legacy status reasons. */
-export function describeSandboxFailure(reason: string | null | undefined): { title: string; hint: string } {
+export function describeSandboxFailure(reason: string | null | undefined) {
   if (reason && Object.values(RUNTIME_STARTUP_FAILURES).some((message) => message === reason))
     return { title: "Sandbox startup failed", hint: reason };
-  const native = describeNativeFailure(reason);
+  const native = describePromptFailure(reason);
   if (native) return native;
   if (
     reason &&
@@ -126,8 +123,7 @@ export function describeSandboxFailure(reason: string | null | undefined): { tit
   };
 }
 
-/** Project persisted Docker failures through the shared closed public vocabulary. */
-export function dockerSandboxFailureReason(reason: string | null | undefined): string {
+export function dockerSandboxFailureReason(reason: string | null | undefined) {
   const explanation = describeSandboxFailure(reason);
   return explanation.title === "Sandbox failed" ? DOCKER_LAUNCH_FAILURE_MESSAGES.startup : explanation.hint;
 }

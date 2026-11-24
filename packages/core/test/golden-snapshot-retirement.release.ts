@@ -84,7 +84,6 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     stop: forbiddenVMAction,
     delete: forbiddenVMAction,
     exec: forbiddenVMAction,
-    prompt: forbiddenVMAction,
     id: placement,
     harnesses: ["claude", "codex"],
     backendIdentity: async () => ({ id: account }),

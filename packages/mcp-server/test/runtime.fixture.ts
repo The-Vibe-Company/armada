@@ -114,7 +114,7 @@ export async function runtimeFixture(
     status: "ready",
     visibility: "org",
     ...defaults,
-    ...(provider === "boat" ? { boatRuntime: true as const } : { runtimeTransport: "dialout" as const }),
+    ...(provider === "boat" ? { boatRuntime: true as const } : { modalTransport: "dialout" as const }),
     credentialId: account.id,
     credentialVersion: account.version,
   });

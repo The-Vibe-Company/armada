@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { promptFailureReason } from "../packages/core/src/prompt-failure.ts";
 import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlineTable from "./smoke-deadlines.json";

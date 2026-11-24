@@ -749,7 +749,7 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
               provider: "modal",
               status: "ready",
               credentialId: account,
-              runtimeTransport: "dialout",
+              modalTransport: "dialout",
             }),
           },
         },
@@ -1015,7 +1015,13 @@ test("queued public receipts remain usable across server reads, evidence, outcom
             result:
               name === "interrupt"
                 ? { id: input.id, interrupted: true }
-                : { id: input.id, promptId: "steer_native", conversationId: "history", delivery: "native", mode: null },
+                : {
+                    id: input.id,
+                    promptId: "steer_native",
+                    conversationId: "history",
+                    delivery: "in-place",
+                    mode: null,
+                  },
           };
         }
         expect(name).toBe("status");

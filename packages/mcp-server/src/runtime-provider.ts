@@ -135,8 +135,6 @@ export function createRuntimeProvider(
         }
       : {}),
     // Ordinary runtime commands carry no stop-time or retained-resume authority.
-    quiesce: unsupported,
-    prompt: unsupported,
     steer: operations
       ? async (request) => {
           target(request.sandboxId);

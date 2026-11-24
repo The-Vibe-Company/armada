@@ -68,9 +68,7 @@ with `--no-orphans`. Database-only core/MCP suites can share bounded workers of 
 12 files. This reuses the existing immutable migrated schema Blob, never a live
 connection between suites. The measured largest bounded SQL worker used 1.57 GB
 RSS locally; two fit the hosted runner's memory envelope without unbounded
-parallel test discovery. The existing `github-boat.test.ts` repository-artifact
-writer runs exclusively before its shard's pool; other artifact fixtures use
-temporary directories. Fixture APIs and row/schema/role isolation are unchanged.
+parallel test discovery. Artifact fixtures use temporary directories.
 Files using explicit process/server/driver/global-mock/environment manipulation
 are conservatively left isolated, as are callers of the audit helper that installs
 global console spies. Imported helpers must obey the same isolation rule; this

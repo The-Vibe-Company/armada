@@ -16,6 +16,8 @@ import {
   type LaunchOptions,
   type LaunchStores,
   launchSandbox as launchEnrolledSandbox,
+  type PromptReceipt,
+  type PromptRequest,
   type PromptStatus,
   type Provider,
   ProviderError,
@@ -75,7 +77,7 @@ function launchSandbox(
       async start({ host }) {
         return {
           epoch: "1",
-          prompt: (input) => host.prompt(input),
+          prompt: (input) => (host as ReturnType<typeof setup>["provider"]).prompt(input),
           prepareWorkspace: async () => ({ status: "not_connected" }),
         };
       },
@@ -252,7 +254,7 @@ describe("launch", () => {
         expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);
         expect(result.golden.visibility).toBe("org");
         expect(result.sandbox.providerSandboxId).toBe(childId);
-        expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
+        expect(result.sandbox.modalTransport).toBe(provider === "modal" ? "dialout" : undefined);
         expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
         expect(order).toEqual(readyOrder);
         if (!prompted) {
@@ -424,7 +426,7 @@ describe("launch", () => {
           order.push("mcp");
         },
       };
-      const calls: Parameters<Provider["prompt"]>[0][] = [];
+      const calls: PromptRequest[] = [];
       const result = await launchSandbox(
         world.provider,
         world.stores,
@@ -1147,7 +1149,7 @@ function setup(options: Setup) {
       deleted.push(sandboxId);
       return { status: "pending" };
     },
-  } as unknown as Provider;
+  } as unknown as Provider & { prompt(request: PromptRequest): Promise<PromptReceipt> };
 
   const caller = options.actor ?? owner;
   const goldens: GoldenStore = {
@@ -1595,10 +1597,10 @@ test("Modal launch writes readiness intervals and GitHub diagnostics to stderr",
   world.stores.credentials.admit = async () => {
     time += 17;
   };
-  const provider: Provider = {
+  const provider: Provider & Pick<typeof world.provider, "prompt"> = {
     ...world.provider,
     id: "modal",
-    async fork(request) {
+    async fork(request: Parameters<Provider["fork"]>[0]) {
       time += 23;
       return { ...(await world.provider.fork(request)), id: "modal-child" };
     },

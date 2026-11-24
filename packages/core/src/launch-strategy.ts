@@ -3,7 +3,6 @@ import type { GoldenActor } from "./golden.ts";
 import type { GitHubLaunchInfo, LaunchPlan, LaunchResult } from "./launch.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import type { LaunchStage } from "./launch-stages.ts";
-import type { Provider } from "./provider.ts";
 import type { SandboxRecord, SandboxStore } from "./sandbox.ts";
 
 interface LaunchStartContext {
@@ -21,11 +20,15 @@ export interface LaunchStrategy {
   forkEnv(plan: LaunchPlan): HarnessCredentials["env"];
   recordFields(
     plan: LaunchPlan,
-  ): Pick<Parameters<SandboxStore["insert"]>[0], "boatRuntime" | "runtimeTransport" | "pullRequestSource">;
+  ): Pick<Parameters<SandboxStore["insert"]>[0], "boatRuntime" | "modalTransport" | "pullRequestSource">;
   initialize(
     plan: LaunchPlan,
     context: LaunchStartContext,
-  ): Promise<{ github: GitHubLaunchInfo; prompt: Provider["prompt"]; runtime?: LaunchResult["runtime"] }>;
+  ): Promise<{
+    github: GitHubLaunchInfo;
+    prompt: (request: import("./provider.ts").PromptRequest) => Promise<import("./provider.ts").PromptReceipt>;
+    runtime?: LaunchResult["runtime"];
+  }>;
 }
 
 export function requireLaunchHeadroom(record: SandboxRecord): void {

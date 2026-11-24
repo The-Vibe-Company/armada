@@ -292,7 +292,7 @@ export function providerRegistry(
                 credentialScope: tokens.scope,
               },
             );
-            if (target.runtimeTransport === "dialout") {
+            if (target.modalTransport === "dialout") {
               if (!options.runtimeProviderFor || !target.id) throw new Error("Runtime routing unavailable.");
               return options.runtimeProviderFor(host, target, caller, captureRuntimeWork);
             }

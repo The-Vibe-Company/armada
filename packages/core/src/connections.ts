@@ -621,6 +621,7 @@ export function createSqlMcpLaunchPort(sql: Sql, registry: McpRegistry) {
     async validate(actor: { userId: string; orgId: string }, ids: string[], _visibility: "private" | "org") {
       for (const id of ids) {
         const c = await registry.get(actor.userId, actor.orgId, id);
+        if (c.transport === "stdio") parsePinnedMcpStdio(c.command ?? "", c.args ?? []);
         if (c.status !== "connected")
           throw new VaultError(
             "forbidden",

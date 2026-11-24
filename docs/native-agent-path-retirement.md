@@ -1,5 +1,7 @@
 # Native agent path retirement plan
 
+> Historical rollout plan. The coordinator confirmed zero remaining provider-run Boat sandboxes for #2742. #4075 removes the drain command and provider-run agent paths. Schema retirement follows separately in #2749.
+
 This is the Step 1 design note for [#2733](https://github.com/The-Vibe-Company/armada/issues/2733). It supersedes [#2602](https://github.com/The-Vibe-Company/armada/issues/2602) under the owner decisions D2, D3 and NC in [#2835](https://github.com/The-Vibe-Company/armada/issues/2835). Armada retires the provider-specific agent paths and keeps provider-specific compute and storage. During the rollout, a selector change affects future launches. Existing sandboxes keep their persisted route until drained.
 
 ## What runs today
@@ -83,37 +85,6 @@ For rollback across this cutover, keep new subscription enrollment quiesced
 while the new workers settle all pending retained native Modal subscription
 stops. Stop the new instances before restarting the older revision. An
 unresolved retained stop blocks rollback to that revision.
-
-### Coordinator command
-
-The Modal drain command has been retired. The [coordinator recorded zero Modal candidates](https://github.com/The-Vibe-Company/armada/issues/2742#issuecomment-7077924142).
-
-Run `bun scripts/ops/drain-native.ts --provider boat --dry-run` with
-`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory access.
-
-For a real pass, wait for Boat's release and checklist gate, disable new native
-admissions, and drain every replica that could still admit or finish a native
-launch from before the cutover. Apply the strict-stop migration, deploy the
-strict-stop worker, and drain older
-lifecycle workers before issuing strict stops. Prepare the checkout with
-`bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
-`ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
-`ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
-Run `bun scripts/ops/drain-native.ts --provider boat` to require verified
-preservation. For the owner-approved drain of native Boat rows without a
-preservation receipt, run
-`bun scripts/ops/drain-native.ts --provider boat --allow-unpreserved-boat`.
-The opt-in can discard unpushed work and reports confirmed deletions without
-receipts in the aggregate `deletedWithoutProof` count. The same authorization,
-stop, placement, and provider confirmation checks apply.
-[Owner decision](https://github.com/The-Vibe-Company/armada/issues/2742#issuecomment-7096183771)
-
-The default command reports eligible running rows as incomplete while the
-lifecycle worker verifies work preservation and requests a retained stop. The
-opt-in requests an ordinary stop if the row has no receipt. Rerun after the stop
-settles. Rows with valid archived proof use the recovery handoff. A nonzero failed
-count returns a failing exit status. A complete inventory rerun reports zero
-candidates.
 
 ### Coordinator ledger
 

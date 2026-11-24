@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
-import type { Provider } from "@armada/core";
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -12,7 +11,6 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
-import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -139,31 +137,6 @@ test("Modal runtime MCP lease spans the command ceiling but follows live sandbox
     expect(await leases.validate(hash, "tools")).not.toBeNull();
     await f.db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [f.row.id]);
     expect(await leases.validate(hash, "tools")).toBeNull();
-  } finally {
-    await f.close();
-  }
-});
-
-test("native lease renewal leaves an epoch-bound runtime gateway lease active", async () => {
-  const x = await fixture("modal"),
-    { f } = x;
-  try {
-    await x.send(f.caller, f.input());
-    const { hash } = x.configuration();
-    const lifecycle = createMcpLifecycle({
-      sql: f.sql,
-      encryptionKey: ENCRYPTION_KEY,
-      origin: "https://armada.test",
-      registry: x.registry,
-    });
-    const provider = {
-      id: "modal",
-      async get() {
-        return { state: "stopped" };
-      },
-    } as unknown as Provider;
-    await lifecycle.renewLeases(provider, f.row.id);
-    expect(await createSqlMcpLeasePort(f.sql).validate(hash, "tools")).not.toBeNull();
   } finally {
     await f.close();
   }
@@ -757,43 +730,6 @@ test.each(["boat", "modal"] as const)(
     }
   },
 );
-
-test("native Modal MCP leases stay epoch-free and usable without an enrolled runtime", async () => {
-  const x = await fixture("modal"),
-    { f } = x;
-  try {
-    const native = await createSqlData(f.sql)(f.caller).sandboxes.insert({
-      id: crypto.randomUUID(),
-      provider: "modal",
-      providerSandboxId: "native-modal",
-      goldenId: f.row.goldenId,
-      orgId: f.people.org,
-      ownerId: f.people.owner,
-      harness: "codex",
-      status: "ready",
-      visibility: "org",
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-    });
-    await x.service.connections.bind(native.id, [x.c.id]);
-    const leases = createSqlMcpLeasePort(f.sql),
-      hash = createHash("sha256").update(crypto.randomUUID()).digest("hex");
-    await leases.issue({
-      sandboxId: native.id,
-      connectionId: x.c.id,
-      tokenHash: hash,
-      operations: ["tools"],
-      expiresAt: new Date(Date.now() + 60000),
-    });
-    expect(
-      (await f.db.query<{ runtime_epoch: string | null }>("select runtime_epoch from mcp_leases where hash=$1", [hash]))
-        .rows[0]?.runtime_epoch,
-    ).toBeNull();
-    expect(await leases.validate(hash, "tools")).not.toBeNull();
-  } finally {
-    await f.close();
-  }
-});
 
 describe("model-only runtime completion", () => {
   test("the first prompt receives only self completion when no remote MCP connections were selected", async () => {

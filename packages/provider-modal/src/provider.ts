@@ -260,7 +260,6 @@ export function createModalProvider(options: ModalProviderOptions) {
   };
   const provider: ModalProvider = {
     id: "modal",
-    prompt: requiresRuntime,
     getPrompt: requiresRuntime,
     steer: requiresRuntime,
     interrupt: requiresRuntime,

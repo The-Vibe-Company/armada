@@ -107,7 +107,6 @@ function readyProvider(): Provider {
     deleteSnapshot: async () => {},
     fork: async () => sandbox(),
     get: async () => sandbox(),
-    prompt: async () => ({ promptId: "p", conversationId: "c", status: "queued" }),
     getPrompt: async () => ({ promptId: "p", status: "finished", done: true }),
     steer: async () => ({ conversationId: "c", promptId: "p" }),
     interrupt: async () => {},

@@ -41,7 +41,7 @@ interface Reply {
   envelope?: unknown;
   golden?: { id?: string; orgId?: string; provider?: string };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
-  runtimeTransport?: "dialout";
+  modalTransport?: "dialout";
   githubReady?: boolean;
   mcpReady?: boolean;
   status?: string;
@@ -79,7 +79,7 @@ interface Reply {
     goldenId?: string;
     skills?: unknown;
     provider?: string;
-    runtimeTransport?: string;
+    modalTransport?: string;
     externalRef?: string;
     templateManifest?: TemplateManifest;
   };
@@ -722,7 +722,7 @@ try {
   if (!templateSource) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: launchRef }));
   const raw = await api(route, {
     ...(!ordinaryMode
-      ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: launchProvider, harness }
+      ? { runtimeVersion: 1, modalTransport: "dialout", provider: launchProvider, harness }
       : templateSource
         ? {}
         : { provider: launchProvider, harness }),
@@ -754,7 +754,7 @@ try {
             ...(raw.id ? { id: raw.id } : {}),
             goldenId: templateSource.goldenId,
             provider: "modal",
-            ...(raw.runtimeTransport ? { runtimeTransport: raw.runtimeTransport } : {}),
+            ...(raw.modalTransport ? { modalTransport: raw.modalTransport } : {}),
             ...(raw.status ? { status: raw.status } : {}),
             skills: raw.manifest?.skillReceipts,
           },
@@ -846,7 +846,7 @@ try {
     promptId = launched.promptId ?? undefined;
     if (
       !id ||
-      launched.sandbox.runtimeTransport !== "dialout" ||
+      launched.sandbox.modalTransport !== "dialout" ||
       launched.runtime?.kind !== "armada" ||
       !/^[1-9][0-9]{0,18}$/.test(epoch ?? "") ||
       (!idleMode && (!promptId || !launched.conversationId))

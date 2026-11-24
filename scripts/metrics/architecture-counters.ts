@@ -3,9 +3,9 @@ import { resolve } from "node:path";
 import {
   isNativePathSource,
   isNonTestSource,
-  nativePathPattern,
   providerAdapterExclusions,
   providerBranchPattern,
+  scanNativePaths,
 } from "./architecture-rules";
 
 const migrationPath = /^supabase\/migrations\/[^/]+\.sql$/;
@@ -35,7 +35,7 @@ export function countArchitecture(files: ReadonlyMap<string, string>) {
       sourceLines += content === "" ? 0 : content.split("\n").length - Number(content.endsWith("\n"));
       if (path.endsWith(".ts") || path.endsWith(".tsx")) {
         if (isNativePathSource(path)) {
-          const matches = Array.from(content.matchAll(nativePathPattern)).length;
+          const matches = Array.from(scanNativePaths(path, content)).length;
           nativeReferences += matches;
           nativeReferenceFiles += Number(matches > 0);
         }

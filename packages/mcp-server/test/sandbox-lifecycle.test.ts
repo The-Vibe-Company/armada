@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
-import { createSqlData, type ServerSandboxPatch } from "../src/data.ts";
+import { createSqlData } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -28,95 +28,6 @@ function expectDeadlineWithin(deadline: number, before: number, after: number, t
   expect(deadline).toBeGreaterThanOrEqual(Math.floor(before) + ttlSeconds * 1000);
   expect(deadline).toBeLessThanOrEqual(Math.ceil(after) + ttlSeconds * 1000);
 }
-
-test.each(["ready", "publication failure", "activity lease", "stop intent"] as const)(
-  "native ready observation with %s",
-  async (scenario) => {
-    const { db, people } = await sharedDatabase();
-    const sql = bunLikeSql(db);
-    const id = crypto.randomUUID();
-    const placement = "bx_23456789";
-    await db.query(
-      `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,expires_at)
-       select $1,'boat',$2,id,$3,$4,'claude','running',now()+interval '1 hour'
-       from public.goldens where name='shared'`,
-      [id, placement, people.org, people.owner],
-    );
-    const read = async () =>
-      (
-        await sql.query<{
-          status: string;
-          reconcile_lease: string | null;
-          reconcile_after: Date;
-          lifecycle_generation: string;
-          activity_lease_id: string | null;
-          stop_requested_at: Date | null;
-          last_observed_at: Date | null;
-        }>(
-          `select status,reconcile_lease,reconcile_after,lifecycle_generation::text,activity_lease_id,
-             stop_requested_at,last_observed_at from public.sandboxes where id=$1`,
-          [id],
-        )
-      ).rows[0]!;
-    const activity = crypto.randomUUID();
-    if (scenario === "activity lease")
-      await sql.query(
-        "update public.sandboxes set activity_lease_id=$2,activity_until=now()-interval '1 second' where id=$1",
-        [id, activity],
-      );
-    const publicationFailure = new Error("injected native turn publication failure");
-    let claimed: Awaited<ReturnType<typeof read>> | undefined;
-    const provider: Pick<Provider, "id" | "get"> = {
-      id: "boat",
-      async get() {
-        claimed = await read();
-        if (scenario === "stop intent")
-          await sql.query("update public.sandboxes set stop_requested_at=now() where id=$1", [id]);
-        return { id: placement, name: placement, state: "ready", providerState: "ready", labels: {} };
-      },
-    };
-    const workerSql: Sql =
-      scenario === "publication failure"
-        ? {
-            query: sql.query,
-            transaction: (work) =>
-              sql.transaction!((tx) =>
-                work({
-                  async query<T>(statement: string, args?: unknown[]) {
-                    const result = await tx.query<T>(statement, args);
-                    if (statement.includes("public.sandbox_transition(") && args?.[5] === "native_turn_settled")
-                      throw publicationFailure;
-                    return result;
-                  },
-                }),
-              ),
-          }
-        : sql;
-    const run = createSandboxLifecycle(workerSql, async () => provider as Provider).reconcileOne();
-    if (scenario === "publication failure") {
-      await expect(run).rejects.toBe(publicationFailure);
-      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
-      expect(await read()).toEqual(claimed);
-    } else {
-      expect(await run).toBe(true);
-      if (!claimed?.reconcile_lease) throw Error("reconciler did not claim the sandbox");
-      const row = await read();
-      expect(row.status).toBe(scenario === "ready" ? "ready" : "running");
-      expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_generation).toBe(claimed.lifecycle_generation);
-      if (scenario === "activity lease") expect(row.activity_lease_id).toBe(activity);
-      if (scenario === "stop intent") expect(row.stop_requested_at).toBeTruthy();
-    }
-    expect(
-      (await sql.query("select actor,code,generation::text from public.sandbox_transitions where sandbox_id=$1", [id]))
-        .rows,
-    ).toEqual(
-      scenario === "ready"
-        ? [{ actor: "native_turn", code: "native_turn_settled", generation: claimed?.lifecycle_generation }]
-        : [],
-    );
-  },
-);
 
 // Private Docker reservations have their own mailbox/local TTL owner, not a full
 // Provider adapter. The generic worker must neither claim nor diagnose them.
@@ -202,63 +113,6 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   ]);
   expect(await readHistory(people.admin)).toEqual([]);
 });
-
-test.each(["accepted", "superseded", "stop intent", "journal failure"] as const)(
-  "promptless native launch settlement (%s)",
-  async (scenario) => {
-    const { db, people } = await sharedDatabase();
-    const store = createSqlData(bunLikeSql(db))({
-      via: "service",
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-    }).sandboxes;
-    const activityToken = crypto.randomUUID();
-    const {
-      rows: [launch],
-    } = await db.query<{ id: string }>(
-      `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
-       lifecycle_generation, activity_lease_id, activity_until, stop_requested_at)
-     select 'boat', 'fixture', id, org_id, $1, 'claude', $3::sandbox_status, 1, $2, now()+interval '1 minute',
-       case when $4 then now() end
-     from goldens where name='shared' returning id`,
-      [people.owner, activityToken, scenario === "superseded" ? "stopping" : "starting", scenario === "stop intent"],
-    );
-    if (!launch) throw Error("missing launch");
-    const accepted = scenario === "accepted";
-    const statusBefore = scenario === "superseded" ? "stopping" : "starting";
-    if (scenario === "journal failure") {
-      await db.exec(`alter table sandbox_transitions add constraint reject_native_ready
-        check (code <> 'native_launch_ready')`);
-    }
-    try {
-      const patch = { status: "ready", finishActivity: true, expectedGeneration: 1, activityToken } as const;
-      const finish = store.update(launch.id, patch);
-      if (accepted) await finish;
-      else
-        await expect(finish).rejects.toThrow(
-          scenario === "journal failure" ? "reject_native_ready" : "publication is stale",
-        );
-      const row = await db.query(
-        "select status, lifecycle_generation::int as generation, activity_lease_id from sandboxes",
-      );
-      expect(row.rows).toEqual([
-        {
-          status: accepted ? "ready" : statusBefore,
-          generation: accepted ? 2 : 1,
-          activity_lease_id: accepted ? null : activityToken,
-        },
-      ]);
-      const journal = await db.query<{ edge: unknown[] }>(`select jsonb_build_array(
-        from_status, to_status, actor, code, generation) as edge from sandbox_transitions`);
-      expect(journal.rows.map(({ edge }) => edge)).toEqual(
-        accepted ? [["starting", "ready", "lifecycle_runner", "native_launch_ready", 2]] : [],
-      );
-    } finally {
-      if (scenario === "journal failure")
-        await db.exec("alter table sandbox_transitions drop constraint reject_native_ready");
-    }
-  },
-);
 
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
   const { db, people } = await sharedDatabase();
@@ -431,7 +285,6 @@ for (const outcome of [
   "snapshot-owner-removed",
   "expired",
   "expired-external-stop",
-  "interrupt-pending",
   "unconfirmed",
   "stop-error",
   "stale",
@@ -490,7 +343,6 @@ for (const outcome of [
         if (new URL(request.url).pathname.endsWith("/conversations"))
           return Response.json({
             ok: true,
-            conversations: outcome === "interrupt-pending" ? [{ id: "conv-pending", running: true }] : [],
           });
         if (outcome === "snapshot-owner-removed")
           await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
@@ -615,9 +467,7 @@ for (const outcome of [
           : "stopping",
     );
     expect(row.status_reason).toBe(
-      ["expired", "expired-external-stop", "interrupt-pending", "unconfirmed", "stop-error"].includes(outcome)
-        ? "expired"
-        : null,
+      ["expired", "expired-external-stop", "unconfirmed", "stop-error"].includes(outcome) ? "expired" : null,
     );
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
@@ -677,13 +527,10 @@ for (const outcome of [
       expect(row.usage_runtime_seconds).not.toBeNull();
       expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
     }
-    if (outcome === "unconfirmed" || outcome === "stop-error" || outcome === "interrupt-pending")
-      expect(row.lifecycle_error).toContain("Retrying");
+    if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
     expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
     expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-      externalStop || outcome === "expired-external-stop" || outcome === "stale" || outcome === "interrupt-pending"
-        ? 0
-        : 1,
+      externalStop || outcome === "expired-external-stop" || outcome === "stale" ? 0 : 1,
     );
   });
 }
@@ -911,148 +758,6 @@ for (const evidence of [
       expect((await db.query("select state,outcome from public.jobs where id=$1", [pendingJobId])).rows).toEqual([
         { state: "failed", outcome: failureReceipt },
       ]);
-  });
-}
-
-for (const observation of ["stopped", "expired", "unavailable"] as const) {
-  test(`failed launch reason survives terminal reconciliation (${observation})`, async () => {
-    const { db, people } = await sharedDatabase();
-
-    const sql = bunLikeSql(db);
-    const id = crypto.randomUUID();
-    const reason = "Repository initialization failed";
-    const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
-    if (!golden) throw Error("missing golden");
-    await db.query(
-      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,status_reason,expires_at)
-        values($1,'boat','bx_23456789',$2,$3,$4,'claude','failed',$5,now()-interval '1 second')`,
-      [id, golden.id, people.org, people.owner, reason],
-    );
-    const methods: string[] = [];
-    let stopped = observation === "stopped";
-    const provider = createBoatProvider({
-      apiKey: "test-key",
-      beforeResume: async () => true,
-      beforePrompt: async () => {},
-      fetch: (async (input: Request | string | URL, init?: RequestInit) => {
-        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
-        methods.push(request.method);
-        if (observation === "unavailable")
-          return Response.json({ error: { code: "unavailable", message: "test" } }, { status: 503 });
-        const path = new URL(request.url).pathname;
-        if (path.endsWith("/resume")) {
-          stopped = false;
-          return Response.json({ ok: true });
-        }
-        if (path.endsWith("/prompt"))
-          return Response.json({ ok: true, promptId: "prompt_1", conversationId: "conv_1", status: "queued" });
-        if (request.method === "POST" && new URL(request.url).pathname.endsWith("/stop")) {
-          stopped = true;
-          return Response.json({ ok: true });
-        }
-        if (request.method === "POST") return Response.json({ ok: true });
-        if (path.endsWith("/conversations")) return Response.json({ ok: true, conversations: [] });
-        return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "running" }) });
-      }) as typeof fetch,
-    });
-    let resolutions = 0;
-    const lifecycle = createSandboxLifecycle(sql, async () => {
-      resolutions++;
-      return provider;
-    });
-    await lifecycle.reconcileOne();
-    const row = (
-      await db.query<{
-        status: string;
-        status_reason: string;
-        stopped_at: Date | null;
-        last_observed_at: Date | null;
-        reconcile_lease: string | null;
-        lifecycle_error: string | null;
-      }>(
-        "select status,status_reason,stopped_at,last_observed_at,reconcile_lease,lifecycle_error from sandboxes where id=$1",
-        [id],
-      )
-    ).rows[0];
-    expect(row?.status).toBe("failed");
-    expect(row?.status_reason).toBe(reason);
-    expect(row?.reconcile_lease).toBeNull();
-    expect(methods.includes("DELETE")).toBe(false);
-    if (observation === "unavailable") {
-      expect(row?.stopped_at).toBeNull();
-      expect(row?.lifecycle_error).toContain("Retrying");
-    } else {
-      expect(row?.stopped_at).not.toBeNull();
-      expect(row?.last_observed_at).not.toBeNull();
-      expect(row?.lifecycle_error).toBeNull();
-      expect(methods).toEqual(
-        observation === "expired" ? ["GET", "GET", "GET", "GET", "GET", "POST", "POST", "GET"] : ["GET"],
-      );
-    }
-    // Re-due historical failures: only unknown outcomes may consume provider work again.
-    await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-    const calls = methods.length;
-    expect(await lifecycle.reconcileOne()).toBe(observation === "unavailable");
-    expect(resolutions).toBe(observation === "unavailable" ? 2 : 1);
-    expect(methods.length).toBe(calls + (observation === "unavailable" ? 1 : 0));
-    if (observation !== "unavailable") {
-      const store = createSqlData(sql)({
-        via: "service",
-        userId: people.owner,
-        orgs: [{ orgId: people.org, role: "member" }],
-      }).sandboxes;
-      const confirmed = await store.get(id);
-      if (!confirmed) throw Error("missing confirmed failed sandbox");
-      // The production send-admission owner rearms the persisted policy, then the
-      // real SDK resumes the stopped machine and admits its next native prompt.
-      const beforeRearm = await databaseNowMs(sql);
-      const admission = {
-        renewLifecycle: true,
-        stopRequested: false,
-        nativeResumeAdmission: confirmed.providerSandboxId,
-      } satisfies ServerSandboxPatch;
-      await sandboxActivity(store, confirmed, admission, async (signal) => {
-        const receipt = await provider.prompt({
-          sandboxId: confirmed.providerSandboxId,
-          harness: "claude",
-          text: "continue",
-          signal,
-        });
-        await store.recordNativePrompt?.(confirmed.id, confirmed.providerSandboxId, receipt.promptId);
-        const patch = {
-          nativeSendReceipt: { fromState: "starting", placement: confirmed.providerSandboxId },
-          taskPromptId: receipt.promptId,
-          conversationIds: [receipt.conversationId],
-          stoppedAt: null,
-        } satisfies ServerSandboxPatch;
-        return { result: receipt, patch };
-      });
-      const afterRearm = await databaseNowMs(sql);
-      const resumed = await store.get(id);
-      expect(resumed?.stoppedAt).toBeNull();
-      expect(resumed?.status).toBe("running");
-      expect(resumed?.lifecycleGeneration).toBe(3);
-      // The rearm writes the deadline and reconcile_after from one transaction
-      // clock; their gap is the TTL regardless of the runner's wall clock.
-      const rearmed = await db.query<{ gap_seconds: number }>(
-        "select extract(epoch from expires_at - reconcile_after)::float8 as gap_seconds from sandboxes where id=$1",
-        [id],
-      );
-      expect(rearmed.rows[0]?.gap_seconds).toBe(resumed?.effectiveTtlSeconds);
-      // A shared clock error in the write (for example an expired deadline)
-      // falls outside the database samples taken around the rearm.
-      expectDeadlineWithin(
-        Date.parse(resumed?.expiresAt ?? ""),
-        beforeRearm,
-        afterRearm,
-        resumed?.effectiveTtlSeconds ?? 0,
-      );
-      const beforeObservation = methods.length;
-      expect(await lifecycle.reconcileOne()).toBe(true);
-      expect(resolutions).toBe(2);
-      expect(methods.slice(beforeObservation)).toEqual(["GET", "GET"]);
-      expect((await store.get(id))?.status).toBe("running");
-    }
   });
 }
 
