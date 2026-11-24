@@ -14,20 +14,24 @@ test("user POST operations reach the dashboard proxy and direct-server POSTs sta
       if (operation.route.method !== "POST" || "anonymous" in operation) continue;
       const { route } = operation;
       const direct = "directServer" in operation;
+      const segments = controlRouteKey(route)
+        .split("/")
+        .map((segment) => segment.replace(/^\{[^}]+\}$/, id));
+      const path = `/api/v1/${segments.join("/")}`;
       const forwarded: string[] = [];
       const response = await forwardControl(
-        new Request(`https://dashboard.test${route.path}`, {
+        new Request(`https://dashboard.test${path}`, {
           method: "POST",
           headers: { authorization: "Bearer fixture" },
         }),
-        controlRouteKey(route).split("/"),
+        segments,
         async (input) => {
           forwarded.push(input.href);
           return new Response(null, { status: 204 });
         },
       );
       expect(response.status, route.path).toBe(direct ? 404 : 204);
-      expect(forwarded, route.path).toEqual(direct ? [] : [`https://control.test${route.path}`]);
+      expect(forwarded, route.path).toEqual(direct ? [] : [`https://control.test${path}`]);
     }
 
     const response = await forwardControl(
