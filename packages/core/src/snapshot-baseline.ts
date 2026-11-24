@@ -1,3 +1,4 @@
+import { MANAGED_BUN, MANAGED_BUN_PROVISION, outputCollectorFailureDetail } from "./managed-bun-path.ts";
 import type { ExecResult } from "./provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 
@@ -33,6 +34,9 @@ const packages = [
 
 const installFailure = "ARMADA_BASELINE_INSTALL_FAILED";
 
+const managedBunProvisionLines = [...MANAGED_BUN_PROVISION.split("\n"), "provision_managed_bun_dirs"].map(shellQuote);
+const provisionManagedBun = `/bin/sh -c "$(printf '%s\\n' ${managedBunProvisionLines.join(" ")})"`;
+
 function installSteps(apt: string, reportStep = false) {
   return [
     ["apt-get update", "apt-get update"],
@@ -52,10 +56,10 @@ function installSteps(apt: string, reportStep = false) {
     ["tar (Node archive)", "tar -xJf node.tar.xz --strip-components=1 -C /usr/local"],
     ["npm install (Bun)", `npm install -g --force --no-audit --no-fund bun@${SNAPSHOT_BASELINE_BUN}`],
     ["npm cache clean", "npm cache clean --force"],
-    ["install (Bun directory)", "install -d -m 755 /opt/armada/runtime-bun"],
+    ["install (Bun directory)", provisionManagedBun],
     [
       "install (Bun executable)",
-      "install -m 555 /usr/local/lib/node_modules/bun/bin/bun.exe /opt/armada/runtime-bun/bun",
+      `/usr/bin/install -o root -g root -m 555 -T /usr/local/lib/node_modules/bun/bin/bun.exe ${MANAGED_BUN}`,
     ],
     [
       "curl (Git archive)",
@@ -109,7 +113,11 @@ export function snapshotBaselineInstallFailure(result: ExecResult) {
   const step = marker?.slice(installFailure.length + 1);
   const command = step && steps.includes(step) ? step : "builder baseline shell (bash or sudo -n bash)";
   const status = Number.isInteger(result.exitCode) ? `exited ${result.exitCode}` : "returned no exit code";
-  return `Snapshot baseline installation failed: ${command} ${status}.`;
+  const failedCheck =
+    result.exitCode === 86 && step === "install (Bun directory)"
+      ? result.stderr.split("\n").map(outputCollectorFailureDetail).findLast(Boolean)
+      : undefined;
+  return `Snapshot baseline installation failed: ${command} ${status}.${failedCheck ? ` Failed check: ${failedCheck}.` : ""}`;
 }
 
 const checks = {
@@ -119,7 +127,7 @@ const checks = {
   node: `[ "$(node --version)" = 'v${NODE}' ]`,
   npm: `[ "$(npm --version)" = '${NPM}' ]`,
   // The golden recipe can select a different project Bun on PATH.
-  bun: `bun --version && [ "$(/opt/armada/runtime-bun/bun --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
+  bun: `bun --version && [ "$(${MANAGED_BUN} --version)" = '${SNAPSHOT_BASELINE_BUN}' ]`,
   git: `[ "$(/usr/bin/git --version)" = 'git version ${GIT}' ] && [ "$(git --version)" = 'git version ${GIT}' ]`,
   gh: "/usr/bin/gh --version && gh --version",
   "build-essential": "cc --version && c++ --version && make --version && test -r /usr/include/stdio.h",
