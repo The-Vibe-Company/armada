@@ -229,9 +229,10 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       const target = input.action === "launch" ? crypto.randomUUID() : input.sandboxId;
       await tx.query(
         `insert into public.orchestrator_child_operations
-          (id,orchestrator_id,owner_id,org_id,parent_generation,action,target_id,idempotency_key,request_digest,scope_target,parent_epoch,reconcile_after)
+          (id,orchestrator_id,owner_id,org_id,parent_generation,action,target_id,idempotency_key,request_digest,scope_target,parent_epoch,reconcile_after,error_code)
           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-            clock_timestamp() + $12::integer * interval '1 millisecond')`,
+            clock_timestamp() + $12::integer * interval '1 millisecond',
+            case when $6='launch' then 'child_launch_admission_pending' end)`,
         [
           id,
           principal.orchestratorId,
@@ -513,7 +514,8 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           select id,(state='pending' and (dispatched_at is null or action='launch')) as abandoned
           from public.orchestrator_child_operations c where state in ('pending','uncertain')
             and reconcile_after<=now() and (reconcile_until is null or reconcile_until<now())
-            and (action<>'launch' or (state='pending' and provider_sandbox_id is null and not exists(
+            and (action<>'launch' or (state='pending' and provider_sandbox_id is null
+              and (dispatched_at is null or error_code='child_launch_admission_pending') and not exists(
               select 1 from public.jobs where kind='launch' and sandbox_id=c.target_id
                 and org_id=c.org_id and request_owner_id=c.owner_id
             )))

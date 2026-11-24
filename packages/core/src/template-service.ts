@@ -26,7 +26,7 @@ import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
 import { validateSkillPins } from "./skillpack.ts";
 import type { LaunchTemplate, TemplateDefinition } from "./templates.ts";
-import { VaultError } from "./vault-error.ts";
+import { VaultError, type VaultErrorCode } from "./vault-error.ts";
 
 export class DockerTemplateAdmissionRefused extends Error {
   constructor(
@@ -203,10 +203,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     if (!m) throw new VaultError("forbidden", "Template access denied.");
     return { userId: actor.userId, orgId: org, role: m.role };
   }
-  async function header(tx: Sql, actor: GoldenActor, templateId: string, write = false) {
+  async function header(tx: Sql, actor: GoldenActor, templateId: string, write = false, worker = false) {
     const h = (
       await tx.query<Header>(
-        "select * from public.launch_templates where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) for update",
+        `select * from public.launch_templates where id=$1 and org_id=$2 and (scope='org' or owner_id=$3) ${worker ? "for share nowait" : "for update"}`,
         [templateId, actor.orgId, actor.userId],
       )
     ).rows[0];
@@ -232,10 +232,11 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     goldenId: string,
     provider: unknown,
     launchAdmission = false,
+    worker = false,
   ) {
     const row = (
       await tx.query<GoldenRow>(
-        `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share`,
+        `select ${GOLDEN_SELECT} from public.goldens where id=$1 and org_id=$2 and removed_at is null and (visibility='org' or owner_id=$3) for share${worker ? " nowait" : ""}`,
         [goldenId, actor.orgId, actor.userId],
       )
     ).rows[0];
@@ -266,6 +267,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     def: TemplateDefinition,
     enforceModelScope = true,
     expectedConnections?: Manifest["connections"],
+    worker = false,
   ) {
     let g: GoldenRecord | null = null;
     let host: Manifest["host"];
@@ -299,7 +301,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         if (!snapshot) unavailable("environment_snapshot_unavailable");
       }
     } else {
-      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
+      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope, worker);
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
       if (await snapshotSealed(tx, g.provider, g.providerSnapshotId)) unavailable("environment_snapshot_unavailable");
     }
@@ -541,7 +543,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     const validKey = runtime.explicitModal
       ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
       : templateLaunchFields.requestKey.safeParse(key).success;
-    if (!validKey) invalid();
+    if (!validKey || key.startsWith("routine:") !== Boolean(runtime.scheduled)) invalid();
+    if (runtime.scheduled && !runtime.fenceAdmission) unavailable("environment_admission_unavailable");
     if (input.revision !== undefined) integer(input.revision);
     if (!templateLaunchFields.prompt.safeParse(input.prompt).success) invalid();
     if (input.ttlSeconds !== undefined) integer(input.ttlSeconds);
@@ -821,16 +824,30 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         );
       } catch (error) {
         if (
-          !active.scheduled ||
-          !(error instanceof GoldenError || error instanceof VaultError || error instanceof LaunchError)
+          !(error instanceof GoldenError || error instanceof VaultError || error instanceof LaunchError) ||
+          error.code === "unavailable" ||
+          error.code === "outcome_unknown"
         )
           throw error;
+        const reason = refusalReason(error) ?? error.code;
         await transaction(async (tx) => {
           await active.fenceAdmission?.(tx);
           await tx.query(
-            `update public.template_launch_requests set state='failed',reason=$2,updated_at=now()
+            `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
              where id=$1 and state='claimed' and result is null`,
-            [row.id, refusalReason(error) ?? error.code],
+            [
+              row.id,
+              reason,
+              JSON.stringify({
+                requestId: row.id,
+                state: "failed",
+                id: row.sandbox_id,
+                reason,
+                failureCode: error.code,
+                manifest: m,
+                ...(error instanceof VaultError ? { message: error.message, vaultCode: error.code } : {}),
+              }),
+            ],
           );
         });
       }
@@ -854,6 +871,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       (row.reason === "secret_unavailable" || row.reason === "secret_version_changed")
     )
       throw new LaunchSecretRefusal(row.reason);
+    if (!runtime.scheduled && row.state === "failed" && row.result?.vaultCode && typeof row.result.message === "string")
+      throw new VaultError(row.result.vaultCode as VaultErrorCode, row.result.message);
     const output = row.result ?? {
       requestId: row.id,
       state: row.state,
@@ -868,9 +887,15 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     };
     return output;
   }
-  async function revalidateInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, m: Manifest) {
+  async function revalidateInTransaction(
+    tx: Sql,
+    actor: ApplicationVaultActor,
+    org: string,
+    m: Manifest,
+    worker = false,
+  ) {
     const a = await member(tx, actor, org);
-    const h = await header(tx, a, m.templateId);
+    const h = await header(tx, a, m.templateId, false, worker);
     if ((await epoch(tx, a)) !== m.actorEpoch) unavailable("authorization_changed");
     const resolved = await references(
       tx,
@@ -879,6 +904,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       { ...m.definition, modelAccount: m.account },
       false,
       m.connections,
+      worker,
     );
     if (canonical(resolved.host) !== canonical(m.host)) unavailable("environment_binding_changed");
     return resolved.golden;
@@ -946,7 +972,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       if (!grant.rows.length) throw new VaultError("forbidden", "Routine owner authorization changed.");
     }
     const actor = { userId: row.actor_id, orgs: [{ orgId: row.org_id }] };
-    await revalidateInTransaction(tx, actor, row.org_id, row.manifest);
+    await revalidateInTransaction(tx, actor, row.org_id, row.manifest, true);
   }
 
   async function completeDockerLaunch(

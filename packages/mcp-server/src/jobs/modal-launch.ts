@@ -780,6 +780,7 @@ export function createModalInitialTurnJob(
             );
             return rows.length > 0 && canDispatch(tx);
           },
+          payload.data.childOperationId,
         );
         if (accepted) return { status: "done" };
       } catch (error) {

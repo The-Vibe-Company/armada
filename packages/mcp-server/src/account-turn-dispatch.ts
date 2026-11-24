@@ -11,9 +11,11 @@ import {
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import type { Job, JobKind } from "./jobs/runner.ts";
+import { templateLaunchAuthorized } from "./jobs/template-launch-authority.ts";
 import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
+import { childLaunchAuthorized } from "./sandbox-access-child-launch.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -515,12 +517,16 @@ export async function dispatchAccountTurn(
   try {
     const {
       correlationId: savedCorrelationId,
+      launchAuthority,
       id,
       request_id,
       prompt,
       model,
       reasoning_effort,
-    } = JSON.parse(await decryptSecret(entry.input_enc, key)) as RuntimeFollowupInput & { correlationId?: string };
+    } = JSON.parse(await decryptSecret(entry.input_enc, key)) as RuntimeFollowupInput & {
+      correlationId?: string;
+      launchAuthority?: { childOperationId?: string };
+    };
     correlationId = savedCorrelationId;
     if (claim) {
       phase = "dispatch_fence";
@@ -529,8 +535,27 @@ export async function dispatchAccountTurn(
       if (!(await claim.canDispatch())) return;
     }
     phase = "send";
+    const assertLaunchAuthority = async (tx: Sql) => {
+      if (
+        launchAuthority &&
+        (!(await childLaunchAuthorized(tx, id, launchAuthority.childOperationId)) ||
+          !(await templateLaunchAuthorized(tx, id)))
+      )
+        throw new VaultError("forbidden", "Initial launch turn authorization changed.");
+    };
+    const guarded =
+      claim && launchAuthority
+        ? {
+            ...claim,
+            async canDispatch(tx?: Sql) {
+              await assertLaunchAuthority(tx ?? sql);
+              return claim.canDispatch(tx);
+            },
+          }
+        : claim;
+    await assertLaunchAuthority(sql);
     const result = await continueRequest(correlationId, () =>
-      dispatch(caller, { id, request_id, prompt, model, reasoning_effort }, claim),
+      dispatch(caller, { id, request_id, prompt, model, reasoning_effort }, guarded),
     );
     phase = "publish_receipt";
     const resultEnc = await encryptSecret(JSON.stringify(result), key);
@@ -549,6 +574,8 @@ export async function dispatchAccountTurn(
       error instanceof ToolApiError || error instanceof VaultError || error instanceof ToolError
         ? error.code
         : undefined;
+    const dbError = origin as { errno?: string; code?: string } | null;
+    const lockContended = (dbError?.errno ?? dbError?.code) === "55P03";
     const secretRefused =
       (error instanceof ToolApiError || error instanceof VaultError) &&
       error.code === "conflict" &&
@@ -572,8 +599,8 @@ export async function dispatchAccountTurn(
         const retry =
           !target.stopped_runtime &&
           !secretRefused &&
-          origin instanceof VaultError &&
-          (origin.code === "conflict" || origin.code === "unavailable");
+          (lockContended ||
+            (origin instanceof VaultError && (origin.code === "conflict" || origin.code === "unavailable")));
         await tx.query(
           `with retried as (update public.account_turn_queue set state=$3,failure_reason=$4,dispatch_generation=null,dispatch_until=null
           where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)

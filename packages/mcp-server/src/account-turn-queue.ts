@@ -142,7 +142,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   async function persist(
     caller: Caller,
     input: RuntimeFollowupInput & { request_id: string },
-    initialLaunch?: { generation: string; canDispatch: JobContext["canDispatch"] },
+    initialLaunch?: {
+      generation: string;
+      canDispatch: JobContext["canDispatch"];
+      childOperationId?: string | undefined;
+    },
   ) {
     const requestId = input.request_id;
     const normalized = {
@@ -155,7 +159,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     const serialized = JSON.stringify(normalized);
     const hash = createHash("sha256").update(serialized).digest("hex");
     // The first insert owns correlation. Keep it outside the idempotency hash.
-    const sealed = await encryptSecret(JSON.stringify({ ...normalized, correlationId: currentRequestId() }), key);
+    const sealed = await encryptSecret(
+      JSON.stringify({
+        ...normalized,
+        correlationId: currentRequestId(),
+        ...(initialLaunch ? { launchAuthority: { childOperationId: initialLaunch.childOperationId } } : {}),
+      }),
+      key,
+    );
     if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
     return sql.transaction(async (tx) => {
       const target = (
@@ -368,8 +379,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       input: { id: string; request_id: string; prompt: string },
       generation: string,
       canDispatch: JobContext["canDispatch"],
+      childOperationId?: string,
     ) {
-      return Boolean(await persist(caller, input, { generation, canDispatch }));
+      return Boolean(await persist(caller, input, { generation, canDispatch, childOperationId }));
     },
     async cancelQueued(caller: Caller, sandboxId: string) {
       await sql.query(

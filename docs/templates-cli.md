@@ -131,26 +131,21 @@ can inspect values delivered into its machine even from personal configuration.
 The first durable claim freezes revision/hash, eligible saved snapshot/config/
 provider (including Modal binding), current tool generations, account ID/version,
 variable versions/copied readable values, secret references, exact skills and
-actor epoch. Its golden-operation fence pins that snapshot while allocation
-awaits: an in-flight launch stays on A or refuses if A is retired; a new key may
-follow rebuilt B without republication. A completed result replays unchanged,
-including its original manifest and receipts; readable values intentionally appear
-there, **never secret values**. Prompts are not generic request metadata.
+actor epoch. Admission commits the sandbox and launch job together, with the
+reserved snapshot. A new key can follow a rebuilt snapshot. The receipt starts
+with `status: "starting"` and replays with the original manifest and sandbox ID.
+The manifest carries readable values and secret references. Secret values stay
+out of the receipt.
 
 Up to 20 distinct exact public `org/slug@version` or private `slug@version` pins
-are accepted; duplicate slugs/floating versions refuse. Private pins resolve the
-launching actor's Skillpack key, not the author's. Publication is not registry
-access proof. Requested pins stay in `manifest.definition.skills`; successful
-result `manifest.skillReceipts` and sandbox receipts record version, ID, SHA256
-and registry origin. Older results can omit that additive evidence. Replay does
-not reinstall. Failed/ambiguous results never claim installation success.
+are accepted. Private pins use the launching actor's Skillpack key. The manifest
+records requested pins. Read sandbox receipts for verified installation evidence
+after setup.
 
-Concurrent/lost-response retries use the **same ID, key and input**; changed input
-conflicts. Unknown allocation remains `reconciling`, not success or absence.
-There is no automatic ambiguous-request retry worker. A crash during claim/
-allocation retains the record and fence for inspection of logical/provider IDs
-and ownership labels. Never delete request rows or invent a fresh key to recover
-an unknown outcome. Keys/manifests do not expire into new work.
+After a lost reply, reuse the same template ID, request key, and input. Changed
+input conflicts. The launch worker reconciles ambiguous provider allocations
+under the original sandbox ID and generation. Use status or logs to follow
+startup and the first prompt.
 
 Refusals retain actionable direct-launch codes/messages and replay unchanged.
 The dashboard can offer another eligible account only for an unpinned template;

@@ -12,6 +12,7 @@ import {
   type Sql,
   createRoutineScheduler as scheduler,
   type TemplateRuntime,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
@@ -188,8 +189,67 @@ test("restart after template success but lost history publication reconciles the
     ]);
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
     expect((await f.runs())[0]).toMatchObject({ state: "reconciling", request_key: key });
+    await f.db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
+       select s.id,j.id,s.credential_id,s.owner_id,s.org_id,1,1,'fixture','fixture','first-conversation'
+       from jobs j join sandboxes s on s.id=j.sandbox_id where j.kind='launch_initial_turn'`,
+    );
+    await f.db.query("update routine_runs set lease_until='-infinity' where routine_id=$1", [f.routine.id]);
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    const turn = (await f.db.query<{ id: string }>("select id from jobs where kind='launch_initial_turn'")).rows[0]!;
+    expect((await f.runs())[0]).toMatchObject({ state: "succeeded", prompt_id: turn.id });
     expect(f.launches).toHaveLength(1);
     expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("daily cap includes failures, skipped ticks do not reset failures, and three refused launches pause safely", async () => {
+  const f = await fixture();
+  try {
+    f.runtime.admitModal = async () => {
+      throw new VaultError("conflict", "Routine admission refused.");
+    };
+    const launch = f.launch;
+    await f.db.query("update routines set max_runs_per_day=1 where id=$1", [f.routine.id]);
+    await f.due();
+    await createRoutineScheduler(f.sql, { launch, observe: f.observe }).tick();
+    expect((await f.runs())[0]).toMatchObject({ state: "failed", reason: "launch_failed" });
+    await f.due();
+    await createRoutineScheduler(f.sql, { launch, observe: f.observe }).tick();
+    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "daily_limit_reached" });
+    expect(
+      (
+        await f.db.query<{ consecutive_failures: number }>("select consecutive_failures from routines where id=$1", [
+          f.routine.id,
+        ])
+      ).rows[0]!.consecutive_failures,
+    ).toBe(1);
+    await f.db.query("update routines set max_runs_per_day=24 where id=$1", [f.routine.id]);
+    for (let i = 0; i < 2; i++) {
+      await f.due();
+      await createRoutineScheduler(f.sql, { launch, observe: f.observe }).tick();
+    }
+    expect(
+      (
+        await f.db.query("select status,consecutive_failures,pause_reason,next_due_at from routines where id=$1", [
+          f.routine.id,
+        ])
+      ).rows[0],
+    ).toEqual({
+      status: "paused",
+      consecutive_failures: 3,
+      pause_reason: "repeated_launch_failures",
+      next_due_at: null,
+    });
+    expect((await f.db.query("select state from template_launch_requests")).rows).toEqual([
+      { state: "failed" },
+      { state: "failed" },
+      { state: "failed" },
+    ]);
+    expect(f.boat.forks).toHaveLength(0);
+    expect(JSON.stringify(await f.runs())).not.toContain("secret raw");
   } finally {
     await f.close();
   }
@@ -262,6 +322,45 @@ test("run input snapshots and sandbox links stay outside JWT history grants", as
     await expect(f.db.query("select sandbox_id from routine_runs")).rejects.toThrow("permission denied");
     await expect(f.db.query("update routine_runs set state='failed'")).rejects.toThrow("permission denied");
     await f.db.exec("reset role");
+  } finally {
+    await f.close();
+  }
+});
+
+test("calendar admission counts missed occurrences once and pauses unavailable schedules without compute", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query(
+      "update routines set cron='0 * * * *',timezone='UTC',interval_hours=null,status='enabled',next_due_at=date_trunc('hour',now())-interval '2000 hours' where id=$1",
+      [f.routine.id],
+    );
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    expect(f.boat.forks).toHaveLength(0);
+    // The run's created_at and the scheduler's clock come from the same transaction.
+    const row = (
+      await f.db.query<{ next_due_at: Date; expected: Date }>(
+        `select r.next_due_at,date_trunc('hour',run.created_at,'UTC')+interval '1 hour' as expected
+         from routines r join routine_runs run on run.routine_id=r.id where r.id=$1`,
+        [f.routine.id],
+      )
+    ).rows[0]!;
+    expect(row.next_due_at).toEqual(row.expected);
+    const run = (
+      await f.db.query<{ missed_intervals: number; missed_count_capped: boolean }>(
+        "select missed_intervals,missed_count_capped from routine_runs where routine_id=$1",
+        [f.routine.id],
+      )
+    ).rows[0];
+    expect(run).toEqual({ missed_intervals: 1000, missed_count_capped: true });
+    await f.db.query("update routines set timezone='Invalid/Zone',next_due_at=now()-interval '1 second' where id=$1", [
+      f.routine.id,
+    ]);
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    expect(f.boat.forks).toHaveLength(0);
+    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "schedule_unavailable" });
+    expect(
+      (await f.db.query("select status,next_due_at,pause_reason from routines where id=$1", [f.routine.id])).rows[0],
+    ).toEqual({ status: "paused", next_due_at: null, pause_reason: "schedule_unavailable" });
   } finally {
     await f.close();
   }

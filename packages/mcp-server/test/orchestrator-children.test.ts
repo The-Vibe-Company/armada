@@ -6,6 +6,8 @@ import {
   encryptSecret,
   type Sql,
 } from "@armada/core/server";
+import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData, DataError } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
 import { runModalLaunch } from "../src/jobs/modal-launch.ts";
@@ -247,6 +249,12 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as 
         await db.query("update orchestrator_child_operations set reconcile_after='-infinity' where id=$1", [
           receipt.id,
         ]);
+        await db.query("update orchestrator_child_operations set error_code=null where id=$1", [receipt.id]);
+        expect(await childWorker.reconcileOne()).toBe(false);
+        await db.query(
+          "update orchestrator_child_operations set error_code='child_launch_admission_pending' where id=$1",
+          [receipt.id],
+        );
         expect(await childWorker.reconcileOne()).toBe(true);
         expect((await childWorker.launch(token, "same-key", chosen)).state).toBe("failed");
         return;
@@ -278,6 +286,47 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as 
         { visibility: "private", credential_id: selection.credentialId, credential_version: 1, orchestrator_id: id },
       ]);
       expect(boat.forks).toHaveLength(0);
+      if (scenario === "lost Modal acknowledgement") {
+        await db.query(
+          `update jobs set outcome='{"modal_machine":{"entry":{"operation":"create","phase":"allocated","machineId":"child-modal"}}}'
+           where id=$1`,
+          [job!.id],
+        );
+        await db.query("update sandboxes set provider_sandbox_id='child-modal' where id=$1", [receipt.sandboxId]);
+        await db.query("update sandboxes set status='ready' where id=$1", [receipt.sandboxId]);
+        await db.query(
+          "insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash) values($1,1,1,repeat('a',64))",
+          [receipt.sandboxId],
+        );
+        const setup = (
+          await db.query<{ id: string }>(
+            "update jobs set state='done' where sandbox_id=$1 and kind='launch_initial_turn' returning id",
+            [receipt.sandboxId],
+          )
+        ).rows[0]!;
+        const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+        expect(
+          await queue.acceptInitialLaunch(
+            { via: "service", userId: p.owner, orgs: [{ orgId: p.org, role: "member" }] },
+            { id: receipt.sandboxId, request_id: setup.id, prompt: "first turn" },
+            "1",
+            async () => true,
+            receipt.id,
+          ),
+        ).toBe(true);
+        await authority.revoke(id);
+        const send = mock(async () => ({}));
+        const turn = (await jobs.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
+        await createTurnDispatchJob(sql, ENCRYPTION_KEY, send).run(turn, {
+          signal: new AbortController().signal,
+          canDispatch: async () => true,
+          handoffGeneration: async () => "1",
+        });
+        expect(send).not.toHaveBeenCalled();
+        expect((await db.query("select state from account_turn_queue where request_id=$1", [setup.id])).rows).toEqual([
+          { state: "failed" },
+        ]);
+      }
       if (scenario === "revoked Boat" && job) {
         await authority.revoke(id);
         const unexpected = () => {
