@@ -201,3 +201,83 @@ test("real-model staging smoke refuses a missing provider before allocating", as
   ).toBe(false);
   expect(receipts).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
 });
+
+test.each([
+  {
+    scenario: "terminal status",
+    response: () =>
+      Response.json({ status: "failed", providerState: null, statusReason: "private_diagnostic_placeholder" }),
+    evidence: {
+      source: "status_body",
+      statusResponse: { status: "failed", providerState: "null", statusReason: "string" },
+    },
+  },
+  {
+    scenario: "API refusal",
+    response: () =>
+      Response.json(
+        { error: { code: "sandbox_not_ready", message: "private_diagnostic_placeholder" } },
+        { status: 409, headers: { "x-request-id": id(9) } },
+      ),
+    evidence: { source: "status_api", httpStatus: 409, requestId: id(9) },
+  },
+])("real-model readiness attributes $scenario after observing starting", async ({ response, evidence }) => {
+  let now = 0;
+  let dockerReads = 0;
+  const receipts: Record<string, unknown>[] = [];
+  const passed = await postDeploySmoke(env, ["--real-model"], {
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    out: (line) => {
+      if (line.startsWith("{")) receipts.push(JSON.parse(line));
+    },
+    fetch: async (url, init) => {
+      const body = JSON.parse(String(init.body));
+      switch (new URL(url).pathname) {
+        case "/api/v1/sandbox/launch":
+          return Response.json({
+            sandbox: {
+              id: body.provider === "docker" ? id(7) : id(5),
+              status: "starting",
+              provider: body.provider,
+              externalRef: body.externalRef,
+            },
+          });
+        case "/api/v1/sandbox/status":
+          if (body.id === id(5)) return Response.json({ status: "ready" });
+          return ++dockerReads === 1 ? Response.json({ status: "starting" }) : response();
+        case "/api/v1/sandbox/send":
+          expect(body.id).toBe(id(5));
+          return Response.json({ promptId: id(8) });
+        case "/api/v1/sandbox/wait":
+          return Response.json({ prompt: { promptId: id(8), state: "finished" } });
+        case "/api/v1/logs/read":
+          return Response.json({
+            events: [{ kind: "message", promptId: id(8), partial: false, text: "Hello" }],
+          });
+        case "/api/v1/sandbox/stop":
+          return Response.json({ status: "stopped" });
+        default:
+          throw new Error(`Unexpected request ${url}`);
+      }
+    },
+  });
+  expect(passed).toBe(false);
+  expect(receipts.filter((row) => row.step === "readiness_diagnostic")).toEqual([
+    {
+      case: 1,
+      lane: "real-model",
+      provider: "docker",
+      step: "readiness_diagnostic",
+      readinessStep: "real_model_ready",
+      sandboxId: id(7),
+      observedStarting: true,
+      code: "sandbox_not_ready",
+      ...evidence,
+    },
+  ]);
+  expect(JSON.stringify(receipts)).not.toContain("private_diagnostic_placeholder");
+  expect(receipts).toContainEqual(expect.objectContaining({ provider: "modal", step: "real_model_wait", pass: true }));
+});
