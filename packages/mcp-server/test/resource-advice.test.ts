@@ -4,7 +4,9 @@ import { createSqlVaultStore } from "@armada/core/server";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL, seedDatabase } from "./support.ts";
+import { createJobsStore, withJobLease } from "../src/jobs/store.ts";
+import { bindModalLaunchMachine } from "../src/sandbox-lifecycle.ts";
+import { bunLikeSql, call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL, seedDatabase } from "./support.ts";
 
 async function prepareFixture() {
   const db = await openMigratedDatabase();
@@ -55,6 +57,26 @@ test("The advice API collects bounded samples, pins project identity and abstain
   });
   expect(launched.isError).toBe(false);
   const id = launchSandboxId(launched.data);
+  const sql = bunLikeSql(server.db);
+  const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+  const worker = crypto.randomUUID();
+  const job = (await jobs.claim("launch", worker, 30, 1))!;
+  const physical = await server.boat.provider.fork({ from: "shared" });
+  await jobs.modalLaunchJournal(job).compareAndSet(id, undefined, {
+    revision: 1,
+    intent: id,
+    operation: "create",
+    phase: "allocated",
+    machineId: physical.id,
+  });
+  expect(
+    await withJobLease(sql, job, (tx) =>
+      bindModalLaunchMachine(tx, { sandboxId: id, generation: 1, machineId: physical.id }, "boat"),
+    ),
+  ).toBe(true);
+  await jobs.complete(job, worker, { status: "done" });
+  await sql.query("update sandboxes set status='ready' where id=$1", [id]);
+  await sql.query("update jobs set state='done' where sandbox_id=$1 and kind='launch_initial_turn'", [id]);
   const row = (
     await server.db.query<{ resource_project: ResourceProject | null; provider_sandbox_id: string }>(
       "select resource_project,provider_sandbox_id from sandboxes where id=$1",

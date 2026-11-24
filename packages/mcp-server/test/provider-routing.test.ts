@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { encryptSecret, type ModalBinding } from "@armada/core";
-import { launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
+import { modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -118,11 +118,8 @@ describe("provider routing", () => {
     expect(server.boat.forks).toEqual([]);
 
     const onBoat = await call(mcp, "launch", { golden: "shared", provider: "boat", harness: "claude" });
-    expect(launchEnvelope.parse(onBoat.data).sandbox).toMatchObject({
-      provider: "boat",
-      providerSandboxId: "bx_1",
-    });
-    expect(server.boat.forks).toHaveLength(1);
+    expect(modalLaunchReceipt.parse(onBoat.data).sandbox.status).toBe("starting");
+    expect(server.boat.forks).toHaveLength(0);
   });
 
   test("MCP admits work on the pinned Modal App and replays the receipt after org credential rotation", async () => {

@@ -49,6 +49,7 @@ const jobsLane: LaneFactory = ({
   control,
   modal,
   modalLaunchJob,
+  launchCleanupJob,
   dockerLaunch,
   accountTurns,
 }) => {
@@ -81,7 +82,7 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
-      delete: modal.launchCleanupJob,
+      delete: launchCleanupJob ?? modal.launchCleanupJob,
       ...(modalLaunchJob || dockerLaunch
         ? {
             launch: {

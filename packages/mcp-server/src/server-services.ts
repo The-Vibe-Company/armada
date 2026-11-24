@@ -22,8 +22,9 @@ import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
-import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
+import { boatRuntimeActivation } from "./boat-runtime-activation.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
+import { boatDeploymentId } from "./config.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
@@ -40,7 +41,9 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
+import { boatLaunchJobs } from "./jobs/boat-launch.ts";
 import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
+import type { JobKind } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -55,7 +58,6 @@ import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createObservedBoatProvider, withBoatManagementIdentity } from "./observed-boat.ts";
-import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
@@ -105,8 +107,8 @@ export async function createServerServices(env: Record<string, string | undefine
     dockerManifest,
   } = await readStartupConfiguration(env);
   const dockerEnabled = dockerManifest !== undefined;
-  const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
-  const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
+  const deploymentId = boatDeploymentId(env.ARMADA_BOAT_DEPLOYMENT_ID, config.publicUrl);
+  const boatInventory = { deploymentId };
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const jobs = createJobsStore(sql, config.encryptionKey);
@@ -229,7 +231,7 @@ export async function createServerServices(env: Record<string, string | undefine
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const runtimeLaunch = boat
-    ? boatRuntimeLaunch({
+    ? boatRuntimeActivation({
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
@@ -269,7 +271,13 @@ export async function createServerServices(env: Record<string, string | undefine
     store,
     app: githubApp,
   });
-  const modalLaunchJob = modal.launchJob(async (sandbox) => {
+  const runtimeArtifacts = { boat, modal: modalRuntime };
+  const prepareLaunchTicket: Parameters<ReturnType<typeof createModalIntegration>["launchJob"]>[0] = async (
+    sandbox,
+  ) => {
+    const provider = sandbox.provider as keyof typeof runtimeArtifacts;
+    const artifacts = runtimeArtifacts[provider];
+    if (!artifacts) throw new Error("Runtime artifacts are unavailable.");
     if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
     const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
     const credentials = await modalLaunchCredentials.resolve(
@@ -285,12 +293,12 @@ export async function createServerServices(env: Record<string, string | undefine
         actor,
         sandbox,
         credentials,
-        manifest: modalRuntime.manifest,
-        architecture: modalRuntime.manifest.architecture,
+        manifest: artifacts.manifest,
+        architecture: artifacts.manifest.architecture,
         modelAuth,
       },
-      "modal",
-      "modal_runtime_empty_v1",
+      provider,
+      `${provider}_runtime_empty_v1`,
     );
     return {
       ...plan,
@@ -298,7 +306,27 @@ export async function createServerServices(env: Record<string, string | undefine
       serverUrl: config.publicUrl,
       ...modalLaunchTicketGuard(sandbox),
     };
+  };
+  const modalJob = modal.launchJob(prepareLaunchTicket);
+  const boatJobs = boat
+    ? boatLaunchJobs({
+        sql,
+        encryptionKey: config.encryptionKey,
+        deploymentId,
+        prepareTicket: prepareLaunchTicket,
+      })
+    : undefined;
+  const combineGoldenJobs = (modalJob: JobKind, boatRun?: JobKind["run"]) => ({
+    ...modalJob,
+    run(job: Parameters<typeof modalJob.run>[0], context: Parameters<typeof modalJob.run>[1]) {
+      if (typeof job.payload !== "object" || job.payload === null || !("boat" in job.payload))
+        return modalJob.run(job, context);
+      if (!boatRun) throw new Error("Boat launch worker is unavailable.");
+      return boatRun(job, context);
+    },
   });
+  const modalLaunchJob = combineGoldenJobs(modalJob, boatJobs?.launch);
+  const launchCleanupJob = combineGoldenJobs(modal.launchCleanupJob, boatJobs?.cleanup);
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,
     app: githubApp,
@@ -346,7 +374,7 @@ export async function createServerServices(env: Record<string, string | undefine
         },
       ),
   };
-  const admitModal = createModalLaunchAdmission(
+  const admitModalGolden = createModalLaunchAdmission(
     sql,
     {
       ...launch.modalRuntimeDefault,
@@ -355,6 +383,18 @@ export async function createServerServices(env: Record<string, string | undefine
     launch,
     (input) => admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),
   );
+  const admitBoat =
+    boatJobs &&
+    launch.boatRuntimeDefault &&
+    createModalLaunchAdmission(sql, launch.boatRuntimeDefault, launch, (input) =>
+      admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),
+    );
+  const goldenAdmissions = { boat: admitBoat, modal: admitModalGolden };
+  const admitModal: typeof admitModalGolden = (actor, golden, ...rest) => {
+    const admit = goldenAdmissions[golden.provider];
+    if (!admit) throw new VaultError("unavailable", "Boat launch admission is unavailable.");
+    return admit(actor, golden, ...rest);
+  };
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
@@ -416,7 +456,6 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
     sandboxLogProviders[sandbox.provider](sandbox, caller);
-  const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
     ...(MODEL_CREDENTIAL_KINDS.some((kind: string) => kind === "antigravity")
@@ -427,7 +466,6 @@ export async function createServerServices(env: Record<string, string | undefine
         }
       : {}),
     ...(deviceLogin ? { deviceLogin } : {}),
-    ordinaryLaunchReceipts,
     admitModalLaunch: admitModal,
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),
@@ -448,7 +486,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeMcp,
     modalRuntimeLaunch: modalRuntimePolicy,
     modalRuntimeHostFor,
-    ...(runtimeLaunch ? { boatRuntimeLaunch: runtimeLaunch, runtimeHostFor } : {}),
+    ...(boatJobs ? { boatLaunchEnabled: true } : {}),
     launch,
     publicUrl: config.publicUrl,
     modelAuth,
@@ -555,7 +593,6 @@ export async function createServerServices(env: Record<string, string | undefine
     idlePauseDelayMs: idleDelayMs,
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
-    ordinaryLaunchReceipts,
     admitModalLaunch: admitModal,
     launch,
     modelAuth,
@@ -615,6 +652,7 @@ export async function createServerServices(env: Record<string, string | undefine
     modelAuth,
     modal,
     modalLaunchJob,
+    launchCleanupJob,
     modalArtifactCache: warmModalArtifacts,
     mcp,
     goldenBuilds,

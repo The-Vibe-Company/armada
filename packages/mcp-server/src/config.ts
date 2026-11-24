@@ -22,6 +22,10 @@ export interface ServerConfig {
   databasePoolMax: number;
 }
 
+export function boatDeploymentId(override: string | undefined, publicUrl: string) {
+  return override?.trim() || new URL(resourceUrl(publicUrl)).origin;
+}
+
 const DEFAULT_DASHBOARD_URL = "https://armada.thevibecompany.co";
 
 /** Fixed deployment configuration, never taken from a request or OAuth return URL. */

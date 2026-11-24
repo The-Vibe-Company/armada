@@ -207,12 +207,13 @@ function sharedDispatcher(send: DispatchTurn) {
   };
 }
 
-test("a send during launch waits for setup and the initial turn before dispatch", async () => {
+test.each(["boat", "modal"] as const)("%s initial turn precedes follow-ups", async (provider) => {
   const id = ids[0]!;
   const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
-  await sql.query("update sandboxes set status='starting',provider='modal',runtime_transport='dialout' where id=$1", [
-    id,
-  ]);
+  await sql.query(
+    "update sandboxes set status='starting',provider=$2,boat_runtime=$2='boat',runtime_transport=$3 where id=$1",
+    [id, provider, provider === "modal" ? "dialout" : null],
+  );
   const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
     orgId: org,
     maxAttempts: 3,

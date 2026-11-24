@@ -217,13 +217,8 @@ export interface BoatProvider extends Provider {
     cursor?: string;
     signal?: AbortSignal;
   }): Promise<Page<{ sandboxId: string; deploymentId: string; createdAt: Date }>>;
-  /** Ordinary VM activation only. Does not restore or verify a native harness session. */
-  resumeBestEffort(sandboxId: string): Promise<void>;
   /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
   stopBestEffort(sandboxId: string): Promise<void>;
-  /** Terminal managed retirement only: caller must durably fence activation and
-   * withhold unsynchronized native output before using this cloud-only port. */
-  retireBestEffort?(sandboxId: string): Promise<void>;
 }
 
 const DEPLOYMENT_LABEL = "armada.deployment";
@@ -678,21 +673,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return boot && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(boot) ? boot.toLowerCase() : null;
     },
 
-    async resumeBestEffort(sandboxId: string): Promise<void> {
-      const signal = AbortSignal.timeout(150_000);
-      // Only the trusted managed adapter calls this port after its own owner,
-      // account and operation fence. Ordinary MCP resume hooks deliberately hide
-      // managed parents; managed MCP is prepared by that adapter after activation.
-      lifecycleTrace(sandboxId, "resume", "api_dispatch", "best_effort");
-      await call(() => api.resume({ sandboxId }, { signal }));
-      let info = await provider.get(sandboxId, { signal });
-      for (let attempt = 0; info.state === "starting" && attempt < 120; attempt++) {
-        signal.throwIfAborted();
-        await sleep(1000);
-        info = await provider.get(sandboxId, { signal });
-      }
-      if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
-    },
     async resumeRuntime(sandboxId, ttlSeconds, caller, onResumeStage) {
       const timeout = AbortSignal.timeout(150_000);
       const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
@@ -716,9 +696,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
     async stopBestEffort(sandboxId: string): Promise<void> {
-      await archive(sandboxId);
-    },
-    async retireBestEffort(sandboxId: string): Promise<void> {
       await archive(sandboxId);
     },
     async listSandboxInventory({ cursor, signal } = {}) {

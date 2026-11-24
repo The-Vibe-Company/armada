@@ -2,13 +2,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "b
 import { createSqlAuthStore } from "@armada/auth";
 import { createSqlVaultStore, ProviderError, VaultError } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { reuseCollectorKeyPair } from "./fixtures/recovery-exec.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { seedPersistedBoat } from "./persisted-boat.fixture.ts";
 import {
@@ -374,68 +370,6 @@ describe("tools", () => {
     });
   });
 
-  test("launch forks with noEnv, the caller's Armada credential and the org boat key, and returns no secret", async () => {
-    const { token, client, people, boat, db } = await start();
-    const helperClient = await client(await token(people.member));
-    for (const reason of ["helper_missing", "helper_receipt_invalid"]) {
-      if (reason === "helper_receipt_invalid")
-        await db.query(
-          `update goldens set helper_receipt='{"version":"old","digest":"old","protocol":0,"platform":"x86_64","capabilities":[],"snapshotId":"old"}' where name='shared'`,
-        );
-      const refused = await call(helperClient, "launch", {
-        provider: "boat",
-        golden: "shared",
-        harness: "claude",
-        helperCapabilities: ["diagnose"],
-      });
-      expect(refused.isError).toBe(true);
-      expect(refused.data).toEqual({
-        error: { code: "unsupported", message: expect.any(String), details: { reason, action: "rebuild_golden" } },
-      });
-      expect(boat.forks).toHaveLength(0);
-    }
-    await db.query(
-      `update goldens set helper_receipt = jsonb_build_object(
-      'version','0.1.0','protocol',1,'platform','x86_64','digest',$1::text,
-      'capabilities',jsonb_build_array('diagnose'),'snapshotId',provider_snapshot_id) where name='shared'`,
-      [helperManifest.x86_64.digest],
-    );
-    const request = { provider: "boat", golden: "shared", harness: "claude", prompt: "Fix the build" };
-    const unsupported = await call(helperClient, "launch", { ...request, helperCapabilities: ["diagnose"] });
-    expect(unsupported).toMatchObject({ isError: true, text: expect.stringContaining("does not yet support helpers") });
-    expect(boat.forks).toHaveLength(0);
-    const launched = await call(helperClient, "launch", request);
-    expect(launched.isError).toBe(false);
-    expect(launched.data).toMatchObject({
-      golden: { name: "shared" },
-      sandbox: { harness: "claude", status: "running" },
-      promptId: "prompt_1",
-      helper: { status: "supported", protocol: 1, capabilities: ["diagnose"] },
-    });
-    expect(boat.forks[0]).toMatchObject({ noEnv: true, env: {} });
-    expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
-    expect(
-      (
-        await db.query(`select c.scope,c.owner_id,c.kind from sandboxes s
-      join credentials c on c.id=s.credential_id`)
-      ).rows,
-    ).toEqual([{ scope: "org", owner_id: people.org, kind: "claude_oauth" }]);
-    expect(boat.execs.map((exec) => exec.command).join("\n")).toContain("git fetch origin");
-    expectNoSecret(launched.text);
-  });
-
-  test("launch reports GitHub as not connected, without failing, when the caller never connected it", async () => {
-    const { token, client, people, boat } = await start();
-    const launched = await call(await client(await token(people.member)), "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-    });
-    expect(launched.isError).toBe(false);
-    expect(launched.data.github).toMatchObject({ status: "not_connected", login: null });
-    expect(boat.forks[0]?.env).toEqual({});
-  });
-
   test("private repository authorization refuses HTTP and MCP before any compute allocation", async () => {
     const s = await start();
     await s.db.query("update goldens set config=$1::jsonb where name='shared'", [
@@ -459,7 +393,7 @@ describe("tools", () => {
         encryptionKey: ENCRYPTION_KEY,
         data: createSqlData(s.db),
         providerFor: s.boat.providerFor,
-        launch: { runtime: enrolledLaunchPolicy(s.db) },
+        admitModalLaunch: s.admitBoat,
         github: {
           app: GITHUB_APP,
           fetch: (async () => Response.json({ message: "Not found." }, { status: 404 })) as unknown as typeof fetch,
@@ -480,47 +414,6 @@ describe("tools", () => {
     expect((await s.db.query("select id from sandboxes order by id")).rows).toEqual(before);
   });
 
-  test("launch with connected GitHub configures the enrolled runtime as the caller and rotates the refresh token", async () => {
-    const { token, client, people, boat, github, db } = await start();
-    await github.connect(people.member, "octocat", 583231);
-    const mcp = await client(await token(people.member));
-
-    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(first.data.github).toEqual({
-      status: "connected",
-      login: "octocat",
-      tokenExpiresAt: expect.any(String),
-      message: null,
-    });
-    expect(boat.forks[0]?.env).toEqual({});
-    expect(github.runtimeIdentities).toEqual([{ name: "octocat", email: "583231+octocat@users.noreply.github.com" }]);
-    expect(first.text).not.toContain("ghu_access_octocat");
-
-    const second = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(second.data.github).toMatchObject({ status: "connected" });
-    expect(github.refreshed).toEqual(["ghr_refresh_octocat_0"]);
-    const stored = await db.query<{ refresh_token_enc: Uint8Array }>(
-      "select refresh_token_enc from github_connections",
-    );
-    expect(stored.rows).toHaveLength(1);
-  });
-
-  test("a revoked GitHub grant is reported once as revoked, then skipped, and the launch still succeeds", async () => {
-    const { token, client, people, boat, github } = await start();
-    await github.connect(people.member, "octocat", 583231);
-    github.revokeEverything();
-    const mcp = await client(await token(people.member));
-
-    const first = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(first.isError).toBe(false);
-    expect(first.data.github).toMatchObject({ status: "revoked", login: null });
-    expect((first.data.github as { message: string }).message).toContain("Reconnect GitHub");
-    expect(boat.forks[0]?.env).toEqual({});
-
-    await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(github.refreshed).toHaveLength(1);
-  });
-
   test("exec output masks GitHub and narrow MCP gateway credentials", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
@@ -539,8 +432,8 @@ describe("tools", () => {
       golden: "mine",
       harness: "claude",
     });
-    expect(launched.data).toMatchObject({ sandbox: { status: "ready", conversationIds: [] }, promptId: null });
-    expect(boat.forks[0]?.env).toEqual({});
+    expect(launched.data).toMatchObject({ sandbox: { status: "starting" } });
+    expect(boat.forks).toHaveLength(0);
     expect(
       (
         await db.query(`select c.scope,c.owner_id,c.kind from sandboxes s
@@ -549,145 +442,6 @@ describe("tools", () => {
     ).toEqual([{ scope: "user", owner_id: people.owner, kind: "claude_oauth" }]);
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
-
-  test.each(["accepted", "superseded", "journal failure", "receipt failure"] as const)(
-    "prompted enrolled launch settlement (%s)",
-    async (scenario) => {
-      const { boat, client, db, people, token } = await start({
-        modelAuth: (db) => createModelAuthOwnership(db, ENCRYPTION_KEY),
-      });
-      const mcp = await client(await token(people.member));
-      await db.exec("update credentials set max_agents=1 where kind='claude_oauth'");
-      const prompt = boat.provider.prompt.bind(boat.provider);
-      let reservedAtDispatch = false;
-      boat.provider.prompt = async (request) => {
-        reservedAtDispatch = (await db.query("select sandbox_id from account_agent_reservations")).rows.length === 1;
-        const receipt = await prompt(request);
-        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
-        return receipt;
-      };
-      if (scenario === "journal failure")
-        await db.exec(`alter table sandbox_transitions add constraint reject_enrolled_launch_journal
-          check (code <> 'runtime_enrolled')`);
-      if (scenario === "receipt failure")
-        await db.exec(`alter table sandboxes add constraint reject_enrolled_launch_receipt
-          check (task_prompt_id is null)`);
-
-      const launched = await call(mcp, "launch", {
-        provider: "boat",
-        golden: "shared",
-        harness: "claude",
-        prompt: "hello",
-      }).finally(async () => {
-        if (scenario === "journal failure")
-          await db.exec("alter table sandbox_transitions drop constraint reject_enrolled_launch_journal");
-        if (scenario === "receipt failure")
-          await db.exec("alter table sandboxes drop constraint reject_enrolled_launch_receipt");
-      });
-
-      const accepted = scenario === "accepted";
-      const superseded = scenario === "superseded";
-      expect(reservedAtDispatch).toBe(true);
-      expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
-      expect(launched.isError).toBe(!accepted);
-      if (accepted) expect(launched.data).toMatchObject({ sandbox: { status: "running" }, promptId: "prompt_1" });
-      expect(
-        (
-          await db.query(`select status, lifecycle_generation::int as generation, activity_lease_id,
-          task_prompt_id, conversation_ids from sandboxes`)
-        ).rows,
-      ).toEqual([
-        {
-          status: accepted ? "running" : superseded ? "stopping" : "failed",
-          generation: accepted || superseded ? 1 : 2,
-          activity_lease_id: superseded ? expect.any(String) : null,
-          task_prompt_id: accepted ? "prompt_1" : null,
-          conversation_ids: accepted ? [expect.any(String)] : [],
-        },
-      ]);
-      expect(
-        (
-          await db.query(`select from_status, actor, code, generation::int from sandbox_transitions
-          where to_status='running'`)
-        ).rows,
-      ).toEqual(
-        accepted
-          ? [{ from_status: "starting", actor: "runtime_enrolment", code: "runtime_enrolled", generation: 1 }]
-          : [],
-      );
-    },
-  );
-
-  test.each(["applied", "superseded", "reported", "rollback"] as const)(
-    "launch failure settlement (%s)",
-    async (scenario) => {
-      const { boat, client, db, people, token } = await start();
-      const mcp = await client(await token(people.member));
-      if (scenario === "rollback")
-        await db.exec(`alter table sandboxes add constraint reject_launch_diagnostic
-        check (status_reason is null or status_reason='launch_failed')`);
-      boat.provider.prompt = async () => {
-        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
-        if (scenario === "reported") {
-          await bunLikeSql(db).transaction!(async (tx) => {
-            const {
-              rows: [launch],
-            } = await tx.query<{ id: string; generation: string }>(
-              "select id, lifecycle_generation::text as generation from sandboxes where status='starting'",
-            );
-            if (!launch) throw new Error("Missing starting launch");
-            await recordRuntimeStartupFailure(
-              tx,
-              launch.id,
-              launch.generation,
-              "bootstrap_failed",
-              "Startup already reported a failure",
-            );
-          });
-        }
-        throw new Error("Initial prompt submission failed.");
-      };
-
-      const launched = await call(mcp, "launch", {
-        provider: "boat",
-        golden: "shared",
-        harness: "claude",
-        prompt: "hello",
-      }).finally(async () => {
-        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_launch_diagnostic");
-      });
-      expect(launched.isError).toBe(true);
-      const { rows } = await db.query(
-        "select status, status_reason, lifecycle_generation::int, activity_lease_id from sandboxes",
-      );
-      const settled = scenario === "applied" || scenario === "reported";
-      const reason =
-        scenario === "applied"
-          ? expect.stringContaining("Initial prompt submission failed.")
-          : scenario === "reported"
-            ? "Startup already reported a failure"
-            : null;
-      const state = settled ? "failed" : scenario === "superseded" ? "stopping" : "starting";
-      expect(rows).toEqual([
-        {
-          status: state,
-          status_reason: reason,
-          lifecycle_generation: settled ? 2 : 1,
-          activity_lease_id: settled ? null : expect.any(String),
-        },
-      ]);
-      const journal = await db.query(
-        "select from_status, actor, code, generation::int from sandbox_transitions where to_status='failed'",
-      );
-      expect(journal.rows).toEqual(
-        scenario === "applied"
-          ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
-          : scenario === "reported"
-            ? [{ from_status: "starting", actor: "lifecycle_runner", code: "bootstrap_failed", generation: 1 }]
-            : [],
-      );
-    },
-  );
 
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();

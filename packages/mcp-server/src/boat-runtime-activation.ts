@@ -3,14 +3,11 @@ import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions, type RuntimeLaunchPolicy } from "./runtime-launch.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 
-/** Build policy once; choose it explicitly for a launch, never as a native fallback.
- * Manifest/origin are trusted server deployment inputs, not client parameters.
- */
-export function boatRuntimeLaunch(
+export function boatRuntimeActivation(
   options: RuntimeLaunchOptions & {
     modelAuth?: RuntimeConfigurationInput["modelAuth"];
   },
-): RuntimeLaunchPolicy {
+) {
   const startRuntime = createRuntimeLaunch(options, "boat", (sandbox) => sandbox.boatRuntime === true);
   const manifest = structuredClone(options.manifest);
   const { architecture, modelAuth } = options;
@@ -37,5 +34,5 @@ export function boatRuntimeLaunch(
         bootstrap: () => (request) => startBoatRuntime(host, request),
       });
     },
-  };
+  } satisfies RuntimeLaunchPolicy;
 }
