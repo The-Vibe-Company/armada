@@ -183,23 +183,6 @@ stop proof; auth never enters the journal archive or usage.
 
 ## Validation
 
-The following Boat protocol diagnostics are historical operator tools, not
-staging or release acceptance. Boat is not part of the release gate; print
-`boat: not part of the release gate`. Any on-demand Boat verification is
-coordinator-only, outside the staging gate.
-
-These diagnostics require a disposable active Boat sandbox,
-current member owner, no real work and secure environment:
-`ARMADA_STAGING_DATABASE_URL`, `ARMADA_STAGING_ENCRYPTION_KEY`,
-`ARMADA_STAGING_URL`, `ARMADA_STAGING_SANDBOX_ID`, `ARMADA_STAGING_OWNER_ID`.
-They **replace runtime authority**.
-
-The remaining legacy publication diagnostic needs a dedicated exclusive staging
-subscription holder with no prompt:
-`ARMADA_RUNTIME_NATIVE_AUTH_SMOKE=use_disposable_staging_subscription bun scripts/smoke-runtime-native-auth.ts`.
-It republishes unchanged auth, not an OAuth refresh; normal stop/release/reconnect
-cleanup is required and the holder must not be repurposed for real work.
-
 For coordinator-only on-demand Boat inference/continuity verification, consult
 the [Boat lifecycle reference](boat-runtime-first-prompt.md#staging-acceptance);
 do not add it to staging acceptance. Measure at least five matched native/runtime

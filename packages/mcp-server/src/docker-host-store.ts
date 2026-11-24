@@ -33,8 +33,6 @@ import {
 import type { DockerHostResources } from "../../core/src/docker-resources.ts";
 import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 import {
-  admitDockerCapacity,
-  admitDockerDisk,
   DOCKER_CAPACITY_USAGE_SQL,
   DockerHostDraining,
   DockerHostFull,
@@ -52,7 +50,7 @@ import {
 import { createDockerMachineGenerationBindings, projectDockerMachineInventory } from "./docker-machine-bindings.ts";
 import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./docker-machine-inventory.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import type { GenerationHandoff, Job as RunnerJob } from "./jobs/runner.ts";
+import type { Job as RunnerJob } from "./jobs/runner.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -1878,85 +1876,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           return { kind: "unknown" };
         return { kind: "completed", machine: { sandboxId, generation, machineId: existing.result_machine_id } };
       });
-    },
-    async admitMachineRestore(
-      actor: Actor,
-      job: Pick<RunnerJob, "id" | "sandbox_id" | "generation">,
-      retained: RestoreJob["predecessor"] & { machineGeneration: number },
-      handoffGeneration: (handoff: GenerationHandoff) => Promise<string>,
-    ) {
-      const { sandbox_id: sandboxId, generation } = job;
-      const expected = Number(generation);
-      const { machineGeneration, ...predecessor } = retained;
-      if (
-        !sandboxId ||
-        predecessor.request.sandboxId !== sandboxId ||
-        !Number.isSafeInteger(expected) ||
-        expected < 1 ||
-        !Number.isSafeInteger(machineGeneration) ||
-        machineGeneration < 0 ||
-        machineGeneration > expected
-      )
-        deny();
-
-      let admission: Awaited<ReturnType<typeof lockSandboxAdmission>> | undefined;
-      const target = await handoffGeneration({
-        async lockPrerequisites(tx) {
-          admission = await lockSandboxAdmission(tx, actor, sandboxId, "restore");
-        },
-        async advance(tx) {
-          const { host, row } = admission ?? deny();
-          if (String(row.lifecycle_generation) !== generation || row.status !== "stopped") deny();
-          const bindings = createDockerMachineGenerationBindings(tx, {
-            hostId: host.id,
-            installationId: row.docker_installation_id,
-          });
-          if ((await bindings.lookup({ sandboxId, generation: machineGeneration })) !== predecessor.request.generation)
-            deny();
-          const epoch = await permission(tx, actor, row, "restore");
-          await refuseDraining(tx, host.id);
-          await admitDockerCapacity(tx, host.id);
-          await admitDockerDisk(tx, host.id);
-          await requireRestoreRunner(tx, job.id, row);
-          const transition = await transitionSandbox(tx, {
-            sandboxId,
-            expectedGeneration: expected,
-            fromStates: ["stopped"],
-            toState: "starting",
-            actor: "resume_admission",
-            code: "docker_resume_admitted",
-            effects: [],
-          });
-          if (transition.kind === "conflict") deny();
-          const daemonGeneration = await bindings.bind({ sandboxId, generation: transition.generation });
-          const restore: RestoreJob = {
-            requestId: daemonGeneration,
-            operation: "restore",
-            request: {
-              ...predecessor.request,
-              generation: daemonGeneration,
-              expiresAt: new Date(row.expires_at).getTime(),
-              ttlSeconds: row.effective_ttl_seconds,
-            },
-            predecessor,
-          };
-          const starting = await sandbox(tx, sandboxId, host, row.docker_installation_id);
-          await enqueueRestore(
-            tx,
-            starting,
-            restore,
-            {
-              bound_sandbox_id: sandboxId,
-              bound_actor_id: actor.userId,
-              bound_actor_epoch: epoch,
-              bound_operation: "restore",
-            },
-            false,
-            job.id,
-          );
-        },
-      });
-      return Number(target);
     },
     attachMachineRestore(
       actor: Actor,

@@ -193,7 +193,7 @@ export function generateOpenApi({
     }
     if (route === "sandbox/send" && input) {
       // One public path, two admissions chosen by the sandbox's provider: Docker
-      // also applies its own admission rules (docker-normal-send.ts).
+      // also applies the Docker rules in the account-turn queue.
       const { $schema: _shared, ...shared } = input as Record<string, unknown>;
       const { $schema: _docker, ...docker } = requestJsonSchema(DOCKER_SEND_REQUEST);
       // Docker admission alone allows a 256 KiB prompt (MCP has no such body cap), but the

@@ -24,9 +24,7 @@ import { createDockerContainerInventory } from "./container-inventory.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
-export async function fileStore(
-  directory: string,
-): Promise<Store & { lock(): Promise<() => Promise<void>>; exists(): Promise<boolean> }> {
+export async function fileStore(directory: string) {
   if (!isAbsolute(directory)) throw new Error("State directory must be absolute");
   directory = resolve(directory);
   for (let path = directory; ; path = dirname(path)) {
@@ -77,7 +75,7 @@ export async function fileStore(
       await file.close();
     }
   }
-  return {
+  const store: Store & { lock(): Promise<() => Promise<void>>; exists(): Promise<boolean> } = {
     load,
     exists,
     async save(state) {
@@ -152,6 +150,7 @@ export async function fileStore(
       return () => unlink(lockPath);
     },
   };
+  return store;
 }
 class HostRequestDenied extends Error {
   constructor(readonly status: number) {
@@ -177,12 +176,7 @@ export function httpApi(
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
   inventory?: { cli: DockerMachineCli; failed(phase: InventoryPhase, error: unknown): void },
-): Api & {
-  stopInventory(): Promise<void>;
-  retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
-  unregister(state: State): Promise<boolean>;
-  reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
-} {
+) {
   let stopIdentitySupported = false;
 
   async function post(
@@ -194,7 +188,7 @@ export function httpApi(
     signal?: AbortSignal,
     onResponse?: (response: Response) => void,
     headers?: Record<string, string>,
-  ): Promise<unknown> {
+  ) {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
@@ -269,7 +263,16 @@ export function httpApi(
     }
   }
 
-  return {
+  const api: Api & {
+    stopInventory(): Promise<void>;
+    retainedOutputs(
+      state: State,
+      requestId: string,
+      read: () => Promise<Uint8Array<ArrayBuffer> | null>,
+    ): Promise<void>;
+    unregister(state: State): Promise<boolean>;
+    reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
+  } = {
     async stopInventory() {
       inventoryStop.abort();
       await inventoryReport;
@@ -454,6 +457,7 @@ export function httpApi(
       });
     },
   };
+  return api;
 }
 
 export async function observeRetainedStop(
@@ -527,7 +531,7 @@ export const dockerCli: DockerMachineCli = {
     });
   },
 };
-export async function readDockerOutputArchive(argv: readonly string[]): Promise<Uint8Array<ArrayBuffer> | null> {
+export async function readDockerOutputArchive(argv: readonly string[]) {
   const child = Bun.spawn(["docker", ...argv], {
     stdin: "ignore",
     stdout: "pipe",

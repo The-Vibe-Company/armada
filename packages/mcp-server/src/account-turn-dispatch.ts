@@ -58,7 +58,10 @@ function lifecycleBlocksTurn(sandbox: string, turn: string) {
 
 export const TURN_LIFECYCLE_WAITING = lifecycleBlocksTurn("s", "q");
 
-export const TURN_FIFO_ELIGIBLE = `(exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null)
+export const TURN_FIFO_ELIGIBLE = `(s.provider is distinct from 'docker' or q.state<>'queued'
+  or not exists(select 1 from public.account_turn_queue prior
+    where prior.sandbox_id=q.sandbox_id and prior.state='queued' and prior.sequence<q.sequence))
+  and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null)
   or not exists(select 1 from public.account_turn_queue earlier join public.sandboxes target on target.id=earlier.sandbox_id
     where earlier.account_id=q.account_id and earlier.state='queued'
       and earlier.model is not distinct from q.model and earlier.sequence<q.sequence

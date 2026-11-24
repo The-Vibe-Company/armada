@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
-import { dockerCli } from "./native.ts";
+import { dockerCli } from "./host.ts";
 
 export function instanceName(instance?: string) {
   if (instance !== undefined && !/^[a-f0-9]{64}$/.test(instance)) throw new Error("Invalid Docker host instance.");

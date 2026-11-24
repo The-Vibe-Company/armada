@@ -4,7 +4,6 @@ import { installServerShutdown } from "../src/server-shutdown.ts";
 test("server shutdown retains shared services through draining and permits forced-stop escalation", async () => {
   const workers = Promise.withResolvers<void>();
   const sockets = Promise.withResolvers<void>();
-  const docker = Promise.withResolvers<void>();
   const request = Promise.withResolvers<void>();
   const native = Promise.withResolvers<void>();
   const mcp = Promise.withResolvers<void>();
@@ -30,7 +29,6 @@ test("server shutdown retains shared services through draining and permits force
     },
     workersDone: workers.promise,
     stopSockets: () => sockets.promise,
-    closeDocker: () => docker.promise,
     requests,
     closeMcp: () => {
       trace.push("mcp");
@@ -51,7 +49,6 @@ test("server shutdown retains shared services through draining and permits force
   expect(trace).toEqual(["draining"]);
   workers.resolve();
   sockets.resolve();
-  docker.resolve();
   await Promise.resolve();
   expect(trace).toEqual(["draining"]);
   request.resolve();
@@ -77,7 +74,6 @@ test("login cleanup failure still drains HTTP and closes shared resources", asyn
     beginDrain() {},
     workersDone: Promise.resolve(),
     async stopSockets() {},
-    closeDocker: () => undefined,
     async closeAntigravityLogin() {
       throw new Error("Login cleanup failed");
     },

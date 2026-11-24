@@ -117,7 +117,6 @@ is authorized. Claude still uses its independent conservative
 Claude SDK accounting.
 
 The notification recording is pinned 0.167.0 evidence. The persisted snake_case
-shape is independently documented in `docs/design/boat-native-usage.md`
-(0.167.1) and observed locally in 0.167.2 accounting records; the regression
+shape is observed locally in 0.167.2 accounting records; the regression
 constructs a rollout in that shape from the recorded counters. It is not a new
 authenticated 0.167.0 or Modal capture.

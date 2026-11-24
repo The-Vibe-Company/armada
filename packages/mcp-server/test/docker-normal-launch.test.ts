@@ -19,35 +19,37 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
-import { LOGS_OUTPUT, modalLaunchReceipt } from "@armada/core/contract";
+import { modalLaunchReceipt } from "@armada/core/contract";
 import {
   createApplicationVault,
+  createRoutineService,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   createSqlVaultStore,
   createTemplateService,
+  DockerTemplateAdmissionRefused,
   decryptSecret,
   encryptSecret,
   type TemplateRuntime,
 } from "@armada/core/server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { z } from "zod";
 import { dockerLaunchBody } from "../../../apps/dashboard/src/lib/docker-launch.ts";
-import { httpApi } from "../../docker-host/src/native.ts";
+import { httpApi } from "../../docker-host/src/host.ts";
 import { Armada, ArmadaError, type SendInput } from "../../sdk/src/index.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
-import { readLogs } from "../src/control-logs.ts";
+import {
+  type ControlOptions,
+  createQueuedSandboxDispatch,
+  dispatchControlCommand,
+  handleControlRequest,
+} from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { dockerLaunchRequestId } from "../src/docker-launch-identity.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
-import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -55,7 +57,6 @@ import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { responseJsonSchema } from "../src/launch-response-schemas.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -63,7 +64,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
-import { createArmadaServer } from "../src/tools.ts";
+import { createServerRoutineScheduler } from "../src/server-routines.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
@@ -98,7 +99,6 @@ const bootstrap = createDockerBootstrapService(sql, key, {
 // Existing private-lane tests own the individual host/runtime protocol matrices.
 async function fixture(
   options: {
-    lifecycleGenerationAfterCreate?: number;
     harness?: Harness;
     checkoutExitCode?: number;
     refreshFailure?: "auth" | "network";
@@ -261,12 +261,6 @@ async function fixture(
           ? { reason: failCreate === "image" ? ("image_unavailable" as const) : ("disk_full" as const) }
           : {}),
       });
-      if (job.operation === "create" && options.lifecycleGenerationAfterCreate !== undefined) {
-        await db.query(`update public.sandboxes set lifecycle_generation=$2 where id=$1`, [
-          body.requestId,
-          options.lifecycleGenerationAfterCreate,
-        ]);
-      }
     }
     await stepRuntime();
   }
@@ -478,7 +472,6 @@ async function fixture(
   ) {
     const launch = createDockerNormalLaunch(target, key, {
       enabled,
-      deferLaunch,
       get officialImage() {
         return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
       },
@@ -507,13 +500,20 @@ async function fixture(
       await db.query("update public.jobs set run_after=now() where id=$1", [job.id]);
       return true;
     }
+    async function drain() {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (!(await runClaim())) return;
+      }
+    }
     return {
       ...launch,
       runClaim,
-      async drain() {
-        for (let attempt = 0; attempt < 4; attempt++) {
-          if (!(await runClaim())) return;
-        }
+      drain,
+      async launch(...args: Parameters<typeof launch.launch>) {
+        const result = await launch.launch(...args);
+        if (deferLaunch || args[2] || result.sandbox.status !== "starting" || !drive) return result;
+        await drain();
+        return launch.launch(...args);
       },
     };
   }
@@ -667,7 +667,7 @@ test("an initial actor epoch reserves a CLI-session Docker launch without weaken
 
 test("normal launch drives create, bootstrap, health and one first prompt, seals its claim and replays current metadata", async () => {
   const db = database();
-  const f = await fixture({ lifecycleGenerationAfterCreate: 7 });
+  const f = await fixture();
   const vault = createSqlVaultStore(sql);
   await vault.setAgentDefault!(f.actor.userId, {
     harness: "codex",
@@ -715,7 +715,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
         [f.body.requestId],
       )
     ).rows[0],
-  ).toEqual({ generation: "7", epoch: "1", runtime_generation: "7" });
+  ).toEqual({ generation: "1", epoch: "1", runtime_generation: "1" });
   expect(result.sandbox.createdAt).toMatch(/^\d{4}-/);
   expect(result.expiresAt).toBe(result.sandbox.expiresAt as string);
   expect(result.sandbox.model).toBe("gpt-6-astra");
@@ -775,64 +775,6 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(f.resolutions()).toBe(1);
   // The replay issues no runtime command.
   expect(await counts(f)).toEqual(beforeReplay);
-});
-
-test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
-  const db = database();
-  const f = await fixture();
-  f.setDrive(false);
-  await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
-  const before = (
-    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      `select request_enc from public.docker_launch_manifests where sandbox_id=$1`,
-      [f.body.requestId],
-    )
-  ).rows[0];
-  expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("starting");
-  await Promise.all([
-    rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable"),
-    rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable"),
-  ]);
-  f.setDrive(true);
-  let lost = false;
-  const lostResponse: Sql = {
-    ...sql,
-    async transaction(work) {
-      if (!sql.transaction) throw Error("transaction required");
-      let published = false;
-      const result = await sql.transaction((tx) =>
-        work({
-          query: (q, v) => {
-            if (q.startsWith("update public.docker_launch_requests set result_enc=")) published = true;
-            return tx.query(q, v);
-          },
-        }),
-      );
-      if (published && !lost) {
-        lost = true;
-        throw Error("private response loss");
-      }
-      return result;
-    },
-  };
-  await rejected(f.service(lostResponse).launch(f.caller, f.body), "unavailable");
-  expect(lost).toBe(true);
-  const [replay, concurrent] = await Promise.all([
-    f.service().launch(f.caller, f.body),
-    f.service().launch(f.caller, f.body),
-  ]);
-  expect(concurrent).toEqual(replay);
-  expect(replay).toMatchObject({ promptId: f.receipt.promptId, conversationId: f.receipt.conversationId });
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
-  expect(f.resolutions()).toBe(1);
-  const after = (
-    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      `select request_enc from public.docker_launch_manifests where sandbox_id=$1`,
-      [f.body.requestId],
-    )
-  ).rows[0];
-  expect(after?.request_enc).toEqual(before?.request_enc);
 });
 
 test("normal admission rejects unsupported input before resolution, scopes ownership and cannot adopt private reservations", async () => {
@@ -905,7 +847,7 @@ test("admission and bound create roll back together when claim persistence fails
       return sql.transaction((tx) =>
         work({
           query(q, v) {
-            if (q.startsWith("insert into public.docker_launch_requests")) throw Error("private failure");
+            if (q.startsWith("insert into public.jobs")) throw Error("private failure");
             return tx.query(q, v);
           },
         }),
@@ -935,7 +877,7 @@ test("member removal and rejoin cannot continue a pending normal claim under a n
   const db = database();
   const f = await fixture();
   f.setDrive(false);
-  await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
+  expect((await f.service(sql, true, 10000).launch(f.caller, f.body)).sandbox.status).toBe("starting");
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
   await rejected(f.service().launch(f.caller, f.body), "not_found");
   await db.query(`insert into public.members(org_id,user_id,role) values($1,$2,'member')`, [
@@ -944,14 +886,14 @@ test("member removal and rejoin cannot continue a pending normal claim under a n
   ]);
   await rejected(f.service().launch(f.caller, f.body), "not_found");
   expect(f.resolutions()).toBe(1);
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
+  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 0, commands: 0 });
 });
 
 test("failed startup returns a safe failure without claiming stopped, and pending retry never starts replacement work", async () => {
   const db = database();
   const f = await fixture();
   f.setFailure();
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+  expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
   const row = await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId);
   expect(row.status).toBe("failed");
   expect(
@@ -961,7 +903,7 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
       ])
     ).rows[0]?.stopped_at,
   ).toBeNull();
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+  expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
   expect(f.resolutions()).toBe(1);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
@@ -970,24 +912,12 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
-test("Docker readiness logs the runtime's safe artifact failure class", async () => {
+test("Docker launch replay preserves the runtime artifact failure message", async () => {
   const f = await fixture({ failRuntimeStartup: true });
-  const lines: string[] = [];
-  await observeRequest(
-    async () => {
-      await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
-      return new Response(null);
-    },
-    (line) => lines.push(line),
-  );
-  expect(lines.map((line) => JSON.parse(line))).toContainEqual(
-    expect.objectContaining({
-      event: "operator_failure",
-      phase: "docker.launch.runtime_readiness",
-      sandboxId: f.body.requestId,
-      causeCode: "artifact_unavailable",
-    }),
-  );
+  expect((await f.service().launch(f.caller, f.body)).sandbox).toMatchObject({
+    status: "failed",
+    statusReason: expect.stringContaining("artifact"),
+  });
 });
 
 test.each([
@@ -998,8 +928,8 @@ test.each([
   async (reason, message) => {
     const f = await fixture();
     f.setFailure(reason);
-    await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
-    await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(message);
+    expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
+    expect((await f.service().launch(f.caller, f.body)).sandbox.statusReason).toBe(message);
     const runtimeReason =
       "Runtime model routing failed. Ask the server operator to check the configured model endpoint before launching again.";
     for (const [stored, expected] of [
@@ -1008,7 +938,7 @@ test.each([
       ["internal_private_diagnostic", DOCKER_LAUNCH_FAILURE_MESSAGES.startup],
     ]) {
       await database().query("update sandboxes set status_reason=$2 where id=$1", [f.body.requestId, stored]);
-      await expect(f.service().launch(f.caller, f.body)).rejects.toThrow(expected);
+      expect((await f.service().launch(f.caller, f.body)).sandbox.statusReason).toEqual(expected ?? null);
       const status = await createDockerSandboxControls(sql, key, { clock: f.clock }).invoke(f.caller, "status", {
         id: f.body.requestId,
       });
@@ -1022,17 +952,13 @@ test.each([
 test("Docker launch replay updates the remedy in a stored GitHub access refusal", async () => {
   const f = await fixture();
   f.setFailure();
-  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+  expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
   const stored =
     "Repository project needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.";
   await database().query("update sandboxes set status_reason=$2 where id=$1", [f.body.requestId, stored]);
   const expected = stored.replace("armada github connect", "armada account login github");
-  await expect(f.service().launch(f.caller, f.body)).rejects.toMatchObject({
-    code: "no_credentials",
-    message: expected,
-  });
   const record = await f.service(sql, true, 10_000, officialImage, true).launch(f.caller, f.body);
-  expect(record.sandbox.statusReason).toBe(expected);
+  expect(record.sandbox.statusReason).toEqual(expected ?? null);
 });
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
@@ -1121,11 +1047,7 @@ function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<
 test("SDK sends to a Docker sandbox meet the published Docker variant exactly when Docker admission accepts them", async () => {
   const f = await fixture();
   await f.seedRunningSandbox();
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-  });
-  const { options, bearer } = restControl(f, { dockerControls: controls });
+  const { options, bearer } = restControl(f, { accountTurns: createAccountTurnQueue(sql, key) });
   const sdk = new Armada({
     token: bearer,
     url: "https://armada.example",
@@ -1141,7 +1063,7 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
   const keyed: SendInput = { ...ref, prompt: "Keyed follow-up", request_id: randomUUID() };
   expect(docker.safeParse(keyed).success).toBe(true);
   expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: expect.any(String) });
-  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { text: keyed.prompt } });
+  expect(f.native).toHaveLength(0);
   // Docker admission alone would take this 150 KiB prompt; the REST body limit refuses it
   // first, and the published variant says so in advance.
   const oversized: SendInput = { ...ref, prompt: "x".repeat(150 * 1024), request_id: randomUUID() };
@@ -1188,19 +1110,10 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
 test("Docker sends through the production-wired account queue key a legacy body, replay a keyed one, refuse overrides before queuing, and dispatch admitted rows", async () => {
   const f = await fixture();
   await f.seedRunningSandbox();
-  // Wired as serve.ts does: REST sends reach the account queue first, and the queue
-  // dispatches through the same route without itself, with Docker in dispatch mode.
   const accountTurns = createAccountTurnQueue(sql, key);
-  const dockerControls = (dispatchQueued: boolean) =>
-    createDockerSandboxControls(sql, key, {
-      clock: f.clock,
-      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, dispatchQueued }),
-    });
-  const { options, bearer, post } = restControl(f, { dockerControls: dockerControls(false), accountTurns });
-  const { accountTurns: _queue, ...unqueued } = options;
-  accountTurns.setDispatch((caller, input) =>
-    dispatchControlCommand("sandbox/send", caller, { ...input }, { ...unqueued, dockerControls: dockerControls(true) }),
-  );
+  const dockerControls = createDockerSandboxControls(sql, key, { clock: f.clock, sendEnabled: true });
+  const { options, bearer, post } = restControl(f, { dockerControls, accountTurns });
+  accountTurns.setDispatch(createQueuedSandboxDispatch(options));
   const sdk = new Armada({
     token: bearer,
     url: "https://armada.example",
@@ -1234,6 +1147,7 @@ test("Docker sends through the production-wired account queue key a legacy body,
   expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
   const generated = await rows();
   expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(false);
   const keyed: SendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
   const receipt = await sdk.send(keyed);
   expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
@@ -1268,11 +1182,20 @@ test.each([false, true])(
     const originalId = dockerLaunchRequestId(key, f.actor.userId, org, body.idempotencyKey);
     if (historical) {
       await f.service().launch(f.caller, { ...fields, org, requestId: originalId, externalRef: body.externalRef });
-      await sql.query("update docker_launch_requests set async_launch=true where sandbox_id=$1", [originalId]);
+      await sql.query(
+        `with historical as (delete from public.jobs where sandbox_id=$1 and kind='launch' returning *)
+        insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc,async_launch)
+        select sandbox_id,(outcome->>'docker_actor_epoch')::bigint,request_digest,payload_enc,
+          decode(outcome->>'docker_receipt','hex'),true from historical`,
+        [originalId],
+      );
       const migration = await Bun.file(
         new URL("../../../supabase/migrations/20261124200501_docker_ordinary_launch_jobs.sql", import.meta.url),
       ).text();
       await sql.query(migration.slice(migration.indexOf("insert into public.jobs"), migration.indexOf("-- Setup")));
+      expect(
+        (await sql.query("select sandbox_id from jobs where sandbox_id=$1 and kind='launch'", [originalId])).rows,
+      ).toEqual([{ sandbox_id: originalId }]);
     }
     const admitted = modalLaunchReceipt.parse(await post("sandbox/launch", body));
     try {
@@ -1330,7 +1253,7 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
     // An acknowledged timeout must preserve the dashboard's stable request key.
     f.setDrive(false);
-    options.dockerLaunch = f.service(sql, true, 250);
+    options.dockerLaunch = f.service(sql, true, 10000);
     const pending = await handleControlRequest(
       new Request("https://armada.example/api/v1/sandbox/launch", {
         method: "POST",
@@ -1339,8 +1262,8 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
       }),
       options,
     );
-    expect(pending?.status).toBe(503);
-    expect(await pending?.json()).toMatchObject({ error: { code: "outcome_unknown" } });
+    expect(pending?.status).toBe(200);
+    expect(await pending?.json()).toEqual({ sandbox: { id: f.body.requestId, status: "starting" } });
     f.setDrive(true);
     options.dockerLaunch = f.service();
     // The published contract describes the dashboard's Docker request and its receipt.
@@ -1504,18 +1427,12 @@ test("normal launch claims remain service-only even for their owner's user JWT",
   const launch = f.service(sql, true, 10_000, officialImage, true);
   const controls = createDockerSandboxControls(sql, key, {
     clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+    sendEnabled: true,
   });
   await launch.launch(f.caller, f.body);
   try {
-    const queued = await controls.invoke(f.caller, "send", {
-      id: f.body.requestId,
-      request_id: randomUUID(),
-      prompt: "Queue a reply",
-    });
-    expect(queued).toMatchObject({ handled: true, result: { promptId: expect.any(String) } });
     for (const role of ["anon", "authenticated"]) {
-      for (const table of ["docker_launch_requests", "docker_queued_prompts"]) {
+      for (const table of ["docker_launch_manifests", "account_turn_queue"]) {
         await db.transaction(async (tx) => {
           await tx.query(`select set_config('request.jwt.claim.sub',$1,true)`, [f.actor.userId]);
           await tx.exec(`set local role ${role}`);
@@ -1569,535 +1486,6 @@ test("Docker launches Antigravity with its account confined to private enrolment
       input: expect.objectContaining({ harness: "antigravity", model: "default" }),
     }),
   );
-});
-
-test.each(["codex", "opencode"] as const)(
-  "queued %s send passes the real MCP structured-output schema and keeps its native conversation",
-  async (harness) => {
-    const db = database();
-    const f = await fixture({ harness });
-    const launch = f.service(sql, true, 10000, officialImage, true);
-    const { prompt: _prompt, ...body } = f.body;
-    await launch.launch(f.caller, body);
-    const stored = (
-      await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from docker_launch_manifests where sandbox_id=$1",
-        [f.body.requestId],
-      )
-    ).rows[0];
-    if (!stored) throw Error("missing launch");
-    const planned = JSON.parse(await decryptSecret(stored.request_enc, key)).conversationId;
-    const controls = createDockerSandboxControls(sql, key, {
-      clock: f.clock,
-      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-    });
-    const server = createArmadaServer(
-      {
-        caller: f.caller,
-        data: createSqlData(sql)(f.caller),
-        launchCredentials: credentials,
-        dockerControls: controls,
-        exposedSecrets: async () => [],
-        provider: async () => {
-          throw Error("Docker must not route to a cloud provider");
-        },
-        now: () => new Date(),
-        sleep: async () => {},
-      },
-      "test",
-    );
-    const client = new Client({ name: "queued-receipt-schema", version: "1" });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await server.connect(a);
-    await client.connect(b);
-    try {
-      const catalog = await client.listTools();
-      const send = catalog.tools.find((t) => t.name === "send");
-      if (!send?.outputSchema?.properties) throw Error("missing send output schema");
-      const properties = send.outputSchema.properties as Record<string, { type: string }>;
-      expect(properties.conversationId?.type).toBe("string");
-      const requestId = randomUUID();
-      const response = await client.callTool({
-        name: "send",
-        arguments: { id: f.body.requestId, request_id: requestId, prompt: "Accepted through the tool boundary" },
-      });
-      if (response.isError) throw Error(JSON.stringify(response._meta));
-      expect(response.isError).not.toBe(true);
-      const receipt = response.structuredContent as { promptId: string; conversationId: string; status: string };
-      expect(receipt.status).toBe("queued");
-      expect(receipt.conversationId).toMatch(/^[a-f0-9-]{36}$/);
-      const conversationId = receipt.conversationId;
-      expect(conversationId).toBe(planned);
-      expect(f.native).toHaveLength(0);
-      await launch.drain();
-      await launch.drainQueued();
-      expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { conversationId } });
-      expect(
-        (
-          await db.query<{ native_conversation_id: string }>(
-            "select native_conversation_id from docker_queued_prompts where sandbox_id=$1 and request_id=$2",
-            [f.body.requestId, requestId],
-          )
-        ).rows[0]?.native_conversation_id,
-      ).toBe(conversationId);
-    } finally {
-      await client.close();
-      await server.close();
-      await launch.close();
-    }
-  },
-);
-
-test("legacy initial prompt replay retains its already-enqueued conversation payload", async () => {
-  const db = database();
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
-  await server.drain();
-  const claim = (
-    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from docker_launch_manifests where sandbox_id=$1",
-      [f.body.requestId],
-    )
-  ).rows[0];
-  if (!claim) throw Error("missing claim");
-  const manifest = JSON.parse(await decryptSecret(claim.request_enc, key));
-  delete manifest.conversationId;
-  const commandId = `docker_prompt_${manifest.promptId}`;
-  const command = (
-    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from runtime_commands where sandbox_id=$1 and request_id=$2",
-      [f.body.requestId, commandId],
-    )
-  ).rows[0];
-  if (!command) throw Error("missing command");
-  const old = JSON.parse(await decryptSecret(command.request_enc, key));
-  delete old.input.conversationId;
-  await db.query("update runtime_commands set request_enc=$3 where sandbox_id=$1 and request_id=$2", [
-    f.body.requestId,
-    commandId,
-    await encryptSecret(JSON.stringify(old), key),
-  ]);
-  await db.query(
-    "update jobs set payload_enc=$2,outcome=outcome-'docker_receipt',state='queued' where sandbox_id=$1 and kind='launch'",
-    [f.body.requestId, await encryptSecret(JSON.stringify(manifest), key)],
-  );
-  await db.query("update sandboxes set conversation_ids='{}'::text[] where id=$1", [f.body.requestId]);
-  const actualConversation = f.receipt.conversationId;
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-  });
-  const queued = await controls.invoke(f.caller, "send", {
-    id: f.body.requestId,
-    request_id: randomUUID(),
-    prompt: "Legacy completed reply, unprojected conversation",
-  });
-  expect(queued).toMatchObject({ handled: true, result: { conversationId: actualConversation, status: "queued" } });
-  expect(actualConversation).not.toBe(manifest.promptId);
-  const before = f.native.length;
-  await server.drain();
-  expect((await server.launch(f.caller, f.body)).conversationId).toBe(f.receipt.conversationId);
-  expect(f.native).toHaveLength(before);
-  await publishFinished(f);
-  await server.drainQueued();
-  expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { conversationId: actualConversation } });
-  await server.close();
-});
-
-async function publishFinished(f: Fixture, sequence = 0, promptId = f.receipt.promptId) {
-  const db = database();
-  const session = f.session();
-  if (!session) throw Error("no runtime");
-  const launch = (
-    await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-      "select request_enc from docker_launch_manifests where sandbox_id=$1",
-      [f.body.requestId],
-    )
-  ).rows[0];
-  if (launch) {
-    const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
-    if (manifest.conversationId) f.receipt.conversationId = manifest.conversationId;
-  }
-  const events: AgentEvent[] = [
-    {
-      id: randomUUID(),
-      at: sequence + 1,
-      kind: "prompt",
-      promptId,
-      conversationId: f.receipt.conversationId,
-      text: "native turn",
-      status: "finished",
-    },
-  ];
-  const response = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({
-        sandboxId: f.body.requestId,
-        generation: session.epoch,
-        events: events.map((event, i) => ({ sequence: sequence + i + 1, event })),
-      }),
-    }),
-  );
-  expect(response?.status).toBe(200);
-}
-
-test.each([false, true])(
-  "send during accepted startup immediately returns a stable queued receipt and dispatches after preparation: initial %s",
-  async (initial) => {
-    const db = database();
-    const f = await fixture({ distinctPromptIds: true });
-    const server = f.service(sql, true, 10000, officialImage, true);
-    const { prompt: _prompt, ...empty } = f.body;
-    const accepted = await server.launch(f.caller, initial ? f.body : empty);
-    expect(accepted.sandbox.id).toBe(f.body.requestId);
-    let waited = false;
-    const sender = createDockerNormalSend(sql, key, {
-      enabled: true,
-      clock: {
-        now: f.clock.now,
-        wait: async () => {
-          waited = true;
-          throw Error("accepted send must not wait");
-        },
-      },
-    });
-    const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
-    const args = { id: f.body.requestId, request_id: randomUUID(), prompt: "Follow up immediately" };
-    const acceptedTurn = await controls.invoke(f.caller, "send", args);
-    expect(acceptedTurn).toMatchObject({
-      handled: true,
-      result: { status: "queued", conversationId: expect.stringMatching(/^[a-f0-9-]{36}$/) },
-    });
-    if (!acceptedTurn.handled) throw Error("not handled");
-    const queued = acceptedTurn.result as { promptId: string };
-    expect(queued.promptId).toMatch(/^[a-f0-9-]{36}$/);
-    expect(waited).toBe(false);
-    expect(f.native).toHaveLength(0);
-    expect(await controls.invoke(f.caller, "send", args)).toEqual(acceptedTurn);
-    await expect(controls.invoke(f.caller, "send", { ...args, prompt: "Changed" })).rejects.toThrow();
-    expect(
-      await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queued.promptId }),
-    ).toMatchObject({
-      handled: true,
-      result: { prompt: { promptId: queued.promptId, state: "queued" }, settled: false },
-    });
-    // The public REST routes (and so the SDK) observe the queued turn within the published contract.
-    const rest = restControl(f, { dockerControls: controls });
-    const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
-    for (const [route, input] of [
-      ["sandbox/status", ref],
-      ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
-    ] as const) {
-      const report = await rest.post(route, input);
-      expect(report).toMatchObject({ prompt: { promptId: queued.promptId, state: "queued" }, settled: false });
-      publishedResponse(route).parse(report);
-    }
-    // Logs report the queued turn. The published REST response and the MCP `logs` output schema
-    // (closed, as MCP clients validate it) both accept it.
-    const queuedLogs = await readLogs({ dockerControls: controls }, f.caller, f.body.requestId, {});
-    expect(queuedLogs).toMatchObject({ queuedPrompt: { promptId: queued.promptId, state: "queued" } });
-    publishedResponse("logs/read").parse(queuedLogs);
-    z.fromJSONSchema(responseJsonSchema(z.object(LOGS_OUTPUT)) as Parameters<typeof z.fromJSONSchema>[0]).parse(
-      queuedLogs,
-    );
-    await server.drain();
-    if (initial) {
-      await server.drainQueued();
-      expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
-      await publishFinished(f);
-    }
-    await server.drainQueued();
-    const dispatched = (
-      await db.query<{ status: string; native_prompt_id: string }>(
-        "select status,native_prompt_id from docker_queued_prompts where sandbox_id=$1",
-        [f.body.requestId],
-      )
-    ).rows[0];
-    const nativePrompt = f.promptReceipts.get(`docker_prompt_${args.request_id}`)?.promptId;
-    if (!nativePrompt) throw Error("native prompt did not acknowledge");
-    expect(dispatched).toEqual({ status: "admitted", native_prompt_id: nativePrompt });
-    expect(f.native.at(-1)).toMatchObject({
-      op: "prompt",
-      input: { text: args.prompt, ...(initial ? { conversationId: f.receipt.conversationId } : {}) },
-    });
-    await publishFinished(f, initial ? 1 : 0, nativePrompt);
-    expect(
-      await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queued.promptId }),
-    ).toMatchObject({ handled: true, result: { prompt: { promptId: queued.promptId, state: "finished" } } });
-    expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId })).toMatchObject({
-      handled: true,
-      result: { events: expect.arrayContaining([expect.objectContaining({ promptId: queued.promptId })]) },
-    });
-    const before = f.native.length;
-    await server.drainQueued();
-    expect(f.native).toHaveLength(before);
-    expect(await controls.invoke(f.caller, "send", args)).toEqual(acceptedTurn);
-    await server.close();
-  },
-);
-
-test.each([false, true])(
-  "pre-ACK queued history and usage never expose transient native IDs: cancel %s",
-  async (cancel) => {
-    const db = database();
-    const f = await fixture();
-    const server = f.service(sql, true, 10000, officialImage, true);
-    const { prompt: _prompt, ...empty } = f.body;
-    await server.launch(f.caller, empty);
-    const controls = createDockerSandboxControls(sql, key, {
-      send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-      clock: f.clock,
-    });
-    const requestId = randomUUID();
-    const accepted = await controls.invoke(f.caller, "send", {
-      id: f.body.requestId,
-      request_id: requestId,
-      prompt: "Native journal before ACK",
-    });
-    if (!accepted.handled) throw Error("not handled");
-    const { promptId } = accepted.result as { promptId: string };
-    await server.drain();
-    const waiting = Promise.withResolvers<void>(),
-      release = Promise.withResolvers<void>();
-    const originalWait = f.clock.wait;
-    f.clock.wait = async (ms: number) => {
-      const pending = (
-        await db.query("select 1 from runtime_commands where sandbox_id=$1 and request_id=$2 and result_enc is null", [
-          f.body.requestId,
-          `docker_prompt_${requestId}`,
-        ])
-      ).rows.length;
-      if (pending) {
-        waiting.resolve();
-        await release.promise;
-      }
-      await originalWait(ms);
-    };
-    const dispatch = server.drainQueued();
-    await waiting.promise;
-    await publishFinished(f);
-    await db.query("update public.sandboxes set usage_turns=$2::jsonb where id=$1", [
-      f.body.requestId,
-      JSON.stringify({
-        turnCount: 1,
-        turns: [
-          { promptId: f.receipt.promptId, model: "gpt-6.1-sol", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
-        ],
-      }),
-    ]);
-    if (cancel) {
-      const stopper = createDockerSandboxControls(sql, key, { clock: { now: f.clock.now, wait: originalWait } });
-      await stopper.invoke(f.caller, "stop", { id: f.body.requestId });
-      await server.drainQueued();
-    }
-    for (const direction of ["forward", "backward"]) {
-      const logs = await controls.invoke(f.caller, "logs", { id: f.body.requestId, direction });
-      expect(logs).toMatchObject({ handled: true, result: { events: [], cursor: null, hasMore: true } });
-      expect(JSON.stringify(logs)).not.toContain(f.receipt.promptId);
-    }
-    expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-      handled: true,
-      result: { usage: null },
-    });
-    release.resolve();
-    await dispatch;
-    if (!cancel) {
-      expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId, direction: "backward" })).toMatchObject({
-        handled: true,
-        result: { events: expect.arrayContaining([expect.objectContaining({ promptId })]) },
-      });
-      expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-        handled: true,
-        result: { usage: { turns: [expect.objectContaining({ promptId })] } },
-      });
-    }
-    await server.close();
-  },
-);
-
-test("queued prompt receipt publication loss reconciles one native turn and preserves public history identity", async () => {
-  const f = await fixture();
-  let lost = false;
-  const interrupted: Sql = {
-    ...sql,
-    query: async (q, v) => {
-      if (!lost && q.includes("set status='admitted',native_prompt_id=")) {
-        lost = true;
-        throw Error("synthetic queue publication loss");
-      }
-      return sql.query(q, v);
-    },
-  };
-  const server = f.service(interrupted, true, 10000, officialImage, true);
-  const { prompt: _prompt, ...empty } = f.body;
-  await server.launch(f.caller, empty);
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-  });
-  const input = { id: f.body.requestId, request_id: randomUUID(), prompt: "Dispatch exactly once" };
-  const admit = () =>
-    observeRequest(
-      async () => Response.json(await controls.invoke(f.caller, "send", input)),
-      () => {},
-    );
-  const accepted = await admit();
-  const queued = (await accepted?.json()) as Awaited<ReturnType<typeof controls.invoke>> | undefined;
-  if (!queued?.handled) throw Error("not handled");
-  const { promptId } = queued.result as { promptId: string };
-  const replay = await admit();
-  expect(await replay?.json()).toEqual(queued);
-  expect(replay?.headers.get("x-request-id")).not.toBe(accepted?.headers.get("x-request-id"));
-  await server.drain();
-  await server.drainQueued();
-  expect(lost).toBe(true);
-  await publishFinished(f);
-  // Journal may arrive before the queue projection write. The validated native receipt still links its public ID.
-  expect(await controls.invoke(f.caller, "logs", { id: f.body.requestId })).toMatchObject({
-    handled: true,
-    result: { events: expect.arrayContaining([expect.objectContaining({ promptId })]) },
-  });
-  const recovered = f.service(sql, true, 10000, officialImage, true);
-  await recovered.drainQueued();
-  expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
-  expect(
-    (
-      await database().query("select correlation_id from runtime_commands where sandbox_id=$1 and request_id=$2", [
-        input.id,
-        `docker_prompt_${input.request_id}`,
-      ])
-    ).rows,
-  ).toEqual([{ correlation_id: accepted?.headers.get("x-request-id") }]);
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId, state: "finished" } },
-  });
-  await server.close();
-  await recovered.close();
-});
-
-test("queued sends retain FIFO order across server recovery and stop fences dispatch", async () => {
-  const f = await fixture({ distinctPromptIds: true });
-  const server = f.service(sql, true, 10000, officialImage, true);
-  const { prompt: _prompt, ...empty } = f.body;
-  await server.launch(f.caller, empty);
-  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
-  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
-  const one = { id: f.body.requestId, request_id: randomUUID(), prompt: "First queued" },
-    two = { ...one, request_id: randomUUID(), prompt: "Second queued" };
-  await controls.invoke(f.caller, "send", one);
-  const accepted = await controls.invoke(f.caller, "send", two);
-  if (!accepted.handled) throw Error("not handled");
-  const { promptId } = accepted.result as { promptId: string };
-  await server.drain();
-  const recovered = f.service(sql, true, 10000, officialImage, true);
-  await recovered.drainQueued();
-  await recovered.drainQueued();
-  expect(f.native.filter((c) => (c as { op: string }).op === "prompt")).toHaveLength(1);
-  await publishFinished(f);
-  await recovered.drainQueued();
-  expect(
-    (f.native.filter((c) => (c as { op: string }).op === "prompt") as { input: { text: string } }[]).map(
-      (c) => c.input.text,
-    ),
-  ).toEqual([one.prompt, two.prompt]);
-  // Existing queue replay is stable even after recovery; a later stop cannot re-wake it.
-  expect(await controls.invoke(f.caller, "send", two)).toEqual(accepted);
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await recovered.drainQueued();
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId, state: "interrupted" } },
-  });
-  await server.close();
-  await recovered.close();
-});
-
-test("queued dispatch failure is visible by default until a newer ordinary send", async () => {
-  const db = database();
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  const { prompt: _prompt, ...empty } = f.body;
-  await server.launch(f.caller, empty);
-  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
-  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
-  const queued = await controls.invoke(f.caller, "send", {
-    id: f.body.requestId,
-    request_id: randomUUID(),
-    prompt: "Pinned model only",
-  });
-  if (!queued.handled) throw Error("not handled");
-  const { promptId } = queued.result as { promptId: string };
-  await server.drain();
-  // Revoke the model binding after startup, at the real admission boundary rather than fake native output.
-  await db.query("update public.credentials set status='revoked' where id=$1", [f.body.credentialId]);
-  await server.drainQueued();
-  // No native prompt may be enqueued with a revoked credential.
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId, state: "failed" } },
-  });
-  await db.query("update public.credentials set status='active' where id=$1", [f.body.credentialId]);
-  const later = await sender.send(
-    f.caller,
-    { request_id: randomUUID(), prompt: "New ordinary turn" },
-    { id: f.body.requestId, org_id: f.actor.orgId, owner_id: f.actor.userId, status: "ready", conversation_ids: [] },
-  );
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId: later.promptId, state: "running" } },
-  });
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId, state: "failed" } },
-  });
-  await server.close();
-});
-
-test("startup failure terminalizes its accepted queued prompt with the real startup reason", async () => {
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
-  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
-  const controls = createDockerSandboxControls(sql, key, { send: sender, clock: f.clock });
-  const result = await controls.invoke(f.caller, "send", {
-    id: f.body.requestId,
-    request_id: randomUUID(),
-    prompt: "Accepted before boot",
-  });
-  if (!result.handled) throw Error("not handled");
-  const { promptId } = result.result as { promptId: string };
-  f.setFailure("image");
-  await server.drain();
-  await server.drainQueued();
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: promptId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId, state: "failed", reason: DOCKER_IMAGE_UNAVAILABLE_MESSAGE }, settled: true },
-  });
-  expect(f.native).toHaveLength(0);
-  await server.close();
-});
-
-test("send refreshes the first conversation when its ready row predates launch receipt publication", async () => {
-  const f = await fixture();
-  await f.seedRunningSandbox();
-  const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
-  const stale = {
-    id: f.body.requestId,
-    org_id: f.actor.orgId,
-    owner_id: f.actor.userId,
-    status: "ready",
-    conversation_ids: [],
-  };
-  const requestId = randomUUID();
-  await sender.send(f.caller, { request_id: requestId, prompt: "Continue the just-published conversation" }, stale);
-  expect(f.native.at(-1)).toMatchObject({
-    op: "prompt",
-    input: { conversationId: f.receipt.conversationId, text: "Continue the just-published conversation" },
-  });
 });
 
 test("revocation between worker read and mailbox admission refuses the old launch", async () => {
@@ -2200,52 +1588,37 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
   await server.launch(f.caller, f.body);
   const controls = createDockerSandboxControls(sql, key, {
     clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
+    sendEnabled: true,
   });
   const status = await controls.invoke(f.caller, "status", { id: f.body.requestId });
   expect(status.handled && (status.result as DockerSandboxStatus).status).toBe("starting");
   const logs = await controls.invoke(f.caller, "logs", { id: f.body.requestId });
   expect(logs).toMatchObject({ handled: true, result: { events: [] } });
-  const accepted = await controls.invoke(f.caller, "send", {
+  const accountTurns = createAccountTurnQueue(sql, key);
+  const accepted = await accountTurns.accept(f.caller, {
     id: f.body.requestId,
     request_id: randomUUID(),
     prompt: "Cancel this queued send",
   });
-  if (!accepted.handled) throw Error("not handled");
-  const queuedId = (accepted.result as { promptId: string }).promptId;
-  expect(await controls.invoke(f.caller, "stop", { id: f.body.requestId })).toEqual({
-    handled: true,
-    result: { id: f.body.requestId, status: "stopped" },
+  const queuedId = accepted.promptId as string;
+  const rest = restControl(f, { dockerControls: controls, accountTurns });
+  expect(await rest.post("sandbox/stop", { id: f.body.requestId })).toMatchObject({
+    id: f.body.requestId,
+    status: "stopped",
   });
   expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["stop"]);
   await server.drain();
-  await server.drainQueued();
-  expect(await controls.invoke(f.caller, "status", { id: f.body.requestId, prompt_id: queuedId })).toMatchObject({
-    handled: true,
-    result: { prompt: { promptId: queuedId, state: "failed" } },
-  });
+
+  expect(await accountTurns.status(f.caller, f.body.requestId, queuedId)).toMatchObject({ failed: true });
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
   expect(f.native).toHaveLength(0);
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
-  await server.close();
 });
 
 test.each([false, true])("deadline recovery preserves the first turn (uncertain ACK: %s)", async (uncertain) => {
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
   await server.launch(f.caller, f.body);
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
-  });
-  const followupId = randomUUID();
-  expect(
-    await controls.invoke(f.caller, "send", {
-      id: f.body.requestId,
-      request_id: followupId,
-      prompt: "Follow up",
-    }),
-  ).toMatchObject({ handled: true, result: { status: "queued" } });
   f.deferFirstPrompt();
   await server.drain();
   expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
@@ -2256,10 +1629,7 @@ test.each([false, true])("deadline recovery preserves the first turn (uncertain 
   const recovered = f.service(sql, true, 10000, officialImage, true);
   await recovered.runClaim();
   expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
-  await recovered.drainQueued();
-  expect((await sql.query("select status from docker_queued_prompts where request_id=$1", [followupId])).rows).toEqual([
-    { status: "queued" },
-  ]);
+
   await f.acknowledgeFirstPrompt(uncertain);
   await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
   await recovered.runClaim();
@@ -2281,8 +1651,6 @@ test.each([false, true])("deadline recovery preserves the first turn (uncertain 
       )
     ).rows,
   ).toHaveLength(1);
-  await server.close();
-  await recovered.close();
 });
 
 test.each(["never delivered", "journaled before restart", "actor revoked", "attempts exhausted"] as const)(
@@ -2322,7 +1690,6 @@ test.each(["never delivered", "journaled before restart", "actor revoked", "atte
         const response = await handle(original, { ...first, input: { ...first.input, cwd: process.cwd() } });
         expect(response.status).toBe(200);
         accepted = ((await response.json()) as { result: { promptId: string; conversationId: string } }).result;
-        await original.close();
       }
       if (delivery === "actor revoked")
         await sql.query("update members set role='admin' where org_id=$1 and user_id=$2", [
@@ -2340,18 +1707,14 @@ test.each(["never delivered", "journaled before restart", "actor revoked", "atte
       const commands = createRuntimeCommands(authority, key);
       const { command } = await commands.next(runtimeToken, epoch);
       const restarted = new Runner(journal, grant, drivers);
-      try {
-        const response = await handle(restarted, command!);
-        expect(starts).toBe(journaled ? 1 : 0);
-        await commands.complete(runtimeToken, epoch, {
-          epoch,
-          requestId: command!.requestId,
-          status: response.status,
-          body: await response.json(),
-        });
-      } finally {
-        await restarted.close();
-      }
+      const response = await handle(restarted, command!);
+      expect(starts).toBe(journaled ? 1 : 0);
+      await commands.complete(runtimeToken, epoch, {
+        epoch,
+        requestId: command!.requestId,
+        status: response.status,
+        body: await response.json(),
+      });
       await server.runClaim();
       expect((await sql.query("select status from sandboxes where id=$1", [f.body.requestId])).rows).toEqual([
         { status: journaled ? "running" : "failed" },
@@ -2363,7 +1726,6 @@ test.each(["never delivered", "journaled before restart", "actor revoked", "atte
       }
     } finally {
       journal.close();
-      await server.close();
     }
   },
 );
@@ -2456,8 +1818,6 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
         completed.sandbox.statusReason,
       );
     }
-    await first.close();
-    await restarted.close();
   });
 
 /** #2560: recorded launch stages of the sandbox's latest activation. */
@@ -2508,7 +1868,7 @@ for (const checkoutExitCode of [0, 1])
       connections: [remote.id],
     };
     if (checkoutExitCode !== 0) {
-      await rejected(f.service().launch(f.caller, body), "sandbox_not_ready");
+      expect((await f.service().launch(f.caller, body)).sandbox.status).toBe("failed");
       expect((f.native as { op: string }[]).map((c) => c.op)).toEqual(["health", "configureGitHub", "exec"]);
       expect(await launchStages(body.requestId)).not.toContain("checkout_done");
       return;
@@ -2583,7 +1943,6 @@ for (const checkoutExitCode of [0, 1])
 
 test("Docker GitHub refresh and follow-up send configure the runtime and replay an admitted send", async () => {
   const { f, body } = await repositoryFixture();
-  const db = database();
   await f.service().launch(f.caller, body);
   const controls = createDockerSandboxControls(sql, key, { clock: f.clock, github: f.github });
   const initialCapability = configuredGitHubCapability(f);
@@ -2601,31 +1960,22 @@ test("Docker GitHub refresh and follow-up send configure the runtime and replay 
     runtime: { epoch: f.session()?.epoch },
   });
   await expect(f.github.status({ ...f.caller, orgs: [] }, f.body.requestId)).rejects.toThrow();
-  const row = (
-    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
-      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
-      [f.body.requestId],
-    )
-  ).rows[0];
-  if (!row) throw Error("missing sandbox");
   const beforeSend = f.native.length;
-  const sendArgs = { request_id: randomUUID(), prompt: "Continue" };
-  const sent = await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, github: f.github }).send(
-    f.caller,
-    sendArgs,
-    row,
-  );
-  const noGitHub = createDockerNormalSend(sql, key, {
-    enabled: true,
+  const sendArgs = { id: f.body.requestId, request_id: randomUUID(), prompt: "Continue" };
+  const sender = createDockerSandboxControls(sql, key, { sendEnabled: true, clock: f.clock, github: f.github });
+  const sent = await sender.invoke(f.caller, "send", sendArgs, {});
+  const noGitHub = createDockerSandboxControls(sql, key, {
+    sendEnabled: true,
     clock: f.clock,
     github: {
+      prepare: f.github.prepare,
       prepareTurn: async () => {
         throw Error("GitHub unavailable");
       },
     },
   });
-  expect(await noGitHub.send(f.caller, sendArgs, row)).toEqual(sent);
-  await expect(noGitHub.send(f.caller, { ...sendArgs, prompt: "Changed" }, row)).rejects.toThrow();
+  expect(await noGitHub.invoke(f.caller, "send", sendArgs, {})).toEqual(sent);
+  await expect(noGitHub.invoke(f.caller, "send", { ...sendArgs, prompt: "Changed" }, {})).rejects.toThrow();
   expect((f.native.slice(beforeSend) as { op: string }[]).map((command) => command.op)).toEqual([
     "configureGitHub",
     "prompt",
@@ -2683,17 +2033,11 @@ test("Docker freezes versioned readable bindings and re-delivers them before the
     (command) => command.op === "configureReadableVariables",
   );
   expect(configurations.map((command) => command.variables)).toEqual([{ APP_REGION: value }, { APP_REGION: value }]);
-  const row = (
-    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
-      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
-      [f.body.requestId],
-    )
-  ).rows[0];
-  if (!row) throw Error("missing sandbox");
-  await createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }).send(
+  await createDockerSandboxControls(sql, key, { sendEnabled: true, clock: f.clock }).invoke(
     f.caller,
-    { request_id: randomUUID(), prompt: "Read the variable again" },
-    row,
+    "send",
+    { id: f.body.requestId, request_id: randomUUID(), prompt: "Read the variable again" },
+    {},
   );
   expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
     2,
@@ -2759,20 +2103,15 @@ test("Docker delivers value-free secret references through native environment an
   expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
     2,
   );
-  const row = (
-    await db.query<{ id: string; org_id: string; owner_id: string; status: string; conversation_ids: string[] }>(
-      "select id,org_id,owner_id,status,conversation_ids from public.sandboxes where id=$1",
-      [f.body.requestId],
-    )
-  ).rows[0];
-  if (!row) throw Error("missing sandbox");
-  const send = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
-  const args = { request_id: randomUUID(), prompt: "Continue" };
-  const sent = await send.send(f.caller, args, row);
+  const sender = createDockerSandboxControls(sql, key, { sendEnabled: true, clock: f.clock });
+  const args = { id: f.body.requestId, request_id: randomUUID(), prompt: "Continue" };
+  const sent = await sender.invoke(f.caller, "send", args, {});
   await db.query("update public.application_secrets set status='revoked',value_enc=null where id=$1", [secretId]);
-  expect(await send.send(f.caller, args, row)).toEqual(sent);
+  expect(await sender.invoke(f.caller, "send", args, {})).toEqual(sent);
   const before = f.native.length;
-  await expect(send.send(f.caller, { request_id: randomUUID(), prompt: "New turn" }, row)).rejects.toThrow();
+  await expect(
+    sender.invoke(f.caller, "send", { ...args, request_id: randomUUID(), prompt: "New turn" }, {}),
+  ).rejects.toThrow();
   expect(f.native).toHaveLength(before);
 });
 
@@ -2844,7 +2183,7 @@ test("Docker freezes org/personal skill defaults and MCP defaults, verifies rece
   ]);
   const body = { ...f.body, skills: ["catalog/notes@2.0.0"] };
   f.setDrive(false);
-  await rejected(f.service(sql, true, 250).launch(f.caller, body), "unavailable");
+  expect((await f.service(sql, true, 10000).launch(f.caller, body)).sandbox.status).toBe("starting");
   await db.query("update public.org_skill_defaults set skills='[]' where org_id=$1", [f.actor.orgId]);
   await createSqlMcpRegistry(sql, key).metadata(f.actor.userId, f.actor.orgId, remote.id, { defaultForLaunch: false });
   f.setDrive(true);
@@ -2889,10 +2228,7 @@ test.each(["receipt", "runtime refusal"])(
     const db = database();
     const f = await fixture({ refuseSkillInstall: failure === "runtime refusal" });
     if (failure === "receipt") f.setMalformedSkills();
-    await rejected(
-      f.service().launch(f.caller, { ...f.body, skills: ["catalog/notes@1.0.0"], connections: [] }),
-      failure === "receipt" ? "unavailable" : "invalid_request",
-    );
+    await f.service().launch(f.caller, { ...f.body, skills: ["catalog/notes@1.0.0"], connections: [] });
     expect(f.native.some((request) => (request as { op: string }).op === "prompt")).toBe(false);
     const row = (
       await db.query<{ skills: unknown[] }>("select skills from public.sandboxes where id=$1", [f.body.requestId])
@@ -2917,18 +2253,12 @@ test("Docker re-prepares bound MCP grants before follow-up and after same-host r
   };
   const first = leaseHash(configured()[0]!);
   await createSqlMcpLeasePort(sql).invalidateSandbox(f.body.requestId);
-  const send = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock, prepareMcp: f.mcp().prepare });
-  await send.send(
-    f.caller,
-    { request_id: randomUUID(), prompt: "follow up" },
-    {
-      id: f.body.requestId,
-      org_id: f.actor.orgId,
-      owner_id: f.actor.userId,
-      status: "running",
-      conversation_ids: [f.receipt.conversationId],
-    },
-  );
+  const sender = createDockerSandboxControls(sql, key, {
+    sendEnabled: true,
+    clock: f.clock,
+    prepareMcp: f.mcp().prepare,
+  });
+  await sender.invoke(f.caller, "send", { id: f.body.requestId, request_id: randomUUID(), prompt: "follow up" }, {});
   expect(configured()).toHaveLength(2);
   const second = leaseHash(configured()[1]!);
   expect(second).not.toBe(first);
@@ -2956,7 +2286,7 @@ test("legacy Docker claims without preparation keep their original hash and do n
   const db = database();
   const f = await fixture();
   f.setDrive(false);
-  await rejected(f.service(sql, true, 250).launch(f.caller, f.body), "unavailable");
+  expect((await f.service(sql, true, 10000).launch(f.caller, f.body)).sandbox.status).toBe("starting");
   const row = (
     await db.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string }>(
       "select request_enc,request_hash from public.docker_launch_manifests where sandbox_id=$1",
@@ -2966,7 +2296,7 @@ test("legacy Docker claims without preparation keep their original hash and do n
   if (!row) throw Error("missing original claim");
   const manifest = JSON.parse(await decryptSecret(row.request_enc, key));
   delete manifest.preparation;
-  await db.query("update public.docker_launch_requests set request_enc=$2 where sandbox_id=$1", [
+  await db.query("update public.jobs set payload_enc=$2 where sandbox_id=$1 and kind='launch'", [
     f.body.requestId,
     await encryptSecret(JSON.stringify(manifest), key),
   ]);
@@ -3005,9 +2335,10 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 
 // Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
 // replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
-test.each([false, true])(
-  "Docker templates freeze pins and replay one host/snapshot allocation (snapshot=%s)",
-  async (fromSnapshot) => {
+test.each(["host", "snapshot", "revoked", "contended"])(
+  "Docker template launch follows the shared reservation and authority checks (%s)",
+  async (scenario) => {
+    const fromSnapshot = scenario === "snapshot";
     const db = database();
     const f = fromSnapshot ? await snapshotFixture() : await fixture();
     const snapshotId = fromSnapshot ? await seedReadySnapshot(f) : undefined;
@@ -3044,20 +2375,11 @@ test.each([false, true])(
       },
     });
     const id = (created.item as { id: string }).id;
-    let dispatches = 0,
-      allocations = 0,
-      starts = 0;
+    let dispatches = 0;
     const runtime: TemplateRuntime = {
       stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
       provider: async () => {
         throw Error("Docker cannot resolve a golden provider");
-      },
-      beforeDockerReserve: async (tx, sandboxId) => {
-        allocations++;
-        expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
-      },
-      beforeDockerStart: async () => {
-        starts++;
       },
       launchDocker: async (body, admission) => {
         dispatches++;
@@ -3070,6 +2392,36 @@ test.each([false, true])(
       },
     };
     const input = { org: f.actor.orgId, id, requestKey: "frozen-docker", prompt: f.body.prompt };
+    const admitted = await templates.command(f.caller, "launch", input, runtime);
+    expect(admitted).toMatchObject({ state: "succeeded", provider: "docker", status: "starting" });
+    expect(f.jobs).toHaveLength(0);
+    if (scenario === "revoked") {
+      let checks = 0;
+      await f.service().runClaim(async (tx) => {
+        if (!tx && ++checks === 2) await templates.command(f.caller, "delete", { org: f.actor.orgId, id });
+        return true;
+      });
+      expect((await counts(f))?.jobs).toBe(0);
+      return;
+    }
+    let contended = false;
+    const lockFault: Sql = {
+      ...sql,
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            query(statement, params) {
+              if (!contended && f.session() && statement.includes("for share of t nowait")) {
+                contended = true;
+                throw Object.assign(Error("Template lock held"), { code: "55P03" });
+              }
+              return tx.query(statement, params);
+            },
+          }),
+        ),
+    };
+    await f.service(scenario === "contended" ? lockFault : sql).drain();
+    if (scenario === "contended") expect(contended).toBe(true);
     const result = await templates.command(f.caller, "launch", input, runtime);
     expect(result).toMatchObject({
       state: "succeeded",
@@ -3093,8 +2445,6 @@ test.each([false, true])(
       }),
     );
     expect(JSON.stringify(result)).not.toContain(canary);
-    expect(allocations).toBe(1);
-    expect(starts).toBeGreaterThan(0);
     expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
     if (snapshotId) {
       expect(
@@ -3141,13 +2491,18 @@ test("Docker template placement refuses inaccessible, revoked and replaced host 
         if (change === "revoked") await db.query("update docker_hosts set revoked_at=now() where id=$1", [f.hostId]);
         if (change === "replaced")
           await db.query("update docker_hosts set installation_id=$2 where id=$1", [f.hostId, randomUUID()]);
-        if (change === "issuer_removed")
+        if (change === "issuer_removed") {
+          await db.query(
+            "insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict(org_id,user_id) do update set role='admin'",
+            [f.actor.orgId, f.actor.userId],
+          );
           await db.query("delete from members where org_id=$1 and user_id=$2", [f.actor.orgId, f.admin.userId]);
+        }
         f.body.requestId = body.requestId as typeof f.body.requestId;
         return f.service().launch(f.caller, body, admission);
       },
     };
-    const result = await templates.command(
+    const launch = templates.command(
       f.caller,
       "launch",
       {
@@ -3158,13 +2513,74 @@ test("Docker template placement refuses inaccessible, revoked and replaced host 
       },
       runtime,
     );
+    const result = await launch;
     expect(result.state).toBe("failed");
-    expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
     if (change === "replaced") expect(result.reason).toBe("environment_binding_changed");
+    expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
   }
 });
 
-test("a lost Docker template response retains one reconciling claim and never redispatches its key", async () => {
+test("a Docker routine settles the scheduled occurrence from its shared launch receipt", async () => {
+  const f = await fixture();
+  const org = f.actor.orgId;
+  const templates = createTemplateService(sql, key);
+  const { item } = await templates.command(f.caller, "create", {
+    org,
+    scope: "personal",
+    name: "Routine host",
+    definition: { provider: "docker", hostId: f.hostId, harness: "codex" },
+  });
+  const routine = (
+    await createRoutineService(sql).command(f.caller, "create", {
+      org,
+      scope: "personal",
+      name: "Inspect",
+      templateId: (item as { id: string }).id,
+      templateRevision: 1,
+      prompt: f.body.prompt,
+      intervalHours: 1,
+      maxRunsPerDay: 24,
+      ttlSeconds: 600,
+    })
+  ).item as { id: string };
+  await sql.query("update routines set status='enabled',next_due_at=now()-interval '1 second' where id=$1", [
+    routine.id,
+  ]);
+  const launch = f.service(sql, true, 10000, officialImage, true);
+  const { options: control } = restControl(f, { dockerLaunch: launch });
+  const scheduler = createServerRoutineScheduler({
+    sql,
+    control,
+    templates,
+    providers: control.providers!,
+    data: createSqlData(sql),
+  });
+  await scheduler.tick();
+  await scheduler.drain();
+  const readRun = async () =>
+    (
+      await sql.query<{ id: string; sandbox_id: string; state: string; prompt_id: string | null }>(
+        "select id,sandbox_id,state,prompt_id from routine_runs where routine_id=$1 and state<>'skipped'",
+        [routine.id],
+      )
+    ).rows[0]!;
+  const admitted = await readRun();
+  expect(admitted).toMatchObject({ state: "reconciling", prompt_id: null });
+  expect(f.jobs).toHaveLength(0);
+  f.body.requestId = admitted.sandbox_id as typeof f.body.requestId;
+  await launch.drain();
+  await sql.query("update routine_runs set lease_until=now()-interval '1 second' where id=$1", [admitted.id]);
+  await scheduler.tick();
+  await scheduler.drain();
+  expect(await readRun()).toMatchObject({
+    state: "succeeded",
+    sandbox_id: admitted.sandbox_id,
+    prompt_id: f.receipt.promptId,
+  });
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+});
+
+test.each(["lost_response", "superseded_refusal"])("Docker template replay after %s", async (scenario) => {
   const f = await fixture();
   const templates = createTemplateService(sql, key);
   const stores = createSqlData(sql)(f.caller);
@@ -3183,8 +2599,22 @@ test("a lost Docker template response retains one reconciling claim and never re
     launchDocker: async (body, admission) => {
       dispatches++;
       f.body.requestId = body.requestId as typeof f.body.requestId;
-      await f.service().launch(f.caller, body, admission);
-      throw Error("response lost after actual normal launch committed");
+      if (scenario === "superseded_refusal" && dispatches === 1) {
+        await templates.command(f.caller, "launch", input, runtime);
+        throw new DockerTemplateAdmissionRefused("host_full", "Docker host capacity unavailable.");
+      }
+      const source: Sql =
+        scenario === "lost_response"
+          ? {
+              ...sql,
+              async transaction(work) {
+                const result = await sql.transaction!(work);
+                if ((await counts(f))?.claims) throw Error("Reservation commit reply lost");
+                return result;
+              },
+            }
+          : sql;
+      return f.service(source).launch(f.caller, body, admission);
     },
   };
   const input = {
@@ -3193,14 +2623,16 @@ test("a lost Docker template response retains one reconciling claim and never re
     requestKey: "lost-response",
     prompt: f.body.prompt,
   };
-  const result = await templates.command(f.caller, "launch", input, runtime);
-  expect(result).toMatchObject({ state: "reconciling", id: f.body.requestId });
+  const start = templates.command(f.caller, "launch", input, runtime);
+  if (scenario === "lost_response") await expect(start).rejects.toThrow();
+  else expect(await start).toMatchObject({ status: "starting" });
   expect(await templates.command(f.caller, "launch", input, runtime)).toMatchObject({
-    state: "reconciling",
+    state: "succeeded",
+    status: "starting",
     id: f.body.requestId,
   });
-  expect(dispatches).toBe(1);
-  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
+  expect(dispatches).toBe(scenario === "lost_response" ? 1 : 2);
+  expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 0 });
 });
 
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}, defaultBranch = "main") {
@@ -3549,30 +2981,26 @@ test.each([false, true])(
     const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const service = f.service(sql, true, 10000, officialImage, deferred);
-    try {
-      // Deferred work rechecks the caller after admission; public visibility remains provable anonymously.
-      if (!deferred) await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
-      let result = await service.launch(f.caller, { ...body, snapshotId: id });
-      if (deferred) {
-        await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
-        await service.drain();
-        result = await service.launch(f.caller, { ...body, snapshotId: id });
-      }
-      expect(result.sandbox.status).toBe("running");
-      expect(result.github.status).toBe("not_connected");
-      const operations = (f.native as { op: string }[]).map((command) => command.op);
-      expect(operations).toEqual(["health", "workspaceExec", "health", "configureMcp", "prompt"]);
-      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
-        (command) => command.op === "workspaceExec",
-      );
-      expect(refresh?.input?.command).toContain("git fetch origin");
-      expect(refresh?.input?.command).not.toContain("git clone");
-      expect(refresh?.input?.command).not.toContain("printf built");
-      // #2560: the successful snapshot refresh is timed.
-      expect(await launchStages(result.sandbox.id)).toContain("checkout_done");
-    } finally {
-      await service.close();
+    // Deferred work rechecks the caller after admission; public visibility remains provable anonymously.
+    if (!deferred) await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+    let result = await service.launch(f.caller, { ...body, snapshotId: id });
+    if (deferred) {
+      await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+      await service.drain();
+      result = await service.launch(f.caller, { ...body, snapshotId: id });
     }
+    expect(result.sandbox.status).toBe("running");
+    expect(result.github.status).toBe("not_connected");
+    const operations = (f.native as { op: string }[]).map((command) => command.op);
+    expect(operations).toEqual(["health", "workspaceExec", "health", "configureMcp", "prompt"]);
+    const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+      (command) => command.op === "workspaceExec",
+    );
+    expect(refresh?.input?.command).toContain("git fetch origin");
+    expect(refresh?.input?.command).not.toContain("git clone");
+    expect(refresh?.input?.command).not.toContain("printf built");
+    // #2560: the successful snapshot refresh is timed.
+    expect(await launchStages(result.sandbox.id)).toContain("checkout_done");
   },
 );
 
@@ -3584,9 +3012,8 @@ test.each(["timeout", "stop"] as const)(
     const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
-    await expect(f.service(sql, true, timeoutMs).launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
-      code: mode === "timeout" ? "unavailable" : "conflict",
-    });
+    const result = await f.service(sql, true, timeoutMs).launch(f.caller, { ...body, snapshotId: id });
+    expect(result.promptId).toBeUndefined();
     const elapsed = f.clock.now() - startedAt;
     if (mode === "timeout") expect(elapsed).toBe(timeoutMs);
     else expect(elapsed).toBeLessThan(timeoutMs);
@@ -3604,113 +3031,97 @@ test.each(["auth", "auth-deferred", "network"] as const)(
     const { hostId: _, ...body } = f.body;
     const request = { ...body, snapshotId: id };
     const service = f.service(sql, true, 10000, officialImage, mode === "auth-deferred");
-    try {
-      if (mode === "network") {
-        const result = await service.launch(f.caller, request);
-        expect(result.github.message).toContain("repository project");
-        expect(result.github.message).toContain("snapshot checkout");
-        expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
-          "health",
-          "configureGitHub",
-          "workspaceExec",
-          "health",
-          "configureMcp",
-          "prompt",
+    if (mode === "network") {
+      const result = await service.launch(f.caller, request);
+      expect(result.github.message).toContain("repository project");
+      expect(result.github.message).toContain("snapshot checkout");
+      expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+        "health",
+        "configureGitHub",
+        "workspaceExec",
+        "health",
+        "configureMcp",
+        "prompt",
+      ]);
+    } else {
+      if (mode === "auth-deferred") {
+        // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
+        const records: Record<string, unknown>[] = [];
+        let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
+        const response = await observeRequest(
+          async () => {
+            admitted = await service.launch(f.caller, request);
+            return new Response(null, { status: 201 });
+          },
+          (line) => records.push(JSON.parse(line)),
+        );
+        expect(admitted?.sandbox.status).toBe("starting");
+        const requestId = response?.headers.get("x-request-id");
+        expect(records.filter((record) => record.event === "provider_call")).toEqual([
+          expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
         ]);
-      } else {
-        if (mode === "auth-deferred") {
-          // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
-          const records: Record<string, unknown>[] = [];
-          let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
-          const response = await observeRequest(
-            async () => {
-              admitted = await service.launch(f.caller, request);
-              return new Response(null, { status: 201 });
-            },
-            (line) => records.push(JSON.parse(line)),
-          );
-          expect(admitted?.sandbox.status).toBe("starting");
-          const requestId = response?.headers.get("x-request-id");
-          expect(records.filter((record) => record.event === "provider_call")).toEqual([
-            expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
-          ]);
-          // A retry of the pending admission is answered from the database: no host job, no record.
-          const jobs = async () =>
-            (
-              await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [
-                admitted?.sandbox.id,
-              ])
-            ).rows.length;
-          const queuedJobs = await jobs();
-          records.length = 0;
-          await observeRequest(
-            async () => {
-              expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
-              return new Response(null, { status: 201 });
-            },
-            (line) => records.push(JSON.parse(line)),
-          );
-          expect(records.map((record) => record.event)).toEqual(["http_request"]);
-          expect(await jobs()).toBe(queuedJobs);
-          const warnings = spyOn(console, "warn");
-          try {
-            await service.drain();
-            const worker = warnings.mock.calls
-              .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
-              .filter((record) => record?.event === "provider_call" && record.operation === "launch");
-            expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
-            expect(warnings.mock.calls).toContainEqual([
-              "docker_launch_failed",
-              expect.objectContaining({ requestId }),
-            ]);
-          } finally {
-            warnings.mockRestore();
-          }
-          expect(
-            (
-              await db.query(
-                "select from_status, to_status, actor, code from sandbox_transitions where sandbox_id=$1 and to_status='failed'",
-                [f.body.requestId],
-              )
-            ).rows,
-          ).toEqual([
-            {
-              from_status: "ready",
-              to_status: "failed",
-              actor: "lifecycle_runner",
-              code: "docker_launch_failed",
-            },
-          ]);
-          expect(
-            (
-              await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
-                f.body.requestId,
-              ])
-            ).rows[0]?.status_reason,
-          ).toContain("Repository project needs a GitHub connection");
+        // A retry of the pending admission is answered from the database: no host job, no record.
+        const jobs = async () =>
+          (await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [admitted?.sandbox.id]))
+            .rows.length;
+        const queuedJobs = await jobs();
+        records.length = 0;
+        await observeRequest(
+          async () => {
+            expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
+            return new Response(null, { status: 201 });
+          },
+          (line) => records.push(JSON.parse(line)),
+        );
+        expect(records.map((record) => record.event)).toEqual(["http_request"]);
+        expect(await jobs()).toBe(queuedJobs);
+        const warnings = spyOn(console, "warn");
+        try {
+          await service.drain();
+          const worker = warnings.mock.calls
+            .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
+            .filter((record) => record?.event === "provider_call" && record.operation === "launch");
+          expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
+          expect(warnings.mock.calls).toContainEqual(["docker_launch_failed", expect.objectContaining({ requestId })]);
+        } finally {
+          warnings.mockRestore();
         }
-        if (mode === "auth-deferred") {
-          const replay = await service.launch(f.caller, request);
-          expect(replay.sandbox).toMatchObject({
-            status: "failed",
-            statusReason: expect.stringContaining("Repository project needs a GitHub connection"),
-          });
-        } else
-          await expect(service.launch(f.caller, request)).rejects.toMatchObject({
-            code: "no_credentials",
-            message: expect.stringContaining("Repository project needs a GitHub connection"),
-          });
-        expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
+        expect(
+          (
+            await db.query(
+              "select from_status, to_status, actor, code from sandbox_transitions where sandbox_id=$1 and to_status='failed'",
+              [f.body.requestId],
+            )
+          ).rows,
+        ).toEqual([
+          {
+            from_status: "ready",
+            to_status: "failed",
+            actor: "lifecycle_runner",
+            code: "docker_launch_failed",
+          },
+        ]);
+        expect(
+          (
+            await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
+              f.body.requestId,
+            ])
+          ).rows[0]?.status_reason,
+        ).toContain("Repository project needs a GitHub connection");
       }
-      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
-        (command) => command.op === "workspaceExec",
-      );
-      expect(refresh?.input?.command).toContain("git fetch origin");
-      expect(refresh?.input?.command).not.toContain("credential.helper=");
-      expect(refresh?.input?.command).not.toContain("git clone");
-    } finally {
-      await service.close();
+      const replay = await service.launch(f.caller, request);
+      expect(replay.sandbox).toMatchObject({
+        status: "failed",
+        statusReason: expect.stringContaining("Repository project needs a GitHub connection"),
+      });
+      expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
     }
+    const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+      (command) => command.op === "workspaceExec",
+    );
+    expect(refresh?.input?.command).toContain("git fetch origin");
+    expect(refresh?.input?.command).not.toContain("credential.helper=");
+    expect(refresh?.input?.command).not.toContain("git clone");
   },
 );
 
@@ -4215,23 +3626,19 @@ test.each(["account_full", "incompatible_model"] as const)(
     const { credentialId: _explicit, ...implicit } = f.body;
     const body = { ...implicit, requestId: randomUUID(), ...(capped ? {} : { model: "armada/other-model" }) };
     const server = f.service(sql, true, 10_000, officialImage, true);
-    try {
-      const admitted = await server.launch(f.caller, body);
-      expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
-      const {
-        rows: [row],
-      } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from docker_launch_manifests where sandbox_id=$1",
-        [body.requestId],
-      );
-      expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
-        credentialId: second,
-        credentialVersion: 1,
-        accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
-      });
-    } finally {
-      await server.close();
-    }
+    const admitted = await server.launch(f.caller, body);
+    expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
+    const {
+      rows: [row],
+    } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from docker_launch_manifests where sandbox_id=$1",
+      [body.requestId],
+    );
+    expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
+      credentialId: second,
+      credentialVersion: 1,
+      accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
+    });
   },
 );
 
