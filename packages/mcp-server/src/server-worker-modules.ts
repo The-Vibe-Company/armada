@@ -25,7 +25,7 @@ export function createWorkerServices(services: ServerServices) {
   const { sql, providers } = services;
   const lifecycleProvider = createMcpSandboxProviderResolver(sql, providers);
   const lifecycle = createSandboxLifecycle(sql, lifecycleProvider);
-  return { ...services, lifecycle, lifecycleProvider };
+  return { ...services, lifecycle };
 }
 
 type WorkerServices = ReturnType<typeof createWorkerServices>;
@@ -39,7 +39,6 @@ const jobsLane: LaneFactory = ({
   jobs,
   store,
   config,
-  lifecycleProvider,
   runtimeCommands,
   runtimeGitHub,
   runtimeMcp,
@@ -57,21 +56,7 @@ const jobsLane: LaneFactory = ({
         sql,
         jobs,
         { store, app: githubApp, encryptionKey: config.encryptionKey },
-        async (target, request, canDispatch) => {
-          if (!target.runtime) {
-            const provider = await lifecycleProvider(target.id);
-            if (provider.supportsExecPhysicalGeneration) {
-              const { physicalGeneration } = await provider.get(
-                request.sandboxId,
-                request.signal ? { signal: request.signal } : undefined,
-              );
-              if (!physicalGeneration) throw Error("No physical incarnation for native PR scan.");
-              request = { ...request, expectedPhysicalGeneration: physicalGeneration };
-            }
-            if (!(await canDispatch())) throw Error("PR scan generation changed.");
-            request.signal?.throwIfAborted();
-            return provider.exec(request);
-          }
+        async (target, request) => {
           const epoch = target.runtime_epoch;
           if (epoch === null) throw Error("No enrolled runtime for PR scan.");
           return createRuntimeAgent(

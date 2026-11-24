@@ -58,7 +58,6 @@ type Target = {
   provider: "boat" | "modal" | "docker";
   provider_sandbox_id: string;
   harness: "codex" | "claude" | "opencode";
-  runtime: boolean;
   runtime_epoch: string | null;
   active: boolean;
   launch_authorized: boolean;
@@ -210,7 +209,7 @@ export function createPullRequestScanJob(
   sql: Sql,
   jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
   github: GitHubResolveDeps,
-  exec: (target: Target, request: ExecRequest, canDispatch: () => Promise<boolean>) => Promise<ExecResult>,
+  exec: (target: Target, request: ExecRequest) => Promise<ExecResult>,
   now = Date.now,
 ) {
   const retryAfter = (minutes: number) => new Date(now() + minutes * 60_000);
@@ -248,7 +247,6 @@ export function createPullRequestScanJob(
         update public.sandboxes s set pull_request_merge_proof=null from target where s.id=target.id
         returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
           s.status in ('ready','running') as active,
-          (s.boat_runtime or s.runtime_transport is not distinct from 'dialout' or s.provider='docker') as runtime,
           (select r.epoch::text from public.runtime_enrolments r
             where r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null)
             as runtime_epoch,
@@ -299,20 +297,15 @@ export function createPullRequestScanJob(
         owners.set(repository, remote.slice(0, remote.indexOf("/")));
         if (!row.active) continue;
         if (!(await canDispatch())) return;
-        const result = await exec(
-          row,
-          {
-            sandboxId: row.provider_sandbox_id,
-            // The launch branch counts as integrated work; without a usable name
-            // the reader falls back to origin/HEAD.
-            command: `set -- '${since}' '${remote}' '${repo.branch && launchBranch.test(repo.branch) ? repo.branch : ""}'; ${readPushes}`,
-            cwd: `/home/user/${repo.dir}`,
-            onlyIfRunning: true,
-            timeoutSeconds: 5,
-            signal,
-          },
-          canDispatch,
-        );
+        const result = await exec(row, {
+          sandboxId: row.provider_sandbox_id,
+          // The launch branch counts as integrated work; without a usable name
+          // the reader falls back to origin/HEAD.
+          command: `set -- '${since}' '${remote}' '${repo.branch && launchBranch.test(repo.branch) ? repo.branch : ""}'; ${readPushes}`,
+          cwd: `/home/user/${repo.dir}`,
+          timeoutSeconds: 5,
+          signal,
+        });
         if (result.detached || result.exitCode !== 0 || result.truncated || result.timedOut) return;
         const lines = result.stdout.trimEnd() ? result.stdout.trimEnd().split("\n") : [];
         // Reinstalling a missing hook restores future evidence, but a push
