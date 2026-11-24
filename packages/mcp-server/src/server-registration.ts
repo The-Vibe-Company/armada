@@ -12,10 +12,8 @@ export type MountFactory = (
 
 type BackgroundWorker = { stop(): void; done: Promise<void> };
 type WorkerFactory = (services: ServerServices) => (() => BackgroundWorker) | undefined;
-type ShutdownHook = (services: ServerServices) => Promise<void> | undefined;
 type ShutdownHooks = {
   stopSockets(services: ServerServices): Promise<void>;
-  closeDocker: ShutdownHook;
   closeMcp(services: ServerServices): Promise<void>;
 };
 
@@ -40,7 +38,6 @@ export function registerServer(modules: readonly ServerModule[]) {
     workers: { managed: new Map(), isolated: new Map(), background: new Map(), beforeListen: [] },
     shutdown: {
       stopSockets: async () => {},
-      closeDocker: () => undefined,
       closeMcp: async () => {},
     },
   };
@@ -95,7 +92,6 @@ export function registerServer(modules: readonly ServerModule[]) {
         },
         shutdown: {
           stopSockets: () => shutdown.stopSockets(services),
-          closeDocker: () => shutdown.closeDocker(services),
           closeMcp: () => shutdown.closeMcp(services),
           closePools: () => settleDetachedModalCollections().then(() => sql.close()),
         },

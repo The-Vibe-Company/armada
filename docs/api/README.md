@@ -50,6 +50,8 @@ and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
 Modal launches also include the frozen manifest at `sandbox.templateManifest`.
 The separate `templates/launch` operation returns a durable template receipt.
+Docker host-placement templates return `status: "starting"` before host allocation.
+Use the same request key to read the completed receipt or follow the sandbox ID in status and logs.
 Boat keeps the full launch envelope.
 
 For Boat and Modal snapshot launches and for Docker launches, use

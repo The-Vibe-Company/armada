@@ -98,7 +98,7 @@ export function createQueuedSandboxDispatch(options: ControlOptions) {
           ? {
               dockerControls: {
                 ...dockerControls,
-                invoke: (actor, name, args) => dockerControls.invoke(actor, name, args, claim),
+                invoke: (actor, name, args) => dockerControls.invoke(actor, name, args, claim ? { claim } : {}),
               },
             }
           : {}),

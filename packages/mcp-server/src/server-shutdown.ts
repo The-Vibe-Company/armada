@@ -8,7 +8,6 @@ interface ShutdownResources {
   workersDone: Promise<void>;
   stopSockets(): Promise<void>;
   closeAntigravityLogin?(): Promise<void> | undefined;
-  closeDocker(): Promise<void> | undefined;
   drainModalArtifacts?(): Promise<void> | undefined;
   requests: ReadonlySet<Promise<unknown>>;
   closeMcp(): Promise<void>;
@@ -33,7 +32,6 @@ export function installServerShutdown(server: ShutdownServer, resources: Shutdow
     const loginCleanup = Promise.allSettled([resources.closeAntigravityLogin?.()]);
     shutdown = Promise.all([
       resources.workersDone,
-      resources.closeDocker(),
       loginCleanup,
       resources.drainModalArtifacts?.(),
       socketsStopped,

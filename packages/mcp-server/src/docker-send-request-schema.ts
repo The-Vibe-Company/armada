@@ -37,9 +37,6 @@ export const DOCKER_SEND_REQUEST = z
     "Docker admission rules: model and reasoning_effort are refused because they remain pinned to launch; a caller-supplied request_id is what makes a retry replay instead of queuing again.",
   );
 
-/** Docker dispatch (`docker-normal-send.ts`) always receives a key: the caller's or the account queue's. */
-export const DOCKER_DISPATCH_REQUEST = DOCKER_SEND_REQUEST.extend({ request_id: uuid });
-
 /** Public guidance for a send that Docker admission refuses, wherever it is admitted. */
 export const DOCKER_SEND_REFUSAL =
   "Docker send requires a non-blank prompt of at most 256 KiB and, when given, a lowercase UUID request_id; model and reasoning_effort are refused because they stay pinned to launch.";
