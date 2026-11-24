@@ -209,12 +209,14 @@ test.each(["create", "restore", "stop"] as const)(
   },
 );
 
-test.each(["stop", "delete"] as const)(
+test.each(["stop", "delete", "deletePhysical"] as const)(
   "%s retries an ambiguous executor failure without sealing a receipt",
   async (operation) => {
-    const { store, api, executor, state } = fixture(operation);
+    const { job, store, api, executor, state } = fixture(operation === "stop" ? "stop" : "delete");
+    if (operation === "deletePhysical")
+      api.poll = async () => ({ job: { ...job, operation, machineId: "a".repeat(64) } });
     let calls = 0;
-    executor[operation] = async () => {
+    executor[operation === "stop" ? "stop" : "delete"] = async () => {
       if (calls++ === 0) throw new DockerMachineError("docker_failed");
     };
     await expect(tick(store, api, executor, false, () => 0)).rejects.toThrow("docker_failed");
@@ -919,6 +921,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
       "content-type": "application/json",
       "x-armada-docker-host-protocol": "1",
       "x-armada-docker-host-delete-physical": "1",
+      "x-armada-docker-host-machine-bootstrap": "1",
       "x-armada-docker-host-restore": "1",
     },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },

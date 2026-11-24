@@ -466,6 +466,166 @@ test("a fresh Docker Machine recovers allocation and confirms exact physical del
   expect(await adapter().observe(a.machine)).toMatchObject({ kind: "absent" });
 });
 
+async function machineBootstrapFixture() {
+  const a = await machineStopFixture();
+  const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  const ticket = await authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  const adapter = store.machine({
+    actor: a.owner,
+    hostId: a.hostId,
+    installationId: a.installationId,
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+  const bootstrap = { ...a.machine, bindingRef: createHash("sha256").update(ticket.enrolmentToken).digest("hex") };
+  await expect(adapter.bootstrap(bootstrap)).rejects.toThrow("outcome is pending");
+  return { ...a, adapter, bootstrap, enrol: () => authority.enrol(ticket.enrolmentToken) };
+}
+
+test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {
+  const a = await machineBootstrapFixture();
+  const route = createDockerHostRoutes(store, async () => {
+    throw Error("Host poll used user auth");
+  });
+  const poll = async (capability: Record<string, string>) => {
+    const response = await route(
+      new Request("https://armada.example/api/docker-host/poll", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${a.hostToken}`,
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          ...capability,
+        },
+        body: JSON.stringify({ installationId: a.installationId, version: "4.0.0" }),
+      }),
+    );
+    expect(response?.status).toBe(200);
+    const { job } = await response?.json();
+    return job ? { operation: job.operation, generation: job.request.generation } : null;
+  };
+  expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false)).toBe(false);
+  expect(await poll({})).toBeNull();
+  expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false, false, false, true)).toBe(true);
+  expect(await poll({ "x-armada-docker-host-machine-bootstrap": "1" })).toMatchObject({
+    operation: "bootstrap",
+    generation: a.generation,
+  });
+});
+
+test("a replayed failed Machine bootstrap ACK preserves the enrolled runtime and reconciles bootstrap", async () => {
+  const a = await machineBootstrapFixture();
+  const requestId = (await store.poll(
+    a.hostToken,
+    a.installationId,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    null,
+    null,
+    [],
+    null,
+    false,
+    false,
+    false,
+    true,
+  ))!.requestId;
+  await a.enrol();
+  const enrolled = await lifecycle(a.sandboxId);
+  expect(enrolled?.status).toBe("ready");
+  const result = { requestId, outcome: "failed" as const };
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  expect(await lifecycle(a.sandboxId)).toEqual(enrolled);
+  await a.adapter.bootstrap(a.bootstrap);
+  expect(await a.adapter.observe(a.machine)).toMatchObject({
+    kind: "present",
+    receipt: { operation: "bootstrap", bindingRef: a.bootstrap.bindingRef },
+  });
+});
+
+test("Machine observation treats an expired allocation receipt as unknown even with a live host", async () => {
+  const a = await machineStopFixture();
+  await store.poll(a.hostToken, a.installationId);
+  await database().query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [a.sandboxId]);
+  const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "unknown" });
+});
+
+test("the exact Machine allocation remains cleanup eligible after bootstrap failure advances the fence", async () => {
+  const a = await machineBootstrapFixture();
+  const startup = await store.poll(
+    a.hostToken,
+    a.installationId,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    null,
+    null,
+    [],
+    null,
+    false,
+    false,
+    false,
+    true,
+  );
+  await store.complete(a.hostToken, a.installationId, { requestId: startup!.requestId, outcome: "failed" });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "failed" });
+  const removal = { ...a.machine, scope: "physical-and-retained" as const };
+  await expect(a.adapter.delete(removal)).rejects.toThrow("outcome is pending");
+  const cleanup = await store.poll(a.hostToken, a.installationId);
+  expect(cleanup).toMatchObject({ operation: "delete", request: { generation: a.generation } });
+  await store.complete(a.hostToken, a.installationId, { requestId: cleanup!.requestId, outcome: "completed" });
+  await a.adapter.delete(removal);
+});
+
+test("Machine physical deletion can retry an uncertain result with a fresh durable intent", async () => {
+  const a = await machineStopFixture();
+  const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+  const removal = { ...a.machine, scope: "physical-only" as const };
+  const poll = () =>
+    store.poll(a.hostToken, a.installationId, undefined, false, undefined, undefined, null, null, [], null, true);
+  await expect(adapter.delete(removal)).rejects.toThrow("outcome is pending");
+  const first = (await poll())!;
+  await store.complete(a.hostToken, a.installationId, { requestId: first.requestId, outcome: "failed" });
+  expect(await adapter.observe(a.machine)).toEqual({ kind: "unknown" });
+  const { faultingStore, failure } = interruptDockerCommit(async (tx) => {
+    const result = await tx.query(
+      `select 1 from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='deletePhysical' and outcome is null`,
+      [a.sandboxId],
+    );
+    return result.rows.length > 0;
+  });
+  const faultingAdapter = faultingStore.machine({
+    actor: a.owner,
+    hostId: a.hostId,
+    installationId: a.installationId,
+  });
+  await expect(faultingAdapter.delete(removal)).rejects.toMatchObject({ cause: failure });
+  expect(await poll()).toBeNull();
+  await expect(adapter.delete(removal)).rejects.toThrow("outcome is pending");
+  const retry = (await poll())!;
+  expect(retry).toMatchObject({ operation: "deletePhysical", machineId: a.machine.machineId });
+  expect(retry.requestId).not.toBe(first.requestId);
+  await expect(adapter.delete(removal)).rejects.toThrow("outcome is pending");
+  expect(await poll()).toEqual(retry);
+  await store.complete(a.hostToken, a.installationId, { requestId: retry.requestId, outcome: "completed" });
+  await adapter.delete(removal);
+});
+
+test("host drain refuses new Machine physical deletion but allows full cleanup", async () => {
+  const a = await machineStopFixture();
+  const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+  await database().query("update docker_hosts set draining_at=now() where id=$1", [a.hostId]);
+  await expect(adapter.delete({ ...a.machine, scope: "physical-only" })).rejects.toBeInstanceOf(DockerHostDraining);
+  await expect(adapter.delete({ ...a.machine, scope: "physical-and-retained" })).rejects.toThrow("outcome is pending");
+});
+
 test.each(["revocation", "physical removal", "failed physical removal"] as const)(
   "Machine stop recovers on takeover and fences %s",
   async (fence) => {
