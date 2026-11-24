@@ -67,6 +67,12 @@ import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
 import {
+  childLaunchAuthorized,
+  completeChildLaunchAdmission,
+  lockChildLaunchAdmission,
+} from "../sandbox-access-child-launch.ts";
+import type { ChildOperation } from "../sandbox-access-children.ts";
+import {
   type RestoreScopedRuntimeAccess,
   registerSandboxArmadaParent,
   type SandboxArmadaAccessOptions,
@@ -93,6 +99,7 @@ import {
   recordModalBootstrapTicket,
   withJobLease,
 } from "./store.ts";
+import { templateLaunchAuthorized } from "./template-launch-authority.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 export interface ModalLaunchAdmission {
@@ -101,6 +108,7 @@ export interface ModalLaunchAdmission {
   ownerId: string;
   request?: { key: string; payload: unknown };
   templateReceiptId?: string;
+  child?: ChildOperation;
   revalidateTemplate?(tx: Sql): Promise<void>;
   sandbox: ModalLaunchSandbox;
   accountPool?: {
@@ -215,9 +223,21 @@ export async function admitModalLaunch(
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
 ) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
-  const { orgId, ownerId, sandbox: plannedSandbox, allocation, request, templateReceiptId, armadaAccess } = input;
+  const {
+    orgId,
+    ownerId,
+    sandbox: plannedSandbox,
+    allocation,
+    request,
+    templateReceiptId,
+    armadaAccess,
+    child,
+  } = input;
   const provider = input.boat ? "boat" : "modal";
-  if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
+  if (Number(Boolean(request)) + Number(Boolean(templateReceiptId)) + Number(Boolean(child)) > 1)
+    throw new Error("Modal launch admission requires one receipt identity.");
+  if (child && (armadaAccess || input.accountPool || child.orgId !== orgId || child.ownerId !== ownerId))
+    throw new Error("Invalid child launch admission.");
   const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
@@ -225,16 +245,19 @@ export async function admitModalLaunch(
   try {
     let admitted = false;
     const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
+      const childDigest = child && (await lockChildLaunchAdmission(tx, child));
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
         : undefined;
-      const sandboxId = reservation?.sandbox_id ?? crypto.randomUUID();
-      const key = reservation
-        ? JSON.stringify(["template", reservation.id])
-        : request
-          ? ordinaryModalKey(request.key)
-          : JSON.stringify(["unkeyed", sandboxId]);
-      const digest = reservation?.digest ?? fingerprint ?? sandboxId;
+      const sandboxId = child?.sandboxId ?? reservation?.sandbox_id ?? crypto.randomUUID();
+      const key = child
+        ? JSON.stringify(["child", child.id])
+        : reservation
+          ? JSON.stringify(["template", reservation.id])
+          : request
+            ? ordinaryModalKey(request.key)
+            : JSON.stringify(["unkeyed", sandboxId]);
+      const digest = childDigest ?? reservation?.digest ?? fingerprint ?? sandboxId;
       if (reservation) {
         const {
           rows: [existing],
@@ -317,6 +340,7 @@ export async function admitModalLaunch(
             source: { kind: "snapshot", ref: image?.image_id },
           },
           snapshot,
+          ...(child ? { childOperationId: child.id } : {}),
           ...(input.boat ? { boat: input.boat } : { modal }),
         },
         {
@@ -355,7 +379,7 @@ export async function admitModalLaunch(
         sandbox = { ...sandbox, ...candidate, credentialId };
         accountSkips = skips;
       }
-      const visibility = armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
+      const visibility = child || armadaAccess || sandbox.visibility === "private" ? "private" : golden.visibility;
       const scopedCredential = sandbox.credentialId;
       if (armadaAccess) {
         const limit = armadaAccess.maxActiveChildren;
@@ -385,6 +409,7 @@ export async function admitModalLaunch(
         },
         sandbox,
       );
+      if (child) await completeChildLaunchAdmission(tx, child);
       if (armadaAccess && scopedCredential)
         await registerSandboxArmadaParent(tx, actor, sandboxId, sandbox.goldenId, scopedCredential, armadaAccess);
       if (reservation) {
@@ -414,6 +439,7 @@ export async function admitModalLaunch(
         sandboxId,
         {
           launchJobId: jobId,
+          ...(child ? { childOperationId: child.id } : {}),
           ...(accountSkips.length ? { accountSkips } : {}),
           prompt: input.initialPrompt,
           workspace,
@@ -430,6 +456,7 @@ export async function admitModalLaunch(
           state: "succeeded",
           id: sandboxId,
           provider,
+          ...(sandbox.externalRef === undefined ? {} : { externalRef: sandbox.externalRef }),
           status: envelope.sandbox.status,
           envelope,
         };
@@ -471,6 +498,7 @@ export function createModalInitialTurnJob(
       const payload = z
         .object({
           launchJobId: z.string().uuid(),
+          childOperationId: z.string().uuid().optional(),
           prompt: z.string().optional(),
           workspace: z.unknown(),
           skills: z.array(z.string()),
@@ -524,8 +552,12 @@ export function createModalInitialTurnJob(
 
       const { epoch } = target;
       const actor = { userId: target.owner_id, orgId: target.org_id, role: target.role };
+      const canDispatch = async (tx?: Sql) =>
+        (await context.canDispatch(tx)) &&
+        (await childLaunchAuthorized(tx ?? sql, sandboxId, payload.data.childOperationId)) &&
+        templateLaunchAuthorized(tx ?? sql, sandboxId);
       const assertClaim = async (tx: Sql) => {
-        if (!(await context.canDispatch(tx))) throw new Error("Modal setup lost its job claim.");
+        if (!(await canDispatch(tx))) throw new VaultError("conflict", "Launch setup authority is unavailable.");
       };
       if (epoch === null) return { status: "fail", reason: "modal_initial_turn_unavailable" };
       const assertRuntimeClaim = async (tx: Sql) => {
@@ -746,7 +778,7 @@ export function createModalInitialTurnJob(
                where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
               [sandboxId, generation, epoch],
             );
-            return rows.length > 0 && context.canDispatch(tx);
+            return rows.length > 0 && canDispatch(tx);
           },
         );
         if (accepted) return { status: "done" };
@@ -843,6 +875,7 @@ const launchAllocation = z.object({
     computeTtlSeconds: z.number().int().positive(),
   }),
   snapshot: z.string().min(1),
+  childOperationId: z.string().uuid().optional(),
 });
 export const boatLaunchPayload = launchAllocation.extend({ boat: boatAuthority });
 function boatAuthorityPayload(payload: unknown) {
@@ -977,6 +1010,11 @@ export async function runModalLaunch(
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
+  const childOperationId = z
+    .object({ childOperationId: z.string().uuid().optional() })
+    .parse(job.payload ?? {}).childOperationId;
+  const launchAuthorized = async (tx: Sql) =>
+    (await childLaunchAuthorized(tx, sandboxId, childOperationId)) && templateLaunchAuthorized(tx, sandboxId);
   const readEnrolment = async (tx: Sql) => {
     const {
       rows: [receipt],
@@ -1081,7 +1119,7 @@ export async function runModalLaunch(
     replayingTicket: Boolean(pending.check_after && pending.bootstrap_ticket_enc),
   };
   const applyPlan = (plan: ModalLaunchPlan, resolve: Parameters<typeof dispatchModalLaunch>[5]) =>
-    dispatchModalLaunch(sql, job, context, plan, targetIncarnation, resolve);
+    dispatchModalLaunch(sql, job, context, plan, targetIncarnation, resolve, launchAuthorized);
   const dispatch = plan
     ? await applyPlan(plan, async (request, preparation, handoff, physicalExpiry) => {
         const { ownerId, configuration, lockPrerequisites, checkAccountPin, ...prepared } = preparation;
@@ -1097,7 +1135,8 @@ export async function runModalLaunch(
             return withJobLease(scopedRuntimeSql(tx), job, async (locked) => {
               await checkAccountPin(locked);
               const receipt = await readEnrolment(locked);
-              if (!receipt?.check_after || !(await context.canDispatch(locked))) return false;
+              if (!receipt?.check_after || !(await context.canDispatch(locked)) || !(await launchAuthorized(locked)))
+                return false;
               if (!("boat" in plan) && !receipt.handoff_staged)
                 throw new ModalBootstrapRefused("Modal bootstrap replay lacks a prepared handoff.");
               const refreshed = await enrolments.refreshModalBootstrapManifest(
@@ -1107,7 +1146,7 @@ export async function runModalLaunch(
                 hash,
                 configuration.artifactManifest,
               );
-              if (!(await context.canDispatch(locked)))
+              if (!(await context.canDispatch(locked)) || !(await launchAuthorized(locked)))
                 throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
               return refreshed;
             });
@@ -1130,8 +1169,8 @@ export async function runModalLaunch(
             expectedGeneration: generation,
             expectedProviderSandboxId: request.machineId,
             async assertClaim(tx) {
-              if (!(await context.canDispatch(tx)))
-                throw new Error("Modal bootstrap dispatch is no longer authorized.");
+              if (!(await context.canDispatch(tx)) || !(await launchAuthorized(tx)))
+                throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
             },
             async recordIssued(tx, enrolmentToken) {
               if (
@@ -1271,6 +1310,7 @@ async function dispatchModalLaunch(
     handoff: ModalLaunchHandoff | undefined,
     physicalExpiry?: number,
   ) => ReturnType<PrepareModalTicket>,
+  launchAuthorized: (tx: Sql) => Promise<boolean>,
 ) {
   const { signal, canDispatch } = context;
   const incarnation = { sandboxId, generation, signal };
@@ -1297,7 +1337,8 @@ async function dispatchModalLaunch(
          for share of m`,
       [sandboxId, job.id, "boat" in plan ? "boat" : "modal"],
     );
-    if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx))) return row;
+    if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx)) && (await launchAuthorized(tx)))
+      return row;
   };
   const target = () => withJobLease(sql, job, dispatchTarget);
   const recovering = hasModalMachineJournal(job);

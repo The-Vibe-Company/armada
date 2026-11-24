@@ -81,7 +81,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Modal REST and MCP launches and ordinary Docker REST launches return a sandbox ID and `starting` before allocation.
   Follow that ID with status or logs to find the first prompt after enrolment.
   For template launches, check `"requestId" in result`
-  before reading the receipt. A Docker host-placement template returns `starting` before allocation.
+  before reading the receipt. Boat, Modal, and Docker templates return `starting` before allocation.
   Use its sandbox ID with status or logs to follow startup. Use the shared `SendInput` for follow-up prompts.
   Ordinary Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
@@ -233,6 +233,8 @@ for a particular machine, `armada host limits HOST` for resource settings, and
 daemon binary handles status and uninstall on the Docker machine.
 
 ## 5. Several sandboxes, including a sandbox as caller
+A scoped child launch receipt confirms admission. Read the child to follow its
+startup. The provider ID is null until allocation binds a machine.
 
 The same API-only CLI can drive other sandboxes wherever it is installed with
 an explicitly authorized Armada session/token and server access. Do not assume

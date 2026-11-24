@@ -80,11 +80,9 @@ function blockedBeforeDispatch(error: unknown) {
 
 export type StopRecoveryAdmission = (work: (tx: Sql) => Promise<void>) => Promise<void>;
 
-/** Runtime caller must use this exact reserved sandbox ID and provider idempotency key.
- * Unknown allocation has no retry path: reconcile the original correlation only.
- * Model-account resolution remains #612/#661's responsibility, never guest credentials. */
+/** Launch commits the job, child relation and operation receipt for the reserved sandbox ID. */
 export interface SandboxChildExecutor {
-  launch(operation: ChildOperation, selection: ChildLaunchSelection): Promise<{ providerSandboxId: string }>;
+  launch(operation: ChildOperation, selection: ChildLaunchSelection): Promise<void>;
   message(operation: ChildOperation, text: string): Promise<void>;
   stop(operation: ChildOperation): Promise<void>;
   recoverStop?(operation: ChildOperation, admit: StopRecoveryAdmission): Promise<void>;
@@ -97,10 +95,6 @@ export interface SandboxChildExecutor {
     operationId: string;
     sandboxId: string;
     state: "succeeded" | "failed" | "unknown";
-    providerSandboxId?: string;
-    noAllocation?: boolean;
-    /** Positive exact SDK stop/exit evidence, never absence/404 or an uncorrelated resource. */
-    resourceStopped?: boolean;
   }>;
   read(sandboxId: string, ownerId: string, orgId: string): Promise<unknown>;
 }
@@ -237,7 +231,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         `insert into public.orchestrator_child_operations
           (id,orchestrator_id,owner_id,org_id,parent_generation,action,target_id,idempotency_key,request_digest,scope_target,parent_epoch,reconcile_after)
           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-            clock_timestamp() + case when $6='launch' then interval '0 seconds' else $12::integer * interval '1 millisecond' end)`,
+            clock_timestamp() + $12::integer * interval '1 millisecond')`,
         [
           id,
           principal.orchestratorId,
@@ -297,7 +291,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
               rows: [dispatch],
             } = await tx.query<ChildDispatch>(
               `update public.orchestrator_child_operations c set dispatched_at=coalesce(c.dispatched_at,now()),
-                 reconcile_after=case when $2 then c.reconcile_after else now() end
+                 reconcile_after=case when $2 or c.action='launch' then c.reconcile_after else now() end
                from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
                where c.id=$1 and o.id=c.orchestrator_id and o.authority_epoch=c.parent_epoch
                  and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation
@@ -367,37 +361,8 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     try {
       if (input.action === "launch") {
         if (admissionSignal.aborted) throw new ChildAdmissionCancelled();
-        const result = await executor.launch(operation, input.selection);
-        phase = "completion";
-        // Store the physical receipt even if a later membership/generation check fails.
-        await sql.query(`update public.orchestrator_child_operations set provider_sandbox_id=$2 where id=$1`, [
-          row.id,
-          result.providerSandboxId,
-        ]);
-        if (!sql.transaction) throw new Error("Transactional child completion unavailable.");
-        await sql.transaction(async (tx) => {
-          const child = (
-            await tx.query(
-              `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3
-            and provider_sandbox_id=$4 for update`,
-              [row.target_id, row.owner_id, row.org_id, result.providerSandboxId],
-            )
-          ).rows[0];
-          if (!child) throw new Error("Child allocation receipt does not match persisted identity.");
-          const existing = (
-            await tx.query<{ orchestrator_id: string }>(
-              `select orchestrator_id from public.orchestrator_children where sandbox_id=$1`,
-              [row.target_id],
-            )
-          ).rows[0];
-          if (existing && existing.orchestrator_id !== row.orchestrator_id)
-            throw new Error("Child belongs to another parent.");
-          await tx.query(
-            `insert into public.orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id)
-            values($1,$2,$3,$4) on conflict(sandbox_id) do nothing`,
-            [row.target_id, row.orchestrator_id, row.org_id, row.owner_id],
-          );
-        });
+        await executor.launch(operation, input.selection);
+        return { id: row.id, state: "succeeded", sandboxId: row.target_id };
       } else if (recovery && recoverStop) {
         await recoverStop(operation, (work) =>
           authority.admit(token, request, async (tx, principal) => {
@@ -505,7 +470,9 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           causeCode,
         });
       }
-      if (!recovery)
+      // An unexpected launch error might be the response to a committed admission.
+      // Leave pending for recovery once its admission window expires.
+      if (!recovery && (input.action !== "launch" || state === "failed"))
         await sql.query(
           `update public.orchestrator_child_operations set state=$2,error_code=$3 where id=$1 and state in ('pending','uncertain')`,
           [row.id, state, code],
@@ -515,7 +482,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           row.id,
         ])
       ).rows[0];
-      return { id: row.id, state: current?.state ?? state, sandboxId: row.target_id };
+      return {
+        id: row.id,
+        state: input.action === "launch" && current?.state === "pending" ? state : (current?.state ?? state),
+        sandboxId: row.target_id,
+      };
     }
   }
   return {
@@ -536,13 +507,16 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           parent_epoch: string;
           action: ChildOperation["action"];
           target_id: string;
-          provider_sandbox_id: string | null;
           abandoned: boolean;
         }>(
           `with candidate as (
-          select id,(action<>'launch' and state='pending' and dispatched_at is null) as abandoned
-          from public.orchestrator_child_operations where state in ('pending','uncertain')
+          select id,(state='pending' and (dispatched_at is null or action='launch')) as abandoned
+          from public.orchestrator_child_operations c where state in ('pending','uncertain')
             and reconcile_after<=now() and (reconcile_until is null or reconcile_until<now())
+            and (action<>'launch' or (state='pending' and provider_sandbox_id is null and not exists(
+              select 1 from public.jobs where kind='launch' and sandbox_id=c.target_id
+                and org_id=c.org_id and request_owner_id=c.owner_id
+            )))
           order by created_at for update skip locked limit 1
         )
         update public.orchestrator_child_operations c
@@ -552,7 +526,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
               reconcile_until=case when not candidate.abandoned then now()+interval '2 minutes' end
         from candidate where c.id=candidate.id
         returning c.id,c.orchestrator_id,c.owner_id,c.org_id,c.parent_generation,c.parent_epoch,c.action,
-                  c.target_id,c.provider_sandbox_id,candidate.abandoned`,
+                  c.target_id,candidate.abandoned`,
           [lease],
         )
       ).rows[0];
@@ -569,65 +543,20 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         sandboxId: row.target_id,
       };
       let state = "uncertain";
-      let noAllocation = false;
-      let closedProviderId: string | null = null;
       try {
         const found = await operations.run(() => executor.reconcile(operation, signal), signal);
         if (found.operationId !== row.id || found.sandboxId !== row.target_id)
           throw Error("Uncorrelated child receipt.");
-        noAllocation = found.noAllocation === true && found.providerSandboxId === undefined;
-        closedProviderId = found.resourceStopped === true && found.providerSandboxId ? found.providerSandboxId : null;
-        if (
-          found.state === "failed" &&
-          (row.action !== "launch" ||
-            (noAllocation && row.provider_sandbox_id === null) ||
-            (closedProviderId !== null && closedProviderId === row.provider_sandbox_id))
-        )
-          state = "failed";
-        if (found.state === "succeeded") {
-          if (row.action === "launch") {
-            if (!found.providerSandboxId || !sql.transaction) throw Error("Launch receipt missing.");
-            await sql.transaction(async (tx) => {
-              const child = (
-                await tx.query(
-                  `select id from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3
-                and provider_sandbox_id=$4 for update`,
-                  [row.target_id, row.owner_id, row.org_id, found.providerSandboxId],
-                )
-              ).rows[0];
-              if (!child) throw Error("Child identity not confirmed.");
-              const existing = (
-                await tx.query<{ orchestrator_id: string }>(
-                  `select orchestrator_id from public.orchestrator_children where sandbox_id=$1`,
-                  [row.target_id],
-                )
-              ).rows[0];
-              if (existing && existing.orchestrator_id !== row.orchestrator_id)
-                throw new Error("Child belongs to another parent.");
-              await tx.query(
-                `insert into public.orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id)
-                values($1,$2,$3,$4) on conflict(sandbox_id) do nothing`,
-                [row.target_id, row.orchestrator_id, row.org_id, row.owner_id],
-              );
-              await tx.query(`update public.orchestrator_child_operations set provider_sandbox_id=$2 where id=$1`, [
-                row.id,
-                found.providerSandboxId,
-              ]);
-            });
-          }
-          state = "succeeded";
-        }
+        if (found.state !== "unknown") state = found.state;
       } catch {
-        /* Unknown cannot become confirmed non-allocation. */
+        /* Unknown cannot become confirmed non-execution. */
       }
       await sql.query(
         `update public.orchestrator_child_operations set state=case when $3='uncertain' and state='pending' then state else $3 end,
         error_code=case when $3='uncertain' then 'child_outcome_unconfirmed' else null end,
         reconcile_lease=null,reconcile_until=null,reconcile_after=now()+interval '1 minute'
-        where id=$1 and reconcile_lease=$2 and reconcile_until>now() and state in ('pending','uncertain')
-        and ($3<>'failed' or action<>'launch' or (provider_sandbox_id is null and $4::boolean)
-          or ($5::text is not null and provider_sandbox_id=$5))`,
-        [row.id, lease, state, noAllocation, closedProviderId],
+        where id=$1 and reconcile_lease=$2 and reconcile_until>now() and state in ('pending','uncertain')`,
+        [row.id, lease, state],
       );
       // A delayed observation must never rewrite a confirmed terminal outcome.
       await sql.query(

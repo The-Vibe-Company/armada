@@ -2447,9 +2447,6 @@ test.each(["host", "snapshot", "revoked", "contended"])(
     let dispatches = 0;
     const runtime: TemplateRuntime = {
       stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
-      provider: async () => {
-        throw Error("Docker cannot resolve a golden provider");
-      },
       launchDocker: async (body, admission) => {
         dispatches++;
         await db.query("update public.personal_skill_defaults set skills=$2::text::jsonb where user_id=$1", [
@@ -2553,9 +2550,6 @@ test("Docker template placement refuses inaccessible, revoked and replaced host 
     });
     const runtime: TemplateRuntime = {
       stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
-      provider: async () => {
-        throw Error("Docker cannot resolve a golden provider");
-      },
       launchDocker: async (body, admission) => {
         if (change === "revoked") await db.query("update docker_hosts set revoked_at=now() where id=$1", [f.hostId]);
         if (change === "replaced")
@@ -2662,9 +2656,6 @@ test.each(["lost_response", "superseded_refusal"])("Docker template replay after
   let dispatches = 0;
   const runtime: TemplateRuntime = {
     stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
-    provider: async () => {
-      throw Error("Docker cannot resolve a golden provider");
-    },
     launchDocker: async (body, admission) => {
       dispatches++;
       f.body.requestId = body.requestId as typeof f.body.requestId;
@@ -2851,9 +2842,6 @@ test.each([
       },
       {
         stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
-        provider: async () => {
-          throw Error("Docker cannot resolve cloud golden");
-        },
         launchDocker,
       },
     ),
