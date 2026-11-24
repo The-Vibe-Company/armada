@@ -1,5 +1,5 @@
 import type { Sql } from "@armada/core";
-import type { Machine, MachineIdentity } from "@armada/core/server";
+import type { Machine } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
@@ -23,16 +23,6 @@ export interface DockerStopIntent {
   captureUntil: number;
 }
 
-type StopMachine = Pick<Machine, "observe" | "stop">;
-
-function matches(actual: MachineIdentity, expected: MachineIdentity) {
-  return (
-    actual.sandboxId === expected.sandboxId &&
-    actual.generation === expected.generation &&
-    actual.machineId === expected.machineId
-  );
-}
-
 export function createStopJob(sql: Sql, key: string, readOutputs = createDockerOutputReader(sql, key), now = Date.now) {
   const hosts = createDockerHostStore(sql, key);
   const jobs = createJobsStore(sql, key);
@@ -44,7 +34,6 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
       const sandboxId = job.sandbox_id;
       const target = { sandboxId, generation: intent.generation, machineId: intent.machineId };
       const { signal } = context;
-      const machine = hosts.machineCleanup(intent.actor, intent);
       const retry = (delay = 2_000) => ({ status: "retry", after: new Date(now() + delay) }) satisfies JobResult;
       const finish = () =>
         ({
@@ -70,19 +59,10 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
         }) satisfies JobResult;
 
       if (job.generation !== String(intent.generation)) {
-        const observed = await machine.observe({ ...target, signal });
+        const outcome = await hosts.checkpointedStopOutcome(sandboxId, intent);
         signal.throwIfAborted();
-        if (
-          observed.kind === "present" &&
-          observed.phase === "stopped" &&
-          matches(observed.machine, target) &&
-          observed.receipt?.operation === "stop" &&
-          observed.receipt.retained?.kind === "container" &&
-          matches({ ...observed.receipt.retained, machineId: observed.receipt.retained.ref }, target)
-        )
-          return finish();
-        if (await hosts.stopReceiptRefused(sandboxId, intent))
-          return { status: "fail", reason: "stop_receipt_refused" };
+        if (outcome === "stopped") return finish();
+        if (outcome === "refused") return { status: "fail", reason: "stop_receipt_refused" };
         return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
 
@@ -119,7 +99,7 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
               effects: [],
             });
             if (result.kind === "conflict") throw new Error("Docker stop target changed.");
-            const dispatch: StopMachine = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(
+            const dispatch: Pick<Machine, "stop"> = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(
               intent.actor,
               intent,
             );

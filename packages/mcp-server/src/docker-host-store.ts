@@ -1738,19 +1738,26 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
         deny();
     },
-    async stopReceiptRefused(sandboxId: string, intent: DockerStopIntent) {
-      const { rows } = await sql.query(
-        `select 1 from public.sandboxes s where s.id=$1 and (
-           not exists(select 1 from public.mcp_actor_epochs e join public.members m using(org_id,user_id)
-             where e.org_id=s.org_id and e.user_id=$2 and e.epoch=$3)
-           or exists(select 1 from public.docker_hosts h where h.id=s.docker_host_id and h.revoked_at is not null)
-           or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
-             and j.host_id=s.docker_host_id and j.bound_operation='stop' and j.request_id=$4
-             and (j.outcome='failed' or j.cancelled_at is not null))
-         )`,
-        [sandboxId, intent.actor.userId, intent.actorEpoch, dockerMachineJobId(intent.daemonGeneration, "stop")],
-      );
-      return rows.length > 0;
+    checkpointedStopOutcome(sandboxId: string, intent: DockerStopIntent) {
+      return transaction(async (tx) => {
+        const row = (
+          await tx.query<Sandbox>(
+            `select * from public.sandboxes where id=$1 and provider='docker' and lifecycle_generation=$2
+            and status='stopping' and docker_host_id=$3 and docker_installation_id=$4 and docker_generation=$5 for update`,
+            [sandboxId, intent.generation + 1, intent.hostId, intent.installationId, intent.daemonGeneration],
+          )
+        ).rows[0];
+        if (!row || (await allocationReceipt(tx, row)) !== intent.machineId) return "unknown";
+        const receipt = await machineCleanupReceipt(tx, row, "stop");
+        if (!receipt) return "unknown";
+        if (receipt.outcome === "failed" || receipt.cancelled_at) return "refused";
+        if (receipt.outcome !== "completed") return "unknown";
+        return receipt.retain &&
+          receipt.result_machine_id === intent.machineId &&
+          !(await physicalRemovalReceipt(tx, row, intent.machineId))
+          ? "stopped"
+          : "refused";
+      });
     },
     machineCleanup(actor: Actor, scope?: MachineHost) {
       const unknown = { kind: "unknown" } as const;
@@ -2030,9 +2037,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
             String(selection.lifecycleGeneration) !== String(row.lifecycle_generation))
         )
           deny();
+        const epoch = await permission(tx, actor, row, selection.operation);
+        if (selection.operation === "stop" && row.status === "stopping") {
+          const requestId = dockerMachineJobId(row.docker_generation, "stop");
+          const shared = await tx.query(
+            `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2 and request_id=$3
+              and bound_operation='stop' and cancelled_at is null and (
+                outcome is null or (outcome='completed' and result_machine_id is not null and exists(
+                  select 1 from public.jobs where sandbox_id=$1 and generation=$4 and kind='stop'
+                    and state in ('queued','leased')
+                ))
+              )`,
+            [row.id, host.id, requestId, row.lifecycle_generation],
+          );
+          if (shared.rows.length) return { requestId };
+        }
         if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
           deny();
-        const epoch = await permission(tx, actor, row, selection.operation);
         // The host lock serializes admission: observe an existing request only
         // after waiting, so concurrent lost-response retries reconcile too.
         const known =
@@ -2134,15 +2155,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
             return { requestId: selection.requestId };
           }
-        }
-        if (selection.operation === "stop" && row.status === "stopping") {
-          const requestId = dockerMachineJobId(row.docker_generation, "stop");
-          const shared = await tx.query(
-            `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2 and request_id=$3
-              and bound_operation='stop' and outcome is distinct from 'failed' and cancelled_at is null`,
-            [row.id, host.id, requestId],
-          );
-          if (shared.rows.length) return { requestId };
         }
         const request = await machine(tx, row, selection.operation);
         const target = { requestId: selection.requestId, request };

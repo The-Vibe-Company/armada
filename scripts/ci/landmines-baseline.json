@@ -694,7 +694,7 @@
     "packages/mcp-server/src/ordinary-launch-receipts.ts": 3,
     "packages/mcp-server/src/org-provider.ts": 5,
     "packages/mcp-server/src/outbound-webhooks.ts": 6,
-    "packages/mcp-server/src/output-transfers.ts": 9,
+    "packages/mcp-server/src/output-transfers.ts": 7,
     "packages/mcp-server/src/provider-metadata.ts": 5,
     "packages/mcp-server/src/provider-reaper.ts": 6,
     "packages/mcp-server/src/provider-runtime-admission.ts": 2,

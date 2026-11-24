@@ -15,6 +15,7 @@ import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
+import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import type { Job } from "../src/jobs/runner.ts";
 import { createStopJob } from "../src/jobs/stop.ts";
@@ -524,10 +525,11 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   const jobs = createJobsStore(sql, key);
   let captures = 0;
   const reader = () => ({
-    async readOutputs() {
+    async listOutputEntries() {
       captures++;
-      return [{ name: "last.txt", bytes: new Uint8Array([42]) }];
+      return [{ name: "last.txt", size: 1, revision: "1:2:3:4" }];
     },
+    readOutputChunk: async () => new Uint8Array([42]),
   });
   const firstOwner = randomUUID();
   const first = (await jobs.claim("stop", firstOwner, 30, 1))!;
@@ -569,7 +571,27 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     machineId: a.machine.machineId,
   });
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping" });
-  expect(await jobs.complete(job, owner, await handler.run(job, context))).toBe(true);
+  await sql.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+    a.owner.orgId,
+    a.owner.userId,
+  ]);
+  let clock = 0;
+  const controls = createDockerSandboxControls(sql, key, {
+    timeoutMs: 1_000,
+    clock: {
+      now: () => clock,
+      async wait(ms) {
+        if (clock === 0) expect(await jobs.complete(job, owner, await handler.run(job, context))).toBe(true);
+        clock += ms;
+      },
+    },
+  });
+  expect(
+    await controls.invoke({ ...a.owner, via: "service", orgs: [{ orgId: a.owner.orgId, role: "admin" }] }, "stop", {
+      id: a.sandboxId,
+      request_id: randomUUID(),
+    }),
+  ).toMatchObject({ handled: true, result: { status: "stopped" } });
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   expect((await outputNames()).rows).toEqual([]);
@@ -583,6 +605,11 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   });
   expect(await jobs.complete(publish, owner, result)).toBe(true);
   expect((await outputNames()).rows).toEqual([{ name: "last.txt" }]);
+  const chunks = await sql.query(
+    "select 1 from sandbox_output_chunks c join sandbox_outputs o on o.transfer_id=c.transfer_id where o.sandbox_id=$1",
+    [a.sandboxId],
+  );
+  expect(chunks.rows).toHaveLength(1);
 });
 
 test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {
