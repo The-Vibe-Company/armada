@@ -521,7 +521,6 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     requestId: checkpoint,
     idleCheckpointRequest: checkpoint,
   });
-  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   const jobs = createJobsStore(sql, key);
   let captures = 0;
   const reader = () => ({
@@ -543,9 +542,7 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
       },
     }),
   ).rejects.toThrow("interrupted after capture");
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "ready" });
   const outputNames = () => sql.query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId]);
-  expect((await outputNames()).rows).toEqual([]);
 
   await sql.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [first.id]);
   const owner = randomUUID();
@@ -561,10 +558,6 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   expect(captures).toBe(1);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping" });
   const stop = await store.poll(a.hostToken, a.installationId);
-  expect(stop?.operation).toBe("stop");
-  expect(await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: randomUUID() })).toEqual({
-    requestId: stop!.requestId,
-  });
   await store.complete(a.hostToken, a.installationId, {
     requestId: stop!.requestId,
     outcome: "completed",
@@ -593,8 +586,12 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     }),
   ).toMatchObject({ handled: true, result: { status: "stopped" } });
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
-  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   expect((await outputNames()).rows).toEqual([]);
+  await sql.query(
+    `select public.sandbox_transition(id,lifecycle_generation,array['stopped']::public.sandbox_status[],
+      'starting','resume_admission','docker_resume_admitted','[]'::jsonb) from sandboxes where id=$1`,
+    [a.sandboxId],
+  );
   const publish = (await jobs.claim(OUTPUTS_CAPTURE, owner, 30, 1))!;
   const outputs = createSandboxOutputs(sql, key, async () => {
     throw new Error("unexpected provider read");

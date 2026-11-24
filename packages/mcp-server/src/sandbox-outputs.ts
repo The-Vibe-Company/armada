@@ -387,25 +387,51 @@ async function publishInlineOutputs(tx: Sql, id: string, scan: string, orgId: st
   await recordOutputPublication(tx, id, scan);
 }
 
-async function publishStagedStopOutput(tx: Sql, job: Job, stoppedJobId: string) {
-  await lockOutputSandbox(tx, job.sandbox_id!);
+export async function enqueueStopOutput(
+  tx: Sql,
+  jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
+  sandboxId: string,
+  orgId: string,
+  sourceGeneration: string | number,
+) {
+  const source = (
+    await tx.query<{ id: string }>(
+      `select id from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop' and outcome ? 'output'
+      and state in ('queued','leased','done') order by created_at desc,id desc limit 1`,
+      [sandboxId, sourceGeneration],
+    )
+  ).rows[0];
+  if (source)
+    await jobs.enqueue(
+      OUTPUTS_CAPTURE,
+      sandboxId,
+      null,
+      source.id,
+      { stoppedJobId: source.id, sourceGeneration: String(sourceGeneration) },
+      { orgId, maxAttempts: 8 },
+      tx,
+    );
+}
+
+async function publishStagedStopOutput(tx: Sql, id: string, stoppedJobId: string, sourceGeneration: string) {
+  await lockOutputSandbox(tx, id);
   const staged = (
     await tx.query<{ org_id: string; output: StagedOutput }>(
-      `select s.org_id,j.outcome->'output' as output
-       from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-       where s.id=$1 and s.lifecycle_generation=$2 and s.status='stopped' and not s.application_secret_tainted
-         and j.id=$3 and j.kind='stop' and j.state='done' and j.outcome ? 'output'
+      `select s.org_id,j.outcome->'output' as output from public.sandboxes s
+       join public.jobs j on j.sandbox_id=s.id
+       where s.id=$1 and j.generation=$2 and s.status<>'deleted' and not s.application_secret_tainted
+         and j.id=$3 and j.kind='stop' and j.outcome ? 'output'
          and not exists(select 1 from public.sandbox_output_state o where o.sandbox_id=s.id
            and o.published_scan >= (j.outcome #>> '{output,scan}')::timestamptz)`,
-      [job.sandbox_id, job.generation, stoppedJobId],
+      [id, sourceGeneration, stoppedJobId],
     )
   ).rows[0];
   if (staged) {
     const { output, org_id: orgId } = staged;
-    if ("files" in output) await publishOutputTransfers(tx, job.sandbox_id!, output.scan, output.files);
-    else await publishInlineOutputs(tx, job.sandbox_id!, output.scan, orgId, output.inline);
+    if ("files" in output) await publishOutputTransfers(tx, id, output.scan, output.files);
+    else await publishInlineOutputs(tx, id, output.scan, orgId, output.inline);
   }
-  await clearStopCapture(tx, stoppedJobId, job.sandbox_id!, job.generation!);
+  await clearStopCapture(tx, stoppedJobId, id, sourceGeneration);
 }
 
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
@@ -743,14 +769,17 @@ export function createSandboxOutputs(
     captureJob: {
       concurrency: OUTSTANDING_MAX,
       async run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult> {
-        if (!key || !job.sandbox_id || !job.generation) return { status: "done" };
+        if (!key || !job.sandbox_id) return { status: "done" };
         if (!(await context.canDispatch())) return { status: "fail", reason: "outputs_capture_dispatch_unavailable" };
-        const staged = job.payload as { stoppedJobId?: string } | null;
-        if (staged?.stoppedJobId) {
-          const stoppedJobId = staged.stoppedJobId;
-          return { status: "done", commit: (tx) => publishStagedStopOutput(tx, job, stoppedJobId) };
-        }
         const id = job.sandbox_id;
+        const staged = job.payload as { stoppedJobId: string; sourceGeneration: string } | null;
+        if (staged) {
+          return {
+            status: "done",
+            commit: (tx) => publishStagedStopOutput(tx, id, staged.stoppedJobId, staged.sourceGeneration),
+          };
+        }
+        if (!job.generation) return { status: "done" };
         const startedAt = Date.now();
         const row = (
           await sql.query<OutputTarget & { id: string; provider_sandbox_id: string; scan: string; retained: boolean }>(

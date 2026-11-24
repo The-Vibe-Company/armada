@@ -8,8 +8,8 @@ begin
     and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
     and not (new.status='stopped' and exists(
       select 1 from public.jobs j
-      where j.sandbox_id=new.id and j.generation=new.lifecycle_generation
-        and j.kind='stop' and j.state='done'
+      where j.sandbox_id=new.id and j.generation between new.lifecycle_generation-1 and new.lifecycle_generation
+        and j.kind='stop' and j.state in ('queued','leased','done','failed')
         and j.outcome #> '{output,files}' @> jsonb_build_array(jsonb_build_object('transfer_id',t.id))
     ));
   update public.runtime_commands set result_enc=null

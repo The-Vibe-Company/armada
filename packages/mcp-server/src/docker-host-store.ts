@@ -67,6 +67,7 @@ import {
   requestRefusedDockerResumeStop,
   transitionSandbox,
 } from "./sandbox-lifecycle.ts";
+import { enqueueStopOutput } from "./sandbox-outputs.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -2755,6 +2756,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           effects: [],
         });
         if (transition.kind === "conflict") deny();
+        await enqueueStopOutput(
+          tx,
+          createJobsStore(sql, key),
+          logical.id,
+          logical.org_id,
+          logical.lifecycle_generation,
+        );
       });
     },
     complete(

@@ -1,11 +1,10 @@
 import type { Sql } from "@armada/core";
-import type { Machine } from "@armada/core/server";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { recordDockerCleanupReceipt, transitionSandbox } from "../sandbox-lifecycle.ts";
-import { captureFinalOutputs, OUTPUTS_CAPTURE, type StagedOutput } from "../sandbox-outputs.ts";
+import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
 import type { JobKind, JobResult } from "./runner.ts";
 import { createJobsStore, recordStopCapture } from "./store.ts";
 
@@ -41,20 +40,7 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
           async commit(tx) {
             const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(job.generation), "stop");
             if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-            if (job.outcome) {
-              await jobs.enqueue(
-                OUTPUTS_CAPTURE,
-                sandboxId,
-                settled.generation,
-                job.id,
-                { stoppedJobId: job.id },
-                {
-                  orgId: intent.actor.orgId,
-                  maxAttempts: 8,
-                },
-                tx,
-              );
-            }
+            await enqueueStopOutput(tx, jobs, sandboxId, intent.actor.orgId, settled.generation);
           },
         }) satisfies JobResult;
 
@@ -99,10 +85,7 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
               effects: [],
             });
             if (result.kind === "conflict") throw new Error("Docker stop target changed.");
-            const dispatch: Pick<Machine, "stop"> = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(
-              intent.actor,
-              intent,
-            );
+            const dispatch = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(intent.actor, intent);
             try {
               await dispatch.stop({ ...target, retain: true, signal });
             } catch (error) {
