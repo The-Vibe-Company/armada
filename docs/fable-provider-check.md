@@ -33,7 +33,7 @@ armada new "$MODAL_SNAPSHOT_NAME" --agent claude --provider modal --org "$ORG_UU
 
 The Boat native prompt must reject with the readable model_selection_mismatch
 explanation. If launch allocated a sandbox, retain its failure ID. The Modal
-JSON receipt must show `sandbox.runtimeTransport: "dialout"` and
+JSON receipt must show `sandbox.modalTransport: "dialout"` and
 `runtime.kind: "armada"`. Set `MODAL_SANDBOX_UUID` to the returned
 `sandbox.id`, then run:
 

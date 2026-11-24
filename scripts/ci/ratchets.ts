@@ -309,6 +309,6 @@ if (import.meta.main) {
   for (const { name, before, after, added } of compare(base ? readBase(base) : undefined, readHead())) {
     console.log(before === undefined ? `${name}: ${after}` : `${name}: base ${before}, head ${after}`);
     for (const { path, line, text } of added) console.error(`  ${path}:${line}: ${text.replace(/\s+/g, " ")}`);
-    if (added.length > 0) process.exitCode = 1;
+    if (added.length > 0 || (name === "native-path" && after !== 0)) process.exitCode = 1;
   }
 }

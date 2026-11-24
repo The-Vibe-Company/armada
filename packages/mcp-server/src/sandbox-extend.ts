@@ -54,7 +54,7 @@ export async function extendSandbox(
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
     throw stateRefusal("deadline_not_extended");
   if (sandbox.boatRuntime) throw stateRefusal("boat_runtime_unsupported");
-  if (sandbox.runtimeTransport === "dialout") {
+  if (sandbox.modalTransport === "dialout") {
     // Modal's compute deadline is fixed. Observe it, then publish only the logical
     // deadline, since advancing the lifecycle generation would revoke the enrolled epoch.
     if (sandbox.lifecycleGeneration === undefined) throw stateRefusal("generation_unavailable");

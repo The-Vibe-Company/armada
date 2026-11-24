@@ -33,7 +33,6 @@ import { createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createEventFeed } from "./event-feed.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
-import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
@@ -42,8 +41,7 @@ import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
-import { bootstrapBoatMcp } from "./mcp-native.ts";
-import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
+import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModalLaunchAdmission } from "./modal-launch-admission.ts";
@@ -115,7 +113,7 @@ export async function createServerServices(env: Record<string, string | undefine
     docker: dockerEnabled,
   });
   const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
-  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
+  const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, {
     origin: config.publicUrl,
   });
   const store = createSqlVaultStore(sql);
@@ -144,18 +142,13 @@ export async function createServerServices(env: Record<string, string | undefine
     cliOAuthClientId: env.ARMADA_CLI_OAUTH_CLIENT_ID,
   };
   const mcp = createMcpHttpIntegration({
-    prepareReadableVariables: templates.prepare,
     deferBackground: true,
-    githubRuntimeEnabled: config.githubRuntimeEnabled,
-    githubLegacyAutoPrepareEnabled: config.githubLegacyAutoPrepareEnabled,
-    github: { store, app: githubApp, encryptionKey: config.encryptionKey },
     catalogAuthentication,
     sql,
     encryptionKey: config.encryptionKey,
     publicUrl: config.publicUrl,
     dashboardUrl: config.dashboardUrl,
     development: config.development,
-    providerForSandbox: (id) => createMcpSandboxProviderResolver(sql, providers)(id),
     authStore,
     supabase,
   });
@@ -177,41 +170,14 @@ export async function createServerServices(env: Record<string, string | undefine
     await sql.close();
     throw error;
   }
-  const providerFor = (apiKey: string, caller?: { userId: string; orgId: string }, sandboxId?: string) => {
+  const providerFor = (apiKey: string, _caller?: { userId: string; orgId: string }, sandboxId?: string) => {
     const provider = createObservedBoatProvider(
       {
         apiKey,
         ...boatInventory,
-        beforeStop: async (provider, id) => {
-          if (caller) await modelAuth.beforeStop(provider, id, caller);
-        },
-        afterPrompt: async (provider, id) => {
-          if (caller) await modelAuth.captureAfterBoatPrompt(provider, id, caller);
-        },
-        resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
-        beforeResume: async (provider, id) => {
-          if (!caller) throw Error("Native resume requires trusted Armada caller scope.");
-          await modelAuth.beforeResume(provider, id, caller);
-          return mcp.beforeResume(provider, id, caller);
-        },
-        beforePrompt: async (provider, id) => {
-          if (!caller) throw Error("Native prompt requires trusted Armada caller scope.");
-          await mcp.beforePrompt(provider, id, caller);
-          await modelAuth.beforePrompt(provider, id, caller);
-          await sandboxArmadaAccess.beforePrompt(provider, id);
-        },
-        beforeSnapshot: async (provider, id) => {
-          if (caller) await modelAuth.capture(provider, id, caller);
-          await sandboxArmadaAccess.beforeSnapshot(provider, id);
-          await mcp.beforeSnapshot(provider, id);
-        },
       },
       sandboxId,
     );
-    if (config.githubRuntimeEnabled)
-      provider.configureGitHub = ({ sandboxId, configuration }) =>
-        configureBoatGitHub(provider, sandboxId, configuration);
-    provider.configureMcp = ({ sandboxId, configuration }) => bootstrapBoatMcp(provider, sandboxId, configuration);
     return sandboxArmadaAccess.wrap(provider);
   };
   const providerMetadata = createProviderMetadata({
@@ -228,7 +194,7 @@ export async function createServerServices(env: Record<string, string | undefine
   });
   const modalProviderFor: NonNullable<HandlerOptions["modalProviderFor"]> = async (...args) => {
     const target = args[2].target;
-    if (diagnosticSandboxId(target) && target.runtimeTransport !== "dialout")
+    if (diagnosticSandboxId(target) && target.modalTransport !== "dialout")
       throw new VaultError("unavailable", "Modal sandboxes require Armada runtime enrolment.");
     const ports = await modal.modalProviderFor(...args);
     return { ...ports, provider: sandboxArmadaAccess.wrap(ports.provider) };
@@ -368,7 +334,7 @@ export async function createServerServices(env: Record<string, string | undefine
     connections: runtimeMcp.connections,
     provider: (actor, golden) =>
       modalRuntimeHostFor(
-        { ...golden, runtimeTransport: "dialout" },
+        { ...golden, modalTransport: "dialout" },
         {
           userId: actor.userId,
           orgs: [{ orgId: actor.orgId, role: actor.role }],
@@ -553,10 +519,7 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
-  const nativeHistoryFor = createHistoricalSandboxProviderResolver({
-    resolve: (target, caller) => logProviders[target.provider](target, caller),
-  });
-  const langfuse = createLangfuse(sql, config.encryptionKey, (id, generation) => nativeHistoryFor(sql, id, generation));
+  const langfuse = createLangfuse(sql, config.encryptionKey);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,

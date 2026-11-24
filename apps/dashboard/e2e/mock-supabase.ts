@@ -1269,7 +1269,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
           text: String(args.prompt),
           conversationId,
         });
-        const delivery = target.harness === "codex" ? "restart" : "native";
+        const delivery = target.harness === "codex" ? "restart" : "in-place";
         return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
       }
       const conversationId = conversations.at(-1) ?? `conv-${events.length}`;

@@ -556,7 +556,7 @@
                         "type": "boolean",
                         "const": false
                       },
-                      "runtimeTransport": {
+                      "modalTransport": {
                         "type": "string",
                         "const": "dialout"
                       }
@@ -566,7 +566,7 @@
                       "golden",
                       "provider",
                       "runtimeVersion",
-                      "runtimeTransport"
+                      "modalTransport"
                     ],
                     "additionalProperties": false
                   },
@@ -622,7 +622,7 @@
                         "type": "number",
                         "const": 1
                       },
-                      "runtimeTransport": {
+                      "modalTransport": {
                         "type": "string",
                         "const": "dialout"
                       },
@@ -669,7 +669,7 @@
                       "harness",
                       "provider",
                       "runtimeVersion",
-                      "runtimeTransport",
+                      "modalTransport",
                       "id",
                       "revision",
                       "idempotencyKey"
@@ -4586,7 +4586,7 @@
                     "delivery": {
                       "type": "string",
                       "enum": [
-                        "native",
+                        "in-place",
                         "restart"
                       ]
                     },
@@ -12917,7 +12917,7 @@
                           "type": "boolean",
                           "const": true
                         },
-                        "runtimeTransport": {
+                        "modalTransport": {
                           "type": "string",
                           "const": "dialout"
                         },

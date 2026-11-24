@@ -9,7 +9,7 @@ export function sandboxControlRefusal(
     statusReason?: string | null;
     expiresAt?: string | null;
     boatRuntime?: boolean;
-    runtimeTransport?: string | null;
+    modalTransport?: string | null;
     preservationNote?: string | null;
   },
   now: Date,
@@ -32,7 +32,7 @@ export function sandboxControlRefusal(
   }
   if (stoppedWithWork && machine?.resumeAfterStop)
     return `${prefix}Send a message to resume its preserved work; start a new sandbox on the same branch if recovery is unavailable.`;
-  if (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout")
+  if (sandbox.boatRuntime || sandbox.modalTransport === "dialout")
     return `${prefix}Use runtime_resume with a synchronized retained checkpoint if available; otherwise start a new sandbox on the same branch.`;
   return `${prefix}This operation cannot resume it; start a new sandbox on the same branch. Retained idle pauses wake automatically on send before expiry.`;
 }

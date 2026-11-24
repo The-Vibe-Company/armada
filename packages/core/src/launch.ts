@@ -25,7 +25,7 @@ import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { PrivateSkillError } from "./private-skill-error.ts";
-import { type Provider, ProviderError } from "./provider.ts";
+import { type PromptReceipt, type PromptRequest, type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
 import { CoreLaunchSettlementConflict, isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
@@ -76,8 +76,6 @@ export interface LaunchCredentialResolver {
   ): Promise<{ credentialId: string | null; model: string | null } | undefined>;
   /** Resolve only for private launch pins, under the already-authorized actor. Never harness env. */
   skillpackKey?(actor: GoldenActor): Promise<string | null>;
-  /** Owner-authorized legacy GitHub repair, private transport; no model credential required. */
-  refreshGitHub?(actor: GoldenActor, provider: Provider, sandboxId: string): Promise<{ login: string }>;
 
   resolve(
     actor: GoldenActor,
@@ -97,15 +95,6 @@ export interface LaunchCredentialResolver {
   admit?(actor: GoldenActor, credentials: HarnessCredentials, sandboxId: string, model?: string): Promise<void>;
   /** Validate the pinned native owner without rehydrating imported auth state. */
   assertTurn?(actor: GoldenActor, sandboxId: string, resuming: boolean): Promise<void>;
-  /** Returns true when native output needs the shared lifecycle admission lease. */
-  assertExec?(actor: GoldenActor, sandboxId: string): Promise<boolean | void>;
-  nativeSecrets?(
-    actor: GoldenActor,
-    sandboxId: string,
-    provider: Provider,
-    providerSandboxId: string,
-    phase?: "before" | "after",
-  ): Promise<string[]>;
 }
 
 export interface LaunchStores {
@@ -183,7 +172,7 @@ export interface LaunchOptions extends GoldenLimits {
       activate?: (signal: AbortSignal) => Promise<void>;
       restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string | null };
     }): Promise<{
-      prompt: Provider["prompt"];
+      prompt: (request: PromptRequest) => Promise<PromptReceipt>;
       epoch: string;
       prepareWorkspace?: (
         golden: GoldenRecord,
@@ -595,7 +584,7 @@ export async function launchSandbox(
     };
     let enrolledEpoch: string | undefined;
     const start = async (signal: AbortSignal) => {
-      if (!(record.boatRuntime === true || record.runtimeTransport === "dialout"))
+      if (!(record.boatRuntime === true || record.modalTransport === "dialout"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
       if ((record.visibility ?? golden.visibility) !== visibility) {
         await provider.delete({ sandboxId: forked.id });

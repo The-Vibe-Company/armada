@@ -39,8 +39,8 @@ export const requiresMissingMachineObservation = (provider: unknown) =>
 export const canRepeatPinnedRuntimeSettings = (provider: unknown) =>
   isSandboxProvider(provider) && runtimeBridgeProfiles[provider].repeatPinnedSettings;
 
-export function modalDialoutPlacement(target: { runtimeTransport?: string }) {
-  return target.runtimeTransport === "dialout";
+export function modalDialoutPlacement(target: { modalTransport?: string }) {
+  return target.modalTransport === "dialout";
 }
 
 export const usesHostLaunch = (provider: unknown) =>
@@ -54,7 +54,7 @@ export function runtimeBridgeTarget(target: {
   provider: string;
   harness: string;
   boatRuntime?: boolean;
-  runtimeTransport?: string;
+  modalTransport?: string;
 }): boolean {
   return (
     isSandboxProvider(target.provider) &&

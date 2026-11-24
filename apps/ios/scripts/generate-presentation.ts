@@ -1,8 +1,8 @@
-import { describeSandboxFailure } from "../../../packages/core/src/native-failure.ts";
+import { describeSandboxFailure } from "../../../packages/core/src/prompt-failure.ts";
 
 // Keep Swift's closed public diagnoses aligned with the dashboard's shared mapper.
 const reasons = new Set<string>();
-for (const path of ["native-failure.ts", "runtime-startup-failure.ts", "docker-api.ts"]) {
+for (const path of ["prompt-failure.ts", "runtime-startup-failure.ts", "docker-api.ts"]) {
   const source = await Bun.file(new URL(`../../../packages/core/src/${path}`, import.meta.url)).text();
   for (const match of source.matchAll(/"([^"\n]*)"/g)) reasons.add(match[1]!);
   for (const match of source.matchAll(/^ {2}([a-z_]+): \{/gm)) reasons.add(match[1]!);

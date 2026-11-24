@@ -21,7 +21,7 @@ export interface ResourceProject {
 export interface SandboxRecord {
   /** Immutable Boat Codex opt-in. Absent means no Boat opt-in, not a readiness receipt. */
   readonly boatRuntime?: true;
-  readonly runtimeTransport?: "dialout";
+  readonly modalTransport?: "dialout";
   skills?: SkillReceipt[];
   usage?: SandboxUsage | null;
   preservationNote?: string | null;
@@ -137,7 +137,7 @@ export interface SandboxStore {
   insert(input: {
     /** Trusted routing selection; never a mutable sandbox patch. */
     boatRuntime?: true;
-    runtimeTransport?: "dialout";
+    modalTransport?: "dialout";
     credentialId?: string;
     credentialVersion?: number;
     id: string;
@@ -269,7 +269,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
           JSON.stringify(input.resourceProject ?? null),
           input.expiresAt ?? null,
           input.boatRuntime === true,
-          input.runtimeTransport ?? null,
+          input.modalTransport ?? null,
           input.externalRef ?? null,
           input.stopWhenWorkMerged ?? true,
           JSON.stringify(input.pullRequestSource ?? null),
@@ -334,7 +334,7 @@ export function mapSandboxRow(row: SandboxRow): SandboxRecord {
   if (row.golden_id === null) throw new Error("Sandbox row has no supported golden binding.");
   const lifecycleGeneration = decodeLifecycleGeneration(row.lifecycle_generation);
   return {
-    ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
+    ...(row.runtime_transport === "dialout" ? { modalTransport: "dialout" as const } : {}),
     ...(row.boat_runtime === true ? { boatRuntime: true as const } : {}),
     ...(row.expires_at
       ? {

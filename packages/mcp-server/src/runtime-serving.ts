@@ -45,7 +45,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
     const sandbox = await createSqlData(sql)(caller).sandboxes.get(target.id);
     if (
       !sandbox ||
-      (!sandbox.boatRuntime && sandbox.runtimeTransport !== "dialout") ||
+      (!sandbox.boatRuntime && sandbox.modalTransport !== "dialout") ||
       !isSandboxProvider(sandbox.provider) ||
       !runtimeHarnessSupported(sandbox.provider, sandbox.harness) ||
       sandbox.provider !== target.provider ||
@@ -236,7 +236,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
         },
         events: ({ sandboxId: _physical, ...pagination }) => history(caller, sandbox.id, pagination),
       },
-      sandbox.boatRuntime || sandbox.runtimeTransport === "dialout"
+      sandbox.boatRuntime || sandbox.modalTransport === "dialout"
         ? {
             ...(sandbox.provider === "boat" && sandbox.boatRuntime
               ? {

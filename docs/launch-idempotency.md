@@ -165,7 +165,7 @@ when the response includes a Boat or Modal snapshot record.
 
 For explicit runtime launches from a Boat or Modal snapshot, send the selectors to `POST /api/v1/sandbox/launch`.
 Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use
-`provider: "modal"`, `runtimeVersion: 1` and `runtimeTransport: "dialout"` for Modal.
+`provider: "modal"`, `runtimeVersion: 1` and `modalTransport: "dialout"` for Modal.
 Both snapshot paths require a harness and are subject to runtime admission checks
 and server opt-ins. For a pinned Modal template, send the same Modal selectors
 with `id`, `revision`, `idempotencyKey` and the template's `harness` to

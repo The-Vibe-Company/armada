@@ -82,7 +82,7 @@ test("new launch resolution skips a pooled account until its current revision re
       orgBoatKey: async () => null,
     };
     const sql = { query: (query: string, args?: unknown[]) => db.query(query, args) } as Sql;
-    const ownership = createModelAuthOwnership(sql, key, undefined, () => now);
+    const ownership = createModelAuthOwnership(sql, key, () => now);
     const credentials = launchCredentials(reader, key, undefined, ownership);
     const selection = await credentials.defaults?.(actor, "codex");
     const launch = () => credentials.resolve(actor, "codex", selection?.credentialId ?? undefined);

@@ -36,11 +36,6 @@ export interface ProviderInventoryMachine {
 }
 
 export interface Provider {
-  /** Private GitHub-only configuration, never exec argv or a public command receipt. */
-  configureGitHub?(request: {
-    sandboxId: string;
-    configuration: GitHubRuntimeConfiguration | null;
-  }): Promise<{ acknowledged: boolean }>;
   /** Fixed capability check of live compute. Shares the output reader transport and never resumes. */
   probeOutputs?(request: { sandboxId: string; signal?: AbortSignal }): Promise<boolean>;
   /** Fixed bounded read of the declared output directory (`/home/user/outputs`) of live compute
@@ -87,44 +82,6 @@ export interface Provider {
   backendIdentity?(): Promise<{ id: string }>;
   /** Immutable credential selection, never the secret or mutable profile label. */
   managementIdentity?(): Promise<{ scope: "org" | "user"; ownerId: string }>;
-  /** Private authenticated runtime configuration; must complete before a model turn starts. */
-  configureMcp?(request: {
-    sandboxId: string;
-    configuration: {
-      revision: string;
-      servers: Record<
-        string,
-        | { type: "http"; url: string; headers?: Record<string, string> }
-        | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
-      >;
-    };
-  }): Promise<void | { revision: string }>;
-
-  /** Private runner control, not exec/prompt/client-visible credential configuration.
-   * Optional until the backend provides native physical-incarnation fencing and ACK. */
-  installOrchestratorEpoch?(request: {
-    sandboxId: string;
-    token: string;
-    binding: { epoch: string; physicalGeneration: string };
-    url: string;
-  }): Promise<{ acknowledged: boolean }>;
-  /** Read-only native work observation. Missing port is unavailable, never log-silence quiescence. */
-  observeOrchestrator?(request: { sandboxId: string; physicalGeneration: string; conversationId?: string }): Promise<{
-    physicalGeneration: string;
-    state: "active" | "quiescent" | "unknown";
-    evidence: string;
-    eventWatermark: number;
-    acknowledgedSequence: number;
-    nativeSessionId: string | null;
-  }>;
-  /** Private active-incarnation interrupt; never activates stopped compute. */
-  quiesceOrchestrator?(request: { sandboxId: string; physicalGeneration: string }): Promise<{ acknowledged: boolean }>;
-  scrubOrchestratorEpoch?(request: {
-    sandboxId: string;
-    physicalGeneration: string;
-    tokenHash?: string;
-  }): Promise<{ acknowledged: boolean }>;
-
   /**
    * Starts a blank sandbox to build a golden in. It is not frozen until `snapshot`.
    * The sandbox gets none of the account's secrets or model credentials (`noEnv`).
@@ -178,14 +135,6 @@ export interface Provider {
     model: string;
     signal?: AbortSignal;
   }): Promise<ModelConnectionTestResult>;
-  /** Trusted final-harness-only bootstrap. Never applied to exec, golden build or init. */
-  configureReadableVariables?(request: {
-    sandboxId: string;
-    harness: Harness;
-    variables: Record<string, string>;
-  }): Promise<void>;
-  /** Queues work for a harness. Without `conversationId` it opens a new conversation. */
-  prompt(request: PromptRequest): Promise<PromptReceipt>;
   getPrompt(request: { sandboxId: string; promptId: string; signal?: AbortSignal }): Promise<PromptState>;
   /** Gives a running turn a new message without stopping it. Refused with `no_running_turn` when nothing runs. */
   steer(request: SteerRequest): Promise<SteerReceipt>;
@@ -198,8 +147,6 @@ export interface Provider {
   /** Events oldest first, after `cursor`. Poll with the cursor of the previous page. */
   events(request: EventsRequest): Promise<EventPage>;
 
-  /** Interrupt and prove all relevant turns settled. Refuse while interruption is pending. */
-  quiesce?(request: InterruptRequest): Promise<void>;
   /** Reset the physical lifetime without restoring or replacing compute. Returns the confirmed hard deadline. */
   extendLifetime?(request: { sandboxId: string; ttlSeconds: number }): Promise<Date>;
   /** Removes compute through the provider's stop policy. Automatic idle requires
@@ -211,10 +158,10 @@ export interface Provider {
 
 export interface HarnessCapabilities {
   /**
-   * How a steer reaches a running turn: `native` joins the turn, `restart` interrupts it and continues the
+   * How a steer reaches a running turn: `in-place` joins the turn, `restart` interrupts it and continues the
    * same conversation, `none` is refused.
    */
-  steer: "native" | "restart" | "none";
+  steer: "in-place" | "restart" | "none";
   interrupt: boolean;
   /** A prompt can continue an earlier conversation, including after the sandbox stopped. */
   resume: boolean;

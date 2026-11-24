@@ -867,8 +867,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         state: "succeeded",
         id: result.sandbox.id,
         provider: result.sandbox.provider,
-        ...(receiptTransport && "runtimeTransport" in sandbox && sandbox.runtimeTransport === receiptTransport
-          ? { runtimeTransport: receiptTransport }
+        ...(receiptTransport && "modalTransport" in sandbox && sandbox.modalTransport === receiptTransport
+          ? { modalTransport: receiptTransport }
           : {}),
         providerSandboxId: result.sandbox.providerSandboxId,
         ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
@@ -1005,33 +1005,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return resolveLaunchSecrets(tx, actor, def.secrets ?? [], encryptionKey);
     });
   }
-  /** Later turns need current sandbox authority, NOT the mutable sources of a frozen readable launch. */
-  async function prepare(
-    provider: Provider,
-    providerSandboxId: string,
-    actor: { userId: string; orgId: string },
-    requestId: string,
-  ) {
-    const row = (
-      await sql.query<{ manifest: Manifest }>(
-        `select r.manifest from public.template_launch_requests r join public.sandboxes s on s.id=r.sandbox_id
-       join public.members m on m.org_id=s.org_id and m.user_id=$4
-       where r.id=$5 and s.provider=$1 and s.provider_sandbox_id=$2 and r.org_id=$3
-       and s.deleted_at is null and (s.owner_id=$4 or m.role='admin')`,
-        [provider.id, providerSandboxId, actor.orgId, actor.userId, requestId],
-      )
-    ).rows[0];
-    if (!row) throw new VaultError("forbidden", "Sandbox access denied.");
-    const m = row.manifest;
-    if (!Object.keys(m.variables).length && !m.definition.secrets?.length) return;
-    if (!provider.configureReadableVariables)
-      unavailable(m.definition.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
-    await provider.configureReadableVariables({
-      sandboxId: providerSandboxId,
-      harness: m.definition.harness,
-      variables: await resolveEnvironment(actor, m),
-    });
-  }
   async function validateBindingInTransaction(tx: Sql, actor: ApplicationVaultActor, org: string, templateId: string) {
     const a = await member(tx, actor, org);
     if (a.role !== "admin") throw new VaultError("forbidden", "Organization admin access is required.");
@@ -1047,6 +1020,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     }
     return { harness: definition.harness, modelAccount: definition.modelAccount };
   }
-  return { command, prepare, validateBindingInTransaction };
+  return { command, validateBindingInTransaction };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;

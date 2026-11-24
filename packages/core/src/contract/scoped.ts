@@ -127,7 +127,7 @@ const readResult = z.looseObject({
   credentialId: modelOutput.credentialId.unwrap(),
   credentialVersion: modelOutput.credentialVersion.unwrap(),
   boatRuntime: z.literal(true).optional(),
-  runtimeTransport: z.literal("dialout").optional(),
+  modalTransport: z.literal("dialout").optional(),
   visibility: statusOutput.visibility.optional(),
   expiresAt: z.string().optional(),
   effectiveTtlSeconds: z.number().optional(),

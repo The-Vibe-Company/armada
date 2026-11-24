@@ -5,7 +5,7 @@ import { PrivateSkillError } from "./private-skill-error.ts";
 
 const runtimeRecordFields = {
   boat: { boatRuntime: true },
-  modal: { runtimeTransport: "dialout" },
+  modal: { modalTransport: "dialout" },
 } as const;
 
 export function runtimeLaunch(runtime: NonNullable<LaunchOptions["runtime"]>): LaunchStrategy {

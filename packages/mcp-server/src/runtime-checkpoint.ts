@@ -127,7 +127,7 @@ export function createRuntimeCheckpoint(
     deletedAt: string | null;
     stopRequestedAt?: string | null;
     boatRuntime?: boolean;
-    runtimeTransport?: string;
+    modalTransport?: string;
   };
   const dockerTarget = async (caller: Caller, id: string): Promise<Target | null> => {
     if (!options.docker) return null;
@@ -148,7 +148,7 @@ export function createRuntimeCheckpoint(
       row.ownerId !== caller.userId ||
       !(
         (usesHostLaunch(row.provider) && options.docker) ||
-        ((row.boatRuntime || row.runtimeTransport === "dialout") && isSandboxProvider(row.provider))
+        ((row.boatRuntime || row.modalTransport === "dialout") && isSandboxProvider(row.provider))
       ) ||
       !runtimeHarnessSupported(row.provider, row.harness) ||
       row.deletedAt

@@ -1,5 +1,5 @@
-import { promptFailureReason } from "./native-failure.ts";
 import { type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
+import { promptFailureReason } from "./prompt-failure.ts";
 import type { AgentEvent, PromptState, Provider } from "./provider.ts";
 import { launchInfrastructure } from "./sandbox-provider.ts";
 

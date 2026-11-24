@@ -1,5 +1,7 @@
 # Managed GitHub credentials in long-lived workers
 
+> Historical context for the retired provider-run GitHub path. Enrolled sandboxes receive GitHub configuration through the Armada runtime.
+
 GitHub App **user** access tokens expire after eight hours. Refreshing one invalidates both its
 previous access token and previous refresh token. Installation tokens are different (one hour) and
 are not a substitute for the worker owner's identity. See [GitHub's user-token refresh contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).

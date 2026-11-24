@@ -4,7 +4,6 @@ import {
   HOST_CAPABILITIES,
   type Provider,
   ProviderError,
-  preserveWork,
   SANDBOX_STATES,
   type Sql,
   type WorkPreservation,
@@ -14,9 +13,7 @@ import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
 import {
   COMPLETE_PRESERVATION,
-  lockedNativePreservationWriter,
   NOTE_FENCE,
-  readNativeCaptureAcknowledgements,
   recordCleanWork,
   recordWorkRecovery,
   STOP_EPOCH,
@@ -314,10 +311,9 @@ async function captureAndStore(
     stopLoaded = true;
     const boatCapture = stop.boat_runtime && !!provider.captureRuntimeWork;
     const runtimeCapture = stop.modal_runtime || boatCapture;
-    if (runtimeCapture || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
+    if (runtimeCapture) {
       if (!stop.work_stop_owned || !authority) return "pending";
       progress.deferOnFailure = runtimeCapture;
-      if (!runtimeCapture) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
       progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind, provider.id];
     }
     progress.stopToken = stop.stop_token;
@@ -346,18 +342,6 @@ async function captureAndStore(
     if (boatCapture && current.id !== providerId) return "pending";
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
     if (boatCapture && !["ready", "running"].includes(current.state)) return "pending";
-    const fencedNativeCapture = !runtimeCapture && provider.supportsExecPhysicalGeneration;
-    const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
-    if (
-      fencedNativeCapture &&
-      (current.id !== providerId || !["ready", "running"].includes(current.state) || !physicalGeneration)
-    )
-      throw new ProviderError({
-        provider: provider.id,
-        code: "sandbox_not_ready",
-        message: "Native work capture requires the exact active physical incarnation.",
-        retryable: false,
-      });
     if (stop.modal_runtime) {
       if (
         HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
@@ -379,31 +363,6 @@ async function captureAndStore(
     };
     if (!(await ownsCapture())) return "pending";
     const context = { source, captureId: crypto.randomUUID() };
-    let acknowledgements: string | null = null;
-    if (!runtimeCapture) {
-      // Native runtimes acknowledge interrupt only after active turns settle.
-      stage = progress.stage = "quiesce";
-      observed("quiesce_started");
-      await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
-      if (expired()) return "pending";
-      if (progress.fence[0] !== null) {
-        try {
-          const evidence = await readNativeCaptureAcknowledgements(
-            sql,
-            id,
-            progress.fence,
-            progress.stopToken,
-            context.captureId,
-            physicalGeneration ?? null,
-          );
-          if (expired() || evidence === undefined) return "pending";
-          acknowledgements = evidence;
-        } catch {
-          return "pending";
-        }
-      }
-      observed("quiesce_finished");
-    }
     stage = progress.stage = runtimeCapture ? "quiesce" : "capture";
     observed("capture_started");
     const onWorkAtRisk = () => {
@@ -430,13 +389,7 @@ async function captureAndStore(
         onWorkAtRisk,
       });
     } else {
-      const collector = physicalGeneration
-        ? {
-            exec: (request: Parameters<Provider["exec"]>[0]) =>
-              provider.exec({ ...request, expectedPhysicalGeneration: physicalGeneration }),
-          }
-        : provider;
-      result = await preserveWork(collector, providerId, signal, onWorkAtRisk, context);
+      throw new Error("Sandbox work capture requires the Armada runtime.");
     }
     if (expired()) return;
     stage = progress.stage = "capture";
@@ -460,7 +413,6 @@ async function captureAndStore(
         note,
         recoveryId,
         encrypted,
-        acknowledgements,
       );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
@@ -470,13 +422,7 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await recordCleanWork(
-        progress.receiptWriter,
-        id,
-        progress.fence,
-        progress.stopToken,
-        acknowledgements,
-      );
+      const saved = await recordCleanWork(progress.receiptWriter, id, progress.fence, progress.stopToken);
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;

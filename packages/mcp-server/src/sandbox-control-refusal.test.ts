@@ -12,7 +12,7 @@ test("terminal controls refuse with provider recovery guidance", () => {
     }
   }
   expect(
-    sandboxControlRefusal({ status: "stopped", provider: "modal", runtimeTransport: "dialout" }, now, "exec"),
+    sandboxControlRefusal({ status: "stopped", provider: "modal", modalTransport: "dialout" }, now, "exec"),
   ).toContain("Send a message");
 });
 test("live and retained idle sandboxes stay usable only before expiry", () => {

@@ -1,5 +1,7 @@
 # GitHub delivery from untrusted sandboxes: options, not just tokens
 
+> Historical context for the retired provider-run GitHub path. Enrolled sandboxes receive GitHub configuration through the Armada runtime.
+
 Decision proposal for #879, 2026-11-10. **Recommend option 6: explicit server-side
 publish-by-bundle as the default managed delivery path.** Keep the minimal
 one-hour remaining-lifetime guard independently shippable. This document does not

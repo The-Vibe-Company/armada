@@ -1,14 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  type AgentEvent,
-  isFinalPromptStatus,
-  observedPromptOutcome,
-  type Provider,
-  readPromptEvents,
-  reportedTurnUsage,
-  type Sql,
-  type TurnTokenUsage,
-} from "@armada/core";
+import { type AgentEvent, isFinalPromptStatus, reportedTurnUsage, type Sql, type TurnTokenUsage } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import { readBody } from "./control-body.ts";
@@ -195,102 +186,23 @@ type ExportHandler = Parameters<typeof createJobsRunner>[1][string];
 
 const MAX_ABANDONED_ATTEMPTS = 5;
 /** Native history reads that outlived their deadline and still run detached. */
-const MAX_OUTSTANDING_HISTORY_READS = 4;
 type PromptEvent = Extract<AgentEvent, { kind: "prompt" }>;
 interface ExportJob {
   sandbox_id: string;
   prompt_id: string;
   org_id: string;
-  provider_sandbox_id: string;
   runtime_ack: string | null;
   terminal_status: PromptEvent["status"];
   observed_ms: number;
-  generation: string;
-  waiting_for_history: boolean;
   config_enc: Uint8Array<ArrayBuffer> | null;
   content_mode: string | null;
   application_secrets: boolean;
   docker_request_enc: Uint8Array<ArrayBuffer> | null;
 }
 
-export function createLangfuse(
-  sql: Sql,
-  key: string,
-  nativeProviderFor: (
-    id: string,
-    generation: string,
-  ) => Promise<{ provider: Pick<Provider, "id" | "events">; providerSandboxId: string }>,
-  send: typeof fetch = fetch,
-  // Optional history gets its own deadline inside the 30 s worker tick, leaving
-  // time for the receipt-only export and durable accounting.
-  historyDeadline: () => AbortSignal = () => AbortSignal.timeout(10_000),
-  now: () => number = Date.now,
-) {
-  type Evidence = { events: AgentEvent[]; nativeProvider?: string } | null;
-  async function nativeHistory(
-    job: ExportJob,
-    signal: AbortSignal,
-    canDispatch: () => Promise<boolean>,
-  ): Promise<Evidence> {
-    if (!(await canDispatch())) return null;
-    signal.throwIfAborted();
-    const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id, job.generation);
-    if (providerSandboxId !== job.provider_sandbox_id) return null;
-    const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
-    const read = await readPromptEvents(
-      {
-        id: provider.id,
-        async events(page) {
-          if (!(await canDispatch())) throw Error("Native export job lost its claim.");
-          signal.throwIfAborted();
-          const binding = await sql.query(
-            "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3",
-            [job.sandbox_id, job.generation, providerSandboxId],
-          );
-          if (!binding.rows.length) throw Error("Native export history binding changed.");
-          signal.throwIfAborted();
-          return provider.events(page);
-        },
-      },
-      request,
-    );
-    signal.throwIfAborted();
-    return {
-      events: read.events.filter((e) => e.promptId === job.prompt_id),
-      nativeProvider: provider.id,
-    };
-  }
-
-  // Provider resolution and provider stores can await SQL or HTTP without
-  // observing the signal, so the deadline is enforced around the whole read.
-  // A read that outlives it keeps running detached: at most one per job and
-  // MAX_OUTSTANDING_HISTORY_READS overall, so a stalled provider can neither
-  // hold the export lane nor pile up reads.
-  const outstanding = new Set<string>();
-  function boundedNativeHistory(
-    job: ExportJob,
-    signal: AbortSignal,
-    canDispatch: () => Promise<boolean>,
-  ): Promise<Evidence> {
-    const id = `${job.sandbox_id}/${job.prompt_id}`;
-    if (signal.aborted) return Promise.reject(signal.reason);
-    if (outstanding.has(id) || outstanding.size >= MAX_OUTSTANDING_HISTORY_READS)
-      return Promise.reject(Error("native history read still outstanding"));
-    outstanding.add(id);
-    return new Promise<Evidence>((resolve, reject) => {
-      const onAbort = () => reject(signal.reason);
-      signal.addEventListener("abort", onAbort, { once: true });
-      nativeHistory(job, signal, canDispatch)
-        .then(resolve, reject)
-        .finally(() => {
-          outstanding.delete(id);
-          signal.removeEventListener("abort", onAbort);
-        });
-    });
-  }
-
-  async function history(job: ExportJob, signal: AbortSignal, canDispatch: () => Promise<boolean>): Promise<Evidence> {
-    if (job.runtime_ack === null) return boundedNativeHistory(job, signal, canDispatch);
+export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch) {
+  async function history(job: ExportJob): Promise<AgentEvent[] | null> {
+    if (job.runtime_ack === null) return [];
     // Read only this turn's window: from its first archived reference (the sparse
     // counted_prompt_id marker) to the settlement acknowledgement. Earlier turns
     // must not consume the bounds. Bound archive memory before fetching ciphertext.
@@ -312,7 +224,7 @@ export function createLangfuse(
       const event = JSON.parse(await decryptSecret(event_enc, key)) as AgentEvent;
       if (event.promptId === job.prompt_id) events.push(event);
     }
-    return { events };
+    return events;
   }
 
   /** Docker keeps its secret references only in the sealed launch request; an unreadable one withholds content. */
@@ -334,37 +246,20 @@ export function createLangfuse(
     job: ExportJob,
     signal: AbortSignal,
     canDispatch: () => Promise<boolean>,
-  ): Promise<"exported" | "failed" | "dropped" | "pending"> {
+  ): Promise<"exported" | "failed" | "dropped"> {
     if (!job.config_enc) return "dropped";
-    let evidence: Awaited<ReturnType<typeof history>>;
-    let historyUnavailable = false;
-    try {
-      evidence = await history(job, AbortSignal.any([signal, historyDeadline()]), canDispatch);
-    } catch (error) {
-      signal.throwIfAborted(); // Only the worker tick or shutdown abandons the job to its lease.
-      // Native history is optional evidence: the settled receipt already holds
-      // the terminal status and observation time. Retry a transient read error
-      // while the receipt is fresh, then export a marked observation without
-      // transcript content rather than discarding the turn.
-      if (job.runtime_ack !== null) throw error;
-      if (job.waiting_for_history) return "pending";
-      evidence = { events: [] };
-      historyUnavailable = true;
-    }
-    if (!evidence) return "dropped";
-    const { events, nativeProvider } = evidence;
+    const events = await history(job);
+    if (!events) return "dropped";
     const terminal = events.findLast((e): e is PromptEvent => e.kind === "prompt" && isFinalPromptStatus(e.status));
     const turnEvents = events.filter((e) => e.kind !== "prompt" || !isFinalPromptStatus(e.status));
-    const outcome = job.runtime_ack === null ? observedPromptOutcome(job.terminal_status, job.prompt_id, events) : null;
     turnEvents.push({
       kind: "prompt",
       id: job.prompt_id,
       promptId: job.prompt_id,
       text: "",
       ...terminal,
-      at: nativeProvider === "boat" ? job.observed_ms : terminal?.at || job.observed_ms,
-      status: outcome && outcome.state !== "running" ? outcome.state : job.terminal_status,
-      ...(outcome?.state === "failed" && job.terminal_status === "finished" ? { reason: outcome.reason } : {}),
+      at: terminal?.at || job.observed_ms,
+      status: job.terminal_status,
     });
     const snapshot = await sql.query<{ turns: TurnTokenUsage[] | null }>(
       "select usage_turns->'turns' as turns from public.sandboxes where id=$1 and org_id=$2",
@@ -385,7 +280,7 @@ export function createLangfuse(
     // or model name), so the check applies in metadata mode too.
     const withheld = await bindsApplicationSecrets(job);
     const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full" && !withheld, {
-      historyUnavailable,
+      historyUnavailable: job.runtime_ack === null,
       ...(withheld ? { contentWithheld: "application_secret_bindings" } : {}),
     });
     const body = JSON.stringify({
@@ -419,12 +314,11 @@ export function createLangfuse(
     concurrency: 1,
     async run(claim, { signal: leaseSignal, canDispatch }) {
       const signal = AbortSignal.any([leaseSignal, AbortSignal.timeout(30_000)]);
-      const { promptId, historyRetries = 0 } = claim.outcome as { promptId: string; historyRetries?: number };
+      const { promptId } = claim.outcome as { promptId: string };
       const job = (
         await sql.query<ExportJob>(
-          `select j.sandbox_id,j.prompt_id,j.org_id,j.provider_sandbox_id,j.runtime_ack,j.terminal_status,
-          s.lifecycle_generation::text as generation,extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
-          j.observed_at>clock_timestamp()-interval '60 seconds' as waiting_for_history,
+          `select j.sandbox_id,j.prompt_id,j.org_id,j.runtime_ack,j.terminal_status,
+          extract(epoch from j.observed_at)::double precision*1000 as observed_ms,
           c.config_enc,
           -- Use the more restrictive of the mode allowed at settlement and the current one.
           case when c.org_id is null then null
@@ -444,17 +338,10 @@ export function createLangfuse(
       if (!job) return { status: "done" };
 
       const outcome =
-        claim.attempts - historyRetries > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
+        claim.attempts > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
           ? "failed"
           : await exportTurn(job, signal, canDispatch).catch(() => "failed");
       signal.throwIfAborted();
-      if (outcome === "pending") {
-        return {
-          status: "retry",
-          after: new Date(now() + 2000),
-          outcome: { promptId, historyRetries: historyRetries + 1 },
-        };
-      }
       return {
         ...(outcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
         async commit(tx) {

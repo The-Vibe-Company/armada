@@ -21,8 +21,7 @@ import {
   toHarnessCredentials,
 } from "@armada/core";
 
-import { createUsagePricingContext, PrivateSkillError, sshHydrateGitHubToken, VaultError } from "@armada/core/server";
-import { refreshLegacyGitHub } from "./github-legacy.ts";
+import { createUsagePricingContext, PrivateSkillError, VaultError } from "@armada/core/server";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { currentRequestId } from "./request-observability.ts";
 
@@ -222,18 +221,6 @@ export function launchCredentials(
         );
       }
     },
-    async refreshGitHub(actor, provider, sandboxId) {
-      if (!github) throw new VaultError("unavailable", "GitHub authorization is not configured.");
-      const repaired = await refreshLegacyGitHub(
-        provider,
-        sandboxId,
-        actor.userId,
-        { ...github, encryptionKey },
-        sshHydrateGitHubToken,
-      );
-      if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
-      return repaired;
-    },
     enrollAccount,
     async admit(actor, credentials, sandboxId, model) {
       if (credentials.binding) await ownership?.admitLaunch(credentials.binding, sandboxId, model);
@@ -245,31 +232,6 @@ export function launchCredentials(
     },
     async releaseAdmission(sandboxId) {
       await ownership?.releaseCapacity(sandboxId);
-    },
-    async nativeSecrets(actor, sandboxId, provider, providerSandboxId, phase = "after") {
-      if (!ownership) return [];
-      await ownership.assertSandbox(actor, sandboxId, false, true);
-      const managed = await ownership.managed(sandboxId);
-      if (phase === "before" && !(await ownership.shared(sandboxId)))
-        await ownership.state.invalidateRedaction(actor, sandboxId);
-      const values = await ownership.capture(
-        provider,
-        providerSandboxId,
-        { userId: actor.userId, orgId: actor.orgId },
-        false,
-        phase === "before",
-      );
-      if (managed && values.length === 0)
-        throw new Error("Private native auth redaction is unavailable; no output may be returned.");
-      // Exec may be invoked by an org peer; actor is the stored sandbox owner.
-      return [
-        ...values,
-        ...(await exposedSecrets(reader, encryptionKey, { userId: actor.userId, orgId: actor.orgId })),
-      ];
-    },
-    async assertExec(actor, sandboxId) {
-      if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);
-      return ownership ? ownership.managed(sandboxId) : false;
     },
     async assertTurn(actor, sandboxId, resuming) {
       if (ownership) {

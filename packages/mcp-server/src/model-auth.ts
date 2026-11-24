@@ -1,34 +1,9 @@
-import type { CredentialBinding, GoldenActor, Harness, Provider, Sql } from "@armada/core/server";
-import {
-  failureDiagnostic,
-  ProviderError,
-  sshNativeAuthAdmission,
-  sshPrivateAuthState,
-  VaultError,
-} from "@armada/core/server";
+import type { CredentialBinding, GoldenActor, Harness, Sql } from "@armada/core/server";
+import { VaultError } from "@armada/core/server";
 import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
-import { createNativeStateStore, NativeObservationSuperseded } from "./model-auth-state.ts";
-import { recordOperatorDiagnostic } from "./request-observability.ts";
+import { createNativeStateStore } from "./model-auth-state.ts";
 import { createSubscriptionBroker } from "./subscription-broker.ts";
-
-class StoppedBoatAuthProofMissing extends ProviderError {
-  constructor(
-    readonly reason: "broker_delivery_missing" | "legacy_quiescence_missing",
-    message: string,
-  ) {
-    super({ provider: "boat", code: "unavailable", retryable: true, message });
-  }
-}
-
-function recordNativeReadFailure(operation: "getPrompt", error: unknown): void {
-  recordOperatorDiagnostic(`native_auth.${operation}`, failureDiagnostic(error), {
-    causeCode:
-      error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing
-        ? error.reason
-        : undefined,
-  });
-}
 
 /**
  * Private subscription state and redaction. Subscription accounts are shared;
@@ -37,38 +12,17 @@ function recordNativeReadFailure(operation: "getPrompt", error: unknown): void {
 export function createModelAuthOwnership(
   sql: Sql,
   encryptionKey?: string,
-  captureNative: typeof sshPrivateAuthState = sshPrivateAuthState,
   now: () => number = Date.now,
   subscription?: {
     origin: string;
     fetch?: typeof fetch;
     prepareAccount?(actor: GoldenActor, id: string, version: number): Promise<void>;
-    prepareTurn?(provider: Provider, id: string, caller: { userId: string; orgId: string }): Promise<void>;
   },
 ) {
   const state = createNativeStateStore(sql, encryptionKey);
   const broker = subscription
     ? createSubscriptionBroker(sql, encryptionKey, subscription.origin, subscription.fetch, subscription.prepareAccount)
     : undefined;
-  async function serverBackedSource(provider: Provider, providerId: string): Promise<boolean> {
-    return (
-      (
-        await sql.query(
-          `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.provider=$1 and s.provider_sandbox_id=$2 and a.source_generation like 'server:%'`,
-          [provider.id, providerId],
-        )
-      ).rows.length > 0
-    );
-  }
-  async function modalGeneration(tx: Sql, providerId: string, actor: GoldenActor, lock = false): Promise<string> {
-    const result = await tx.query<{ generation: string }>(
-      `select record->>'generation' as generation from public.modal_machines where id=$1 and org_id=$2::uuid and owner_id=$3::uuid${lock ? " for update" : ""}`,
-      [providerId, actor.orgId, actor.userId],
-    );
-    if (result.rows.length !== 1 || !result.rows[0]?.generation)
-      throw new VaultError("conflict", "Native source generation is ambiguous.");
-    return result.rows[0].generation;
-  }
   async function authorize(tx: Sql, actor: GoldenActor, id: string, version: number): Promise<Uint8Array> {
     const result = await tx.query<{ id: string; value_enc: Uint8Array }>(
       `select c.id,c.value_enc from public.credentials c where c.id=$1::uuid and c.version=$2 and c.status='active'
@@ -94,12 +48,6 @@ export function createModelAuthOwnership(
     async admitLaunch(binding: CredentialBinding, sandboxId: string, model?: string) {
       await sql.transaction!((tx) => admitLaunchAccount(tx, binding, sandboxId, model, now));
     },
-    async releaseProviderCapacity(provider: Provider, providerId: string) {
-      await sql.query(
-        "delete from public.account_agent_reservations r using public.sandboxes s where r.sandbox_id=s.id and s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.status='stopped'",
-        [provider.id, providerId],
-      );
-    },
     async admitSandboxCapacity(sandboxId: string) {
       await sql.transaction!(async (tx) => {
         const row = (
@@ -111,242 +59,12 @@ export function createModelAuthOwnership(
       });
     },
     releaseCapacity: (sandboxId: string) => releaseAccountCapacity(sql, sandboxId),
-    async shared(sandboxId: string): Promise<boolean> {
-      return (
-        !!broker &&
-        (
-          await sql.query(
-            `select 1 from public.sandboxes s join public.model_auth_state a on a.account_id=s.credential_id and a.account_version=s.credential_version where s.id=$1::uuid and a.source_generation like 'server:%'`,
-            [sandboxId],
-          )
-        ).rows.length > 0
-      );
-    },
-    async managed(sandboxId: string): Promise<boolean> {
-      return (
-        (
-          await sql.query(
-            `select 1 from public.sandboxes s join public.model_auth_state state
-          on state.account_id=s.credential_id and state.account_version=s.credential_version
-          where s.id=$1::uuid limit 1`,
-            [sandboxId],
-          )
-        ).rows.length > 0
-      );
-    },
     async bootstrap(actor: GoldenActor, id: string, version: number, sandboxId: string) {
       await sql.transaction!(async (tx) => {
         await authorize(tx, actor, id, version);
       });
       const saved = await state.read(actor, id, version, sandboxId);
       return { authJson: saved?.authJson, revision: saved?.revision ?? 0, secrets: saved?.secrets ?? [] };
-    },
-    async capture(
-      provider: Provider,
-      providerId: string,
-      caller: { userId: string; orgId: string },
-      quiesced = false,
-      allowStoppedSample = false,
-    ): Promise<string[]> {
-      const result = await sql.query<{
-        id: string;
-        owner_id: string;
-        org_id: string;
-        credential_id: string | null;
-        credential_version: number | null;
-        harness: string;
-        kind: string | null;
-        lifecycle_generation: number;
-        current_version: number | null;
-        current_status: string | null;
-        expires_at: string | Date | null;
-      }>(
-        `select s.id,s.owner_id,s.org_id,s.credential_id,s.credential_version,s.harness,c.kind,s.lifecycle_generation,
-         c.version as current_version,c.status as current_status,c.expires_at
-         from public.sandboxes s left join public.credentials c on c.id=s.credential_id
-         where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
-         and s.deleted_at is null and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
-         and (coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org' or s.owner_id=$4::uuid)`,
-        [provider.id, providerId, caller.orgId, caller.userId],
-      );
-      if (result.rows.length > 1) throw new VaultError("conflict", "Ambiguous native source.");
-      const row = result.rows[0];
-      if (row?.harness === "codex" && (!row.credential_id || row.credential_version === null || !row.kind))
-        throw new VaultError(
-          "credential_binding_required",
-          "Legacy Codex output has no trustworthy account binding. Stop it and launch a new sandbox with an explicit account.",
-        );
-      if (!row || row.kind !== "codex_auth" || !row.credential_id || row.credential_version === null) return [];
-      const actor: GoldenActor = { userId: row.owner_id, orgId: row.org_id, role: "member" };
-      if (broker && (await broker.enrolled(row.credential_id, row.credential_version))) {
-        if (provider.id === "boat") {
-          const authorize = async (tx: Sql) => {
-            const pinned = await tx.query<{ lifecycle_generation: number }>(
-              `select s.lifecycle_generation from public.sandboxes s where s.id=$1::uuid and s.owner_id=$2::uuid and s.org_id=$3::uuid
-               and s.credential_id=$4::uuid and s.credential_version=$5
-               and s.provider='boat' and s.provider_sandbox_id=$6 and s.deleted_at is null
-               and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$7::uuid)
-               and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
-                    or s.owner_id=$7::uuid) for update of s`,
-              [row.id, row.owner_id, row.org_id, row.credential_id, row.credential_version, providerId, caller.userId],
-            );
-            if (!pinned.rows[0]) throw new VaultError("conflict", "Private native observation source changed.");
-            if (pinned.rows[0].lifecycle_generation !== row.lifecycle_generation)
-              throw new NativeObservationSuperseded("sandbox_generation");
-          };
-          const physical = await provider.get(providerId);
-          if (physical.id !== providerId)
-            throw new VaultError("conflict", "Private native observation returned another sandbox.");
-          const delivery = {
-            accountId: row.credential_id,
-            version: row.credential_version,
-            sandboxId: row.id,
-            generation: row.lifecycle_generation,
-            authorize,
-          };
-          if (physical.state === "stopped") {
-            if (await state.hasBrokerDelivery(delivery))
-              return broker.secrets(row.credential_id, row.credential_version);
-            throw new StoppedBoatAuthProofMissing(
-              "broker_delivery_missing",
-              "Stopped native auth has no verified access-only delivery; output is withheld.",
-            );
-          }
-          if (!["ready", "running"].includes(physical.state) || physical.physicalExitConfirmed === true)
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Private native observation requires running compute; output is withheld.",
-            });
-          const capability = broker.configuration(actor, row.credential_id, row.credential_version, row.id).capability;
-          let observed: string;
-          try {
-            observed = await captureNative(provider, providerId, {}, quiesced, capability);
-          } catch {
-            throw new ProviderError({
-              provider: "boat",
-              code: "unavailable",
-              retryable: true,
-              message: "Private native auth observation is unavailable; output is withheld.",
-            });
-          }
-          if (observed === "pending")
-            throw new VaultError("unavailable", "Private native configuration is incomplete; output is withheld.");
-          if (observed === "null") {
-            // A pre-exec sample cannot certify the filesystem after that command.
-            if (allowStoppedSample) await state.recordBrokerDelivery({ ...delivery, generation: null });
-            else await state.recordBrokerDelivery(delivery);
-          } else
-            await state.observeRedaction({
-              accountId: row.credential_id,
-              version: row.credential_version,
-              authJson: observed,
-              sandboxId: row.id,
-              authorize,
-            });
-        }
-        return broker.secrets(row.credential_id, row.credential_version);
-      }
-      const stoppedSecrets = (saved: { secrets: string[]; sourceGeneration: string } | undefined) => {
-        if (provider.id === "boat" && !allowStoppedSample && !saved?.sourceGeneration.startsWith("boat:quiesced:"))
-          throw new StoppedBoatAuthProofMissing(
-            "legacy_quiescence_missing",
-            "Native state synchronization is pending. Resume the sandbox to reconcile its private auth before reading archived output.",
-          );
-        return saved?.secrets ?? [];
-      };
-      const nativeSource = { actor, accountId: row.credential_id, version: row.credential_version, sandboxId: row.id };
-      const verifySource = (generation: string, retired: boolean) => async (tx: Sql) => {
-        const current = await tx.query<{ lifecycle_generation: number }>(
-          retired
-            ? "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null for update"
-            : "select lifecycle_generation from public.sandboxes where id=$1::uuid and deleted_at is null and credential_id=$2::uuid and credential_version=$3 for update",
-          retired ? [row.id] : [row.id, row.credential_id, row.credential_version],
-        );
-        const pinned = current.rows[0];
-        if (pinned && pinned.lifecycle_generation !== row.lifecycle_generation)
-          throw new NativeObservationSuperseded("sandbox_generation");
-        if (!pinned || (provider.id === "modal" && (await modalGeneration(tx, providerId, actor, true)) !== generation))
-          throw new VaultError(
-            "conflict",
-            retired ? "Retired native source changed." : "Native source incarnation changed.",
-          );
-      };
-      // Explicit replacement/revocation invalidates publication, not the ability to stop old compute.
-      const retired =
-        row.current_status !== "active" ||
-        row.current_version !== row.credential_version ||
-        (row.expires_at !== null &&
-          new Date(row.expires_at instanceof Date ? row.expires_at.getTime() : row.expires_at).getTime() <= now());
-      const { accountId, version, sandboxId } = nativeSource;
-      const readState = () => state.read(actor, accountId, version, sandboxId);
-      let retained: Awaited<ReturnType<typeof state.redactionState>>;
-      if (retired) {
-        retained = await state.redactionState(actor, row.credential_id, row.credential_version, row.id);
-        if (!retained)
-          throw new VaultError(
-            "credential_binding_required",
-            "Legacy native output has no trustworthy secret registry. Stop the sandbox and reconnect with a fresh account version.",
-          );
-      } else {
-        await this.bootstrap(actor, row.credential_id, row.credential_version, row.id);
-      }
-      const info = await provider.get(providerId);
-      if (info.state === "stopped") return stoppedSecrets(retired ? retained : await readState());
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const saved = retired ? undefined : await readState();
-        const generation =
-          provider.id === "modal" ? await modalGeneration(sql, providerId, actor) : String(row.lifecycle_generation);
-        const authJson = await captureNative(provider, providerId, {}, quiesced);
-        const observation = {
-          ...nativeSource,
-          authJson,
-          generation: `${provider.id}:${quiesced ? "quiesced:" : ""}${generation}`,
-          verifySource: verifySource(generation, retired),
-        };
-        if (retired) return state.retire(observation);
-        try {
-          await state.publish({ ...observation, expectedRevision: saved?.revision ?? 0 });
-          return (await readState())?.secrets ?? [];
-        } catch (error) {
-          if (error instanceof NativeObservationSuperseded && error.reason === "sandbox_generation") throw error;
-          if (!(error instanceof VaultError) || error.code !== "conflict" || attempt === 2) throw error;
-        }
-      }
-      throw new VaultError("conflict", "Native auth publication is not acknowledged.");
-    },
-    async captureAfterBoatPrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
-      try {
-        await this.capture(provider, providerId, caller);
-      } catch (error) {
-        recordNativeReadFailure("getPrompt", error);
-        if (!(error instanceof NativeObservationSuperseded || error instanceof StoppedBoatAuthProofMissing))
-          throw error;
-      }
-    },
-    async beforeStop(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
-      if ((await provider.get(providerId)).state === "stopped") return;
-      let secrets: string[];
-      try {
-        secrets = await this.capture(provider, providerId, caller);
-      } catch (error) {
-        // Stopping an unmanaged legacy writer is safe and is required before a
-        // fresh explicit import. Never release its output or hydrate its tokens.
-        if (error instanceof VaultError && error.code === "credential_binding_required") return;
-        throw error;
-      }
-      if (provider.id !== "boat" || secrets.length === 0) return;
-      if (broker && (await serverBackedSource(provider, providerId))) return;
-      await sshNativeAuthAdmission(provider, providerId, false);
-      await this.capture(provider, providerId, caller, true);
-    },
-    async beforePrompt(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
-      await this.beforeResume(provider, providerId, caller);
-      await subscription?.prepareTurn?.(provider, providerId, caller);
-      const secrets = await this.capture(provider, providerId, caller);
-      if (provider.id === "boat" && secrets.length > 0 && !(broker && (await serverBackedSource(provider, providerId))))
-        await sshNativeAuthAdmission(provider, providerId, true);
     },
     async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false) {
       const result = await sql.query<{
@@ -374,53 +92,6 @@ export function createModelAuthOwnership(
         await authorize(tx, actor, row.credential_id!, row.credential_version!);
       });
       if (broker) await broker.enroll(actor, row.credential_id, row.credential_version);
-    },
-    /** Called at the provider's actual pre-resume/restore boundary, not a racy preflight. */
-    async beforeResume(provider: Provider, providerId: string, caller: { userId: string; orgId: string }) {
-      const result = await sql.query<{
-        id: string;
-        owner_id: string;
-        org_id: string;
-        application_secret_tainted: boolean;
-      }>(
-        `select s.id,s.owner_id,s.org_id,s.application_secret_tainted from public.sandboxes s
-         where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2
-         and s.org_id=$3::uuid and s.deleted_at is null
-         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
-         and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
-              or s.owner_id=$4::uuid)`,
-        [provider.id, providerId, caller.orgId, caller.userId],
-      );
-      if (result.rows.length > 1) throw new VaultError("conflict", "Ambiguous native sandbox identity.");
-      const row = result.rows[0];
-      // No sandbox row means a golden builder, which never receives model auth.
-      if (row) {
-        if (row.application_secret_tainted)
-          throw new ProviderError({
-            provider: provider.id,
-            code: "unavailable",
-            message: "Application-secret exposed sandboxes cannot resume or restore retained disks.",
-            retryable: false,
-          });
-        try {
-          await this.assertSandbox({ userId: row.owner_id, orgId: row.org_id, role: "member" }, row.id, true);
-          await this.admitSandboxCapacity(row.id);
-        } catch (error) {
-          if (error instanceof VaultError)
-            throw new ProviderError({
-              provider: provider.id,
-              code:
-                error.code === "conflict" || error.code === "credential_busy"
-                  ? "conflict"
-                  : error.code === "not_found"
-                    ? "not_found"
-                    : "unavailable",
-              message: error.message,
-              retryable: false,
-            });
-          throw error;
-        }
-      }
     },
   };
 }

@@ -44,9 +44,9 @@ reports the base and head totals and the locations of new matches.
   `public-rest-routes.ts` and `control*.ts` under the server source directory.
 - `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test
   server TypeScript.
+- `native-path` requires zero provider-run references in the architecture metric’s scope.
 - `append-point` counts central control routes, server workers and mounts, core
   barrel exports, and CLI command table entries.
-- `native-path` tracks provider-run tokens in non-test TypeScript and TSX using the architecture metric’s scope and token list. The Armada runtime’s harness drivers are excluded.
 
 Run `bun scripts/ci/ratchets.ts [base]` locally. Without a base argument or
 `origin/main`, it prints working-tree totals. These counters are trend

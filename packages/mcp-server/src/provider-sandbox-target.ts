@@ -20,7 +20,7 @@ export function sandboxRowProviderTarget(row: PersistedSandboxTargetRow): Provid
   return {
     id: row.id,
     sandboxId: row.id,
-    ...(row.runtime_transport === "dialout" ? { runtimeTransport: "dialout" as const } : {}),
+    ...(row.runtime_transport === "dialout" ? { modalTransport: "dialout" as const } : {}),
     ...(row.boat_runtime ? { boatRuntime: true as const } : {}),
     provider: row.provider,
     orgId: row.org_id,

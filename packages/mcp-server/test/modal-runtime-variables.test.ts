@@ -149,7 +149,7 @@ async function fixture(
       },
     },
     modalRuntimeHostFor: async (target) => {
-      if (target.runtimeTransport !== "dialout") throw Error("Missing immutable transport selection");
+      if (target.modalTransport !== "dialout") throw Error("Missing immutable transport selection");
       return host;
     },
     modalRuntimeLaunch: {
@@ -220,7 +220,7 @@ async function fixture(
         connections: { async validate() {}, async bind() {} },
         provider: (actor, golden) =>
           options.modalRuntimeHostFor!(
-            { ...golden, runtimeTransport: "dialout" },
+            { ...golden, modalTransport: "dialout" },
             { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
           ),
       },
@@ -265,7 +265,7 @@ async function fixture(
     ...(provider === "modal" && entry === "explicit"
       ? {
           runtimeVersion: 1,
-          runtimeTransport: "dialout",
+          modalTransport: "dialout",
           provider,
           harness,
           idempotencyKey: `launch/${crypto.randomUUID()}`,
@@ -695,7 +695,7 @@ test("Boat launch returns the vault conflict after allocation and on replay", as
     ...f.definition,
     secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
   });
-  const changeVersionAfterFork = (host: ReturnType<typeof fakeBoat>["provider"]) => ({
+  const changeVersionAfterFork = (host: import("@armada/core").Provider) => ({
     ...host,
     async fork(request: Parameters<typeof host.fork>[0]) {
       const child = await host.fork(request);

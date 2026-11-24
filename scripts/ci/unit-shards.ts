@@ -7,7 +7,6 @@ import durations from "./test-durations.json";
 
 export const SHARD_COUNT = 6;
 const WORKERS_PER_SHARD = 2;
-const ARTIFACT_WRITER = "packages/mcp-server/test/github-boat.test.ts";
 const STATIC_RESERVE_SECONDS: Record<number, number> = durations.static;
 type WorkerObservation = { files: string[]; seconds: number };
 const workerKey = (files: readonly string[]) => [...files].sort().join(",");
@@ -72,7 +71,7 @@ export function planShards(
     const batch = ordered.find((batch) => batch.length > 1)!;
     ordered.push([batch.pop()!]);
   }
-  const wallSeconds = (batch: string[]) => weight(batch) / (batch.includes(ARTIFACT_WRITER) ? 1 : WORKERS_PER_SHARD);
+  const wallSeconds = (batch: string[]) => weight(batch) / WORKERS_PER_SHARD;
   ordered.sort((a, b) => wallSeconds(b) - wallSeconds(a) || workerKey(a).localeCompare(workerKey(b)));
   for (const [position, batch] of ordered.entries()) {
     const empty = shards.flatMap((shard, index) => (shard.length === 0 ? [index] : []));
@@ -160,16 +159,12 @@ if (import.meta.main) {
         if (batch.length === 1) console.log(`Completed ${batch[0]} in ${elapsed}s`);
         else console.log(`Completed SQL worker in ${elapsed}s: ${batch.join(", ")}`);
       };
-      // This existing test rebuilds a repository artifact read by other suites.
-      // Keep its write exclusive; new artifact fixtures must use temporary paths.
-      for (const batch of batches.filter((batch) => batch.includes(ARTIFACT_WRITER))) await run(batch);
-      const parallel = batches.filter((batch) => !batch.includes(ARTIFACT_WRITER));
       let next = 0;
       // Two isolated processes fit the measured SQL-worker memory envelope; never
       // fan out every file. This uses runner cores without requesting more jobs.
       await Promise.all(
         Array.from({ length: WORKERS_PER_SHARD }, async () => {
-          while (next < parallel.length) await run(parallel[next++]!);
+          while (next < batches.length) await run(batches[next++]!);
         }),
       );
     } finally {

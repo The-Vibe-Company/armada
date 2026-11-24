@@ -6,7 +6,6 @@ import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
   OUTPUT_COLLECTOR_PROBE_MARKER,
-  preserveWork,
   scanGoldenSandbox,
 } from "@armada/core/server";
 import { SandboxLastSnapshotStatusEnum, StopOperationStatusEnum } from "@boatdev/sdk";
@@ -453,139 +452,6 @@ describe("sandboxes", () => {
     expect(boat.requests[1]).toMatchObject({ method: "DELETE", path: `/api/v1/sandboxes/${ID}` });
     expect(boat.requests[1]?.headers.get("x-ascii-confirm-delete")).toBe(ID);
   });
-
-  test.each([
-    ["completed", {}, "completed"],
-    ["still processing", { status: "processing" }, "pending"],
-    ["wrong operation", { id: "del_other" }, null],
-    ["wrong kind", { kind: "snapshot" }, null],
-    ["wrong placement", { targetId: "bx_98765432" }, null],
-  ] as const)("observes an exact sandbox deletion: %s", async (_case, changes, status) => {
-    const boat = fakeBoat({
-      body: {
-        ok: true,
-        type: "deletion.operation",
-        operation: { id: "del_1", kind: "sandbox", targetId: ID, status: "completed", ...changes },
-      },
-    });
-    const receipt = boat.provider.observeSandboxDeletion({
-      sandboxId: ID,
-      generation: 6,
-      operationId: "del_1",
-      signal: new AbortController().signal,
-    });
-    if (status === null) await expect(receipt).rejects.toMatchObject({ code: "unknown" });
-    else await expect(receipt).resolves.toEqual({ status });
-    expect(boat.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "GET", path: "/api/v1/deletion-operations/del_1" },
-    ]);
-  });
-});
-
-describe("agent turns", () => {
-  const queued = (conversationId: string) => ({
-    status: 202,
-    body: {
-      ok: true,
-      type: "prompt.queued",
-      id: ID,
-      promptId: "prompt_1",
-      conversationId,
-      status: "queued",
-      provider: "claude-code",
-      promptRun: { id: "prompt_1", promptId: "prompt_1", sandboxId: ID, status: "queued", done: false },
-    },
-  });
-
-  test("a prompt without a conversation opens a new one on the right harness, with its options", async () => {
-    const boat = fakeBoat(queued("conv_new"));
-    const receipt = await boat.provider.prompt({
-      sandboxId: ID,
-      harness: "claude",
-      text: "Fix the tests",
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      fast: true,
-    });
-    expect(receipt).toEqual({ promptId: "prompt_1", conversationId: "conv_new", status: "queued" });
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/prompt` });
-    expect(boat.requests[0]?.body).toEqual({
-      provider: "claude-code",
-      prompt: "Fix the tests",
-      new: true,
-      model: "claude-sonnet-5",
-      reasoningEffort: "high",
-      fast: true,
-    });
-  });
-
-  test("a prompt with a conversation continues it, and codex maps to boat's codex", async () => {
-    const boat = fakeBoat(queued("conv_1"));
-    await boat.provider.prompt({ sandboxId: ID, harness: "codex", text: "Go on", conversationId: "conv_1" });
-    expect(boat.requests[0]?.body).toEqual({ provider: "codex", prompt: "Go on", conversationId: "conv_1" });
-  });
-
-  test("Boat refuses known unhonoured Fable selection before any provider work", async () => {
-    const boat = fakeBoat();
-    await expect(
-      boat.provider.prompt({ sandboxId: ID, harness: "claude", model: "claude-fable-5-2", text: "Go" }),
-    ).rejects.toMatchObject({ code: "invalid_request", message: expect.stringContaining("model_selection_mismatch") });
-    expect(boat.requests).toHaveLength(0);
-  });
-
-  test("an empty prompt is refused before any request", async () => {
-    const boat = fakeBoat();
-    await expect(boat.provider.prompt({ sandboxId: ID, harness: "claude", text: "  " })).rejects.toMatchObject({
-      code: "invalid_request",
-    });
-    expect(boat.requests).toHaveLength(0);
-  });
-
-  test("getPrompt reads the run's status and whether it is done", async () => {
-    const run = { id: "p", promptId: "p", sandboxId: ID, done: true, conversationId: "conv_1" };
-    const boat = fakeBoat(
-      { body: { ok: true, type: "prompt.run", id: ID, promptRun: { ...run, status: "interrupted" } } },
-      { body: { ok: true, type: "prompt.run", id: ID, promptRun: { ...run, status: "teleporting" } } },
-    );
-    expect(await boat.provider.getPrompt({ sandboxId: ID, promptId: "p" })).toEqual({
-      promptId: "p",
-      status: "interrupted",
-      done: true,
-      conversationId: "conv_1",
-    });
-    expect(boat.requests[0]).toMatchObject({ method: "GET", path: `/api/v1/sandboxes/${ID}/prompts/p` });
-    await expect(boat.provider.getPrompt({ sandboxId: ID, promptId: "p" })).rejects.toMatchObject({ code: "unknown" });
-  });
-
-  test("steer names its conversation and returns how boat delivered it", async () => {
-    const boat = fakeBoat({
-      body: {
-        ok: true,
-        type: "prompt.steered",
-        id: ID,
-        conversationId: "conv_1",
-        promptId: "prompt_1",
-        mode: "native",
-      },
-    });
-    expect(await boat.provider.steer({ sandboxId: ID, text: "Skip e2e", conversationId: "conv_1" })).toEqual({
-      conversationId: "conv_1",
-      promptId: "prompt_1",
-      mode: "native",
-    });
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/steer` });
-    expect(boat.requests[0]?.query.get("conversation")).toBe("conv_1");
-    expect(boat.requests[0]?.body).toEqual({ message: "Skip e2e", conversation: "conv_1" });
-  });
-
-  test("interrupt scopes to a conversation when one is named, else stops everything", async () => {
-    const boat = fakeBoat({ body: { ok: true, type: "x", id: ID, status: "interrupted" } }, { body: { ok: true } });
-    await boat.provider.interrupt({ sandboxId: ID, conversationId: "conv_1" });
-    await boat.provider.interrupt({ sandboxId: ID });
-    expect(boat.requests[0]).toMatchObject({ method: "POST", path: `/api/v1/sandboxes/${ID}/interrupt` });
-    expect(boat.requests[0]?.query.get("conversation")).toBe("conv_1");
-    expect(boat.requests[1]?.query.has("conversation")).toBe(false);
-  });
 });
 
 describe("exec", () => {
@@ -669,7 +535,7 @@ describe("exec", () => {
 });
 
 test("Claude steers natively, Codex by restarting its turn, and neither can ask for approval", () => {
-  expect(BOAT_CAPABILITIES.claude).toMatchObject({ steer: "native", approvals: false, resume: true });
+  expect(BOAT_CAPABILITIES.claude).toMatchObject({ steer: "in-place", approvals: false, resume: true });
   expect(BOAT_CAPABILITIES.codex).toMatchObject({ steer: "restart", approvals: false, resume: true });
 });
 
@@ -712,109 +578,6 @@ test("the real golden scan passes Boat's command timeout validation", async () =
   });
   await scanGoldenSandbox(provider, ID);
   expect(calls).toBe(1);
-});
-
-test("native bootstrap follows actual resume readiness and precedes prompt; I/O failures forbid turns and snapshots", async () => {
-  for (const fail of [false, true]) {
-    const events: string[] = [];
-    let gets = 0;
-    const provider = createBoatProvider({
-      apiKey: KEY,
-      sleep: async () => {},
-      fetch: (async (input, init) => {
-        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (init?.method === "GET") {
-          const state = ["archived", "provisioning", "ready"][gets++] ?? "ready";
-          events.push(state);
-          return Response.json({ sandbox: state === "archived" ? retainedSandbox() : sandbox({ state }) });
-        }
-        if (path.endsWith("/resume")) {
-          events.push("resume");
-          return Response.json({ ok: true });
-        }
-        if (path.endsWith("/prompt")) {
-          events.push("prompt");
-          return Response.json({ promptId: "p", conversationId: "c", status: "queued" });
-        }
-        throw Error("Unexpected provider HTTP operation");
-      }) as typeof fetch,
-      beforeResume: async () => {
-        events.push("fence");
-        return true;
-      },
-      beforePrompt: async () => {
-        events.push("configure");
-        if (fail) throw Error("bootstrap I/O failed");
-      },
-      beforeSnapshot: async () => {
-        throw Error("snapshot scrub I/O failed");
-      },
-    });
-    const turn = provider.prompt({
-      sandboxId: ID,
-      harness: "codex",
-      text: "work",
-      model: "gpt-6.1-sol",
-      reasoningEffort: "medium",
-      onResumeStage: async (stage) => {
-        events.push(stage);
-      },
-    });
-    if (fail) await expect(turn).rejects.toThrow("bootstrap I/O failed");
-    else await turn;
-    expect(events).toEqual([
-      "archived",
-      "accepted",
-      "fence",
-      "resume",
-      "provider_claimed",
-      "provisioning",
-      "ready",
-      "machine_started",
-      "configure",
-      ...(fail ? [] : ["harness_ready", "prompt"]),
-    ]);
-    await expect(provider.snapshot({ sandboxId: ID, name: "safe" })).rejects.toThrow("snapshot scrub I/O failed");
-  }
-});
-
-test.each([true, false])(
-  "native resume requires verified retention before checking the owner fence (%s)",
-  async (usable) => {
-    const methods: string[] = [];
-    const provider = createBoatProvider({
-      apiKey: KEY,
-      beforeResume: async () => {
-        throw Error("resume fence denied");
-      },
-      fetch: (async (_input, init) => {
-        methods.push(init?.method ?? "GET");
-        return Response.json({ sandbox: retainedSandbox({ snapshotAvailable: usable }) });
-      }) as typeof fetch,
-    });
-    await expect(provider.prompt({ sandboxId: ID, harness: "codex", text: "work" })).rejects.toThrow(
-      usable ? "resume fence denied" : "Boat retained data has not been verified.",
-    );
-    expect(methods).toEqual(["GET"]);
-  },
-);
-
-test.each([true, false])("native private state ACK precedes Boat stop API (%s)", async (acknowledged) => {
-  const order: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    beforeStop: async () => {
-      order.push("private-state");
-      if (!acknowledged) throw Error("native state publication unknown");
-    },
-    fetch: (async () => {
-      order.push("stop");
-      return Response.json({ ok: true, type: "sandbox.stopped" });
-    }) as unknown as typeof fetch,
-  });
-  if (acknowledged) await provider.stop({ sandboxId: ID });
-  else await expect(provider.stop({ sandboxId: ID })).rejects.toThrow("native state publication unknown");
-  expect(order).toEqual(acknowledged ? ["private-state", "stop"] : ["private-state"]);
 });
 
 test("resource collection uses bounded fixed file reads, boot fencing and no commands or telemetry writes", async () => {
@@ -860,31 +623,6 @@ test("resource collection uses bounded fixed file reads, boot fencing and no com
   expect(stopped.requests).toHaveLength(1);
 });
 
-// This is the SDK wire contract, distinct from the SQL lifecycle owner test.
-test("managed best-effort activation uses ordinary VM resume and conversation metadata without inference", async () => {
-  const boat = fakeBoat(
-    { body: { ok: true } },
-    { body: { ok: true, sandbox: sandbox({ state: "running" }) } },
-    {
-      body: {
-        ok: true,
-        conversations: [
-          { id: "kept", running: false, lastHarness: "codex", lastModel: "model", lastPromptPreview: "private prompt" },
-        ],
-      },
-    },
-  );
-  await boat.provider.resumeBestEffort(ID);
-  expect(await boat.provider.conversations(ID)).toEqual([
-    { id: "kept", running: false, lastHarness: "codex", lastModel: "model" },
-  ]);
-  expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
-    ["POST", `/api/v1/sandboxes/${ID}/resume`],
-    ["GET", `/api/v1/sandboxes/${ID}`],
-    ["GET", `/api/v1/sandboxes/${ID}/conversations`],
-  ]);
-});
-
 // Boat returns acceptance before archival; neither acceptance nor a different
 // operation may be presented as successful managed stop.
 test.each(["completed", "superseded", "wrong-operation"])(
@@ -916,135 +654,6 @@ test.each(["completed", "superseded", "wrong-operation"])(
     ]);
   },
 );
-
-// Terminal retirement must remain cloud-only when native-auth preservation is
-// unavailable; the managed owner must persist its activation/output fences first.
-test("terminal Boat archival does not require the failing guest preservation hook", async () => {
-  let captures = 0;
-  const requests: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    beforeStop: async () => {
-      captures++;
-      throw Error("native SSH unavailable");
-    },
-    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
-      return Response.json(
-        { ok: true, id: ID, stop: { id: "retirement-stop", status: "completed" } },
-        { status: init?.method === "POST" ? 202 : 200 },
-      );
-    }) as typeof fetch,
-  });
-  await expect(provider.stopBestEffort(ID)).rejects.toThrow("native SSH unavailable");
-  expect(requests).toEqual([]);
-  await provider.retireBestEffort?.(ID);
-  expect(captures).toBe(1);
-  expect(requests).toEqual([`POST /api/v1/sandboxes/${ID}/stop`, `GET /api/v1/sandboxes/${ID}/stops/retirement-stop`]);
-});
-
-test("prompt status cancellation reaches HTTP and suppresses late native capture", async () => {
-  const controller = new AbortController();
-  let propagated = false,
-    captures = 0;
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    afterPrompt: async () => {
-      captures++;
-    },
-    fetch: (async (_input: unknown, init?: RequestInit) => {
-      controller.abort();
-      propagated = init?.signal?.aborted === true;
-      return Response.json({ ok: true, promptRun: { promptId: "p", status: "finished", done: true } });
-    }) as typeof fetch,
-  });
-  await expect(provider.getPrompt({ sandboxId: ID, promptId: "p", signal: controller.signal })).rejects.toThrow();
-  expect(propagated).toBe(true);
-  expect(captures).toBe(0);
-});
-
-// The real SDK must not send an idle interrupt; active turns must still settle
-// before local work capture can begin. No collector mocking at this boundary.
-test.each(["idle", "settled", "pending"])("work capture quiescence handles %s Boat turns", async (state) => {
-  const conversations = (running: boolean) => ({ body: { ok: true, conversations: [{ id: "review", running }] } });
-  const boat = fakeBoat(
-    conversations(state !== "idle"),
-    ...(state === "idle" ? [] : [{ body: { ok: true } }, conversations(state === "pending")]),
-  );
-  if (!boat.provider.quiesce) throw new Error("Missing Boat quiescence support");
-  const result = boat.provider.quiesce({ sandboxId: ID });
-  if (state === "pending") await expect(result).rejects.toMatchObject({ code: "sandbox_not_ready" });
-  else await result;
-  expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
-    ["GET", `/api/v1/sandboxes/${ID}/conversations`],
-    ...(state === "idle"
-      ? []
-      : [
-          ["POST", `/api/v1/sandboxes/${ID}/interrupt`],
-          ["GET", `/api/v1/sandboxes/${ID}/conversations`],
-        ]),
-  ]);
-});
-
-for (const phase of ["before_interrupt", "after_interrupt"] as const) {
-  for (const malformed of [{ id: "review" }, { running: true }, { id: "review", running: "false" }]) {
-    test(`quiescence refuses unknown conversation activity (${phase}, ${JSON.stringify(malformed)})`, async () => {
-      const active = { body: { ok: true, conversations: [{ id: "review", running: true }] } };
-      const invalid = { body: { ok: true, conversations: [malformed] } };
-      const settled = { body: { ok: true, conversations: [{ id: "review", running: false }] } };
-      const boat =
-        phase === "before_interrupt"
-          ? fakeBoat(invalid, { body: { ok: true } }, settled)
-          : fakeBoat(active, { body: { ok: true } }, invalid);
-      if (!boat.provider.quiesce) throw Error("Missing Boat quiescence support");
-      await expect(boat.provider.quiesce({ sandboxId: ID, conversationId: "review" })).rejects.toMatchObject({
-        provider: "boat",
-        code: "unknown",
-        retryable: false,
-      });
-      expect(boat.requests.map(({ method }) => method)).toEqual(
-        phase === "before_interrupt" ? ["GET"] : ["GET", "POST", "GET"],
-      );
-    });
-  }
-}
-
-// The SDK boundary owns refusal classification/retry safety. Capture must finish
-// before stop, and a 409 refusal is safe to retry unlike an ambiguous 502.
-test("capture retries before physical stop", async () => {
-  const ready = { body: { ok: true, sandbox: sandbox({ state: "ready" }) } };
-  const boat = fakeBoat(
-    { body: { ok: true, conversations: [] } },
-    ready,
-    errorBody(409, "sandbox_not_ready", "Not ready"),
-    ready,
-    {
-      body: {
-        ok: true,
-        type: "command.finished",
-        success: true,
-        exitCode: 0,
-        stdout: '{"status":"clean"}',
-        stderr: "",
-        timedOut: false,
-      },
-    },
-    { body: { ok: true } },
-  );
-  if (!boat.provider.quiesce) throw new Error("Missing quiescence");
-  await boat.provider.quiesce({ sandboxId: ID });
-  expect(await preserveWork(boat.provider, ID)).toEqual({ status: "clean" });
-  await boat.provider.stop({ sandboxId: ID });
-  expect(boat.requests.map(({ method, path }) => [method, path.split("/").at(-1)])).toEqual([
-    ["GET", "conversations"],
-    ["GET", ID],
-    ["POST", "commands"],
-    ["GET", ID],
-    ["POST", "commands"],
-    ["POST", "stop"],
-  ]);
-});
 
 test("starting compute waits for readiness before a command", async () => {
   const boat = fakeBoat(
@@ -1237,17 +846,6 @@ test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
     }
   },
 );
-
-// Unsupported harness admission must not wake compute or run a native bootstrap on Boat.
-test("OpenCode is not advertised or dispatched through Boat's native API", async () => {
-  const boat = fakeBoat();
-  expect(boat.provider.harnesses).not.toContain("opencode");
-  expect(boat.provider.capabilities.opencode).toBeUndefined();
-  await expect(boat.provider.prompt({ sandboxId: ID, harness: "opencode", text: "hello" })).rejects.toMatchObject({
-    code: "invalid_request",
-  });
-  expect(boat.requests).toHaveLength(0);
-});
 
 test("runtime activation resumes compute with explicit lifetime and no account environment or native inference", async () => {
   const boat = fakeBoat({ body: { ok: true } }, { body: { ok: true, sandbox: sandbox({ state: "running" }) } });

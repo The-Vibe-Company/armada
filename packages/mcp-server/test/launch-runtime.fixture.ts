@@ -1,6 +1,6 @@
 import type { LaunchOptions, Sql } from "@armada/core/server";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY, type FakeBoat } from "./support.ts";
 
 export function enrolledLaunchPolicy(sql: Sql) {
   const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
@@ -18,7 +18,7 @@ export function enrolledLaunchPolicy(sql: Sql) {
         installSkills: async () => {
           throw Error("Unexpected skill installation");
         },
-        prompt: (request) => host.prompt(request),
+        prompt: (request) => (host as FakeBoat["provider"]).prompt(request),
       };
     },
   } satisfies NonNullable<LaunchOptions["runtime"]>;

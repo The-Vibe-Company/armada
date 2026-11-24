@@ -415,7 +415,7 @@ export const sandboxOperations = {
       id: z.string(),
       promptId: z.string(),
       conversationId: z.string(),
-      delivery: z.enum(["native", "restart"]),
+      delivery: z.enum(["in-place", "restart"]),
       mode: z.string().nullable(),
     },
   }),

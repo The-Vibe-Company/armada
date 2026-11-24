@@ -123,7 +123,7 @@ async function launchGolden(
   const { idempotencyKey: _key, ...request } = body;
   const payload = {
     surface: "control",
-    route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "native",
+    route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "ordinary",
     request,
     goldenId: golden.id,
   };
@@ -425,7 +425,7 @@ export const launchRoutes = defineRoutes("launch", {
         provider,
         harness,
         runtimeVersion: _runtimeVersion,
-        runtimeTransport: _runtimeTransport,
+        modalTransport: _runtimeTransport,
         org: _org,
         idempotencyKey,
         ...input
@@ -470,7 +470,7 @@ export const launchRoutes = defineRoutes("launch", {
     }
     scopedOrg(caller, launch.org);
     if ("runtimeVersion" in launch) {
-      if ("runtimeTransport" in launch) {
+      if ("modalTransport" in launch) {
         if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
         if (launch.prompt === undefined && !options.runtimeSend)
           throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");

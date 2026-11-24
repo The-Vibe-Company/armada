@@ -1,4 +1,4 @@
-import { API_FAILURE_HELP, describeNativeFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
+import { API_FAILURE_HELP, describePromptFailure, planLimitFromMessage, planLimitMessage } from "@armada/core";
 
 export type FailureHelp = {
   title: string;
@@ -70,5 +70,5 @@ export function describeFailure(reason: string | null | undefined): FailureHelp 
       title: limit.code === "rate_limited" ? "Rate limit reached" : "Plan limit reached",
       hint: planLimitMessage(limit),
     };
-  return describeNativeFailure(reason) ?? HELP[reason] ?? null;
+  return describePromptFailure(reason) ?? HELP[reason] ?? null;
 }

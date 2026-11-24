@@ -307,6 +307,8 @@ sends keep the model and reasoning effort selected at launch. When Armada
 generates the request ID, it returns it as `requestId`. If that answer is lost,
 the send cannot be replayed, so send your own.
 
+Steer receipts report `in-place` or `restart`, depending on the runtime harness.
+
 Supply a stable request UUID for sends, as `request_id` on backend requests
 and `requestId` on viewer requests. The account turn queue deduplicates by
 request ID for sends it admits, including native sends with a pinned model

@@ -1,5 +1,7 @@
 # GitHub token lifecycle and incident #879
 
+> Historical context for the retired provider-run GitHub path. Enrolled sandboxes receive GitHub configuration through the Armada runtime.
+
 ## Cause
 
 [GitHub documents](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)

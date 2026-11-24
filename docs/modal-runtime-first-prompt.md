@@ -47,7 +47,7 @@ The script preflights `launch/options.modalRuntime {version:1,enabled:true,follo
 before allocating. With `--resume`, it also requires `resumeVersion:1`; an old
 server refuses before any allocation. Omit `--resume` only to run the original
 first-answer/follow-up/checkpoint/stop subset. It sends one `sandbox/launch` request with
-`runtimeVersion:1`, `runtimeTransport:"dialout"`, `provider:"modal"`,
+`runtimeVersion:1`, `modalTransport:"dialout"`, `provider:"modal"`,
 `harness:"codex"` and a 900-second TTL. Without `--skills`, skills are empty
 and defaults are skipped. With `--skills`, both fields are omitted so the normal
 server policy resolves defaults. Connections are empty unless `--mcp` explicitly

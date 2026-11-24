@@ -73,14 +73,11 @@ test("runtime sandbox adapter exposes bound reads/compute cleanup, never host ag
   await expect(runtime.get("other")).rejects.toMatchObject({ code: "not_found" });
   await expect(runtime.events({ sandboxId: "other" })).rejects.toMatchObject({ code: "not_found" });
   for (const attempt of [
-    () => runtime.prompt({ sandboxId: "physical", harness: "codex", text: "must not send" }),
     () => runtime.exec({ sandboxId: "physical", command: "must not exec" }),
     () => runtime.interrupt({ sandboxId: "physical" }),
-    () => runtime.quiesce?.({ sandboxId: "physical" }),
     () => runtime.sshKey({ sandboxId: "physical", key: "must not register" }),
   ])
     await expect(attempt()).rejects.toMatchObject({ code: "invalid_request", retryable: false });
-  expect(runtime.configureMcp).toBeUndefined();
   expect(calls).toHaveLength(5);
   // Declared outputs are a fixed host read, bound to this sandbox, so enrolled runtimes publish them.
   await runtime.readOutputs?.({ sandboxId: "physical" });
