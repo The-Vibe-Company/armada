@@ -1233,7 +1233,9 @@ test.each(["rejects", "returns"] as const)(
         ])
       ).rows,
     ).toEqual([{ state: "admitted" }]);
-    expect(f.native.filter((effect) => effect.requestId === `docker_prompt_${requestId}`)).toHaveLength(1);
+    expect(
+      (f.native as RunnerRequest[]).filter((effect) => effect.requestId === `docker_prompt_${requestId}`),
+    ).toHaveLength(1);
   },
 );
 
