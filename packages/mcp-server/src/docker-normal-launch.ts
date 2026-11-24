@@ -1032,6 +1032,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
+        if (reservationDatabaseDiagnostic(error).sqlstate === "55P03") throw new DockerMachinePending("pending");
         if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
         else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
         else if (

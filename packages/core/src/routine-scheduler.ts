@@ -178,7 +178,7 @@ export function createRoutineScheduler(sql: Sql, runtime: RoutineSchedulerRuntim
             // A preflight can outlive its lease while another replica concludes that no claim
             // exists. Fence that stale caller at the provider boundary, not just history publication.
             const current = await tx.query(
-              "select id from public.routine_runs where id=$1 and (state='admitted' or ($3 and state='reconciling')) and lease_id=$2 for update",
+              "select id from public.routine_runs where id=$1 and (state='admitted' or ($3 and state='reconciling')) and lease_id=$2 and lease_until>clock_timestamp() for update",
               [run.id, run.lease_id, Boolean(unallocatedDocker)],
             );
             if (!current.rows.length) throw Error("Routine launch admission expired.");

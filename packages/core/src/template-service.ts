@@ -71,7 +71,7 @@ export interface TemplateRuntime {
       scheduled: boolean;
     },
   ): Promise<DockerLaunchResult>;
-  beforeDockerReserve?(tx: Sql, sandboxId: string): Promise<void>;
+  fenceDockerAdmission?(tx: Sql, sandboxId?: string): Promise<void>;
 }
 type Header = {
   id: string;
@@ -739,7 +739,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             scheduled: runtime!.scheduled === true,
             beforeReserve: async (tx) => {
               await revalidateInTransaction(tx, actor, org, m);
-              if (runtime!.beforeDockerReserve) await runtime!.beforeDockerReserve(tx, row.sandbox_id);
+              if (runtime!.fenceDockerAdmission) await runtime!.fenceDockerAdmission(tx, row.sandbox_id);
               else await runtime!.options?.beforeFork?.(row.sandbox_id);
               const changed = await tx.query(
                 `update public.template_launch_requests set state='allocating',updated_at=now()
@@ -763,11 +763,14 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
             error instanceof DockerTemplateAdmissionRefused || error instanceof VaultError ? error.message : undefined,
           manifest: m,
         };
-        const changed = await sql.query(
-          `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
-           where id=$1 and state='claimed' returning id`,
-          [row.id, reason, JSON.stringify(failure)],
-        );
+        const changed = await transaction(async (tx) => {
+          await runtime!.fenceDockerAdmission?.(tx);
+          return tx.query(
+            `update public.template_launch_requests set state='failed',reason=$2,result=$3::jsonb,updated_at=now()
+             where id=$1 and state='claimed' returning id`,
+            [row.id, reason, JSON.stringify(failure)],
+          );
+        });
         if (changed.rows.length) return failure;
         const current = (
           await sql.query<RequestRow>("select * from public.template_launch_requests where id=$1", [row.id])

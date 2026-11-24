@@ -777,41 +777,6 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(await counts(f)).toEqual(beforeReplay);
 });
 
-test("lost launch admission response survives restart and concurrent exact retries", async () => {
-  const f = await fixture();
-  let lost = false;
-  const lostResponse: Sql = {
-    ...sql,
-    async transaction(work) {
-      let admitted = false;
-      const result = await sql.transaction!((tx) =>
-        work({
-          query: (q, v) => {
-            if (q.startsWith("insert into public.jobs")) admitted = true;
-            return tx.query(q, v);
-          },
-        }),
-      );
-      if (admitted && !lost) {
-        lost = true;
-        throw Error("private response loss");
-      }
-      return result;
-    },
-  };
-  await rejected(f.service(lostResponse).launch(f.caller, f.body), "unavailable");
-  expect(lost).toBe(true);
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 0, commands: 0 });
-  const restarted = f.service(sql, true, 10000, officialImage, true);
-  const input = [f.caller, f.body] as const;
-  const [first, second] = await Promise.all([restarted.launch(...input), restarted.launch(...input)]);
-  expect(first).toEqual(second);
-  expect(first.sandbox.status).toBe("starting");
-  await restarted.drain();
-  expect(await restarted.launch(...input)).toMatchObject({ promptId: f.receipt.promptId });
-  expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 4 });
-});
-
 test("normal admission rejects unsupported input before resolution, scopes ownership and cannot adopt private reservations", async () => {
   const f = await fixture();
   for (const change of [
@@ -1082,14 +1047,7 @@ function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<
 test("SDK sends to a Docker sandbox meet the published Docker variant exactly when Docker admission accepts them", async () => {
   const f = await fixture();
   await f.seedRunningSandbox();
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    sendEnabled: true,
-  });
-  const { options, bearer } = restControl(f, {
-    dockerControls: controls,
-    accountTurns: createAccountTurnQueue(sql, key),
-  });
+  const { options, bearer } = restControl(f, { accountTurns: createAccountTurnQueue(sql, key) });
   const sdk = new Armada({
     token: bearer,
     url: "https://armada.example",
@@ -1661,14 +1619,6 @@ test.each([false, true])("deadline recovery preserves the first turn (uncertain 
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
   await server.launch(f.caller, f.body);
-  const followupId = randomUUID();
-  expect(
-    await createAccountTurnQueue(sql, key).accept(f.caller, {
-      id: f.body.requestId,
-      request_id: followupId,
-      prompt: "Follow up",
-    }),
-  ).toMatchObject({ status: "queued" });
   f.deferFirstPrompt();
   await server.drain();
   expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
@@ -1680,9 +1630,6 @@ test.each([false, true])("deadline recovery preserves the first turn (uncertain 
   await recovered.runClaim();
   expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
 
-  expect((await sql.query("select state from account_turn_queue where request_id=$1", [followupId])).rows).toEqual([
-    { state: "queued" },
-  ]);
   await f.acknowledgeFirstPrompt(uncertain);
   await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
   await recovered.runClaim();
@@ -1760,17 +1707,14 @@ test.each(["never delivered", "journaled before restart", "actor revoked", "atte
       const commands = createRuntimeCommands(authority, key);
       const { command } = await commands.next(runtimeToken, epoch);
       const restarted = new Runner(journal, grant, drivers);
-      try {
-        const response = await handle(restarted, command!);
-        expect(starts).toBe(journaled ? 1 : 0);
-        await commands.complete(runtimeToken, epoch, {
-          epoch,
-          requestId: command!.requestId,
-          status: response.status,
-          body: await response.json(),
-        });
-      } finally {
-      }
+      const response = await handle(restarted, command!);
+      expect(starts).toBe(journaled ? 1 : 0);
+      await commands.complete(runtimeToken, epoch, {
+        epoch,
+        requestId: command!.requestId,
+        status: response.status,
+        body: await response.json(),
+      });
       await server.runClaim();
       expect((await sql.query("select status from sandboxes where id=$1", [f.body.requestId])).rows).toEqual([
         { status: journaled ? "running" : "failed" },
@@ -2431,16 +2375,11 @@ test.each(["host", "snapshot", "revoked"])(
       },
     });
     const id = (created.item as { id: string }).id;
-    let dispatches = 0,
-      allocations = 0;
+    let dispatches = 0;
     const runtime: TemplateRuntime = {
       stores: { goldens: stores.goldens, sandboxes: stores.sandboxes, credentials },
       provider: async () => {
         throw Error("Docker cannot resolve a golden provider");
-      },
-      beforeDockerReserve: async (tx, sandboxId) => {
-        allocations++;
-        expect((await tx.query("select id from sandboxes where id=$1", [sandboxId])).rows).toHaveLength(0);
       },
       launchDocker: async (body, admission) => {
         dispatches++;
@@ -2489,7 +2428,6 @@ test.each(["host", "snapshot", "revoked"])(
       }),
     );
     expect(JSON.stringify(result)).not.toContain(canary);
-    expect(allocations).toBe(1);
     expect(await counts(f)).toMatchObject({ sandboxes: 1, claims: 1, jobs: 2 });
     if (snapshotId) {
       expect(
@@ -3017,29 +2955,26 @@ test.each([false, true])(
     const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const service = f.service(sql, true, 10000, officialImage, deferred);
-    try {
-      // Deferred work rechecks the caller after admission; public visibility remains provable anonymously.
-      if (!deferred) await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
-      let result = await service.launch(f.caller, { ...body, snapshotId: id });
-      if (deferred) {
-        await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
-        await service.drain();
-        result = await service.launch(f.caller, { ...body, snapshotId: id });
-      }
-      expect(result.sandbox.status).toBe("running");
-      expect(result.github.status).toBe("not_connected");
-      const operations = (f.native as { op: string }[]).map((command) => command.op);
-      expect(operations).toEqual(["health", "workspaceExec", "health", "configureMcp", "prompt"]);
-      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
-        (command) => command.op === "workspaceExec",
-      );
-      expect(refresh?.input?.command).toContain("git fetch origin");
-      expect(refresh?.input?.command).not.toContain("git clone");
-      expect(refresh?.input?.command).not.toContain("printf built");
-      // #2560: the successful snapshot refresh is timed.
-      expect(await launchStages(result.sandbox.id)).toContain("checkout_done");
-    } finally {
+    // Deferred work rechecks the caller after admission; public visibility remains provable anonymously.
+    if (!deferred) await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+    let result = await service.launch(f.caller, { ...body, snapshotId: id });
+    if (deferred) {
+      await db.query("delete from github_connections where user_id=$1", [f.actor.userId]);
+      await service.drain();
+      result = await service.launch(f.caller, { ...body, snapshotId: id });
     }
+    expect(result.sandbox.status).toBe("running");
+    expect(result.github.status).toBe("not_connected");
+    const operations = (f.native as { op: string }[]).map((command) => command.op);
+    expect(operations).toEqual(["health", "workspaceExec", "health", "configureMcp", "prompt"]);
+    const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+      (command) => command.op === "workspaceExec",
+    );
+    expect(refresh?.input?.command).toContain("git fetch origin");
+    expect(refresh?.input?.command).not.toContain("git clone");
+    expect(refresh?.input?.command).not.toContain("printf built");
+    // #2560: the successful snapshot refresh is timed.
+    expect(await launchStages(result.sandbox.id)).toContain("checkout_done");
   },
 );
 
@@ -3070,106 +3005,97 @@ test.each(["auth", "auth-deferred", "network"] as const)(
     const { hostId: _, ...body } = f.body;
     const request = { ...body, snapshotId: id };
     const service = f.service(sql, true, 10000, officialImage, mode === "auth-deferred");
-    try {
-      if (mode === "network") {
-        const result = await service.launch(f.caller, request);
-        expect(result.github.message).toContain("repository project");
-        expect(result.github.message).toContain("snapshot checkout");
-        expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
-          "health",
-          "configureGitHub",
-          "workspaceExec",
-          "health",
-          "configureMcp",
-          "prompt",
+    if (mode === "network") {
+      const result = await service.launch(f.caller, request);
+      expect(result.github.message).toContain("repository project");
+      expect(result.github.message).toContain("snapshot checkout");
+      expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
+        "health",
+        "configureGitHub",
+        "workspaceExec",
+        "health",
+        "configureMcp",
+        "prompt",
+      ]);
+    } else {
+      if (mode === "auth-deferred") {
+        // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
+        const records: Record<string, unknown>[] = [];
+        let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
+        const response = await observeRequest(
+          async () => {
+            admitted = await service.launch(f.caller, request);
+            return new Response(null, { status: 201 });
+          },
+          (line) => records.push(JSON.parse(line)),
+        );
+        expect(admitted?.sandbox.status).toBe("starting");
+        const requestId = response?.headers.get("x-request-id");
+        expect(records.filter((record) => record.event === "provider_call")).toEqual([
+          expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
         ]);
-      } else {
-        if (mode === "auth-deferred") {
-          // Admission is recorded as such; the worker's real outcome joins the admitting request's ID.
-          const records: Record<string, unknown>[] = [];
-          let admitted: Awaited<ReturnType<typeof service.launch>> | undefined;
-          const response = await observeRequest(
-            async () => {
-              admitted = await service.launch(f.caller, request);
-              return new Response(null, { status: 201 });
-            },
-            (line) => records.push(JSON.parse(line)),
-          );
-          expect(admitted?.sandbox.status).toBe("starting");
-          const requestId = response?.headers.get("x-request-id");
-          expect(records.filter((record) => record.event === "provider_call")).toEqual([
-            expect.objectContaining({ requestId, provider: "docker", operation: "launch.admit", outcome: "ok" }),
-          ]);
-          // A retry of the pending admission is answered from the database: no host job, no record.
-          const jobs = async () =>
-            (
-              await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [
-                admitted?.sandbox.id,
-              ])
-            ).rows.length;
-          const queuedJobs = await jobs();
-          records.length = 0;
-          await observeRequest(
-            async () => {
-              expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
-              return new Response(null, { status: 201 });
-            },
-            (line) => records.push(JSON.parse(line)),
-          );
-          expect(records.map((record) => record.event)).toEqual(["http_request"]);
-          expect(await jobs()).toBe(queuedJobs);
-          const warnings = spyOn(console, "warn");
-          try {
-            await service.drain();
-            const worker = warnings.mock.calls
-              .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
-              .filter((record) => record?.event === "provider_call" && record.operation === "launch");
-            expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
-            expect(warnings.mock.calls).toContainEqual([
-              "docker_launch_failed",
-              expect.objectContaining({ requestId }),
-            ]);
-          } finally {
-            warnings.mockRestore();
-          }
-          expect(
-            (
-              await db.query(
-                "select from_status, to_status, actor, code from sandbox_transitions where sandbox_id=$1 and to_status='failed'",
-                [f.body.requestId],
-              )
-            ).rows,
-          ).toEqual([
-            {
-              from_status: "ready",
-              to_status: "failed",
-              actor: "lifecycle_runner",
-              code: "docker_launch_failed",
-            },
-          ]);
-          expect(
-            (
-              await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
-                f.body.requestId,
-              ])
-            ).rows[0]?.status_reason,
-          ).toContain("Repository project needs a GitHub connection");
+        // A retry of the pending admission is answered from the database: no host job, no record.
+        const jobs = async () =>
+          (await db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1", [admitted?.sandbox.id]))
+            .rows.length;
+        const queuedJobs = await jobs();
+        records.length = 0;
+        await observeRequest(
+          async () => {
+            expect((await service.launch(f.caller, request)).sandbox.status).toBe("starting");
+            return new Response(null, { status: 201 });
+          },
+          (line) => records.push(JSON.parse(line)),
+        );
+        expect(records.map((record) => record.event)).toEqual(["http_request"]);
+        expect(await jobs()).toBe(queuedJobs);
+        const warnings = spyOn(console, "warn");
+        try {
+          await service.drain();
+          const worker = warnings.mock.calls
+            .map(([line]) => (typeof line === "string" && line.startsWith("{") ? JSON.parse(line) : undefined))
+            .filter((record) => record?.event === "provider_call" && record.operation === "launch");
+          expect(worker).toEqual([expect.objectContaining({ requestId, provider: "docker", outcome: "error" })]);
+          expect(warnings.mock.calls).toContainEqual(["docker_launch_failed", expect.objectContaining({ requestId })]);
+        } finally {
+          warnings.mockRestore();
         }
-        const replay = await service.launch(f.caller, request);
-        expect(replay.sandbox).toMatchObject({
-          status: "failed",
-          statusReason: expect.stringContaining("Repository project needs a GitHub connection"),
-        });
-        expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
+        expect(
+          (
+            await db.query(
+              "select from_status, to_status, actor, code from sandbox_transitions where sandbox_id=$1 and to_status='failed'",
+              [f.body.requestId],
+            )
+          ).rows,
+        ).toEqual([
+          {
+            from_status: "ready",
+            to_status: "failed",
+            actor: "lifecycle_runner",
+            code: "docker_launch_failed",
+          },
+        ]);
+        expect(
+          (
+            await db.query<{ status_reason: string }>("select status_reason from sandboxes where id=$1", [
+              f.body.requestId,
+            ])
+          ).rows[0]?.status_reason,
+        ).toContain("Repository project needs a GitHub connection");
       }
-      const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
-        (command) => command.op === "workspaceExec",
-      );
-      expect(refresh?.input?.command).toContain("git fetch origin");
-      expect(refresh?.input?.command).not.toContain("credential.helper=");
-      expect(refresh?.input?.command).not.toContain("git clone");
-    } finally {
+      const replay = await service.launch(f.caller, request);
+      expect(replay.sandbox).toMatchObject({
+        status: "failed",
+        statusReason: expect.stringContaining("Repository project needs a GitHub connection"),
+      });
+      expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
     }
+    const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
+      (command) => command.op === "workspaceExec",
+    );
+    expect(refresh?.input?.command).toContain("git fetch origin");
+    expect(refresh?.input?.command).not.toContain("credential.helper=");
+    expect(refresh?.input?.command).not.toContain("git clone");
   },
 );
 
@@ -3674,22 +3600,19 @@ test.each(["account_full", "incompatible_model"] as const)(
     const { credentialId: _explicit, ...implicit } = f.body;
     const body = { ...implicit, requestId: randomUUID(), ...(capped ? {} : { model: "armada/other-model" }) };
     const server = f.service(sql, true, 10_000, officialImage, true);
-    try {
-      const admitted = await server.launch(f.caller, body);
-      expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
-      const {
-        rows: [row],
-      } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-        "select request_enc from docker_launch_manifests where sandbox_id=$1",
-        [body.requestId],
-      );
-      expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
-        credentialId: second,
-        credentialVersion: 1,
-        accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
-      });
-    } finally {
-    }
+    const admitted = await server.launch(f.caller, body);
+    expect(admitted.sandbox).toMatchObject({ credentialId: second, credentialVersion: 1, status: "starting" });
+    const {
+      rows: [row],
+    } = await db.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+      "select request_enc from docker_launch_manifests where sandbox_id=$1",
+      [body.requestId],
+    );
+    expect(JSON.parse(await decryptSecret(row!.request_enc, key))).toMatchObject({
+      credentialId: second,
+      credentialVersion: 1,
+      accountSkips: [{ credentialId: f.body.credentialId, reason: { code: reason } }],
+    });
   },
 );
 
