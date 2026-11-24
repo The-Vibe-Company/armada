@@ -194,8 +194,10 @@ async function pinnedUpgrade(io: UpgradeServiceIo, origin: string, installed: Ma
   try {
     const arch = process.arch;
     if (arch !== "x64" && arch !== "arm64") throw new Error("Unsupported host architecture.");
-    const manifest = await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json();
-    const digest: unknown = manifest?.[arch];
+    const manifest = (await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json()) as Partial<
+      Record<"x64" | "arm64", unknown>
+    > | null;
+    const digest = manifest?.[arch];
     if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
     if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
     const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`);
@@ -246,7 +248,12 @@ export async function upgradeService(
     throw new Error("Upgrade server does not match the registered host; registration preserved.");
   const initialMarker = await validateInstallation(initial, io.home, instance);
   const p = paths(io.home, instance);
-  const retry = `"${p.binary}" upgrade --server ${origin}${instance ? ` --instance ${instance}` : ""}`;
+  const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const serverArg = shellQuote(origin);
+  const retry =
+    process.execPath === p.binary
+      ? `${shellQuote(p.binary)} upgrade --server ${serverArg}${instance ? ` --instance ${instance}` : ""}`
+      : `armada host install --server ${serverArg} (supply a fresh one-use token on stdin)`;
   const { bytes, digest } = await pinnedUpgrade(io, origin, initialMarker, retry);
   const verifyInstalled = async () => {
     if (sha256(await ownedFile(p.binary, io.home, true)) !== digest)
