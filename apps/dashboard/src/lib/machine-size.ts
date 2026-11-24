@@ -1,4 +1,5 @@
 import {
+  isSandboxProvider,
   LaunchError,
   MACHINE_SIZE_CATALOG,
   MACHINE_SIZES,
@@ -11,6 +12,7 @@ import {
   resolveMachineSize,
   type SandboxProviderId,
 } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { PROVIDER_LABELS } from "./golden-form.ts";
 
 /**
@@ -93,7 +95,8 @@ export function defaultOptionLabel(provider: SandboxProviderId, evidence: Machin
  */
 export function sizeCaveat(provider: SandboxProviderId, chosen: MachineSize | null): string | null {
   if (!chosen) return null;
-  if (provider === "modal") return "Modal requests and limits; the same label on Boat is a different machine.";
+  if (capabilities(provider).sizeResources === "explicit-limits")
+    return "Modal requests and limits; the same label on Boat is a different machine.";
   if (chosen === "xlarge") return "Extra large needs a Boat plan that includes it.";
   return "Boat refuses a size whose disk cannot hold the snapshot.";
 }
@@ -214,7 +217,7 @@ export function isSizePolicyResult(value: unknown): value is MachineSizePolicyRe
   const result = value as Record<string, unknown>;
   return (
     typeof result.goldenId === "string" &&
-    (result.provider === "boat" || result.provider === "modal") &&
+    isSandboxProvider(result.provider) &&
     Array.isArray(result.repositories) &&
     (result.policy === null ||
       (typeof result.policy === "object" && (result.policy as { version?: unknown }).version === 1))

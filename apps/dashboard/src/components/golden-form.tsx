@@ -1,6 +1,6 @@
 "use client";
 
-import { type GoldenBuildStatus, parseGoldenConfig, type SandboxProviderId } from "@armada/core";
+import { type GoldenBuildStatus, isSandboxProvider, parseGoldenConfig, type SandboxProviderId } from "@armada/core";
 import { CheckCircle2Icon, CircleAlertIcon, Loader2Icon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -187,8 +187,7 @@ function ScopedGoldenForm({
     setAdmissionKey(savedKey ?? crypto.randomUUID());
     setSubmitted(Boolean(savedKey || params.get(jobParam)));
     const savedProvider = params.get(providerParam);
-    if (mode === "create" && (savedProvider === "boat" || savedProvider === "modal"))
-      setAdmittedProvider(savedProvider);
+    if (mode === "create" && isSandboxProvider(savedProvider)) setAdmittedProvider(savedProvider);
     const savedJob = params.get(jobParam);
     if (savedJob)
       void goldenBuildStatus(savedJob)
@@ -271,7 +270,7 @@ function ScopedGoldenForm({
       return { ok: false, error: BUILD_OUTCOME_UNKNOWN };
     }
     if (result.ok && result.build) {
-      if (mode === "create" && (submitted === "boat" || submitted === "modal")) setAdmittedProvider(submitted);
+      if (mode === "create" && isSandboxProvider(submitted)) setAdmittedProvider(submitted);
       setObserved(result.build);
       rememberJob(jobParam, result.build.jobId);
     }
@@ -286,9 +285,14 @@ function ScopedGoldenForm({
   const [chosenVisibility, setChosenVisibility] = useState<"org" | "private">(isAdmin ? "org" : "private");
   const [choice, setChosenProvider] = useState<SandboxProviderId | null>(null);
   // A provider disconnected since it was chosen is not kept: the first connected one is used instead.
-  const contextProvider = placement?.value === "boat" || placement?.value === "modal" ? placement.value : null;
+  const contextProvider = isSandboxProvider(placement?.value) ? placement.value : null;
   const chosenProvider =
     contextProvider ?? (choice !== null && providers.includes(choice) ? choice : (providers[0] ?? null));
+  const boatCapacity = capacities?.boat;
+  const replacementRequired =
+    mode === "create" &&
+    chosenProvider === "boat" &&
+    (boatCapacity?.kind === "full" || boatCapacity?.kind === "legacy");
   // Controlled, so a refused build keeps what was typed (React resets a form after its action).
   const formRef = usePreservedActionForm();
   const [goldenName, setGoldenName] = useState(embedded?.name ?? "");
@@ -591,14 +595,10 @@ function ScopedGoldenForm({
           . Opens in a new tab. This form keeps what you typed.
         </p>
       )}
-      {mode === "create" && chosenProvider === "boat" && ["full", "legacy"].includes(capacities?.boat?.kind ?? "") && (
+      {replacementRequired && (
         <div role="status" className="space-y-2 rounded-md border p-3 text-sm">
           <p>
-            Boat allows{" "}
-            {capacities?.boat && "capacity" in capacities.boat ? capacities.boat.capacity : "a limited number of"}{" "}
-            {capacities?.boat && "capacity" in capacities.boat && capacities.boat.capacity === 1
-              ? "snapshot"
-              : "snapshots"}{" "}
+            Boat allows {boatCapacity.capacity} {boatCapacity.capacity === 1 ? "snapshot" : "snapshots"}
             here and the limit is reached.
           </p>
           <div className="flex flex-wrap gap-2">
@@ -642,15 +642,7 @@ function ScopedGoldenForm({
           <Button
             type="submit"
             disabled={
-              !admissionKey ||
-              pending ||
-              finding ||
-              jobActive ||
-              !canStart ||
-              !githubConnected ||
-              (mode === "create" &&
-                chosenProvider === "boat" &&
-                ["full", "legacy"].includes(capacities?.boat?.kind ?? ""))
+              !admissionKey || pending || finding || jobActive || !canStart || !githubConnected || replacementRequired
             }
           >
             {pending && <Loader2Icon className="animate-spin" />}

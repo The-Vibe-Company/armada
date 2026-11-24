@@ -1,4 +1,5 @@
-import { isSandboxProvider, SANDBOX_PLACEMENT_LABELS, type SandboxPlacementProviderId } from "@armada/core";
+import { SANDBOX_PLACEMENT_LABELS, type SandboxPlacementProviderId } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import type { LaunchStartTarget } from "./launch-picker";
 import { type TemplateLaunchTarget, templatePlacementId } from "./template-launch";
 import { ttlOptions } from "./templates";
@@ -9,8 +10,14 @@ export function composerChips(
   sizing: boolean,
   template = false,
 ) {
-  const cloud = isSandboxProvider(provider);
-  return { folder: cloud && folders > 0, machine: cloud && sizing, access: cloud && !template, docker: !cloud };
+  const { launchSource, sizes } = capabilities(provider);
+  const cloud = launchSource === "golden";
+  return {
+    folder: cloud && folders > 0,
+    machine: sizes.length > 0 && sizing,
+    access: cloud && !template,
+    docker: !cloud,
+  };
 }
 
 export function launchSendLabel(task: string, docker: boolean, template: boolean) {

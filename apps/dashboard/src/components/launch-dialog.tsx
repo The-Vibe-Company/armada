@@ -3,6 +3,7 @@
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { HARNESSES, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import { runtimeHarnessSupported } from "@armada/core/harnesses";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -26,7 +27,7 @@ import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { CONNECTION_CHOICE_FIELD, type McpConnection } from "@/lib/connections";
 import { createDockerLaunchKey } from "@/lib/docker-launch";
-import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, dockerHostGroup, sandboxProviderLabel } from "@/lib/labels";
 import { composerChips, launchHoldIds, MISSING_LAUNCH_START } from "@/lib/launch-composer";
 import { LAUNCH_KEY_FIELD, type LaunchKey, launchKeyFor } from "@/lib/launch-key";
 import { initialLaunchSelection, type LaunchStartTarget, launchHarnessForSource } from "@/lib/launch-picker";
@@ -183,11 +184,12 @@ export function LaunchStart(
   const optionsRevision = useRef(0);
   const [loadingError, setLoadingError] = useState("");
   const host = "hostId" in props;
+  const group = host ? dockerHostGroup(props.hostName) : sandboxProviderLabel(props.provider);
   const fallback: LaunchStartTarget = host
     ? {
         id: props.initialTargetId ?? `host:${props.hostId}`,
         label: `Empty machine · ${props.hostName}`,
-        group: dockerHostGroup(props.hostName),
+        group,
         hostName: props.hostName,
         golden: "",
         provider: "docker",
@@ -201,8 +203,8 @@ export function LaunchStart(
         id:
           props.initialTargetId ??
           (props.snapshotId ? `snapshot:${props.snapshotId}` : `${props.provider}:${props.golden}`),
-        label: `${props.golden} · ${props.provider === "boat" ? "Boat cloud" : props.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL}`,
-        group: props.provider === "docker" ? DOCKER_HOST_LABEL : `${PROVIDER_LABELS[props.provider]} cloud`,
+        label: `${props.golden} · ${group}`,
+        group,
         golden: props.golden,
         provider: props.provider,
         repositories: props.snapshotRepositories ?? [],
@@ -563,7 +565,8 @@ function LaunchForm({
     accountsFor(accounts.accounts, "codex").some(
       (account) => account.id === value && accountProblem(account, accounts.now) === null,
     );
-  const canDelegate = provider !== "docker" && harness === "codex" && usableCodexAccount(credential);
+  const fromHost = capabilities(provider).launchSource === "host";
+  const canDelegate = !fromHost && harness === "codex" && usableCodexAccount(credential);
   const access = useLaunchAccess(connections);
   const root = useRef<HTMLDivElement>(null);
   const launchKey = useRef<LaunchKey | null>(null);
@@ -587,7 +590,7 @@ function LaunchForm({
       launchKey.current = launchKeyFor(
         launchKey.current,
         event.formData.entries(),
-        provider === "docker" ? createDockerLaunchKey : undefined,
+        fromHost ? createDockerLaunchKey : undefined,
       );
       event.formData.set(LAUNCH_KEY_FIELD, launchKey.current.key);
     };
@@ -597,7 +600,7 @@ function LaunchForm({
       node.removeEventListener("reset", keep, true);
       node.removeEventListener("formdata", keyed, true);
     };
-  }, [provider]);
+  }, [fromHost]);
 
   // Going on without an unready default enables Launch: that is the next step, so focus follows.
   const focusLaunch = useRef(false);
@@ -620,15 +623,15 @@ function LaunchForm({
   return (
     <div ref={root}>
       <ActionForm
-        action={provider === "docker" ? launchFromDockerSnapshot : launchFromGolden}
+        action={fromHost ? launchFromDockerSnapshot : launchFromGolden}
         focusError
         renderContent={(result) => (
           <>
             <input type="hidden" name="golden" value={golden} />
-            {provider === "docker" && <input type="hidden" name="snapshotId" value={snapshotId ?? ""} />}
+            {fromHost && <input type="hidden" name="snapshotId" value={snapshotId ?? ""} />}
             <input type="hidden" name="provider" value={provider} />
             <input type="hidden" name="org" value={orgId} />
-            {provider !== "docker" && <input type="hidden" name="repo" value={project} />}
+            {!fromHost && <input type="hidden" name="repo" value={project} />}
             <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
             {access.inputs}
             {skills.map((exact) => (
@@ -638,7 +641,7 @@ function LaunchForm({
             <LaunchComposer
               id={id}
               headline={
-                provider === "docker"
+                fromHost
                   ? `What should we build on ${hostName ?? DOCKER_HOST_LABEL}?`
                   : `What should we build in ${project || golden}?`
               }
@@ -710,7 +713,7 @@ function LaunchForm({
                     project={project}
                     onProject={setProject}
                   />
-                  {provider !== "docker" && chips.machine && sizing && (
+                  {chips.machine && sizing && (
                     <MachineSizeField
                       key={provider}
                       provider={provider}
