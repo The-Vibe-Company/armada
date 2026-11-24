@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GOLDEN_SSH_RECEIPT_PHASES, GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
+import { outputCollectorFailureDetail } from "./managed-bun-path.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
-import { outputCollectorFailureDetail } from "./sandbox-outputs.ts";
 import { launchInfrastructure } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 

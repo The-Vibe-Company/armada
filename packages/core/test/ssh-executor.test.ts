@@ -389,16 +389,14 @@ test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout rep
 });
 
 test.each([
-  ["missing", "the managed Bun file or a parent directory is missing"],
-  [
-    "mode",
-    "the managed Bun is not executable, its directories are not traversable, or its path is group- or other-writable",
-  ],
-  ["owner", "the managed Bun path is not root-owned"],
-  ["symlink", "the managed Bun path contains a symlink"],
+  ["missing /opt/armada/runtime-bun/bun", "/opt/armada/runtime-bun/bun is missing or has the wrong file type"],
+  ["mode /opt/armada/runtime-bun", "/opt/armada/runtime-bun has unsafe permissions"],
+  ["owner /opt/armada", "/opt/armada is not root-owned"],
+  ["owner /opt", "/opt is not root-owned"],
+  ["symlink /opt/armada", "/opt/armada is a symlink"],
   ["ffi", "Bun could not load Linux glibc through FFI"],
   ["proc_fd", "the collector could not open a directory through /proc/self/fd"],
-  ["private-tool-stderr", "Verify the managed Bun executable"],
+  ["owner /private-tool-stderr", "Verify the managed Bun executable"],
 ])("SSH reports the safe collector check for exit 86 (%s)", async (reason, expected) => {
   const spawn: any = (file: string) => {
     const child: any = new EventEmitter();
@@ -432,7 +430,7 @@ test.each([
     code: "build_failed",
     safePhase: "output_collector",
     safeMessage: expect.stringContaining(
-      `The sandbox output collector exited 86. ${reason === "private-tool-stderr" ? "" : "Failed check: "}${expected}`,
+      `The sandbox output collector exited 86. ${reason === "owner /private-tool-stderr" ? "" : "Failed check: "}${expected}`,
     ),
   });
 });

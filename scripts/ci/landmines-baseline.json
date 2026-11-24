@@ -1422,7 +1422,7 @@
     "packages/core/src/sandbox-activity.ts": 1,
     "packages/core/src/sandbox-control.ts": 1,
     "packages/core/src/sandbox-cost.ts": 4,
-    "packages/core/src/sandbox-outputs.ts": 11,
+    "packages/core/src/sandbox-outputs.ts": 10,
     "packages/core/src/sandbox-provider.ts": 3,
     "packages/core/src/sandbox-usage.ts": 6,
     "packages/core/src/sandbox.ts": 8,
