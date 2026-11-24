@@ -1,12 +1,15 @@
 # Snapshot secret scan locations
 
-A rejected snapshot build names the first available safe location, never the value:
+A rejected Boat or Modal snapshot build names the first available safe location,
+never the value:
 
     repository armada, git object <object-id>, commit <commit-id>
 
 The build phase remains secret_scan. The curated location is persisted with the
 durable job and appears in snapshot show, the CLI failure line and the
 dashboard build error. Manual snapshot errors carry the same safe location.
+Docker builds use the same scan script and return a generic build failure
+because Docker build output is suppressed to protect secrets.
 
 ## What is exposed
 
@@ -36,10 +39,10 @@ the source before rebuilding.
 
 ## Explicit per-repository short history (owner approved)
 
-When a Git object in a configured repository is flagged, the scan error points
-to the short-history checkout approved in #1755. Use it when you have verified
-that the match is a historical false positive and the snapshot does not need
-that repository's older commits:
+When a Git object in a configured Boat or Modal repository is flagged, the
+scan error points to the short-history checkout approved in #1755. Use it
+when you have verified that the match is a historical false positive and the
+snapshot does not need that repository's older commits:
 
 ```json
 {
