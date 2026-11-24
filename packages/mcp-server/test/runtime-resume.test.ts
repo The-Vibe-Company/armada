@@ -5,6 +5,7 @@ import {
   DelegatedAuthority,
   decryptSecret,
   encryptSecret,
+  type Harness,
   type Provider,
   SANDBOX_STOP_MARGIN_SECONDS,
   type Sql,
@@ -34,11 +35,7 @@ import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function stopped(
-  harness: "codex" | "claude" | "opencode" = "codex",
-  provider: "boat" | "modal" = "boat",
-  idle = false,
-) {
+async function stopped(harness: Harness = "codex", provider: "boat" | "modal" = "boat", idle = false) {
   const f = await runtimeFixture(await sharedDatabase(), provider, harness, idle);
   return configureRuntimeFixture(f, async () => {
     const cp = await createRuntimeCheckpoint(
@@ -61,8 +58,7 @@ const input = (id: string) => ({
 });
 
 test("a stopped Antigravity Modal sandbox refuses resume before activation", async () => {
-  const f = await stopped("codex", "modal");
-  await f.db.query("update sandboxes set harness='antigravity' where id=$1", [f.row.id]);
+  const f = await stopped("antigravity", "modal", true);
   const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
     throw Error("Antigravity must not activate retained compute");
   });
