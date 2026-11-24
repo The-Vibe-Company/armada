@@ -114,6 +114,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
+    if (encryptionKey) expected.push("stop");
     const claimed = new Set<string>();
     const errors: string[] = [];
     let backfillAttempts = 0;
@@ -147,12 +148,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
     expect(claimed).toEqual(
-      new Set([
-        "delete",
-        ...(encryptionKey ? ["stop", "launch_initial_turn"] : []),
-        ...expected,
-        "snapshot_retirement",
-      ]),
+      new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
     );
     expect(backfillAttempts).toBe(encryptionKey ? 1 : 0);
     expect(errors).toEqual(encryptionKey ? ["armada: queued turn job backfill unavailable."] : []);
