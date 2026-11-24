@@ -28,6 +28,14 @@ function requestLogForStatus(status: number) {
   return console.info;
 }
 
+function requestPath(request: Request): string {
+  try {
+    return redactForLog(decodeURIComponent(new URL(request.url).pathname));
+  } catch {
+    return "[invalid path]";
+  }
+}
+
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
 export function observeRequest<T extends Response | undefined>(
   work: () => T | Promise<T>,
@@ -52,7 +60,7 @@ export function observeRequest<T extends Response | undefined>(
     requestLog(
       JSON.stringify({
         event: "http_request",
-        ...(request ? { path: redactForLog(new URL(request.url).pathname) } : {}),
+        ...(request ? { path: requestPath(request) } : {}),
         requestId: id,
         status,
         durationMs: Math.round(performance.now() - started),

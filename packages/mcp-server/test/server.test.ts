@@ -221,6 +221,18 @@ describe("http", () => {
   });
 });
 
+test("HTTP request logs mask encoded path tokens and omit query values", async () => {
+  const lines: string[] = [];
+  const { handler } = await start({ log: (line) => lines.push(line) });
+  const token = `armada_runtime_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
+  const encoded = `%61${token.slice(1)}`;
+  const response = await handler(new Request(`${PUBLIC_URL}/missing/${encoded}?query=private-value`));
+  expect(response.status).toBe(404);
+  expect(lines).toHaveLength(1);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ event: "http_request", path: "/missing/***" });
+  expect(lines[0]).not.toContain("private-value");
+});
+
 describe("when the auth lookup fails", () => {
   test("a SQL session membership failure is a 503 with a sanitized diagnostic", async () => {
     const lines: string[] = [];
