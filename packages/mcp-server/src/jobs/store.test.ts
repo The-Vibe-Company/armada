@@ -800,6 +800,40 @@ test("Modal backfill rolls back when a destination key belongs to a different re
   expect((await db.query("select count(*)::int as count from jobs where kind='launch'")).rows).toEqual([{ count: 1 }]);
 });
 
+test.each(["receipt", "job"] as const)(
+  "an ordinary launch %s reserves the shared key during deploy overlap",
+  async (first) => {
+    const { db, input, sql } = await modalAdmissionFixture();
+    const key = "overlap-launch-key";
+    const payload = { golden: "boat-golden" };
+    const predecessor = () =>
+      db.query(
+        `insert into ordinary_launch_receipts (id,org_id,owner_id,request_key,fingerprint,authority)
+       values ($1,$2,$3,$4,$5,$6)`,
+        [
+          crypto.randomUUID(),
+          input.orgId,
+          input.ownerId,
+          key,
+          ordinaryLaunchFingerprint(payload),
+          { target: { provider: "boat" } },
+        ],
+      );
+    const current = () => admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, payload } });
+
+    if (first === "receipt") {
+      await predecessor();
+      await expect(current()).rejects.toMatchObject({ code: "outcome_unknown" });
+      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+    } else {
+      const { sandbox } = await current();
+      await expect(predecessor()).rejects.toMatchObject({ code: "A2760" });
+      expect((await db.query("select id from ordinary_launch_receipts")).rows).toEqual([]);
+      expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
+    }
+  },
+);
+
 function admitModalLaunch(sql: Sql, key: string, input: ModalLaunchAdmission) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const mcp = createRuntimeMcp({ sql, key, origin: "https://armada.example", commands });

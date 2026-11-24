@@ -127,7 +127,7 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns the original sandbox ID and
 current status (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview. Normal
+The API-only CLI uses the same normal route. Normal
 API requests, CLI launches and dashboard forms do not accept an image selector.
 Armada chooses the official image pinned by the deployed server's release;
 source/dev builds without a release pin use the server-owned immutable bootstrap
