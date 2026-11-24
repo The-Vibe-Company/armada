@@ -264,7 +264,7 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
   expect(stopping.stopRequestedAt).not.toBeNull();
   expect(await hosts.poll(f.hostToken, f.installationId)).toMatchObject({ requestId: stopId, operation: "stop" });
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  expect((await retained.get(f.actor, saved.id)).status).toBe("stopped");
+  expect(await retained.get(f.actor, saved.id)).toMatchObject({ status: "stopped", stopRequestedAt: null });
   expect((await service.reserve(f.actor, f.input)).generation).toBe(saved.generation);
   await retained.delete(f.actor, saved.id, deleteId);
   expect((await retained.get(f.actor, saved.id)).status).toBe("stopped");
@@ -272,7 +272,6 @@ test("retained owner/admin diagnostics and delegated cleanup are independent of 
   const deleted = await retained.get(f.actor, saved.id);
   expect(deleted.status).toBe("deleted");
   expect(deleted.deletedAt).not.toBeNull();
-  expect(deleted.stopRequestedAt).toBe(stopping.stopRequestedAt);
   await hosts.revoke(f.admin, f.hostId);
   await denied(service.reserve(f.actor, f.input));
   expect(await retained.job(f.admin, saved.id, deleteId)).toEqual({

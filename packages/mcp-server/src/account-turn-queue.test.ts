@@ -1882,7 +1882,7 @@ test.each([true, false])("retained stop intent fences new queued work (merged=%s
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });
 
-test.each(["modal", "boat"])(
+test.each(["modal", "boat", "docker"])(
   "a send during %s idle stop waits for the retained stop before dispatch",
   async (provider) => {
     const input = { id: ids[0]!, request_id: requests[0]!, prompt: "continue after idle pause" };
@@ -1893,8 +1893,8 @@ test.each(["modal", "boat"])(
       [input.id, provider],
     );
     await sql.query(
-      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopping','idle','runtime_checkpoint_idle_paused',2)",
-      [input.id],
+      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopping','idle',$2,2)",
+      [input.id, provider === "docker" ? "docker_idle_paused" : "runtime_checkpoint_idle_paused"],
     );
     expect(await queue.accept(caller, input)).toMatchObject({ status: "queued", promptId: input.request_id });
     const sent: (typeof input)[] = [];
@@ -1912,8 +1912,10 @@ test.each(["modal", "boat"])(
       input.id,
     ]);
     await sql.query(
-      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopped','reconciler','provider_stopped',2)",
-      [input.id],
+      "insert into sandbox_transitions(sandbox_id,to_status,actor,code,generation) values($1,'stopped',$2,$3,2)",
+      provider === "docker"
+        ? [input.id, "lifecycle_runner", "docker_stop_completed"]
+        : [input.id, "reconciler", "provider_stopped"],
     );
     await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [input.id]);
 

@@ -28,15 +28,17 @@ export const LAUNCH_PENDING = `(exists(select 1 from public.jobs setup
 function idleStopPending(sandbox: string) {
   return `(${sandbox}.status='stopping' and ${sandbox}.stop_requested_at is not null
     and ${sandbox}.status_reason is not distinct from 'idle_paused'
-    and ((${sandbox}.provider is not distinct from 'boat' and ${sandbox}.boat_runtime is true)
-      or (${sandbox}.provider is not distinct from 'modal' and ${sandbox}.runtime_transport is not distinct from 'dialout'))
     and exists (
       select 1 from (
         select to_status, actor, code, generation from public.sandbox_transitions
         where sandbox_id=${sandbox}.id order by id desc limit 1
       ) latest
       where latest.generation=${sandbox}.lifecycle_generation and latest.to_status='stopping'
-        and latest.actor='idle' and latest.code='runtime_checkpoint_idle_paused'
+        and latest.actor='idle'
+        and ((${sandbox}.provider is not distinct from 'docker' and latest.code='docker_idle_paused')
+          or (latest.code='runtime_checkpoint_idle_paused'
+            and ((${sandbox}.provider is not distinct from 'boat' and ${sandbox}.boat_runtime is true)
+              or (${sandbox}.provider is not distinct from 'modal' and ${sandbox}.runtime_transport is not distinct from 'dialout'))))
     ))`;
 }
 
