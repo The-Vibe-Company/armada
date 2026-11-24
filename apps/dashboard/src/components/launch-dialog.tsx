@@ -1,7 +1,7 @@
 "use client";
 
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
-import { HARNESSES, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
+import { HARNESSES, isSandboxProvider, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { capabilities } from "@armada/core/machine-capabilities";
 import { RocketIcon } from "lucide-react";
@@ -713,7 +713,7 @@ function LaunchForm({
                     project={project}
                     onProject={setProject}
                   />
-                  {chips.machine && sizing && (
+                  {chips.machine && sizing && isSandboxProvider(provider) && (
                     <MachineSizeField
                       key={provider}
                       provider={provider}

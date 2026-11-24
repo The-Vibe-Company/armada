@@ -1,6 +1,12 @@
 "use server";
 
-import { type Harness, isSandboxProvider, MODEL_CATALOG, validateSkillPins } from "@armada/core";
+import {
+  type Harness,
+  isSandboxProvider,
+  MODEL_CATALOG,
+  SANDBOX_PLACEMENT_LABELS,
+  validateSkillPins,
+} from "@armada/core";
 import { capabilities } from "@armada/core/machine-capabilities";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
@@ -381,7 +387,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
     if (parsed.args.size && error.code && PROVIDER_REFUSALS.has(error.code))
       return fail(
-        `${launchFailureMessage(error)} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
+        `${launchFailureMessage(error)} If ${SANDBOX_PLACEMENT_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
       );
     return fail(launchFailureMessage(error));
   }
