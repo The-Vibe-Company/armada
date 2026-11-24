@@ -2,20 +2,15 @@
 
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
+import { DockerLimitList } from "@/components/launch-composer";
 import { DiscoveredLaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
-export function SandboxLaunchAction({
-  shortcut = false,
-  dockerLimits,
-}: {
-  shortcut?: boolean;
-  dockerLimits?: ReactNode;
-}) {
+export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -65,7 +60,11 @@ export function SandboxLaunchAction({
             <DialogDescription>Loading starting points…</DialogDescription>
           </DialogHeader>
         ) : options && target ? (
-          <DiscoveredLaunchStart target={target} options={options} dockerLimits={dockerLimits} />
+          <DiscoveredLaunchStart
+            target={target}
+            options={options}
+            dockerLimits={<DockerLimitList unavailable={options.dockerLimits} />}
+          />
         ) : (
           <DialogHeader className="overflow-y-auto p-6 pr-12 text-left">
             <DialogTitle>Launch a sandbox</DialogTitle>

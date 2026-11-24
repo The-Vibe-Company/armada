@@ -1,7 +1,6 @@
 "use client";
 
-// The landing's terminal (THE-887): a session replayed from transcript.ts,
-// which the Armada CLI's own code wrote (scripts/landing-transcript.ts). It types
+// The landing's terminal (THE-887): a session replayed from transcript.ts. It types
 // each command, prints what Armada printed line by line, and starts over. It
 // plays only while on screen; with reduced motion it shows the whole session at once.
 import { useEffect, useRef, useState } from "react";

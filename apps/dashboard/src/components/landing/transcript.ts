@@ -1,4 +1,3 @@
-// Written by `bun apps/dashboard/scripts/landing-transcript.ts` from the Armada CLI's own code: do not edit.
 import type { TerminalCommand } from "./terminal-types";
 
 export const TRANSCRIPT: TerminalCommand[] = [

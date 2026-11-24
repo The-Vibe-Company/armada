@@ -1,11 +1,39 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { exactLocalTime, relativeAge } from "@/lib/relative-time";
 
 /** Often enough for "min ago" to stay right to the minute. */
 const TICK_MS = 30_000;
+
+const subscribers = new Set<() => void>();
+let timer: ReturnType<typeof setInterval> | undefined;
+let current: number | null = null;
+
+function tick() {
+  current = Date.now();
+  for (const notify of subscribers) notify();
+}
+
+function subscribe(notify: () => void) {
+  if (timer === undefined) {
+    current = Date.now();
+    timer = setInterval(tick, TICK_MS);
+  }
+  subscribers.add(notify);
+  return () => {
+    subscribers.delete(notify);
+    if (subscribers.size === 0) {
+      clearInterval(timer);
+      timer = undefined;
+      current = null;
+    }
+  };
+}
+
+const getSnapshot = () => current;
+const getServerSnapshot = () => null;
 
 /**
  * When a sandbox was created, as its age ("5 min ago"), kept current without a reload. Hover or keyboard focus shows
@@ -13,14 +41,7 @@ const TICK_MS = 30_000;
  * server's HTML; the browser's clock and zone take over once mounted, and only there.
  */
 export function CreatedAt({ iso, now }: { iso: string; now: number }) {
-  const [current, setCurrent] = useState(now);
-  useEffect(() => {
-    setCurrent(Date.now());
-    const timer = setInterval(() => setCurrent(Date.now()), TICK_MS);
-    return () => clearInterval(timer);
-  }, []);
-
-  const age = relativeAge(iso, current);
+  const age = relativeAge(iso, useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot) ?? now);
   if (age === null) return <span>Unknown</span>;
   return (
     <TooltipProvider>

@@ -2,7 +2,6 @@ import { LogOutIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, Suspense } from "react";
 import { AppSidebar, DesktopSidebarTrigger } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
-import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
@@ -11,7 +10,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
-import { dockerHostsEnabled } from "@/lib/data/docker-hosts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { parseSandboxListMetadata } from "@/lib/sandbox-access";
@@ -40,7 +38,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </div>
       <ShellSearch />
       <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
-        <SandboxLaunchAction shortcut dockerLimits={<DockerLaunchLimitList />} />
+        <SandboxLaunchAction shortcut />
       </div>
     </div>
   );
@@ -78,7 +76,6 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
               organizationId={selected?.org.id ?? null}
               organizationAdmin={selected?.role === "admin"}
               className="px-3 pb-4"
-              optIns={{ dockerHosts: dockerHostsEnabled() }}
             />
           }
         >
@@ -112,25 +109,20 @@ function SignOut({ compact = false }: { compact?: boolean }) {
 
 async function loadLiveSandboxes(orgId: string) {
   const supabase = await createClient();
-  const rows = [];
-  for (let from = 0; ; from += 500) {
-    const { data, error } = await supabase
-      .rpc("sandbox_list_metadata")
-      .eq("orgId", orgId)
-      .in("status", ["starting", "ready", "running", "stopping"])
-      .order("id")
-      .range(from, from + 499);
-    if (error?.code === "PGRST103") break;
-    if (error) return [];
-    const parsed = parseSandboxListMetadata(data);
-    rows.push(
-      ...parsed.rows
-        .filter((row) => row.canOpen)
-        .map((row) => ({ id: row.id, label: sandboxListName(row), status: row.status })),
-    );
-    if (parsed.rows.length + parsed.skipped.length < 500) break;
-  }
-  return rows;
+  const { data, error } = await supabase
+    .rpc("sandbox_list_metadata")
+    .eq("orgId", orgId)
+    .eq("canOpen", true)
+    .in("status", ["starting", "ready", "running", "stopping"])
+    .order("createdAt", { ascending: false })
+    .order("id")
+    .limit(10);
+  if (error) return [];
+  return parseSandboxListMetadata(data).rows.map((row) => ({
+    id: row.id,
+    label: sandboxListName(row),
+    status: row.status,
+  }));
 }
 
 async function ShellNavigation({
@@ -147,7 +139,6 @@ async function ShellNavigation({
       organizationId={organizationId}
       organizationAdmin={organizationAdmin}
       className="px-3 pb-4"
-      optIns={{ dockerHosts: dockerHostsEnabled() }}
       sandboxes={await sandboxes}
     />
   );
