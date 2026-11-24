@@ -1,8 +1,7 @@
 # Docker normal read and cleanup contract (#1165 / #1380)
 
 This historical increment connected existing Docker resources to the ordinary sandbox control
-API **and MCP tools**, rather than another dashboard-only transport. The private
-preview remains compatible. At that slice, normal launch/send/resume, snapshot
+API and MCP tools. At that slice, normal launch/send/resume, snapshot
 builds, GitHub/MCP setup, new pricing quotes and visual dashboard changes were
 not yet enabled. This is not the current product feature list: normal
 launch/send/resume and host-local snapshots are documented in the

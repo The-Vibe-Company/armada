@@ -970,7 +970,7 @@
     "scripts/scoped-access-smoke.test.ts": 10,
     "scripts/scoped-access-smoke.ts": 13,
     "scripts/seal-slack-mcp-client.ts": 1,
-    "scripts/smoke-docker-lifecycle.test.ts": 2,
+    "scripts/smoke-docker-lifecycle.test.ts": 1,
     "scripts/smoke-sandbox-cleanup.test.ts": 1,
     "scripts/smoke-sandbox-cleanup.ts": 3,
     "scripts/smoke-step.ts": 1,
