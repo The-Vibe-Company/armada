@@ -1,5 +1,21 @@
 # Changelog
 
+## [12.0.0](https://github.com/The-Vibe-Company/armada/compare/v11.0.1...v12.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** delete native launch admission ([#4106](https://github.com/The-Vibe-Company/armada/issues/4106))
+
+### Bug Fixes
+
+* **server:** stop serializing runtime callbacks on membership ([#4108](https://github.com/The-Vibe-Company/armada/issues/4108)) ([5cf973a](https://github.com/The-Vibe-Company/armada/commit/5cf973a664649ef3bb43e37cde0a14c4dde83fdf))
+
+
+### Code Refactoring
+
+* **core:** delete native launch admission ([#4106](https://github.com/The-Vibe-Company/armada/issues/4106)) ([c44f6ae](https://github.com/The-Vibe-Company/armada/commit/c44f6ae844e54966ed93c148889c6705d4c9b2bf))
+
 ## [11.0.1](https://github.com/The-Vibe-Company/armada/compare/v11.0.0...v11.0.1) (2026-11-24)
 
 
