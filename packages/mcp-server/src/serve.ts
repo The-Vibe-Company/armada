@@ -60,6 +60,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // Normal Docker launches and scoped child mutations use their own operation deadlines.
   // Other routes retain their existing response timeout policy.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
+  control.configureAntigravityLoginRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureStopRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
@@ -69,6 +70,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   const workers = assembly.planWorkers().start();
   installServerShutdown(server, {
     ...assembly.shutdown,
+    closeAntigravityLogin: () => control.antigravityLogin?.shutdown(),
     beginDrain: () => {
       requestDrain.beginDrain();
       eventStreamShutdown.abort();

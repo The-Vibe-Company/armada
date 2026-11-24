@@ -1,6 +1,8 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
+  antigravityLoginOperations,
   controlRouteKey,
+  isAntigravityLoginPath,
   operations,
   PUBLIC_CONTROL_ROUTES,
   skillpackOperations,
@@ -16,6 +18,9 @@ const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
  * proxy test fills each in and checks it is forwarded and published or given a reason.
  */
 export const PARAMETERIZED_CONTROL_ROUTES = [
+  ...[antigravityLoginOperations.completeAntigravityLogin, antigravityLoginOperations.cancelAntigravityLogin].map(
+    ({ route }) => ({ method: route.method, path: controlRouteKey(route) }),
+  ),
   { method: "DELETE", path: "sandboxes/{id}" },
   { method: "GET", path: "sandboxes/{id}/outputs" },
   { method: "GET", path: "sandboxes/{id}/outputs/{name}" },
@@ -25,7 +30,11 @@ export const PARAMETERIZED_CONTROL_ROUTES = [
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   ...Object.values(operations)
     .filter(
-      (operation) => operation.route.method === "POST" && !("directServer" in operation) && !("anonymous" in operation),
+      (operation) =>
+        operation.route.method === "POST" &&
+        !operation.route.path.includes("{") &&
+        !("directServer" in operation) &&
+        !("anonymous" in operation),
     )
     .map(({ route }) => controlRouteKey(route)),
   "creds/accounts/models",
@@ -209,10 +218,13 @@ async function forwardRequest(
     ? (PUBLIC_CONTROL_ROUTES[relative] ?? [])
     : [];
   const isPublic = publicMethods.includes(method);
+  const antigravityLogin =
+    (method === "POST" || method === "DELETE") && isAntigravityLoginPath(`${CONTROL_PREFIX}${relative}`);
   if (
     !eventStream &&
     !sandboxOutputs &&
     !sandboxDeletion &&
+    !antigravityLogin &&
     !isPublic &&
     !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
   )

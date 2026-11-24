@@ -1,4 +1,7 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSqlAuthStore } from "@armada/auth";
+import { MODEL_CREDENTIAL_KINDS } from "@armada/core";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -17,6 +20,8 @@ import {
 } from "@armada/core/server";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
+import { createAntigravityLogin } from "./antigravity-login.ts";
+import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
@@ -422,6 +427,13 @@ export async function createServerServices(env: Record<string, string | undefine
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
+    ...(MODEL_CREDENTIAL_KINDS.some((kind: string) => kind === "antigravity")
+      ? {
+          antigravityLogin: createAntigravityLogin((signal) =>
+            startAntigravityLoginProcess(join(tmpdir(), "armada-antigravity-login-cache"), signal),
+          ),
+        }
+      : {}),
     ...(deviceLogin ? { deviceLogin } : {}),
     ordinaryLaunchReceipts,
     admitModalLaunch: admitModal,

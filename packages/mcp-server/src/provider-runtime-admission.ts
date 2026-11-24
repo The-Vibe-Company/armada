@@ -2,10 +2,10 @@ import {
   isSandboxPlacementProvider,
   isSandboxProvider,
   type LaunchOptions,
-  runtimeHarnessSupported,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
 } from "@armada/core";
+import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { capabilities } from "@armada/core/machine-capabilities";
 
 export const runtimeBridgeProfiles = {

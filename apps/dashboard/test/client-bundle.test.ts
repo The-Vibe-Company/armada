@@ -27,6 +27,7 @@ test("the dashboard imports only browser-safe Armada core entry points", () => {
       expect([
         "@armada/core",
         "@armada/core/contract",
+        "@armada/core/harnesses",
         "@armada/core/launch-workdir",
         "@armada/core/machine-capabilities",
       ]).toContain(specifier);

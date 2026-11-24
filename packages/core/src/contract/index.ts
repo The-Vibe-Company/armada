@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { accountOperations } from "./accounts.ts";
+import { accountOperations, antigravityLoginOperations } from "./accounts.ts";
 import type { ServerFailureCode } from "./failures.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
@@ -20,7 +20,12 @@ import { skillDefaultOperations } from "./skill-defaults.ts";
 import { skillpackOperations } from "./skillpack.ts";
 import { tokenOperations } from "./tokens.ts";
 
-export { accountOperations } from "./accounts.ts";
+export {
+  accountOperations,
+  antigravityLoginOperations,
+  antigravityLoginPath,
+  isAntigravityLoginPath,
+} from "./accounts.ts";
 export { type DockerHostVersionStatus, isDockerHostVersionStatus } from "./docker-host.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
@@ -158,6 +163,7 @@ export const operations = {
   ...githubOperations,
   ...tokenOperations,
   ...accountOperations,
+  ...antigravityLoginOperations,
   ...memberOperations,
   ...organizationOperations,
   ...skillDefaultOperations,

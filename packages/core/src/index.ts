@@ -227,7 +227,6 @@ export {
   isHarness,
   MODEL_CREDENTIAL_KINDS,
   mapHarnesses,
-  runtimeHarnessSupported,
 } from "./harnesses.ts";
 export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";

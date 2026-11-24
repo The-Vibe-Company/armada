@@ -48,7 +48,7 @@ describe("dashboard JWT projections", () => {
     ["sandbox interior", (db: Supabase) => getSandbox(db, "sandbox_id"), true],
   ] as const) {
     test(`${name} preserves readable data without implicitly fetching new columns`, async () => {
-      const details = name === "sandbox interior" ? { harness: "claude", status: "ready" } : {};
+      const details = name === "sandbox interior" ? { harness: "antigravity", status: "ready" } : {};
       const db = database({
         id: "row_id",
         org_id: "selected_org",
@@ -69,8 +69,8 @@ describe("dashboard JWT projections", () => {
     });
   }
 
-  test("sandbox interior omits rows with a reserved harness", async () => {
-    const db = database({ id: "sandbox_id", org_id: "selected_org", harness: "antigravity" });
+  test("sandbox interior omits rows with an unknown harness", async () => {
+    const db = database({ id: "sandbox_id", org_id: "selected_org", harness: "unknown-harness" });
     expect(await getSandbox(db.client, "sandbox_id")).toBeNull();
   });
 });

@@ -50,7 +50,7 @@ export default {
 Manage model credentials, GitHub access or your personal Armada session.
   ls            List credential metadata.
   add           Store a credential kind.
-  login codex   Authorize native Codex in your browser.
+  login codex|antigravity   Connect a model account in your browser.
   import        Import native Claude, Codex or Antigravity credentials securely.
   default       Select a default model account by ID.
   limits        Set an account or model concurrency cap.
@@ -72,7 +72,12 @@ Example: armada account login github --help
 Example: armada account logout --help
 `,
   subcommandHelp: {
-    "account login": nativeLoginHelp,
+    "account login": `Usage: armada account login codex|antigravity (--name <name> | --id <id> --expected-version <version>) [--org <name>]
+Codex uses a native device login. Antigravity uses a Google sign-in code. Use leaf --help for details.
+`,
+    "account login antigravity": `Usage: armada account login antigravity (--name <name> | --id <id> --expected-version <version>) [--org <name>]
+Open the Google link and paste the code when prompted. Omit --org for a personal account.
+`,
     "account login codex": nativeLoginHelp,
     "account ls": `Usage: armada account ls [--org <name>] [--json]
 List credential metadata after Armada login; secret values are never returned.

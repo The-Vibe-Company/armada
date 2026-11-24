@@ -16,6 +16,7 @@
     "./contract/sandbox-viewer": "./src/contract/sandbox-viewer.ts",
     "./contract/tokens": "./src/contract/tokens.ts",
     "./docker": "./src/docker-api.ts",
+    "./harnesses": "./src/harnesses.ts",
     "./launch": "./src/launch-exports.ts",
     "./launch-workdir": "./src/launch-workdir.ts",
     "./machine-capabilities": "./src/machine-capabilities.ts",

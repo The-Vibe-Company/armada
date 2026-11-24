@@ -1,12 +1,8 @@
 "use client";
 
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
-import {
-  HARNESSES,
-  MODEL_CATALOG,
-  SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS,
-  runtimeHarnessSupported,
-} from "@armada/core";
+import { HARNESSES, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
+import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
