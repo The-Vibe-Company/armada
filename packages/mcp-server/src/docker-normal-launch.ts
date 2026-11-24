@@ -28,6 +28,7 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { dockerHostLaunchFields, dockerSnapshotLaunchFields } from "@armada/core/contract";
+import { RUNTIME_STARTUP_FAILURES } from "@armada/core/runtime";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -46,7 +47,6 @@ import {
   validateLaunchSkillPins,
 } from "@armada/core/server";
 import { z } from "zod";
-import { RUNTIME_STARTUP_FAILURES } from "../../core/src/runtime-startup-failure.ts";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
