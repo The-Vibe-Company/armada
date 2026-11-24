@@ -50,11 +50,11 @@ const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lea
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
 
-const ADJACENT_RUNTIME_DISPATCH = `(q.state = 'dispatching'
+const adjacentRuntimeDispatch = () => `(q.state = 'dispatching'
   and q.dispatch_generation = s.lifecycle_generation - 1
   and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE})`;
 
-const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.request_id
+const noAdjacentDispatchEvidence = () => `(s.activity_lease_id is distinct from q.request_id
   and not ${QUEUED_DISPATCH_EVIDENCE}
   and (s.provider <> 'docker' or not exists(
     select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
@@ -113,6 +113,20 @@ export async function withJobLease<T>(
     );
     if (jobs.length) return write(tx);
   });
+}
+
+export async function recordStopCapture(tx: Sql, jobId: string, output: unknown) {
+  await tx.query("update public.jobs set outcome=jsonb_build_object('output',$2::jsonb) where id=$1", [
+    jobId,
+    JSON.stringify(output),
+  ]);
+}
+
+export function clearStopCapture(tx: Sql, jobId: string, sandboxId: string, generation: string) {
+  return tx.query(
+    "update public.jobs set outcome=outcome-'output' where id=$1 and sandbox_id=$2 and generation=$3 and kind='stop'",
+    [jobId, sandboxId, generation],
+  );
 }
 
 export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId: string) {
@@ -250,17 +264,17 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
-                    or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
+                    or (${adjacentRuntimeDispatch()} and s.status in ('ready','running')
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_PROMPT}))))
+                      and (${noAdjacentDispatchEvidence()} or ${OBSOLETE_RUNTIME_PROMPT}))))
                     as unrecoverable_dispatch,
-                  case when ${ADJACENT_RUNTIME_DISPATCH}
+                  case when ${adjacentRuntimeDispatch()}
                     and (s.status in ('ready','running')
                       or (s.status = 'starting'
                         and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text
-                    when ${ADJACENT_RUNTIME_DISPATCH} and ${PENDING_READY_DOCKER_RESUME_ACK}
+                    when ${adjacentRuntimeDispatch()} and ${PENDING_READY_DOCKER_RESUME_ACK}
                     then least(s.expires_at, statement_timestamp() + interval '1 second')::text
                   end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
@@ -388,25 +402,28 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     return rows.length > 0;
   }
 
-  async function withLockedTurnGeneration<T>(
+  async function withLockedJobGeneration<T>(
     job: Job,
     owner: string,
     work: (db: Sql, generation: string | null) => Promise<T>,
     lockPrerequisites?: (tx: Sql) => Promise<void>,
   ) {
-    if (job.kind !== "turn_dispatch") return work(sql, job.generation);
-    if (!sql.transaction) throw new Error("Turn job fencing requires a transaction.");
+    if (job.kind !== "turn_dispatch" && job.kind !== "stop") return work(sql, job.generation);
+    if (!sql.transaction) throw new Error("Job fencing requires a transaction.");
     return sql.transaction(async (tx) => {
       await lockPrerequisites?.(tx);
       await tx.query("select id from public.sandboxes where id = $1 for update", [job.sandbox_id]);
       const { rows } = await tx.query<{ generation: string }>(
         `select j.generation::text from public.jobs j
          join public.sandboxes s on s.id = j.sandbox_id and s.lifecycle_generation = j.generation
-         where ${fence} and j.kind = 'turn_dispatch'`,
-        claimIdentity(job, owner),
+         where ${fence} and j.kind = $4`,
+        [...claimIdentity(job, owner), job.kind],
       );
       if (rows[0]) return work(tx, rows[0].generation);
-      if (lockPrerequisites) throw new Error("Turn job lease is no longer current.");
+      if (lockPrerequisites)
+        throw new Error(
+          job.kind === "stop" ? "Stop job lease is no longer current." : "Turn job lease is no longer current.",
+        );
     });
   }
 
@@ -616,20 +633,20 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       });
     },
     async handoffGeneration(job, owner, handoff) {
-      if (job.kind !== "turn_dispatch" || job.generation === null)
-        throw new Error("Only a sandbox turn job can hand off its generation.");
-      const generation = await withLockedTurnGeneration(
+      if ((job.kind !== "turn_dispatch" && job.kind !== "stop") || job.generation === null)
+        throw new Error("This job cannot hand off its generation.");
+      const generation = await withLockedJobGeneration(
         job,
         owner,
         async (tx, current) => {
-          const claim = claimKey(job, owner);
+          const claim = [...claimIdentity(job, owner), current];
           const { rows } = await tx.query(
             `select j.id from public.jobs j where ${fence} and j.generation = $4
              and j.attempts <= j.max_attempts and (j.deadline_at is null or j.deadline_at > clock_timestamp())
            for update`,
             claim,
           );
-          if (current !== job.generation || !rows[0]) throw new Error("Turn job cannot admit another generation.");
+          if (current !== job.generation || !rows[0]) throw new Error("Job cannot admit another generation.");
           await handoff.advance(tx, job);
           const updated = await tx.query<{ generation: string }>(
             `update public.jobs j set generation = s.lifecycle_generation from public.sandboxes s
@@ -639,17 +656,26 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
            returning j.generation::text`,
             claim,
           );
-          if (!updated.rows[0]) throw new Error("Turn admission did not advance its fenced generation.");
+          if (!updated.rows[0])
+            throw new Error(
+              job.kind === "stop"
+                ? "Stop admission did not advance its fenced generation."
+                : "Turn admission did not advance its fenced generation.",
+            );
           return updated.rows[0].generation;
         },
         handoff.lockPrerequisites,
       );
-      if (generation === undefined) throw new Error("Turn job lease is no longer current.");
+      if (generation === undefined)
+        throw new Error(
+          job.kind === "stop" ? "Stop job lease is no longer current." : "Turn job lease is no longer current.",
+        );
+      if (job.kind === "stop") job.generation = generation;
       return generation;
     },
     async renew(job, owner, seconds) {
       return (
-        (await withLockedTurnGeneration(job, owner, async (db, generation) => {
+        (await withLockedJobGeneration(job, owner, async (db, generation) => {
           const { rows } = await db.query<{ renewed: boolean }>("select public.renew_job($1,$2,$3,$4,$5) as renewed", [
             ...claimIdentity(job, owner),
             generation,
@@ -668,10 +694,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' and evidence ? 'docker_actor_epoch'
                   then evidence || jsonb_build_object('reason', $8::text)
+                  when $5 = 'failed' and kind = 'stop' then jsonb_build_object('reason', $8::text)
                   when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (
-             select case when kind = 'launch' and $6::jsonb is not null
+             select kind, case when kind = 'launch' and $6::jsonb is not null
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end ||
@@ -701,7 +728,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         return rows[0]?.completed === true;
       };
-      if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
+      if (job.kind === "turn_dispatch") return (await withLockedJobGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));

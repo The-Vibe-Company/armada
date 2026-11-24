@@ -1,4 +1,5 @@
 import { type AgentEvent, isRecord, PROMPT_STATUSES, type SandboxStatus, type ToolCall } from "@armada/core";
+import { sandboxUsesRuntime } from "./sandbox-thread";
 
 const ACTIVE: readonly SandboxStatus[] = ["starting", "ready", "running", "stopping"];
 
@@ -140,8 +141,7 @@ export function conversationReadDirection(
   sandbox: { provider: string | null; runtime_transport: string | null; boat_runtime: boolean },
   source: "history" | "follow",
 ) {
-  const retained = sandbox.provider === "docker" || sandbox.runtime_transport === "dialout" || sandbox.boat_runtime;
-  return source === "history" && retained ? "backward" : "forward";
+  return source === "history" && sandboxUsesRuntime(sandbox) ? "backward" : "forward";
 }
 
 /** One upstream page after `initialCursor`; the caller follows historical continuations. */

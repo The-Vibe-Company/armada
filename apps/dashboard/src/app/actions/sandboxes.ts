@@ -1,6 +1,13 @@
 "use server";
 
-import { type Harness, MODEL_CATALOG, validateSkillPins } from "@armada/core";
+import {
+  type Harness,
+  isSandboxProvider,
+  MODEL_CATALOG,
+  SANDBOX_PLACEMENT_LABELS,
+  validateSkillPins,
+} from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -33,8 +40,8 @@ import { dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/d
 import { snapshotLaunchEnabled } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { createGateway, GatewayError } from "@/lib/gateway";
-import { goldenLaunchReadiness, goldenRowState, PROVIDER_LABELS, providerCapacity } from "@/lib/golden-form";
-import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
+import { goldenLaunchReadiness, goldenRowState, providerCapacity } from "@/lib/golden-form";
+import { DOCKER_HOST_LABEL, dockerHostGroup, sandboxProviderLabel } from "@/lib/labels";
 import {
   decodeLaunchAttempt,
   encodeLaunchAttempt,
@@ -54,6 +61,7 @@ import { connectedProviders } from "@/lib/provider-setup";
 import { goldenRepositories, goldenRepositoryDirs, repositoryChoice } from "@/lib/repository-context";
 import { filtersToSearch } from "@/lib/sandbox-filters";
 import { lifecycleFailure } from "@/lib/sandbox-lifecycle";
+import { sandboxUsesRuntime } from "@/lib/sandbox-thread";
 import { createClient } from "@/lib/supabase/server";
 import { launchTarget } from "@/lib/template-launch";
 import { ttlChoice } from "@/lib/templates";
@@ -109,7 +117,8 @@ export async function extendSandbox(_previous: ActionResult | null, data: FormDa
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  if (target.sandbox.provider === "docker") return fail("The time limit cannot be extended on a Docker host.");
+  if (!capabilities(target.sandbox.provider).extendLifetime)
+    return fail("The time limit cannot be extended on a Docker host.");
   const expires = Date.parse(target.sandbox.expires_at ?? "");
   if (!Number.isFinite(expires)) return fail("This sandbox has no recorded deadline to extend.");
   const ttl = Math.ceil((Math.max(Date.now(), expires) - Date.now()) / 1000) + 3600;
@@ -138,7 +147,7 @@ export async function stopSandbox(_previous: ActionResult | null, data: FormData
   revalidatePath(`/sandboxes/${id}`);
   revalidatePath("/sandboxes");
   return done(
-    target.sandbox.provider === "docker"
+    capabilities(target.sandbox.provider).stopRetention === "container"
       ? "Stop requested. The container stops and its workspace stays on the host."
       : "Stop requested. The machine is removed and the disk is kept.",
   );
@@ -177,10 +186,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   let override: SendArgs = {};
   const requestId = formString(data, SEND_KEY_FIELD);
   if (!isUuid(requestId)) return fail("That request is not valid. Reload the page and send it again.");
-  const pinned =
-    target.sandbox.provider === "docker" ||
-    target.sandbox.boat_runtime ||
-    target.sandbox.runtime_transport === "dialout";
+  const pinned = sandboxUsesRuntime(target.sandbox);
   if (pinned) {
     // Runtime-backed sandboxes keep launch choices and admit stable instruction IDs.
     const checked = pinnedSend(modelFields(data), requestId);
@@ -381,7 +387,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     // A provider refusing an explicit size (plan, disk) is never retried with another: say what can be changed.
     if (parsed.args.size && error.code && PROVIDER_REFUSALS.has(error.code))
       return fail(
-        `${launchFailureMessage(error)} If ${PROVIDER_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
+        `${launchFailureMessage(error)} If ${SANDBOX_PLACEMENT_LABELS[parsed.args.provider]} refused ${MACHINE_SIZE_LABELS[parsed.args.size]}, choose another size or the default.`,
       );
     return fail(launchFailureMessage(error));
   }
@@ -458,10 +464,10 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
   ]);
   const connected = setup.state === "unavailable" ? null : connectedProviders(setup.status);
   const targets: LaunchStartTarget[] = goldens.flatMap((golden): LaunchStartTarget[] => {
-    if (golden.provider === "docker") return [];
+    if (!isSandboxProvider(golden.provider)) return [];
     const repositories = goldenRepositoryDirs(golden.config);
     const sizing = goldenSizing(golden, repositories);
-    const group = `${PROVIDER_LABELS[golden.provider]} cloud`;
+    const group = sandboxProviderLabel(golden.provider);
     const readiness = goldenLaunchReadiness({
       provider: golden.provider,
       hasSnapshot: Boolean(golden.provider_snapshot_id),

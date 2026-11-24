@@ -244,7 +244,7 @@ export function ComposerLocation({
                   label: start.label,
                   group: repo?.otherStarts.includes(start)
                     ? "Starts without this repository"
-                    : start.provider === "docker"
+                    : capabilities(start.provider).launchSource === "host"
                       ? "Docker hosts"
                       : start.group,
                   reason: start.reason,

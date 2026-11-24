@@ -173,9 +173,9 @@ type TemplateProblem = { kind: "environment" | "tool" | "variable" | "secret"; t
 export function templateProblems(definition: TemplateDefinition, lookups: TemplateLookups): TemplateProblem[] {
   const problems: TemplateProblem[] = [];
   const golden = lookups.goldens.find((row) => row.id === definition.goldenId);
-  if (definition.provider !== "docker" && (!golden || golden.provider !== definition.provider))
+  if (definition.goldenId !== null && (!golden || golden.provider !== definition.provider))
     problems.push({ kind: "environment", text: "Its snapshot was removed or is no longer visible to you." });
-  else if (definition.provider !== "docker" && golden && !golden.ready)
+  else if (definition.goldenId !== null && golden && !golden.ready)
     problems.push({ kind: "environment", text: `${golden.name} has no snapshot yet.` });
   if (lookups.connections)
     for (const id of definition.connections) {

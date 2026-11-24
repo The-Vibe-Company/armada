@@ -247,6 +247,12 @@ export default async function GoldensPage({ searchParams }: Props) {
   });
   const skipped = goldens.length - shown.length;
   const cloudRows = shown.map((golden) => environmentRow(golden, context, now));
+  const rebuildableBoatIds = new Set(
+    cloudRows.filter((row) => row.provider === "boat" && row.rebuildable).map((row) => row.key),
+  );
+  const replacements = goldens
+    .filter((golden) => rebuildableBoatIds.has(golden.id))
+    .map(({ id, name, visibility }) => ({ id, name, visibility }));
   const rows = sortResources([
     ...cloudRows,
     ...snapshots.map((snapshot) =>
@@ -281,17 +287,17 @@ export default async function GoldensPage({ searchParams }: Props) {
           cloudForms={Object.fromEntries(
             (connected ?? []).map((provider) => [
               provider,
-              <CreatePanel
+              <GoldenForm
                 key={provider}
-                org={selected}
+                mode="create"
+                orgId={selected.org.id}
+                orgName={selected.org.name}
+                isAdmin={selected.role === "admin"}
                 providers={connected ?? []}
                 capacities={capacities}
-                boatLive={counts.boat.live}
-                serverReady={serverReady}
+                canStart={serverReady}
                 githubConnected={githubConnected}
-                rebuildable={goldens.filter((golden) =>
-                  cloudRows.some((row) => row.key === golden.id && row.provider === "boat" && row.rebuildable),
-                )}
+                replacements={replacements}
                 launch={{ orgId: selected.org.id, catalog: MODEL_CATALOG, connections, accounts }}
               />,
             ]),
@@ -555,49 +561,6 @@ function LegacyConflict({ provider, goldens }: { provider: SandboxProviderId; go
         </p>
       </AlertDescription>
     </Alert>
-  );
-}
-
-/**
- * The create form, in the dialog the New button opens. When Boat is full it says so first and points at the
- * environments the viewer can rebuild instead; the form stays a click away (Modal, or a slot freed meanwhile).
- */
-function CreatePanel({
-  org,
-  capacities,
-  boatLive,
-  serverReady,
-  githubConnected,
-  providers,
-  rebuildable,
-  launch,
-}: {
-  org: Membership;
-  /** The providers the org has connected, where a new golden may be built; none: the form only follows a tracked build. */
-  providers: SandboxProviderId[];
-  capacities: Partial<Record<SandboxProviderId, CapacityState>>;
-  /** Live Boat goldens visible here; the Boat slot may instead be held by a removed one. */
-  boatLive: number;
-  serverReady: boolean;
-  githubConnected: boolean;
-  /** The Boat environments this viewer may rebuild, offered instead of a new one when Boat is full. */
-  rebuildable: GoldenRow[];
-  launch: React.ComponentProps<typeof GoldenForm>["launch"];
-}) {
-  void boatLive;
-  return (
-    <GoldenForm
-      mode="create"
-      orgId={org.org.id}
-      orgName={org.org.name}
-      isAdmin={org.role === "admin"}
-      capacities={capacities}
-      providers={providers}
-      canStart={serverReady && providers.length > 0}
-      githubConnected={githubConnected}
-      {...(launch ? { launch } : {})}
-      replacements={rebuildable.map((row) => ({ id: row.id, name: row.name, visibility: row.visibility }))}
-    />
   );
 }
 
@@ -1135,18 +1098,11 @@ function IdentifierDetails({ children }: { children: import("react").ReactNode }
 
 function SnapshotLaunchDialog({ primary = false, ...props }: LaunchProps & { primary?: boolean }) {
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button variant={primary ? "default" : "outline"} size="sm">
-          {primary ? "Launch a sandbox" : "Launch"}
-        </Button>
-      </DialogTrigger>
-      <LaunchDialogContent>
-        <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
-          <SnapshotLaunchStart {...props} />
-        </Suspense>
-      </LaunchDialogContent>
-    </Dialog>
+    <EnvironmentLaunchDialog primary={primary}>
+      <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
+        <SnapshotLaunchStart {...props} />
+      </Suspense>
+    </EnvironmentLaunchDialog>
   );
 }
 /** Launch-only Boat harness discovery streams independently of the snapshot inventory. */
@@ -1157,15 +1113,21 @@ async function SnapshotLaunchStart(props: LaunchProps) {
 
 function HostLaunchDialog({ primary = false, ...props }: HostLaunchStart & { primary?: boolean }) {
   return (
+    <EnvironmentLaunchDialog primary={primary}>
+      <LaunchStart {...props} />
+    </EnvironmentLaunchDialog>
+  );
+}
+
+function EnvironmentLaunchDialog({ primary, children }: { primary: boolean; children: import("react").ReactNode }) {
+  return (
     <Dialog>
       <DialogTrigger asChild>
         <Button variant={primary ? "default" : "outline"} size="sm">
           {primary ? "Launch a sandbox" : "Launch"}
         </Button>
       </DialogTrigger>
-      <LaunchDialogContent>
-        <LaunchStart {...props} />
-      </LaunchDialogContent>
+      <LaunchDialogContent>{children}</LaunchDialogContent>
     </Dialog>
   );
 }

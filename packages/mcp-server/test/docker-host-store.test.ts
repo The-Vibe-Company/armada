@@ -15,11 +15,14 @@ import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
+import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import type { Job } from "../src/jobs/runner.ts";
+import { createStopJob } from "../src/jobs/stop.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
+import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -486,6 +489,121 @@ async function machineBootstrapFixture() {
   await expect(adapter.bootstrap(bootstrap)).rejects.toThrow("outcome is pending");
   return { ...a, adapter, bootstrap, enrol: () => authority.enrol(ticket.enrolmentToken) };
 }
+
+test("Docker stop takeover reuses the final snapshot and settles from the retained host receipt", async () => {
+  const a = await machineBootstrapFixture();
+  const boot = await store.poll(
+    a.hostToken,
+    a.installationId,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    null,
+    null,
+    [],
+    null,
+    false,
+    false,
+    false,
+    true,
+  );
+  const session = await a.enrol();
+  await store.complete(a.hostToken, a.installationId, { requestId: boot!.requestId, outcome: "completed" });
+  const checkpoint = randomUUID();
+  await sql.query(
+    `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+     values($1,$2,$3,0,now())`,
+    [a.sandboxId, session.epoch, checkpoint],
+  );
+  await store.enqueueSandbox(a.owner, a.sandboxId, {
+    operation: "stop",
+    requestId: checkpoint,
+    idleCheckpointRequest: checkpoint,
+  });
+  const jobs = createJobsStore(sql, key);
+  let captures = 0;
+  const reader = () => ({
+    async listOutputEntries() {
+      captures++;
+      return [{ name: "last.txt", size: 1, revision: "1:2:3:4" }];
+    },
+    readOutputChunk: async () => new Uint8Array([42]),
+  });
+  const firstOwner = randomUUID();
+  const first = (await jobs.claim("stop", firstOwner, 30, 1))!;
+  const signal = new AbortController().signal;
+  await expect(
+    createStopJob(sql, key, reader).run(first, {
+      signal,
+      canDispatch: async (tx) => (await jobs.inspect(first, firstOwner, tx)) === "dispatch",
+      async handoffGeneration() {
+        throw new Error("interrupted after capture");
+      },
+    }),
+  ).rejects.toThrow("interrupted after capture");
+  const outputNames = () => sql.query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId]);
+  await sql.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [first.id]);
+  const owner = randomUUID();
+  const job = (await jobs.claim("stop", owner, 30, 1))!;
+  const handler = createStopJob(sql, key, reader);
+  const context = {
+    signal,
+    canDispatch: async (tx?: Sql) => (await jobs.inspect(job, owner, tx)) === "dispatch",
+    handoffGeneration: (handoff: Parameters<typeof jobs.handoffGeneration>[2]) =>
+      jobs.handoffGeneration(job, owner, handoff),
+  };
+  expect(await handler.run(job, context)).toMatchObject({ status: "retry" });
+  expect(captures).toBe(1);
+  const stop = await store.poll(a.hostToken, a.installationId);
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: stop!.requestId,
+    outcome: "completed",
+    machineId: a.machine.machineId,
+  });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping" });
+  await sql.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+    a.owner.orgId,
+    a.owner.userId,
+  ]);
+  let clock = 0;
+  const controls = createDockerSandboxControls(sql, key, {
+    timeoutMs: 1_000,
+    clock: {
+      now: () => clock,
+      async wait(ms) {
+        if (clock === 0) expect(await jobs.complete(job, owner, await handler.run(job, context))).toBe(true);
+        clock += ms;
+      },
+    },
+  });
+  expect(
+    await controls.invoke({ ...a.owner, via: "service", orgs: [{ orgId: a.owner.orgId, role: "admin" }] }, "stop", {
+      id: a.sandboxId,
+      request_id: randomUUID(),
+    }),
+  ).toMatchObject({ handled: true, result: { status: "stopped" } });
+  expect((await outputNames()).rows).toEqual([]);
+  await sql.query(
+    `select public.sandbox_transition(id,lifecycle_generation,array['stopped']::public.sandbox_status[],
+      'starting','resume_admission','docker_resume_admitted','[]'::jsonb) from sandboxes where id=$1`,
+    [a.sandboxId],
+  );
+  const publish = (await jobs.claim(OUTPUTS_CAPTURE, owner, 30, 1))!;
+  const outputs = createSandboxOutputs(sql, key, async () => {
+    throw new Error("unexpected provider read");
+  });
+  const result = await outputs.captureJob.run(publish, {
+    signal,
+    canDispatch: async () => (await jobs.inspect(publish, owner)) === "dispatch",
+  });
+  expect(await jobs.complete(publish, owner, result)).toBe(true);
+  const chunks = await sql.query(
+    "select o.name from sandbox_output_chunks c join sandbox_outputs o on o.transfer_id=c.transfer_id where o.sandbox_id=$1",
+    [a.sandboxId],
+  );
+  expect(chunks.rows).toEqual([{ name: "last.txt" }]);
+});
 
 test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {
   const a = await machineBootstrapFixture();

@@ -1,5 +1,5 @@
-import type { Harness } from "@armada/core";
-import { mapHarnesses } from "@armada/core";
+import { type Harness, mapHarnesses, SANDBOX_PLACEMENT_LABELS, type SandboxPlacementProviderId } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 
 /** The agent a harness runs, as people know it. */
 export const HARNESS_LABELS: Record<Harness, string> = mapHarnesses((descriptor) => descriptor.label);
@@ -22,4 +22,10 @@ export const DOCKER_HOSTS_LABEL = "Docker hosts";
 /** A Docker host's launch-picker group: its name (when set), the shared term and details such as its state. */
 export function dockerHostGroup(name: string | null | undefined, ...details: string[]): string {
   return [name, DOCKER_HOST_LABEL, ...details].filter(Boolean).join(" · ");
+}
+
+export function sandboxProviderLabel(provider: SandboxPlacementProviderId) {
+  return capabilities(provider).launchSource === "host"
+    ? DOCKER_HOST_LABEL
+    : `${SANDBOX_PLACEMENT_LABELS[provider]} cloud`;
 }

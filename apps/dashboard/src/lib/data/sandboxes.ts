@@ -8,6 +8,7 @@ import {
   type SandboxCost,
   summarizeLaunch,
 } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
@@ -155,7 +156,9 @@ export async function listSandboxHostNames(
   hosts: DockerHostList | null,
 ): Promise<Map<string, string>> {
   const names = new Map<string, string>();
-  const wanted = rows.filter((row) => row.provider === "docker" && row.canOpen && isUuid(row.id)).map((row) => row.id);
+  const wanted = rows
+    .filter((row) => capabilities(row.provider).launchSource === "host" && row.canOpen && isUuid(row.id))
+    .map((row) => row.id);
   if (wanted.length === 0 || hosts === null) return names;
   const selected = await selectedOrganization();
   if (!selected) return names;

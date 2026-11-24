@@ -22,7 +22,7 @@ import {
 } from "@armada/core/server";
 import type { Caller, CallerResult } from "./caller.ts";
 import type { Job, JobResult } from "./jobs/runner.ts";
-import type { createJobsStore } from "./jobs/store.ts";
+import { clearStopCapture, type createJobsStore } from "./jobs/store.ts";
 import {
   BOAT_RETAINED_OUTPUT_STOP,
   CAN_WRITE_LIVE,
@@ -31,6 +31,8 @@ import {
   lockOutputSandbox,
   OUTPUT_COLLECTOR_ELIGIBLE,
   OUTPUT_SCAN_UNPUBLISHED,
+  type PublishedFile,
+  publishOutputTransfers,
   recordOutputPublication,
   remainingOutputOrgBytes,
 } from "./output-transfers.ts";
@@ -61,6 +63,8 @@ const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
     and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
 
 const CAPTURE_CANDIDATE = `not application_secret_tainted and provider_sandbox_id is not null
+  and not exists(select 1 from public.jobs stop where stop.sandbox_id=sandboxes.id
+    and stop.generation=sandboxes.lifecycle_generation and stop.kind='stop' and stop.state in ('queued','leased'))
   and ((${LIVE_OUTPUT_CANDIDATE}) or (${BOAT_RETAINED_CANDIDATE}))`;
 export const OUTPUTS_CAPTURE = "outputs_capture";
 
@@ -211,6 +215,10 @@ async function probeOutputCapability(
   return markOutputCollectorSupported(sql, id, generation, providerId);
 }
 
+type InlineOutput = { name: string; size: number; digest: string; content: string };
+export type StagedOutput = { scan: string; files: PublishedFile[] } | { scan: string; inline: InlineOutput[] };
+type StageOutput = (tx: Sql, output: StagedOutput) => Promise<void>;
+
 async function collect(
   sql: Sql,
   provider: OutputReader,
@@ -224,6 +232,7 @@ async function collect(
     generation: string;
     periodic?: boolean;
     canDispatch?: () => Promise<boolean>;
+    stage?: StageOutput | undefined;
   },
 ) {
   const { signal, writes, generation, periodic } = options;
@@ -280,7 +289,12 @@ async function collect(
           { sandboxId: providerId, ...(signal ? { signal } : {}) },
           scan,
           key,
-          { generation, mode: "live", writes },
+          {
+            generation,
+            mode: "live",
+            writes,
+            stage: options.stage && ((tx, files) => options.stage!(tx, { scan, files })),
+          },
         ),
       );
       return;
@@ -333,28 +347,8 @@ async function collect(
     const sandbox = authority.rows[0];
     if (!sandbox) return;
     signal?.throwIfAborted();
-    const remaining = await remainingOutputOrgBytes(tx, sandbox.org_id);
-    const existing =
-      (
-        await tx.query<{ bytes: number }>(
-          "select coalesce(sum(size),0)::integer as bytes from public.sandbox_outputs where sandbox_id=$1 and content_enc is not null",
-          [id],
-        )
-      ).rows[0]?.bytes ?? 0;
-    if (payload.reduce((total, file) => total + file.size, 0) > Math.max(0, remaining) + existing)
-      throw new OutputCollectionError("output_limit");
-    signal?.throwIfAborted();
-    await tx.query(
-      `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
-      removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
-      insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
-      select $1,name,digest,size,decode(content,'hex') from incoming
-      on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,
-        transfer_id=null,skipped=null,updated_at=now()
-      where sandbox_outputs.digest is distinct from excluded.digest`,
-      [id, JSON.stringify(payload)],
-    );
-    await recordOutputPublication(tx, id, scan);
+    if (options.stage) await options.stage(tx, { scan, inline: payload });
+    else await publishInlineOutputs(tx, id, scan, sandbox.org_id, payload);
     signal?.throwIfAborted();
   });
   // A write already in progress is bounded by SQL and settles before the pool closes.
@@ -367,6 +361,77 @@ async function collect(
     void settled.then(() => writes.delete(settled));
   }
   await write;
+}
+
+async function publishInlineOutputs(tx: Sql, id: string, scan: string, orgId: string, payload: InlineOutput[]) {
+  const remaining = await remainingOutputOrgBytes(tx, orgId);
+  const existing =
+    (
+      await tx.query<{ bytes: number }>(
+        "select coalesce(sum(size),0)::integer as bytes from public.sandbox_outputs where sandbox_id=$1 and content_enc is not null",
+        [id],
+      )
+    ).rows[0]?.bytes ?? 0;
+  if (payload.reduce((total, file) => total + file.size, 0) > Math.max(0, remaining) + existing)
+    throw new OutputCollectionError("output_limit");
+  await tx.query(
+    `with incoming as (select * from jsonb_to_recordset($2::jsonb) as f(name text,digest text,size integer,content text)),
+    removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
+    insert into public.sandbox_outputs(sandbox_id,name,digest,size,content_enc)
+    select $1,name,digest,size,decode(content,'hex') from incoming
+    on conflict(sandbox_id,name) do update set digest=excluded.digest,size=excluded.size,content_enc=excluded.content_enc,
+      transfer_id=null,skipped=null,updated_at=now()
+    where sandbox_outputs.digest is distinct from excluded.digest`,
+    [id, JSON.stringify(payload)],
+  );
+  await recordOutputPublication(tx, id, scan);
+}
+
+export async function enqueueStopOutput(
+  tx: Sql,
+  jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
+  sandboxId: string,
+  orgId: string,
+  sourceGeneration: string | number,
+) {
+  const source = (
+    await tx.query<{ id: string }>(
+      `select id from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop' and outcome ? 'output'
+      and state in ('queued','leased','done') order by created_at desc,id desc limit 1`,
+      [sandboxId, sourceGeneration],
+    )
+  ).rows[0];
+  if (source)
+    await jobs.enqueue(
+      OUTPUTS_CAPTURE,
+      sandboxId,
+      null,
+      source.id,
+      { stoppedJobId: source.id, sourceGeneration: String(sourceGeneration) },
+      { orgId, maxAttempts: 8 },
+      tx,
+    );
+}
+
+async function publishStagedStopOutput(tx: Sql, id: string, stoppedJobId: string, sourceGeneration: string) {
+  await lockOutputSandbox(tx, id);
+  const staged = (
+    await tx.query<{ org_id: string; output: StagedOutput }>(
+      `select s.org_id,j.outcome->'output' as output from public.sandboxes s
+       join public.jobs j on j.sandbox_id=s.id
+       where s.id=$1 and j.generation=$2 and s.status<>'deleted' and not s.application_secret_tainted
+         and j.id=$3 and j.kind='stop' and j.outcome ? 'output'
+         and not exists(select 1 from public.sandbox_output_state o where o.sandbox_id=s.id
+           and o.published_scan >= (j.outcome #>> '{output,scan}')::timestamptz)`,
+      [id, sourceGeneration, stoppedJobId],
+    )
+  ).rows[0];
+  if (staged) {
+    const { output, org_id: orgId } = staged;
+    if ("files" in output) await publishOutputTransfers(tx, id, output.scan, output.files);
+    else await publishInlineOutputs(tx, id, output.scan, orgId, output.inline);
+  }
+  await clearStopCapture(tx, stoppedJobId, id, sourceGeneration);
 }
 
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
@@ -385,7 +450,12 @@ export async function captureFinalOutputs(
   sql: Sql,
   provider: OutputReader,
   id: string,
-  options: { key?: string | undefined; signal?: AbortSignal } = {},
+  options: {
+    key?: string | undefined;
+    signal?: AbortSignal;
+    generation?: string;
+    stage?: StageOutput;
+  } = {},
 ): Promise<void> {
   const key = options.key ?? encryptionKey();
   if (!key) return;
@@ -406,8 +476,9 @@ export async function captureFinalOutputs(
         }>(
           `select provider,provider_sandbox_id,lifecycle_generation::text as generation,clock_timestamp()::text as scan
            from public.sandboxes where id=$1 and stopped_at is null and (${CAN_WRITE_LIVE})
+           and ($2::bigint is null or lifecycle_generation=$2)
            and provider_sandbox_id is not null and ${OUTPUT_COLLECTOR_ELIGIBLE}`,
-          [id],
+          [id, options.generation ?? null],
         ),
       )
     ).rows[0];
@@ -420,7 +491,11 @@ export async function captureFinalOutputs(
     providerKind = row.provider;
     try {
       await outputPhase("publish_snapshot", () =>
-        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, { signal, generation: row.generation }),
+        collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
+          signal,
+          generation: row.generation,
+          stage: options.stage,
+        }),
       );
     } catch (error) {
       if (
@@ -694,9 +769,17 @@ export function createSandboxOutputs(
     captureJob: {
       concurrency: OUTSTANDING_MAX,
       async run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult> {
-        if (!key || !job.sandbox_id || !job.generation) return { status: "done" };
+        if (!key || !job.sandbox_id) return { status: "done" };
         if (!(await context.canDispatch())) return { status: "fail", reason: "outputs_capture_dispatch_unavailable" };
         const id = job.sandbox_id;
+        const staged = job.payload as { stoppedJobId: string; sourceGeneration: string } | null;
+        if (staged) {
+          return {
+            status: "done",
+            commit: (tx) => publishStagedStopOutput(tx, id, staged.stoppedJobId, staged.sourceGeneration),
+          };
+        }
+        if (!job.generation) return { status: "done" };
         const startedAt = Date.now();
         const row = (
           await sql.query<OutputTarget & { id: string; provider_sandbox_id: string; scan: string; retained: boolean }>(

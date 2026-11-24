@@ -1,4 +1,5 @@
 import { dockerWorkspaceReclaimedMessage } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import Link from "next/link";
 import {
   AddSandboxTime,
@@ -89,13 +90,13 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: SandboxDe
     );
   } else if (view.attention === "expiring") {
     title = `${view.expiry?.text ?? "Little time left"} and the agent is still working.`;
-    detail =
-      sandbox.provider === "docker"
-        ? "The time limit cannot be extended on a Docker host."
-        : "When time is up Armada tries to save work that was not pushed.";
+    const { extendLifetime } = capabilities(sandbox.provider);
+    detail = extendLifetime
+      ? "When time is up Armada tries to save work that was not pushed."
+      : "The time limit cannot be extended on a Docker host.";
     const memberships = await listMemberships(await createClient(), viewer.id);
     if (
-      sandbox.provider !== "docker" &&
+      extendLifetime &&
       (sandbox.owner_id === viewer.id ||
         memberships.some((item) => item.org.id === sandbox.org_id && item.role === "admin"))
     )
