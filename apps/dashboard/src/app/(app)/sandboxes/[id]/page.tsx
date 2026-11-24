@@ -344,6 +344,7 @@ export default async function SandboxPage({ params }: Props) {
       }
     >
       <SandboxChat
+        key={sandbox.id}
         sandboxId={sandbox.id}
         currentConversation={sandbox.conversation_ids.at(-1)}
         initialStatus={sandbox.publicStatus}
@@ -549,6 +550,7 @@ function DockerSandbox({
         </Alert>
       ) : (
         <SandboxChat
+          key={sandbox.id}
           sandboxId={sandbox.id}
           currentConversation={sandbox.conversation_ids.at(-1)}
           initialStatus={sandbox.publicStatus}

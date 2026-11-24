@@ -2,7 +2,7 @@ import { type AgentEvent, isRecord, PROMPT_STATUSES, type SandboxStatus, type To
 
 const ACTIVE: readonly SandboxStatus[] = ["starting", "ready", "running", "stopping"];
 
-/** Logs of an active sandbox keep changing: the dashboard polls them. */
+/** Logs of an active sandbox keep changing. */
 export function isActiveStatus(status: SandboxStatus): boolean {
   return ACTIVE.includes(status);
 }
