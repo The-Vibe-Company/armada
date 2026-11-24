@@ -8,6 +8,7 @@ import {
   type Sql,
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/core/server";
+import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
@@ -504,7 +505,7 @@ test("only a daemon advertising Machine bootstrap replay receives a pending desc
       }),
     );
     expect(response?.status).toBe(200);
-    const { job } = await response!.json();
+    const { job } = (await response!.json()) as DockerHostPollResponse;
     return job ? { operation: job.operation, generation: job.request.generation } : null;
   };
   expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false)).toBe(false);
