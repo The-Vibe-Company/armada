@@ -504,7 +504,7 @@ test("only a daemon advertising Machine bootstrap replay receives a pending desc
       }),
     );
     expect(response?.status).toBe(200);
-    const { job } = await response?.json();
+    const { job } = await response!.json();
     return job ? { operation: job.operation, generation: job.request.generation } : null;
   };
   expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false)).toBe(false);
