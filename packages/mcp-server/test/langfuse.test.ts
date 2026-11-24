@@ -341,7 +341,11 @@ test("a settled receipt still exports metadata after historical history-only ret
   await db.query(
     `update jobs set attempts=5,outcome=outcome || '{"historyRetries":5}'::jsonb where kind='langfuse_export'`,
   );
-  const exportReceipt = createLangfuse(db, key, (async () => new Response(null, { status: 200 })) as typeof fetch);
+  const exportReceipt = createLangfuse(
+    db,
+    key,
+    (async (_url, _init) => new Response(null, { status: 200 })) as typeof fetch,
+  );
   expect(await runExport(db, exportReceipt, new AbortController().signal)).toBe(true);
   expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
 });
