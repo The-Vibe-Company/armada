@@ -726,22 +726,6 @@ for (const mode of [
               };
               break;
             }
-            case "docker/sandboxes/get":
-              expect(body).toEqual({ org: p, sandboxId: sandboxId(p) });
-              result = {
-                id: sandboxId(p),
-                provider: "docker",
-                snapshotId: ["snapshot_wrong_receipt", "snapshot_lost_receipt_wrong_source"].includes(mode)
-                  ? "other-snapshot"
-                  : snapshotId,
-                hostId: "owned-host",
-                image: snapshotImage,
-                orgId: p,
-                ownerId: snapshotOwner,
-                visibility: "private",
-                status: "ready",
-              };
-              break;
             case "sandbox/list":
               if (!dockerLaunchScenario && p === "docker") {
                 expect(body.externalRef).toBe(dockerLaunchKey);
@@ -1209,6 +1193,21 @@ for (const mode of [
               }
               if (mode === "snapshot_lost_receipt" && p === "docker" && snapshotStatusReads++ === 0) {
                 result = { id: sandboxId(p), provider: p, status: "starting" };
+                break;
+              }
+              if (mode.startsWith("snapshot_") && p === "docker" && !turns.has(p)) {
+                expect(body).toEqual({ org: p, id: sandboxId(p) });
+                result = {
+                  id: sandboxId(p),
+                  provider: p,
+                  status: "ready",
+                  hostId: "owned-host",
+                  image: snapshotImage,
+                  visibility: "private",
+                  snapshotId: ["snapshot_wrong_receipt", "snapshot_lost_receipt_wrong_source"].includes(mode)
+                    ? "other-snapshot"
+                    : snapshotId,
+                };
                 break;
               }
               if (mode.startsWith("idle_")) {

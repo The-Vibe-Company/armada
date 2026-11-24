@@ -80,6 +80,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   The TypeScript SDK infers its request, response and error types from the API contract. Use `outputs.list` and `outputs.get` to read stored sandbox outputs.
   Modal REST and MCP launches and ordinary Docker REST launches return a sandbox ID and `starting` before allocation.
   Follow that ID with status or logs to find the first prompt after enrolment.
+  Docker snapshot launches report their source `snapshotId`, `hostId` and `image` in `sandbox/status`.
   For template launches, check `"requestId" in result`
   before reading the receipt. Boat, Modal, and Docker templates return `starting` before allocation.
   Use its sandbox ID with status or logs to follow startup. Use the shared `SendInput` for follow-up prompts.

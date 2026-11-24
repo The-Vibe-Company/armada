@@ -215,6 +215,7 @@ export const statusOutput = {
   provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
   hostId: z.string().optional(),
   image: z.string().optional(),
+  snapshotId: z.uuid().optional().describe("Snapshot used to launch this Docker sandbox, when applicable."),
   visibility: z.enum(["org", "private"]),
   harness: z.enum(HARNESSES),
   repositoryDir: z

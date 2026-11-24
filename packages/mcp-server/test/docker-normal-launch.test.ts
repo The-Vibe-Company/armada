@@ -2994,6 +2994,13 @@ test.each(["private", "org"] as const)(
     }
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
     expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
+    const { post } = restControl(f);
+    const status = await post("sandbox/status", { org: f.actor.orgId, id: launched.sandbox.id });
+    expect(publishedResponse("sandbox/status").parse(status)).toMatchObject({
+      snapshotId: id,
+      hostId: f.hostId,
+      image,
+    });
     expect(f.jobs[0]).toMatchObject({ request: { image, snapshot: { id, ownerId: creator.userId, visibility } } });
     expect((f.native as { op: string }[]).map((cmd) => cmd.op)).toEqual([
       "health",

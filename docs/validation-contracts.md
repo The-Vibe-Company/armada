@@ -729,7 +729,6 @@ The parameterized case name is `normal Docker smoke uses normal routes (<case>)`
 | --- | ---: |
 | `launch` | 79.50 |
 | `resume` | 75.38 |
-| `preview-follow-up` | 80.91 |
 | `cost` | 76.66 |
 | `bad-cost` | 76.09 |
 | `claude` | 79.41 |

@@ -6,7 +6,6 @@ import {
   createSqlVaultStore,
   decryptSecret,
   encryptSecret,
-  GoldenError,
   ProviderError,
   resolveBoatKey,
   type Sql,
@@ -31,7 +30,7 @@ import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts
 import { launchRoute } from "../launch-control.ts";
 import { launchCredentials } from "../launch-credentials.ts";
 import { createModalLaunchAdmission } from "../modal-launch-admission.ts";
-import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
+import { ordinaryLaunchFingerprint } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
@@ -637,31 +636,23 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
   await db.query("delete from jobs where sandbox_id=$1", [accepted]);
 
   const key = 'historical-launch-"\\雪\n';
-  const actor = { orgId: input.orgId, userId: input.ownerId };
-  const receipts = createOrdinaryLaunchReceipts(sql);
   const payload = { surface: "control", route: "modal-runtime", request: { prompt: null, repo: "workspace" } };
   const refusalKey = `${key}refused`;
-  await expect(
-    receipts.run(
-      actor,
+  const fingerprint = ordinaryLaunchFingerprint(payload);
+  expect(fingerprint).toBe("58fd07ec69fc5341b486d99ee4011e65f3ea41ed7e3fbb787ad66dc579952b21");
+  await db.query(
+    `insert into ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority, failure)
+     values ($1,$2,$3,$4,$5,$6,$7)`,
+    [
+      crypto.randomUUID(),
+      input.orgId,
+      input.ownerId,
       refusalKey,
-      payload,
-      async () => {
-        throw new GoldenError("setup_failed", "Fixture refusal");
-      },
-      {
-        target: { provider: "modal", orgId: actor.orgId, visibility: "private", modal: null },
-        backendId: "modal",
-        management: { scope: "user", ownerId: actor.userId },
-      },
-    ),
-  ).rejects.toMatchObject({ code: "setup_failed" });
-  const historical = await db.query("select fingerprint from ordinary_launch_receipts where request_key=$1", [
-    refusalKey,
-  ]);
-  expect(historical.rows).toEqual([
-    { fingerprint: "58fd07ec69fc5341b486d99ee4011e65f3ea41ed7e3fbb787ad66dc579952b21" },
-  ]);
+      fingerprint,
+      { target: { provider: "modal" } },
+      { kind: "golden", code: "setup_failed" },
+    ],
+  );
 
   const requests = [
     { key: `${key}accepted\ud800`, payload: "historical-accepted", id: accepted },
@@ -809,39 +800,39 @@ test("Modal backfill rolls back when a destination key belongs to a different re
   expect((await db.query("select count(*)::int as count from jobs where kind='launch'")).rows).toEqual([{ count: 1 }]);
 });
 
-test.each(["boat", "modal"] as const)("a %s reservation excludes the competing launch producer", async (first) => {
-  const { db, input, sql } = await modalAdmissionFixture();
-  const key = 'shared-launch-key-"\\雪\n';
-  const actor = { orgId: input.orgId, userId: input.ownerId };
-  const receipts = createOrdinaryLaunchReceipts(sql);
-  const boat = (dispatch: (id: string) => Promise<string>) =>
-    receipts.run(actor, key, { golden: "boat-golden" }, dispatch, {
-      target: { provider: "boat", orgId: actor.orgId, visibility: "org", modal: null },
-      backendId: "boat",
-      management: { scope: "org", ownerId: actor.orgId },
-    });
-  const modal = (payload: unknown) =>
-    admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, payload } });
+test.each(["receipt", "job"] as const)(
+  "an ordinary launch %s reserves the shared key during deploy overlap",
+  async (first) => {
+    const { db, input, sql } = await modalAdmissionFixture();
+    const key = "overlap-launch-key";
+    const payload = { golden: "boat-golden" };
+    const predecessor = () =>
+      db.query(
+        `insert into ordinary_launch_receipts (id,org_id,owner_id,request_key,fingerprint,authority)
+       values ($1,$2,$3,$4,$5,$6)`,
+        [
+          crypto.randomUUID(),
+          input.orgId,
+          input.ownerId,
+          key,
+          ordinaryLaunchFingerprint(payload),
+          { target: { provider: "boat" } },
+        ],
+      );
+    const current = () => admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, payload } });
 
-  if (first === "boat") {
-    await boat(async (id) => id);
-    await expect(modal({ golden: "boat-golden" })).rejects.toMatchObject({ code: "outcome_unknown" });
-    expect((await db.query("select id from sandboxes")).rows).toEqual([]);
-    expect((await db.query("select backfill_modal_launch_receipts()::int as verified")).rows).toEqual([
-      { verified: 1 },
-    ]);
-    return;
-  }
-
-  const { sandbox } = await modal("modal-digest");
-  await expect(
-    boat(async () => {
-      throw new Error("Competing Boat provider must never be called");
-    }),
-  ).rejects.toMatchObject({ code: "conflict" });
-  expect((await db.query("select id from ordinary_launch_receipts")).rows).toEqual([]);
-  expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
-});
+    if (first === "receipt") {
+      await predecessor();
+      await expect(current()).rejects.toMatchObject({ code: "outcome_unknown" });
+      expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+    } else {
+      const { sandbox } = await current();
+      await expect(predecessor()).rejects.toMatchObject({ code: "A2760" });
+      expect((await db.query("select id from ordinary_launch_receipts")).rows).toEqual([]);
+      expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
+    }
+  },
+);
 
 function admitModalLaunch(sql: Sql, key: string, input: ModalLaunchAdmission) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
