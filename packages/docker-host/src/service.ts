@@ -253,7 +253,7 @@ export async function upgradeService(
   const retry =
     process.execPath === p.binary
       ? `${shellQuote(p.binary)} upgrade --server ${serverArg}${instance ? ` --instance ${instance}` : ""}`
-      : `armada host install --server ${serverArg} (supply a fresh one-use token on stdin)`;
+      : "run a fresh installer command from armada host add or the dashboard";
   const { bytes, digest } = await pinnedUpgrade(io, origin, initialMarker, retry);
   const verifyInstalled = async () => {
     if (sha256(await ownedFile(p.binary, io.home, true)) !== digest)

@@ -284,7 +284,7 @@ test("an artifact that fails SHA-256 verification leaves the installation runnin
   try {
     f.download.artifact = "unexpected artifact";
     await expect(upgradeService(f.store, f.state.server, f.io)).rejects.toThrow(
-      "Host artifact SHA-256 mismatch. Check the server and retry:",
+      "Host artifact SHA-256 mismatch. Check the server and retry: run a fresh installer command",
     );
     expect(f.events).toEqual([]);
     expect(await readFile(f.binary, "utf8")).toBe(f.oldBytes);
