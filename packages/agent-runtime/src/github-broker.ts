@@ -258,6 +258,8 @@ export class GitHubBroker {
     });
     const credentialOptions = {
       unix: socket,
+      // Allow the 15-second upstream deadline to reach the wrappers before their 20-second timeout.
+      idleTimeout: 18,
       maxRequestBodySize: 1048576,
       fetch: async (request: Request) => {
         try {
