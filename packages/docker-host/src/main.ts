@@ -22,7 +22,14 @@ import {
 } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
-import { dockerCli, fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "./native.ts";
+import {
+  dockerCli,
+  fileStore,
+  hostFailureClass,
+  httpApi,
+  observeRetainedStop,
+  readDockerOutputArchive,
+} from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
@@ -192,8 +199,11 @@ async function main(args: string[]) {
       },
       {
         cli: dockerCli,
-        failed() {
-          console.error("Docker host container inventory report failed.");
+        failed(phase, error) {
+          console.error("Docker host container inventory report failed.", {
+            phase,
+            errorClass: hostFailureClass(error),
+          });
         },
       },
     );
@@ -292,11 +302,12 @@ async function main(args: string[]) {
             await cleanupOfficialImages(dockerCli);
           } catch {}
         },
-        failed(what) {
+        failed(what, phase, error) {
           console.error(
             what === "tick"
               ? "Docker host iteration failed; local TTL sweep continues. If membership was removed or the host revoked, ask an organization admin to request cleanup; preserve daemon state until cleanup is confirmed."
               : "Docker host job could not be completed or reported; it is retried from its durable receipt.",
+            { phase, errorClass: hostFailureClass(error) },
           );
         },
       });

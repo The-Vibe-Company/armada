@@ -7,7 +7,7 @@ import { startServerWorkers } from "./server-workers.ts";
 
 export type MountFactory = (
   services: ServerServices,
-  configureDockerArchiveTimeout: (request: Request) => void,
+  configureRequestTimeout: (request: Request, seconds: number) => void,
 ) => readonly Route[];
 
 type BackgroundWorker = { stop(): void; done: Promise<void> };
@@ -51,8 +51,8 @@ export function registerServer(modules: readonly ServerModule[]) {
     assembleServer(services: ServerServices) {
       const { options, sql } = services;
       return {
-        mounts: (configureDockerArchiveTimeout: (request: Request) => void) =>
-          mounts.flatMap((mount) => mount(services, configureDockerArchiveTimeout)),
+        mounts: (configureRequestTimeout: (request: Request, seconds: number) => void) =>
+          mounts.flatMap((mount) => mount(services, configureRequestTimeout)),
         startBeforeListen() {
           for (const start of workers.beforeListen) start(services);
         },

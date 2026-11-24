@@ -33,7 +33,7 @@ const triggerMounts: MountFactory = (services) => {
   ];
 };
 
-export const dockerMounts: MountFactory = (services, configureDockerArchiveTimeout) => {
+export const dockerMounts: MountFactory = (services, configureRequestTimeout) => {
   const { env, sql, config, options, store, githubApp, dockerEnabled, dockerBootstrap, dockerLaunchEnabled } = services;
   return [
     ...(env.ARMADA_DOCKER_HOSTS === "1"
@@ -49,7 +49,7 @@ export const dockerMounts: MountFactory = (services, configureDockerArchiveTimeo
           createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), authenticate(services), {
             placement: dockerLaunchEnabled,
             ...(options.log ? { log: options.log } : {}),
-            configureArchiveTimeout: (request) => configureDockerArchiveTimeout?.(request),
+            configureRequestTimeout,
             publicUrl: config.publicUrl,
             snapshots: createDockerSnapshots(sql, config.encryptionKey, {
               enabled: dockerLaunchEnabled,

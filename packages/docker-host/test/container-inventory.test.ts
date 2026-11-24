@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createDockerContainerInventory } from "../src/container-inventory.ts";
 import type { State } from "../src/daemon.ts";
-import { httpApi } from "../src/native.ts";
+import { hostFailureClass, httpApi } from "../src/native.ts";
 
 const state: State = {
   server: "https://armada.example.test",
@@ -186,4 +186,29 @@ test("stopping inventory drains the current Docker call and prevents publishing 
   await api.poll(state);
   expect(scans).toBe(1);
   expect(reports).toBe(0);
+});
+
+test("inventory reports HTTP refusal as an upload failure without response data", async () => {
+  const failure = Promise.withResolvers<{ phase: string; errorClass: string }>();
+  const api = httpApi(
+    (async (url) =>
+      String(url).endsWith("/poll")
+        ? Response.json({ job: null, containerInventory: 1 })
+        : new Response("private server detail", { status: 503 })) as typeof fetch,
+    undefined,
+    undefined,
+    undefined,
+    {
+      cli: { run: async () => ({ exitCode: 0, stdout: "" }) },
+      failed(phase, error) {
+        failure.resolve({ phase, errorClass: hostFailureClass(error) });
+      },
+    },
+  );
+  try {
+    await api.poll(state);
+    expect(await failure.promise).toEqual({ phase: "inventory_upload", errorClass: "HostRequestDenied" });
+  } finally {
+    await api.stopInventory();
+  }
 });
