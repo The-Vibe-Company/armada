@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createDockerContainerInventory } from "../src/container-inventory.ts";
 import type { State } from "../src/daemon.ts";
-import { hostFailureClass, httpApi } from "../src/native.ts";
+import { hostFailureClass, httpApi } from "../src/host.ts";
 
 const state: State = {
   server: "https://armada.example.test",

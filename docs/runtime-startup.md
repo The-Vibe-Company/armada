@@ -229,11 +229,7 @@ ARMADA_RUNTIME_EVENT_SMOKE=use_disposable_staging_sandbox bun scripts/smoke-runt
 
 Require one-use/replay rejection, stable command/result ACKs, WSS plus old-epoch
 closure and duplicate-safe event/usage commit, respectively. Stop/delete the test
-sandbox afterwards. The legacy publication diagnostic additionally needs a dedicated
-exclusive staging subscription holder with no prompt:
-`ARMADA_RUNTIME_NATIVE_AUTH_SMOKE=use_disposable_staging_subscription bun scripts/smoke-runtime-native-auth.ts`.
-It republishes unchanged auth, not an OAuth refresh; normal stop/release/reconnect
-cleanup is required and the holder must not be repurposed for real work.
+sandbox afterwards.
 
 For coordinator-only on-demand Boat inference/continuity verification, consult
 the [Boat lifecycle reference](boat-runtime-first-prompt.md#staging-acceptance);

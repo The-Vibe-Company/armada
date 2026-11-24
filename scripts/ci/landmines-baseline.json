@@ -993,7 +993,6 @@
     "scripts/smoke-runtime-enrolment.ts": 1,
     "scripts/smoke-runtime-events.ts": 2,
     "scripts/smoke-runtime-harness.ts": 4,
-    "scripts/smoke-runtime-native-auth.ts": 1,
     "scripts/smoke-runtime-sockets.ts": 2,
     "scripts/smoke-sandbox-cleanup.test.ts": 1,
     "scripts/smoke-sandbox-cleanup.ts": 3,
@@ -1007,7 +1006,6 @@
     "scripts/testflight/app-store-connect.ts": 13,
     "scripts/testflight/testflight.test.ts": 4,
     "scripts/validate-runtime-compiled.ts": 1,
-    "scripts/validate-runtime-native.ts": 1,
     "scripts/vault-smoke.test.ts": 1,
     "scripts/vault-smoke.ts": 6,
     "scripts/verify-changed.ts": 2
@@ -1442,7 +1440,6 @@
     "packages/docker-host/src/daemon.ts": 16,
     "packages/docker-host/src/disk.ts": 4,
     "packages/docker-host/src/image-retention.ts": 2,
-    "packages/docker-host/src/native.ts": 4,
     "packages/docker-host/src/runtime-install.ts": 1,
     "packages/docker-host/src/service.ts": 2,
     "packages/docker-host/test/daemon.test.ts": 1,
