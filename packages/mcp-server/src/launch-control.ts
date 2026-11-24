@@ -35,6 +35,7 @@ import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
 import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { withBoatManagementIdentity } from "./observed-boat.ts";
+import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
 import { goldenRuntimePlacement, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
@@ -120,13 +121,7 @@ async function launchGolden(
     ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
     ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
   };
-  const { idempotencyKey: _key, ...request } = body;
-  const payload = {
-    surface: "control",
-    route: modalRuntime ? "modal-runtime" : runtime ? "boat-runtime" : "ordinary",
-    request,
-    goldenId: golden.id,
-  };
+  const payload = controlLaunchReceiptPayload(body, golden.id, runtime);
   timing.checkpoint("admission");
   if (HOST_CAPABILITIES[golden.provider].goldenLaunchAdmission) {
     if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");

@@ -2,9 +2,9 @@ import { lstatSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import {
   isNativePathSource,
-  nativePathPattern,
   providerAdapterExclusions,
   providerBranchPattern,
+  scanNativePaths,
   testPaths,
 } from "../metrics/architecture-rules";
 
@@ -133,7 +133,7 @@ const counters: Record<string, Counter> = {
   "native-path": {
     name: "native-path",
     includes: isNativePathSource,
-    pattern: nativePathPattern,
+    scan: scanNativePaths,
   },
   "append-point": {
     name: "append-point",

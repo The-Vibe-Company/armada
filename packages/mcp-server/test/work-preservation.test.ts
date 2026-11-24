@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
@@ -41,6 +42,33 @@ const sharedDatabase = fixture.get;
 
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
 // (including actual Git reconstruction) belongs to core's work-preservation test.
+test("a detached historical archive remains recoverable only by its owner and org admins", async () => {
+  const { db, people, sharedGoldenId } = sharedDatabase();
+  const id = crypto.randomUUID(),
+    archiveId = crypto.randomUUID();
+  const archive = "historical-work";
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,deleted_at)
+       values($1,$2,$3,$4,'boat','bx_historical','codex','deleted','org',now())`,
+    [id, sharedGoldenId, people.org, people.owner],
+  );
+  await db.query(
+    "insert into native_drain_recovery(archive_id,sandbox_id,org_id,owner_id,archive_enc) values($1,$2,$3,$4,$5)",
+    [archiveId, id, people.org, people.owner, await encryptSecret(archive, ENCRYPTION_KEY)],
+  );
+  const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+  try {
+    const read = (actor: string) => readWorkRecovery(bunLikeSql(db), [[people.org], actor], id, archiveId);
+    expect(await read(people.owner)).toBe(archive);
+    expect(await read(people.admin)).toBe(archive);
+    expect(await read(people.member)).toBeUndefined();
+  } finally {
+    if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
+  }
+});
+
 async function withPreservationRow(
   work: (fixture: {
     db: Awaited<ReturnType<typeof sharedDatabase>>["db"];

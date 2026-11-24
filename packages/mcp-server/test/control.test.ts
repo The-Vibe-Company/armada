@@ -27,7 +27,7 @@ import { run } from "../../cli/src/run.ts";
 import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
-import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
+import { createOrdinaryLaunchReceipts, ordinaryLaunchFingerprint } from "../src/ordinary-launch-receipts.ts";
 import { createProviderMetadata } from "../src/provider-metadata.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -1198,9 +1198,17 @@ describe("control API", () => {
           boatSandboxId: receipt.golden.providerSandboxId,
         },
       };
-      await db.query("update ordinary_launch_receipts set response=$2::jsonb where id=$1", [
+      const { idempotencyKey: _key, ...originalRequest } = request;
+      const fingerprint = ordinaryLaunchFingerprint({
+        surface: "control",
+        route: "native",
+        request: originalRequest,
+        goldenId: launched.goldenId,
+      });
+      await db.query("update ordinary_launch_receipts set response=$2::jsonb,fingerprint=$3 where id=$1", [
         launched.id,
         JSON.stringify(oldReceipt),
+        fingerprint,
       ]);
       delete keyed.launch;
       const replay = await call("sandbox/launch", request);

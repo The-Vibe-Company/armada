@@ -709,7 +709,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
     async stopBestEffort(sandboxId: string): Promise<void> {
-      lifecycleTrace(sandboxId, "stop", "before_hook", "best_effort");
       await archive(sandboxId);
     },
     async retireBestEffort(sandboxId: string): Promise<void> {
@@ -896,7 +895,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     },
 
     async stop(request: { sandboxId: string }): Promise<void> {
-      lifecycleTrace(request.sandboxId, "stop", "before_hook", "ordinary");
       lifecycleTrace(request.sandboxId, "stop", "api_dispatch", "ordinary");
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       lifecycleTrace(request.sandboxId, "stop", "api_accepted", "ordinary");

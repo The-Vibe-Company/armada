@@ -45,6 +45,7 @@ reports the base and head totals and the locations of new matches.
 - `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test
   server TypeScript.
 - `native-path` requires zero provider-run references in the architecture metric’s scope.
+  The two stored launch fingerprint discriminators keep their original bytes.
 - `append-point` counts central control routes, server workers and mounts, core
   barrel exports, and CLI command table entries.
 

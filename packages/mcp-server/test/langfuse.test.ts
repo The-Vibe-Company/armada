@@ -336,7 +336,17 @@ test("cutover transfers pending receipts and fences a legacy worker that already
   expect(legacyCompletion.rows).toEqual([]);
 });
 
-test("worker exports the persisted usage envelope and reconstructed archive through OTLP", async () => {
+test("a settled receipt still exports metadata after historical history-only retries", async () => {
+  const { db, counters } = await settledBoatTurn("turn");
+  await db.query(
+    `update jobs set attempts=5,outcome=outcome || '{"historyRetries":5}'::jsonb where kind='langfuse_export'`,
+  );
+  const exportReceipt = createLangfuse(db, key, (async () => new Response(null, { status: 200 })) as typeof fetch);
+  expect(await runExport(db, exportReceipt, new AbortController().signal)).toBe(true);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+});
+
+test.each(["full", "metadata", "tainted"])("runtime OTLP archive export with %s policy", async (mode) => {
   const { db, people } = await database();
   const id = crypto.randomUUID();
   await db.query(
@@ -396,6 +406,9 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
       [id, index + 2002, index === 0 ? "turn" : null, await encryptSecret(JSON.stringify(event), key)],
     );
   await db.query("select public.enqueue_webhook_turn($1,'turn','failed')", [id]);
+  if (mode === "metadata")
+    await db.query("update org_langfuse set content_mode='metadata' where org_id=$1", [people.org]);
+  if (mode === "tainted") await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
   const requests: Request[] = [];
   const exporter = createLangfuse(db, key, (async (url, init) => {
     requests.push(url instanceof Request ? new Request(url, init) : new Request(String(url), init));
@@ -408,8 +421,8 @@ test("worker exports the persisted usage envelope and reconstructed archive thro
     resourceSpans: { scopeSpans: { spans: { attributes: { key: string; value: { stringValue: string } }[] }[] }[] }[];
   };
   const attributes = body.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes;
-  expect(attributes.find((a: { key: string }) => a.key === "langfuse.observation.output")!.value.stringValue).toBe(
-    "Hello",
+  expect(attributes.find((a) => a.key === "langfuse.observation.output")?.value.stringValue).toBe(
+    mode === "full" ? "Hello" : undefined,
   );
   expect(
     attributes.find((a: { key: string }) => a.key === "langfuse.observation.usage_details")!.value.stringValue,

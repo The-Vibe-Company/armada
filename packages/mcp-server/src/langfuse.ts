@@ -314,7 +314,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     concurrency: 1,
     async run(claim, { signal: leaseSignal, canDispatch }) {
       const signal = AbortSignal.any([leaseSignal, AbortSignal.timeout(30_000)]);
-      const { promptId } = claim.outcome as { promptId: string };
+      const { promptId, historyRetries = 0 } = claim.outcome as { promptId: string; historyRetries?: number };
       const job = (
         await sql.query<ExportJob>(
           `select j.sandbox_id,j.prompt_id,j.org_id,j.runtime_ack,j.terminal_status,
@@ -338,7 +338,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       if (!job) return { status: "done" };
 
       const outcome =
-        claim.attempts > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
+        claim.attempts - historyRetries > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
           ? "failed"
           : await exportTurn(job, signal, canDispatch).catch(() => "failed");
       signal.throwIfAborted();

@@ -16,6 +16,20 @@ export function isNativePathSource(path: string) {
 }
 
 export const nativePathPattern = /\b(?:agentPath|nativeRuntime|nativeCli|runtimeTransport)\b|["']native["']/g;
+export function* scanNativePaths(path: string, content: string) {
+  for (const match of content.matchAll(nativePathPattern)) {
+    const start = content.lastIndexOf("\n", match.index) + 1;
+    const end = content.indexOf("\n", match.index);
+    const line = content.slice(start, end === -1 ? undefined : end).trim();
+    if (
+      path === "packages/mcp-server/src/ordinary-launch-receipts.ts" &&
+      (line === 'ordinaryRoute: "native",' || line === 'modalTransportField: "runtimeTransport",')
+    )
+      continue;
+    yield { index: match.index, text: match[0] };
+  }
+}
+
 export const providerAdapterExclusions = /^(?:packages\/(?:provider-[^/]+|docker-host)|scripts\/metrics)\//;
 export const providerBranchPattern =
   /(?:[!=]==|\bcase\b)\s*(?:"(?:boat|modal|docker)"|'(?:boat|modal|docker)')|\bswitch\s*\(\s*provider\b/g;

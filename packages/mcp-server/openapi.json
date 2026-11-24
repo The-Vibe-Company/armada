@@ -4292,7 +4292,7 @@
                         "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
                       },
                       "request_id": {
-                        "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+                        "description": "Request UUID. Reuse it with identical input after uncertain delivery.",
                         "type": "string",
                         "format": "uuid",
                         "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
@@ -4336,7 +4336,7 @@
                             "description": "Armada's sandbox id (a uuid, as returned by launch and list)."
                           },
                           "request_id": {
-                            "description": "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+                            "description": "Request UUID. Reuse it with identical input after uncertain delivery.",
                             "type": "string",
                             "format": "uuid",
                             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
@@ -4519,7 +4519,7 @@
     "/api/v1/sandbox/steer": {
       "post": {
         "operationId": "sandbox_steer",
-        "description": "Redirects the turn that is running now. delivery says how: native joins the turn (Claude Code); restart interrupts it and continues the same conversation with this text (Codex). Refused when no turn runs: use send then.",
+        "description": "Redirects the turn that is running now. delivery says how: in-place joins the turn (Claude Code); restart interrupts it and continues the same conversation with this text (Codex). Refused when no turn runs: use send then.",
         "security": [
           {
             "serviceToken": []
