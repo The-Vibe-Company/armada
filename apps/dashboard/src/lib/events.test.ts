@@ -63,7 +63,7 @@ describe("events", () => {
     });
   });
 
-  test("only starting, ready, running and stopping sandboxes are polled", () => {
+  test("only starting, ready, running and stopping sandboxes are active", () => {
     expect((["starting", "ready", "running", "stopping"] as const).every(isActiveStatus)).toBe(true);
     expect((["stopped", "failed", "deleted"] as const).some(isActiveStatus)).toBe(false);
   });
