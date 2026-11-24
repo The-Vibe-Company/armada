@@ -13,7 +13,7 @@
     "apps/dashboard/src/app/(app)/sandboxes/[id]/page.tsx": 14,
     "apps/dashboard/src/app/(app)/sandboxes/page.tsx": 11,
     "apps/dashboard/src/app/(app)/skills/refresh.tsx": 1,
-    "apps/dashboard/src/app/(app)/snapshots/page.tsx": 35,
+    "apps/dashboard/src/app/(app)/snapshots/page.tsx": 31,
     "apps/dashboard/src/app/(app)/templates/page.tsx": 5,
     "apps/dashboard/src/app/(app)/tools/page.tsx": 5,
     "apps/dashboard/src/app/(app)/variables/refresh.tsx": 1,

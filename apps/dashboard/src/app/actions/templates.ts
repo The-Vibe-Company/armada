@@ -1,6 +1,7 @@
 "use server";
 
 import { MACHINE_SIZES, type MachineSize, type SandboxPlacementProviderId } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
@@ -165,11 +166,13 @@ export async function launchFromTemplate(
   try {
     const { revision: saved } = await templates.get({ org, id, revision });
     provider = saved.definition.provider;
-    const blocker = provider === "docker" ? null : await newWorkBlocker(org, provider);
+    const { sizes } = capabilities(provider);
+    const fromGolden = saved.definition.goldenId !== null;
+    const blocker = saved.definition.goldenId !== null ? await newWorkBlocker(org, saved.definition.provider) : null;
     if (blocker) return fail(blocker);
     const golden = (await listGoldens(await createClient())).find((row) => row.id === saved.definition.goldenId);
-    if (!golden && provider !== "docker") return fail("No such snapshot.");
-    if (provider === "docker" && size) return fail("Docker templates use their host machine size.");
+    if (!golden && fromGolden) return fail("No such snapshot.");
+    if (sizes.length === 0 && size) return fail("Docker templates use their host machine size.");
     const repository = repositoryChoice(formString(data, "repo"), golden ? goldenRepositoryDirs(golden.config) : []);
     if (!repository.ok) return fail(repository.error);
     const ttl = ttlChoice(formString(data, "ttl"), provider);

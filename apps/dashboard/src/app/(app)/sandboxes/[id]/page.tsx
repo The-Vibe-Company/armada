@@ -1,4 +1,5 @@
 import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -43,7 +44,7 @@ import { sandboxHostLabel } from "@/lib/docker-hosts";
 import { type DockerSandboxControls, dockerImageLabel, dockerSandboxControls } from "@/lib/docker-launch";
 import { mcpUrl } from "@/lib/env";
 import { isActiveStatus } from "@/lib/events";
-import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
+import { DOCKER_HOST_LABEL, HARNESS_LABELS, sandboxProviderLabel } from "@/lib/labels";
 import { launchTimingFact } from "@/lib/launch-timing";
 import { formatDuration, type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { describeEvidence } from "@/lib/machine-size";
@@ -52,6 +53,7 @@ import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
+import { sandboxUsesRuntime } from "@/lib/sandbox-thread";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
 
@@ -71,7 +73,7 @@ export default async function SandboxPage({ params }: Props) {
   // Provider reads depend on the authorized interior row, not the unrelated member directory.
   // Attach both branches to the same read so directory and provider latency overlap.
   const dockerRead = sandboxRead.then((sandbox) =>
-    sandbox?.provider === "docker"
+    sandbox && capabilities(sandbox.provider).launchSource === "host"
       ? Promise.all([
           readDockerLaunchOption(),
           credentialMetadata(supabase, [sandbox.credential_id]),
@@ -123,7 +125,7 @@ export default async function SandboxPage({ params }: Props) {
     if (!listed || listed.canOpen) notFound();
     return <RestrictedSandbox sandbox={listed} owner={displayUser(directory, listed.ownerId, viewer.id)} />;
   }
-  if (sandbox.provider === "docker") {
+  if (capabilities(sandbox.provider).launchSource === "host") {
     // A sandbox on an owned Docker host (#1165): the same page, with what the server supports on Docker. A control the
     // server marks unsupported is listed with its reason, never offered as a button it would refuse.
     if (!docker) notFound();
@@ -162,7 +164,7 @@ export default async function SandboxPage({ params }: Props) {
     ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
     ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
-    ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
+    ["Provider", sandboxProviderLabel(sandbox.provider)],
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", account.name],
     ["Billing type", account.billing],
@@ -204,20 +206,14 @@ export default async function SandboxPage({ params }: Props) {
         <>
           <section className="space-y-4 text-sm" aria-label="About">
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
-            <Facts
-              facts={[
-                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-                ["Model", sandbox.model ?? "Provider default"],
-                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
-              ]}
-            />
+            <AgentFacts sandbox={sandbox} />
             <BillingAccountSummary account={account} />
             <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
             <Facts
               facts={[
                 ["Snapshot", golden?.name ?? "Unknown"],
                 ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
-                ["Provider", sandbox.provider === "boat" ? "Boat cloud" : "Modal cloud"],
+                ["Provider", sandboxProviderLabel(sandbox.provider)],
                 ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
               ]}
             />
@@ -280,52 +276,7 @@ export default async function SandboxPage({ params }: Props) {
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
-          <PullRequestSection value={sandbox.pull_requests} />
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
-            <div className="pt-4">
-              <Facts facts={facts} />
-              {settledOutcome(
-                sandbox.status,
-                parseTaskOutcome(sandbox.task_outcome),
-                parsePullRequests(sandbox.pull_requests),
-              ) && (
-                <div className="mt-2 space-y-1">
-                  <OutcomeBadge
-                    outcome={
-                      settledOutcome(
-                        sandbox.status,
-                        parseTaskOutcome(sandbox.task_outcome),
-                        parsePullRequests(sandbox.pull_requests),
-                      )!
-                    }
-                  />
-                  <OutcomeDetail
-                    outcome={
-                      settledOutcome(
-                        sandbox.status,
-                        parseTaskOutcome(sandbox.task_outcome),
-                        parsePullRequests(sandbox.pull_requests),
-                      )!
-                    }
-                  />
-                </div>
-              )}
-              {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
-                <PreservationNotice
-                  preservation={preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true)!}
-                />
-              )}
-            </div>
-          </details>
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">
-              Usage · <RowCost cost={cost} />
-            </summary>
-            <div className="pt-3">
-              <SandboxCostCard cost={cost} />
-            </div>
-          </details>
+          <ThreadDetails sandbox={sandbox} facts={facts} cost={cost} />
 
           <details className="text-sm">
             <summary className="cursor-pointer text-muted-foreground">Skills</summary>
@@ -343,24 +294,7 @@ export default async function SandboxPage({ params }: Props) {
         </>
       }
     >
-      <SandboxChat
-        key={sandbox.id}
-        sandboxId={sandbox.id}
-        currentConversation={sandbox.conversation_ids.at(-1)}
-        initialStatus={sandbox.publicStatus}
-        provider={sandbox.provider}
-        preservationNote={sandbox.preservation_note}
-        pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
-        initialIdlePaused={sandbox.status_reason === "idle_paused"}
-        statusReason={sandbox.status_reason}
-        expiresAt={sandbox.expires_at}
-        initialUsageRevision={usageRevision(sandbox.usage_turns)}
-        live={isActiveStatus(sandbox.status)}
-        harness={sandbox.harness}
-        catalog={MODEL_CATALOG}
-        launchedModel={sandbox.model}
-        configured={configured}
-      />
+      <ThreadConversation sandbox={sandbox} configured={configured} />
     </ThreadLayout>
   );
 }
@@ -448,13 +382,7 @@ function DockerSandbox({
           )}
           <section className="space-y-3 text-sm">
             <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
-            <Facts
-              facts={[
-                ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-                ["Model", sandbox.model ?? "Provider default"],
-                ["Effort", sandbox.reasoning_effort ?? "Provider default"],
-              ]}
-            />
+            <AgentFacts sandbox={sandbox} />
             <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
             <BillingAccountSummary account={billing} />
             <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
@@ -466,52 +394,7 @@ function DockerSandbox({
               ]}
             />
           </section>
-          <PullRequestSection value={sandbox.pull_requests} />
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
-            <div className="pt-4">
-              <Facts facts={facts} />
-              {settledOutcome(
-                sandbox.status,
-                parseTaskOutcome(sandbox.task_outcome),
-                parsePullRequests(sandbox.pull_requests),
-              ) && (
-                <div className="mt-2 space-y-1">
-                  <OutcomeBadge
-                    outcome={
-                      settledOutcome(
-                        sandbox.status,
-                        parseTaskOutcome(sandbox.task_outcome),
-                        parsePullRequests(sandbox.pull_requests),
-                      )!
-                    }
-                  />
-                  <OutcomeDetail
-                    outcome={
-                      settledOutcome(
-                        sandbox.status,
-                        parseTaskOutcome(sandbox.task_outcome),
-                        parsePullRequests(sandbox.pull_requests),
-                      )!
-                    }
-                  />
-                </div>
-              )}
-              {preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true) && (
-                <PreservationNotice
-                  preservation={preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true)!}
-                />
-              )}
-            </div>
-          </details>
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">
-              Usage · <RowCost cost={cost} />
-            </summary>
-            <div className="pt-3">
-              <SandboxCostCard cost={cost} />
-            </div>
-          </details>
+          <ThreadDetails sandbox={sandbox} facts={facts} cost={cost} />
           {controls.unavailable.length > 0 && (
             <Card className="gap-3 py-5" data-docker-unavailable>
               <CardHeader className="px-5">
@@ -549,27 +432,96 @@ function DockerSandbox({
           <AlertDescription>{reasons.logs}</AlertDescription>
         </Alert>
       ) : (
-        <SandboxChat
-          key={sandbox.id}
-          sandboxId={sandbox.id}
-          currentConversation={sandbox.conversation_ids.at(-1)}
-          initialStatus={sandbox.publicStatus}
-          provider={sandbox.provider}
-          preservationNote={sandbox.preservation_note}
-          initialIdlePaused={sandbox.status_reason === "idle_paused"}
-          statusReason={sandbox.status_reason}
-          expiresAt={sandbox.expires_at}
-          initialUsageRevision={usageRevision(sandbox.usage_turns)}
-          live={isActiveStatus(sandbox.status)}
-          harness={sandbox.harness}
-          catalog={MODEL_CATALOG}
-          launchedModel={sandbox.model}
-          configured={configured}
-          composerUnavailable={reasons.followupPrompts}
-          pinnedModel
-        />
+        <ThreadConversation sandbox={sandbox} configured={configured} composerUnavailable={reasons.followupPrompts} />
       )}
     </ThreadLayout>
+  );
+}
+
+function AgentFacts({ sandbox }: { sandbox: SandboxDetail }) {
+  return (
+    <Facts
+      facts={[
+        ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
+        ["Model", sandbox.model ?? "Provider default"],
+        ["Effort", sandbox.reasoning_effort ?? "Provider default"],
+      ]}
+    />
+  );
+}
+
+function ThreadConversation({
+  sandbox,
+  configured,
+  composerUnavailable,
+}: {
+  sandbox: SandboxDetail;
+  configured: boolean;
+  composerUnavailable?: string | undefined;
+}) {
+  return (
+    <SandboxChat
+      key={sandbox.id}
+      sandboxId={sandbox.id}
+      currentConversation={sandbox.conversation_ids.at(-1)}
+      initialStatus={sandbox.publicStatus}
+      provider={sandbox.provider}
+      preservationNote={sandbox.preservation_note}
+      pinnedModel={sandboxUsesRuntime(sandbox)}
+      initialIdlePaused={sandbox.status_reason === "idle_paused"}
+      statusReason={sandbox.status_reason}
+      expiresAt={sandbox.expires_at}
+      initialUsageRevision={usageRevision(sandbox.usage_turns)}
+      live={isActiveStatus(sandbox.status)}
+      harness={sandbox.harness}
+      catalog={MODEL_CATALOG}
+      launchedModel={sandbox.model}
+      configured={configured}
+      composerUnavailable={composerUnavailable}
+    />
+  );
+}
+
+function ThreadDetails({
+  sandbox,
+  facts,
+  cost,
+}: {
+  sandbox: SandboxDetail;
+  facts: Fact[];
+  cost: ReturnType<typeof costOfRow>;
+}) {
+  const outcome = settledOutcome(
+    sandbox.status,
+    parseTaskOutcome(sandbox.task_outcome),
+    parsePullRequests(sandbox.pull_requests),
+  );
+  const preservation = preservationView(sandbox.preservation_note, sandbox.status, sandbox.id, true);
+  return (
+    <>
+      <PullRequestSection value={sandbox.pull_requests} />
+      <details className="text-sm">
+        <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+        <div className="pt-4">
+          <Facts facts={facts} />
+          {outcome && (
+            <div className="mt-2 space-y-1">
+              <OutcomeBadge outcome={outcome} />
+              <OutcomeDetail outcome={outcome} />
+            </div>
+          )}
+          {preservation && <PreservationNotice preservation={preservation} />}
+        </div>
+      </details>
+      <details className="text-sm">
+        <summary className="cursor-pointer text-muted-foreground">
+          Usage · <RowCost cost={cost} />
+        </summary>
+        <div className="pt-3">
+          <SandboxCostCard cost={cost} />
+        </div>
+      </details>
+    </>
   );
 }
 
@@ -586,7 +538,7 @@ function ThreadHeader({
   cost: ReturnType<typeof costOfRow>;
   children: ReactNode;
 }) {
-  const docker = sandbox.provider === "docker";
+  const docker = capabilities(sandbox.provider).launchSource === "host";
   const rowCost = (
     <span className="text-xs text-muted-foreground">
       <RowCost cost={cost} />
@@ -690,10 +642,7 @@ function ThreadLayout({
 function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; owner: string }) {
   const life = lifecycleView(sandbox.status, readLifecycle(sandbox), new Date());
   const facts: [string, string][] = [
-    [
-      "Provider",
-      sandbox.provider === "boat" ? "Boat cloud" : sandbox.provider === "modal" ? "Modal cloud" : DOCKER_HOST_LABEL,
-    ],
+    ["Provider", sandboxProviderLabel(sandbox.provider)],
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
