@@ -92,7 +92,7 @@ const KIND_PRESENTATION: Record<AccountKind, Omit<KindInfo, "harness" | "harness
     hint: "From platform.openai.com. Billed per token.",
   },
   antigravity: {
-    label: "Antigravity Gemini API key",
+    label: HARNESS_CATALOG.antigravity.label,
     billing: "api",
     valueLabel: "Gemini API key",
     hint: "Use a Gemini Developer API key. Available on Modal and Docker hosts.",
@@ -319,6 +319,15 @@ export function checkAccountName(raw: unknown): { ok: true; value: string } | { 
   if (value.length > MAX_ACCOUNT_NAME)
     return { ok: false, error: `Keep the name under ${MAX_ACCOUNT_NAME} characters.` };
   return { ok: true, value };
+}
+
+export const MAX_ACCOUNT_AGENTS = 2_147_483_647;
+
+export function parseAccountAgentLimit(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  return /^[1-9][0-9]*$/.test(trimmed) && value <= MAX_ACCOUNT_AGENTS ? value : undefined;
 }
 
 /** The kind's label when it adds something: a migrated account is often named after its kind already. */

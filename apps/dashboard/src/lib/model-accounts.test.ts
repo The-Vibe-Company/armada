@@ -17,6 +17,7 @@ import {
   monthlyApiSpendLabel,
   orderAccounts,
   PASTE_SIGN_IN,
+  parseAccountAgentLimit,
   parseAuthCapabilities,
   parseUsage,
   terminalLogin,
@@ -510,4 +511,10 @@ test("launch account observation keeps unknown distinct from ready and legacy wi
     state: "unavailable",
     reason: expect.stringContaining("join an organization"),
   });
+});
+
+test("an agent limit must fit the database integer before an account can be saved", () => {
+  expect(parseAccountAgentLimit("")).toBeNull();
+  expect(parseAccountAgentLimit("2147483647")).toBe(2_147_483_647);
+  expect(parseAccountAgentLimit("2147483648")).toBeUndefined();
 });

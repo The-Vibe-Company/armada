@@ -4,6 +4,7 @@ import { HARNESSES, type Harness, parseCredentialValue, resolveModelChoice, Vaul
 import { revalidatePath } from "next/cache";
 import type { AccountControl, AccountTarget } from "@/lib/account-control";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
+import { antigravityMethod, GOOGLE_CODE_ERROR, googleCode, googleSignInFailure } from "@/lib/antigravity-account";
 import { ControlError } from "@/lib/control";
 import { listSelectedAccounts, viewerAccountControl } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
@@ -17,6 +18,7 @@ import {
   HARNESS_PATH,
   KIND_INFO,
   modelAccountFailure,
+  parseAccountAgentLimit,
 } from "@/lib/model-accounts";
 import { connectionTestOutcome, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import {
@@ -36,7 +38,7 @@ type Scoped = { control: AccountControl; scope: AccountScope; org: string };
  * The control client and the scope the form names. An org account belongs to the org the person is looking at,
  * so its form must name that org; the server checks the admin role itself.
  */
-async function scoped(data: FormData): Promise<Scoped | ActionResult> {
+async function scoped(data: FormData) {
   const scope = formString(data, "scope");
   if (scope !== "user" && scope !== "org") return fail("That request is not valid.");
   const selected = await selectedOrganization();
@@ -44,7 +46,7 @@ async function scoped(data: FormData): Promise<Scoped | ActionResult> {
   if (scope === "org" && formString(data, "org") !== selected.org.id) return fail("Switch to that organization first.");
   const control = await viewerAccountControl();
   if (!control) return fail("The Armada server is not configured for this dashboard.");
-  return { control, scope, org: selected.org.id };
+  return { control, scope, org: selected.org.id } satisfies Scoped;
 }
 
 function target(context: Scoped, id: string): AccountTarget {
@@ -82,6 +84,64 @@ function refresh() {
   revalidatePath("/snapshots");
 }
 
+export async function startGoogleSignIn(data: FormData) {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const name = checkAccountName(data.get("name"));
+  if (!name.ok) return fail(name.error);
+  try {
+    const login = await context.control.startGoogleSignIn({
+      name: name.value,
+      ...(context.scope === "org" ? { org: context.org } : {}),
+    });
+    return { ok: true as const, ...login };
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(googleSignInFailure("start", error.status, error.code));
+  }
+}
+
+export async function cancelGoogleSignIn(data: FormData): Promise<ActionResult> {
+  const context = await scoped(data);
+  if (!isScoped(context)) return context;
+  const id = formString(data, "loginId");
+  if (!isUuid(id)) return fail("That request is not valid.");
+  try {
+    await context.control.cancelGoogleSignIn(id);
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    if (error.code !== "not_found") return explain(error);
+  }
+  return done("Google sign-in cancelled.");
+}
+
+async function completeGoogleSignIn(context: Scoped, data: FormData, maxAgents: number | null) {
+  const id = formString(data, "loginId");
+  if (!isUuid(id)) return fail("Start sign-in again.");
+  const code = googleCode(data.get("code"));
+  if (!code) return fail(GOOGLE_CODE_ERROR);
+  let account: Awaited<ReturnType<AccountControl["completeGoogleSignIn"]>>;
+  try {
+    account = await context.control.completeGoogleSignIn(id, code);
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail(googleSignInFailure("complete", error.status, error.code));
+  }
+  if (maxAgents !== null) {
+    try {
+      await context.control.limits({ ...target(context, account.id), maxAgents });
+    } catch (error) {
+      if (!(error instanceof ControlError)) throw error;
+      refresh();
+      return {
+        ...fail(`${account.name} was saved. Open the account in Models to check its agent limit and default settings.`),
+        accountSaved: true as const,
+      };
+    }
+  }
+  return finishAccountSetup(context, data, account);
+}
+
 /** Adds a named account from a pasted token, key or auth.json, and makes it the default when asked. */
 export async function addAccount(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   const context = await scoped(data);
@@ -94,17 +154,25 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   if (!(ACCOUNT_KINDS as readonly string[]).includes(kind)) return fail("Choose what you are adding.");
   const name = checkAccountName(data.get("name"));
   if (!name.ok) return fail(name.error);
+  const method = kind === "antigravity" ? antigravityMethod(data.get("antigravityMethod")) : undefined;
+  if (kind === "antigravity" && !method) return fail("Choose an Antigravity connection method.");
+  const maxAgents = parseAccountAgentLimit(formString(data, "maxAgents"));
+  if (maxAgents === undefined)
+    return fail("Enter a maximum of 1 to 2,147,483,647 agents, or leave it empty for unlimited.");
+  if (method === "google") return completeGoogleSignIn(context, data, maxAgents);
+  const raw =
+    method === "gemini-api-key"
+      ? JSON.stringify({ method, apiKey: formString(data, "value").trim() })
+      : data.get("value");
   const value =
     fromPreset ??
     (kind === "morph"
       ? morphAccountValue(data)
       : data.get("customEndpoint") === "on"
         ? customAccountValue(kind as AccountKind, data)
-        : secret(kind as AccountKind, data.get("value")));
+        : secret(kind as AccountKind, raw));
   if (!value.ok) return fail(value.error);
 
-  const maxAgents = formAgentLimit(data);
-  if (maxAgents === undefined) return fail("Maximum agents must be a positive integer, or empty for unlimited.");
   let saved: Awaited<ReturnType<AccountControl["set"]>>;
   try {
     saved = await context.control.set({
@@ -118,6 +186,14 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
   } catch (error) {
     return explain(error);
   }
+  return finishAccountSetup(context, data, saved);
+}
+
+async function finishAccountSetup(
+  context: Scoped,
+  data: FormData,
+  saved: Pick<Awaited<ReturnType<AccountControl["set"]>>, "id" | "kind" | "name"> & { isDefault?: boolean },
+) {
   refresh();
   if (data.get("default") === "on" && !saved.isDefault) {
     try {
@@ -128,7 +204,10 @@ export async function addAccount(_previous: ActionResult | null, data: FormData)
         error.status === 401
           ? "Sign in again, then reload Models."
           : "Reload Models and check the saved account before adding another.";
-      return fail(`${saved.name} was saved; its default setting is unconfirmed. ${recovery}`);
+      return {
+        ...fail(`${saved.name} was saved, but its default setting is unconfirmed. ${recovery}`),
+        accountSaved: true as const,
+      };
     }
     return done(`${saved.name} saved as the default ${KIND_INFO[saved.kind].harnessLabel} account.`);
   }
@@ -264,19 +343,13 @@ export async function testAccountConnection(_previous: ActionResult | null, data
   }
 }
 
-function formAgentLimit(data: FormData): number | null | undefined {
-  const raw = formString(data, "maxAgents").trim();
-  if (!raw) return null;
-  const value = Number(raw);
-  return /^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(value) ? value : undefined;
-}
-
-export async function updateAccountLimits(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function updateAccountLimits(_previous: ActionResult | null, data: FormData) {
   const context = await scoped(data);
   if (!isScoped(context)) return context;
   const id = formString(data, "id");
-  const maxAgents = formAgentLimit(data);
-  if (!isUuid(id) || maxAgents === undefined) return fail("Enter a positive integer, or leave empty for unlimited.");
+  const maxAgents = parseAccountAgentLimit(formString(data, "maxAgents"));
+  if (!isUuid(id) || maxAgents === undefined)
+    return fail("Enter a maximum of 1 to 2,147,483,647 agents, or leave it empty for unlimited.");
   try {
     const saved = await context.control.limits({
       ...target(context, id),
@@ -298,7 +371,7 @@ export async function pollModelAccounts(orgId: string) {
 }
 
 /** Personal selections never mutate organization-owned accounts. */
-export async function setPersonalAgentDefault(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function setPersonalAgentDefault(_previous: ActionResult | null, data: FormData) {
   const selected = await selectedOrganization();
   if (!selected || formString(data, "org") !== selected.org.id) return fail("Switch to that organization first.");
   const harness = formString(data, "harness") as Harness;

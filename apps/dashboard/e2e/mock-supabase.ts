@@ -11,7 +11,14 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
-import { createInboundTrigger, type LaunchEnvelope, streamSandboxEvents } from "@armada/core/contract";
+import {
+  antigravityLoginOperations,
+  createInboundTrigger,
+  isAntigravityLoginPath,
+  type LaunchEnvelope,
+  streamSandboxEvents,
+} from "@armada/core/contract";
+import { runtimeHarnessSupported } from "@armada/core/harnesses";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -1473,9 +1480,8 @@ function launchRoute(body: Row, userId: string | null): Response {
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
   );
   if (!source) return controlFail(404, "not_found", "No such golden.");
-  if (body.harness !== "claude" && body.harness !== "codex") {
-    return controlFail(400, "invalid", "The agent is claude or codex.");
-  }
+  if (!runtimeHarnessSupported(String(source.provider), String(body.harness)))
+    return controlFail(400, "invalid", "This agent is unavailable on the snapshot.");
   const dirs = ((source.config as { repos?: { dir?: string }[] }).repos ?? []).map((repo) => repo.dir);
   if (body.repo !== undefined && !dirs.includes(String(body.repo))) {
     return controlFail(400, "invalid", "That repository is not in the golden.");
@@ -2891,6 +2897,7 @@ function accounts(route: string, body: Row, request: Request): Response {
       created_at: now,
       name: String(body.name),
       is_default: false,
+      maxAgents: body.maxAgents,
       version: 1,
       status: "active",
       expires_at: null,
@@ -2900,6 +2907,10 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ account: accountDto(row) });
   }
   if (!target) return controlFail(400, "invalid", "Name the account.");
+  if (route === "creds/accounts/limits" && body.model === undefined) {
+    target.maxAgents = body.maxAgents;
+    return json({ account: accountDto(target) });
+  }
   if (route === "creds/accounts/rename") {
     Object.assign(target, { name: String(body.name), updated_at: now });
     return json({ account: accountDto(target) });
@@ -2927,6 +2938,7 @@ function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
     pendingOAuth.clear();
+    pendingGoogleLogins.clear();
     sessions.clear();
     goldenJobs.clear();
     return json({ ok: true });
@@ -3092,6 +3104,52 @@ function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray, bod
   return controlFail(405, "method_not_allowed", "Method not allowed.");
 }
 
+const googleLoginPath = antigravityLoginOperations.startAntigravityLogin.route.path;
+const pendingGoogleLogins = new Map<string, { caller: string; org?: string; name: string; expiresAt: number }>();
+
+function fixtureGoogleSignIn(path: string, body: Row, request: Request) {
+  const caller = viewer(request);
+  if (!caller) return controlFail(401, "unauthorized", "Sign in again.");
+  if (path === googleLoginPath) {
+    const parsed = antigravityLoginOperations.startAntigravityLogin.input.body.safeParse(body);
+    if (!parsed.success || !("name" in parsed.data)) return controlFail(400, "invalid", "Name the account.");
+    const { name, org } = parsed.data;
+    if (org && !isAdmin(org, caller)) return controlFail(403, "forbidden", "Only an org admin can do that.");
+    const loginId = crypto.randomUUID();
+    const expiresAt = Date.now() + 300_000;
+    pendingGoogleLogins.set(loginId, { caller, name, expiresAt, ...(org ? { org } : {}) });
+    return json({
+      loginId,
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      expiresAt: new Date(expiresAt).toISOString(),
+    });
+  }
+  const loginId = path.slice(googleLoginPath.length + 1);
+  const pending = pendingGoogleLogins.get(loginId);
+  if (!pending || pending.caller !== caller || pending.expiresAt <= Date.now())
+    return controlFail(404, "not_found", "Start sign-in again.");
+  if (request.method === "DELETE") {
+    pendingGoogleLogins.delete(loginId);
+    return json({ ok: true });
+  }
+  if (body.code !== "fixture-code") return controlFail(404, "not_found", "Start sign-in again.");
+  pendingGoogleLogins.delete(loginId);
+  const now = new Date().toISOString();
+  const row = {
+    id: crypto.randomUUID(),
+    name: pending.name,
+    kind: "antigravity",
+    scope: pending.org ? "org" : "user",
+    owner_id: pending.org ?? caller,
+    created_at: now,
+    updated_at: now,
+    status: "active",
+    version: 1,
+  };
+  state.credentials.push(row);
+  return json({ account: { id: row.id, name: row.name, kind: row.kind, createdAt: now, version: row.version } });
+}
+
 const server = Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
@@ -3106,6 +3164,11 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
     if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
+    if (
+      (request.method === "POST" && url.pathname === googleLoginPath) ||
+      ((request.method === "POST" || request.method === "DELETE") && isAntigravityLoginPath(url.pathname))
+    )
+      return fixtureGoogleSignIn(url.pathname, body, request);
     const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
     if (canonicalLaunch && request.method === "POST" && body.armadaAccess) {
       if (

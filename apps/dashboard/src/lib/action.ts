@@ -16,9 +16,9 @@ export function snapshotText(text: string): string {
   );
 }
 
-export const fail = (message: string, link?: ActionLink): ActionResult => {
+export const fail = (message: string, link?: ActionLink) => {
   const error = snapshotText(message);
-  return link ? { ok: false, error, link } : { ok: false, error };
+  return link ? { ok: false as const, error, link } : { ok: false as const, error };
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

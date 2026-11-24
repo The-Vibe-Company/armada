@@ -28,7 +28,7 @@ export function usePreservedActionForm() {
       event.preventDefault();
       event.stopImmediatePropagation();
       for (const field of form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-        'input[type="password"], textarea[data-secret-value]',
+        'input[type="password"]:not([data-preserve-on-action-error]), textarea[data-secret-value]',
       )) {
         field.value = "";
       }

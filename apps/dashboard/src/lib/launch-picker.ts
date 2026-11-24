@@ -1,6 +1,7 @@
 import { HARNESSES, type Harness, harnessesForCredential } from "@armada/core";
 import type { ModelCatalog } from "@/components/model-fields";
 import { accountProblem, type LaunchAccounts, type ModelAccount, missingMorphModels } from "@/lib/model-accounts";
+import { dashboardHarnessModels } from "@/lib/model-picker";
 import { modelsPageDefault } from "@/lib/models-page";
 
 export function launchHarnessBlocker(
@@ -44,7 +45,7 @@ export function launchPickerGroups(
     const agents = harnessesForCredential(account.kind);
     // Shared accounts offer the current agent once, not three identical sets of model ids.
     const harness = agents.includes(current) ? current : (agents[0] ?? current);
-    const entry = catalog[harness];
+    const entry = dashboardHarnessModels(harness, catalog[harness]);
     const options = account.models?.length
       ? account.models.map((row) => ({ id: row.model, label: row.model, harness, isDefault: false }))
       : account.kind === "morph"
