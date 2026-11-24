@@ -29,7 +29,11 @@ function requestLogForStatus(status: number) {
 }
 
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
-export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log?: Log) {
+export function observeRequest<T extends Response | undefined>(
+  work: () => T | Promise<T>,
+  log?: Log,
+  request?: Request,
+) {
   const id = crypto.randomUUID();
   return current.run({ id, log }, async () => {
     const started = performance.now();
@@ -48,6 +52,7 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
     requestLog(
       JSON.stringify({
         event: "http_request",
+        ...(request ? { path: redactForLog(new URL(request.url).pathname) } : {}),
         requestId: id,
         status,
         durationMs: Math.round(performance.now() - started),

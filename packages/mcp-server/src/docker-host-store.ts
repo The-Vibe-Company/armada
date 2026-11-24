@@ -255,7 +255,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     const host = result.rows[0] ?? deny();
     const member = await tx.query<{ user_id: string }>(
-      `select user_id from public.members where org_id=$1 and user_id=any($2::uuid[]) order by user_id for update`,
+      `select user_id from public.members where org_id=$1 and user_id=any($2::uuid[]) order by user_id for share`,
       [host.org_id, [host.owner_id, actorId ?? host.owner_id, ...refusalActors]],
     );
     if (!member.rows.some((row) => row.user_id === host.owner_id)) deny();
@@ -282,7 +282,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       // Preserve membership -> host lock order for cleanup dispatch authorization.
       await tx.query(
         `select m.user_id from public.members m join public.docker_hosts h on h.org_id=m.org_id
-         where h.hash=$1 and h.installation_id=$2 and m.user_id=any($3::uuid[]) order by m.user_id for update of m`,
+         where h.hash=$1 and h.installation_id=$2 and m.user_id=any($3::uuid[]) order by m.user_id for share of m`,
         [hash(hostToken), installationId, actorIds],
       );
     }

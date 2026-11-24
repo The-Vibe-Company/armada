@@ -34,13 +34,17 @@ export async function startServer(env: Record<string, string | undefined>, optio
       maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
       fetch: (request, instance) =>
         new URL(request.url).pathname === "/api/runtime/channel"
-          ? observeRequest(() => {
-              // Read the ID here: the upgrade callback runs inside a database session callback.
-              const requestId = currentRequestId()!;
-              return runtimeSockets.upgrade(request, (data) =>
-                instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: requestId } }),
-              );
-            }, options.logError)
+          ? observeRequest(
+              () => {
+                // Read the ID here: the upgrade callback runs inside a database session callback.
+                const requestId = currentRequestId()!;
+                return runtimeSockets.upgrade(request, (data) =>
+                  instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: requestId } }),
+                );
+              },
+              options.logError,
+              request,
+            )
           : fetch(request),
       error: (error) =>
         observeRequest(() => {

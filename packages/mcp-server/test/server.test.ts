@@ -246,6 +246,12 @@ describe("when the auth lookup fails", () => {
       requestId: response.headers.get("x-request-id"),
       phase: "mcp.authentication",
     });
+    expect(JSON.parse(lines[1]!)).toMatchObject({
+      event: "http_request",
+      requestId: response.headers.get("x-request-id"),
+      path: "/mcp",
+      status: 503,
+    });
     for (const text of [lines[0] ?? "", await response.text()]) {
       expect(text).not.toContain(jwt);
       expect(text).not.toContain(credential);

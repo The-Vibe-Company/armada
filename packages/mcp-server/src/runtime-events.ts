@@ -124,36 +124,42 @@ export function createRuntimeEvents(
         expectedRevision: value.nativeAuth.expectedRevision as number,
       });
     }
+    if (typeof value.sandboxId !== "string" || value.generation !== epoch) throw new RuntimeEnrolmentDenied();
+    if (value.nativeAuth !== undefined) {
+      return authority.withSession(token, epoch, async (_tx, scope) => {
+        if (value.sandboxId !== scope.sandboxId) throw new RuntimeEnrolmentDenied();
+        throw new UnsupportedNativeAuth();
+      });
+    }
+    if (
+      Object.keys(value).some((k) => !["sandboxId", "generation", "events"].includes(k)) ||
+      !Array.isArray(value.events) ||
+      value.events.length > 1000
+    )
+      throw new InvalidEvents();
+    let items: { sequence: number; event: AgentEvent; serialized: string }[];
+    try {
+      items = value.events
+        .map((item: unknown) => {
+          if (
+            !record(item) ||
+            !Number.isSafeInteger(item.sequence) ||
+            (item.sequence as number) < 1 ||
+            !event(item.event)
+          )
+            throw new InvalidEvents();
+          const serialized = JSON.stringify(canonical(item.event));
+          if (serialized.length > 262144) throw new OversizedEvents();
+          return { sequence: item.sequence as number, event: item.event, serialized };
+        })
+        .sort((a, b) => a.sequence - b.sequence);
+    } catch (error) {
+      if (error instanceof OversizedEvents) throw error;
+      throw new InvalidEvents();
+    }
     let first: { sandboxId: string; epoch: string } | undefined;
     const result = await authority.withSession(token, epoch, async (tx, scope, generation) => {
-      if (value.sandboxId !== scope.sandboxId || value.generation !== scope.epoch) throw new RuntimeEnrolmentDenied();
-      if (value.nativeAuth !== undefined) throw new UnsupportedNativeAuth();
-      if (
-        Object.keys(value).some((k) => !["sandboxId", "generation", "events"].includes(k)) ||
-        !Array.isArray(value.events) ||
-        value.events.length > 1000
-      )
-        throw new InvalidEvents();
-      let items: { sequence: number; event: AgentEvent; serialized: string }[];
-      try {
-        items = value.events
-          .map((item: unknown) => {
-            if (
-              !record(item) ||
-              !Number.isSafeInteger(item.sequence) ||
-              (item.sequence as number) < 1 ||
-              !event(item.event)
-            )
-              throw new InvalidEvents();
-            const serialized = JSON.stringify(canonical(item.event));
-            if (serialized.length > 262144) throw new OversizedEvents();
-            return { sequence: item.sequence as number, event: item.event, serialized };
-          })
-          .sort((a, b) => a.sequence - b.sequence);
-      } catch (error) {
-        if (error instanceof OversizedEvents) throw error;
-        throw new InvalidEvents();
-      }
+      if (value.sandboxId !== scope.sandboxId) throw new RuntimeEnrolmentDenied();
       let ack = Number(
         (
           await tx.query<{ ack: string }>(
