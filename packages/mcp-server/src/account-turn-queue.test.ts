@@ -1389,6 +1389,78 @@ test.each([
   }
 });
 
+test.each(["modal", "boat", "docker"] as const)(
+  "the account turn worker settles an expired %s wake that cannot dispatch",
+  async (provider) => {
+    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake with a queued prompt" };
+    const docker = provider === "docker";
+    const host = crypto.randomUUID();
+    const installation = crypto.randomUUID();
+    const machine = crypto.randomUUID();
+    await sql.query(
+      `update sandboxes set provider=$2,boat_runtime=($2='boat'),
+           runtime_transport=case when $2='modal' then 'dialout' end,status='stopped',stopped_at=now(),
+           status_reason=case when $2='docker' then 'idle_paused' end,
+           docker_host_id=$3,docker_installation_id=$4,docker_generation=$5
+         where id=$1`,
+      [input.id, provider, docker ? host : null, docker ? installation : null, docker ? machine : null],
+    );
+    if (docker)
+      await sql.query("insert into docker_hosts(id,org_id,installation_id,owner_id,hash) values($1,$2,$3,$4,'host')", [
+        host,
+        org,
+        installation,
+        owner,
+      ]);
+    const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+    const signal = new AbortController().signal;
+    const sent: string[] = [];
+    worker.setDispatch(async (_, request) => {
+      sent.push(request.request_id!);
+      await sql.query("update sandboxes set status=$2,stopped_at=null,lifecycle_generation=2 where id=$1", [
+        input.id,
+        docker ? "starting" : "ready",
+      ]);
+      if (docker) {
+        await sql.query(
+          `insert into docker_resume_claims
+             (sandbox_id,request_id,actor_id,host_id,installation_id,generation,lifecycle_generation,accepted)
+           values($1,$2,$3,$4,$5,$6,1,true)`,
+          [input.id, input.request_id, owner, host, installation, machine],
+        );
+        await sql.query(
+          `insert into docker_host_jobs
+             (bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch,refused_resume_generation)
+           values($1,1,$2,$3,$4,'resume',1,2)`,
+          [input.id, input.request_id, owner, host],
+        );
+      } else {
+        await sql.query(
+          "insert into runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,phase) values($1,$2,1,2,'dispatched')",
+          [input.id, input.request_id],
+        );
+        await sql.query(
+          "insert into runtime_enrolments(sandbox_id,epoch,lifecycle_generation,runtime_hash) values($1,2,2,'active')",
+          [input.id],
+        );
+      }
+      throw new Error("Wake ended before the prompt was dispatched.");
+    });
+
+    expect(await worker.accept(caller, input)).toMatchObject({ status: "queued" });
+    expect(await worker.reconcileOne(signal)).toBe(true);
+    await worker.drain();
+    const replayed = await worker.reconcileOne(signal);
+    await worker.drain();
+    expect(replayed).toBe(false);
+    expect(sent).toEqual([input.request_id]);
+    expect(await worker.status(caller, input.id, input.request_id)).toMatchObject({
+      requestId: input.request_id,
+      failed: true,
+    });
+  },
+);
+
 test("native invalid model settings are rejected before a durable prompt is queued", async () => {
   await expect(
     queue.accept(caller, {
