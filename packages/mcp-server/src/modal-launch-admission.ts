@@ -22,6 +22,16 @@ export type AdmitModalLaunch = (
   },
 ) => Promise<import("@armada/core/contract").ModalLaunchReceipt>;
 
+const launchAuthority = {
+  modal: async (_provider: import("@armada/core").Provider) => ({}),
+  boat: async (provider: import("@armada/core").Provider) => {
+    const management = await provider.managementIdentity?.();
+    const backendId = (await provider.backendIdentity?.())?.id;
+    if (!management || !backendId) throw new VaultError("unavailable", "Boat launch authority is unavailable.");
+    return { boat: { scope: management.scope, backendId } };
+  },
+};
+
 export function createModalLaunchAdmission(
   sql: Sql,
   placement: NonNullable<LaunchOptions["modalRuntimeDefault"]>,
@@ -89,12 +99,9 @@ export function createModalLaunchAdmission(
     const binding = requireLaunchAccountBinding(plan.credentials.binding);
     const project = plan.resourceProject;
     checkpointGoldenLaunch("account_resolution");
-    const management = golden.provider === "boat" ? await provider.managementIdentity?.() : undefined;
-    const backendId = golden.provider === "boat" ? (await provider.backendIdentity?.())?.id : undefined;
-    if (golden.provider === "boat" && (!management || !backendId))
-      throw new VaultError("unavailable", "Boat launch authority is unavailable.");
+    const management = await launchAuthority[golden.provider](provider);
     return admit({
-      ...(management && backendId ? { boat: { scope: management.scope, backendId } } : {}),
+      ...management,
       ...(pool && prepared ? { accountPool: { pool, prepared } } : {}),
       orgId: actor.orgId,
       ownerId: actor.userId,

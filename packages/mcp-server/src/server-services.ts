@@ -24,6 +24,7 @@ import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
 import { boatRuntimeActivation } from "./boat-runtime-activation.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
+import { boatDeploymentId } from "./config.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
@@ -106,8 +107,8 @@ export async function createServerServices(env: Record<string, string | undefine
     dockerManifest,
   } = await readStartupConfiguration(env);
   const dockerEnabled = dockerManifest !== undefined;
-  const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
-  const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
+  const deploymentId = boatDeploymentId(env.ARMADA_BOAT_DEPLOYMENT_ID, config.publicUrl);
+  const boatInventory = { deploymentId };
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
   const jobs = createJobsStore(sql, config.encryptionKey);
@@ -270,11 +271,12 @@ export async function createServerServices(env: Record<string, string | undefine
     store,
     app: githubApp,
   });
+  const runtimeArtifacts = { boat, modal: modalRuntime };
   const prepareLaunchTicket: Parameters<ReturnType<typeof createModalIntegration>["launchJob"]>[0] = async (
     sandbox,
   ) => {
-    const provider = sandbox.provider === "boat" ? "boat" : "modal";
-    const artifacts = provider === "boat" ? boat : modalRuntime;
+    const provider = sandbox.provider as keyof typeof runtimeArtifacts;
+    const artifacts = runtimeArtifacts[provider];
     if (!artifacts) throw new Error("Runtime artifacts are unavailable.");
     if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
     const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
@@ -306,15 +308,14 @@ export async function createServerServices(env: Record<string, string | undefine
     };
   };
   const modalJob = modal.launchJob(prepareLaunchTicket);
-  const boatJobs =
-    boat && boatDeploymentId
-      ? boatLaunchJobs({
-          sql,
-          encryptionKey: config.encryptionKey,
-          deploymentId: boatDeploymentId,
-          prepareTicket: prepareLaunchTicket,
-        })
-      : undefined;
+  const boatJobs = boat
+    ? boatLaunchJobs({
+        sql,
+        encryptionKey: config.encryptionKey,
+        deploymentId,
+        prepareTicket: prepareLaunchTicket,
+      })
+    : undefined;
   const combineGoldenJobs = (modalJob: JobKind, boatRun?: JobKind["run"]) => ({
     ...modalJob,
     run(job: Parameters<typeof modalJob.run>[0], context: Parameters<typeof modalJob.run>[1]) {
@@ -388,10 +389,11 @@ export async function createServerServices(env: Record<string, string | undefine
     createModalLaunchAdmission(sql, launch.boatRuntimeDefault, launch, (input) =>
       admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),
     );
+  const goldenAdmissions = { boat: admitBoat, modal: admitModalGolden };
   const admitModal: typeof admitModalGolden = (actor, golden, ...rest) => {
-    if (golden.provider !== "boat") return admitModalGolden(actor, golden, ...rest);
-    if (!admitBoat) throw new VaultError("unavailable", "Boat launch admission is unavailable.");
-    return admitBoat(actor, golden, ...rest);
+    const admit = goldenAdmissions[golden.provider];
+    if (!admit) throw new VaultError("unavailable", "Boat launch admission is unavailable.");
+    return admit(actor, golden, ...rest);
   };
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })

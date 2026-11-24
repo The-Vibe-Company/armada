@@ -846,6 +846,11 @@ const launchAllocation = z.object({
   snapshot: z.string().min(1),
 });
 export const boatLaunchPayload = launchAllocation.extend({ boat: boatAuthority });
+function boatAuthorityPayload(payload: unknown) {
+  return typeof payload === "object" && payload !== null && "boat" in payload
+    ? { boat: boatLaunchPayload.parse(payload).boat }
+    : {};
+}
 const launchPayload = launchAllocation.extend({
   modal: z.object({ workspace: z.string().min(1), environment: z.string().min(1), appId: z.string().min(1) }),
 });
@@ -1094,7 +1099,7 @@ export async function runModalLaunch(
               await checkAccountPin(locked);
               const receipt = await readEnrolment(locked);
               if (!receipt?.check_after || !(await context.canDispatch(locked))) return false;
-              if (provider === "modal" && !receipt.handoff_staged)
+              if (!("boat" in plan) && !receipt.handoff_staged)
                 throw new ModalBootstrapRefused("Modal bootstrap replay lacks a prepared handoff.");
               const refreshed = await enrolments.refreshModalBootstrapManifest(
                 locked,
@@ -1110,7 +1115,7 @@ export async function runModalLaunch(
           });
           return current ? { ...prepared, enrolmentToken } : null;
         }
-        if (provider === "modal" && !handoff && !pending.handoff_staged) return null;
+        if (!("boat" in plan) && !handoff && !pending.handoff_staged) return null;
         const commandGrantExpiresAt = physicalExpiry ?? ("boat" in plan ? NaN : plan.computeExpiresAt.getTime());
         if (!Number.isFinite(commandGrantExpiresAt) || commandGrantExpiresAt < configuration.grant.expiresAt)
           throw new Error("Modal compute deadline does not cover the initial runtime grant.");
@@ -1230,7 +1235,7 @@ export async function runModalLaunch(
         {
           launchJobId: job.id,
           machineId: known ?? observed,
-          ...(provider === "boat" ? { boat: boatLaunchPayload.parse(job.payload).boat } : {}),
+          ...boatAuthorityPayload(job.payload),
         },
         {
           orgId: target.org_id,

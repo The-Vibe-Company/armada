@@ -16,15 +16,15 @@ returns boolean language sql immutable set search_path = '' as $$
 $$;
 
 drop trigger sandboxes_provider_guard on public.sandboxes;
-create trigger sandboxes_provider_guard before insert on public.sandboxes
+create trigger sandboxes_provider_insert_guard before insert on public.sandboxes
 for each row execute function public.sandboxes_provider_guard();
-create trigger sandboxes_provider_update_guard before update on public.sandboxes
+create trigger sandboxes_provider_guard before update on public.sandboxes
 for each row when (not public.is_boat_launch_binding(old, new)) execute function public.sandboxes_provider_guard();
 
 drop trigger sandboxes_guard on public.sandboxes;
-create trigger sandboxes_guard before insert on public.sandboxes
+create trigger sandboxes_guard_insert before insert on public.sandboxes
 for each row execute function public.sandboxes_guard();
-create trigger sandboxes_update_guard before update on public.sandboxes
+create trigger sandboxes_guard before update on public.sandboxes
 for each row when (not public.is_boat_launch_binding(old, new)) execute function public.sandboxes_guard();
 
 create function public.guard_boat_launch_binding() returns trigger
