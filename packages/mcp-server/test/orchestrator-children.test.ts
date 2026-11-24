@@ -1,17 +1,18 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
 import {
-  createSqlGoldenStore,
   createSqlSandboxStore,
   createSqlVaultStore,
   DelegatedAuthority,
   encryptSecret,
   type Sql,
-  VaultError,
 } from "@armada/core/server";
+import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData, DataError } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
+import { runModalLaunch } from "../src/jobs/modal-launch.ts";
 import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -21,12 +22,11 @@ import {
   RuntimeCheckpointActivityConflict,
   RuntimeReconciliationConflict,
 } from "../src/runtime-reconciliation-conflict.ts";
-import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
+import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -177,95 +177,193 @@ async function fixture(
   };
 }
 
-test("delegated child reservation precedes ambiguous allocation and retries cannot allocate twice", async () => {
-  const { close, db, sql, p, parent, authority, token, selection } = await fixture();
-  try {
-    let allocations = 0;
-    const executor: SandboxChildExecutor = {
-      async launch(operation) {
-        allocations++;
-        const reservation = (
-          await db.query<{ target_id: string; owner_id: string; org_id: string; state: string }>(
-            "select target_id,owner_id,org_id,state from orchestrator_child_operations where id=$1",
-            [operation.id],
-          )
-        ).rows[0];
-        expect(reservation).toEqual({
-          target_id: operation.sandboxId,
-          owner_id: p.owner,
-          org_id: p.org,
-          state: "pending",
-        });
-        throw Error("synthetic response lost after provider allocation");
-      },
-      async reconcile(operation) {
-        return { operationId: operation.id, sandboxId: operation.sandboxId, state: "unknown" };
-      },
-      async message() {
-        throw Error("unexpected message");
-      },
-      async stop() {
-        throw Error("unexpected stop");
-      },
-      async read() {
-        throw Error("unexpected read");
-      },
-    };
-    const children = createSandboxChildren(sql, authority, executor);
-    const first = await children.launch(token, "ticket-663", selection);
-    expect(first.state).toBe("uncertain");
-    // Persisted no-skill receipts must remain replayable across the skills rollout.
-    const legacyDigest = createHash("sha256")
-      .update(
-        JSON.stringify([
-          "launch",
-          [
-            selection.goldenId,
-            selection.harness,
-            selection.credentialId,
-            selection.credentialVersion,
-            selection.model,
-            null,
-            null,
-            null,
-            null,
-          ],
-        ]),
-      )
-      .digest("hex");
-    expect(
-      (
-        await db.query<{ request_digest: string }>(
-          "select request_digest from orchestrator_child_operations where id=$1",
-          [first.id],
-        )
-      ).rows[0]?.request_digest,
-    ).toBe(legacyDigest);
-    expect(await children.launch(token, "ticket-663", { ...selection, skills: [] })).toEqual(first);
+const childRuntime = (
+  sql: Sql,
+  provider: ReturnType<typeof fakeBoat>["provider"],
+  admitLaunch?: Awaited<ReturnType<typeof modalAdmissionFixture>>,
+) =>
+  createSandboxAccessServices({
+    sql,
+    providers: { resolve: async () => provider },
+    connections: undefined,
+    encryptionKey: ENCRYPTION_KEY,
+    scopedMcpUrl: "https://armada.example/mcp",
+    ...(admitLaunch ? { admitLaunch } : {}),
+  });
 
-    expect(await children.launch(token, "ticket-663", selection)).toEqual(first);
-    expect(allocations).toBe(1);
-    expect(await children.reconcileOne()).toBe(true);
-    expect(allocations).toBe(1);
-    expect(await children.launch(token, "ticket-663", selection)).toEqual(first);
-    await expect(children.launch(token, "ticket-663", { ...selection, model: "different" })).rejects.toThrow(
-      "Idempotency conflict",
-    );
-    const op = (
-      await db.query<{ target_id: string }>("select target_id from orchestrator_child_operations where id=$1", [
-        first.id,
-      ])
-    ).rows[0];
-    expect(op?.target_id).toBeTruthy();
-    await expect(children.read(token, parent.id)).rejects.toThrow("authority");
-    expect((await db.query("select * from orchestrator_children")).rows).toHaveLength(0);
-    await expect(
-      db.query("update orchestrator_child_operations set owner_id=$1 where id=$2", [p.admin, first.id]),
-    ).rejects.toThrow("immutable child reservation");
-  } finally {
-    await close();
-  }
+const boatAdmissionProvider = (boat: ReturnType<typeof fakeBoat>) => ({
+  ...boat.provider,
+  managementIdentity: async () => ({ scope: "org" as const, ownerId: "fixture" }),
 });
+
+test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as const)(
+  "delegated admission is durable and fenced after %s",
+  async (scenario) => {
+    const provider = scenario === "lost Modal acknowledgement" ? "modal" : "boat";
+    const { close, db, sql, p, authority, id, token, selection } = await fixture("running", "anthropic", provider);
+    try {
+      const boat = fakeBoat();
+      const fixtureProvider = { ...boatAdmissionProvider(boat), id: provider };
+      let armed = false;
+      const guarded: Sql = {
+        ...sql,
+        transaction: async (work) => {
+          const result = await sql.transaction!(async (tx) => {
+            const value = await work(tx);
+            if (armed && scenario === "rolled back Boat") throw Error("worker admission rollback");
+            return value;
+          });
+          if (armed && scenario === "lost Modal acknowledgement") throw Error("admission response lost");
+          return result;
+        },
+      };
+      const admit = await modalAdmissionFixture(
+        guarded,
+        ENCRYPTION_KEY,
+        createSqlVaultStore(sql),
+        provider === "modal"
+          ? {
+              orgId: p.org,
+              userId: p.owner,
+              visibility: "org",
+              binding: { workspace: "workspace", environment: "main", appId: "app" },
+            }
+          : undefined,
+        fixtureProvider,
+      );
+      const { childWorker } = childRuntime(sql, fixtureProvider, async (...args) => {
+        armed = true;
+        try {
+          return await admit(...args);
+        } finally {
+          armed = false;
+        }
+      });
+      const chosen = { ...selection, model: "claude-sonnet-4-6", size: "small" as const };
+      const receipt = await childWorker.launch(token, "same-key", chosen);
+      const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+      if (scenario === "rolled back Boat") {
+        expect(receipt.state).toBe("uncertain");
+        expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeUndefined();
+        expect((await db.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
+        await db.query("update orchestrator_child_operations set reconcile_after='-infinity' where id=$1", [
+          receipt.id,
+        ]);
+        await db.query("update orchestrator_child_operations set error_code=null where id=$1", [receipt.id]);
+        expect(await childWorker.reconcileOne()).toBe(false);
+        await db.query(
+          "update orchestrator_child_operations set error_code='child_launch_admission_pending' where id=$1",
+          [receipt.id],
+        );
+        expect(await childWorker.reconcileOne()).toBe(true);
+        expect((await childWorker.launch(token, "same-key", chosen)).state).toBe("failed");
+        return;
+      }
+      expect(receipt.state).toBe("succeeded");
+      expect(await childWorker.launch(token, "same-key", { ...chosen, skills: [] })).toEqual(receipt);
+      await expect(childWorker.launch(token, "same-key", { ...chosen, size: "large" })).rejects.toThrow(
+        "Idempotency conflict",
+      );
+      expect(await childWorker.read(token, receipt.sandboxId)).toMatchObject({
+        status: "starting",
+        providerSandboxId: null,
+        events: [],
+      });
+      const job = await jobs.claim("launch", crypto.randomUUID(), 30, 1);
+      expect(job).toMatchObject({
+        sandbox_id: receipt.sandboxId,
+        payload: { childOperationId: receipt.id, allocation: { size: "small" } },
+      });
+      expect(
+        (
+          await db.query(
+            `select s.visibility,s.credential_id,s.credential_version,c.orchestrator_id
+          from sandboxes s join orchestrator_children c on c.sandbox_id=s.id where s.id=$1`,
+            [receipt.sandboxId],
+          )
+        ).rows,
+      ).toEqual([
+        { visibility: "private", credential_id: selection.credentialId, credential_version: 1, orchestrator_id: id },
+      ]);
+      expect(boat.forks).toHaveLength(0);
+      if (scenario === "lost Modal acknowledgement") {
+        await db.query(
+          `update jobs set outcome='{"modal_machine":{"entry":{"operation":"create","phase":"allocated","machineId":"child-modal"}}}'
+           where id=$1`,
+          [job!.id],
+        );
+        await db.query("update sandboxes set provider_sandbox_id='child-modal' where id=$1", [receipt.sandboxId]);
+        await db.query("update sandboxes set status='ready' where id=$1", [receipt.sandboxId]);
+        await db.query(
+          "insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash) values($1,1,1,repeat('a',64))",
+          [receipt.sandboxId],
+        );
+        const setup = (
+          await db.query<{ id: string }>(
+            "update jobs set state='done' where sandbox_id=$1 and kind='launch_initial_turn' returning id",
+            [receipt.sandboxId],
+          )
+        ).rows[0]!;
+        const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+        expect(
+          await queue.acceptInitialLaunch(
+            { via: "service", userId: p.owner, orgs: [{ orgId: p.org, role: "member" }] },
+            { id: receipt.sandboxId, request_id: setup.id, prompt: "first turn" },
+            "1",
+            async () => true,
+            { childOperationId: receipt.id },
+          ),
+        ).toBe(true);
+        await authority.revoke(id);
+        const send = mock(async () => ({}));
+        const turn = (await jobs.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
+        await createTurnDispatchJob(sql, ENCRYPTION_KEY, send).run(turn, {
+          signal: new AbortController().signal,
+          canDispatch: async () => true,
+          handoffGeneration: async () => "1",
+        });
+        expect(send).not.toHaveBeenCalled();
+        expect((await db.query("select state from account_turn_queue where request_id=$1", [setup.id])).rows).toEqual([
+          { state: "failed" },
+        ]);
+      }
+      if (scenario === "revoked Boat" && job) {
+        await authority.revoke(id);
+        const unexpected = () => {
+          throw Error("revoked launch must not allocate or bootstrap");
+        };
+        const result = await runModalLaunch(
+          sql,
+          ENCRYPTION_KEY,
+          job,
+          {
+            signal: new AbortController().signal,
+            canDispatch: async () => true,
+          },
+          () => ({
+            boat: "fixture",
+            bindingRef: job.id,
+            allocation: { source: { kind: "snapshot", ref: "snapshot" }, computeTtlSeconds: 3600, size: "small" },
+            canUseModalCredential: async () => true,
+            prepareRuntimeTicket: unexpected,
+            machine: () => ({
+              create: unexpected,
+              bootstrap: unexpected,
+              stop: unexpected,
+              resume: unexpected,
+              delete: unexpected,
+              observe: async () => ({ kind: "absent" }),
+            }),
+          }),
+          "boat",
+        );
+        expect(result.status).toBe("fail");
+      }
+    } finally {
+      await close();
+    }
+  },
+);
 
 test("own children support independent target receipts while unrelated children remain denied", async () => {
   const { close, db, sql, p, parent, id, authority, token, selection } = await fixture();
@@ -273,29 +371,17 @@ test("own children support independent target receipts while unrelated children 
     const boat = fakeBoat();
     const messages: string[] = [];
     const stopped: string[] = [];
+    const admit = await modalAdmissionFixture(
+      sql,
+      ENCRYPTION_KEY,
+      createSqlVaultStore(sql),
+      undefined,
+      boatAdmissionProvider(boat),
+    );
+    const { childWorker } = childRuntime(sql, boat.provider, admit);
     const executor: SandboxChildExecutor = {
-      async launch(op, selected) {
-        return launchSandboxChild({
-          sql,
-          runtime: enrolledLaunchPolicy(sql),
-          provider: boat.provider,
-          operation: op,
-          selection: selected,
-          stores: {
-            goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlData(sql)({
-              via: "service",
-              userId: p.owner,
-              orgs: [{ orgId: p.org, role: "member" }],
-            }).sandboxes,
-            credentials: {
-              async resolve() {
-                throw Error("legacy credential fallback forbidden");
-              },
-            },
-          },
-          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-        });
+      async launch() {
+        throw Error("Unexpected launch");
       },
       async reconcile(op) {
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
@@ -311,14 +397,11 @@ test("own children support independent target receipts while unrelated children 
       },
     };
     const children = createSandboxChildren(sql, authority, executor);
-    expect((await children.launch(token, "ticket-one", { ...selection, size: "small" })).state).toBe("succeeded");
-    expect(boat.forks[0]?.size).toBe("small");
-    await expect(children.launch(token, "ticket-one", { ...selection, size: "large" })).rejects.toThrow(
-      "Idempotency conflict",
-    );
-    expect((await children.launch(token, "ticket-two", selection)).state).toBe("succeeded");
-    expect((await children.launch(token, "ticket-three", selection)).state).toBe("succeeded");
-    expect((await children.launch(token, "ticket-four", selection)).state).toBe("succeeded");
+    for (const key of ["ticket-one", "ticket-two", "ticket-three", "ticket-four"]) {
+      expect((await childWorker.launch(token, key, { ...selection, model: "claude-sonnet-4-6" })).state).toBe(
+        "succeeded",
+      );
+    }
     const rows = (
       await db.query<{ sandbox_id: string }>(
         "select sandbox_id from orchestrator_children where orchestrator_id=$1 order by sandbox_id",
@@ -749,120 +832,6 @@ test.each([
   }
 });
 
-test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
-  const { close, db, sql, id, authority, token, selection } = await fixture();
-  try {
-    const boat = fakeBoat();
-    const admissionSql: Sql = {
-      query: sql.query,
-      async transaction(work) {
-        const result = await sql.transaction!(work);
-        await authority.revoke(id);
-        return result;
-      },
-    };
-    const children = createSandboxChildren(sql, authority, {
-      async launch(operation, selected) {
-        return launchSandboxChild({
-          sql,
-          runtime: enrolledLaunchPolicy(sql),
-          provider: boat.provider,
-          operation,
-          selection: selected,
-          stores: {
-            goldens: createSqlGoldenStore(admissionSql),
-            sandboxes: createSqlSandboxStore(sql),
-            credentials: {
-              async resolve() {
-                throw Error("no legacy fallback");
-              },
-            },
-          },
-          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-        });
-      },
-      async read() {
-        throw Error("unexpected");
-      },
-      async message() {
-        throw Error("unexpected");
-      },
-      async stop() {
-        throw Error("unexpected");
-      },
-      async reconcile(op) {
-        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
-      },
-    });
-    const receipt = await children.launch(token, "revoked-after-admission", selection);
-    expect(receipt.state).toBe("failed");
-    expect(boat.forks).toHaveLength(0);
-    expect(
-      (
-        await db.query("select sandbox_id from ordinary_launch_snapshot_intents where sandbox_id=$1", [
-          receipt.sandboxId,
-        ])
-      ).rows,
-    ).toEqual([]);
-  } finally {
-    await close();
-  }
-});
-
-test("missing actual named-account schema fails before fork without an uncertain allocation reservation", async () => {
-  const { close, db, sql, authority, token, selection } = await fixture("running", "anthropic");
-  try {
-    const boat = fakeBoat();
-    // Simulate a deployment missing the actual producer202 column, not a second account schema.
-    await db.exec("alter table sandboxes rename column credential_id to unavailable_credential_id");
-    const children = createSandboxChildren(sql, authority, {
-      async launch(operation, selected) {
-        return launchSandboxChild({
-          sql,
-          runtime: enrolledLaunchPolicy(sql),
-          provider: boat.provider,
-          operation,
-          selection: selected,
-          stores: {
-            goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlSandboxStore(sql),
-            credentials: {
-              async resolve() {
-                throw Error("no legacy fallback");
-              },
-            },
-          },
-          namedCredentials: {
-            async resolve() {
-              throw Error("schema must be checked first");
-            },
-          },
-        });
-      },
-      async read() {
-        throw Error("unexpected");
-      },
-      async message() {
-        throw Error("unexpected");
-      },
-      async stop() {
-        throw Error("unexpected");
-      },
-      async reconcile(op) {
-        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
-      },
-    });
-    expect((await children.launch(token, "missing202", selection)).state).toBe("failed");
-    expect(boat.forks).toHaveLength(0);
-    expect((await db.query<{ state: string }>("select state from orchestrator_child_operations")).rows[0]?.state).toBe(
-      "failed",
-    );
-  } finally {
-    await db.exec("alter table sandboxes rename column unavailable_credential_id to credential_id");
-    await close();
-  }
-});
-
 test("read-only delegated scope cannot override the launch method through untrusted selection fields", async () => {
   const { close, db, sql, p, parent, id, authority, selection, golden } = await fixture();
   try {
@@ -922,223 +891,23 @@ test("read-only delegated scope cannot override the launch method through untrus
   }
 });
 
-for (const outcome of ["direct-success", "direct-failed", "discovery-success"] as const) {
-  test(`child terminal receipt is not downgraded by delayed ${outcome} publication`, async () => {
-    const { close, db, sql, p, authority, token, selection, golden } = await fixture();
-    const deferred = <T>() => {
-      let resolve: (value: T) => void = () => {};
-      let reject: (reason: unknown) => void = () => {};
-      const promise = new Promise<T>((yes, no) => {
-        resolve = yes;
-        reject = no;
-      });
-      return { promise, resolve, reject };
-    };
-    const entered = deferred<void>(),
-      discovered = deferred<void>();
-    const launchReply = deferred<{ providerSandboxId: string }>();
-    const discoverReply = deferred<Awaited<ReturnType<SandboxChildExecutor["reconcile"]>>>();
-    let op: Parameters<SandboxChildExecutor["launch"]>[0] | undefined;
-    let launch: ReturnType<ReturnType<typeof createSandboxChildren>["launch"]> | undefined;
-    let reconcile: Promise<boolean> | undefined;
-    try {
-      const children = createSandboxChildren(sql, authority, {
-        async launch(operation) {
-          op = operation;
-          if (outcome !== "direct-failed")
-            await createSqlSandboxStore(sql).insert({
-              id: operation.sandboxId,
-              provider: "boat",
-              providerSandboxId: "receipt-race",
-              goldenId: golden.id,
-              orgId: p.org,
-              ownerId: p.owner,
-              harness: "claude",
-              status: "running",
-              model: "m",
-              reasoningEffort: "medium",
-              visibility: "private",
-            });
-          entered.resolve();
-          return launchReply.promise;
-        },
-        async reconcile() {
-          discovered.resolve();
-          return discoverReply.promise;
-        },
-        async read() {
-          throw Error("unexpected");
-        },
-        async message() {
-          throw Error("unexpected");
-        },
-        async stop() {
-          throw Error("unexpected");
-        },
-      });
-      launch = children.launch(token, "terminal-race", selection);
-      await entered.promise;
-      reconcile = children.reconcileOne();
-      await discovered.promise;
-      if (!op) throw Error("missing operation");
-      if (outcome === "discovery-success") {
-        discoverReply.resolve({
-          operationId: op.id,
-          sandboxId: op.sandboxId,
-          state: "succeeded",
-          providerSandboxId: "receipt-race",
-        });
-        await reconcile;
-        launchReply.reject(Error("original response lost after confirmed discovery"));
-        expect((await launch).state).toBe("succeeded");
-      } else {
-        if (outcome === "direct-success") launchReply.resolve({ providerSandboxId: "receipt-race" });
-        else {
-          const { ChildLaunchNotAllocated } = await import("../src/sandbox-access-child-launch.ts");
-          launchReply.reject(new ChildLaunchNotAllocated("preallocation_rejected"));
-        }
-        await launch;
-        discoverReply.resolve({ operationId: op.id, sandboxId: op.sandboxId, state: "unknown" });
-        await reconcile;
-      }
-      expect(
-        (await db.query<{ state: string }>("select state from orchestrator_child_operations where id=$1", [op.id]))
-          .rows[0]?.state,
-      ).toBe(outcome === "direct-failed" ? "failed" : "succeeded");
-    } finally {
-      launchReply.reject(Error("fixture cleanup"));
-      if (op) discoverReply.resolve({ operationId: op.id, sandboxId: op.sandboxId, state: "unknown" });
-      await Promise.allSettled([launch, reconcile]);
-      await close();
-    }
-  });
-}
-
-for (const proof of [
-  "closed-owned-resource",
-  "wrong-resource",
-  "no-stop-proof",
-  "contradictory-no-allocation",
-] as const) {
-  test(`uncertain child allocation settles only on matching terminal provider evidence (${proof})`, async () => {
-    const { close, sql, id, authority, token, selection } = await fixture();
-    try {
-      await sql.query(
-        "insert into orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,1) on conflict(orchestrator_id) do update set max_active_children=1",
-        [id],
-      );
-      let allocations = 0;
-      const children = createSandboxChildren(sql, authority, {
-        async launch(op) {
-          allocations++;
-          await sql.query("update orchestrator_child_operations set provider_sandbox_id=$2 where id=$1", [
-            op.id,
-            `allocated-${op.id}`,
-          ]);
-          throw Error("registration response unavailable after allocation");
-        },
-        async reconcile(op) {
-          return {
-            operationId: op.id,
-            sandboxId: op.sandboxId,
-            state: "failed",
-            providerSandboxId: proof === "wrong-resource" ? "another-user-resource" : `allocated-${op.id}`,
-            resourceStopped: proof === "closed-owned-resource" || proof === "wrong-resource",
-            noAllocation: proof === "contradictory-no-allocation",
-          };
-        },
-        async read() {
-          throw Error("unexpected");
-        },
-        async message() {
-          throw Error("unexpected");
-        },
-        async stop() {
-          throw Error("readonly reconciliation must not stop");
-        },
-      });
-      const first = await children.launch(token, "ambiguous-allocation", selection);
-      expect(first.state).toBe("uncertain");
-      await expect(children.launch(token, "while-unknown", selection)).rejects.toThrow("Owner child policy");
-      await children.reconcileOne();
-      const state = (
-        await sql.query<{ state: string }>("select state from orchestrator_child_operations where id=$1", [first.id])
-      ).rows[0]?.state;
-      expect(state).toBe(proof === "closed-owned-resource" ? "failed" : "uncertain");
-      if (proof === "closed-owned-resource") {
-        await children.launch(token, "after-confirmed-stop", selection);
-        expect(allocations).toBe(2);
-      } else {
-        await expect(children.launch(token, "without-terminal-proof", selection)).rejects.toThrow("Owner child policy");
-        expect(allocations).toBe(1);
-      }
-    } finally {
-      await close();
-    }
-  });
-}
-
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
   const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
   const { ORCHESTRATOR_SCOPED_PATH } = await import("@armada/core/contract");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-  const { createSandboxScopedGateway } = await import("../src/sandbox-access-scoped-gateway.ts");
   const boat = fakeBoat();
   const clients: InstanceType<typeof Client>[] = [];
   try {
-    let reads = 0;
-    const executor: SandboxChildExecutor = {
-      async launch(op, chosen) {
-        return launchSandboxChild({
-          sql,
-          runtime: enrolledLaunchPolicy(sql),
-          provider: boat.provider,
-          operation: op,
-          selection: chosen,
-          stores: {
-            goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlData(sql)({
-              via: "service",
-              userId: p.owner,
-              orgs: [{ orgId: p.org, role: "member" }],
-            }).sandboxes,
-            credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-          },
-          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-        });
-      },
-      async read(sandboxId) {
-        reads++;
-        return (await sql.query("select id,status from sandboxes where id=$1", [sandboxId])).rows[0];
-      },
-      async message(op, text) {
-        const child = (
-          await sql.query<{ provider_sandbox_id: string; harness: "claude" | "codex" }>(
-            "select provider_sandbox_id,harness from sandboxes where id=$1",
-            [op.sandboxId],
-          )
-        ).rows[0];
-        if (!child) throw Error("missing owned child");
-        await boat.provider.prompt({ sandboxId: child.provider_sandbox_id, harness: child.harness, text });
-      },
-      async stop(op) {
-        const child = (
-          await sql.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
-            op.sandboxId,
-          ])
-        ).rows[0];
-        if (!child) throw Error("missing owned child");
-        await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
-      },
-      async extend(_op, ttlSeconds) {
-        expect(ttlSeconds).toBe(60);
-      },
-      async reconcile(op) {
-        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
-      },
-    };
-    const route = createSandboxScopedGateway(createSandboxChildren(sql, authority, executor), authority);
+    const admit = await modalAdmissionFixture(
+      sql,
+      ENCRYPTION_KEY,
+      createSqlVaultStore(sql),
+      undefined,
+      boatAdmissionProvider(boat),
+    );
+    const services = childRuntime(sql, boat.provider, admit);
+    const route = services.scopedToolsRoute;
     const clientFor = async (secret: string) => {
       const client = new Client({ name: "scoped-native-fixture", version: "1" });
       await client.connect(
@@ -1161,7 +930,10 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     ]);
     const launched = await client.callTool({
       name: "launch",
-      arguments: { idempotencyKey: "mcp-child", selection: { ...selection, size: "small" } },
+      arguments: {
+        idempotencyKey: "mcp-child",
+        selection: { ...selection, model: "claude-sonnet-4-6", size: "small" },
+      },
     });
     expect(launched.isError).not.toBe(true);
     const receipt = (
@@ -1169,7 +941,6 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     )?.result;
     if (!receipt) throw new Error("Scoped launch receipt missing.");
     expect(receipt.state).toBe("succeeded");
-    expect(boat.forks[0]?.size).toBe("small");
     expect((await client.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).not.toBe(
       true,
     );
@@ -1188,20 +959,6 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       visibility: "private",
     });
     expect((await client.callTool({ name: "read", arguments: { sandboxId: unrelated.id } })).isError).toBe(true);
-    expect(reads).toBe(1);
-    expect(
-      (
-        await client.callTool({
-          name: "message",
-          arguments: {
-            idempotencyKey: "mcp-child-message",
-            sandboxId: receipt.sandboxId,
-            text: "continue the same ticket",
-          },
-        })
-      ).isError,
-    ).not.toBe(true);
-    expect(boat.prompts).toHaveLength(1);
     const api = async (method: string, payload: unknown, secret = token, key?: string) =>
       (await route(
         new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/${method}`, {
@@ -1215,17 +972,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         }),
       )) ?? new Response(null, { status: 404 });
     const { publishedResponse } = await import("./published-response.ts");
-    const launchResponse = await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child");
+    const launchResponse = await api(
+      "launch",
+      { selection: { ...selection, model: "claude-sonnet-4-6", size: "small" } },
+      token,
+      "mcp-child",
+    );
     expect(launchResponse.status).toBe(200);
     expect(publishedResponse("orchestrator-tools/launch").safeParse(await launchResponse.json()).success).toBe(true);
-    const services = createSandboxAccessServices({
-      sql,
-      providers: { resolve: async () => boat.provider },
-      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-      connections: undefined,
-      encryptionKey: ENCRYPTION_KEY,
-      scopedMcpUrl: "https://armada.example/mcp",
-    });
     const readResponse = await services.scopedToolsRoute(
       new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/read`, {
         method: "POST",
@@ -1236,19 +990,6 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     if (!readResponse) throw new Error("Scoped read did not dispatch.");
     expect(readResponse.status).toBe(200);
     expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
-    expect(boat.forks).toHaveLength(1);
-    for (const [method, body, key] of [
-      ["message", { text: "continue the same ticket" }, "mcp-child-message"],
-      ["stop", {}, "api-child-stop"],
-    ] as const) {
-      const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
-      expect(response.status).toBe(200);
-      const parsed = publishedResponse(`orchestrator-tools/${method}`).safeParse(await response.json());
-      expect(parsed).toMatchObject({ success: true, data: { result: { state: "succeeded" } } });
-    }
-    expect(boat.prompts).toHaveLength(1);
-    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
-    expect(boat.stops).toHaveLength(1);
     for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
       expect((await api(method, {})).status).toBe(403);
     expect((await api("wait_record", { kind: "child", reference: receipt.sandboxId })).status).toBe(503);
@@ -1304,101 +1045,9 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     expect((await client.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).toBe(true); // old epoch
     await sql.query("delete from members where org_id=$1 and user_id=$2", [p.org, p.owner]);
     expect((await reader.callTool({ name: "read", arguments: { sandboxId: receipt.sandboxId } })).isError).toBe(true);
-    expect(boat.forks).toHaveLength(1);
+    expect(boat.forks).toHaveLength(0);
   } finally {
     for (const client of clients) await client.close();
-    await close();
-  }
-});
-
-test("registered failed child with confirmed stopped compute releases explicit capacity", async () => {
-  const { close, sql, p, id, authority, token, selection } = await fixture();
-  try {
-    await sql.query(
-      "insert into orchestrator_lifecycle(orchestrator_id,max_active_children) values($1,1) on conflict(orchestrator_id) do update set max_active_children=1",
-      [id],
-    );
-    const boat = fakeBoat();
-    let executionCalls = 0;
-    const children = createSandboxChildren(sql, authority, {
-      async launch(op, chosen) {
-        if (++executionCalls > 1) {
-          const { ChildLaunchNotAllocated } = await import("../src/sandbox-access-child-launch.ts");
-          throw new ChildLaunchNotAllocated("preallocation_rejected");
-        }
-        return launchSandboxChild({
-          sql,
-          runtime: {
-            async start(input) {
-              const agent = await enrolledLaunchPolicy(sql).start(input);
-              input.onEnrolled?.(agent.epoch);
-              return {
-                ...agent,
-                async prepareWorkspace() {
-                  throw Error("synthetic repository preparation failure");
-                },
-              };
-            },
-          },
-          provider: boat.provider,
-          operation: op,
-          selection: chosen,
-          stores: {
-            goldens: createSqlGoldenStore(sql),
-            sandboxes: createSqlData(sql)({
-              via: "service",
-              userId: p.owner,
-              orgs: [{ orgId: p.org, role: "member" }],
-            }).sandboxes,
-            credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-          },
-          namedCredentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
-        });
-      },
-      async reconcile(op) {
-        const row = (
-          await sql.query<{ provider_sandbox_id: string }>(
-            "select provider_sandbox_id from orchestrator_child_operations where id=$1",
-            [op.id],
-          )
-        ).rows[0];
-        if (!row) throw Error("missing provider receipt");
-        const info = await boat.provider.get(row.provider_sandbox_id);
-        return {
-          operationId: op.id,
-          sandboxId: op.sandboxId,
-          state: "failed",
-          providerSandboxId: info.id,
-          resourceStopped: info.state === "stopped",
-        };
-      },
-      async read() {
-        throw Error("unexpected");
-      },
-      async message() {
-        throw Error("unexpected");
-      },
-      async stop() {
-        throw Error("readonly proof only");
-      },
-    });
-    const failed = await children.launch(token, "registered-child-fails", selection);
-    expect(failed.state).toBe("uncertain");
-    const { createSandboxLifecycle } = await import("../src/sandbox-lifecycle.ts");
-    expect(await createSandboxLifecycle(sql, async () => boat.provider).reconcileOne()).toBe(true);
-    const row = (
-      await sql.query<{ status: string; stopped_at: Date | null; status_reason: string }>(
-        "select status,stopped_at,status_reason from sandboxes where id=$1",
-        [failed.sandboxId],
-      )
-    ).rows[0];
-    expect(row?.status).toBe("failed");
-    expect(row?.stopped_at).not.toBeNull();
-    await children.reconcileOne();
-    expect((await children.launch(token, "capacity-after-confirmed-closure", selection)).state).toBe("failed");
-    expect(executionCalls).toBe(2);
-    expect(boat.forks).toHaveLength(1);
-  } finally {
     await close();
   }
 });
@@ -1422,7 +1071,6 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     let checkpointRequest: string | undefined;
     let checkpointCalls = 0;
     let hostAvailable = true;
-    let logicalId: string;
     const physicalDeadline = new Date(Date.now() + 16_000_000);
     const host = {
       ...fake.provider,
@@ -1452,9 +1100,36 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         if (loseStopReply) throw Error("synthetic lost compute stop response");
       },
     };
-    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
+    const resolved = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, noEnv: true, env: {} });
+    const physicalId = resolved.id;
+    const saved = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "modal",
+      providerSandboxId: physicalId,
+      modalTransport: "dialout",
+      orgId: p.org,
+      ownerId: p.owner,
+      goldenId: selection.goldenId,
+      visibility: "private",
+      status: "starting",
+      harness: "claude",
+      model: "m",
+      reasoningEffort: "medium",
+      credentialId: selection.credentialId,
+      credentialVersion: 1,
+    });
+    const logicalId = saved.id;
+    await sql.query("insert into orchestrator_children values($1,$2,$3,$4)", [logicalId, id, p.org, p.owner]);
+    const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+    const ticket = await enrolments.issue({
+      sandboxId: logicalId,
+      ownerId: p.owner,
+      commandGrantExpiresAt: physicalDeadline.getTime(),
+      configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
+    });
+    await enrolments.enrol(ticket.enrolmentToken);
+    await sql.query("update sandboxes set status='running' where id=$1", [logicalId]);
     const sends: { id: string; prompt: string; request_id?: string | undefined }[] = [];
-    let physicalId: string;
     const services = createSandboxAccessServices({
       sql,
       providers: {
@@ -1474,7 +1149,6 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
           );
         },
       },
-      credentials,
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
@@ -1516,54 +1190,8 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
           status: "running",
         };
       },
-      runtimePlacements: {
-        modal: {
-          async provider(_actor, target) {
-            expect(target).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
-            return host;
-          },
-          credentials,
-          connections: { async validate() {}, async bind() {} },
-          policy: {
-            async start({ sandbox }) {
-              logicalId = sandbox.id;
-              physicalId = sandbox.providerSandboxId;
-              expect(sandbox.modalTransport).toBe("dialout");
-              expect(sandbox.credentialId).toBe(selection.credentialId);
-              expect(sandbox.credentialVersion).toBe(selection.credentialVersion);
-              expect(sandbox.visibility).toBe("private");
-              const enrolments = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
-              const ticket = await enrolments.issue({
-                sandboxId: sandbox.id,
-                ownerId: p.owner,
-                commandGrantExpiresAt: physicalDeadline.getTime(),
-                configuration: { grant: { expiresAt: physicalDeadline.getTime() } },
-              });
-              const active = await enrolments.enrol(ticket.enrolmentToken);
-              return {
-                epoch: active.epoch,
-                prepareWorkspace: async () => ({ status: "not_connected" }),
-                async prompt(request) {
-                  expect(request.text).toStartWith("first turn");
-                  return { promptId: "runtime-prompt", conversationId: "runtime-conversation", status: "running" };
-                },
-              };
-            },
-          },
-        },
-      },
     });
-    const request = { ...selection, prompt: "first turn" };
-    const receipt = await services.childWorker.launch(token, "enrolled-child", request);
-    expect(receipt.state).toBe("succeeded");
-    expect((await services.childWorker.launch(token, "enrolled-child", request)).id).toBe(receipt.id);
-    expect(fake.forks).toHaveLength(1);
-    expect(fake.forks[0]?.idempotencyKey).toBe(receipt.id);
-    expect(fake.execs).toHaveLength(0);
-    await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
-      id: receipt.sandboxId,
-      events: [],
-    });
+    const receipt = { sandboxId: logicalId };
     hostAvailable = false;
     const message = await services.childWorker.message(token, "message", receipt.sandboxId, "follow up");
     hostAvailable = true;
@@ -1573,12 +1201,12 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     expect(
       (
         await sql.query(
-          `select c.orchestrator_id,c.owner_id,c.org_id,s.task_prompt_id from orchestrator_children c
+          `select c.orchestrator_id,c.owner_id,c.org_id,s.id as sandbox_id from orchestrator_children c
          join sandboxes s on s.id=c.sandbox_id where c.sandbox_id=$1`,
           [receipt.sandboxId],
         )
       ).rows,
-    ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, task_prompt_id: "runtime-prompt" }]);
+    ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, sandbox_id: logicalId }]);
     expect((await services.childWorker.extend(token, "extend", receipt.sandboxId, 15_000)).state).toBe("succeeded");
     const firstStop = services.childWorker.stop(token, "stop", receipt.sandboxId);
     let stopped: Awaited<typeof firstStop>;
@@ -1640,108 +1268,6 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
   }
 });
 
-test.each(["golden lookup failure", "placement refusal", "config revocation", "MCP revocation"] as const)(
-  "scoped Modal launch fences host dispatch and configuration after %s",
-  async (scenario) => {
-    const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
-    try {
-      if (scenario === "golden lookup failure") {
-        await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
-      }
-      const preallocationRefused = scenario === "golden lookup failure" || scenario === "placement refusal";
-      const fake = fakeBoat();
-      const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
-      let bootstraps = 0;
-      const configureMcp = mock(() => {});
-      const prepareMcp: NonNullable<
-        NonNullable<Parameters<typeof launchSandboxChild>[0]["stores"]["connections"]>["prepare"]
-      > = async (_host, _sandbox, _actor, _signal, assertClaim?: (tx: Sql) => Promise<void>) => {
-        await authority.revoke(id);
-        if (assertClaim) await sql.transaction!(assertClaim);
-        configureMcp();
-      };
-      const host = {
-        ...fake.provider,
-        id: "modal" as const,
-        async startRuntime() {
-          bootstraps++;
-        },
-      };
-      const services = createSandboxAccessServices({
-        sql,
-        providers: { resolve: async () => host },
-        credentials,
-        connections: undefined,
-        encryptionKey: ENCRYPTION_KEY,
-        scopedMcpUrl: "https://armada.example/mcp",
-        runtimePlacements: {
-          modal: {
-            async provider() {
-              if (scenario === "placement refusal") throw new VaultError("unavailable", "private placement detail");
-              return host;
-            },
-            credentials,
-            connections: { async validate() {}, async bind() {}, prepare: prepareMcp },
-            policy: {
-              async start(input) {
-                if (scenario === "MCP revocation") return enrolledLaunchPolicy(sql).start(input);
-                await authority.revoke(id);
-                await (input.host as typeof host).startRuntime();
-                throw Error("Revoked parent should have prevented bootstrap");
-              },
-            },
-          },
-        },
-      });
-      const log = spyOn(console, "error");
-      try {
-        let receipt: Awaited<ReturnType<typeof services.childWorker.launch>> | undefined;
-        const response = await observeRequest(async () => {
-          receipt = await services.childWorker.launch(token, scenario, selection);
-          return new Response();
-        }, console.error);
-        if (!receipt) throw Error("Missing child receipt.");
-        expect(receipt.state).toBe(preallocationRefused ? "failed" : "uncertain");
-        if (preallocationRefused) {
-          expect(await services.childWorker.launch(token, scenario, selection)).toEqual(receipt);
-          const placementRefused = scenario === "placement refusal";
-
-          const diagnostics = log.mock.calls
-            .map(([line]) => String(line))
-            .filter((line) => line.includes("operator_failure"));
-          expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
-            expect.objectContaining({
-              phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
-              code: "child_preallocation_rejected",
-              refusalCode: placementRefused ? "unavailable" : "invalid_config",
-              errorClass: placementRefused ? "VaultError" : "GoldenError",
-              sandboxId: receipt.sandboxId,
-              operationId: receipt.id,
-              requestId: response?.headers.get("x-request-id"),
-            }),
-          ]);
-          expect(diagnostics.join("\n")).not.toContain("private placement detail");
-          expect((await sql.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
-          expect(
-            (
-              await sql.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [
-                receipt.sandboxId,
-              ])
-            ).rows,
-          ).toEqual([]);
-        }
-      } finally {
-        log.mockRestore();
-      }
-      expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
-      expect(bootstraps).toBe(0);
-      expect(configureMcp).not.toHaveBeenCalled();
-    } finally {
-      await close();
-    }
-  },
-);
-
 // Real delegated stop and SQL fences: a completed stop must remain live-readable.
 test("managed child stop clears its epoch only after physical confirmation", async () => {
   let scenario:
@@ -1785,7 +1311,6 @@ test("managed child stop clears its epoch only after physical confirmation", asy
           return provider;
         },
       },
-      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",

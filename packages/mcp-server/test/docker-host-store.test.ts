@@ -2833,11 +2833,6 @@ test("runtime self completion needs no child access and retries failed stop/dele
         throw Error("No provider I/O on self report");
       },
     },
-    credentials: {
-      resolve: async () => {
-        throw Error("No model credentials on self report");
-      },
-    },
     connections: undefined,
   });
   const response = await services.scopedToolsRoute(

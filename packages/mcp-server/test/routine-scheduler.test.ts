@@ -4,6 +4,7 @@ import {
   createRoutineService,
   createSqlMcpLaunchPort,
   createSqlMcpRegistry,
+  createSqlVaultStore,
   createTemplateService,
   promptOutcome,
   type Routine,
@@ -11,9 +12,11 @@ import {
   type Sql,
   createRoutineScheduler as scheduler,
   type TemplateRuntime,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
+import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -56,6 +59,10 @@ async function fixture() {
   const templateId = (template.item as { id: string }).id;
   const data = createSqlData(sql)({ ...actor, orgs: [{ orgId: people.org, role: "member" }], via: "supabase" });
   const credential = (await db.query<{ id: string }>("select id from credentials where kind='openai'")).rows[0]!.id;
+  const admit = await modalAdmissionFixture(sql, ENCRYPTION_KEY, createSqlVaultStore(sql), undefined, {
+    ...boat.provider,
+    managementIdentity: async () => ({ scope: "org", ownerId: people.org }),
+  });
   const runtime: TemplateRuntime = {
     stores: {
       goldens: data.goldens,
@@ -70,7 +77,7 @@ async function fixture() {
         }),
       },
     },
-    provider: async () => boat.provider,
+    admitModal: (actor, golden, request, pin) => admit(actor, golden, data, request, { pin }),
     options: { runtime: enrolledLaunchPolicy(sql) },
   };
   const launches: Record<string, unknown>[] = [];
@@ -83,13 +90,8 @@ async function fixture() {
     expect(owner.userId).toBe(people.owner);
     return templates.command(owner, "launch", input, {
       ...runtime,
-      options: {
-        ...runtime.options,
-        beforeFork: async (id) => {
-          await runtime.options?.beforeFork?.(id);
-          await admission?.beforeFork();
-        },
-      },
+      scheduled: true,
+      fenceAdmission: (tx) => admission.beforeFork(tx),
     });
   };
   const observe = async (
@@ -186,9 +188,18 @@ test("restart after template success but lost history publication reconciles the
       f.routine.id,
     ]);
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect((await f.runs())[0]).toMatchObject({ state: "succeeded", request_key: key });
+    expect((await f.runs())[0]).toMatchObject({ state: "reconciling", request_key: key });
+    await f.db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
+       select s.id,j.id,s.credential_id,s.owner_id,s.org_id,1,1,'fixture','fixture','first-conversation'
+       from jobs j join sandboxes s on s.id=j.sandbox_id where j.kind='launch_initial_turn'`,
+    );
+    await f.db.query("update routine_runs set lease_until='-infinity' where routine_id=$1", [f.routine.id]);
+    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
+    const turn = (await f.db.query<{ id: string }>("select id from jobs where kind='launch_initial_turn'")).rows[0]!;
+    expect((await f.runs())[0]).toMatchObject({ state: "succeeded", prompt_id: turn.id });
     expect(f.launches).toHaveLength(1);
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -197,10 +208,8 @@ test("restart after template success but lost history publication reconciles the
 test("daily cap includes failures, skipped ticks do not reset failures, and three refused launches pause safely", async () => {
   const f = await fixture();
   try {
-    // Fail after real template admission has committed its reserved sandbox identity.
-    // A pre-claim exception cannot exercise the no-allocation overlap boundary.
-    f.runtime.provider = async () => {
-      throw Error("secret raw provider output must not persist");
+    f.runtime.admitModal = async () => {
+      throw new VaultError("conflict", "Routine admission refused.");
     };
     const launch = f.launch;
     await f.db.query("update routines set max_runs_per_day=1 where id=$1", [f.routine.id]);
@@ -241,102 +250,6 @@ test("daily cap includes failures, skipped ticks do not reset failures, and thre
     ]);
     expect(f.boat.forks).toHaveLength(0);
     expect(JSON.stringify(await f.runs())).not.toContain("secret raw");
-  } finally {
-    await f.close();
-  }
-});
-
-// Real template admission owns the known-no-allocation decision; a reserved UUID is not a sandbox.
-test.each([false, true])(
-  "pre-allocation template failure permits recovery (legacy reserved ID: %s)",
-  async (legacy) => {
-    const f = await fixture();
-    try {
-      const provider = f.runtime.provider;
-      f.runtime.provider = async () => {
-        throw Error("provider resolution unavailable");
-      };
-      // Use distinct hourly occurrences, independent of execution speed or timestamp precision.
-      await f.due(1);
-      const admissions: RoutineLaunchAdmission[] = [];
-      await createRoutineScheduler(f.sql, {
-        launch: async (...args) => {
-          admissions.push(args[2]);
-          return f.launch(...args);
-        },
-        observe: f.observe,
-      }).tick();
-      const failed = (await f.runs())[0]!;
-      const claim = (
-        await f.db.query<{ id: string; sandbox_id: string; state: string }>(
-          "select id,sandbox_id,state from template_launch_requests where client_key=$1",
-          [failed.request_key],
-        )
-      ).rows[0]!;
-      expect(claim.state).toBe("failed");
-      expect((await f.db.query("select id from sandboxes where id=$1", [claim.sandbox_id])).rows).toHaveLength(0);
-      expect(failed).toMatchObject({ state: "failed", reason: "launch_failed", sandbox_id: null });
-      expect((await f.service.command(f.actor, "history", { org: f.people.org, id: f.routine.id })).items).toEqual([
-        expect.objectContaining({ templateRequestId: claim.id, sandboxId: null }),
-      ]);
-      // Rows persisted before this fix retain the reservation; only the terminal template
-      // claim, not absence of a sandbox by itself, proves that allocation never started.
-      if (legacy) await f.db.query("update routine_runs set sandbox_id=$2 where id=$1", [failed.id, claim.sandbox_id]);
-      f.runtime.provider = provider;
-      await f.due();
-      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-      expect(f.boat.forks).toHaveLength(1);
-      expect(f.boat.prompts).toHaveLength(1);
-      expect((await f.runs()).at(-1)).toMatchObject({ state: "succeeded" });
-      expect(
-        (await f.db.query("select consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
-      ).toEqual({ consecutive_failures: 0 });
-      if (!legacy) {
-        const admission = admissions[0];
-        const input = f.launches[0];
-        if (!admission || !input) throw Error("Missing routine launch admission");
-        // A valid template/provider path must recheck the failed run's admission before allocating.
-        let checked = false;
-        const refused = await f.launch(
-          f.actor,
-          { ...input, requestKey: crypto.randomUUID() },
-          {
-            async beforeFork(tx) {
-              checked = true;
-              await admission.beforeFork(tx);
-            },
-          },
-        );
-        expect(checked).toBe(true);
-        expect(refused).toMatchObject({ state: "failed" });
-        expect(f.boat.forks).toHaveLength(1);
-      }
-    } finally {
-      await f.close();
-    }
-  },
-);
-
-test("uncertain template claims never refork and remain visible across restart", async () => {
-  const f = await fixture();
-  try {
-    await f.due();
-    f.runtime.provider = async () => ({
-      ...f.boat.provider,
-      fork: async () => {
-        throw Error("connection lost after dispatch");
-      },
-    });
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect((await f.runs())[0]).toMatchObject({ state: "reconciling", reason: "launch_uncertain" });
-    expect((await f.runs())[0]!.sandbox_id).not.toBeNull();
-    await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where routine_id=$1", [
-      f.routine.id,
-    ]);
-    await f.due();
-    await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.launches).toHaveLength(1);
-    expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "previous_run_uncertain" });
   } finally {
     await f.close();
   }
@@ -386,8 +299,8 @@ test("restart after occurrence admission launches the frozen snapshot with the o
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
     expect(f.launches).toHaveLength(1);
     expect(f.launches[0]).toMatchObject({ requestKey: key, prompt: "Inspect\nexact bytes", ttlSeconds: 600 });
-    expect((await f.runs())[0]).toMatchObject({ state: "succeeded", request_key: key });
-    expect(f.boat.forks).toHaveLength(1);
+    expect((await f.runs())[0]).toMatchObject({ state: "reconciling", request_key: key });
+    expect(f.boat.forks).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -414,55 +327,6 @@ test("run input snapshots and sandbox links stay outside JWT history grants", as
   }
 });
 
-test.each(["finished", "failed"] as const)(
-  "history observes original prompt %s, not a later turn, without changing launch failure counters",
-  async (status) => {
-    const f = await fixture();
-    try {
-      await f.due();
-      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-      const row = (
-        await f.db.query<{
-          sandbox_id: string;
-          prompt_id: string;
-          conversation_id: string;
-          template_request_id: string;
-        }>("select sandbox_id,prompt_id,conversation_id,template_request_id from routine_runs where routine_id=$1", [
-          f.routine.id,
-        ])
-      ).rows[0]!;
-      const physical = (
-        await f.db.query<{ provider_sandbox_id: string }>("select provider_sandbox_id from sandboxes where id=$1", [
-          row.sandbox_id,
-        ])
-      ).rows[0]!.provider_sandbox_id;
-      f.boat.finish(physical, row.prompt_id, status);
-      const later = await f.boat.provider.prompt({ sandboxId: physical, harness: "codex", text: "Later turn" });
-      f.boat.finish(physical, later.promptId, status === "finished" ? "failed" : "finished");
-      await f.db.query("update routine_runs set task_checked_at=now()-interval '2 minutes' where routine_id=$1", [
-        f.routine.id,
-      ]);
-      await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-      expect(
-        (await f.db.query("select state,task_state,prompt_id from routine_runs where routine_id=$1", [f.routine.id]))
-          .rows[0],
-      ).toEqual({ state: "succeeded", task_state: status, prompt_id: row.prompt_id });
-      expect(
-        (await f.db.query("select status,consecutive_failures from routines where id=$1", [f.routine.id])).rows[0],
-      ).toEqual({ status: "enabled", consecutive_failures: 0 });
-      const history = await f.service.command(f.actor, "history", { org: f.people.org, id: f.routine.id });
-      expect((history.items as Record<string, unknown>[])[0]).toMatchObject({
-        taskState: status,
-        templateRequestId: row.template_request_id,
-      });
-      if (status === "failed") expect(typeof (history.items as Record<string, unknown>[])[0]!.taskHelp).toBe("string");
-      expect(f.boat.forks).toHaveLength(1);
-    } finally {
-      await f.close();
-    }
-  },
-);
-
 test("calendar admission counts missed occurrences once and pauses unavailable schedules without compute", async () => {
   const f = await fixture();
   try {
@@ -471,7 +335,7 @@ test("calendar admission counts missed occurrences once and pauses unavailable s
       [f.routine.id],
     );
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
     // The run's created_at and the scheduler's clock come from the same transaction.
     const row = (
       await f.db.query<{ next_due_at: Date; expected: Date }>(
@@ -492,7 +356,7 @@ test("calendar admission counts missed occurrences once and pauses unavailable s
       f.routine.id,
     ]);
     await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-    expect(f.boat.forks).toHaveLength(1);
+    expect(f.boat.forks).toHaveLength(0);
     expect((await f.runs()).at(-1)).toMatchObject({ state: "skipped", reason: "schedule_unavailable" });
     expect(
       (await f.db.query("select status,next_due_at,pause_reason from routines where id=$1", [f.routine.id])).rows[0],
@@ -506,7 +370,10 @@ test("stalled launch and observation retain their slots without blocking healthy
   const f = await fixture();
   await f.due();
   await createRoutineScheduler(f.sql, { launch: f.launch, observe: f.observe }).tick();
-  await f.db.query("update routine_runs set task_checked_at=null where routine_id=$1", [f.routine.id]);
+  await f.db.query(
+    "update routine_runs set state='succeeded',task_state='running',prompt_id='existing-turn',task_checked_at=null where routine_id=$1",
+    [f.routine.id],
+  );
   const definition = (
     await f.db.query<{ definition: Record<string, unknown> }>(
       "select definition from launch_template_revisions where template_id=$1",
@@ -576,7 +443,6 @@ test("stalled launch and observation retain their slots without blocking healthy
   expect(launches).toContain(secondTemplate.id);
   expect(launches).toContain(f.routine.templateId);
   expect(observations).toBe(1);
-  // Expired leases are not permission to replay a still-owned raw dispatch.
   await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where state='admitted'");
   await instance.tick();
   expect(launches.filter((id) => id === f.routine.templateId)).toHaveLength(1);

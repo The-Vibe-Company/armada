@@ -1,5 +1,5 @@
 import type { GoldenRecord } from "./golden.ts";
-import type { GitHubLaunchInfo } from "./launch.ts";
+import type { GitHubLaunchInfo } from "./golden-launch-admission.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "./snapshot-baseline.ts";
 
 /** Public golden metadata. */

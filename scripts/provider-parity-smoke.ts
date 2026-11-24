@@ -697,7 +697,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       );
     }
 
-    async function launchWithObservation(provider: "modal" | "docker") {
+    async function launchWithObservation(provider: "boat" | "modal" | "docker") {
       const started = io.now();
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const step = dockerSnapshot ? "parity_docker_snapshot_launch" : `parity_${provider}_launch`;
@@ -709,7 +709,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 
       async function claim(sandboxId: string) {
         id = sandboxId;
-        await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
+        if (provider !== "boat") await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
       const dockerInput = launchSource === "host" ? dockerLaunchInput() : undefined;
@@ -2217,29 +2217,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     );
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : c.provider === "modal" || c.provider === "docker"
-                  ? await launchWithObservation(c.provider)
-                  : await api<{
-                      sandbox: {
-                        id: string;
-                        provider: string;
-                        snapshotId?: string;
-                        hostId?: string;
-                        image?: string;
-                        orgId?: string;
-                        ownerId?: string;
-                        visibility?: string;
-                      };
-                    }>("sandbox/launch", {
-                      provider: c.provider,
-                      harness: c.harness,
-                      model: c.model,
-                      credentialId: c.modelAccountId,
-                      visibility: "private",
-                      ttlSeconds: 1800,
-                      golden: c.golden,
-                      connections: [],
-                    });
+                : await launchWithObservation(c.provider);
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;

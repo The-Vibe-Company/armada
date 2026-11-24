@@ -1,19 +1,12 @@
 import { expect, test } from "bun:test";
 import type { StoredTurnPricing } from "@armada/core";
-import {
-  createSqlGoldenStore,
-  createSqlVaultStore,
-  encryptSecret,
-  launchSandbox,
-  type Provider,
-} from "@armada/core/server";
+import { createSqlVaultStore, encryptSecret, type Provider } from "@armada/core/server";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { collectSandboxUsage, type StatusReport } from "../src/turns.ts";
-import { enrolledLaunchPolicy } from "./launch-runtime.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { call, ENCRYPTION_KEY, fakeBoat, harness, type People, PUBLIC_URL, SECRETS } from "./support.ts";
 
@@ -110,19 +103,18 @@ test.each([
       }).sandboxes;
       const fake = fakeBoat();
       const provider: Provider = { ...fake.provider, id: "modal" };
-      const launched = await launchSandbox(
-        provider,
-        {
-          goldens: createSqlGoldenStore(db),
-          sandboxes: store,
-          credentials: launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY),
-        },
-        actor,
-        { golden: "amount-modal", harness: agent, prompt: "Reply OK" },
-        { runtime: enrolledLaunchPolicy(db) },
+      const account = await launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY).resolve(actor, agent);
+      const sandboxId = crypto.randomUUID();
+      const physical = await fake.provider.fork({ from: "snapshot" });
+      await db.query(
+        `insert into sandboxes(id,org_id,owner_id,golden_id,provider,provider_sandbox_id,status,harness,model,reasoning_effort,credential_id,credential_version,expires_at)
+         select $1,$2,$3,g.id,'modal',$4,'running',$5,$6,'high',$7,1,now()+interval '1 hour'
+         from goldens g where g.org_id=$2 and g.name='amount-modal'`,
+        [sandboxId, p.org, p.owner, physical.id, agent, model, account.binding!.credentialId],
       );
-      const promptId = launched.promptId!;
-      fake.sandbox(launched.sandbox.providerSandboxId).events.push({
+      await store.recordUsagePricingContext!(sandboxId, account.usagePricing!);
+      const promptId = "native-prompt";
+      fake.sandbox(physical.id).events.push({
         id: "native-usage",
         at: 2,
         kind: "other",
@@ -149,11 +141,11 @@ test.each([
                 reasoningTokens: 0,
               },
       });
-      await collectSandboxUsage(provider, store, (await store.get(launched.sandbox.id))!, promptId);
+      await collectSandboxUsage(provider, store, (await store.get(sandboxId))!, promptId);
       const persisted = (
         await db.query<{ usage_turns: { turns: { pricing: StoredTurnPricing | null }[] } }>(
           "select usage_turns from sandboxes where id=$1",
-          [launched.sandbox.id],
+          [sandboxId],
         )
       ).rows[0]!.usage_turns;
       expect(persisted.turns[0]?.pricing).toMatchObject({ usd, basis, snapshot: { model } });
@@ -169,10 +161,10 @@ test.each([
         await db.query(
           `update sandboxes set usage_turns=jsonb_set(jsonb_set(usage_turns,
           '{turns,0,pricing,usd}','null'::jsonb),'{turns,0,pricing,unknown}','"pricing_dimensions"'::jsonb) where id=$1`,
-          [launched.sandbox.id],
+          [sandboxId],
         );
-        await store.recordUsage!(launched.sandbox.id, { turnCount: 1, turns: [] }, { observations: [] });
-        expect((await store.get(launched.sandbox.id))?.usage?.turns[0]?.pricing).toMatchObject({
+        await store.recordUsage!(sandboxId, { turnCount: 1, turns: [] }, { observations: [] });
+        expect((await store.get(sandboxId))?.usage?.turns[0]?.pricing).toMatchObject({
           usd,
           snapshot: { revision: originalQuote.snapshot.revision },
         });
@@ -185,26 +177,26 @@ test.each([
         unknown: null,
         unpricedTurns: 0,
       } as const;
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
+      expect((await store.get(sandboxId))?.usage?.cost).toEqual(cost);
       expect((await store.list({ limit: 10 })).rows[0]?.usage?.cost).toEqual(cost);
       // A closed stored read may not need a native provider, fresh credentials or current prices.
       await db.query(
         "update sandboxes set status='failed',status_reason='closed fixture',stopped_at=now() where id=$1",
-        [launched.sandbox.id],
+        [sandboxId],
       );
       const token = await activeServer.token(p.owner);
       const response = await activeServer.handler(
         new Request(`${PUBLIC_URL}/api/v1/sandbox/status`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({ id: launched.sandbox.id }),
+          body: JSON.stringify({ id: sandboxId }),
         }),
       );
       expect(response.status).toBe(200);
       const api = (await response.json()) as StatusReport;
       expect(api.usage?.cost).toEqual(cost);
       const client = await activeServer.client(token);
-      expect((await call(client, "status", { id: launched.sandbox.id })).data.usage).toMatchObject({
+      expect((await call(client, "status", { id: sandboxId })).data.usage).toMatchObject({
         cost,
         tokenTotals: { inputTokens: nativeInput, outputTokens: nativeOutput },
         turns: [{ inputTokens: nativeInput, outputTokens: nativeOutput, pricing: { usd, basis, snapshot: { model } } }],
@@ -219,7 +211,7 @@ test.each([
           errors += text;
         },
       };
-      const exitCode = await run(["info", launched.sandbox.id, "--json"], io, {
+      const exitCode = await run(["info", sandboxId, "--json"], io, {
         auth: {
           ...io,
           env: { ARMADA_URL: PUBLIC_URL, ARMADA_TOKEN: token },
@@ -247,10 +239,10 @@ test.each([
           },
         },
         store,
-        (await store.get(launched.sandbox.id))!,
+        (await store.get(sandboxId))!,
         promptId,
       );
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
+      expect((await store.get(sandboxId))?.usage?.cost).toEqual(cost);
       const second = {
         promptId: "second-known",
         model,
@@ -259,14 +251,14 @@ test.each([
         cachedTokens: 0,
         cacheWriteTokens: 0,
       };
-      await store.recordTurnModel!(launched.sandbox.id, second.promptId, null);
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toMatchObject({
+      await store.recordTurnModel!(sandboxId, second.promptId, null);
+      expect((await store.get(sandboxId))?.usage?.cost).toMatchObject({
         usd: null,
         unknown: "coverage",
         unpricedTurns: 1,
       });
-      await store.recordUsage!(launched.sandbox.id, { turnCount: 2, turns: [second] }, { observations: [second] });
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual({ ...cost, usd: sum });
+      await store.recordUsage!(sandboxId, { turnCount: 2, turns: [second] }, { observations: [second] });
+      expect((await store.get(sandboxId))?.usage?.cost).toEqual({ ...cost, usd: sum });
       // Never present a priced subtotal as the complete cost when another actual model is unknown.
       const unknown = {
         promptId: "missing-model",
@@ -276,15 +268,15 @@ test.each([
         cachedTokens: 0,
         cacheWriteTokens: 0,
       };
-      await store.recordUsage!(launched.sandbox.id, { turnCount: 3, turns: [unknown] }, { observations: [unknown] });
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toMatchObject({
+      await store.recordUsage!(sandboxId, { turnCount: 3, turns: [unknown] }, { observations: [unknown] });
+      expect((await store.get(sandboxId))?.usage?.cost).toMatchObject({
         usd: null,
         unknown: "price",
         unpricedTurns: 1,
       });
-      await store.recordTurnModel!(launched.sandbox.id, "admitted-but-unmeasured", null);
-      await store.recordUsage!(launched.sandbox.id, { turnCount: 1, turns: [] }, { observations: [] });
-      expect((await store.get(launched.sandbox.id))?.usage?.cost).toMatchObject({
+      await store.recordTurnModel!(sandboxId, "admitted-but-unmeasured", null);
+      await store.recordUsage!(sandboxId, { turnCount: 1, turns: [] }, { observations: [] });
+      expect((await store.get(sandboxId))?.usage?.cost).toMatchObject({
         usd: null,
         unknown: "coverage",
         unpricedTurns: 2,

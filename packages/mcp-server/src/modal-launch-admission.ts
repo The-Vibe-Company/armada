@@ -1,10 +1,19 @@
 import type { GoldenActor, GoldenRecord, LaunchOptions, Sql } from "@armada/core";
-import { type LaunchRequest, type LaunchStores, prepareGoldenLaunch, VaultError } from "@armada/core/server";
+import {
+  GoldenError,
+  LaunchError,
+  type LaunchRequest,
+  type LaunchStores,
+  ProviderError,
+  prepareGoldenLaunch,
+  VaultError,
+} from "@armada/core/server";
 import { type ModalLaunchAdmission, replayModalLaunch } from "./jobs/modal-launch.ts";
 import { requireLaunchAccountBinding } from "./launch-account-admission.ts";
 import { preparePoolCandidates, readLaunchAccountDefault } from "./launch-account-pool.ts";
 
 import { checkpointGoldenLaunch } from "./request-timing.ts";
+import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 
 export type AdmitModalLaunch = (
   actor: GoldenActor,
@@ -14,6 +23,7 @@ export type AdmitModalLaunch = (
   admission?: {
     request?: ModalLaunchAdmission["request"];
     armadaAccess?: ModalLaunchAdmission["armadaAccess"];
+    child?: { operation: NonNullable<ModalLaunchAdmission["child"]>; credentialVersion: number };
     pin?: {
       id: string;
       credentialVersion: number;
@@ -43,37 +53,38 @@ export function createModalLaunchAdmission(
       const receipt = await replayModalLaunch(sql, actor, golden.id, admission.request, golden.provider);
       if (receipt) return receipt;
     }
-    const provider = await placement.provider(actor, golden);
+    const { child, pin, armadaAccess } = admission ?? {};
+    const provider = await placement.provider(actor, golden).catch((error: unknown) => {
+      if (child) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement", error);
+      throw error;
+    });
     checkpointGoldenLaunch("provider_resolution");
-    const { pin, armadaAccess } = admission ?? {};
     const credentials = placement.credentials;
     let repositories: Promise<void> | undefined;
     const prepare = async (candidate: LaunchRequest, version?: number) =>
-      (
-        await prepareGoldenLaunch(
-          provider,
-          {
-            ...stores,
-            goldens: { ...stores.goldens, findByName: async () => [golden] },
-            credentials: {
-              ...credentials,
-              async authorizeRepositories(...args) {
-                repositories ??= credentials.authorizeRepositories?.(...args);
-                await repositories;
-              },
+      await prepareGoldenLaunch(
+        provider,
+        {
+          ...stores,
+          goldens: { ...stores.goldens, findByName: async () => [golden] },
+          credentials: {
+            ...credentials,
+            async authorizeRepositories(...args) {
+              repositories ??= credentials.authorizeRepositories?.(...args);
+              await repositories;
             },
-            connections: placement.connections,
           },
-          actor,
-          candidate,
-          {
-            ...options,
-            runtime: placement.policy,
-            ...(armadaAccess ? { privateVisibility: true } : {}),
-            ...(version !== undefined ? { credentialVersion: version } : {}),
-          },
-        )
-      ).plan;
+          connections: placement.connections,
+        },
+        actor,
+        candidate,
+        {
+          ...options,
+
+          ...(armadaAccess || child ? { privateVisibility: true } : {}),
+          ...(version !== undefined ? { credentialVersion: version } : {}),
+        },
+      );
     const preference =
       request.credentialId === undefined && !pin
         ? await readLaunchAccountDefault(sql, actor.userId, request.harness)
@@ -86,7 +97,9 @@ export function createModalLaunchAdmission(
           prepare({ ...request, credentialId, model }),
         )
       : undefined;
-    const plan = candidates ? candidates.values().next().value! : await prepare(request, pin?.credentialVersion);
+    const plan = candidates
+      ? candidates.values().next().value!
+      : await prepare(request, pin?.credentialVersion ?? child?.credentialVersion);
     const prepared =
       candidates &&
       new Map(
@@ -97,6 +110,11 @@ export function createModalLaunchAdmission(
       );
     if (plan.golden.id !== golden.id) throw new VaultError("conflict", "Modal launch golden changed.");
     const binding = requireLaunchAccountBinding(plan.credentials.binding);
+    if (
+      child &&
+      (binding.credentialId !== request.credentialId || binding.credentialVersion !== child.credentialVersion)
+    )
+      throw new ChildLaunchNotAllocated("preallocation_rejected", "named_account");
     const project = plan.resourceProject;
     checkpointGoldenLaunch("account_resolution");
     const management = await launchAuthority[golden.provider](provider);
@@ -127,6 +145,7 @@ export function createModalLaunchAdmission(
       },
       ...(admission?.request ? { request: admission.request } : {}),
       ...(armadaAccess ? { armadaAccess } : {}),
+      ...(child ? { child: child.operation } : {}),
       ...(pin ? { templateReceiptId: pin.id, revalidateTemplate: pin.revalidate } : {}),
       ...(plan.prompt === undefined ? {} : { initialPrompt: plan.prompt }),
       ...(request.connections === undefined ? {} : { connections: request.connections }),
@@ -135,5 +154,20 @@ export function createModalLaunchAdmission(
       maxAttempts: 3,
     });
   };
-  return launch;
+  const admitLaunch: AdmitModalLaunch = async (...args) => {
+    try {
+      return await launch(...args);
+    } catch (error) {
+      if (
+        args[4]?.child &&
+        (error instanceof GoldenError ||
+          error instanceof LaunchError ||
+          error instanceof ProviderError ||
+          error instanceof VaultError)
+      )
+        throw new ChildLaunchNotAllocated("preallocation_rejected", "launch_admission", error);
+      throw error;
+    }
+  };
+  return admitLaunch;
 }

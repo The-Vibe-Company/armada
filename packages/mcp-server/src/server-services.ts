@@ -22,8 +22,7 @@ import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
-import { boatRuntimeActivation } from "./boat-runtime-activation.ts";
-import { boatRuntimeResume } from "./boat-runtime-resume.ts";
+import { boatRuntimeResume, createBoatResumePolicy } from "./boat-runtime-resume.ts";
 import { boatDeploymentId } from "./config.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
@@ -52,16 +51,13 @@ import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModalLaunchAdmission } from "./modal-launch-admission.ts";
-import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
-import { modalRuntimeResume } from "./modal-runtime-resume.ts";
+import { createModalResumePolicy, modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
-import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { createObservedBoatProvider, withBoatManagementIdentity } from "./observed-boat.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
-import { goldenRuntimePlacement } from "./provider-runtime-admission.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
@@ -231,7 +227,7 @@ export async function createServerServices(env: Record<string, string | undefine
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const runtimeLaunch = boat
-    ? boatRuntimeActivation({
+    ? createBoatResumePolicy({
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
@@ -258,7 +254,7 @@ export async function createServerServices(env: Record<string, string | undefine
   }
   const { manifest, artifactDir } = modalRuntime;
   const warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);
-  const modalRuntimePolicy = modalRuntimeLaunch({
+  const modalRuntimePolicy = createModalResumePolicy({
     sql,
     encryptionKey: config.encryptionKey,
     serverUrl: config.publicUrl,
@@ -539,20 +535,12 @@ export async function createServerServices(env: Record<string, string | undefine
       };
     },
   };
-  const credentials = Reflect.apply(launchCredentials, undefined, [
-    store,
-    config.encryptionKey,
-    { store, app: githubApp },
-    Reflect.get(control, "modelAuth"),
-  ]) as NamedLaunchCredentials;
   const sandboxAccessContext = {
-    extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds,
     sql,
     providers,
-    credentials,
+    admitLaunch: admitModal,
     runtimeSend,
     runtimeCheckpoint,
-    runtimePlacements: { boat: goldenRuntimePlacement(launch, "boat"), modal: launch.modalRuntimeDefault },
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,

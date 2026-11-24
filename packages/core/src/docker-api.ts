@@ -4,7 +4,7 @@ import type { CredentialKind } from "./database.types.ts";
 import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
 import { DOCKER_HOST_DRAINING_MESSAGE } from "./docker-host-drain.ts";
 import { GITHUB_CALLER_NOT_CONNECTED } from "./github.ts";
-import type { GitHubLaunchInfo } from "./launch.ts";
+import type { GitHubLaunchInfo } from "./golden-launch-admission.ts";
 import type { MachineSize, MachineSizeEvidence } from "./machine-size.ts";
 import type { HarnessModels } from "./models.ts";
 import type { PromptOutcome } from "./outcome.ts";

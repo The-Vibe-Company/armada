@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import type { Sql } from "@armada/core";
-import { boatRuntimeActivation } from "./boat-runtime-activation.ts";
+import { createBoatResumePolicy } from "./boat-runtime-resume.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
+import { createModalResumePolicy } from "./modal-runtime-resume.ts";
 
 test("unpublished runtime architecture is rejected before any provider or database allocation", () => {
   const options = {
@@ -13,8 +13,8 @@ test("unpublished runtime architecture is rejected before any provider or databa
     encryptionKey: "",
   };
   const message = "Runtime artifacts are not published for architecture: arm64";
-  expect(() => boatRuntimeActivation(options)).toThrow(message);
-  expect(() => modalRuntimeLaunch(options)).toThrow(message);
+  expect(() => createBoatResumePolicy(options)).toThrow(message);
+  expect(() => createModalResumePolicy(options)).toThrow(message);
   expect(() =>
     createDockerBootstrapService(options.sql, "", {
       ...options,

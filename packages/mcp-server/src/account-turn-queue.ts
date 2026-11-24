@@ -32,6 +32,7 @@ import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-
 import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
+import type { LaunchAuthority } from "./jobs/template-launch-authority.ts";
 import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
@@ -142,7 +143,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   async function persist(
     caller: Caller,
     input: RuntimeFollowupInput & { request_id: string },
-    initialLaunch?: { generation: string; canDispatch: JobContext["canDispatch"] },
+    initialLaunch?: {
+      generation: string;
+      canDispatch: JobContext["canDispatch"];
+      authority?: LaunchAuthority | undefined;
+    },
   ) {
     const requestId = input.request_id;
     const normalized = {
@@ -155,7 +160,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     const serialized = JSON.stringify(normalized);
     const hash = createHash("sha256").update(serialized).digest("hex");
     // The first insert owns correlation. Keep it outside the idempotency hash.
-    const sealed = await encryptSecret(JSON.stringify({ ...normalized, correlationId: currentRequestId() }), key);
+    const sealed = await encryptSecret(
+      JSON.stringify({
+        ...normalized,
+        correlationId: currentRequestId(),
+        ...(initialLaunch?.authority ? { launchAuthority: initialLaunch.authority } : {}),
+      }),
+      key,
+    );
     if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
     return sql.transaction(async (tx) => {
       const target = (
@@ -368,8 +380,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       input: { id: string; request_id: string; prompt: string },
       generation: string,
       canDispatch: JobContext["canDispatch"],
+      authority?: LaunchAuthority,
     ) {
-      return Boolean(await persist(caller, input, { generation, canDispatch }));
+      return Boolean(await persist(caller, input, { generation, canDispatch, authority }));
     },
     async cancelQueued(caller: Caller, sandboxId: string) {
       await sql.query(

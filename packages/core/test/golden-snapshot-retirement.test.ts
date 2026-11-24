@@ -1,7 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlData } from "../../mcp-server/src/data.ts";
 import { providerRegistry } from "../../mcp-server/src/http.ts";
-import { enrolledLaunchPolicy } from "../../mcp-server/test/launch-runtime.fixture.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
@@ -12,7 +10,6 @@ import {
   recordGoldenPublication,
 } from "../src/golden-snapshot-retirement.ts";
 import { beginGoldenOperation, createSqlGoldenStore, type Sql } from "../src/golden-store.ts";
-import { type LaunchStores, launchSandbox } from "../src/launch.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 import { migratedDatabase } from "./support/database.ts";
@@ -223,45 +220,6 @@ async function seedHistory(f: Awaited<ReturnType<typeof fixture>>, middle?: stri
   return insert;
 }
 
-test("stale golden admission cannot fork a superseded revision", async () => {
-  const db = database();
-  const f = await fixture(db);
-  // A real launch reads old, then credentials resolve while a rebuild publishes next.
-  let forks = 0;
-  f.provider.fork = async () => {
-    forks++;
-    throw Error("stale fork");
-  };
-  const stores = {
-    goldens: f.store,
-    sandboxes: {} as LaunchStores["sandboxes"],
-    credentials: {
-      resolve: async () => {
-        await f.store.setSnapshot(f.golden.id, f.next);
-        return {
-          env: {},
-          secrets: [],
-          codexAuthJson: false,
-          binding: { credentialId: f.actor.userId, credentialVersion: 1 },
-        };
-      },
-    },
-  } as LaunchStores;
-  await expect(
-    launchSandbox(
-      f.provider,
-      stores,
-      f.actor,
-      { golden: "retire", harness: "claude" },
-      { runtime: enrolledLaunchPolicy(db) },
-    ),
-  ).rejects.toMatchObject({ code: "conflict" });
-  expect(forks).toBe(0);
-  const release = await beginGoldenOperation(db, f.golden.id, { snapshotId: f.next, sandboxId: null });
-  await release();
-  expect((await db.query("select id from golden_operation_fences")).rows).toEqual([]);
-});
-
 test.each([
   "fence",
   "hidden-pointer",
@@ -327,40 +285,19 @@ test.each([
 test("retirement preserves the exact source snapshot of a registered ordinary launch", async () => {
   const db = database();
   const f = await fixture(db);
-  const { provider } = fakeBoat();
-  const account = crypto.randomUUID();
+  const sandboxId = crypto.randomUUID();
   await db.query(
-    "insert into credentials (id,scope,owner_id,kind,value_enc) values ($1,'user',$2,'claude_oauth','fixture')",
-    [account, f.actor.userId],
+    `insert into sandboxes(id,org_id,owner_id,golden_id,provider,provider_sandbox_id,status,harness,expires_at)
+     values($1,$2,$3,$4,'boat','live-child','ready','claude',now()+interval '1 hour')`,
+    [sandboxId, f.actor.orgId, f.actor.userId, f.golden.id],
   );
-  const child = await launchSandbox(
-    provider,
-    {
-      goldens: f.store,
-      sandboxes: createSqlData(db)({
-        userId: f.actor.userId,
-        via: "service",
-        orgs: [{ orgId: f.actor.orgId, role: f.actor.role }],
-      }).sandboxes,
-      credentials: {
-        resolve: async () => ({
-          env: {},
-          secrets: [],
-          codexAuthJson: false,
-          binding: { credentialId: account, credentialVersion: 1 },
-        }),
-      },
-    },
-    f.actor,
-    { golden: "retire", harness: "claude" },
-    { runtime: enrolledLaunchPolicy(db) },
-  );
+  await db.query("insert into sandbox_source_snapshots(sandbox_id,snapshot_id) values($1,$2)", [sandboxId, f.old]);
   await f.publish();
 
   await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
 
-  await db.query("update sandboxes set status='deleted',deleted_at=now() where id=$1", [child.sandbox.id]);
+  await db.query("update sandboxes set status='deleted',deleted_at=now() where id=$1", [sandboxId]);
   await f.due();
   await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([f.old]);

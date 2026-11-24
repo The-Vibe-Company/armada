@@ -12,7 +12,7 @@ import { observeRoutinePrompt } from "./routine-observer.ts";
 
 interface ServerRoutineOptions {
   sql: Sql;
-  control: Parameters<typeof templateRuntime>[0] & Pick<ControlOptions, "dockerControls">;
+  control: Parameters<typeof templateRuntime>[0] & Pick<ControlOptions, "dockerControls" | "accountTurns">;
   templates: TemplateService;
   providers: ProviderRegistry;
   data: DataSource;
@@ -36,6 +36,7 @@ export function createServerRoutineScheduler({ sql, control, templates, provider
         { ...turn, ...(signal ? { signal } : {}) },
         {
           ...(control.dockerControls ? { docker: control.dockerControls } : {}),
+          ...(control.accountTurns ? { accountTurns: control.accountTurns } : {}),
           get: (id) => data(caller).sandboxes.get(id),
           provider: (sandbox) => providers.resolve(sandbox, caller),
         },
@@ -74,22 +75,9 @@ export function createServerRoutineScheduler({ sql, control, templates, provider
         {
           ...runtime,
           scheduled: true,
-          fenceDockerAdmission: async (tx, id) => {
+          fenceAdmission: async (tx) => {
             await authorize(tx);
             await admission.beforeFork(tx);
-            if (id) await runtime.options?.beforeFork?.(id);
-          },
-          options: {
-            ...runtime.options,
-            beforeFork: async (id) => {
-              await authorize();
-              await runtime.options?.beforeFork?.(id);
-              await admission.beforeFork();
-            },
-            beforeStart: async (provider, sandbox) => {
-              await authorize();
-              await runtime.options?.beforeStart?.(provider, sandbox);
-            },
           },
         },
         "routine",

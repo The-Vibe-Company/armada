@@ -11,12 +11,10 @@ import {
 const serverAdapters = new Set(
   [
     "boat-delegated-access-provider.ts",
-    "boat-runtime-launch.ts",
     "boat-runtime-resume.ts",
     "docker-runtime-lifecycle.ts",
     "modal-integration.ts",
     "modal-reaper.ts",
-    "modal-runtime-launch.ts",
     "modal-runtime-resume.ts",
     "observed-boat.ts",
   ].map((name) => `packages/mcp-server/src/${name}`),
