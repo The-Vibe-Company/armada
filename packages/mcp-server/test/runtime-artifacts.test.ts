@@ -118,6 +118,15 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
     expect(await download?.text()).toBe("bytes");
     expect(JSON.parse(lines[0]!)).toMatchObject({ path: "/api/runtime/artifacts/:digest", artifactDigest: digest });
     expect(lines[0]).not.toContain("not-for-logs");
+    const rejectedDigest = "b".repeat(64);
+    const missing = request(`/api/runtime/artifacts/${rejectedDigest}`);
+    const rejected = await observeRequest(
+      async () => (await route(missing)) ?? undefined,
+      (line) => lines.push(line),
+      missing,
+    );
+    expect(rejected?.status).toBe(404);
+    expect(lines[1]).not.toContain(rejectedDigest);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

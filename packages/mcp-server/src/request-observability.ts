@@ -73,7 +73,7 @@ export function observeRequest<T extends Response | undefined>(
     const requestLog = log ?? requestLogForStatus(status);
     const pathname = request ? new URL(request.url).pathname : undefined;
     const artifactDigest =
-      request?.method === "GET" && pathname
+      status === 200 && request?.method === "GET" && pathname
         ? /^\/api\/runtime\/artifacts\/([a-f0-9]{64})$/.exec(pathname)?.[1]
         : undefined;
     requestLog(
