@@ -4,8 +4,9 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { nativeState } from "../src/model-auth-state.ts";
+import { seedPersistedBoat } from "./persisted-boat.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, launchSandboxId, SECRETS, seedDatabase } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness, SECRETS, seedDatabase } from "./support.ts";
 
 const sharedConnection = rowOnlyConnection();
 const sharedDatabase = async () => seedDatabase(await sharedConnection());
@@ -232,25 +233,24 @@ test("managed exec holds stop admission through secret publication while indepen
       return { id, physical: machine.id, accountId: account.id };
     };
     const ownerClient = await server.client(await server.token(actor.userId));
-    const claude = await call(ownerClient, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(claude.isError).toBe(false);
+    const claude = await seedPersistedBoat(server, { ownerId: actor.userId });
     const peerClient = await server.client(await server.token(server.people.member));
     server.boat.setExecOutput({ stdout: SECRETS.ownerClaude });
     const peerOutput = await call(peerClient, "exec", {
-      id: launchSandboxId(claude.data),
+      id: claude,
       command: "inspect-static-native-token",
     });
     expect(peerOutput.isError).toBe(true); // Current sandbox access is owner/admin, not org-peer.
     const adminClient = await server.client(await server.token(server.people.admin));
     const adminOutput = await call(adminClient, "exec", {
-      id: launchSandboxId(claude.data),
+      id: claude,
       command: "inspect-static-native-token",
     });
     expect(adminOutput.isError).toBe(false);
     expect(adminOutput.data.stdout).toBe("***");
 
     const ownerOutput = await call(ownerClient, "exec", {
-      id: launchSandboxId(claude.data),
+      id: claude,
       command: "inspect-static-native-token",
     });
     expect(ownerOutput.isError).toBe(false);

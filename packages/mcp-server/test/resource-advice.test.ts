@@ -9,7 +9,7 @@ import { call, ENCRYPTION_KEY, harness, launchSandboxId, PUBLIC_URL, seedDatabas
 async function prepareFixture() {
   const db = await openMigratedDatabase();
   try {
-    const server = await harness({}, await seedDatabase(db));
+    const server = await harness({ enrolledLaunch: true }, await seedDatabase(db));
     return { db, server };
   } catch (error) {
     try {
