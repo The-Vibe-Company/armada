@@ -342,8 +342,7 @@ Record deployed evidence separately for each required parity row.
 
 For an on-demand check of the runtime default, use the
 [ordinary launch probe](#verifying-the-ordinary-launch-path)
-below. Record the selected path and the archived runtime source in the
-[coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
+below. Record the selected path and the archived runtime source.
 
 ## Repository/init runtime check
 
@@ -390,10 +389,8 @@ work remains with #1419/#1420.
 
 The [owner cutover decision](https://github.com/The-Vibe-Company/armada/issues/2741#issuecomment-7082117919)
 sets the Boat runtime default with lifetime extension deferred and stop preservation
-limited to the checkpoint note. After release, the coordinator runs the
-[production checklist](native-agent-path-retirement.md#production-checklist)
-on authorized resources. The Boat drain and native removal follow that evidence
-and the release cycle required by the
+limited to the checkpoint note. After release, the coordinator runs its
+production checklist on authorized resources under the
 [architecture program](https://github.com/The-Vibe-Company/armada/issues/2835).
 
 ## Claude acceptance (#1419)
@@ -636,9 +633,7 @@ still uses one allocation and one retained-machine activation, no automatic
 allocation retry. Add existing MCP/skills flags only with their real prerequisites.
 Boat is coordinator-only/on-demand in production, never staging/release acceptance.
 Record the release, deployment SHA, UTC date and evidence for ordinary launch,
-follow-up, Git, stop and account counters in the
-[coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
-The release cycle, production checklist and drain gate native retirement.
+follow-up, Git, stop and account counters.
 
 ### OpenCode on the shared Boat runtime (#2052)
 

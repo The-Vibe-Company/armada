@@ -664,6 +664,4 @@ Use matching account/harness flags. Unknown allocation or send is not retried.
 Verify ordinary and explicit paths across supported harness/account variants,
 templates/routines, busy-turn controls, GitHub/MCP/skills/readables, idle and empty
 stop-wake, archives, usage/cost and matched cold/warm/resume timings. After the
-production rollout, record the release, UTC date and checklist results in the
-[retirement ledger](native-agent-path-retirement.md#coordinator-ledger). The
-default-on cycle and checklist gate native retirement.
+production rollout, record the release, UTC date and checklist results.

@@ -21,7 +21,6 @@ import {
   validToken,
 } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
-import { cleanupOfficialImages } from "./image-retention.ts";
 import {
   dockerCli,
   fileStore,
@@ -29,7 +28,8 @@ import {
   httpApi,
   observeRetainedStop,
   readDockerOutputArchive,
-} from "./native.ts";
+} from "./host.ts";
+import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
