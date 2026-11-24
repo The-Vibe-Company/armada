@@ -144,8 +144,13 @@ type DockerModelCase = Pick<SmokeCase, "org" | "model" | "modelAccountId"> & {
 type RealModelCase = SmokeCase | DockerModelCase;
 type RealModelLaunchSource = { golden: string; connections: [] } | { hostId: string };
 const smokeLaunch = {
-  modal: { ready: ["ready"], waitForRecoveredSetup: true },
-  docker: { ready: ["ready", "running"], waitForRecoveredSetup: false },
+  modal: { ready: ["ready"], waitForRecoveredSetup: true, failureReason: modalSmokeSetupReason },
+  docker: {
+    ready: ["ready", "running"],
+    waitForRecoveredSetup: false,
+    failureReason: (reason: unknown) =>
+      Object.entries(dockerSmokeFailureMessages).find(([, message]) => message === reason)?.[0],
+  },
 };
 interface SmokeIo {
   fetch: (url: string, init: RequestInit, receipt?: "admission") => Promise<Response>;
@@ -1181,10 +1186,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               const runtimeReason = Object.entries(RUNTIME_STARTUP_FAILURES).find(
                 ([, message]) => message === statusReason,
               )?.[0];
-              const providerReason =
-                item.provider === "docker"
-                  ? Object.entries(dockerSmokeFailureMessages).find(([, message]) => message === statusReason)?.[0]
-                  : modalSmokeSetupReason(statusReason);
+              const providerReason = smokeLaunch[item.provider].failureReason(statusReason);
               statusResponse = {
                 status,
                 providerState:
