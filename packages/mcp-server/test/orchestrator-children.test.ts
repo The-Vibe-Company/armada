@@ -1641,18 +1641,26 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
   }
 });
 
-test.each(["golden lookup failure", "placement refusal", "parent revocation during configuration"] as const)(
-  "scoped Modal launch fences host dispatch after %s",
+test.each(["golden lookup failure", "placement refusal", "config revocation", "MCP revocation"] as const)(
+  "scoped Modal launch fences host dispatch and configuration after %s",
   async (scenario) => {
     const { close, sql, authority, id, token, selection } = await fixture("running", "anthropic", "modal");
     try {
       if (scenario === "golden lookup failure") {
         await sql.query("update goldens set config='{}'::jsonb where id=$1", [selection.goldenId]);
       }
-      const preallocationRefused = scenario !== "parent revocation during configuration";
+      const preallocationRefused = scenario === "golden lookup failure" || scenario === "placement refusal";
       const fake = fakeBoat();
       const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
       let bootstraps = 0;
+      const configureMcp = mock(() => {});
+      const prepareMcp: NonNullable<
+        NonNullable<Parameters<typeof launchSandboxChild>[0]["stores"]["connections"]>["prepare"]
+      > = async (_host, _sandbox, _actor, _signal, assertClaim?: (tx: Sql) => Promise<void>) => {
+        await authority.revoke(id);
+        if (assertClaim) await sql.transaction!(assertClaim);
+        configureMcp();
+      };
       const host = {
         ...fake.provider,
         id: "modal" as const,
@@ -1674,9 +1682,10 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
               return host;
             },
             credentials,
-            connections: { async validate() {}, async bind() {} },
+            connections: { async validate() {}, async bind() {}, prepare: prepareMcp },
             policy: {
               async start(input) {
+                if (scenario === "MCP revocation") return enrolledLaunchPolicy(sql).start(input);
                 await authority.revoke(id);
                 await (input.host as typeof host).startRuntime();
                 throw Error("Revoked parent should have prevented bootstrap");
@@ -1727,6 +1736,7 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
       }
       expect(fake.forks).toHaveLength(preallocationRefused ? 0 : 1);
       expect(bootstraps).toBe(0);
+      expect(configureMcp).not.toHaveBeenCalled();
     } finally {
       await close();
     }
