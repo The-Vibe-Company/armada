@@ -284,9 +284,3 @@ function ackKey(sandboxId: string, parts: readonly string[]): string {
   }
   return `${sandboxId}.${hash.toString(16).padStart(8, "0")}`;
 }
-
-/** The acknowledgement cookie (#801): per browser, and holding only the signed-in viewer's keys. */
-export const ACK_COOKIE = "armada-fleet-ack";
-
-/** Set on the legacy path when sandbox views write preferences, so a later import cannot replace newer choices. */
-export const ACK_MIGRATION_COOKIE = "armada-sandbox-attention-migrated";

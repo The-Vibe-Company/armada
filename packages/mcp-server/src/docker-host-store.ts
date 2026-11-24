@@ -71,7 +71,11 @@ import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
-type MachineHost = { hostId: string; installationId: string };
+type MachineHost = {
+  hostId: string;
+  installationId: string;
+  canDispatch?: (tx: Sql, actorEpoch: string) => Promise<boolean>;
+};
 type RestoreClaim = Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">;
 type DockerMachineOptions = MachineHost & {
   actor: Actor;
@@ -190,17 +194,39 @@ function notRunning(n: number): string {
       and (j.bound_operation is distinct from 'restore' or r.bound_operation not in ('stop','delete','deletePhysical')))
       or (r.snapshot_id is not null and j.snapshot_id is not null)))`;
 }
+const bootstrapIdSql =
+  "left(encode(sha256(convert_to('docker-machine:' || b.daemon_generation::text || ':bootstrap', 'UTF8')), 'hex'),32)::uuid";
+const machineStartupMailbox = `(j.bound_operation='create' and j.request_id=b.daemon_generation
+  or j.bound_operation='bootstrap' and j.request_id=${bootstrapIdSql})`;
+function eligibleMachineLaunch(capability: number) {
+  return `not exists(select 1 from public.jobs launch
+    join public.docker_machine_bindings b on b.sandbox_id=launch.sandbox_id and b.machine_generation=launch.generation
+    where launch.kind='launch' and launch.outcome ? 'docker_actor_epoch'
+      and b.sandbox_id=j.bound_sandbox_id and b.host_id=j.host_id and ${machineStartupMailbox}
+      and (not $${capability}::boolean or launch.deadline_at<=clock_timestamp()
+        or launch.attempts>launch.max_attempts or launch.state in ('failed','done')))`;
+}
 function eligibleJob(physical: number, restore: number, bootstrap: number) {
   return `($${physical}::boolean or j.bound_operation is distinct from 'deletePhysical')
     and ($${restore}::boolean or j.bound_operation is distinct from 'restore')
     and ($${bootstrap}::boolean or j.bound_operation is distinct from 'bootstrap' or not exists(
       select 1 from public.docker_machine_bindings b
-      where b.sandbox_id=j.bound_sandbox_id and b.host_id=j.host_id
-        and j.request_id=left(encode(sha256(convert_to('docker-machine:' || b.daemon_generation::text || ':bootstrap', 'UTF8')), 'hex'), 32)::uuid))
+      where b.sandbox_id=j.bound_sandbox_id and b.host_id=j.host_id and j.request_id=${bootstrapIdSql}))
+    and ${eligibleMachineLaunch(bootstrap)}
     and (j.bound_operation='restore' or not exists(
       select 1 from public.docker_host_jobs pending
       where pending.host_id=j.host_id and pending.bound_sandbox_id=j.bound_sandbox_id
         and pending.bound_operation='restore' and pending.outcome is null))`;
+}
+
+export async function cancelDockerLaunchMailbox(tx: Sql, sandboxId: string, generation: string) {
+  await tx.query(
+    `update public.docker_host_jobs j set outcome='failed',completed_at=now(),cancelled_at=now()
+     from public.docker_machine_bindings b where b.sandbox_id=$1 and b.machine_generation=$2
+       and j.bound_sandbox_id=b.sandbox_id and j.host_id=b.host_id and j.outcome is null
+       and ${machineStartupMailbox}`,
+    [sandboxId, generation],
+  );
 }
 
 type MachineCleanupOperation = "stop" | "delete";
@@ -574,13 +600,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
     ).rows[0];
     if (!original) {
-      if (operation !== "create") deny();
+      if (operation !== "create" && (!isCleanupOperation(operation) || !(await currentMachineCleanup(tx, row)))) deny();
       // Cleanup and replay validate an existing sandbox's identity; a drain must not hide its source.
-      const source = row.docker_snapshot_id
-        ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
-            allowDraining: true,
-          })
-        : undefined;
+      const source =
+        operation === "create" && row.docker_snapshot_id
+          ? await resolveDockerSnapshot(tx, { userId: row.owner_id, orgId: row.org_id }, row.docker_snapshot_id, {
+              allowDraining: true,
+            })
+          : undefined;
       if (
         source &&
         (source.image_id !== row.docker_image ||
@@ -1833,6 +1860,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             : source.kind !== "image" || source.ref !== allocation.image)
         )
           deny();
+        if (scope?.canDispatch && !(await scope.canDispatch(tx, epoch))) deny();
         signal?.throwIfAborted();
         await insert(
           tx,
@@ -2060,7 +2088,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           deny();
         if (!known && selection.operation === "stop" && selection.onlyIfIdle && row.status === "ready") {
           const pendingWork = await tx.query(
-            `select 1 from public.docker_launch_requests where sandbox_id=$1 and result_enc is null
+            `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
              union all
              select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
              union all
@@ -2482,6 +2510,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const job = await readJob(row);
         if ((job.operation === "deletePhysical" && !supportsPhysicalDelete) || job.operation === "restore") return null;
+        if (job.operation === "create" || job.operation === "bootstrap") {
+          const eligible = await tx.query(
+            `select 1 from public.docker_host_jobs j where j.request_id=$1 and ${eligibleMachineLaunch(2)}`,
+            [job.requestId, supportsMachineBootstrap],
+          );
+          if (!eligible.rows.length) return null;
+        }
         return job;
       });
     },
@@ -2973,8 +3008,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
 
   return {
     ...store,
-    machine({ actor, hostId, installationId, inventory, bootstrapDescriptor, restoreClaim }: DockerMachineOptions) {
-      const scope = { hostId, installationId };
+    machine(options: DockerMachineOptions) {
+      const { actor, hostId, installationId, inventory, bootstrapDescriptor, restoreClaim } = options;
+      const scope = { hostId, installationId, ...(options.canDispatch && { canDispatch: options.canDispatch }) };
       const descriptor = bootstrapDescriptor && structuredClone(bootstrapDescriptor);
       const claim = restoreClaim && { ...restoreClaim };
       return createDockerMachineAdapter({

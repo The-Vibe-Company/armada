@@ -36,53 +36,18 @@ class McpReceiptTest(unittest.TestCase):
 
 
 class NormalLaunchReceiptTest(unittest.TestCase):
-    def test_pending_launch_replays_the_same_request_until_its_original_receipt(self):
-        from unittest.mock import patch
-        request = {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key", "prompt": "original prompt"}
-        pending = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "starting"}, "runtime": None}
-        complete = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "running"},
-                    "runtime": {"kind": "armada", "epoch": "1"},
-                    "promptId": "original-prompt", "conversationId": "original-conversation"}
-        calls, admissions, replies = [], [], iter([pending, complete])
-        def api(path, body, normal=False):
-            calls.append((path, body, normal))
-            return next(replies)
-        with patch.object(module.time, "monotonic", return_value=0), patch.object(module.time, "sleep") as sleep:
-            self.assertEqual(module.normal_launch_receipt(api, request, 10, on_admission=admissions.append), complete)
-        self.assertEqual(calls, [("sandbox/launch", request, True)] * 2)
-        self.assertTrue(all(body is request for _, body, _ in calls))
-        self.assertEqual(admissions, ["00000000-0000-4000-8000-000000000001"])
-        sleep.assert_called_once_with(2)
-
-    def test_failed_preparation_reports_the_plain_reason_without_another_launch(self):
-        from unittest.mock import Mock
-        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "failed",
-                                             "statusReason": "Repository checkout failed or timed out."}})
-        with self.assertRaisesRegex(RuntimeError, "Repository checkout failed or timed out"):
-            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10)
-        api.assert_called_once()
-
-    def test_github_proof_reports_the_launch_connection_reason_before_misattributing_a_missing_tool(self):
-        from unittest.mock import Mock
-        receipt = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "running"},
-                   "promptId": "prompt", "conversationId": "conversation",
-                   "github": {"status": "not_connected", "message": "This caller has no GitHub connection."}}
-        api = Mock(return_value=receipt)
-        with self.assertRaisesRegex(RuntimeError, "GitHub proof blocked: This caller has no GitHub connection"):
-            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10, require_github=True)
-        api.assert_called_once()
-        receipt["github"] = {"status": "connected", "login": "owner"}
-        self.assertIs(module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10, require_github=True), receipt)
-
-    def test_pending_preparation_has_a_bounded_deadline(self):
+    def test_admission_is_followed_by_status_observation_without_relaunch(self):
         from unittest.mock import Mock, patch
-        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "starting"},
-                                "runtime": None})
-        with patch.object(module.time, "monotonic", side_effect=[0, 10]), patch.object(module.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox ID and launch key"):
-                module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10)
-        api.assert_called_once()
-        sleep.assert_not_called()
+        sandbox = "00000000-0000-4000-8000-000000000001"
+        request = {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key", "prompt": "original prompt"}
+        pending = {"id": sandbox, "status": "starting", "provider": "docker", "externalRef": request["externalRef"]}
+        running = {**pending, "status": "running", "prompt": {"promptId": "prompt", "conversationId": "conversation"}}
+        api = Mock(side_effect=[{"sandbox": {"id": sandbox, "status": "starting"}}, pending, running])
+        admissions = []
+        with patch.object(module.time, "monotonic", return_value=0), patch.object(module.time, "sleep"):
+            self.assertEqual(module.normal_launch_receipt(api, request, 10, admissions.append), running)
+        self.assertEqual([call.args[0] for call in api.call_args_list], ["sandbox/launch", "sandbox/status", "sandbox/status"])
+        self.assertEqual(admissions, [sandbox])
 
 
 class PlacementCleanupTest(unittest.TestCase):

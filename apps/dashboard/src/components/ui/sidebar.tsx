@@ -240,11 +240,10 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, children, ...props }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar, triggerRef } = useSidebar();
+  const { toggleSidebar } = useSidebar();
 
   return (
     <Button
-      ref={triggerRef}
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
       variant="ghost"

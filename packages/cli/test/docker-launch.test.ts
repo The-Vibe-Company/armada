@@ -56,17 +56,7 @@ test.each(["codex", "claude", "opencode"] as const)(
   "Docker %s CLI uses normal authenticated launch without golden or provider secrets",
   async (harness) => {
     const calls: Request[] = [];
-    const receipt = {
-      sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "running" },
-      golden: null,
-      runtime: { kind: "armada", epoch: "1" },
-      helper: null,
-      ttlSeconds: 1800,
-      expiresAt: null,
-      github: { status: "not_connected" },
-      promptId: "prompt",
-      conversationId: "conversation",
-    };
+    const receipt = { sandbox: { id: requestId, status: "starting" } };
     const result = await capture(
       [...args.map((arg) => (arg === "codex" ? harness : arg)), "--ttl", "30m", "answer once", "--json"],
       async (request) => {
@@ -97,11 +87,7 @@ test("Docker repository launch accepts a starting receipt without inventing a ru
   const withoutImage = args.filter((arg, index) => arg !== "--image" && args[index - 1] !== "--image");
   const result = await capture([...withoutImage, "--repo", "acme/web@feature/work"], async (request) => {
     calls.push(request);
-    return Response.json({
-      sandbox: { id: requestId, provider: "docker", status: "starting" },
-      golden: null,
-      runtime: null,
-    });
+    return Response.json({ sandbox: { id: requestId, status: "starting" } });
   });
   expect(result.code).toBe(0);
   expect(await calls[0]?.json()).toMatchObject({
@@ -171,7 +157,7 @@ test("unknown Docker launch outcome retains a stable replay key for exact retry"
       if (mode === "lost") throw Error("offline");
       if (mode === "server-failure") return new Response("Gateway unavailable", { status: 503 });
       if (mode === "explicit-unknown") return Response.json({ error: { code: "outcome_unknown" } }, { status: 409 });
-      return Response.json({ sandbox: { provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+      return Response.json({ sandbox: { status: "starting" } });
     });
     expect(result.code).not.toBe(0);
     expect(result.out).toBe("");
@@ -187,7 +173,7 @@ test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { 
     let body: Record<string, unknown> = {};
     const result = await capture([...args, ...flags], async (request) => {
       body = (await request.json()) as Record<string, unknown>;
-      return Response.json({ sandbox: { id: requestId, provider: "docker" }, golden: null, runtime: { epoch: "1" } });
+      return Response.json({ sandbox: { id: requestId, status: "starting" } });
     });
     expect(result.code).toBe(0);
     expect(body.connections).toEqual(flags.includes("--no-connections") ? [] : [host]);
@@ -195,11 +181,7 @@ test.each([{ flags: ["--skill", "team/notes@1.2.3", "--connections", host] }, { 
   },
 );
 test("Docker launch resolves an exact unique non-revoked host name and refuses missing/ambiguous names", async () => {
-  const receipt = {
-    sandbox: { id: requestId, provider: "docker", status: "running" },
-    golden: null,
-    runtime: { epoch: "1" },
-  };
+  const receipt = { sandbox: { id: requestId, status: "starting" } };
   const namedArgs = [
     ...args.map((arg) => (arg === host ? "office" : arg === org ? "engineering" : arg)),
     "--repo",
@@ -268,11 +250,7 @@ test("Docker CLI translates repeated repository flags with golden branch and dir
     ],
     async (request) => {
       body = await request.json();
-      return Response.json({
-        sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
-        golden: null,
-        runtime: { epoch: "1" },
-      });
+      return Response.json({ sandbox: { id: requestId, status: "starting" } });
     },
   );
   expect(result.code).toBe(0);
@@ -380,11 +358,7 @@ test("Docker snapshots build through the normal golden command and launch throug
     expect(body).toMatchObject({ snapshotId: id, provider: "docker", prompt: "Work" });
     expect(body.hostId).toBeUndefined();
     expect(body.image).toBeUndefined();
-    return Response.json({
-      sandbox: { id: requestId, provider: "docker", snapshotId: id, status: "running" },
-      golden: null,
-      runtime: { epoch: "1" },
-    });
+    return Response.json({ sandbox: { id: requestId, status: "starting" } });
   });
   expect(launched.code).toBe(0);
   let calls = 0;
@@ -406,11 +380,7 @@ test("Docker launch omits an unspecified account for server default resolution w
   const requests: Request[] = [];
   const result = await capture([...withoutAccount, "--json"], async (request) => {
     requests.push(request);
-    return Response.json({
-      sandbox: { id: requestId, provider: "docker", status: "ready" },
-      golden: null,
-      runtime: { epoch: "1" },
-    });
+    return Response.json({ sandbox: { id: requestId, status: "starting" } });
   });
   expect(result.code).toBe(0);
   expect(requests).toHaveLength(1);
@@ -420,21 +390,4 @@ test("Docker launch omits an unspecified account for server default resolution w
       throw Error("must not contact server");
     }),
   ).toMatchObject({ code: 2 });
-});
-
-test("Docker launch text exposes snapshot refresh warnings", async () => {
-  const result = await capture(args, async () =>
-    Response.json({
-      sandbox: { id: requestId, provider: "docker", providerSandboxId: "docker-logical", status: "ready" },
-      golden: null,
-      runtime: { epoch: "1" },
-      github: {
-        status: "connected",
-        message: "Warning: repository private could not refresh; launching with its snapshot checkout.",
-      },
-    }),
-  );
-  expect(result.code).toBe(0);
-  expect(result.out).toContain("Note: Warning: repository private");
-  expect(result.out).toContain("snapshot checkout");
 });

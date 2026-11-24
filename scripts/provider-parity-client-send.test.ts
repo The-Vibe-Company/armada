@@ -129,7 +129,10 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
+              if (provider === "docker") return Response.json({ sandbox: { id: ids[provider], status: "starting" } });
               return Response.json({ sandbox: { id: ids[provider], provider, externalRef: body.externalRef } });
+            case "sandbox/list":
+              return Response.json({ sandboxes: [{ ...body, id: ids[provider], provider, status: "ready" }] });
             case "sandbox/status":
               return Response.json({
                 id: body.id,

@@ -46,7 +46,7 @@ lifecycle = mode not in ("launch", "repository", "repository-no-proof")
 prices, accepted = [], {}
 class Opener:
     def open(self, request, timeout):
-        global sandbox, prompt, marker, answer, sends, stops, snapshot_id
+        global sandbox, prompt, marker, answer, sends, stops, snapshot_id, external_ref
         path = request.full_url.split("/api/v1/", 1)[1]
         if request.get_method() == "DELETE":
             from urllib.parse import parse_qs
@@ -96,9 +96,10 @@ class Opener:
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
-            value = {"sandbox": {"id": sandbox, "provider": "docker", "externalRef": body["externalRef"], "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64, "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
-            if mode.startswith(("github", "snapshot")):
-                value["github"] = {"status": "connected", "login": "owner"}
+            external_ref = body["externalRef"]
+            value = {"sandbox": {"id": sandbox, "status": "starting"}}
+        elif path == "docker/sandboxes/get":
+            value = {"snapshotId": snapshot_id, "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64}
         elif path == "sandbox/send":
             assert lifecycle and "conversation_id" not in body
             if mode == "preview-follow-up":
@@ -155,7 +156,9 @@ class Opener:
             if not any(t["promptId"] == prompt for t in prices):
                 prices.append({"promptId": prompt, "model": "test-model", "inputTokens": 10,
                                "outputTokens": 2, "pricing": {"usd": "0.01", "unknown": None}})
-            value = {"provider": "docker", "golden": None, "hostId": "retained-host", "conversationIds": [conversation], "usage": {"turns": prices, "turnCount": len(prices),
+            value = {"id": sandbox, "provider": "docker", "golden": None, "hostId": "retained-host",
+                     "status": "running", "externalRef": external_ref if mode != "preview-follow-up" else None,
+                     "prompt": {"promptId": prompt, "conversationId": conversation}, "conversationIds": [conversation], "usage": {"turns": prices, "turnCount": len(prices),
                 "cost": {"currency": "USD", "usd": "9" if mode == "bad-cost" else str(len(prices) / 100),
                          "unknown": None, "unpricedTurns": 0}}}
         elif path in ("docker/sandboxes/stop", "docker/sandboxes/delete"):
@@ -219,7 +222,7 @@ if mode == "preview-follow-up":
     assert "PASS: same-conversation follow-up recalled marker" in output.getvalue()
     sys.exit(0)
 assert (not lifecycle or (sends == (3 if mode.endswith("-mcp") else 2) and stops == 2))
-assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/status", "sandbox/stop", "sandboxes/" + sandbox]
+assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/status", "docker/sandboxes/get", "sandbox/list", "logs/read", "sandbox/status", "sandbox/stop", "sandboxes/" + sandbox]
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,

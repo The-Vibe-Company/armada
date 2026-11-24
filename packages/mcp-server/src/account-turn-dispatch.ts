@@ -18,7 +18,7 @@ import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 
 function deferredDockerLaunch(sandbox: string, pending = false) {
-  return `exists(select 1 from public.docker_launch_requests launch
+  return `exists(select 1 from public.docker_launch_manifests launch
     where launch.sandbox_id=${sandbox}.id and launch.async_launch${pending ? " and launch.result_enc is null" : ""})`;
 }
 

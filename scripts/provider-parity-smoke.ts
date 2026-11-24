@@ -383,10 +383,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     const provider = (body as { provider?: unknown } | undefined)?.provider;
     const jobLaunch =
       path === "sandbox/launch" &&
-      isSandboxProvider(provider) &&
-      HOST_CAPABILITIES[provider].goldenLaunchAdmission === "job";
-    const keyedDockerLaunch = path === "sandbox/launch" && provider === "docker" && body && "externalRef" in body;
-    const trackedLaunch = jobLaunch || keyedDockerLaunch || path === "templates/launch";
+      (provider === "docker" ||
+        (isSandboxProvider(provider) && HOST_CAPABILITIES[provider].goldenLaunchAdmission === "job"));
+    const trackedLaunch = jobLaunch || path === "templates/launch";
     const requestId = trackedLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
@@ -429,12 +428,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     if (jobLaunch && parseLaunchAdmissionReceipt(provider, result)) return result as T;
     if (path === "sandbox/launch") {
       if (
-        ((keyedDockerLaunch || jobLaunch) &&
-          (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id))) ||
-        (keyedDockerLaunch &&
-          (result?.sandbox?.provider !== provider ||
-            result?.sandbox?.externalRef !== (body as { externalRef?: unknown }).externalRef ||
-            smokeReceiptProvider(result) !== provider)) ||
+        (jobLaunch && (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id))) ||
+        provider === "docker" ||
         (jobLaunch &&
           result?.sandbox?.provider === undefined &&
           (result?.provider === undefined || result.provider === provider))
@@ -739,6 +734,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           if (row.id !== id) return;
           if (!dockerInput && row.status === "failed") throw new Error("sandbox_not_ready");
           if (row.status !== "ready" && !(dockerInput && row.status === "running")) return;
+          if (dockerInput && !dockerSnapshot && !detail) return row;
           const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
           const statusBudget = readBudget();
           if (statusBudget <= 0) return;

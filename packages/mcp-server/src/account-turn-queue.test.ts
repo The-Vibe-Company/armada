@@ -62,7 +62,7 @@ beforeAll(async () => {
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid,
       bound_actor_id uuid,host_id uuid,bound_operation text,bound_actor_epoch bigint,cancelled_at timestamptz,
       refused_resume_generation bigint,outcome text);
-    create table docker_launch_requests(sandbox_id uuid primary key,async_launch boolean not null,result_enc bytea);
+    create table docker_launch_manifests(sandbox_id uuid primary key,async_launch boolean not null,result_enc bytea);
     create table docker_queued_prompts(sandbox_id uuid,status text);
     create table docker_hosts(id uuid,org_id uuid,installation_id uuid,owner_id uuid,hash text,
       registration_hash text,revoked_at timestamptz);
@@ -117,7 +117,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_requests; delete from docker_queued_prompts; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; delete from sandbox_transitions; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_manifests; delete from docker_queued_prompts; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; delete from sandbox_transitions; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -278,7 +278,7 @@ test("a Docker follow-up waits for deferred launch publication and runtime turn 
   const id = ids[0]!;
   const input = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
   await sql.query("update sandboxes set status='starting',provider='docker' where id=$1", [id]);
-  await sql.query("insert into docker_launch_requests values($1,true,null)", [id]);
+  await sql.query("insert into docker_launch_manifests values($1,true,null)", [id]);
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued", promptId: input.request_id });
   const send = spyOn({ send: async () => ({ promptId: "follow-up-turn" }) }, "send");
   const run = sharedDispatcher(send);
@@ -286,7 +286,7 @@ test("a Docker follow-up waits for deferred launch publication and runtime turn 
   expect(await queue.status(caller, id, input.request_id)).toMatchObject({ failed: false });
 
   await sql.query("update sandboxes set status='ready',task_prompt_id='initial-turn' where id=$1", [id]);
-  await sql.query("update docker_launch_requests set result_enc='sealed'::bytea where sandbox_id=$1", [id]);
+  await sql.query("update docker_launch_manifests set result_enc='sealed'::bytea where sandbox_id=$1", [id]);
   await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch'");
   await run();
   expect(send).not.toHaveBeenCalled();

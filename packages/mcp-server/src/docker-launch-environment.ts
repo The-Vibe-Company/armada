@@ -15,7 +15,7 @@ export function createDockerLaunchEnvironment(
   return async (caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) => {
     const row = (
       await sql.query<{ request_enc: Uint8Array<ArrayBuffer>; harness: Harness }>(
-        `select d.request_enc,s.harness from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+        `select d.request_enc,s.harness from public.docker_launch_manifests d join public.sandboxes s on s.id=d.sandbox_id
        join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
        join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
        where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
@@ -33,7 +33,7 @@ export function createDockerLaunchEnvironment(
       load: async (tx) => {
         const current = (
           await tx.query<{ org_id: string }>(
-            `select s.org_id from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
+            `select s.org_id from public.docker_launch_manifests d join public.sandboxes s on s.id=d.sandbox_id
          join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=d.actor_epoch
          where s.id=$1 and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
             [id, caller.userId, caller.orgs.map((org) => org.orgId)],

@@ -3,24 +3,6 @@ import type { LaunchEnvelope } from "@armada/core/contract";
 import type { LaunchResult } from "@armada/core/server";
 import { z } from "zod";
 
-/** Fill missing fields from asynchronous Docker launches and pre-existing golden receipts. */
-export function canonicalLaunchResponse<
-  T extends {
-    helper?: { status: string } | null;
-    runtime?: { kind: "armada"; epoch: string } | null;
-    promptId?: string | null;
-    conversationId?: string | null;
-  },
->(result: T) {
-  return {
-    ...result,
-    helper: result.helper ?? null,
-    runtime: result.runtime ?? null,
-    promptId: result.promptId ?? null,
-    conversationId: result.conversationId ?? null,
-  };
-}
-
 export function goldenLaunchResponse(result: LaunchResult) {
   return {
     runtime: result.runtime ?? null,

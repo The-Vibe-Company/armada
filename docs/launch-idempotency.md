@@ -67,28 +67,12 @@ organization must be its UUID. In the CLI, pass `--agent` for Docker launches
 as you would when launching from a Boat or Modal snapshot. A `hostId`
 selects a Docker host. A `snapshotId` selects a Docker snapshot and its host.
 
-The launch call returns once Armada admits the launch, normally with
-`sandbox.status: "starting"` and null `promptId` and `conversationId`. A worker starts
-the sandbox and sends the prompt afterwards. A replay with the same
-key and normalized inputs never launches twice:
+The launch responds with `{ "sandbox": { "id": "...", "status": "starting" } }`
+before allocation. A replay of the same inputs and key returns the original
+sandbox ID and its current status. The worker sends any initial prompt after
+runtime enrolment. Use `sandbox/status` or logs for prompt and conversation details.
+After an uncertain response, keep the same key until you have reconciled the launch.
 
-- The replay reports the sandbox's current status, not the status of an
-  earlier response. Until the worker publishes the launch receipt, a `ready`
-  or `running` sandbox is reported as `starting`. A stopped, failed or deleted
-  sandbox keeps that status.
-- The recorded `promptId` and `conversationId` appear only after the worker
-  publishes the launch receipt, and only when the launch sent a prompt.
-
-After an uncertain Docker launch, replay the original request or poll
-`sandbox/status` with the sandbox ID when it is known. For a launch that sent a prompt, replay the same request and look for
-`promptId` and `conversationId` rather than at the status. `starting` without
-them means the launch is still pending. `stopped`, `failed` or `deleted`
-without them is a separate outcome: no receipt will appear, and the prompt
-outcome is uncertain. The sandbox may have ended before the launch prompt was
-sent, or after the worker sent it but before the receipt was recorded, in which
-case the agent may already have acted on it. Inspect the original sandbox's
-status and logs before you repeat the work. Do not launch with a new
-key until you know that the first launch failed or ended.
 See
 [Docker hosts](docker-host-daemon.md) for an example body.
 
@@ -137,7 +121,6 @@ never re-dispatched.
 - `sandbox/list` returns `externalRef` and accepts it as a filter. Both are
   interior-only: a member who cannot open another member's sandbox sees the row
   without its reference, and filtering by reference never matches it.
-- The launch answer returns it too.
 
 Signed [outbound webhooks](outbound-webhooks.md) include `externalRef` in
 each payload, with null when the sandbox has no reference.
@@ -155,8 +138,8 @@ key conflicts, keep the key and recover the original attempt by receipt ID or
 `ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
 settings and server opt-ins still apply.
 
-All `sandbox/launch` sources share an envelope. Read the placement and Armada ID
-at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
+Read the Armada ID at `sandbox.id`. The full launch envelope
+includes placement at `sandbox.provider`.
 `promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
 CLI JSON uses the same envelope, including `sandbox.id` and `golden.name`
 when the response includes a Boat or Modal snapshot record.

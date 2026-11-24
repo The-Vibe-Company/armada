@@ -73,6 +73,7 @@ test.each([
             dockerAllocation = { id: id(7), externalRef: body.externalRef };
             return Response.json({ sandbox: { id: id(6), provider: "docker", externalRef: "different-launch" } });
           }
+          if (body.provider === "docker") return Response.json({ sandbox: { id: id(7), status: "starting" } });
           if (body.provider === "modal" && scenario === "finished with complete text") {
             return Response.json({ sandbox: { id: id(5), status: "starting" } });
           }
@@ -242,6 +243,7 @@ test.each([
       const body = JSON.parse(String(init.body));
       switch (new URL(url).pathname) {
         case "/api/v1/sandbox/launch":
+          if (body.provider === "docker") return Response.json({ sandbox: { id: id(7), status: "starting" } });
           return Response.json({
             sandbox: {
               id: body.provider === "docker" ? id(7) : id(5),

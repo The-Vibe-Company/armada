@@ -50,7 +50,7 @@ test("counts provider comparisons and switch forms while excluding adapters and 
 
 test("counts versioned route names only in the route tables", () => {
   const head = new Map([
-    [server + "public-rest-routes.ts", 'const routes = ["sandbox/launch-v2"];'],
+    [server + "control-tool-routes.ts", 'const routes = ["sandbox/launch-v2"];'],
     [server + "control.ts", 'case "sandbox/resume-v3":'],
     [server + "models.ts", 'const model = "gpt-5-v2";'],
   ]);

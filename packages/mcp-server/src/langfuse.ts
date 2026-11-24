@@ -328,7 +328,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
             where r.sandbox_id=j.sandbox_id
               and coalesce(r.manifest->'definition'->'secrets','[]'::jsonb) not in ('[]'::jsonb,'null'::jsonb)
           ) as application_secrets,
-          (select d.request_enc from public.docker_launch_requests d where d.sandbox_id=j.sandbox_id) as docker_request_enc
+          (select d.request_enc from public.docker_launch_manifests d where d.sandbox_id=j.sandbox_id) as docker_request_enc
         from public.langfuse_turn_exports j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled
         where j.sandbox_id=$1 and j.prompt_id=$2 and s.org_id=j.org_id`,
