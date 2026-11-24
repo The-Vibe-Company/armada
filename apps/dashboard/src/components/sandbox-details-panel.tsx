@@ -28,8 +28,8 @@ export function SandboxDetailsPanel({ children }: { children: ReactNode }) {
 
   function toggle(next: boolean) {
     setOpen(next);
-    // On a small screen the details take the history's place; where the page cannot fit (a fallback), bring them into view.
-    if (next && window.matchMedia("(width < 64rem)").matches) {
+    // On a phone, where the page cannot fit, bring the open details into view.
+    if (next && window.matchMedia("(width < 48rem)").matches) {
       const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       requestAnimationFrame(() =>
         section.current?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" }),

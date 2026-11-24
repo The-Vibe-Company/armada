@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { NavMobileTrigger } from "@/components/nav-links";
 import { Sidebar, SidebarFooter, SidebarHeader, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 
-/** Mount the organization switcher only once, including across responsive layouts. */
+/** CSS selects the visible header on first paint. The mobile drawer reuses the thread header. */
 export function AppSidebar({
   header,
   footer,
@@ -20,7 +20,7 @@ export function AppSidebar({
   return (
     <>
       <div className="border-b bg-sidebar pb-2 md:hidden">
-        {!thread && header}
+        {isMobile !== false && !thread && header}
         <div className="px-3">
           <NavMobileTrigger />
         </div>

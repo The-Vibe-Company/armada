@@ -65,10 +65,11 @@ function OptIn({ when, children }: { when: Promise<boolean>; children: ReactNode
 
 export function NavMobileTrigger() {
   const pathname = usePathname();
-  const { openMobile } = useSidebar();
+  const { openMobile, triggerRef } = useSidebar();
   const current = NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href));
   return (
     <SidebarTrigger
+      ref={triggerRef}
       variant="ghost"
       size="default"
       className="mb-1 h-9 w-full justify-between md:hidden"
