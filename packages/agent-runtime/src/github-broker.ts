@@ -258,8 +258,6 @@ export class GitHubBroker {
     });
     const credentialOptions = {
       unix: socket,
-      // Allow the 15-second upstream deadline to reach the wrappers before their 20-second timeout.
-      idleTimeout: 18,
       maxRequestBodySize: 1048576,
       fetch: async (request: Request) => {
         try {
@@ -322,6 +320,8 @@ export class GitHubBroker {
       }
     };
     try {
+      // WARNING: Bun honors idleTimeout on Unix despite its types. The default drops the reply before acquisition times out.
+      Object.assign(credentialOptions, { idleTimeout: 18 });
       credentials = Bun.serve(credentialOptions);
       await chmod(socket, 0o600);
       await chmod(redactSocket, 0o600);
