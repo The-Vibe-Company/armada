@@ -11,18 +11,18 @@ import { sqlOver } from "../src/sql.ts";
 // Release validation supplies an already migrated disposable database.
 const url = process.env.ARMADA_TEST_POSTGRES_URL ?? "";
 
-function authority(connection: SQL, nowait = false) {
+function authority(connection: SQL, failOnLockConflict = false) {
   return createRuntimeEnrolments(
     sqlOver({
       unsafe: (q, v) => connection.unsafe(q, v),
       begin: (work) =>
         connection.begin((tx) =>
           work({
-            // Make lock conflicts fail immediately so the test can hold a transaction open
-            // without waiting for a timeout to distinguish compatible and conflicting locks.
             unsafe: (q, v) =>
               tx.unsafe(
-                nowait && /\bfor (?:no key update|update|key share|share)(?: of \w+)?$/i.test(q) ? `${q} nowait` : q,
+                failOnLockConflict && /\bfor (?:no key update|update|key share|share)(?: of \w+)?$/i.test(q)
+                  ? `${q} nowait`
+                  : q,
                 v,
               ),
           }),
@@ -39,7 +39,7 @@ test("runtime sessions share an owner's membership fence and conflict with role 
   const owner = crypto.randomUUID();
   const org = crypto.randomUUID();
   const golden = crypto.randomUUID();
-  const sandboxes = [crypto.randomUUID(), crypto.randomUUID()];
+  const sandboxes: [string, string] = [crypto.randomUUID(), crypto.randomUUID()];
   const service = authority(runtime);
   const other = authority(peer, true);
   const entered = Promise.withResolvers<void>();
@@ -93,7 +93,7 @@ test("runtime sessions share an owner's membership fence and conflict with role 
   } finally {
     finish.resolve();
     await Promise.allSettled([held]);
-    await admin.unsafe("delete from sandboxes where id=any($1::uuid[])", [sandboxes]);
+    await admin.unsafe("delete from sandboxes where id in ($1,$2)", sandboxes);
     await admin.unsafe("delete from goldens where id=$1", [golden]);
     await admin.unsafe("delete from members where org_id=$1", [org]);
     await admin.unsafe("delete from mcp_invalidations where org_id=$1", [org]);

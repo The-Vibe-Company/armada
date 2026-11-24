@@ -92,7 +92,6 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     return sql.transaction(work);
   }
   // Lock every source actor in one stable order, before credentials, hosts or sandboxes.
-  // SHARE permits other readers and fences deletes and role updates that bump the actor epoch.
   // The unlocked host owner is only a hint; lockSandbox pins it under the host lock.
   async function lockSourceMembers(tx: Sql, id: string, ownerId?: string) {
     const members = await tx.query<{
