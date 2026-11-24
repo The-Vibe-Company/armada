@@ -947,7 +947,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
   expect(attempts).toBe(1);
 });
 
-test("private native state survives reopening, excludes concurrent owners and rejects unsafe existing files", async () => {
+test("private host state survives reopening, excludes concurrent owners and rejects unsafe existing files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-docker-host-"));
   try {
     const store = await fileStore(directory);
@@ -980,7 +980,7 @@ test("private native state survives reopening, excludes concurrent owners and re
   }
 });
 
-test("native state writes remain readable or preserve the previous durable state", async () => {
+test("host state writes remain readable or preserve the previous durable state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-docker-state-size-"));
   try {
     const f = fixture();
@@ -2508,7 +2508,7 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
   expect(f.acknowledgements).toEqual(["completed"]);
 });
 
-test("native held polls report running work without retrying a refused request", async () => {
+test("held polls report running work without retrying a refused request", async () => {
   const f = fixture();
   const startupPreferences: (string | null)[] = [];
   const bodies: Record<string, unknown>[] = [];
