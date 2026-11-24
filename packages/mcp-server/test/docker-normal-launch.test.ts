@@ -2335,7 +2335,7 @@ test("Docker honors frozen launch pins without re-merging later skill defaults",
 
 // Template placement owner: real admission + normal Docker reservation/commands; fake host/runtime
 // replies exercise transport only. Actual native execution remains the coordinator smoke's proof.
-test.each(["host", "snapshot", "revoked"])(
+test.each(["host", "snapshot", "revoked", "contended"])(
   "Docker template launch follows the shared reservation and authority checks (%s)",
   async (scenario) => {
     const fromSnapshot = scenario === "snapshot";
@@ -2404,7 +2404,24 @@ test.each(["host", "snapshot", "revoked"])(
       expect((await counts(f))?.jobs).toBe(0);
       return;
     }
-    await f.service().drain();
+    let contended = false;
+    const lockFault: Sql = {
+      ...sql,
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            query(statement, params) {
+              if (!contended && f.session() && statement.includes("for share of t nowait")) {
+                contended = true;
+                throw Object.assign(Error("Template lock held"), { code: "55P03" });
+              }
+              return tx.query(statement, params);
+            },
+          }),
+        ),
+    };
+    await f.service(scenario === "contended" ? lockFault : sql).drain();
+    if (scenario === "contended") expect(contended).toBe(true);
     const result = await templates.command(f.caller, "launch", input, runtime);
     expect(result).toMatchObject({
       state: "succeeded",
@@ -2586,9 +2603,18 @@ test.each(["lost_response", "superseded_refusal"])("Docker template replay after
         await templates.command(f.caller, "launch", input, runtime);
         throw new DockerTemplateAdmissionRefused("host_full", "Docker host capacity unavailable.");
       }
-      const receipt = await f.service().launch(f.caller, body, admission);
-      if (scenario === "lost_response") throw Error("response lost after actual normal launch committed");
-      return receipt;
+      const source: Sql =
+        scenario === "lost_response"
+          ? {
+              ...sql,
+              async transaction(work) {
+                const result = await sql.transaction!(work);
+                if ((await counts(f))?.claims) throw Error("Reservation commit reply lost");
+                return result;
+              },
+            }
+          : sql;
+      return f.service(source).launch(f.caller, body, admission);
     },
   };
   const input = {

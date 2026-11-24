@@ -8,7 +8,6 @@ import { type BootstrapDescriptor, dockerMachineJobId, parseDockerHostJob } from
 import { admitDockerCapacity, DockerHostDraining, DockerHostFull, DockerLimitsRefused } from "./docker-capacity.ts";
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
 import { DockerMachinePending } from "./docker-machine-adapter.ts";
-import { reservationDatabaseDiagnostic } from "./docker-reservation-sql.ts";
 import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { JobContext } from "./jobs/runner.ts";
@@ -396,8 +395,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         error instanceof DockerHostDraining ||
         error instanceof DockerHostFull ||
         error instanceof DockerLimitsRefused ||
-        error instanceof DockerRetentionEnded ||
-        reservationDatabaseDiagnostic(error).sqlstate === "55P03"
+        error instanceof DockerRetentionEnded
       )
         throw error;
       return deny();

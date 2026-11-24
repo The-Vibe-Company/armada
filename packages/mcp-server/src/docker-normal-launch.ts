@@ -749,6 +749,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       // From here this call drives the host itself, even when it resumes a retried launch.
       noteAdmission();
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+      let templateLockContended = false;
+      const assertTemplate = async (tx: Sql, references = false) => {
+        if (!manifest.template) return;
+        await templates
+          .revalidateDockerLaunch(tx, actor, request.requestId, manifest.template, references)
+          .catch((error) => {
+            templateLockContended ||= reservationDatabaseDiagnostic(error).sqlstate === "55P03";
+            throw error;
+          });
+      };
       try {
         if (request.repos?.length || manifest.snapshotConfig?.repos.length) {
           reason = "github_preparation";
@@ -770,13 +780,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           const { docker_actor_epoch: admittedEpoch } = worker.job.outcome as { docker_actor_epoch: string };
           if ((await member(tx, actor)).epoch !== admittedEpoch || !(await worker.context.canDispatch(tx)))
             throw failure("unavailable");
-          if (manifest.template)
-            await templates.revalidateDockerLaunch(tx, actor, request.requestId, manifest.template);
+          await assertTemplate(tx);
         };
-        const assertTemplate = () =>
-          manifest.template &&
-          transaction((tx) => templates.revalidateDockerLaunch(tx, actor, request.requestId, manifest.template!, true));
-        await assertTemplate();
+        if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
         const live = async () => {
           if (!(await worker.context.canDispatch())) throw failure("unavailable");
@@ -971,7 +977,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
         if (manifest.request.prompt !== null) {
-          await assertTemplate();
+          if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
           const prior = (
             await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
               "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
@@ -1032,7 +1038,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           return envelope(saved.row, saved.receipt);
         });
       } catch (error) {
-        if (reservationDatabaseDiagnostic(error).sqlstate === "55P03") throw new DockerMachinePending("pending");
+        if (templateLockContended) throw new DockerMachinePending("pending");
         if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
         else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
         else if (
