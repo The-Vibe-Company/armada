@@ -1526,7 +1526,7 @@
     "packages/mcp-server/src/output-transfers.ts": 3,
     "packages/mcp-server/src/provider-metadata.ts": 1,
     "packages/mcp-server/src/provider-reaper.ts": 3,
-    "packages/mcp-server/src/provider-runtime-admission.ts": 2,
+    "packages/mcp-server/src/provider-runtime-admission.ts": 1,
     "packages/mcp-server/src/provider-sandbox-target.ts": 2,
     "packages/mcp-server/src/public-auth-control.ts": 5,
     "packages/mcp-server/src/public-rest-routes.ts": 1,

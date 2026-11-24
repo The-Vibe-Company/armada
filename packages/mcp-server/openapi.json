@@ -37,7 +37,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -178,7 +179,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -310,7 +312,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -451,7 +454,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -583,7 +587,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -689,7 +694,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -860,7 +866,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "skills": {
@@ -4304,7 +4311,7 @@
                         "maxLength": 131072
                       },
                       "model": {
-                        "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                        "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default. antigravity: default (default), gemini-2.5-pro (default), gemini-2.5-flash (default); default default default.",
                         "type": "string",
                         "minLength": 1
                       },
@@ -4348,7 +4355,7 @@
                             "maxLength": 131072
                           },
                           "model": {
-                            "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default.",
+                            "description": "The model, by id. claude: claude-opus-5-5 (low|medium|high|xhigh|max), claude-sonnet-5-5 (low|medium|high|xhigh|max); default claude-opus-5-5 medium. codex: gpt-6.2-sol (low|medium|high|xhigh|max|ultra), gpt-6.2-astra (low|medium|high|xhigh|max|ultra), gpt-6.1-sol (low|medium|high|xhigh|max|ultra), gpt-6.1-terra (low|medium|high|xhigh|max|ultra), gpt-6-astra (low|medium|high|xhigh|max|ultra), gpt-6-sol (low|medium|high|xhigh|max|ultra), gpt-6-luna (low|medium|high|xhigh|max); default gpt-6.2-sol medium. opencode: armada/deepseek-flash (default); default armada/deepseek-flash default. antigravity: default (default), gemini-2.5-pro (default), gemini-2.5-flash (default); default default default.",
                             "type": "string",
                             "minLength": 1
                           },
@@ -5091,7 +5098,8 @@
                     "enum": [
                       "claude",
                       "codex",
-                      "opencode"
+                      "opencode",
+                      "antigravity"
                     ]
                   },
                   "golden": {
@@ -5479,7 +5487,8 @@
                             "enum": [
                               "claude",
                               "codex",
-                              "opencode"
+                              "opencode",
+                              "antigravity"
                             ]
                           },
                           "model": {
@@ -6332,7 +6341,8 @@
                       "enum": [
                         "claude",
                         "codex",
-                        "opencode"
+                        "opencode",
+                        "antigravity"
                       ]
                     },
                     "repositoryDir": {
@@ -7274,7 +7284,8 @@
                       "enum": [
                         "claude",
                         "codex",
-                        "opencode"
+                        "opencode",
+                        "antigravity"
                       ]
                     },
                     "repositoryDir": {
@@ -11160,7 +11171,8 @@
                       "enum": [
                         "claude",
                         "codex",
-                        "opencode"
+                        "opencode",
+                        "antigravity"
                       ]
                     },
                     "repositoryDir": {
@@ -12411,7 +12423,8 @@
                         "enum": [
                           "claude",
                           "codex",
-                          "opencode"
+                          "opencode",
+                          "antigravity"
                         ]
                       },
                       "credentialId": {
@@ -12834,7 +12847,8 @@
                           "enum": [
                             "claude",
                             "codex",
-                            "opencode"
+                            "opencode",
+                            "antigravity"
                           ]
                         },
                         "status": {

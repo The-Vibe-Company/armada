@@ -1,4 +1,4 @@
-# Antigravity runtime artifact
+# Antigravity runtime
 
 Armada pins the Google Antigravity CLI **1.5.13** Linux glibc tarballs for x64 and arm64.
 On Modal and Docker, the runtime downloads the tarball directly from the Google
@@ -6,6 +6,38 @@ release URL in the pin when it first prepares Antigravity. Cold starts need
 HTTPS access to `storage.googleapis.com`. The runtime checks the tarball's SHA-256
 and length before extracting it, then verifies the executable on every cache hit.
 The official sandbox image and Armada runtime artifact store omit these tarballs.
+
+## Launch on Modal or Docker
+
+Use a Gemini Developer API key from hidden input, stdin or a private file. The
+account command prints no credential material. Use the ID shown by
+`armada account ls --json`.
+
+```sh
+armada account add antigravity --name gemini --file /private/gemini-key
+armada new starter --provider modal --agent antigravity --credential-id "$account_id" --model default 'Reply with armada-antigravity-ok'
+armada new 'Reply with armada-antigravity-ok' --provider docker --host workstation --agent antigravity --credential-id "$account_id" --model default
+```
+
+To import a native Google login, use
+`armada account import antigravity --name google --file /private/antigravity-oauth-token`.
+The token file contains a `token` object with `access_token`, `refresh_token` and
+optional ISO 8601 `expiry`. Keep key and token values out of command arguments.
+
+Use model `default` to accept the account's selection. The suggested Gemini
+model IDs are pending confirmation on staging. Armada has no prices for them.
+Boat refuses Antigravity before provider access. The server seals the selected
+credential for private runtime enrollment. Follow-ups work in a running
+sandbox. Conversation restore after stopping the sandbox is unsupported.
+
+## Coordinator staging check
+
+With a Gemini API-key account and model `default`, repeat on Modal and the
+owner's Docker host. Check the first reply, a follow-up in the same conversation,
+interrupt, and an Armada MCP tool call. The pinned CLI advertises no
+`mcpCapabilities`, so verify delivery with an actual tool call. Confirm the
+account secret is absent from logs, events, and exec output. Record the offered
+model IDs to confirm the picker choices.
 
 ## Bump the pin
 

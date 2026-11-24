@@ -3192,7 +3192,8 @@
                     "enum": [
                       "claude",
                       "codex",
-                      "opencode"
+                      "opencode",
+                      "antigravity"
                     ]
                   },
                   "ratePerMinute": {

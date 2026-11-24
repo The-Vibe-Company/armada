@@ -2,6 +2,7 @@ import {
   isSandboxPlacementProvider,
   isSandboxProvider,
   type LaunchOptions,
+  runtimeHarnessSupported,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
 } from "@armada/core";
@@ -65,8 +66,7 @@ export function runtimeBridgeTarget(target: {
   );
 }
 
-export const runtimeHarnessSupported = (provider: string, harness: string): boolean =>
-  ["codex", "claude"].includes(harness) || (isSandboxPlacementProvider(provider) && harness === "opencode");
+export { runtimeHarnessSupported };
 
 export function runtimeConfigurationFailure(id: unknown) {
   const names: Record<string, string> = { boat: "Boat runtime", docker: "Docker runtime" };

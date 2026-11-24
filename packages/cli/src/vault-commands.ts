@@ -127,9 +127,12 @@ export async function modelAccountCommand(
       const [harness] = expect(
         args.positionals,
         1,
-        `armada account ${sub} ${sub === "login" ? "codex" : "claude|codex"} --name <name> [--org <name>]`,
+        `armada account ${sub} ${sub === "login" ? "codex" : "claude|codex|antigravity"} --name <name> [--org <name>]`,
       );
-      if (harness !== "claude" && harness !== "codex") throw usage("Native import supports claude or codex.");
+      if (harness !== "claude" && harness !== "codex" && harness !== "antigravity")
+        throw usage("Native import supports claude, codex or antigravity.");
+      if (harness === "antigravity" && sub === "import" && !single(args, "--file"))
+        throw usage("Antigravity import requires --file <token file>.");
       const id = single(args, "--id");
       const revision = single(args, "--expected-version");
       if (id && (!revision || !/^[1-9][0-9]*$/.test(revision) || !Number.isSafeInteger(Number(revision))))
@@ -141,7 +144,7 @@ export async function modelAccountCommand(
         throw usage(
           "For Claude, run claude setup-token locally and import its token securely with armada account import claude.",
         );
-      const kind = harness === "claude" ? "claude_oauth" : "codex_auth";
+      const kind = harness === "claude" ? "claude_oauth" : harness === "codex" ? "codex_auth" : "antigravity";
       let raw: string;
       if (sub === "login") {
         const controller = new AbortController();
@@ -166,7 +169,7 @@ export async function modelAccountCommand(
           process.removeListener("SIGHUP", hangup);
         }
       } else raw = await readValue(args, io);
-      const value = parseCredentialValue(kind, raw);
+      const value = kind === "antigravity" ? importAntigravityToken(raw) : parseCredentialValue(kind, raw);
       if (kind === "codex_auth") validateNativeCodexAuth(value, false);
       await control(io.auth, "creds/accounts/set", {
         scope,
@@ -462,4 +465,15 @@ function agentLimit(args: ReturnType<typeof parseArgs>): number | null | undefin
   if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(value))
     throw usage("--max-agents must be a positive integer.");
   return value;
+}
+
+function importAntigravityToken(raw: string) {
+  let token: unknown;
+  try {
+    const file = JSON.parse(raw);
+    token = file?.token;
+  } catch {
+    throw usage("Invalid Antigravity token file.");
+  }
+  return parseCredentialValue("antigravity", JSON.stringify({ method: "google", token }));
 }

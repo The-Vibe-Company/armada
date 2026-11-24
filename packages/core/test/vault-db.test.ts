@@ -185,6 +185,13 @@ describe("credentials", () => {
         kind: "claude_oauth",
         value: `${CLAUDE}\n`,
       });
+      const geminiKey = "fixture-gemini-key";
+      await setCredential(store, KEY, people.stan, {
+        scope: "user",
+        org: undefined,
+        kind: "antigravity",
+        value: geminiKey,
+      });
       const largeAuth = JSON.stringify({ ...JSON.parse(AUTH_JSON), padding: "x".repeat(65000) });
       await mutateCredentialAccount(store, KEY, people.stan, {
         action: "set",
@@ -205,13 +212,27 @@ describe("credentials", () => {
         union all select coalesce(string_agg(encode(boat_api_key_enc, 'escape'), ' '), '') from orgs
       `);
       const raw = dump.rows.map((row) => row.blob).join(" ");
-      for (const secret of [CLAUDE, "at-secret", "boat-personal", "boat-org"]) expect(raw).not.toContain(secret);
+      for (const secret of [CLAUDE, "at-secret", "boat-personal", "boat-org", geminiKey])
+        expect(raw).not.toContain(secret);
       const sizes = await db.query<{ n: number }>(
         "select octet_length(value_enc)::int as n from credentials order by 1",
       );
       expect(sizes.rows.every((row) => row.n > 12 + 16)).toBe(true);
 
       const org = (await listOrgs(store, people.stan))[0];
+      expect(
+        await resolveCredentials(store, KEY, { userId: people.stan, orgId: org?.id ?? "", harness: "antigravity" }),
+      ).toMatchObject({ antigravityCredential: { method: "gemini-api-key", apiKey: geminiKey }, env: {}, files: [] });
+      const selected = (await store.credentials("user", people.stan)).find(({ kind }) => kind === "antigravity");
+      if (!selected?.id) throw Error("Missing Antigravity account binding");
+      await expect(
+        resolveCredentials(store, KEY, {
+          userId: people.stan,
+          orgId: org?.id ?? "",
+          harness: "codex",
+          credentialId: selected.id,
+        }),
+      ).rejects.toThrow("This account cannot drive Codex. This account works with Antigravity");
       expect(
         (await resolveCredentials(store, KEY, { userId: people.stan, orgId: org?.id ?? "", harness: "codex" })).files[0]
           ?.content,
@@ -875,7 +896,7 @@ describe("credential values", () => {
     expect(parseCredentialKind("Codex-Auth")).toBe("codex_auth");
     expect(parseCredentialKind("opencode")).toBe("opencode");
     expect(() => parseCredentialKind("unknown")).toThrow(/Unknown credential 'unknown'/);
-    expect(() => parseCredentialKind("antigravity")).toThrow(/Unknown credential 'antigravity'/);
+    expect(parseCredentialKind("antigravity")).toBe("antigravity");
   });
 });
 

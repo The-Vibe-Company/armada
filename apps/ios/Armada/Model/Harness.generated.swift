@@ -4,6 +4,7 @@ enum Harness: String, CaseIterable, Identifiable, Hashable, Sendable {
     case `claude`
     case `codex`
     case `opencode`
+    case `antigravity`
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum Harness: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .`claude`: "Claude Code"
         case .`codex`: "Codex"
         case .`opencode`: "OpenCode"
+        case .`antigravity`: "Antigravity"
         }
     }
 
@@ -21,6 +23,7 @@ enum Harness: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .`claude`: false
         case .`codex`: true
         case .`opencode`: true
+        case .`antigravity`: true
         }
     }
 }

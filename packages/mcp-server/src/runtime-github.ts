@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
-import { GITHUB_CALLER_NOT_CONNECTED } from "@armada/core";
+import { GITHUB_CALLER_NOT_CONNECTED, HARNESSES } from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
@@ -18,7 +18,7 @@ import { matchesDockerLaunchRequestHash } from "./docker-launch-identity.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { Route } from "./http.ts";
 import { parseModalLaunchWorkspace } from "./jobs/modal-launch-setup.ts";
-import { runtimeBridgeTarget, usesHostLaunch } from "./provider-runtime-admission.ts";
+import { runtimeBridgeTarget, runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { currentRequestId } from "./request-observability.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -55,6 +55,9 @@ interface Binding {
   githubId: number;
   repositories: { url: string }[];
 }
+const boatHarnessesSql = HARNESSES.filter((id) => runtimeHarnessSupported("boat", id))
+  .map((id) => `'${id}'`)
+  .join(",");
 const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_id,'orgId',s.org_id,
  'epoch',r.epoch::text,'providerSandboxId',s.provider_sandbox_id,'goldenId',s.golden_id,
  'membershipEpoch',e.epoch,'mcpGeneration',s.mcp_generation,'connectionEpoch',c.connection_epoch,
@@ -68,7 +71,7 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
  where s.id=$1 and (s.provider='docker' or (
    ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
-   and g.provider=s.provider and s.harness in ('codex','claude','opencode')))
+   and g.provider=s.provider and (s.provider='modal' or s.harness in (${boatHarnessesSql}))))
  and (s.status in ('ready','running') or (s.provider='docker' and s.status='starting') or (((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout')) and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

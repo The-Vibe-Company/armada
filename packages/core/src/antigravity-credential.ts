@@ -31,3 +31,17 @@ export function parseAntigravityCredential(value: unknown) {
   }
   return result.data;
 }
+
+export function parseAntigravityValue(raw: string) {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    value = undefined;
+  }
+  return parseAntigravityCredential(value);
+}
+
+export function antigravitySecrets(value: AntigravityCredential) {
+  return value.method === "google" ? [value.token.access_token, value.token.refresh_token] : [value.apiKey];
+}

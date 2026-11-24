@@ -858,7 +858,7 @@ describe("control API", () => {
       expect(docker).toMatchObject({
         enabled: true,
         launchSources: ["image"],
-        harnesses: ["codex", "claude", "opencode"],
+        harnesses: [...HARNESSES],
       });
       expect(docker?.capabilities).toMatchObject({
         launch: false,
@@ -1070,7 +1070,7 @@ describe("control API", () => {
     });
   }
 
-  test("a keyed runtime launch refuses an unbound account before opening the provider", async () => {
+  test.each(["codex", "antigravity"] as const)("%s refusal precedes opening the Boat provider", async (harness) => {
     await withServer(async ({ db, options }) => {
       const org = (await options.store.createOrg("RuntimeAccount", STAN)).id;
       options.authStore.addMembership(STAN, { orgId: org, name: "RuntimeAccount", role: "admin" });
@@ -1096,7 +1096,7 @@ describe("control API", () => {
             org,
             provider: "boat",
             golden: "web",
-            harness: "codex",
+            harness,
             idempotencyKey: "unbound-account-launch",
           }),
         }),
@@ -1119,9 +1119,12 @@ describe("control API", () => {
           },
         },
       );
-      expect(response?.status).toBe(409);
+      expect(response?.status).toBe(harness === "codex" ? 409 : 400);
       expect(await response?.json()).toMatchObject({
-        error: { code: "credential_binding_required", message: expect.stringContaining("--credential-id") },
+        error:
+          harness === "codex"
+            ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
+            : { message: expect.stringContaining("Unknown agent 'antigravity'") },
       });
     });
   });

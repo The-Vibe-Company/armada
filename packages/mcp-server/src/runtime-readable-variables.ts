@@ -98,6 +98,7 @@ export async function runtimeConfigurationWithVariables(
 ) {
   const plan = await runtimeConfiguration(input, provider, emptyMcpRevision);
   const { variables } = await readRuntimeTemplateEnvironment(sql, input.actor, input.sandbox.id, provider);
-  Object.assign(plan.configuration[`${input.sandbox.harness}Env`], variables);
+  if (input.sandbox.harness !== "antigravity")
+    Object.assign(plan.configuration[`${input.sandbox.harness}Env`], variables);
   return { ...plan, configuration: { ...plan.configuration, readableVariables: variables } };
 }

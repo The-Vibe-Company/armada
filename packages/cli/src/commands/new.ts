@@ -177,8 +177,8 @@ Docker form:
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
 A snapshot cannot be combined with --repo.
-Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
-OpenCode is also supported on Modal and Docker.
+Boat supports Claude, Codex and OpenCode with the server runtime.
+Modal and Docker also support Antigravity.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
 Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 

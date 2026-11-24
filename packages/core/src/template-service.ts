@@ -8,7 +8,7 @@ import type { DockerLaunchResult } from "./docker-api.ts";
 import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
-import { isHarness } from "./harnesses.ts";
+import { isHarness, runtimeHarnessSupported } from "./harnesses.ts";
 import { type LaunchOptions, type LaunchRequest, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import {
@@ -579,6 +579,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
+    if (!runtimeHarnessSupported(def.provider, def.harness)) unavailable("environment_admission_unavailable");
     if (
       !runtime.scheduled &&
       isSandboxProvider(def.provider) &&

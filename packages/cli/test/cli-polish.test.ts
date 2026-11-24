@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { HARNESSES } from "@armada/core";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
@@ -84,7 +85,7 @@ test("invalid agents list the catalog for list and Docker launch", async () => {
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
-    expect(result.err).toMatch(/claude.*codex.*opencode/);
+    for (const harness of HARNESSES) expect(result.err).toContain(harness);
   }
 });
 
@@ -95,7 +96,7 @@ test("explicit launches require an agent on both Docker and golden paths", async
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
-    expect(result.err).toContain("Pass --agent claude or codex or opencode.");
+    expect(result.err).toContain(`Pass --agent ${HARNESSES.join(" or ")}.`);
   }
 });
 

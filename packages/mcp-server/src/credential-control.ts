@@ -1,3 +1,4 @@
+import { isHarness } from "@armada/core";
 import {
   listConnectionModels,
   mutateCredentialAccount,
@@ -56,8 +57,7 @@ export const credentialRoutes = defineRoutes("credential-control", {
     const { userId } = caller;
     const org = scopedOrg(caller, optional(body, "org"));
     const harness = required(body, "harness");
-    if (harness !== "claude" && harness !== "codex" && harness !== "opencode")
-      throw new VaultError("invalid", "Unknown agent.");
+    if (!isHarness(harness)) throw new VaultError("invalid", "Unknown agent.");
     const credentialId = body.credentialId === null ? null : required(body, "credentialId");
     const model = body.model === null ? null : required(body, "model");
     if (

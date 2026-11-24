@@ -1,5 +1,6 @@
 import type { CredentialKind } from "./database.types.ts";
 import type { HarnessCapabilities } from "./provider.ts";
+import { isSandboxPlacementProvider } from "./sandbox-provider.ts";
 
 /** Browser-safe harness metadata. Driver implementations and SQL enums remain at their native boundaries. */
 interface HarnessDescriptor {
@@ -43,6 +44,13 @@ export const HARNESS_CATALOG = {
     boatProvider: null,
     capabilities: { ...COMMON_CAPABILITIES, steer: "restart", fast: false },
   },
+  antigravity: {
+    label: "Antigravity",
+    skillpackTool: "antigravity",
+    credentialKinds: ["antigravity"],
+    boatProvider: null,
+    capabilities: { ...COMMON_CAPABILITIES, steer: "restart", resume: false, reasoningEffort: false, fast: false },
+  },
 } as const satisfies Record<string, HarnessDescriptor>;
 
 export type Harness = keyof typeof HARNESS_CATALOG;
@@ -78,4 +86,10 @@ export function harnessForCredential(kind: CredentialKind): Harness | undefined 
 /** Every harness that can use an account; shared provider accounts are not single-harness subscriptions. */
 export function harnessesForCredential(kind: CredentialKind): Harness[] {
   return HARNESSES.filter((id) => (HARNESS_CATALOG[id].credentialKinds as readonly CredentialKind[]).includes(kind));
+}
+
+export function runtimeHarnessSupported(provider: string, harness: string): harness is Harness {
+  return (
+    isSandboxPlacementProvider(provider) && isHarness(harness) && (provider !== "boat" || harness !== "antigravity")
+  );
 }

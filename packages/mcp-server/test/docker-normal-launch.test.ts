@@ -156,10 +156,16 @@ async function fixture(
               apiKey: secret,
               endpoint: { version: 1, baseUrl: "https://models.example/v1", models: ["deepseek-flash"] },
             })
-          : secret,
+          : options.harness === "antigravity"
+            ? JSON.stringify({ method: "gemini-api-key", apiKey: secret })
+            : secret,
         key,
       ),
-      options.harness === "claude" ? "anthropic" : options.harness === "opencode" ? "opencode" : "openai",
+      options.harness === "claude"
+        ? "anthropic"
+        : !options.harness || options.harness === "codex"
+          ? "openai"
+          : options.harness,
     ],
   );
   const body = {
@@ -1448,6 +1454,22 @@ test.each(["claude", "opencode"] as const)("normal Docker launch selects and boo
   expect(env[harness === "claude" ? "ANTHROPIC_API_KEY" : "OPENCODE_API_KEY"]).toBe(f.secret);
   expect(f.native).toContainEqual(
     expect.objectContaining({ op: "prompt", input: expect.objectContaining({ harness }) }),
+  );
+});
+
+test("Docker launches Antigravity with its account confined to private enrolment", async () => {
+  const f = await fixture({ harness: "antigravity" });
+  const launched = await f.service().launch(f.caller, { ...f.body, model: "default" });
+  expect(launched.sandbox.harness).toBe("antigravity");
+  const config = f.session()?.configuration as Record<string, unknown>;
+  const { antigravityCredential, ...rest } = config;
+  expect(antigravityCredential).toEqual({ method: "gemini-api-key", apiKey: f.secret });
+  expect(JSON.stringify([launched, f.jobs, f.native, rest])).not.toContain(f.secret);
+  expect(f.native).toContainEqual(
+    expect.objectContaining({
+      op: "prompt",
+      input: expect.objectContaining({ harness: "antigravity", model: "default" }),
+    }),
   );
 });
 

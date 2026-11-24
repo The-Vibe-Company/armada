@@ -3,9 +3,10 @@ import { parseAccountArgs, vaultIo } from "../vault-commands.ts";
 import type { Command } from "./command.ts";
 
 function importHelp(harness?: string) {
-  return `Usage: armada account import ${harness ?? "claude|codex"} (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
+  return `Usage: armada account import ${harness ?? "claude|codex|antigravity"} (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
 Import an existing native credential after Armada login; no native login is started.
 Claude: run claude setup-token locally. Codex: supply native auth JSON.
+Antigravity: pass --file with a Google token file from the native CLI.
 Read the credential from stdin/hidden input or a private --file, never command arguments.
 Use --name to create; replacement requires --id and a positive integer --expected-version.
 Set the account cap with --max-agents N or --unlimited.
@@ -50,7 +51,7 @@ Manage model credentials, GitHub access or your personal Armada session.
   ls            List credential metadata.
   add           Store a credential kind.
   login codex   Authorize native Codex in your browser.
-  import        Import native Claude or Codex credentials securely.
+  import        Import native Claude, Codex or Antigravity credentials securely.
   default       Select a default model account by ID.
   limits        Set an account or model concurrency cap.
   rm            Remove a named account by ID or a credential with --kind.
@@ -108,6 +109,7 @@ Example: armada account test SANDBOX_UUID --model deployment-name --json
 `,
     "account add": `Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
 Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
+For a Gemini API key, use armada account add antigravity --name NAME [--file PATH].
 OpenAI custom endpoints also accept --api-version where supported.
 Official Azure addresses make a tiny billable request per deployment before storing the account.
 Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
@@ -119,6 +121,7 @@ Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
     "account import": importHelp(),
     "account import claude": importHelp("claude"),
     "account import codex": importHelp("codex"),
+    "account import antigravity": importHelp("antigravity"),
     "account ls github": `Usage: armada account ls github [--json]
 Read GitHub connection and installation metadata as JSON. Requires a personal Armada login.
 `,
