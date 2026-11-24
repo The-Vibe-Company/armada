@@ -63,7 +63,7 @@ export const dockerMounts: MountFactory = (services, configureRequestTimeout) =>
   ];
 };
 
-export const runtimeMounts: MountFactory = (services) => {
+export const runtimeMounts: MountFactory = (services, configureRequestTimeout) => {
   const {
     env,
     sql,
@@ -78,7 +78,7 @@ export const runtimeMounts: MountFactory = (services) => {
     dockerArtifactSet,
   } = services;
   return [
-    createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR),
+    createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, configureRequestTimeout),
     ...(dockerArtifactSet ? [dockerArtifactSet] : []),
     runtimeEnrolments.route,
     createRuntimeProgress(runtimeEnrolments),

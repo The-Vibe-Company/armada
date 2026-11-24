@@ -63,7 +63,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   control.configureStopRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
-  // Held Docker polls and archive uploads set their own bounded ingress timeouts.
+  // Held Docker polls, archive uploads and artifact downloads set their own bounded ingress timeouts.
   configureRequestTimeout = (request, seconds) => server.timeout(ingressRequest(request), seconds);
   services.configureAccountDispatch();
   const workers = assembly.planWorkers().start();

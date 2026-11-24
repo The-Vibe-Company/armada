@@ -61,6 +61,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
+import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
@@ -103,6 +104,7 @@ async function fixture(
     distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
     refuseSkillInstall?: boolean;
+    failRuntimeStartup?: boolean;
     daemonVersion?: string;
   } = {},
 ) {
@@ -233,6 +235,21 @@ async function fixture(
       if (next.command) {
         const command = next.command;
         native.push(command);
+        if (command.op === "health" && options.failRuntimeStartup) {
+          const response = await createRuntimeProgress(authority)(
+            new Request("https://armada.example/api/runtime/progress", {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${session.runtimeToken}`,
+                "x-armada-runtime-epoch": session.epoch,
+              },
+              body: JSON.stringify({ stage: "runtime_failed", reason: "artifact_unavailable" }),
+            }),
+          );
+          expect(response?.status).toBe(200);
+          session = undefined;
+          return;
+        }
         if (command.op === "installSkills" && options.refuseSkillInstall) {
           await commands.complete(session.runtimeToken, session.epoch, {
             epoch: session.epoch,
@@ -846,6 +863,26 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
+});
+
+test("Docker readiness logs the runtime's safe artifact failure class", async () => {
+  const f = await fixture({ failRuntimeStartup: true });
+  const lines: string[] = [];
+  await observeRequest(
+    async () => {
+      await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+      return new Response(null);
+    },
+    (line) => lines.push(line),
+  );
+  expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+    expect.objectContaining({
+      event: "operator_failure",
+      phase: "docker.launch.runtime_readiness",
+      sandboxId: f.body.requestId,
+      causeCode: "artifact_unavailable",
+    }),
+  );
 });
 
 test.each([

@@ -94,7 +94,10 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
     const request = (path: string, method = "GET") => new Request(`https://armada.example${path}`, { method });
     const path = `/api/runtime/artifacts/${digest}`;
     expect((await createRuntimeArtifactRoute(undefined)(request(path)))?.status).toBe(404);
-    const route = createRuntimeArtifactRoute(root);
+    const timeouts = new Map<Request, number>();
+    const route = createRuntimeArtifactRoute(root, (request: Request, seconds: number) => {
+      timeouts.set(request, seconds);
+    });
     expect(await route(request("/healthz"))).toBeNull();
     expect((await route(request(path, "POST")))?.status).toBe(405);
     expect((await route(request("/api/runtime/artifacts/not-a-digest")))?.status).toBe(404);
@@ -106,7 +109,7 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
     const head = await route(request(path, "HEAD"));
     expect(head?.headers.get("content-length")).toBe("5");
     expect(await head?.text()).toBe("");
-    expect(await (await route(request(path)))?.text()).toBe("bytes");
+    expect(timeouts.size).toBe(0);
 
     const lines: string[] = [];
     const get = request(`${path}?ignored=not-for-logs`);
@@ -116,6 +119,7 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
       get,
     );
     expect(await download?.text()).toBe("bytes");
+    expect(timeouts.get(get)).toBe(120);
     expect(JSON.parse(lines[0]!)).toMatchObject({ path: "/api/runtime/artifacts/:digest", artifactDigest: digest });
     expect(lines[0]).not.toContain("not-for-logs");
     const rejectedDigest = "b".repeat(64);
@@ -126,6 +130,7 @@ test("artifact route is opt-in, digest-only, read-only and refuses symlink publi
       missing,
     );
     expect(rejected?.status).toBe(404);
+    expect(timeouts.size).toBe(1);
     expect(lines[1]).not.toContain(rejectedDigest);
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -3,7 +3,10 @@ import { join, resolve } from "node:path";
 import type { Route } from "./http.ts";
 
 /** Public executable bytes only, deliberately separate from enrolment/model configuration. */
-export function createRuntimeArtifactRoute(directory: string | undefined): Route {
+export function createRuntimeArtifactRoute(
+  directory: string | undefined,
+  configureRequestTimeout?: (request: Request, seconds: number) => void,
+): Route {
   const root = directory ? resolve(directory) : undefined;
   return async (request) => {
     const path = new URL(request.url).pathname;
@@ -16,6 +19,8 @@ export function createRuntimeArtifactRoute(directory: string | undefined): Route
     try {
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink()) return new Response(null, { status: 404 });
+      // Match the runtime fetch budget so a stalled file transfer can outlive Bun's default idle window.
+      if (request.method === "GET") configureRequestTimeout?.(request, 120);
       return new Response(request.method === "HEAD" ? null : Bun.file(file), {
         headers: {
           "content-type": "application/octet-stream",
