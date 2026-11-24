@@ -43,8 +43,7 @@ const requestPaths = [
   "/api/runtime/session",
 ];
 
-function requestPath(request: Request) {
-  const { pathname } = new URL(request.url);
+function requestPath(pathname: string) {
   if (pathname.startsWith("/mcp/gateway/")) return "/mcp/gateway/:connectionId";
   if (pathname.startsWith("/api/runtime/artifacts/")) return "/api/runtime/artifacts/:digest";
   if (pathname.startsWith("/api/runtime/artifact-sets/")) return "/api/runtime/artifact-sets/:digest";
@@ -72,10 +71,18 @@ export function observeRequest<T extends Response | undefined>(
     }
     const status = response?.status ?? 101;
     const requestLog = log ?? requestLogForStatus(status);
+    const pathname = request ? new URL(request.url).pathname : undefined;
+    // Distinguish the runtime executable from harness downloads. This measures origin
+    // response preparation; Bun sends the file body after the handler returns.
+    const artifactDigest =
+      request?.method === "GET" && pathname
+        ? /^\/api\/runtime\/artifacts\/([a-f0-9]{64})$/.exec(pathname)?.[1]
+        : undefined;
     requestLog(
       JSON.stringify({
         event: "http_request",
-        path: request && requestPath(request),
+        path: pathname && requestPath(pathname),
+        ...(artifactDigest ? { artifactDigest } : {}),
         requestId: id,
         status,
         durationMs: Math.round(performance.now() - started),

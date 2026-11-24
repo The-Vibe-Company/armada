@@ -1564,3 +1564,40 @@ test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the 
     (await f.db.query("select resets_at from account_exhaustion where account_id=$1", [f.account.id])).rows,
   ).toEqual([{ resets_at: null }]);
 });
+
+test("workspace execution timestamps are logged only for freshly committed events", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const lines: Record<string, unknown>[] = [];
+  const info = spyOn(console, "info").mockImplementation((line) => {
+    const entry = JSON.parse(line);
+    if (entry.event === "runtime_workspace_execution") lines.push(entry);
+  });
+  try {
+    const events = (["running", "finished"] as const).map((status, index) => ({
+      sequence: index + 1,
+      event: {
+        ...f.other(`workspace_workspace_${active.epoch}_repository_0_0_${status}`),
+        at: 1000 + index * 29_000,
+        type: "armada/workspaceStep",
+        data: { phase: "repository", index: 0, attempt: 0, status, extra: "not-for-logs" },
+      },
+    }));
+    expect((await f.publish(active, events)).status).toBe(200);
+    expect((await f.publish(active, events)).status).toBe(200);
+    expect(lines).toMatchObject([
+      {
+        sandboxId: f.id,
+        epoch: active.epoch,
+        commandId: `workspace_${active.epoch}_repository_0_0`,
+        stage: "running",
+        runtimeAtMs: 1000,
+      },
+      { stage: "finished", runtimeAtMs: 30_000 },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain("not-for-logs");
+  } finally {
+    info.mockRestore();
+    await f.close();
+  }
+});

@@ -2,6 +2,7 @@ import type { ServerWebSocket, WebSocketHandler } from "bun";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 
+import { logWorkspaceCommand } from "./runtime-workspace-diagnostics.ts";
 import { runtimeWakes } from "./wake-bus.ts";
 
 export interface RuntimeSocketData {
@@ -95,6 +96,7 @@ export function createRuntimeSockets(
             return;
           }
           state.waiting = value.command.requestId;
+          logWorkspaceCommand(socket.data, state.waiting, "sent_socket", time.now());
         });
       } while (state.woken && !state.closed && !stopping);
     } catch (error) {

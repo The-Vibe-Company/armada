@@ -20,6 +20,7 @@ import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
+import { logWorkspaceExecution } from "./runtime-workspace-diagnostics.ts";
 import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
 import { deferTransactionWake, eventFeedWakeKey } from "./wake-bus.ts";
@@ -327,10 +328,11 @@ export function createRuntimeEvents(
       // ignored; the earliest report wins.
       await recordFirstTokenSql(tx, scope.sandboxId, fresh);
       if (initialAck === 0 && fresh.length) first = scope;
-      return { acknowledgedSequence: ack };
+      return { scope, fresh, acknowledgedSequence: ack };
     });
+    for (const event of result.fresh) logWorkspaceExecution(result.scope, event);
     if (first) logRuntimeStage(first, "first_event"); // Only after encrypted archive/usage commit.
-    return result;
+    return { acknowledgedSequence: result.acknowledgedSequence };
   }
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== "/api/runtime/events") return null;
