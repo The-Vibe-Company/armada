@@ -5,9 +5,9 @@ import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { recordDockerCleanupReceipt, transitionSandbox } from "../sandbox-lifecycle.ts";
-import { captureFinalOutputs } from "../sandbox-outputs.ts";
+import { captureFinalOutputs, OUTPUTS_CAPTURE, type StagedOutput } from "../sandbox-outputs.ts";
 import type { JobKind, JobResult } from "./runner.ts";
-import { recordStopCapture } from "./store.ts";
+import { createJobsStore, recordStopCapture } from "./store.ts";
 
 export interface DockerStopIntent {
   actor: { userId: string; orgId: string };
@@ -17,6 +17,7 @@ export interface DockerStopIntent {
   machineId: string;
   generation: number;
   runtimeEpoch: string;
+  daemonGeneration: string;
   hostId: string;
   installationId: string;
   captureUntil: number;
@@ -32,13 +33,9 @@ function matches(actual: MachineIdentity, expected: MachineIdentity) {
   );
 }
 
-export function createStopJob(
-  sql: Sql,
-  key: string,
-  readOutputs = createDockerOutputReader(sql, key),
-  now = Date.now,
-): JobKind {
+export function createStopJob(sql: Sql, key: string, readOutputs = createDockerOutputReader(sql, key), now = Date.now) {
   const hosts = createDockerHostStore(sql, key);
+  const jobs = createJobsStore(sql, key);
   return {
     concurrency: 8,
     async run(job, context) {
@@ -48,14 +45,29 @@ export function createStopJob(
       const target = { sandboxId, generation: intent.generation, machineId: intent.machineId };
       const { signal } = context;
       const machine = hosts.machineCleanup(intent.actor, intent);
-      const retry = (): JobResult => ({ status: "retry", after: new Date(now() + 2_000) });
-      const finish = (): JobResult => ({
-        status: "done",
-        async commit(tx) {
-          const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(job.generation), "stop");
-          if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-        },
-      });
+      const retry = (delay = 2_000) => ({ status: "retry", after: new Date(now() + delay) }) satisfies JobResult;
+      const finish = () =>
+        ({
+          status: "done",
+          async commit(tx) {
+            const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(job.generation), "stop");
+            if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
+            if (job.outcome) {
+              await jobs.enqueue(
+                OUTPUTS_CAPTURE,
+                sandboxId,
+                settled.generation,
+                job.id,
+                { stoppedJobId: job.id },
+                {
+                  orgId: intent.actor.orgId,
+                  maxAttempts: 8,
+                },
+                tx,
+              );
+            }
+          },
+        }) satisfies JobResult;
 
       if (job.generation !== String(intent.generation)) {
         const observed = await machine.observe({ ...target, signal });
@@ -69,15 +81,17 @@ export function createStopJob(
           matches({ ...observed.receipt.retained, machineId: observed.receipt.retained.ref }, target)
         )
           return finish();
-        return retry();
+        if (await hosts.stopReceiptRefused(sandboxId, intent))
+          return { status: "fail", reason: "stop_receipt_refused" };
+        return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
 
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
       if (!job.outcome) {
-        const checkpoint = async (tx: Sql) => {
+        const stage = async (tx: Sql, output: StagedOutput) => {
           signal.throwIfAborted();
           if (!(await context.canDispatch(tx))) throw new Error("Stop capture claim changed.");
-          await recordStopCapture(tx, job.id);
+          await recordStopCapture(tx, job.id, output);
         };
         const remaining = intent.captureUntil - now();
         if (remaining > 0) {
@@ -85,7 +99,7 @@ export function createStopJob(
             key,
             signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
             generation: job.generation,
-            checkpoint,
+            stage,
           }).catch(() => {});
         }
       }
@@ -112,7 +126,6 @@ export function createStopJob(
             try {
               await dispatch.stop({ ...target, retain: true, signal });
             } catch (error) {
-              // The mailbox commits with the transition and the job generation handoff.
               if (!(error instanceof DockerMachinePending)) throw error;
             }
           },
@@ -124,5 +137,5 @@ export function createStopJob(
       }
       return retry();
     },
-  };
+  } satisfies JobKind;
 }

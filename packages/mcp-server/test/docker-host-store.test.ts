@@ -21,6 +21,7 @@ import { createStopJob } from "../src/jobs/stop.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
+import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -541,9 +542,8 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
     }),
   ).rejects.toThrow("interrupted after capture");
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "ready" });
-  expect((await sql.query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId])).rows).toEqual([
-    { name: "last.txt" },
-  ]);
+  const outputNames = () => sql.query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId]);
+  expect((await outputNames()).rows).toEqual([]);
 
   await sql.query("update public.jobs set lease_until=now()-interval '1 second' where id=$1", [first.id]);
   const owner = randomUUID();
@@ -560,6 +560,9 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping" });
   const stop = await store.poll(a.hostToken, a.installationId);
   expect(stop?.operation).toBe("stop");
+  expect(await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: randomUUID() })).toEqual({
+    requestId: stop!.requestId,
+  });
   await store.complete(a.hostToken, a.installationId, {
     requestId: stop!.requestId,
     outcome: "completed",
@@ -569,6 +572,17 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   expect(await jobs.complete(job, owner, await handler.run(job, context))).toBe(true);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  expect((await outputNames()).rows).toEqual([]);
+  const publish = (await jobs.claim(OUTPUTS_CAPTURE, owner, 30, 1))!;
+  const outputs = createSandboxOutputs(sql, key, async () => {
+    throw new Error("unexpected provider read");
+  });
+  const result = await outputs.captureJob.run(publish, {
+    signal,
+    canDispatch: async () => (await jobs.inspect(publish, owner)) === "dispatch",
+  });
+  expect(await jobs.complete(publish, owner, result)).toBe(true);
+  expect((await outputNames()).rows).toEqual([{ name: "last.txt" }]);
 });
 
 test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {

@@ -115,9 +115,18 @@ export async function withJobLease<T>(
   });
 }
 
-// The caller holds the checked claim through the capture's publication transaction.
-export async function recordStopCapture(tx: Sql, jobId: string) {
-  await tx.query("update public.jobs set outcome=jsonb_build_object('captured',true) where id=$1", [jobId]);
+export async function recordStopCapture(tx: Sql, jobId: string, output: unknown) {
+  await tx.query("update public.jobs set outcome=jsonb_build_object('output',$2::jsonb) where id=$1", [
+    jobId,
+    JSON.stringify(output),
+  ]);
+}
+
+export function clearStopCapture(tx: Sql, jobId: string, sandboxId: string, generation: string) {
+  return tx.query(
+    "update public.jobs set outcome=outcome-'output' where id=$1 and sandbox_id=$2 and generation=$3 and kind='stop'",
+    [jobId, sandboxId, generation],
+  );
 }
 
 export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId: string) {
@@ -397,7 +406,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         [...claimIdentity(job, owner), job.kind],
       );
       if (rows[0]) return work(tx, rows[0].generation);
-      if (lockPrerequisites) throw new Error("Job lease is no longer current.");
+      if (lockPrerequisites)
+        throw new Error(
+          job.kind === "stop" ? "Stop job lease is no longer current." : "Turn job lease is no longer current.",
+        );
     });
   }
 
@@ -630,13 +642,21 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
            returning j.generation::text`,
             claim,
           );
-          if (!updated.rows[0]) throw new Error("Admission did not advance its fenced generation.");
+          if (!updated.rows[0])
+            throw new Error(
+              job.kind === "stop"
+                ? "Stop admission did not advance its fenced generation."
+                : "Turn admission did not advance its fenced generation.",
+            );
           return updated.rows[0].generation;
         },
         handoff.lockPrerequisites,
       );
-      if (generation === undefined) throw new Error("Job lease is no longer current.");
-      job.generation = generation;
+      if (generation === undefined)
+        throw new Error(
+          job.kind === "stop" ? "Stop job lease is no longer current." : "Turn job lease is no longer current.",
+        );
+      if (job.kind === "stop") job.generation = generation;
       return generation;
     },
     async renew(job, owner, seconds) {

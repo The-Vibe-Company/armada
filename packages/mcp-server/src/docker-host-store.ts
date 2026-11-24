@@ -1738,6 +1738,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
       )
         deny();
     },
+    async stopReceiptRefused(sandboxId: string, intent: DockerStopIntent) {
+      const { rows } = await sql.query(
+        `select 1 from public.sandboxes s where s.id=$1 and (
+           not exists(select 1 from public.mcp_actor_epochs e join public.members m using(org_id,user_id)
+             where e.org_id=s.org_id and e.user_id=$2 and e.epoch=$3)
+           or exists(select 1 from public.docker_hosts h where h.id=s.docker_host_id and h.revoked_at is not null)
+           or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
+             and j.host_id=s.docker_host_id and j.bound_operation='stop' and j.request_id=$4
+             and (j.outcome='failed' or j.cancelled_at is not null))
+         )`,
+        [sandboxId, intent.actor.userId, intent.actorEpoch, dockerMachineJobId(intent.daemonGeneration, "stop")],
+      );
+      return rows.length > 0;
+    },
     machineCleanup(actor: Actor, scope?: MachineHost) {
       const unknown = { kind: "unknown" } as const;
       return {
@@ -2083,6 +2097,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const machineId = await allocationReceipt(tx, row);
             if (!machineId || !Number.isSafeInteger(generation) || boundGeneration !== String(row.lifecycle_generation))
               deny();
+            const prior = (
+              await tx.query<{ id: string; state: string }>(
+                `select id,state from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
+               order by created_at desc,id desc limit 1`,
+                [row.id, generation],
+              )
+            ).rows[0];
+            if (prior && prior.state !== "failed") return { requestId: selection.requestId };
             const deadline = new Date(Date.now() + 120_000);
             const payload: DockerStopIntent = {
               actor,
@@ -2092,6 +2114,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               machineId,
               generation,
               runtimeEpoch: proof.epoch,
+              daemonGeneration: row.docker_generation,
               hostId: host.id,
               installationId: row.docker_installation_id,
               captureUntil: deadline.getTime() - 98_000,
@@ -2100,7 +2123,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               "stop",
               sandboxId,
               generation,
-              checkpoint,
+              prior ? `${checkpoint}:${prior.id}` : checkpoint,
               payload,
               {
                 orgId: actor.orgId,
@@ -2112,19 +2135,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
             return { requestId: selection.requestId };
           }
         }
-        if (
-          selection.operation === "stop" &&
-          !known &&
-          row.status === "stopping" &&
-          (
-            await tx.query(
-              `select 1 from public.jobs where sandbox_id=$1 and kind='stop'
-            and generation=$2 and state in ('queued','leased')`,
-              [row.id, row.lifecycle_generation],
-            )
-          ).rows.length
-        )
-          deny();
+        if (selection.operation === "stop" && row.status === "stopping") {
+          const requestId = dockerMachineJobId(row.docker_generation, "stop");
+          const shared = await tx.query(
+            `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2 and request_id=$3
+              and bound_operation='stop' and outcome is distinct from 'failed' and cancelled_at is null`,
+            [row.id, host.id, requestId],
+          );
+          if (shared.rows.length) return { requestId };
+        }
         const request = await machine(tx, row, selection.operation);
         const target = { requestId: selection.requestId, request };
         let job: Job;

@@ -63,7 +63,7 @@ const WRITE_ELIGIBILITY = {
 
 type Transfer = { id: string; received: number; digest: string | null };
 type Skipped = "too_large" | "sandbox_limit" | "org_limit";
-type PublishedFile = { name: string; size: number; skipped?: Skipped; digest?: string; transfer_id?: string };
+export type PublishedFile = { name: string; size: number; skipped?: Skipped; digest?: string; transfer_id?: string };
 
 export async function collectOutputTransfers(
   sql: Sql,
@@ -76,7 +76,7 @@ export async function collectOutputTransfers(
     generation: string;
     mode: keyof typeof WRITE_ELIGIBILITY;
     writes?: Set<Promise<unknown>> | undefined;
-    checkpoint?: ((tx: Sql) => Promise<void>) | undefined;
+    stage?: ((tx: Sql, files: PublishedFile[]) => Promise<void>) | undefined;
   },
 ): Promise<void> {
   const { signal } = request;
@@ -259,38 +259,47 @@ export async function collectOutputTransfers(
     files.push({ name, size, digest, transfer_id: transfer.id });
   }
 
-  await update(async (tx) => {
-    // Hold the completed revisions through publication against expiration in another sandbox's
-    // quota transaction. A swept transfer cannot publish a reference to deleted data.
-    const transferIds = files.flatMap((file) => (file.transfer_id ? [file.transfer_id] : []));
-    const ready = await tx.query(
-      "select id from public.sandbox_output_transfers where sandbox_id=$1 and id=any($2::uuid[]) for key share",
-      [id, transferIds],
-    );
-    if (ready.rows.length !== transferIds.length) throw new OutputCollectionError("output_unavailable");
-    await tx.query(
-      `with incoming as (select * from jsonb_to_recordset($2::jsonb)
-         as f(name text,size bigint,digest text,transfer_id uuid,skipped text)),
-       removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
-       insert into public.sandbox_outputs(sandbox_id,name,size,digest,transfer_id,skipped)
-       select $1,name,size,digest,transfer_id,skipped from incoming
-       on conflict(sandbox_id,name) do update set size=excluded.size,digest=excluded.digest,
-         transfer_id=excluded.transfer_id,skipped=excluded.skipped,content_enc=null,
-         updated_at=case when (sandbox_outputs.digest,sandbox_outputs.skipped,sandbox_outputs.size)
-           is distinct from (excluded.digest,excluded.skipped,excluded.size) then now() else sandbox_outputs.updated_at end
-       where (excluded.skipped is distinct from 'org_limit' or sandbox_outputs.digest is null)
-         and (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
-         is distinct from (excluded.transfer_id,excluded.skipped,excluded.size)`,
-      [id, JSON.stringify(files)],
-    );
-    await tx.query(
-      `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz
-        and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
-      [id, scan],
-    );
-    await recordOutputPublication(tx, id, scan, mode === "live" ? undefined : generation);
-    await options.checkpoint?.(tx);
-  });
+  await update((tx) =>
+    options.stage
+      ? options.stage(tx, files)
+      : publishOutputTransfers(tx, id, scan, files, mode === "live" ? undefined : generation),
+  );
+}
+
+export async function publishOutputTransfers(
+  tx: Sql,
+  id: string,
+  scan: string,
+  files: PublishedFile[],
+  retainedGeneration?: string,
+) {
+  const transferIds = files.flatMap((file) => (file.transfer_id ? [file.transfer_id] : []));
+  const ready = await tx.query(
+    "select id from public.sandbox_output_transfers where sandbox_id=$1 and id=any($2::uuid[]) for key share",
+    [id, transferIds],
+  );
+  if (ready.rows.length !== transferIds.length) throw new OutputCollectionError("output_unavailable");
+  await tx.query(
+    `with incoming as (select * from jsonb_to_recordset($2::jsonb)
+       as f(name text,size bigint,digest text,transfer_id uuid,skipped text)),
+     removed as (delete from public.sandbox_outputs where sandbox_id=$1 and name not in(select name from incoming))
+     insert into public.sandbox_outputs(sandbox_id,name,size,digest,transfer_id,skipped)
+     select $1,name,size,digest,transfer_id,skipped from incoming
+     on conflict(sandbox_id,name) do update set size=excluded.size,digest=excluded.digest,
+       transfer_id=excluded.transfer_id,skipped=excluded.skipped,content_enc=null,
+       updated_at=case when (sandbox_outputs.digest,sandbox_outputs.skipped,sandbox_outputs.size)
+         is distinct from (excluded.digest,excluded.skipped,excluded.size) then now() else sandbox_outputs.updated_at end
+     where (excluded.skipped is distinct from 'org_limit' or sandbox_outputs.digest is null)
+       and (sandbox_outputs.transfer_id,sandbox_outputs.skipped,sandbox_outputs.size)
+       is distinct from (excluded.transfer_id,excluded.skipped,excluded.size)`,
+    [id, JSON.stringify(files)],
+  );
+  await tx.query(
+    `delete from public.sandbox_output_transfers t where t.sandbox_id=$1 and t.scan<=$2::timestamptz
+      and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)`,
+    [id, scan],
+  );
+  await recordOutputPublication(tx, id, scan, retainedGeneration);
 }
 
 /** Serialize chunk reservations and legacy publication for a single organization. */
@@ -302,6 +311,10 @@ export async function remainingOutputOrgBytes(tx: Sql, orgId: string): Promise<n
     `select t.id from public.sandbox_output_transfers t
       join public.sandboxes s on s.id=t.sandbox_id
       where s.org_id=$1 and t.progress_at<now()-interval '15 minutes'
+      and not exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='stop'
+        and (j.generation=s.lifecycle_generation or (s.status='stopping' and j.generation=s.lifecycle_generation-1))
+        and j.state in ('queued','leased','done')
+        and j.outcome #> '{output,files}' @> jsonb_build_array(jsonb_build_object('transfer_id',t.id)))
       and not exists(select 1 from public.sandbox_outputs o where o.sandbox_id=t.sandbox_id and o.transfer_id=t.id)
       for update of t skip locked`,
     [orgId],
