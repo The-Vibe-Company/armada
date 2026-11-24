@@ -7,6 +7,7 @@ import {
   decryptSecret,
   encryptSecret,
   GoldenError,
+  ProviderError,
   resolveBoatKey,
   type Sql,
   setCredential,
@@ -44,7 +45,7 @@ import { runtimeConfigurationWithVariables } from "../runtime-readable-variables
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
 import { extendSandbox } from "../sandbox-extend.ts";
-import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
+import { createSandboxLifecycle, requestBoatLaunchFailure } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
@@ -457,7 +458,7 @@ async function modalAdmissionFixture(visibility: "org" | "private" = "private") 
   return { ...f, input };
 }
 
-test("a replacement Boat launch worker adopts an allocation after a lost reply", async () => {
+test.each(["lost reply", "refusal", "bootstrap failure"] as const)("Boat successor after %s", async (outcome) => {
   const { db, sql, input, people } = await modalAdmissionFixture();
   const golden = (
     await db.query<{ id: string; provider_snapshot_id: string }>(
@@ -521,10 +522,20 @@ test("a replacement Boat launch worker adopts an allocation after a lost reply",
       machine: (ticket: (request: typeof machine, expiry: number) => Promise<{ enrolmentToken: string } | null>) => ({
         async create() {
           allocations++;
+          if (outcome === "refusal")
+            throw new ProviderError({
+              provider: "boat",
+              status: 402,
+              code: "payment_required",
+              retryable: false,
+              message: "Fixture",
+            });
           throw Error("Lost Boat create reply.");
         },
         async observe() {
-          return { kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const;
+          return allocations
+            ? ({ kind: "present", machine, phase: "running", receipt: { operation: "create", machine } } as const)
+            : ({ kind: "absent" } as const);
         },
         async bootstrap(request: typeof machine) {
           const lifecycle = createSandboxLifecycle(sql, unsupported);
@@ -539,13 +550,39 @@ test("a replacement Boat launch worker adopts an allocation after a lost reply",
     });
     await jobs.complete(job, owner, await runModalLaunch(sql, ENCRYPTION_KEY, job, context, plan, "boat"));
   }
+  const vacate = () =>
+    db.query(
+      "update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1 and kind='launch'",
+      [sandboxId],
+    );
+  if (outcome === "refusal") {
+    expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeDefined();
+    await vacate();
+    await run();
+    expect((await db.query("select status from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+      { status: "failed" },
+    ]);
+    return;
+  }
   await expect(run()).rejects.toThrow("Lost Boat create reply.");
-  await db.query(
-    "update jobs set lease_until=clock_timestamp()-interval '1 second' where sandbox_id=$1 and kind='launch'",
-    [sandboxId],
-  );
+  await vacate();
   await run();
   if (!delayedTicket) throw Error("Boat bootstrap did not receive a ticket.");
+  if (outcome === "bootstrap failure") {
+    expect(await requestBoatLaunchFailure(sql, sandboxId, "1")).toBe(true);
+    await db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
+    await run();
+    expect((await db.query("select kind from jobs where sandbox_id=$1 and kind='delete'", [sandboxId])).rows).toEqual([
+      { kind: "delete" },
+    ]);
+    const data = createSqlData(sql)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    });
+    await expect(data.sandboxes.assertDeletionAllowed!(sandboxId)).rejects.toThrow("exit is unconfirmed");
+    return;
+  }
   await db.query("update credentials set expires_at=now() where id=$1", [account.id]);
   await expect(enrolments.enrol(delayedTicket)).rejects.toThrow("runtime_enrolment_denied");
   await db.query("update credentials set expires_at=null where id=$1", [account.id]);

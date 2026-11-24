@@ -10,7 +10,7 @@ import { recordLaunchStage } from "./launch-stage-record.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeSessionScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
-import { recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
+import { recordRuntimeStartupFailure, requestBoatLaunchFailure } from "./sandbox-lifecycle.ts";
 
 const bootstrap = new Set(["bootstrap_started", "artifact_verified", "bootstrap_failed"]);
 const runtime = new Set(["enrolled", "harness_started", "runtime_failed"]);
@@ -103,6 +103,7 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
           "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
         if (stage === "bootstrap_failed") message = "Armada runtime bootstrap failed.";
         if (isRuntimeStartupFailure(reason)) message = RUNTIME_STARTUP_FAILURES[reason];
+        if (await requestBoatLaunchFailure(tx, scope.sandboxId, generation)) return;
         const result = await recordRuntimeStartupFailure(tx, scope.sandboxId, generation, code, message);
         if (result.kind === "conflict") throw new RuntimeEnrolmentDenied();
       };

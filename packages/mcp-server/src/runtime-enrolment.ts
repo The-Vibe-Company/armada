@@ -374,6 +374,12 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         );
         for (const launch of rows) {
           if (launch.expired) throw new RuntimeEnrolmentDenied();
+          await tx.query("select id from public.orgs where id=$1 for share nowait", [launch.org_id]);
+          if (launch.visibility === "private")
+            await tx.query(
+              "select id from public.credentials where scope='user' and owner_id=$1 and kind='boat' for share nowait",
+              [launch.owner_id],
+            );
           const { key, scope } = await resolveBoatKey(createSqlVaultStore(tx), encryptionKey, {
             userId: launch.owner_id,
             orgId: launch.org_id,

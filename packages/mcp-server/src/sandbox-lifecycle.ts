@@ -878,6 +878,16 @@ export async function finishLaunchFailure(
   return true;
 }
 
+export async function requestBoatLaunchFailure(tx: Sql, sandboxId: string, generation: string) {
+  const { rows } = await tx.query(
+    `update public.sandboxes s set stop_requested_at=coalesce(stop_requested_at, clock_timestamp())
+     where s.id=$1 and s.lifecycle_generation=$2 and s.status='starting' and s.boat_runtime
+       and ${unresolvedModalLaunch("s")} returning s.id`,
+    [sandboxId, generation],
+  );
+  return rows.length > 0;
+}
+
 export async function recordRuntimeStartupFailure(
   tx: Sql,
   sandboxId: string,

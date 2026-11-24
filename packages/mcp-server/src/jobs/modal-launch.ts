@@ -1384,6 +1384,7 @@ async function dispatchModalLaunch(
     signal.throwIfAborted();
     if (observed?.kind === "present" && observed.receipt?.operation !== "create")
       return { kind: "dispatch_deferred" } as const;
+    let freshBoatIntent = false;
     if (boat && observed?.kind !== "present") {
       const entry = await journal.read(plan.bindingRef);
       if (
@@ -1396,12 +1397,13 @@ async function dispatchModalLaunch(
         }))
       )
         return deferred;
+      freshBoatIntent = !entry;
     }
     try {
       allocated =
         observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
     } catch (error) {
-      const refused = boat && job.attempts === 1 && isNonMutatingProviderRefusal(error);
+      const refused = freshBoatIntent && isNonMutatingProviderRefusal(error);
       if (!refused || !(await withJobLease(sql, job, (tx) => clearRefusedBoatCreate(tx, job)))) throw error;
       return { kind: "reconcile", observation: { kind: "absent" } } as const;
     }

@@ -207,56 +207,52 @@ function sharedDispatcher(send: DispatchTurn) {
   };
 }
 
-test.each(["boat", "modal"] as const)(
-  "a send during %s launch waits for setup and the initial turn",
-  async (provider) => {
-    const id = ids[0]!;
-    const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
-    await sql.query(
-      "update sandboxes set status='starting',provider=$2,boat_runtime=$2='boat',runtime_transport=$3 where id=$1",
-      [id, provider, provider === "modal" ? "dialout" : null],
-    );
-    const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
-      orgId: org,
-      maxAttempts: 3,
-    });
-    expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued", promptId: followup.request_id });
-    const sent: string[] = [];
-    const run = sharedDispatcher(async (_actor, input) => {
-      sent.push(input.prompt);
-      await sql.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [id, "runtime-turn"]);
-      return { promptId: "runtime-turn" };
-    });
-    await run();
-    expect(await queue.status(caller, id, followup.request_id)).toMatchObject({ failed: false });
-    expect(sent).toEqual([]);
+test.each(["boat", "modal"] as const)("%s initial turn precedes follow-ups", async (provider) => {
+  const id = ids[0]!;
+  const followup = { id, request_id: requests[0]!, prompt: "follow-up instruction" };
+  await sql.query(
+    "update sandboxes set status='starting',provider=$2,boat_runtime=$2='boat',runtime_transport=$3 where id=$1",
+    [id, provider, provider === "modal" ? "dialout" : null],
+  );
+  const setup = await createJobsStore(sql).enqueue("launch_initial_turn", id, 1, id, null, {
+    orgId: org,
+    maxAttempts: 3,
+  });
+  expect(await queue.accept(caller, followup)).toMatchObject({ status: "queued", promptId: followup.request_id });
+  const sent: string[] = [];
+  const run = sharedDispatcher(async (_actor, input) => {
+    sent.push(input.prompt);
+    await sql.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [id, "runtime-turn"]);
+    return { promptId: "runtime-turn" };
+  });
+  await run();
+  expect(await queue.status(caller, id, followup.request_id)).toMatchObject({ failed: false });
+  expect(sent).toEqual([]);
 
-    await sql.query("update sandboxes set status='ready',provider_sandbox_id='machine' where id=$1", [id]);
-    await sql.query(
-      "insert into runtime_enrolments(sandbox_id,lifecycle_generation,runtime_hash) values($1,1,'bound')",
-      [id],
-    );
-    const initial = { id, request_id: setup, prompt: "initial instruction" };
-    expect(await queue.acceptInitialLaunch(caller, initial, "1", async () => true)).toBe(true);
-    await sql.query("update jobs set state='done' where id=$1", [setup]);
-    await sql.query(
-      "update jobs set run_after='-infinity' where kind='turn_dispatch' and attempts=0 and run_after>now()",
-    );
-    await run();
-    expect(sent).toEqual([]);
-    await run();
-    expect(sent).toEqual([initial.prompt]);
+  await sql.query("update sandboxes set status='ready',provider_sandbox_id='machine' where id=$1", [id]);
+  await sql.query("insert into runtime_enrolments(sandbox_id,lifecycle_generation,runtime_hash) values($1,1,'bound')", [
+    id,
+  ]);
+  const initial = { id, request_id: setup, prompt: "initial instruction" };
+  expect(await queue.acceptInitialLaunch(caller, initial, "1", async () => true)).toBe(true);
+  await sql.query("update jobs set state='done' where id=$1", [setup]);
+  await sql.query(
+    "update jobs set run_after='-infinity' where kind='turn_dispatch' and attempts=0 and run_after>now()",
+  );
+  await run();
+  expect(sent).toEqual([]);
+  await run();
+  expect(sent).toEqual([initial.prompt]);
 
-    await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
-    await run();
-    expect(sent).toEqual([initial.prompt]);
-    await sql.query("insert into runtime_idle_turns values($1,'runtime-turn',true)", [id]);
-    await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
-    await run();
-    expect(sent).toEqual([initial.prompt, followup.prompt]);
-    expect(await queue.status(caller, id, followup.request_id)).toEqual({ nativePromptId: "runtime-turn" });
-  },
-);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt]);
+  await sql.query("insert into runtime_idle_turns values($1,'runtime-turn',true)", [id]);
+  await sql.query("update jobs set run_after='-infinity' where kind='turn_dispatch' and state='queued'");
+  await run();
+  expect(sent).toEqual([initial.prompt, followup.prompt]);
+  expect(await queue.status(caller, id, followup.request_id)).toEqual({ nativePromptId: "runtime-turn" });
+});
 
 test.each(["done", "failed"] as const)("a launch without an initial turn leaves setup %s", async (state) => {
   const id = ids[0]!;
