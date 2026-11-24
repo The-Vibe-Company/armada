@@ -1283,8 +1283,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             ]),
         );
         if (reconciled === "published") return { status: "done" as const };
-        if (reconciled === "pending")
-          return { status: "retry" as const, after: new Date(Date.now() + 1000), unattempted: true as const };
+        if (reconciled === "pending") return { status: "retry" as const, after: new Date(Date.now() + 1000) };
       }
       return { status: "fail" as const, reason: "docker_launch_inactive" };
     };

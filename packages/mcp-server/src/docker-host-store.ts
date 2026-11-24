@@ -203,7 +203,8 @@ function eligibleMachineLaunch(capability: number) {
     join public.docker_machine_bindings b on b.sandbox_id=launch.sandbox_id and b.machine_generation=launch.generation
     where launch.kind='launch' and launch.outcome ? 'docker_actor_epoch'
       and b.sandbox_id=j.bound_sandbox_id and b.host_id=j.host_id and ${machineStartupMailbox}
-      and (not $${capability}::boolean or launch.deadline_at<=clock_timestamp() or launch.state in ('failed','done')))`;
+      and (not $${capability}::boolean or launch.deadline_at<=clock_timestamp()
+        or launch.attempts>launch.max_attempts or launch.state in ('failed','done')))`;
 }
 function eligibleJob(physical: number, restore: number, bootstrap: number) {
   return `($${physical}::boolean or j.bound_operation is distinct from 'deletePhysical')

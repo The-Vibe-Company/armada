@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { AUTH_HEADER, Journal, Runner, type RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -189,6 +190,7 @@ async function fixture(
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
   let acknowledgeFirstPrompt: ((uncertain: boolean) => Promise<unknown>) | undefined;
   let deferFirstPrompt = false;
+  let disconnectBeforePrompt = false;
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   const promptReceipts = new Map<string, typeof receipt>();
   const jobs: unknown[] = [],
@@ -270,6 +272,18 @@ async function fixture(
   }
   async function stepRuntime() {
     if (session) {
+      if (
+        disconnectBeforePrompt &&
+        (
+          await sql.query(
+            "select 1 from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+            [body.requestId],
+          )
+        ).rows.length
+      ) {
+        drive = false;
+        throw Error("synthetic runtime disconnect before first delivery");
+      }
       const next = await commands.next(session.runtimeToken, session.epoch);
       if (next.command) {
         const command = next.command;
@@ -575,8 +589,9 @@ async function fixture(
       }
     },
     step,
-    deferFirstPrompt: () => {
-      deferFirstPrompt = true;
+    deferFirstPrompt: (beforeDelivery = false) => {
+      disconnectBeforePrompt = beforeDelivery;
+      deferFirstPrompt = !beforeDelivery;
     },
     acknowledgeFirstPrompt: (uncertain: boolean) => acknowledgeFirstPrompt!(uncertain),
     setDrive(value: boolean) {
@@ -2269,6 +2284,89 @@ test.each([false, true])("deadline recovery preserves the first turn (uncertain 
   await server.close();
   await recovered.close();
 });
+
+test.each(["never delivered", "journaled before restart", "actor revoked", "attempts exhausted"] as const)(
+  "an inactive Docker first prompt only reads the existing journal (%s)",
+  async (delivery) => {
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    const journal = new Journal(":memory:", (text) => text);
+    const grant = { token: randomUUID(), sandboxId: f.body.requestId, generation: "1", expiresAt: Date.now() + 60_000 };
+    let starts = 0;
+    const drivers = {
+      codex: {
+        start() {
+          starts++;
+          return { done: Promise.resolve("finished" as const), interrupt: async () => {}, steer: async () => {} };
+        },
+        close: async () => {},
+      },
+    };
+    const handle = (runner: Runner, command: RunnerRequest) =>
+      runner.handle(
+        new Request("https://runner", {
+          method: "POST",
+          headers: { [AUTH_HEADER]: grant.token },
+          body: JSON.stringify(command),
+        }),
+      );
+    const journaled = delivery === "journaled before restart";
+    try {
+      await server.launch(f.caller, f.body);
+      f.deferFirstPrompt(!journaled);
+      await server.drain();
+      let accepted: { promptId: string; conversationId: string } | undefined;
+      if (journaled) {
+        const first = (f.native as RunnerRequest[]).find((command) => command.op === "prompt")!;
+        const original = new Runner(journal, grant, drivers);
+        const response = await handle(original, first);
+        expect(response.status).toBe(200);
+        accepted = ((await response.json()) as { result: { promptId: string; conversationId: string } }).result;
+        await original.close();
+      }
+      if (delivery === "actor revoked")
+        await sql.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+          f.actor.orgId,
+          f.actor.userId,
+        ]);
+      await sql.query(
+        `update jobs set run_after=now(),
+           deadline_at=case when $2 then now()-interval '1 second' else deadline_at end,
+           attempts=case when $3 then max_attempts+1 else attempts end
+         where sandbox_id=$1 and kind='launch'`,
+        [f.body.requestId, delivery === "never delivered" || journaled, delivery === "attempts exhausted"],
+      );
+      const { runtimeToken, epoch } = f.session()!;
+      const commands = createRuntimeCommands(authority, key);
+      const { command } = await commands.next(runtimeToken, epoch);
+      const restarted = new Runner(journal, grant, drivers);
+      try {
+        const response = await handle(restarted, command!);
+        expect(starts).toBe(journaled ? 1 : 0);
+        await commands.complete(runtimeToken, epoch, {
+          epoch,
+          requestId: command!.requestId,
+          status: response.status,
+          body: await response.json(),
+        });
+      } finally {
+        await restarted.close();
+      }
+      await server.runClaim();
+      expect((await sql.query("select status from sandboxes where id=$1", [f.body.requestId])).rows).toEqual([
+        { status: journaled ? "running" : "failed" },
+      ]);
+      if (accepted) {
+        const final = await server.launch(f.caller, f.body);
+        expect(final.promptId).toBe(accepted.promptId);
+        expect(final.conversationId).toBe(accepted.conversationId);
+      }
+    } finally {
+      journal.close();
+      await server.close();
+    }
+  },
+);
 
 for (const scenario of ["success", "checkout-failed", "missing-github", "github-delivery-failed"] as const)
   test(`deferred repository launch returns before host work and durably completes: ${scenario}`, async () => {

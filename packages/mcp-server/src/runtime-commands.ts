@@ -267,7 +267,7 @@ export function createRuntimeCommands(
     use: (value: { epoch: string; command: RunnerRequest | null }) => Promise<T>,
     onScope?: (sandboxId: string) => void,
   ) {
-    return authority.withSession(token, epoch, async (tx, scope) => {
+    return authority.withSession(token, epoch, async (tx, scope, generation) => {
       onScope?.(scope.sandboxId);
       const rows = (
         await tx.query<{ request_id: string; request_enc: Uint8Array<ArrayBuffer> }>(
@@ -287,6 +287,29 @@ export function createRuntimeCommands(
       // yields to the successor's fresh health probe until re-admitted.
       for (const row of rows) {
         const encoded = JSON.parse(await decryptSecret(row.request_enc, key));
+        if (encoded.op === "prompt" && row.request_id.startsWith("docker_prompt_")) {
+          const receiptOnly = await tx.query(
+            `select 1 from public.jobs j where j.sandbox_id=$1 and j.generation=$2 and j.kind='launch'
+              and j.outcome ? 'docker_actor_epoch' and j.outcome->>'docker_receipt' is null
+              and (j.deadline_at<=clock_timestamp() or j.attempts>j.max_attempts or j.state in ('failed','done')
+                or not exists(select 1 from public.mcp_actor_epochs e
+                  where e.org_id=j.org_id and e.user_id=j.request_owner_id
+                    and e.epoch::text=j.outcome->>'docker_actor_epoch'))`,
+            [scope.sandboxId, generation],
+          );
+          if (receiptOnly.rows.length) {
+            return use({
+              epoch: scope.epoch,
+              command: {
+                version: 1,
+                sandboxId: scope.sandboxId,
+                requestId: row.request_id,
+                op: "getPrompt",
+                promptId: row.request_id,
+              },
+            });
+          }
+        }
         if (!row.request_id.startsWith(authorityExtensionPrefix)) return use({ epoch: scope.epoch, command: encoded });
         const current = await tx.query(
           `select 1 where ${liveAuthorityExtension("$1::uuid", "$2::bigint", "$3::text", "$4::bigint")}`,
