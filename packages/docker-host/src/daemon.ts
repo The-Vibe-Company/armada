@@ -5,6 +5,7 @@ import {
   type BootstrapDescriptor,
   canonicalDockerHostJob,
   type DockerHostJob,
+  dockerMachineJobId,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
@@ -905,7 +906,13 @@ async function admitLocked(
           await sweeping;
         }
       } else if (receipt.operation === "bootstrap" || receipt.operation === "resume") {
-        if (!admitted || (job.operation !== "bootstrap" && job.operation !== "resume") || !executor.startRuntime)
+        const machineBootstrap =
+          job.operation === "bootstrap" && job.requestId === dockerMachineJobId(job.request.generation, "bootstrap");
+        if (
+          (!admitted && !machineBootstrap) ||
+          (job.operation !== "bootstrap" && job.operation !== "resume") ||
+          !executor.startRuntime
+        )
           throw new Error("Unknown bootstrap outcome");
         if (receipt.operation === "resume") {
           if (!executor.resume) throw new Error("Resume unavailable");
