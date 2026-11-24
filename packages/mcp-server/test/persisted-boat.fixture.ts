@@ -28,7 +28,7 @@ export async function seedPersistedBoat(
       ? null
       : await boat.provider.prompt({ sandboxId: machine.id, harness, text: prompt, model, reasoningEffort });
   const id = crypto.randomUUID();
-  const { rows } = await db.query<{ credential_id: string; credential_version: number }>(
+  const result = await db.query<{ credential_id: string; credential_version: number }>(
     `insert into sandboxes (id,golden_id,org_id,owner_id,provider,provider_sandbox_id,boat_id,
       harness,status,visibility,model,reasoning_effort,task_prompt_id,conversation_ids,credential_id,credential_version)
      select $1,g.id,g.org_id,$2,'boat',$3,$3,$4::harness,$5::sandbox_status,g.visibility,$6,$7,$8,array(select jsonb_array_elements_text($9::jsonb)),c.id,c.version
@@ -55,7 +55,7 @@ export async function seedPersistedBoat(
       golden,
     ],
   );
-  const binding = rows[0];
+  const binding = result.rows[0];
   if (!binding) throw Error("Missing persisted Boat fixture golden or credential");
   if (turn)
     await createSqlSandboxStore(db, { turnModels: true }).recordTurnModel!(id, turn.promptId, model, {

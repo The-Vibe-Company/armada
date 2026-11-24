@@ -515,12 +515,8 @@ function createTestServer(
     provider: async () => boat.provider,
   });
   const sql = sqlFor(db);
-  const github = {
-    store: createSqlVaultStore(sql),
-    encryptionKey: ENCRYPTION_KEY,
-    app: GITHUB_APP,
-    fetch: fakeGit.fetch,
-  };
+  const vault = createSqlVaultStore(sql);
+  const github = { store: vault, app: GITHUB_APP, fetch: fakeGit.fetch };
   const runtime = enrolledLaunchPolicy(sql);
   const runtimeGitHub =
     options.enrolledLaunch &&
@@ -528,11 +524,12 @@ function createTestServer(
       sql,
       key: ENCRYPTION_KEY,
       origin: PUBLIC_URL,
-      github,
+      github: { ...github, encryptionKey: ENCRYPTION_KEY },
       commands: {
         ...createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
         async call(_ownerId, command) {
-          if (command.op !== "configureGitHub") throw Error("Unexpected GitHub fixture command");
+          if (command.op !== "configureGitHub" || !command.configuration?.identity)
+            throw Error("Unexpected GitHub fixture command");
           fakeGit.github.runtimeIdentities.push(command.configuration.identity);
           return {
             epoch: command.configuration.generation,
@@ -549,7 +546,7 @@ function createTestServer(
     authStore: options.authStore ? options.authStore(db) : auth,
     supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon", fetch: supabaseFetch },
     data: createSqlData(sql),
-    vault: github.store,
+    vault,
     encryptionKey: ENCRYPTION_KEY,
     github,
     providerFor: options.providerFor ?? boat.providerFor,
@@ -570,7 +567,14 @@ function createTestServer(
         runtime: {
           async start(input) {
             const agent = await runtime.start(input);
-            const peer = { workspaceHealth: async () => {}, workspaceExec: input.host.exec.bind(input.host) };
+            const peer = {
+              workspaceHealth: async () => {},
+              workspaceExec: async (request: ExecRequest) => {
+                const output = await input.host.exec(request);
+                if (output.detached) throw Error("Unexpected detached workspace command");
+                return output;
+              },
+            };
             return { ...agent, ...runtimeWorkspace(input, peer, agent.epoch, runtimeGitHub) };
           },
         },

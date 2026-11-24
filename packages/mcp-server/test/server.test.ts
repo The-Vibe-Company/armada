@@ -283,9 +283,8 @@ describe("on the database client production uses", () => {
     });
     const mcp = await client(session(people.member, []));
 
-    const launch = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect(launch.isError).toBe(false);
-
+    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    expect(launched.isError).toBe(false);
     const sandboxId = await seedPersistedBoat({ db, boat, people }, { prompt: "go" });
 
     const listed = await call(mcp, "list");
@@ -296,7 +295,7 @@ describe("on the database client production uses", () => {
     const logs = await call(mcp, "logs", { id: sandboxId });
     expect(logs.isError).toBe(false);
     expect(logs.data.events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "prompt" })]));
-    boat.finish("bx_2", "prompt_1", "finished");
+    boat.finish("bx_2", "prompt_2", "finished");
     const waited = await call(mcp, "status", {
       wait: true,
       id: sandboxId,
@@ -305,7 +304,7 @@ describe("on the database client production uses", () => {
     expect(waited.isError).toBe(false);
     const sent = await call(mcp, "send", { id: sandboxId, prompt: "and the tests" });
     expect(sent.isError).toBe(false);
-    expect(sent.data).toMatchObject({ promptId: "prompt_2", conversationId: "conv_1" });
+    expect(sent.data).toMatchObject({ promptId: "prompt_3", conversationId: "conv_2" });
     const stopped = await call(mcp, "stop", { id: sandboxId });
     expect(stopped.isError).toBe(false);
     expect(stopped.data).toMatchObject({ status: "stopped" });
@@ -405,8 +404,7 @@ describe("tools", () => {
     );
     const request = { provider: "boat", golden: "shared", harness: "claude", prompt: "Fix the build" };
     const unsupported = await call(helperClient, "launch", { ...request, helperCapabilities: ["diagnose"] });
-    expect(unsupported.isError).toBe(true);
-    expect(unsupported.text).toContain("does not yet support helpers");
+    expect(unsupported).toMatchObject({ isError: true, text: expect.stringContaining("does not yet support helpers") });
     expect(boat.forks).toHaveLength(0);
     const launched = await call(helperClient, "launch", request);
     expect(launched.isError).toBe(false);
@@ -419,10 +417,10 @@ describe("tools", () => {
     expect(boat.keys.at(-1)).toBe(SECRETS.orgBoat);
     expect(
       (
-        await db.query(`select c.scope,c.owner_id from sandboxes s
+        await db.query(`select c.scope,c.owner_id,c.kind from sandboxes s
       join credentials c on c.id=s.credential_id`)
       ).rows,
-    ).toEqual([{ scope: "org", owner_id: people.org }]);
+    ).toEqual([{ scope: "org", owner_id: people.org, kind: "claude_oauth" }]);
     expect(boat.execs.map((exec) => exec.command).join("\n")).toContain("git fetch origin");
     expectNoSecret(launched.text);
   });
@@ -546,10 +544,10 @@ describe("tools", () => {
     expect(boat.forks[0]?.env).toEqual({});
     expect(
       (
-        await db.query(`select c.scope,c.owner_id from sandboxes s
+        await db.query(`select c.scope,c.owner_id,c.kind from sandboxes s
       join credentials c on c.id=s.credential_id`)
       ).rows,
-    ).toEqual([{ scope: "user", owner_id: people.owner }]);
+    ).toEqual([{ scope: "user", owner_id: people.owner, kind: "claude_oauth" }]);
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
 
@@ -1206,10 +1204,10 @@ describe("tools", () => {
       expect(launched.isError).toBe(false);
       expect(boat.stops).toHaveLength(0);
       const id = await seedPersistedBoat({ db, boat, people });
-      const sent = await call(mcp, "send", { id: id, prompt: "next" });
+      const sent = await call(mcp, "send", { id, prompt: "next" });
       expect(sent.isError).toBe(false);
       expect(boat.prompts).toHaveLength(2);
-      const status = await call(mcp, "status", { id: id });
+      const status = await call(mcp, "status", { id });
       expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
     } finally {
       await db.exec("drop trigger reject_model_record on sandbox_turn_models; drop function reject_model_record()");
@@ -1382,7 +1380,7 @@ describe("tools", () => {
     expect(
       (
         await call(admin, "send", {
-          id: id,
+          id,
           prompt: "Cannot use owner's personal account",
         })
       ).isError,
@@ -1390,7 +1388,7 @@ describe("tools", () => {
     expect(
       (
         await call(admin, "send", {
-          id: id,
+          id,
           steer: true,
           prompt: "Cannot restart with owner's account",
         })
@@ -1408,7 +1406,7 @@ describe("tools", () => {
       scope: "user",
       id: second.id!,
     });
-    const sent = await call(mcp, "send", { id: id, prompt: "Continue" });
+    const sent = await call(mcp, "send", { id, prompt: "Continue" });
     expect(sent.isError).not.toBe(true);
     const count = boat.prompts.length;
     await mutateCredentialAccount(store, ENCRYPTION_KEY, people.member, {
@@ -1417,7 +1415,7 @@ describe("tools", () => {
       id: first.id!,
     });
     const refused = await call(mcp, "send", {
-      id: id,
+      id,
       prompt: "Must not use another account",
     });
     expect(refused.isError).toBe(true);
@@ -1425,7 +1423,7 @@ describe("tools", () => {
     expect(boat.prompts).toHaveLength(count);
     const steerCount = boat.steers.length;
     const steerRefused = await call(mcp, "send", {
-      id: id,
+      id,
       steer: true,
       prompt: "Must not restart",
     });
@@ -1471,42 +1469,41 @@ describe("tools", () => {
     expect(refused.text).toContain("Use one of: low, medium, high, xhigh, max, ultra");
     expect(boat.forks).toHaveLength(0);
 
+    const choice = { model: "gpt-6.1-terra", reasoningEffort: "high" };
     const launched = await call(mcp, "launch", {
       provider: "boat",
       golden: "shared",
       harness: "codex",
-      model: "gpt-6.1-terra",
-      reasoningEffort: "high",
+      ...choice,
     });
-    expect(launched.data.sandbox).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high", status: "ready" });
+    expect(launched.data.sandbox).toMatchObject({ ...choice, status: "ready" });
     expect(boat.prompts).toHaveLength(0);
 
-    const id = await seedPersistedBoat(
-      { db, boat, people },
-      { harness: "codex", model: "gpt-6.1-terra", reasoningEffort: "high" },
-    );
-    await call(mcp, "send", { id: id, prompt: "first" });
-    await call(mcp, "stop", { id: id });
-    await call(mcp, "send", { id: id, prompt: "after stop" });
+    const saved = await call(mcp, "status", { id: launchSandboxId(launched.data) });
+    expect(saved.data).toMatchObject(choice);
+    const id = await seedPersistedBoat({ db, boat, people }, { harness: "codex", ...choice });
+    await call(mcp, "send", { id, prompt: "first" });
+    await call(mcp, "stop", { id });
+    await call(mcp, "send", { id, prompt: "after stop" });
     await call(mcp, "send", {
-      id: id,
+      id,
       prompt: "once",
       model: "gpt-6-luna",
       reasoning_effort: "low",
     });
-    await call(mcp, "send", { id: id, prompt: "back" });
+    await call(mcp, "send", { id, prompt: "back" });
     expect(boat.prompts.map(({ text, model, reasoningEffort }) => ({ text, model, reasoningEffort }))).toEqual([
       { text: "first", model: "gpt-6.1-terra", reasoningEffort: "high" },
       { text: "after stop", model: "gpt-6.1-terra", reasoningEffort: "high" },
       { text: "once", model: "gpt-6-luna", reasoningEffort: "low" },
       { text: "back", model: "gpt-6.1-terra", reasoningEffort: "high" },
     ]);
-    const status = await call(mcp, "status", { id: id });
+    const status = await call(mcp, "status", { id });
     expect(status.data).toMatchObject({ model: "gpt-6.1-terra", reasoningEffort: "high" });
 
     // A sandbox recorded before the choice existed keeps the provider's default.
     await db.query("update sandboxes set model = null, reasoning_effort = null where id = $1", [id]);
-    await call(mcp, "send", { id: id, prompt: "legacy" });
+    await call(mcp, "send", { id, prompt: "legacy" });
     expect(boat.prompts.at(-1)).not.toHaveProperty("model");
   });
 
@@ -2272,10 +2269,10 @@ describe("tools", () => {
 
   test("a member of another org sees none of this org's sandboxes", async () => {
     const { token, client, people, boat, db } = await start();
-    const sandboxId = await seedPersistedBoat({ db, boat, people });
+    const id = await seedPersistedBoat({ db, boat, people });
     const other = await client(await token(people.member, people.otherOrg));
     expect((await call(other, "list")).data.sandboxes).toEqual([]);
-    expect((await call(other, "stop", { id: sandboxId })).isError).toBe(true);
+    expect((await call(other, "stop", { id })).isError).toBe(true);
   });
 });
 
