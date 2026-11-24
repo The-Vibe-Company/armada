@@ -66,11 +66,7 @@ import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
-import {
-  childLaunchAuthorized,
-  completeChildLaunchAdmission,
-  lockChildLaunchAdmission,
-} from "../sandbox-access-child-launch.ts";
+import { completeChildLaunchAdmission, lockChildLaunchAdmission } from "../sandbox-access-child-launch.ts";
 import type { ChildOperation } from "../sandbox-access-children.ts";
 import {
   type RestoreScopedRuntimeAccess,
@@ -99,7 +95,7 @@ import {
   recordModalBootstrapTicket,
   withJobLease,
 } from "./store.ts";
-import { templateLaunchAuthorized } from "./template-launch-authority.ts";
+import { launchAuthorityCurrent } from "./template-launch-authority.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 export interface ModalLaunchAdmission {
@@ -341,6 +337,7 @@ export async function admitModalLaunch(
           },
           snapshot,
           ...(child ? { childOperationId: child.id } : {}),
+          ...(reservation ? { templateReceiptId: reservation.id } : {}),
           ...(input.boat ? { boat: input.boat } : { modal }),
         },
         {
@@ -440,6 +437,7 @@ export async function admitModalLaunch(
         {
           launchJobId: jobId,
           ...(child ? { childOperationId: child.id } : {}),
+          ...(reservation ? { templateReceiptId: reservation.id } : {}),
           ...(accountSkips.length ? { accountSkips } : {}),
           prompt: input.initialPrompt,
           workspace,
@@ -499,6 +497,7 @@ export function createModalInitialTurnJob(
         .object({
           launchJobId: z.string().uuid(),
           childOperationId: z.string().uuid().optional(),
+          templateReceiptId: z.string().uuid().optional(),
           prompt: z.string().optional(),
           workspace: z.unknown(),
           skills: z.array(z.string()),
@@ -553,9 +552,7 @@ export function createModalInitialTurnJob(
       const { epoch } = target;
       const actor = { userId: target.owner_id, orgId: target.org_id, role: target.role };
       const canDispatch = async (tx?: Sql) =>
-        (await context.canDispatch(tx)) &&
-        (await childLaunchAuthorized(tx ?? sql, sandboxId, payload.data.childOperationId)) &&
-        templateLaunchAuthorized(tx ?? sql, sandboxId);
+        (await context.canDispatch(tx)) && launchAuthorityCurrent(tx ?? sql, sandboxId, payload.data);
       const assertClaim = async (tx: Sql) => {
         if (!(await canDispatch(tx))) throw new VaultError("conflict", "Launch setup authority is unavailable.");
       };
@@ -780,7 +777,7 @@ export function createModalInitialTurnJob(
             );
             return rows.length > 0 && canDispatch(tx);
           },
-          payload.data.childOperationId,
+          { childOperationId: payload.data.childOperationId, templateReceiptId: payload.data.templateReceiptId },
         );
         if (accepted) return { status: "done" };
       } catch (error) {
@@ -877,6 +874,7 @@ const launchAllocation = z.object({
   }),
   snapshot: z.string().min(1),
   childOperationId: z.string().uuid().optional(),
+  templateReceiptId: z.string().uuid().optional(),
 });
 export const boatLaunchPayload = launchAllocation.extend({ boat: boatAuthority });
 function boatAuthorityPayload(payload: unknown) {
@@ -1011,11 +1009,9 @@ export async function runModalLaunch(
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
-  const childOperationId = z
-    .object({ childOperationId: z.string().uuid().optional() })
-    .parse(job.payload ?? {}).childOperationId;
-  const launchAuthorized = async (tx: Sql) =>
-    (await childLaunchAuthorized(tx, sandboxId, childOperationId)) && templateLaunchAuthorized(tx, sandboxId);
+  const authority = launchAllocation.pick({ childOperationId: true, templateReceiptId: true }).parse(job.payload ?? {});
+  const launchAuthorized = (tx: Sql) => launchAuthorityCurrent(tx, sandboxId, authority);
+
   const readEnrolment = async (tx: Sql) => {
     const {
       rows: [receipt],

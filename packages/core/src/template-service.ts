@@ -956,11 +956,14 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       await revalidateInTransaction(tx, { userId: actor.userId, orgs: [actor] }, actor.orgId, row.manifest);
   }
 
-  async function revalidateGoldenJob(tx: Sql, sandboxId: string) {
+  async function revalidateGoldenJob(tx: Sql, sandboxId: string, receiptId: string) {
     const row = (
-      await tx.query<RequestRow>(`select c.* from public.template_launch_requests c where c.sandbox_id=$1`, [sandboxId])
+      await tx.query<RequestRow>(
+        "select * from public.template_launch_requests where sandbox_id=$1 and id=$2 and state='succeeded'",
+        [sandboxId, receiptId],
+      )
     ).rows[0];
-    if (!row) return;
+    if (!row) unavailable("environment_admission_unavailable");
     if (row.client_key.startsWith("routine:")) {
       const grant = await tx.query(
         `select 1 from public.routine_runs run join public.routines r on r.id=run.routine_id

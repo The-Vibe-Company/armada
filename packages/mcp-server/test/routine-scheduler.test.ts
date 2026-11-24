@@ -443,7 +443,6 @@ test("stalled launch and observation retain their slots without blocking healthy
   expect(launches).toContain(secondTemplate.id);
   expect(launches).toContain(f.routine.templateId);
   expect(observations).toBe(1);
-  // Expired leases are not permission to replay a still-owned raw dispatch.
   await f.db.query("update routine_runs set lease_until=now()-interval '1 second' where state='admitted'");
   await instance.tick();
   expect(launches.filter((id) => id === f.routine.templateId)).toHaveLength(1);

@@ -311,7 +311,7 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as 
             { id: receipt.sandboxId, request_id: setup.id, prompt: "first turn" },
             "1",
             async () => true,
-            receipt.id,
+            { childOperationId: receipt.id },
           ),
         ).toBe(true);
         await authority.revoke(id);

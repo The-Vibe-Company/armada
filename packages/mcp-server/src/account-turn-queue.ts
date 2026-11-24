@@ -32,6 +32,7 @@ import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-
 import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
+import type { LaunchAuthority } from "./jobs/template-launch-authority.ts";
 import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
@@ -145,7 +146,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     initialLaunch?: {
       generation: string;
       canDispatch: JobContext["canDispatch"];
-      childOperationId?: string | undefined;
+      authority?: LaunchAuthority | undefined;
     },
   ) {
     const requestId = input.request_id;
@@ -163,7 +164,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       JSON.stringify({
         ...normalized,
         correlationId: currentRequestId(),
-        ...(initialLaunch ? { launchAuthority: { childOperationId: initialLaunch.childOperationId } } : {}),
+        ...(initialLaunch?.authority ? { launchAuthority: initialLaunch.authority } : {}),
       }),
       key,
     );
@@ -379,9 +380,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       input: { id: string; request_id: string; prompt: string },
       generation: string,
       canDispatch: JobContext["canDispatch"],
-      childOperationId?: string,
+      authority?: LaunchAuthority,
     ) {
-      return Boolean(await persist(caller, input, { generation, canDispatch, childOperationId }));
+      return Boolean(await persist(caller, input, { generation, canDispatch, authority }));
     },
     async cancelQueued(caller: Caller, sandboxId: string) {
       await sql.query(
