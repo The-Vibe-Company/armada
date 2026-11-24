@@ -64,3 +64,31 @@ test("server shutdown retains shared services through draining and permits force
   await shutdown;
   expect(trace).toEqual(["draining", "mcp", "mcp-closed", "native-drained", "pools"]);
 });
+
+test("login cleanup failure still drains HTTP and closes shared resources", async () => {
+  const trace: string[] = [];
+  const server = {
+    async stop() {
+      trace.push("http");
+    },
+    workerDone: Promise.resolve(),
+  };
+  installServerShutdown(server, {
+    beginDrain() {},
+    workersDone: Promise.resolve(),
+    async stopSockets() {},
+    closeDocker: () => undefined,
+    async closeAntigravityLogin() {
+      throw new Error("Login cleanup failed");
+    },
+    requests: new Set(),
+    async closeMcp() {
+      trace.push("mcp");
+    },
+    async closePools() {
+      trace.push("sql");
+    },
+  });
+  await expect(server.stop()).rejects.toThrow("Login cleanup failed");
+  expect(trace).toEqual(["http", "mcp", "sql"]);
+});

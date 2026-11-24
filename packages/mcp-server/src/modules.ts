@@ -1,4 +1,5 @@
 import { accountRoutes } from "./account-control.ts";
+import { antigravityLoginRoutes } from "./antigravity-login-control.ts";
 import { applicationVaultRoutes } from "./application-vault-control.ts";
 import { logRoutes } from "./control-logs.ts";
 import { sandboxToolRoutes } from "./control-tool-routes.ts";
@@ -43,6 +44,7 @@ const controlModules = [
   sandboxToolRoutes,
   orgRoutes,
   credentialRoutes,
+  antigravityLoginRoutes,
   skillpackRoutes,
   publicAuthRoutes,
   deviceLoginRoutes,

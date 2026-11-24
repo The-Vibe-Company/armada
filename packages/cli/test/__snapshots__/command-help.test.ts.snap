@@ -337,7 +337,7 @@ exports[`armada account help preserves its output 1`] = `
 Manage model credentials, GitHub access or your personal Armada session.
   ls            List credential metadata.
   add           Store a credential kind.
-  login codex   Authorize native Codex in your browser.
+  login codex|antigravity   Connect a model account in your browser.
   import        Import native Claude or Codex credentials securely.
   default       Select a default model account by ID.
   limits        Set an account or model concurrency cap.

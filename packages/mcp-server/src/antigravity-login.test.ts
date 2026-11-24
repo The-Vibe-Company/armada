@@ -54,11 +54,13 @@ test("invalid codes never reach stdin and leave the pending login usable", async
   for (const invalid of [
     "code\n",
     "a".repeat(2049),
-    "https://antigravity.google/oauth-callback?code=example&state=foreign",
     "https://antigravity.google/oauth-callback?code=example%0A&state=matching",
   ]) {
     await expect(login.complete(caller, loginId, invalid)).rejects.toThrow("matching Google sign-in");
   }
+  await expect(
+    login.complete(caller, loginId, "https://antigravity.google/oauth-callback?code=example&state=foreign"),
+  ).rejects.toThrow("Start sign-in again.");
   expect(submitted).toEqual([]);
   await login.cancel(caller, loginId);
 });
@@ -101,7 +103,7 @@ test("the deadline closes a pending exchange and refuses the result", async () =
   await Promise.resolve();
   expect(submitted).toEqual(["example"]);
   deadline.abort();
-  await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
+  await expect(complete).rejects.toThrow("Start sign-in again.");
   expect(closes()).toBe(1);
 });
 
@@ -154,7 +156,9 @@ test.each(["cancel", "shutdown", "deadline"] as const)(
     else deadline.abort();
     finishCleanup();
     await stop;
-    await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
+    await expect(complete).rejects.toThrow(
+      reason === "deadline" ? "Start sign-in again." : "Antigravity sign-in failed.",
+    );
   },
 );
 

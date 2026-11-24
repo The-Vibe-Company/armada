@@ -6,7 +6,7 @@ const maxUrlLength = 8192;
 const codePattern = /^[\w./~-]{1,2048}$/;
 
 export type LoginCaller = { userId: string; orgId: string };
-export type LoginTarget = { name: string } | { id: string; expectedVersion: number };
+export type LoginTarget = ({ name: string } | { id: string; expectedVersion: number }) & { org?: string };
 
 export interface AntigravityLoginProcess {
   authorizationUrl: Promise<string>;
@@ -77,6 +77,7 @@ function validatedCode(value: string, state: string) {
     ) {
       const codes = url.searchParams.getAll("code");
       const states = url.searchParams.getAll("state");
+      if (states.length === 1 && states[0] !== state) throw new AntigravityLoginError("login_missing");
       if (
         codes.length === 1 &&
         states.length === 1 &&
@@ -136,6 +137,11 @@ export function createAntigravityLogin(
   }
 
   return {
+    targetFor(caller: LoginCaller, id: string) {
+      const login = pending.get(callerKey(caller));
+      if (login?.id === id) return { ...login.target };
+    },
+
     async start(caller: LoginCaller, target: LoginTarget) {
       const key = callerKey(caller);
       const previous = pending.get(key);
@@ -197,11 +203,12 @@ export function createAntigravityLogin(
         credential = parseAntigravityCredential({ method: "google", token: await child.readToken() });
         assertLive(login);
       } catch {
-        throw new AntigravityLoginError("login_failed");
+        throw new AntigravityLoginError(expired(login) ? "login_missing" : "login_failed");
       } finally {
         await close(key, login);
       }
-      if (stopped || login.cancelled || expired(login)) throw new AntigravityLoginError("login_failed");
+      if (expired(login)) throw new AntigravityLoginError("login_missing");
+      if (stopped || login.cancelled) throw new AntigravityLoginError("login_failed");
       return { target: login.target, credential };
     },
 

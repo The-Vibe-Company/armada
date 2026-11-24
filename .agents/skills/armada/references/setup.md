@@ -11,6 +11,7 @@ repair; it is not a model-account refresh or a way around repository permissions
 Inspect `armada account ls`. Model credentials resolve personal over org defaults;
 select an account explicitly with `armada new GOLDEN --provider boat --agent codex --credential-id ACCOUNT`.
 For native subscription login use `armada account login codex --name ACCOUNT_NAME`;
+for Google sign-in use `armada account login antigravity --name ACCOUNT_NAME` with the human present.
 Claude/native imports use `armada account import claude --name ACCOUNT_NAME --file TOKEN_FILE`.
 API credentials use `armada account add openai --file KEY_FILE`.
 Values arrive only via stdin or files, never argv. Files should be locally secured;

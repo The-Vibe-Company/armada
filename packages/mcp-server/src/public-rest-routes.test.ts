@@ -111,7 +111,7 @@ test("proxy-generated failures match the published failure schema and decode to 
 });
 
 const fillParameters = (template: string) =>
-  template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
+  template.replace(/\{(?:id|loginId)\}/g, "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
 test("published OpenAPI and migrated admin operations follow their proxy routing", async () => {
   type PublishedPaths = Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;

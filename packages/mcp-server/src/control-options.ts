@@ -38,6 +38,8 @@ import type { CredentialBindingRecovery } from "./sandbox-account-change.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 
 export interface ControlOptions {
+  antigravityLogin?: ReturnType<typeof import("./antigravity-login.ts").createAntigravityLogin>;
+  configureAntigravityLoginRequest?: (request: Request) => void;
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
   eventStreamShutdown?: AbortSignal;
   eventFeed?: import("./event-feed.ts").EventFeed;
