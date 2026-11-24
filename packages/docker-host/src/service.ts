@@ -182,8 +182,37 @@ export async function validateInstallation(
 }
 
 export interface UpgradeServiceIo extends ServiceIo {
-  executable: string;
+  fetch(input: string, init: RequestInit): Promise<Response>;
 }
+async function fetchUpgradeFile(io: UpgradeServiceIo, url: string) {
+  const response = await io.fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`Upgrade download returned HTTP ${response.status}.`);
+  return response;
+}
+
+async function pinnedUpgrade(io: UpgradeServiceIo, origin: string, installed: ManagedInstallation, retry: string) {
+  try {
+    const arch = process.arch;
+    if (arch !== "x64" && arch !== "arm64") throw new Error("Unsupported host architecture.");
+    const manifest = (await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json()) as Partial<
+      Record<"x64" | "arm64", unknown>
+    > | null;
+    const digest = manifest?.[arch];
+    if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
+    if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
+    const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`);
+    const bytes = new Uint8Array(await artifact.arrayBuffer());
+    if (sha256(bytes) !== digest) throw new Error("Host artifact SHA-256 mismatch.");
+    return { digest, bytes };
+  } catch (error) {
+    const reason =
+      error instanceof Error && error.constructor === Error
+        ? error.message
+        : "Could not read the host upgrade download.";
+    throw new Error(`${reason} Check the server and retry: ${retry}`);
+  }
+}
+
 async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temporaryDirectory = dirname(path)) {
   const temporary = join(temporaryDirectory, `.armada-host-upgrade-${randomUUID()}.tmp`);
   try {
@@ -210,7 +239,7 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
 export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
-  io: UpgradeServiceIo = { ...localService(), executable: process.execPath },
+  io: UpgradeServiceIo = { ...localService(), fetch: globalThis.fetch },
   instance?: string,
 ) {
   const origin = serverOrigin(server);
@@ -218,9 +247,23 @@ export async function upgradeService(
   if (origin !== initial.server)
     throw new Error("Upgrade server does not match the registered host; registration preserved.");
   const initialMarker = await validateInstallation(initial, io.home, instance);
-  const bytes = await ownedFile(io.executable, io.home, true);
-  const digest = sha256(bytes);
-  if (initialMarker.binarySha256 === digest && initialMarker.pendingBinarySha256 === undefined) return;
+  const p = paths(io.home, instance);
+  const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const serverArg = shellQuote(origin);
+  const retry =
+    process.execPath === p.binary
+      ? `${shellQuote(p.binary)} upgrade --server ${serverArg}${instance ? ` --instance ${instance}` : ""}`
+      : "run a fresh installer command from armada host add or the dashboard";
+  const { bytes, digest } = await pinnedUpgrade(io, origin, initialMarker, retry);
+  const verifyInstalled = async () => {
+    if (sha256(await ownedFile(p.binary, io.home, true)) !== digest)
+      throw new Error(`Installed Docker host SHA-256 differs from the server pin. Retry: ${retry}`);
+  };
+  if (!bytes) {
+    await io.service(["systemctl", "--user", "start", serviceName(instance)]);
+    await verifyInstalled();
+    return false;
+  }
   try {
     await io.service(["systemctl", "--user", "stop", serviceName(instance)]);
     const unlock = await store.lock();
@@ -229,7 +272,6 @@ export async function upgradeService(
       if (state.server !== origin || state.installationId !== initial.installationId || state.hostId !== initial.hostId)
         throw new Error("Installation identity changed; registration preserved.");
       const marker = await validateInstallation(state, io.home, instance);
-      const p = paths(io.home, instance);
       const directory = stateDirectory(io.home, instance);
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
@@ -241,6 +283,7 @@ export async function upgradeService(
         dirname(directory),
       );
       await atomicReplace(p.binary, bytes, 0o700);
+      await verifyInstalled();
       await atomicReplace(
         markerFile,
         Buffer.from(JSON.stringify({ ...stable, binarySha256: digest })),
@@ -253,6 +296,8 @@ export async function upgradeService(
   } finally {
     await io.service(["systemctl", "--user", "start", serviceName(instance)]);
   }
+  await verifyInstalled();
+  return true;
 }
 export async function uninstallPreflight(state: State, instance?: string) {
   await validateInstallation(state, homedir(), instance);

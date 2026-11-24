@@ -131,8 +131,12 @@ async function main(args: string[]) {
     return;
   }
   if (command === "upgrade") {
-    await upgradeService(store, options.get("--server") ?? "", undefined, instance);
-    console.log("Upgraded Armada Docker host binary; registration, workloads and user service preserved.");
+    const upgraded = await upgradeService(store, options.get("--server") ?? "", undefined, instance);
+    console.log(
+      upgraded
+        ? "Upgraded Armada Docker host binary; registration, workloads and user service preserved."
+        : "Installed Armada Docker host binary already matches the server pin.",
+    );
     return;
   }
   if (command === "reuse-registration") {
