@@ -28,12 +28,27 @@ function requestLogForStatus(status: number) {
   return console.info;
 }
 
+const requestPaths = [
+  "/healthz",
+  "/mcp",
+  "/api/v1/sandbox/status",
+  "/api/runtime/channel",
+  "/api/runtime/enrol",
+  "/api/runtime/events",
+  "/api/runtime/github/credentials",
+  "/api/runtime/model-access",
+  "/api/runtime/poll",
+  "/api/runtime/progress",
+  "/api/runtime/results",
+  "/api/runtime/session",
+];
+
 function requestPath(request: Request) {
-  try {
-    return redactForLog(decodeURIComponent(new URL(request.url).pathname));
-  } catch {
-    return "[invalid path]";
-  }
+  const { pathname } = new URL(request.url);
+  if (pathname.startsWith("/mcp/gateway/")) return "/mcp/gateway/:connectionId";
+  if (pathname.startsWith("/api/runtime/artifacts/")) return "/api/runtime/artifacts/:digest";
+  if (pathname.startsWith("/api/runtime/artifact-sets/")) return "/api/runtime/artifact-sets/:digest";
+  return requestPaths.find((path) => path === pathname);
 }
 
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
@@ -60,7 +75,7 @@ export function observeRequest<T extends Response | undefined>(
     requestLog(
       JSON.stringify({
         event: "http_request",
-        ...(request ? { path: requestPath(request) } : {}),
+        path: request && requestPath(request),
         requestId: id,
         status,
         durationMs: Math.round(performance.now() - started),

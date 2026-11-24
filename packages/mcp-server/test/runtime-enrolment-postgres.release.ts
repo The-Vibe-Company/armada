@@ -45,6 +45,7 @@ test("runtime sessions share an owner's membership fence and conflict with role 
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
   let held: Promise<void> | undefined;
+  let admission: Promise<unknown> | undefined;
   try {
     await admin.unsafe("insert into auth.users(id) values($1)", [owner]);
     await admin.unsafe("insert into orgs(id,name) values($1,'runtime-lock-race')", [org]);
@@ -85,14 +86,25 @@ test("runtime sessions share an owner's membership fence and conflict with role 
       await expect(admitPeer()).rejects.toMatchObject({ errno: "55P03" });
       await tx.unsafe("rollback to savepoint role_edit");
     });
+    const pid = Number((await peer.unsafe("select pg_backend_pid() as pid"))[0].pid);
+    await peer.unsafe("set statement_timeout='5s'");
+    await admin.unsafe("set statement_timeout='5s'");
     await admin.begin(async (tx) => {
+      await tx.unsafe("select user_id from members where org_id=$1 and user_id=$2 for update", [org, owner]);
+      admission = authority(peer)
+        .withSession(second, "1", async (_tx, scope) => scope.sandboxId)
+        .catch((error: unknown) => error);
+      let blocked = false;
+      for (let attempt = 0; attempt < 1000 && !blocked; attempt++) {
+        blocked = (await tx.unsafe("select cardinality(pg_blocking_pids($1))>0 as blocked", [pid]))[0].blocked;
+      }
+      expect(blocked).toBe(true);
       await tx.unsafe("delete from members where org_id=$1 and user_id=$2", [org, owner]);
-      await expect(admitPeer()).rejects.toMatchObject({ errno: "55P03" });
     });
-    await expect(admitPeer()).rejects.toBeInstanceOf(RuntimeEnrolmentDenied);
+    expect(await admission).toBeInstanceOf(RuntimeEnrolmentDenied);
   } finally {
     finish.resolve();
-    await Promise.allSettled([held]);
+    await Promise.allSettled([held, admission]);
     await admin.unsafe("delete from sandboxes where id in ($1,$2)", sandboxes);
     await admin.unsafe("delete from goldens where id=$1", [golden]);
     await admin.unsafe("delete from members where org_id=$1", [org]);
