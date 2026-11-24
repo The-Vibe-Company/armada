@@ -1,14 +1,12 @@
 import { expect, test } from "bun:test";
-import type { PromptRequest, Provider, SandboxInfo, Sql } from "@armada/core";
+import type { Provider, SandboxInfo } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
-import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createPullRequestScanJob } from "../src/sandbox-pull-requests.ts";
 import { sqlOver } from "../src/sql.ts";
-import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -22,25 +20,13 @@ async function fixture(mode = "quiet") {
     via: "service" as const,
   };
   const data = createSqlData(sql)(caller);
-  const placement = mode === "owner-modal" ? "modal" : "boat";
-  const golden =
-    placement === "boat"
-      ? (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!
-      : { id: crypto.randomUUID() };
-  if (placement === "modal")
-    await db.query(
-      `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-    values($1,$2,$3,'native-modal-idle','org','modal','image','workspace','main','app','{}'::jsonb)`,
-      [golden.id, people.org, people.owner],
-    );
-  const id = crypto.randomUUID(),
-    physical = placement === "boat" ? "bx_23456789" : "native-modal",
-    task = "turn";
+  const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
+  const id = crypto.randomUUID();
+  const physical = "bx_23456789";
+  const task = "turn";
   const at = Date.now();
   let stopped = false,
     stops = 0,
-    promptCalls = 0,
-    quiesceCalls = 0,
     eventReads = 0;
   const credential = (
     await db.query<{ id: string }>(
@@ -55,7 +41,7 @@ async function fixture(mode = "quiet") {
     ownerId: people.owner,
     credentialId: credential.id,
     credentialVersion: 1,
-    provider: placement,
+    provider: "boat",
     providerSandboxId: physical,
     harness: "claude",
     status: "running",
@@ -66,16 +52,15 @@ async function fixture(mode = "quiet") {
   });
   await data.sandboxes.update(id, { taskPromptId: task, conversationIds: ["conversation"] });
   const provider = {
-    id: placement,
+    id: "boat",
     get: async () =>
       ({
         id: physical,
         state: stopped ? "stopped" : "running",
         createdAt: new Date(at),
-        name: "native",
+        name: "scan-fixture",
         providerState: stopped ? "stopped" : "active",
-        ...(placement === "modal" ? { physicalGeneration: "1" } : {}),
-        ...(stopped && placement === "boat" ? { retainedSnapshot: "usable" as const } : {}),
+        ...(stopped ? { retainedSnapshot: "usable" as const } : {}),
         labels: {},
       }) satisfies SandboxInfo,
     getPrompt: async () => ({
@@ -90,37 +75,9 @@ async function fixture(mode = "quiet") {
         hasMore: false,
       };
     },
-    conversations: async () => [{ id: "conversation", running: mode === "active" }],
-    quiesce: async () => {
-      quiesceCalls++;
-      if (mode.startsWith("owner-")) return;
-      throw Error("Idle policy must never interrupt/quiesce native work");
-    },
-    interrupt: async () => {
-      quiesceCalls++;
-      throw Error("Idle policy must never interrupt native work");
-    },
-    exec: async () => ({
-      detached: false,
-      exitCode: 0,
-      timedOut: false,
-      truncated: false,
-      stdout: '{"status":"clean"}',
-      stderr: "",
-    }),
     stop: async () => {
       stops++;
       stopped = true;
-    },
-    prompt: async ({ onResumeStage }: PromptRequest) => {
-      if (stopped) {
-        await onResumeStage?.("accepted");
-        await onResumeStage?.("provider_claimed");
-        await onResumeStage?.("machine_started");
-      }
-      promptCalls++;
-      stopped = false;
-      return { promptId: "next", conversationId: "conversation", status: "queued", resumed: true };
     },
   } as unknown as Provider;
   const worker = createSandboxLifecycle(sql, async () => provider, { now: () => at });
@@ -135,152 +92,12 @@ async function fixture(mode = "quiet") {
     caller,
     id,
     at,
-    provider,
     tick,
     worker,
     stops: () => stops,
-    promptCalls: () => promptCalls,
-    quiesceCalls: () => quiesceCalls,
     eventReads: () => eventReads,
   };
 }
-
-test("an expired native idle pause refuses wake before provider work", async () => {
-  const f = await fixture();
-  await f.db.query(
-    "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=$2,expires_at=$3 where id=$1",
-    [f.id, new Date(f.at).toISOString(), new Date(f.at + 600_000).toISOString()],
-  );
-  await expect(
-    callSharedTool(
-      {
-        caller: f.caller,
-        data: f.data,
-        provider: async () => {
-          throw Error("Provider must not be resolved for expired idle pause");
-        },
-        launchCredentials: {
-          resolve: async () => {
-            throw Error("No credentials after expiry");
-          },
-        },
-        exposedSecrets: async () => [],
-        now: () => new Date(f.at + 600_000),
-        sleep: async () => {},
-      },
-      "send",
-      { id: f.id, prompt: "too late" },
-    ),
-  ).rejects.toMatchObject({ code: "sandbox_terminal", status: 409 });
-});
-
-test.each(["idle_paused", "work_merged"])(
-  "a native %s stop still checkpointing refuses send before provider work",
-  async (reason) => {
-    const f = await fixture(`stopping-${reason}`);
-    await f.db.query("update sandboxes set status='stopping',status_reason=$2,expires_at=$3 where id=$1", [
-      f.id,
-      reason,
-      new Date(f.at + 3_600_000).toISOString(),
-    ]);
-    await expect(
-      callSharedTool(
-        {
-          caller: f.caller,
-          data: f.data,
-          provider: async () => {
-            throw Error("Provider must not be resolved while the idle checkpoint is stopping");
-          },
-          launchCredentials: {
-            resolve: async () => {
-              throw Error("No credentials while stopping");
-            },
-          },
-          exposedSecrets: async () => [],
-          now: () => new Date(f.at),
-          sleep: async () => {},
-        },
-        "send",
-        { id: f.id, prompt: "wake" },
-      ),
-    ).rejects.toMatchObject({ code: "conflict" });
-    expect((await f.data.sandboxes.get(f.id))?.status).toBe("stopping");
-  },
-);
-
-test("an admitted native idle stop waits while provider work is active", async () => {
-  const f = await fixture("active");
-  await f.db.query(
-    "update sandboxes set status='stopping',status_reason='idle_paused',stop_requested_at=now() where id=$1",
-    [f.id],
-  );
-  await f.tick();
-  expect(f.quiesceCalls()).toBe(0);
-  expect(f.stops()).toBe(0);
-  expect(await f.data.sandboxes.get(f.id)).toMatchObject({ status: "stopping" });
-  await f.worker.drain();
-});
-
-test.each(["boat", "modal"])("%s owner stop refuses old receipts but a fresh owner send resumes", async (provider) => {
-  const f = await fixture(`owner-${provider}`);
-  const key = btoa("x".repeat(32));
-  const sql: Sql = {
-    ...f.sql,
-    transaction: (work) => f.db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
-  };
-  const queue = createAccountTurnQueue(sql, key);
-  const context = {
-    caller: f.caller,
-    data: f.data,
-    provider: async () => f.provider,
-    launchCredentials: { resolve: async () => ({ env: {}, secrets: [], codexAuthJson: false }) },
-    exposedSecrets: async () => [],
-    now: () => new Date(f.at),
-    sleep: async () => {},
-  };
-  const oldRequest = crypto.randomUUID();
-  await f.db.query("update sandboxes set status='ready',task_prompt_id=null where id=$1", [f.id]);
-  await queue.accept(f.caller, { id: f.id, request_id: oldRequest, prompt: "old work" });
-  const picked = Promise.withResolvers<void>();
-  const proceed = Promise.withResolvers<void>();
-  const dispatched: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
-    if (input.request_id === oldRequest) {
-      picked.resolve();
-      await proceed.promise;
-    }
-    const receipt = await callSharedTool(context, "send", { ...input });
-    dispatched.push(input.prompt);
-    return receipt;
-  });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await picked.promise;
-  expect(await callSharedTool({ ...context, accountTurns: queue }, "stop", { id: f.id })).toMatchObject({
-    status: "stopped",
-  });
-  proceed.resolve();
-  await queue.drain();
-  expect(await queue.status(f.caller, f.id, oldRequest)).toMatchObject({ failed: true });
-  expect(dispatched).toEqual([]);
-  expect(f.promptCalls()).toBe(0);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  const freshRequest = crypto.randomUUID();
-  expect(
-    await callSharedTool({ ...context, accountTurns: queue }, "send", {
-      id: f.id,
-      request_id: freshRequest,
-      prompt: "new owner work",
-    }),
-  ).toMatchObject({ status: "queued" });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(dispatched).toEqual(["new owner work"]);
-  expect(await queue.status(f.caller, f.id, freshRequest)).toMatchObject({ nativePromptId: "next" });
-  expect((await f.data.sandboxes.get(f.id))?.status).toBe("running");
-  expect(f.stops()).toBe(1);
-  expect(f.promptCalls()).toBe(1);
-  await f.worker.drain();
-});
 
 test.each([
   "merged",

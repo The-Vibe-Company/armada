@@ -15,7 +15,12 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
+import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -23,7 +28,9 @@ const sharedDatabase = rowOnlyDatabase();
 // The shared HTTP/MCP boundary, real migrations and SQL activity CAS own deletion policy.
 // A mocked store would miss authorization, archive cleanup and concurrent resume admission.
 test("sandbox deletion authorizes live owners/admins, fences activity, and preserves history only after provider success", async () => {
-  const server = await harness({}, await sharedDatabase());
+  const seeded = await sharedDatabase();
+  const server = await harness({}, seeded);
+  let runtime: Awaited<ReturnType<typeof runtimeFixture>> | undefined;
   let release: (() => void) | undefined;
   let deletion: Promise<Response> | undefined;
   try {
@@ -39,7 +46,12 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       encryptionKey: ENCRYPTION_KEY,
       supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "anon" },
       data: createSqlData(db),
-      providers: providerRegistry({ vault: store, encryptionKey: ENCRYPTION_KEY, providerFor: boat.providerFor }),
+      providers: providerRegistry({
+        vault: store,
+        encryptionKey: ENCRYPTION_KEY,
+        providerFor: boat.providerFor,
+        runtimeProviderFor: async () => boat.provider,
+      }),
       now: () => server.clock.now,
     };
     const request = async (id: string, token = ownerToken, method = "DELETE") => {
@@ -283,9 +295,15 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     expect(JSON.parse(output)).toEqual({ id: cliId, status: "deleted" });
     expect(sent).toBe(1);
 
-    const physical = await boat.provider.fork({ from: "snapshot" });
-    await boat.provider.stop({ sandboxId: physical.id });
-    const raced = await insert("stopped", physical.id);
+    runtime = await runtimeFixture(seeded);
+    const { sql, bridge, caller, row, context, input, starts } = runtime;
+    const raced = row.id;
+    await createRuntimeCheckpoint(sql, ENCRYPTION_KEY, bridge)(caller, { ...input(), runtimeVersion: 1 });
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [raced]);
+    const resume = createRuntimeResume(sql, ENCRYPTION_KEY, bridge, async () => {
+      throw Error("Deletion must fence runtime activation");
+    });
+    context.runtimeSend = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge, undefined, resume);
     let admitted!: () => void;
     const started = new Promise<void>((resolve) => {
       admitted = resolve;
@@ -299,11 +317,13 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
       return { status: "deleted" };
     };
     deletion = request(raced);
-    await started;
-    const resumed = await call(owner, "send", { id: raced, prompt: "resume" });
-    expect(resumed.isError).toBe(true);
-    expect(resumed.text).toContain("error code: sandbox_not_ready");
-    expect(boat.prompts).toHaveLength(0);
+    const admission = await Promise.race([started, deletion]);
+    if (admission) throw Error(`Delete returned ${admission.status} before acquiring its lease.`);
+    await expect(callSharedTool(context, "send", input("resume"))).rejects.toMatchObject({
+      code: "conflict",
+      message: "Resume requires a confirmed retained stop and no unresolved admission.",
+    });
+    expect(starts).toHaveLength(1);
     release?.();
     expect((await deletion).status).toBe(200);
     expect((await state(raced)).status).toBe("deleted");
@@ -326,6 +346,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
   } finally {
     release?.();
     await Promise.allSettled([deletion]);
+    await runtime?.close();
     await server.close();
   }
 });

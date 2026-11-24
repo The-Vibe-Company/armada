@@ -237,7 +237,6 @@
     "packages/mcp-server/test/exec-selected-org-api.test.ts": 2.969,
     "packages/mcp-server/test/github-account-api.test.ts": 2.497,
     "packages/mcp-server/test/github-legacy.test.ts": 1.932,
-    "packages/mcp-server/test/github-refresh.test.ts": 0.221,
     "packages/mcp-server/test/github-runtime.test.ts": 1.86,
     "packages/mcp-server/test/golden-adoption.test.ts": 2.509,
     "packages/mcp-server/test/golden-authorization.test.ts": 3.0,
