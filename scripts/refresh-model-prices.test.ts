@@ -67,12 +67,14 @@ test("the vendored model catalog preserves the pre-consolidation values", () => 
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   expect(buildModelCatalog(catalog.snapshot, overlay)).toEqual(catalog);
   expect(MODEL_CATALOG).toEqual(catalog.harnesses);
+  const { antigravity, ...preConsolidationHarnesses } = MODEL_CATALOG;
+  expect(antigravity.defaultModel).toBe("default");
   const generatedMorph = { models: MORPH_MODEL_IDS, ...MORPH_ENDPOINTS };
   expect<unknown>(generatedMorph).toEqual(catalog.compatibleProviders.morph);
   expect<unknown>(CONNECTION_MODELS).toEqual(catalog.snapshot.providers);
   // Captured from the original catalogs at 22f9482b, before switching them to generated data.
   expect({
-    harnesses: digest(MODEL_CATALOG),
+    harnesses: digest(preConsolidationHarnesses),
     compatibleProviders: digest({ morph: generatedMorph }),
     models: digest(catalog.snapshot.models),
     providers: digest(CONNECTION_MODELS),
