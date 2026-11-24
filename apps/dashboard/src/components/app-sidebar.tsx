@@ -19,16 +19,14 @@ export function AppSidebar({
   const thread = usePathname().startsWith("/sandboxes/");
   return (
     <>
-      {isMobile && (
-        <div className="border-b bg-sidebar pb-2 md:hidden">
-          {!thread && header}
-          <div className="px-3">
-            <NavMobileTrigger />
-          </div>
+      <div className="border-b bg-sidebar pb-2 md:hidden">
+        {!thread && header}
+        <div className="px-3">
+          <NavMobileTrigger />
         </div>
-      )}
+      </div>
       <Sidebar collapsible="icon" className="md:sticky md:top-0 md:h-dvh md:shrink-0">
-        {(isMobile === false || thread) && (
+        {(!isMobile || thread) && (
           <SidebarHeader className="gap-0 p-0">
             {state === "collapsed" && !isMobile ? (
               <SidebarTrigger className="mx-auto my-3" aria-label="Expand navigation" />

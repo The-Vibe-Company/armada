@@ -265,7 +265,7 @@ export function ComposerLocation({
           )}
           <div className="flex flex-wrap gap-3 border-t p-2 text-sm underline">
             <Link href="/snapshots">Open Snapshots</Link>
-            <Link href="/hosts">Open Docker hosts</Link>
+            <Link href="/providers/cloud">Open Docker hosts</Link>
           </div>
         </ChoiceChip>
       )}
