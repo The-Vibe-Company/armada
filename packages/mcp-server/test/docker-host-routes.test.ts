@@ -7,6 +7,7 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core";
+import { DOCKER_HOST_PREFER_STARTUP_HEADER } from "../../core/src/docker-host-wire.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -943,14 +944,19 @@ test("a host poll skips work the daemon reports running and hands out another sa
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
-  const poll = (running: string[]) =>
-    post("/api/docker-host/poll", host.hostToken, {
-      installationId,
-      version: "2.51.0",
-      resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
-      resourcePolicyVersion: 1,
-      running,
-    });
+  const poll = (running: string[], extra?: Record<string, string>) =>
+    post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      {
+        installationId,
+        version: "2.51.0",
+        resources: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
+        resourcePolicyVersion: 1,
+        running,
+      },
+      extra,
+    );
   expect((await poll([])).status).toBe(200);
   const sql: Sql = {
     query: (q, p) => db.query(q, p),
@@ -1009,4 +1015,9 @@ test("a host poll skips work the daemon reports running and hands out another sa
     job: { operation: "stop", request: { sandboxId: first.id } },
   });
   expect(time).toBe(2000);
+
+  const preferStartup = { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" };
+  expect(await (await poll([])).json()).toMatchObject({ job: { operation: "stop" } });
+  expect(await (await poll([], preferStartup)).json()).toMatchObject({ job: { requestId: next!.requestId } });
+  expect(await (await poll([next!.requestId], preferStartup)).json()).toMatchObject({ job: { operation: "stop" } });
 });

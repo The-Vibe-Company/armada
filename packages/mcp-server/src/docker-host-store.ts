@@ -2200,7 +2200,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
       protocol?: number | null,
       supportsPhysicalDelete = false,
       supportsRestore = false,
+      preferStartup = false,
     ): Promise<Job | null> {
+      const priority = preferStartup
+        ? `case when j.bound_operation in ('create','bootstrap') then 0 else 1 end,${dispatchPriority}`
+        : dispatchPriority;
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
       // admission path denies, so a queued startup cannot stay starting forever.
@@ -2238,7 +2242,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(5, 6)} order by ${dispatchPriority} limit 1`,
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${eligibleJob(5, 6)} order by ${priority} limit 1`,
             [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete, supportsRestore],
           )
         ).rows[0];
@@ -2315,7 +2319,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const row = (
           await tx.query<StoredJob & { recovering_receipt: boolean }>(
             `select j.*, (${pendingRefusedResumeSql}) as recovering_receipt
-            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${eligibleJob(4, 5)} order by ${dispatchPriority} limit 1`,
+            from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${eligibleJob(4, 5)} order by ${priority} limit 1`,
             [host.id, skipSnapshots, running, supportsPhysicalDelete, supportsRestore],
           )
         ).rows[0];
