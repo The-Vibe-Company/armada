@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { shellQuote } from "../../core/src/shell-quote.ts";
+import { githubAcquisitionFailures } from "./github-broker.ts";
 import { retryGitHubAuthentication } from "./github-git-retry.ts";
 
 type Mode = "git-run" | "git" | "gh" | "native";
@@ -416,13 +417,7 @@ export async function runGitHubClient(argv: string[]) {
     if (!response.ok) {
       stage = "broker_denied";
       const { error } = JSON.parse((await readBody(response.body, 1024)).toString()) as { error: unknown };
-      if (
-        typeof error === "string" &&
-        /^(?:github_credentials_(?:denied|unavailable|http_denied|http_unavailable|oversized|invalid_json|invalid_token))$/.test(
-          error,
-        )
-      )
-        stage = error;
+      if (githubAcquisitionFailures.some((code) => code === error)) stage = String(error);
       throw Error();
     }
     stage = "broker_response";
