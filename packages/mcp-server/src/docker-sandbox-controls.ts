@@ -64,6 +64,7 @@ type Row = {
   status: SandboxRecord["status"];
   status_reason: string | null;
   external_ref: string | null;
+  skills: SandboxRecord["skills"];
   pull_requests: NonNullable<SandboxRecord["pullRequests"]>;
   stopped_at: string | Date | null;
   model: string | null;
@@ -150,7 +151,7 @@ export function createDockerSandboxControls(
       await sql.query<Row>(
         `select s.id,s.org_id,s.owner_id,s.provider,s.docker_host_id,s.docker_image,s.docker_snapshot_id,s.harness,
         ${publicSandboxStatusSql} as status,
-        s.status_reason,s.external_ref,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
+        s.status_reason,s.external_ref,s.skills,s.pull_requests,s.task_prompt_id,s.lifecycle_generation,
         s.stopped_at,s.model,s.reasoning_effort,s.conversation_ids,s.expires_at,s.usage_turns,m.role,e.prompt_projection_sequence::text,e.latest_prompt_enc,
        (select coalesce(max(c.sequence),0)::text from public.runtime_commands c where c.sandbox_id=s.id and starts_with(c.request_id,'docker_prompt_')) as prompt_sequence,
        (select coalesce(max(e.sequence),0)::text from public.runtime_events e where e.sandbox_id=s.id) as journal_sequence
@@ -449,7 +450,7 @@ export function createDockerSandboxControls(
     const launch = includeRepository
       ? (
           await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-            "select request_enc from public.docker_launch_requests where sandbox_id=$1",
+            "select request_enc from public.docker_launch_manifests where sandbox_id=$1",
             [row.id],
           )
         ).rows[0]
@@ -472,6 +473,7 @@ export function createDockerSandboxControls(
       status: row.status,
       statusReason: reason(row),
       pullRequests: row.pull_requests ?? [],
+      skills: row.skills ?? [],
       statusMessage:
         dockerWorkspaceReclaimedMessage(row.status_reason) ??
         idlePauseMessage(
@@ -603,7 +605,7 @@ export function createDockerSandboxControls(
                    ) j) as "hostJobs"
            from public.sandboxes s
            left join public.docker_hosts h on h.id=s.docker_host_id
-           left join public.docker_launch_requests d on d.sandbox_id=s.id
+           left join public.docker_launch_manifests d on d.sandbox_id=s.id
            where s.id=$1 and s.provider='docker'`,
           [sandboxId, stopRequestId],
         )

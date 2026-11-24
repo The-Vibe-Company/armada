@@ -2,7 +2,6 @@ import { AuthError } from "@armada/auth";
 import {
   configFromFlags,
   type DockerLaunchRequest,
-  type DockerLaunchResult,
   GoldenError,
   MAX_MCP_CONNECTIONS,
   parseApplicationSecretBindings,
@@ -10,6 +9,7 @@ import {
   resolveModelChoice,
   validateSkillPins,
 } from "@armada/core";
+import { parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "./agent-validation.ts";
 import { ArmadaApiError } from "./api-responses.ts";
 import { type Args, flag, single, values } from "./args.ts";
@@ -159,25 +159,19 @@ export async function launchDocker(
     ...(args.positionals[0] === undefined ? {} : { prompt: args.positionals[0] }),
   };
   try {
-    const result = await client.sandboxes.launch<DockerLaunchResult>(body, {
+    const response = await client.sandboxes.launch<unknown>(body, {
       signal: AbortSignal.timeout(600_000),
     });
-    if (
-      result?.sandbox?.provider !== "docker" ||
-      !uuid.test(result.sandbox.id) ||
-      result.golden !== null ||
-      (!result.runtime?.epoch && !(result.runtime === null && ["starting", "failed"].includes(result.sandbox.status)))
-    )
+    const result = parseLaunchAdmissionReceipt("docker", response);
+    if (!result)
       throw new GoldenError(
         "invalid_config",
         "Docker launch outcome unknown: server did not confirm the requested logical sandbox.",
       );
-    if (result.sandbox.status !== "failed") await rememberSandbox(result.sandbox.id, sandboxFile, io);
+    if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
+      await rememberSandbox(result.sandbox.id, sandboxFile, io);
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
-    else
-      io.out(
-        `Docker sandbox: ${result.sandbox.providerSandboxId}\nArmada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n${result.promptId ? `Prompt: ${result.promptId}\n` : ""}${result.github?.message ? `Note: ${result.github.message}\n` : ""}${result.sandbox.statusReason ? `Reason: ${result.sandbox.statusReason}\n` : ""}`,
-      );
+    else io.out(`Armada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`);
     return 0;
   } catch (error) {
     if (

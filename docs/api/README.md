@@ -50,7 +50,7 @@ and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
 Modal launches also include the frozen manifest at `sandbox.templateManifest`.
 The separate `templates/launch` operation returns a durable template receipt.
-Boat and Docker keep the full launch envelope.
+Boat keeps the full launch envelope.
 
 For Boat and Modal snapshot launches and for Docker launches, use
 `credentialId` to select a model account. The account’s simultaneous-agent
@@ -102,35 +102,11 @@ returns 409 `conflict`. Set `externalRef` to look up the sandbox later.
   `credentialVersion`, `model`, `reasoningEffort`, `prompt`, `ttlSeconds`,
   `repos`, `skills` and `"visibility":"private"`.
 
-The launch call returns as soon as Armada admits the launch. A worker then
-starts the sandbox on the host and sends the prompt. The first response
-therefore normally carries `"status":"starting"` and no `promptId` or
-`conversationId`. To follow the launch, call `sandbox/status` with the
-returned sandbox ID. Replaying the same identifier and body starts at most one launch.
-
-- The replay reports the sandbox's current status, not the status of an
-  earlier response. Until the worker publishes the launch receipt, a sandbox
-  that is `ready` or `running` is reported as `starting`. A sandbox that is
-  stopped, failed or deleted keeps that status.
-- The replay carries the recorded `promptId` and `conversationId` only once the
-  worker has published the launch receipt and the launch sent a prompt. It
-  never carries them before.
-
-After a dropped response, reissue the same request with the original replay
-key to recover the receipt. If you have the assigned sandbox ID, you can also
-query `sandbox/status`.
-For a launch that sent a prompt, read the prompt receipt by replaying the same
-request and checking the response for `promptId` and `conversationId`, not its
-status. A `starting` response without
-them means the launch is still pending, so replay again later. A `stopped`,
-`failed` or `deleted` response without them is a separate outcome: no prompt
-receipt will ever exist, but that does not prove the prompt never ran. The
-sandbox may have ended while the launch was queued, before the prompt was sent.
-It may also have ended after the worker sent the prompt but before it recorded
-the receipt, so the agent may already have acted on it. Treat the prompt outcome
-as uncertain: inspect the original sandbox with `sandbox/status` and its
-transcript with `logs/read` before you repeat the work. Do not launch with a
-new `idempotencyKey` until you know that the first launch failed or ended.
+The launch returns `{ "sandbox": { "id": "...", "status": "starting" } }`
+before allocation. A replay with the same inputs and key returns the original
+sandbox ID and current status. The worker sends any initial prompt after
+runtime enrolment. Use `sandbox/status` for its prompt and conversation IDs
+and `logs/read` for the transcript. Keep the same key after an uncertain outcome.
 See
 [Docker hosts](../docker-host-daemon.md) for an example body.
 
@@ -286,7 +262,7 @@ sandboxes, the queue returns HTTP 400 `invalid` for a refused override. It
 returns HTTP 409 `conflict` for a pending stop request, a reused `request_id`
 with different input, or a request whose queued send has failed.
 
-Modal launch jobs and deferred Docker launches accept sends while the sandbox
+Modal and ordinary Docker launch jobs accept sends while the sandbox
 is still `starting`. Armada holds those sends until launch setup finishes and
 the initial prompt settles, if the launch supplied one.
 

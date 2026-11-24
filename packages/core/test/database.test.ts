@@ -244,6 +244,8 @@ describe("database", () => {
         "application_secrets.value_enc",
         "credentials.value_enc",
         "docker_host_jobs.input_enc",
+        "docker_launch_manifests.request_enc",
+        "docker_launch_manifests.result_enc",
         "docker_launch_requests.request_enc",
         "docker_launch_requests.result_enc",
         "docker_queued_prompts.input_enc",

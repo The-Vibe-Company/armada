@@ -241,6 +241,7 @@ export interface DockerLaunchResult {
 }
 export interface DockerSandboxStatus {
   externalRef?: string;
+  skills?: SandboxRecord["skills"];
   pullRequests?: NonNullable<SandboxRecord["pullRequests"]>;
   /** Additive idle-pause wording; canonical status remains stopped. */
   statusMessage?: string | null;

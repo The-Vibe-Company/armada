@@ -355,7 +355,7 @@ test("logs remain available without reading the launch manifest", async () => {
   const controller = createDockerSandboxControls(
     {
       async query(query, values) {
-        if (query.includes("select request_enc from public.docker_launch_requests")) {
+        if (query.includes("select request_enc from public.docker_launch_manifests")) {
           throw new Error("Launch manifest is unavailable");
         }
         return sql.query(query, values);

@@ -28,6 +28,43 @@ function identity(actor: Actor, sandboxId: string) {
   )
     deny();
 }
+export async function projectDockerPromptReceipt(
+  tx: Sql,
+  actor: Actor,
+  sandboxId: string,
+  model: string,
+  id: string,
+  epoch: string,
+  receipt: NonNullable<ReturnType<typeof readDockerPromptReceipt>>,
+  saveConversation: boolean,
+) {
+  const pricing = (
+    await tx.query<{ context: unknown; captured: boolean }>(
+      "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
+      [sandboxId, epoch],
+    )
+  ).rows[0];
+  await createSqlData(tx)({
+    userId: actor.userId,
+    orgs: [{ orgId: actor.orgId, role: "member" }],
+    via: "service",
+  }).sandboxes.recordTurnModel!(sandboxId, receipt.promptId, model, pricing?.captured ? pricing.context : null);
+  await tx.query(
+    `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
+   select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
+   and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
+     and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
+    [sandboxId, receipt.promptId, id, epoch],
+  );
+  if (saveConversation) {
+    // This service-owned projection must not advance lifecycle_generation.
+    await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
+      sandboxId,
+      receipt.conversationId,
+    ]);
+  }
+}
+
 /** One native conversation per allocation. No provider projection or network/waiting in this service. */
 export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
@@ -180,7 +217,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
           // The launch reserves a conversation before any native admission or queued receipt.
           const launch = (
             await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; result_enc: Uint8Array<ArrayBuffer> | null }>(
-              "select request_enc,result_enc from public.docker_launch_requests where sandbox_id=$1",
+              "select request_enc,result_enc from public.docker_launch_manifests where sandbox_id=$1",
               [sandboxId],
             )
           ).rows[0];
@@ -294,36 +331,16 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             (saved.length === 1 && receipt.conversationId !== saved[0])
           )
             deny();
-          const pricing = (
-            await tx.query<{ context: unknown; captured: boolean }>(
-              "select pricing_context as context,pricing_context is not null as captured from public.runtime_enrolments where sandbox_id=$1 and epoch=$2",
-              [sandboxId, queued.epoch],
-            )
-          ).rows[0];
-          await createSqlData(tx)({
-            userId: actor.userId,
-            orgs: [{ orgId: actor.orgId, role: "member" }],
-            via: "service",
-          }).sandboxes.recordTurnModel!(
+          await projectDockerPromptReceipt(
+            tx,
+            actor,
             sandboxId,
-            receipt.promptId,
             sandbox.model,
-            pricing?.captured ? pricing.context : null,
+            id,
+            queued.epoch,
+            receipt,
+            !saved.length,
           );
-          await tx.query(
-            `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
-           select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
-           and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
-             and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
-            [sandboxId, receipt.promptId, id, queued.epoch],
-          );
-          if (!saved.length) {
-            // This service-owned projection must not advance lifecycle_generation.
-            await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
-              sandboxId,
-              receipt.conversationId,
-            ]);
-          }
           return {
             state: "admitted" as const,
             epoch: queued.epoch,

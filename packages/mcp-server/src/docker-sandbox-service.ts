@@ -21,6 +21,7 @@ import {
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
+import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
@@ -198,6 +199,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
       selectAccount?: (
         tx: Sql,
       ) => Promise<Pick<Reservation, "credentialId" | "credentialVersion" | "model" | "reasoningEffort">>,
+      machineLaunch = false,
     ) {
       return transaction(async (tx) => {
         if (options.enabled !== true) deny();
@@ -259,6 +261,7 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             )
           ).rows[0] ?? deny();
         if (existing) {
+          if (machineLaunch) deny();
           const row =
             (await tx.query<Row>(`select * from public.sandboxes where id=$1 for update`, [request.requestId]))
               .rows[0] ?? deny();
@@ -298,7 +301,12 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             await admitDockerCapacity(tx, request.hostId);
           },
         );
-        const generation = randomUUID();
+        const generation = machineLaunch
+          ? await createDockerMachineGenerationBindings(tx, {
+              hostId: request.hostId,
+              installationId: host.installation_id,
+            }).bind({ sandboxId: request.requestId, generation: 1 })
+          : randomUUID();
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;
         const row =
           (
@@ -329,10 +337,11 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               ],
             )
           ).rows[0] ?? deny();
-        await createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, row.id, {
-          requestId: row.id,
-          operation: "create",
-        });
+        if (!machineLaunch)
+          await createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, row.id, {
+            requestId: row.id,
+            operation: "create",
+          });
         return record(row);
       });
     },

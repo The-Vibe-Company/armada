@@ -55,7 +55,7 @@ export type PinnedModalReceiptContract = Assert<
   Equal<Awaited<ReturnType<typeof pinnedModal>>, PinnedModalLaunchReceipt>
 >;
 export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, ModalLaunchReceipt>>;
-export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, FullLaunchResult>>;
+export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, ModalLaunchReceipt>>;
 export type LaunchFields = Assert<
   Equal<
     Pick<FullLaunchResult, "promptId" | "conversationId" | "expiresAt" | "runtime">,
