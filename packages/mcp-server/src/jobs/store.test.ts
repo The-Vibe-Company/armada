@@ -1526,6 +1526,23 @@ async function modalFirstTurnLane(
   } as unknown as Parameters<LaneFactory>[0])!;
 }
 
+test("JWT inventory keeps an enrolled Modal sandbox starting while launch setup is queued", async () => {
+  const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  await f.db.transaction(async (tx) => {
+    await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [f.people.owner]);
+    await tx.exec("set local role authenticated");
+    const { rows } = await tx.query("select status from public.sandbox_list_metadata() where id=$1", [id]);
+    expect(rows).toEqual([{ status: "starting" }]);
+    expect((await tx.query("select public.sandbox_detail_status($1,$2) as status", [id, f.people.org])).rows).toEqual([
+      { status: "starting" },
+    ]);
+  });
+});
+
 test.each([
   { prompted: false, max: null, limits: { "gpt-5": 1 }, refusal: "Model gpt-5" },
   { prompted: true, max: 1, limits: {}, refusal: "1/1 agents working" },
