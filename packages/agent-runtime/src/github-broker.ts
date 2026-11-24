@@ -7,9 +7,13 @@ export type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@a
 
 import type { GitHubRuntimeConfiguration as GitHubBrokerConfiguration } from "@armada/core";
 
-const acquisitionFailures = [
+export const githubAcquisitionFailures = [
   "github_credentials_denied",
-  "github_credentials_unavailable",
+  "github_credentials_fetch_failed",
+  "github_credentials_fetch_timeout",
+  "github_credentials_body_failed",
+  "github_credentials_body_timeout",
+  "github_credentials_redaction_failed",
   "github_credentials_http_denied",
   "github_credentials_http_unavailable",
   "github_credentials_oversized",
@@ -95,41 +99,49 @@ export class GitHubBroker {
     const configuration = this.configuration,
       revision = this.revision;
     if (!configuration || configuration.expiresAt <= this.now()) throw Error("github_credentials_denied");
-    let token: unknown;
+    const signal = AbortSignal.timeout(15_000);
+    let response: Response;
     try {
-      const response = await this.fetcher(configuration.url, {
+      response = await this.fetcher(configuration.url, {
         method: "POST",
         redirect: "error",
-        signal: AbortSignal.timeout(15_000),
+        signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${configuration.capability}` },
         body: JSON.stringify({ version: 1, repository, operation }),
       });
-      if (!response.ok)
-        throw Error(
-          response.status === 401 || response.status === 403
-            ? "github_credentials_http_denied"
-            : "github_credentials_http_unavailable",
-        );
-      const body = await response.text();
-      if (body.length > 16384) throw Error("github_credentials_oversized");
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(body);
-      } catch {
-        throw Error("github_credentials_invalid_json");
-      }
-      token = parsed && typeof parsed === "object" ? (parsed as { token?: unknown }).token : undefined;
-      if (typeof token !== "string" || !token.length || token.length > 8192 || !/^[\x21-\x7e]+$/.test(token))
-        throw Error("github_credentials_invalid_token");
+    } catch {
+      // Only fixed codes cross the socket. Upstream exceptions can contain credentials.
+      throw Error(signal.aborted ? "github_credentials_fetch_timeout" : "github_credentials_fetch_failed");
+    }
+    if (!response.ok)
+      throw Error(
+        response.status === 401 || response.status === 403
+          ? "github_credentials_http_denied"
+          : "github_credentials_http_unavailable",
+      );
+    let body: string;
+    try {
+      body = await response.text();
+    } catch {
+      throw Error(signal.aborted ? "github_credentials_body_timeout" : "github_credentials_body_failed");
+    }
+    if (body.length > 16384) throw Error("github_credentials_oversized");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw Error("github_credentials_invalid_json");
+    }
+    const token = parsed && typeof parsed === "object" ? (parsed as { token?: unknown }).token : undefined;
+    if (typeof token !== "string" || !token.length || token.length > 8192 || !/^[\x21-\x7e]+$/.test(token))
+      throw Error("github_credentials_invalid_token");
+    try {
       this.remember([token]);
-    } catch (error) {
-      if (error instanceof Error && acquisitionFailures.some((code) => code === error.message))
-        throw Error(error.message);
-      // HTTP diagnostics can contain credentials. Never propagate body, cause or error text.
-      throw Error("github_credentials_unavailable");
+    } catch {
+      throw Error("github_credentials_redaction_failed");
     }
     if (revision !== this.revision || configuration.expiresAt <= this.now()) throw Error("github_credentials_denied");
-    return token as string;
+    return token;
   }
 
   /** Credential replies require root IPC. Unprivileged native processes get only a redact oracle. */
@@ -284,7 +296,7 @@ export class GitHubBroker {
           return Response.json({ token }, { headers: { "cache-control": "no-store" } });
         } catch (error) {
           const code =
-            error instanceof Error && acquisitionFailures.some((code) => code === error.message)
+            error instanceof Error && githubAcquisitionFailures.some((code) => code === error.message)
               ? error.message
               : "github_credentials_denied";
           return Response.json({ error: code }, { status: 403, headers: { "cache-control": "no-store" } });

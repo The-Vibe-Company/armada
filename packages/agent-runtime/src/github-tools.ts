@@ -1,6 +1,7 @@
 import { chmod, chown, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { shellQuote as q } from "../../core/src/shell-quote.ts";
+import { githubAcquisitionFailures } from "./github-broker.ts";
 import { githubToolCommands } from "./github-client.ts";
 
 /** Trusted runtime process controls only; user readable/exec environments cannot set BASH_ENV. */
@@ -576,7 +577,7 @@ try:
         raw=response.read(1024)
         try: code=json.loads(raw).get('error','')
         except Exception: code=''
-        allowed=('github_credentials_denied','github_credentials_unavailable','github_credentials_http_denied','github_credentials_http_unavailable','github_credentials_oversized','github_credentials_invalid_json','github_credentials_invalid_token')
+        allowed=${JSON.stringify(githubAcquisitionFailures)}
         if code in allowed: stage=code
         else: stage='broker_denied'
         raise ValueError()
