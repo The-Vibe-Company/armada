@@ -28,6 +28,7 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { dockerHostLaunchFields, dockerSnapshotLaunchFields } from "@armada/core/contract";
+import { RUNTIME_STARTUP_FAILURES } from "@armada/core/runtime";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -36,6 +37,7 @@ import {
   createSqlSandboxStore,
   decryptSecret,
   encryptSecret,
+  failureDiagnostic,
   prepareLaunchPlan,
   prepareLaunchWorkspace,
   resolveLaunchConnections,
@@ -65,7 +67,7 @@ import {
   currentRequestId,
   noteAdmission,
   observeProviderCall,
-  recordOperatorFailure,
+  recordOperatorDiagnostic,
 } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -465,6 +467,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let dispatchPossible = false;
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
+    let readinessCause = "readiness_check_failed";
     const validate = () => {
       const parsed = dockerAdmissionInput.safeParse(body);
       if (!parsed.success)
@@ -768,11 +771,22 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           }
           const current = await transaction((tx) => load(tx, actor, request, hash));
           if (!current.row) throw failure("not_found");
-          if (!active(current.row)) throw notReady(current.row);
+          if (!active(current.row)) {
+            if (reason === "runtime_readiness") {
+              const { status, status_reason: statusReason } = current.row;
+              readinessCause =
+                Object.entries(RUNTIME_STARTUP_FAILURES).find(([, message]) => message === statusReason)?.[0] ??
+                (status === "failed" ? "startup_failed" : "sandbox_inactive");
+            }
+            throw notReady(current.row);
+          }
           return current;
         }
         async function wait() {
-          if (clock.now() >= deadline) throw failure("unavailable");
+          if (clock.now() >= deadline) {
+            if (reason === "runtime_readiness") readinessCause = "readiness_deadline";
+            throw failure("unavailable");
+          }
           await clock.wait(Math.min(250, deadline - clock.now()));
         }
         async function acknowledged(id: string) {
@@ -794,7 +808,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         let receipt: Receipt;
         for (;;) {
           await live();
-          const ready = await runtime.ready(actor, request.requestId, manifest.healthId);
+          const ready = await runtime.ready(actor, request.requestId, manifest.healthId).catch(async (error) => {
+            await live().catch(() => {});
+            throw error;
+          });
           if (ready.state === "ready") {
             receipt = { epoch: ready.epoch };
             break;
@@ -1028,7 +1045,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         throw error;
       }
     } catch (error) {
-      recordOperatorFailure(`docker.launch.${reason}`, error, { sandboxId: diagnosticSandboxId });
+      recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
+        sandboxId: diagnosticSandboxId,
+        causeCode: reason === "runtime_readiness" ? readinessCause : undefined,
+      });
       // Never log raw exception messages: account/provider errors can contain secrets.
       const requestId = currentRequestId();
       console.warn("docker_launch_failed", {
