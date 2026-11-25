@@ -2223,3 +2223,161 @@ export async function reportSandboxTaskOutcome(
   );
   if (!result.rows.length) throw new DataError("The turn changed or this sandbox is not reportable.");
 }
+
+type Report = { prNumber?: number; prUrl?: string };
+export type PullRequestIdentity = { repository: string; number: number };
+type PullRequestScan = {
+  pushes: Record<string, [string, string[]][]>;
+  discovered: PullRequestIdentity[];
+  untracked?: true;
+  heads?: Record<string, Record<string, Record<string, string>>>;
+};
+export type PullRequestScanTarget = {
+  id: string;
+  owner_id: string;
+  provider: "boat" | "modal" | "docker";
+  provider_sandbox_id: string;
+  harness: "codex" | "claude" | "opencode";
+  runtime_epoch: string | null;
+  active: boolean;
+  launch_authorized: boolean;
+  settled: boolean;
+  created_at: string;
+  lifecycle_generation: string;
+  task_prompt_id: string | null;
+  connection_epoch: string;
+  github_id: string;
+  membership_epoch: string;
+  repositories: unknown;
+  repository_dir: string | null;
+  pull_request_scan: PullRequestScan | null;
+  pull_request_reports: Record<string, Report>;
+};
+
+export const PULL_REQUEST_SCAN_ELIGIBLE = `from public.sandboxes s
+          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+          join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+          join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
+          join lateral (
+            select repositories,priority from (
+              select s.pull_request_source->'repositories' as repositories, 3 as priority, 0::bigint as revision
+              where s.pull_request_source->>'connectionEpoch'=c.connection_epoch::text
+              union all
+              select binding->'repositories', 2, revision
+              from public.runtime_github_capabilities
+              where sandbox_id=s.id and delivered_at is not null
+                and binding->>'connectionEpoch'=c.connection_epoch::text
+                and binding->>'membershipEpoch'=e.epoch::text
+              union all
+              select binding->'identity'->'repositories', 1, revision from public.github_runtime_capabilities
+              where sandbox_id=s.id and binding->'identity'->>'connectionEpoch'=c.connection_epoch::text
+                and binding->'identity'->>'membershipEpoch'=e.epoch::text
+              union all
+              select jsonb_build_array(s.resource_project), 0, 0::bigint
+              where s.provider<>'docker' and s.pull_request_source is null and s.resource_project is not null
+            ) grants order by priority desc, revision desc limit 1
+          ) grant_row on true
+          where ((s.status in ('ready','running') and s.stop_requested_at is null)
+              or (s.status='stopped' and (s.pull_request_scan is not null or s.pull_request_reports<>'{}'::jsonb)))
+            and s.activity_lease_id is null and not s.application_secret_tainted
+            and s.expires_at>now()`;
+
+export function clearPullRequestMergeProof(sql: Sql, id: string | null, generation: string | null) {
+  return sql.query<PullRequestScanTarget>(
+    `with target as (
+          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,
+            grant_row.repositories,grant_row.priority>0 as launch_authorized
+          ${PULL_REQUEST_SCAN_ELIGIBLE} and s.id=$1 and s.lifecycle_generation=$2
+        )
+        update public.sandboxes s set pull_request_merge_proof=null from target where s.id=target.id
+        returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
+          s.status in ('ready','running') as active,
+          (select r.epoch::text from public.runtime_enrolments r
+            where r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null)
+            as runtime_epoch,
+          s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,
+          (s.task_prompt_id is not null
+            and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)
+            and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and not t.settled)) as settled,
+          target.connection_epoch::text,target.github_id::text,target.membership_epoch::text,
+          target.repositories,target.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
+    [id, generation],
+  );
+}
+
+export function markPullRequestScanUntracked(sql: Sql, id: string) {
+  return sql.query(
+    `update public.sandboxes set pull_request_merge_proof=null,
+              pull_request_scan=jsonb_set(coalesce(pull_request_scan,'{"pushes":{},"discovered":[]}'::jsonb),'{untracked}','true'::jsonb)
+             where id=$1 returning id`,
+    [id],
+  );
+}
+
+export function retainPullRequestScan(sql: Sql, id: string, scan: string, generation: string) {
+  return sql.query(
+    `update public.sandboxes set pull_request_scan=$2::text::jsonb
+         where id=$1 and lifecycle_generation=$3 and (status='stopped' or stop_requested_at is null)
+           and activity_lease_id is null returning id`,
+    [id, scan, generation],
+  );
+}
+
+export function commitPullRequestScan(sql: Sql, row: PullRequestScanTarget, list: string, proof: string, scan: string) {
+  return sql.query<{ stopped: boolean }>(
+    `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
+          pull_request_scan=$9::text::jsonb
+          where s.id=$1 and s.lifecycle_generation=$4 and s.task_prompt_id is not distinct from $5
+            and s.pull_request_reports=$6::text::jsonb and s.activity_lease_id is null
+            and (s.status='stopped' or (s.status in ('ready','running') and s.stop_requested_at is null))
+            and exists(select 1 from public.github_connections c where c.user_id=s.owner_id
+              and c.revoked_at is null and c.connection_epoch=$7)
+            and exists(select 1 from public.mcp_actor_epochs e join public.members m
+              on m.org_id=e.org_id and m.user_id=e.user_id
+              where e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=$8)
+          returning s.status='stopped' as stopped`,
+    [
+      row.id,
+      list,
+      proof,
+      row.lifecycle_generation,
+      row.task_prompt_id,
+      JSON.stringify(row.pull_request_reports),
+      row.connection_epoch,
+      row.membership_epoch,
+      scan,
+    ],
+  );
+}
+
+export function changeStoppedSandboxCredential(sql: Sql, id: string, credentialId: string, credentialVersion: number) {
+  return sql.query(
+    "update public.sandboxes set credential_id=$2,credential_version=$3,lifecycle_generation=lifecycle_generation+1 where id=$1",
+    [id, credentialId, credentialVersion],
+  );
+}
+
+export const RESOURCE_SAMPLING_VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)
+  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
+
+export function claimSandboxResourceSample(
+  sql: Sql,
+  orgIds: string[],
+  userId: string,
+  id: string,
+  token: string,
+  at: string,
+) {
+  return sql.query<{ token: string }>(
+    `update public.sandboxes s set resource_sampling_claim_id=$4::uuid,
+           resource_sampling_after=$5::timestamptz+interval '10 seconds',resource_sampling_generation=s.lifecycle_generation
+         where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and s.status in ('ready','running')
+           and s.resource_project is not null and s.resource_project<>'null'::jsonb and s.machine_size->'capacity' is not null
+           and s.machine_size->'capacity'<>'null'::jsonb
+           and (s.resource_sampling_after is null or s.resource_sampling_after <= $5::timestamptz)
+           and (s.activity_until is null or s.activity_until <= $5::timestamptz)
+           and (s.reconcile_lease_until is null or s.reconcile_lease_until <= $5::timestamptz)
+         returning s.resource_sampling_claim_id::text as token`,
+    [orgIds, userId, id, token, at],
+  );
+}

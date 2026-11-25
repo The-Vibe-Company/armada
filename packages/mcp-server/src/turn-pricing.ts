@@ -7,6 +7,7 @@ import type {
   StoredTurnPricing,
   TurnPriceContext,
   TurnTokenUsage,
+  UsagePricingContext,
 } from "@armada/core";
 import { type PriceSnapshot, priceTurn, type Sql, type TokenRates } from "@armada/core/server";
 import { validRates } from "../../core/src/pricing/rates.ts";
@@ -335,5 +336,19 @@ export async function recordTurnRateLimit(sql: Sql, id: string, promptId: string
   await sql.query(
     `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
     [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
+  );
+}
+
+export function recordSandboxAccountUsagePricing(
+  sql: Sql,
+  id: string,
+  credentialId: string,
+  credentialVersion: number,
+  context: UsagePricingContext | null,
+) {
+  return sql.query(
+    `insert into public.sandbox_account_usage_pricing(sandbox_id,credential_id,credential_version,context)
+         values($1,$2,$3,$4::jsonb) on conflict do nothing`,
+    [id, credentialId, credentialVersion, JSON.stringify(context)],
   );
 }

@@ -1,7 +1,18 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readBoundedText } from "@armada/auth";
 import { decryptSecret, encryptSecret, type GoldenActor, type Sql, VaultError } from "@armada/core/server";
-import { type NativeState, nativeState, refreshFingerprint, withRefreshHistory } from "./model-auth-state.ts";
+import {
+  adoptBrokerAuthState,
+  beginBrokerRefresh,
+  completeBrokerRefresh,
+  insertBrokerAuthState,
+  type NativeState,
+  nativeState,
+  recordBrokerRefreshFailure,
+  refreshFingerprint,
+  sealBrokerRefreshHistory,
+  withRefreshHistory,
+} from "./model-auth-state.ts";
 
 const PATH = "/api/internal/model/access";
 const READY = "server:ready";
@@ -78,10 +89,7 @@ export function createSubscriptionBroker(
     const previous = JSON.parse(await decryptSecret(new Uint8Array(row.state_enc), key)) as NativeState;
     const state = withRefreshHistory(previous);
     if (state !== previous)
-      await tx.query(
-        "update public.model_auth_state set state_enc=$3::bytea where account_id=$1::uuid and account_version=$2",
-        [id, version, await encryptSecret(JSON.stringify(state), key)],
-      );
+      await sealBrokerRefreshHistory(tx, id, version, await encryptSecret(JSON.stringify(state), key));
     return { ...row, state };
   }
   const output = (state: NativeState, revision: number): SubscriptionAccess => {
@@ -192,9 +200,13 @@ export function createSubscriptionBroker(
         );
         if (Buffer.byteLength(JSON.stringify(next)) > 4 * 1024 * 1024)
           throw new VaultError("unavailable", "Native secret redaction budget exceeded.");
-        const updated = await tx.query(
-          "update public.model_auth_state set state_enc=$4::bytea,auth_revision=auth_revision+1,source_generation=$5,updated_at=now() where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing' returning auth_revision",
-          [id, version, row.auth_revision, await encryptSecret(JSON.stringify(next), key), READY],
+        const updated = await completeBrokerRefresh(
+          tx,
+          id,
+          version,
+          row.auth_revision,
+          await encryptSecret(JSON.stringify(next), key),
+          READY,
         );
         if (!updated.rows.length) throw Error("refresh_conflict");
         return output(next, row.auth_revision + 1);
@@ -213,15 +225,13 @@ export function createSubscriptionBroker(
           ],
         };
         if (Buffer.byteLength(JSON.stringify(retained)) > 4 * 1024 * 1024) throw Error("redaction_budget");
-        await tx.query(
-          "update public.model_auth_state set state_enc=$4::bytea,source_generation=$5 where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
-          [
-            id,
-            version,
-            row.auth_revision,
-            await encryptSecret(JSON.stringify(retained), key),
-            error instanceof SubscriptionTemporaryError ? row.source_generation : "server:uncertain",
-          ],
+        await recordBrokerRefreshFailure(
+          tx,
+          id,
+          version,
+          row.auth_revision,
+          await encryptSecret(JSON.stringify(retained), key),
+          error instanceof SubscriptionTemporaryError ? row.source_generation : "server:uncertain",
         );
       }).catch(() => {});
       if (error instanceof SubscriptionTemporaryError) throw error;
@@ -274,10 +284,7 @@ export function createSubscriptionBroker(
           const refresh = previousRevision === row.auth_revision || (expiry > 0 && expiry < Date.now() + 60_000);
           if (!refresh) return { row, refresh: false };
           // Commit intent BEFORE contacting the rotating upstream. A crash/unknown reply must never replay it.
-          await tx.query(
-            "update public.model_auth_state set source_generation='server:refreshing' where account_id=$1::uuid and account_version=$2 and auth_revision=$3",
-            [id, version, row.auth_revision],
-          );
+          await beginBrokerRefresh(tx, id, version, row.auth_revision);
           return { row, refresh: true };
         });
         if (!selected.waiting) break;
@@ -366,10 +373,7 @@ export function createSubscriptionBroker(
               JSON.parse(row.state.authJson).tokens.refresh_token;
             if (row.source_generation !== READY && !(row.source_generation === "server:uncertain" && distinct))
               throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
-            await tx.query(
-              "update public.model_auth_state set source_generation='server:refreshing' where account_id=$1::uuid and account_version=$2 and auth_revision=$3",
-              [id, version, row.auth_revision],
-            );
+            await beginBrokerRefresh(tx, id, version, row.auth_revision);
             return { row, waiting: false as const };
           });
           if ("legacy" in selected) return undefined;
@@ -416,18 +420,12 @@ export function createSubscriptionBroker(
           throw new VaultError("unavailable", "Sign in again to this ChatGPT account.");
         if (!old) {
           const state = withRefreshHistory(nativeState(await decryptSecret(new Uint8Array(raw), key)));
-          await tx.query(
-            "insert into public.model_auth_state(account_id,account_version,state_enc,source_generation) values($1::uuid,$2,$3::bytea,$4)",
-            [id, version, await encryptSecret(JSON.stringify(state), key), READY],
-          );
+          await insertBrokerAuthState(tx, id, version, await encryptSecret(JSON.stringify(state), key), READY);
         } else if (!old.source_generation.startsWith("server:")) {
           const state = withRefreshHistory(
             JSON.parse(await decryptSecret(new Uint8Array(old.state_enc), key)) as NativeState,
           );
-          await tx.query(
-            "update public.model_auth_state set source_generation=$3,state_enc=$4::bytea,updated_at=now() where account_id=$1::uuid and account_version=$2",
-            [id, version, READY, await encryptSecret(JSON.stringify(state), key)],
-          );
+          await adoptBrokerAuthState(tx, id, version, READY, await encryptSecret(JSON.stringify(state), key));
         }
         await saved(tx, id, version);
       });
