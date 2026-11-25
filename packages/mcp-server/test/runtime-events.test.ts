@@ -1,9 +1,13 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { AgentEvent } from "@armada/core";
 import { streamSandboxEvents } from "@armada/core/contract";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
+import { type IngestClient, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
@@ -405,100 +409,101 @@ test("private archive grants and bounded event validation refuse malformed batch
   }
 });
 
-test.each(["runtime", "server", "unicode-head"] as const)(
-  "lost HTTP ACK leaves the journal pending; runtime/server restart retries without duplicate archive or usage (%s)",
-  async (kind) => {
-    const { RuntimeDialout } = await import("../../agent-runtime/src/dialout.ts");
-    const { Journal, Runner } = await import("../../agent-runtime/src/index.ts");
-    const { mkdtemp, rm } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const f = await fixture(),
-      root = await mkdtemp(join(tmpdir(), "event-ack-"));
-    let journal = new Journal(join(root, "journal"), (value) => value);
+test("a lost HTTP ACK survives journal reopen and server replacement without duplicate archive or usage", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const grant = {
+    token: active.runtimeToken,
+    sandboxId: f.id,
+    generation: active.epoch,
+    expiresAt: Date.UTC(2100, 0, 1),
+  };
+  const root = await mkdtemp(join(tmpdir(), "event-ack-"));
+  const path = join(root, "journal");
+  const openJournal = () => new Journal(path, (value) => value);
+  const publish = async (route: ReturnType<typeof f.route>, batch: Parameters<IngestClient["append"]>[0]) => {
+    const response = await route(
+      new Request("https://armada.example/api/runtime/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${grant.token}`, "x-armada-runtime-epoch": grant.generation },
+        body: JSON.stringify(batch),
+      }),
+    );
+    expect(response?.status).toBe(200);
+    return response!;
+  };
+
+  try {
+    const journal = openJournal();
     try {
-      const active = await f.enrol();
-      let lost = true;
-      let handler = f.route();
-      const channel = new RuntimeDialout("https://armada.example", active, {
-        socket() {
-          throw Error("unused");
-        },
-        after() {
-          throw Error("unused");
-        },
-        every() {
-          throw Error("unused");
-        },
-        async fetch(url, options) {
-          const response = await handler(new Request(url.href, options));
-          if (!response) throw Error("event wire path mismatch");
-          if (response.status === 200 && lost) {
-            lost = false;
-            // Lose the HTTP response after commit, then destroy ALL server-local
-            // session/ingest state. The same runtime must replay on the new replica.
-            handler = createRuntimeEvents(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY).route;
+      const original = f.route();
+      const runner = new Runner(
+        journal,
+        grant,
+        {},
+        {
+          async append(batch) {
+            await publish(original, batch);
             throw Error("lost_ack_after_commit");
-          }
-          return response;
+          },
         },
+      );
+      journal.append({
+        id: "unicode-head",
+        at: 1,
+        kind: "message",
+        text: "😀".repeat(100000),
+        partial: false,
+        tools: [],
       });
-      const grant = {
-        token: active.runtimeToken,
-        sandboxId: f.id,
-        generation: active.epoch,
-        expiresAt: Date.now() + 60000,
-      };
-      const driver = {
-        start() {
-          throw Error("no harness expected");
-        },
-        async close() {},
-      };
-      let runner = new Runner(journal, grant, { codex: driver, claude: driver }, channel);
-      if (kind === "unicode-head")
-        journal.append({
-          id: "unicode-head",
-          at: 1,
-          kind: "message",
-          text: "😀".repeat(100000),
-          partial: false,
-          tools: [],
-        });
-      const count = kind === "unicode-head" ? 2 : 1;
-      journal.append(f.usage("journal-native-usage"));
+      journal.append(f.usage("journal-usage"));
       await expect(runner.flushOutbox()).rejects.toThrow("lost_ack_after_commit");
       expect(journal.ack).toBe(0);
-      expect(await f.rows()).toHaveLength(count);
-      if (kind !== "server") {
-        journal.close();
-        journal = new Journal(join(root, "journal"), (value) => value);
-        runner = new Runner(journal, grant, { codex: driver, claude: driver }, channel);
-      }
-      await runner.flushOutbox();
-      expect(journal.ack).toBe(count);
-      expect(await f.rows()).toHaveLength(count);
-      expect(await f.aggregate()).toMatchObject({ turnCount: 1, turns: [{ inputTokens: 100, outputTokens: 20 }] });
-      if (kind === "server") {
-        journal.append({
-          id: "after-restart",
-          at: 4,
-          kind: "prompt",
-          promptId: "prompt-a",
-          text: "fixture",
-          status: "finished",
-        });
-        await runner.flushOutbox();
-        expect(journal.ack).toBe(count + 1);
-        expect(await f.rows()).toHaveLength(count + 1);
-      }
     } finally {
       journal.close();
-      await f.close();
-      await rm(root, { recursive: true, force: true });
     }
-  },
-);
+    const archive = await f.rows();
+    expect(archive).toHaveLength(2);
+    expect(await f.aggregate()).toMatchObject({ turnCount: 1, turns: [{ inputTokens: 100, outputTokens: 20 }] });
+
+    const reopened = openJournal();
+    try {
+      const replacement = createRuntimeEvents(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY).route;
+      const runner = new Runner(
+        reopened,
+        grant,
+        {},
+        {
+          async append(batch) {
+            return (await publish(replacement, batch)).json() as ReturnType<IngestClient["append"]>;
+          },
+        },
+      );
+      expect(reopened.ack).toBe(0);
+      await runner.flushOutbox();
+      expect(reopened.ack).toBe(2);
+      expect(await f.rows()).toEqual(archive);
+      expect(await f.aggregate()).toMatchObject({ turnCount: 1, turns: [{ inputTokens: 100, outputTokens: 20 }] });
+
+      reopened.append({
+        id: "after-restart",
+        at: 4,
+        kind: "prompt",
+        promptId: "prompt-a",
+        text: "fixture",
+        status: "finished",
+      });
+      await runner.flushOutbox();
+      expect(reopened.ack).toBe(3);
+      expect(await f.rows()).toHaveLength(3);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await f.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("unmeasured prompt-only turns accumulate across batches without claiming complete token coverage", async () => {
   const f = await fixture();
