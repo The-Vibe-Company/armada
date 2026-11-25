@@ -1112,15 +1112,20 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
       ],
     );
   }
-  const a = await boundFixture(host, {
+  const allocation = await boundFixture(host, {
     sandboxId,
     generation: predecessor,
     expiresAt,
     image,
     ...(snapshot && { snapshotId: snapshot.id }),
   });
+  const a = { ...allocation, create: { ...allocation.create, requestId: predecessor } };
   await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: a.create.requestId,
+    outcome: "completed",
+    machineId: "a".repeat(64),
+  });
   await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [sandboxId]);
   const request = {
     sandboxId: a.sandboxId,
@@ -1154,7 +1159,7 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
     );
   await putIntent(cleanupId, "stop", { bound: 1, job: cleanup });
   const runnerJobId = await createJobsStore(sql, key).enqueue(
-    "turn_dispatch",
+    "resume",
     sandboxId,
     2,
     randomUUID(),
@@ -1249,7 +1254,7 @@ test("the current runner declines a completed restore receipt without a physical
 });
 
 test("the current runner attaches only a completed Docker restore and can recover an interrupted handoff", async () => {
-  const a = await restoreFixture();
+  const a = await prepareRestore();
   const db = database();
   const {
     rows: [claim],
@@ -1259,6 +1264,26 @@ test("the current runner attaches only a completed Docker restore and can recove
     [a.selection.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
+  const resume = (hostStore = store, restoreClaim = claim) =>
+    hostStore
+      .machine({
+        actor: a.owner,
+        hostId: a.hostId,
+        installationId: a.installationId,
+        restoreClaim,
+      })
+      .resume({
+        sandboxId: a.sandboxId,
+        generation: 2,
+        size: null,
+        computeTtlSeconds: a.restore.request.ttlSeconds,
+        predecessor: {
+          sandboxId: a.sandboxId,
+          generation: 1,
+          kind: "container",
+          ref: a.restore.predecessor.machineId,
+        },
+      });
   const requestId = a.restore.requestId;
   const machineId = "c".repeat(64);
   const machine = { sandboxId: a.sandboxId, generation: Number(claim.generation), machineId };
@@ -1271,7 +1296,9 @@ test("the current runner attaches only a completed Docker restore and can recove
       )
     ).rows[0];
   const predecessor = await current();
-  await expect(store.attachMachineRestore(a.owner, claim)).rejects.toBeInstanceOf(DockerHostDenied);
+  await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
+  await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
+  expect(await a.poll([a.cleanupId])).toEqual(a.restore);
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId });
   await expect(store.attachMachineRestore(a.owner, { ...claim, lease_epoch: "1" })).rejects.toBeInstanceOf(
     DockerHostDenied,
@@ -1288,10 +1315,10 @@ test("the current runner attaches only a completed Docker restore and can recove
     ]);
     return result.rows.length > 0;
   });
-  await expect(faultingStore.attachMachineRestore(a.owner, claim)).rejects.toMatchObject({ cause: failure });
+  await expect(resume(faultingStore)).rejects.toMatchObject({ cause: failure });
   expect(await current()).toEqual(predecessor);
-  expect(await store.attachMachineRestore(a.owner, claim)).toEqual(machine);
-  await expect(store.attachMachineRestore(a.owner, claim)).resolves.toEqual(machine);
+  expect(await resume()).toEqual(machine);
+  await expect(resume()).resolves.toEqual(machine);
   expect(await current()).toEqual({
     status: "starting",
     lifecycle_generation: claim.generation,
@@ -1299,6 +1326,7 @@ test("the current runner attaches only a completed Docker restore and can recove
     provider_sandbox_id: placement,
   });
 
+  await database().query("update jobs set state='done',lease_until=null,lease_owner=null where id=$1", [claim.id]);
   const stopId = randomUUID();
   await queueMailboxStop(sql, key, a.owner, a.sandboxId, stopId);
   await expect(a.poll()).resolves.toEqual({
@@ -1437,6 +1465,7 @@ test.each(["none", "pending", "settled"] as const)(
     expect(await a.poll()).toEqual(a.restore);
     await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed", machineId: "c".repeat(64) });
     await store.attachMachineRestore(a.owner, claim);
+    await database().query("update jobs set state='done',lease_until=null,lease_owner=null where id=$1", [claim.id]);
 
     if (stopAdmitted !== "none") {
       const stop = await queueMailboxStop(sql, key, a.owner, a.sandboxId, randomUUID());
@@ -1493,6 +1522,7 @@ test("retention cleanup settles an attached restore after expiry with atomic rol
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId: "c".repeat(64) });
   await denied(store.cleaned(a.hostToken, a.installationId, cleanup));
   await store.attachMachineRestore(a.owner, claim);
+  await database().query("update jobs set state='done',lease_until=null,lease_owner=null where id=$1", [claim.id]);
   await reportDockerExpiry(sql, key, a.hostToken, a.installationId, { requestId });
 
   const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, cleanup.cleanupReason);
@@ -2519,6 +2549,7 @@ test("an attached Docker restore can publish the replacement's retained outputs"
   expect(await a.poll()).toEqual(a.restore);
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId: "c".repeat(64) });
   await store.attachMachineRestore(a.owner, claim);
+  await database().query("update jobs set state='done',lease_until=null,lease_owner=null where id=$1", [claim.id]);
   await reportDockerExpiry(sql, key, a.hostToken, a.installationId, { requestId });
   const signal = new AbortController().signal;
   const outputs = (body: ReadableStream<Uint8Array> | null) =>

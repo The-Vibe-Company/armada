@@ -227,7 +227,7 @@ export async function attachDockerRestorePlacement(
     `with locked_runner as materialized (
        select j.lease_until,j.deadline_at from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
        where j.id=$1 and j.sandbox_id=$2 and j.generation=$3 and j.lease_epoch=$4
-         and j.org_id=s.org_id and j.kind='turn_dispatch' and j.state='leased' and j.attempts <= j.max_attempts
+         and j.org_id=s.org_id and j.kind='resume' and j.state='leased' and j.attempts <= j.max_attempts
        for update of j
      ), eligible as materialized (
        select s.id,s.docker_generation,s.provider_sandbox_id from public.sandboxes s cross join locked_runner j
