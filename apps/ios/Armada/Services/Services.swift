@@ -13,6 +13,8 @@ protocol SandboxService: Sendable {
     /// `POST /api/v1/logs/read`: one page of the conversation after an opaque cursor; `backward`
     /// reads the latest page, or the one before an older cursor (#812).
     func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage
+    /// `GET /api/v1/events`: live inline SSE stream. Pass `lastEventID` to resume after an SSE id.
+    func streamSandboxEvents(id: String, orgID: String, lastEventID: String?) -> AsyncThrowingStream<ConversationStreamEvent, Error>
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
     /// delivered; it is never resent automatically because native providers ignore its request_id.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
@@ -96,6 +98,11 @@ struct UnavailableServices: SandboxService {
 
     func sandboxEvents(id: String, orgID: String, cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage {
         throw .unavailable(reason)
+    }
+
+    func streamSandboxEvents(id: String, orgID: String, lastEventID: String?) -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        let message = reason
+        return AsyncThrowingStream { $0.finish(throwing: ServiceFailure.unavailable(message)) }
     }
 
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {

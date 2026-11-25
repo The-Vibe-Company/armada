@@ -44,7 +44,7 @@ public actor ArmadaClient {
     private static let conversationSignposter = OSSignposter(subsystem: "co.thevibecompany.armada", category: "ConversationRequest")
     public static let productionOrigin = URL(string: "https://armada.thevibecompany.co")!
     private let origin: URL
-    private let transport: any ArmadaTransport
+    let transport: any ArmadaTransport
     private let storage: any SessionStorage
     private var session: ArmadaSession?
     private var generation = 0
@@ -189,6 +189,23 @@ public actor ArmadaClient {
         try persist(session, org: selectedOrgID, sandboxPrompts: prompts)
         pendingSandboxPrompts = prompts
     }
+
+    func streamContext(sandboxID id: String, cursor: String?, lastEventID: String?) async throws -> (request: URLRequest, fence: Int) {
+        guard UUID(uuidString: id) != nil else { throw ArmadaError.invalidRequest }
+        guard isSignedIn else { throw ArmadaError.signedOut }; guard selectedOrgID != nil else { throw ArmadaError.forbidden }
+        if let lastEventID, !SSEFrameParser.isValidCursorID(lastEventID) { throw ArmadaError.invalidRequest }
+        if lastEventID == nil, let cursor, cursor != "tail", !SSEFrameParser.isValidCursorID(cursor) { throw ArmadaError.invalidRequest }
+        let fence = generation; let token = try await authority(); guard generation == fence else { throw CancellationError() }
+        var components = URLComponents(url: origin.appendingPathComponent("api/v1/events"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "sandbox", value: id)] + (lastEventID == nil ? cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? [] : [])
+        guard let url = components.url else { throw ArmadaError.invalidResponse }
+        var req = URLRequest(url: url); req.httpMethod = "GET"; req.timeoutInterval = 60
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept"); req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if let lastEventID { req.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
+        return (req, fence)
+    }
+    func isCurrentGeneration(_ fence: Int) -> Bool { generation == fence }
 
     /// Sandbox route codes that refuse before anything reaches the agent. Older servers answer 400 for
     /// other codes too, including `unknown` after a provider already accepted a prompt, so a bare

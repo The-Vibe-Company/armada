@@ -39,6 +39,7 @@ public struct ConversationSnapshot<Event: Identifiable & Equatable & Sendable>: 
     public fileprivate(set) var hasOlder = false
     /// The latest page was read: the next read continues forward from `cursor`.
     public fileprivate(set) var hasTail = false
+    fileprivate var liveOnly: [UInt64?] = []
 
     public init() {}
 
@@ -186,7 +187,9 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     private let cache: ConversationCache<Event>?
     private var revision = 0
     private var newestRevision = 0
-    private var forgotten = false
+    private var forgotten = false, liveConnected = false, wakePending = false
+    private var sleepContinuation: CheckedContinuation<Void, Never>? = nil, sleepTimer: Task<Void, Never>? = nil
+    private var sleepToken: UInt64 = 0
 
     public init(key: String, cache: ConversationCache<Event>?) {
         self.key = key
@@ -236,7 +239,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
                 failures = 0
                 onRead()
                 if more { continue }
-                try? await clock.sleep(for: pollDelay())
+                await waitForNextPoll(clock: clock, delay: pollDelay())
             } catch {
                 guard !Task.isCancelled, !forgotten else { return }
                 failures += 1
@@ -244,6 +247,32 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
                 try? await clock.sleep(for: backoff)
             }
         }
+    }
+
+    public func wake() {
+        guard !forgotten, !liveConnected else { return }
+        if sleepContinuation != nil { resumeSleep() } else { wakePending = true }
+    }
+    public func setLiveConnected(_ connected: Bool) {
+        guard !forgotten, liveConnected != connected else { return }
+        liveConnected = connected
+        if connected { wakePending = false; sleepTimer?.cancel(); sleepTimer = nil } else { wake() }
+    }
+    public func applyLiveEvent(_ event: Event, sequence: String? = nil, show: Show) async {
+        guard !forgotten, !Task.isCancelled else { return }
+        let seq = sequence.flatMap(UInt64.init)
+        if let seq, let cur = Self.cursorSequence(snapshot.cursor), seq <= cur { return }
+        let existingIndex = snapshot.events.firstIndex { $0.id == event.id }
+        revision += 1; newestRevision += 1
+        let changed = EventStream.merge([event], into: &snapshot.events)
+        if let idx = existingIndex {
+            let base = snapshot.events.count - snapshot.liveOnly.count
+            if idx >= base, let seq { snapshot.liveOnly[idx - base] = max(snapshot.liveOnly[idx - base] ?? 0, seq) }
+        } else { snapshot.liveOnly.append(seq) }
+        await publish(store: changed, render: changed, show: show)
+    }
+    private static func cursorSequence(_ cursor: String?) -> UInt64? {
+        guard let cursor, cursor.hasPrefix("ar1_"), let sep = cursor.lastIndex(of: "_") else { return nil }; return UInt64(cursor[cursor.index(after: sep)...])
     }
 
     /// Reads the page before the oldest event shown and prepends it. Does nothing when there is
@@ -274,11 +303,34 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
     /// Terminal for this loader (for example after a refused read). A new authorized screen
     /// creates a new loader; late reads may not restore this window or restart its polling.
     public func forget() {
-        forgotten = true
-        revision += 1
-        snapshot = ConversationSnapshot()
-        hasShown = false
-        cache?.remove(key)
+        forgotten = true; revision += 1; liveConnected = false; wakePending = false
+        resumeSleep(); snapshot = ConversationSnapshot(); hasShown = false; cache?.remove(key)
+    }
+
+    private func waitForNextPoll<C: Clock>(clock: C, delay: C.Duration) async {
+        guard !forgotten, !Task.isCancelled else { return }
+        if !liveConnected, wakePending { wakePending = false; return }
+        sleepToken &+= 1; let token = sleepToken
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || forgotten || (!liveConnected && wakePending) {
+                    if !liveConnected { wakePending = false }; c.resume(); return
+                }
+                sleepContinuation = c
+                guard !liveConnected else { return }
+                sleepTimer = Task { @MainActor [weak self] in
+                    try? await clock.sleep(for: delay)
+                    guard let self, self.sleepToken == token, !Task.isCancelled, !self.liveConnected else { return }
+                    self.resumeSleep(token: token)
+                }
+            }
+        } onCancel: { Task { @MainActor [weak self] in self?.resumeSleep(token: token) } }
+        sleepToken &+= 1; sleepTimer?.cancel(); sleepTimer = nil
+    }
+    private func resumeSleep(token: UInt64? = nil) {
+        if let token, sleepToken != token { return }
+        sleepTimer?.cancel(); sleepTimer = nil
+        if let c = sleepContinuation { sleepContinuation = nil; c.resume() }
     }
 
     /// One read toward the newest event. Returns whether another immediate read is needed
@@ -316,11 +368,21 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         // suppressing a conflicting live body: revalidate the whole page from the same cursor.
         // If that read fails, the existing frontier still permits a later retry of the update.
         guard incoming.count == page.events.count else { return true }
-        revision += 1
-        newestRevision += 1
-        let changed = EventStream.merge(incoming, into: &snapshot.events)
+        revision += 1; newestRevision += 1
+        let advanced = page.cursor != nil && page.cursor != previous; let changed: Bool
+        if advanced, !snapshot.liveOnly.isEmpty {
+            let before = snapshot.events; let n = min(snapshot.liveOnly.count, snapshot.events.count)
+            let tail = Array(zip(snapshot.events.suffix(n), snapshot.liveOnly.suffix(n)))
+            snapshot.events.removeLast(n); snapshot.liveOnly.removeAll(); _ = EventStream.merge(incoming, into: &snapshot.events)
+            if page.hasMore, let nextCur = Self.cursorSequence(page.cursor) {
+                for (ev, seq) in tail where (seq ?? 0) > nextCur {
+                    if !snapshot.events.contains(where: { $0.id == ev.id }) { snapshot.liveOnly.append(seq) }
+                    _ = EventStream.merge([ev], into: &snapshot.events)
+                }
+            }
+            changed = snapshot.events != before
+        } else { changed = EventStream.merge(incoming, into: &snapshot.events) }
         if let next = page.cursor { snapshot.cursor = next }
-        let advanced = snapshot.cursor != previous
         await publish(store: changed || advanced, render: changed, show: show)
         return page.hasMore && advanced
     }

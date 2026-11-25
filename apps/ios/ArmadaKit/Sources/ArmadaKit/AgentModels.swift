@@ -24,15 +24,15 @@ public enum JSONValue: Codable, Sendable, Equatable {
         }
     }
 }
-public struct AgentToolCall: Decodable, Sendable, Identifiable {
-    public struct Result: Decodable, Sendable { public let output: JSONValue; public let isError: Bool }
+public struct AgentToolCall: Decodable, Sendable, Equatable, Identifiable {
+    public struct Result: Decodable, Sendable, Equatable { public let output: JSONValue; public let isError: Bool }
     public let id: String
     public let name: String
     public let input: JSONValue?
     public let result: Result?
 }
-public struct AgentEvent: Decodable, Sendable, Identifiable {
-    public enum Body: Sendable {
+public struct AgentEvent: Decodable, Sendable, Equatable, Identifiable {
+    public enum Body: Sendable, Equatable {
         case prompt(text: String, status: String, reason: String?)
         case message(text: String, partial: Bool, messageId: String?, textMode: String?, model: String?, tools: [AgentToolCall])
         case steer(text: String, mode: String?)

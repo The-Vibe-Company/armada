@@ -54,6 +54,31 @@ struct ArmadaKitServices: SandboxService {
         }
     }
 
+    func streamSandboxEvents(id: String, orgID: String, lastEventID: String?) -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+        let client = self.client
+        return AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    guard await client.selectedOrgID == orgID else { throw ServiceFailure.noAccess }
+                    for try await item in client.streamSandboxEvents(id: id, cursor: lastEventID == nil ? "tail" : nil, lastEventID: lastEventID) {
+                        try Task.checkCancellation()
+                        switch item {
+                        case .connected: c.yield(.connected)
+                        case .frame(let f):
+                            switch f.kind {
+                            case .runtimeEvent(let e): c.yield(e.map { .event(id: f.id, sequence: f.sequence, Self.agentEvent($0)) } ?? .advance(id: f.id))
+                            case .transition(let s, let r): c.yield(.transition(id: f.id, status: s.map(SandboxStatus.init(rawValue:)), statusReason: r))
+                            case .unknown: c.yield(.advance(id: f.id))
+                            }
+                        }
+                    }
+                    c.finish()
+                } catch is CancellationError { c.finish(throwing: CancellationError()) } catch let f as ServiceFailure { c.finish(throwing: f) } catch { c.finish(throwing: Self.sandboxReadFailure(error)) }
+            }
+            c.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {
         try await requireOrganization(orgID)
         do {

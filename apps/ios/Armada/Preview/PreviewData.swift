@@ -91,6 +91,10 @@ enum PreviewData {
             )
         }
 
+        func streamSandboxEvents(id: String, orgID: String, lastEventID: String?) -> AsyncThrowingStream<ConversationStreamEvent, Error> {
+            AsyncThrowingStream { $0.yield(.connected) }
+        }
+
         func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {
             // Shows the unconfirmed path in previews: an outcome is never invented as success.
             throw .uncertain
