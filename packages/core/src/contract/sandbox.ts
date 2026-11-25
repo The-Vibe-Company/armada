@@ -236,7 +236,7 @@ export const statusOutput = {
   settled: z.boolean(),
 };
 
-const event = z.looseObject({
+export const agentEventSchema = z.looseObject({
   id: z.string(),
   at: z.number(),
   kind: z.enum(["prompt", "message", "steer", "other"]),
@@ -245,7 +245,7 @@ const event = z.looseObject({
 });
 
 export const LOGS_OUTPUT = {
-  events: z.array(event),
+  events: z.array(agentEventSchema),
   cursor: z.string().nullable(),
   olderCursor: z.string().optional(),
   hasMore: z.boolean(),

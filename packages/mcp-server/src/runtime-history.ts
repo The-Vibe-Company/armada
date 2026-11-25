@@ -102,7 +102,7 @@ export function createRuntimeHistory(
 }
 
 export type SandboxLogReader = Pick<Provider, "events" | "get" | "getPrompt"> & {
-  followSettled?(): Promise<boolean | undefined>;
+  followSettled?(fenceEvents?: boolean): Promise<boolean | undefined>;
 };
 
 export function createModalJobReader(sql: Sql, key: string) {
@@ -167,6 +167,7 @@ export function createModalJobReader(sql: Sql, key: string) {
       id: sandbox.provider,
       events,
       enrolledStatus: observed.enrolled_status,
+      settled: observed.settled,
       setupFailure: modalSetupFailureReason(observed.setup_reason),
       verify: current,
       async followSettled() {
@@ -202,7 +203,12 @@ export function createModalJobReader(sql: Sql, key: string) {
         });
       },
     } satisfies Pick<SandboxLogReader, "events" | "getPrompt" | "followSettled"> &
-      Pick<Provider, "id"> & { enrolledStatus: SandboxStatus | null; setupFailure: string; verify: typeof current };
+      Pick<Provider, "id"> & {
+        enrolledStatus: SandboxStatus | null;
+        settled: boolean;
+        setupFailure: string;
+        verify: typeof current;
+      };
     return reader;
   };
 }
@@ -222,9 +228,10 @@ export function createModalLogReader(
     const observe = () => (observation ??= resolveProvider(sandbox, caller));
     return {
       events: (request) => followed?.events(request) ?? history(caller, sandbox.id, request),
-      async followSettled() {
-        followed = await jobReader(sandbox, caller);
-        return followed?.followSettled();
+      async followSettled(fenceEvents = true) {
+        const job = await jobReader(sandbox, caller);
+        if (fenceEvents) followed = job;
+        return job?.settled;
       },
       get: async (...args) => (await observe()).get(...args),
       getPrompt: async (request) => (await observe()).getPrompt(request),

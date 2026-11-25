@@ -172,9 +172,9 @@ Boat sandboxes report events and token usage through the enrolled Armada runtime
 
 Fetch `GET /api/v1/events?sandbox=<UUID>` with an `Authorization: Bearer ...` header. The sandbox owner, an organization admin, and a bearer scoped to read that child or view that sandbox can subscribe. A refusal returns HTTP 403 before streaming.
 
-Each frame carries the global decimal-string SSE `id` and an event-log reference. Runtime entries include the per-sandbox `sequence`. Transition entries have a null sequence. Fetch logs or status for content.
+Each frame carries the global decimal-string SSE `id` and event metadata. Public runtime entries include the per-sandbox `sequence` and inline decrypted `event` payload. Transition entries have a null sequence and include `status` and `statusReason`.
 
-Reconnect with the last processed ID in `Last-Event-ID` or `cursor`. The header takes precedence and playback starts strictly after that ID. With neither, the stream replays available history. Idle feeds send a heartbeat comment every 15 seconds.
+Reconnect with the last processed ID in `Last-Event-ID` or `cursor`. The header takes precedence and playback starts strictly after that ID. Pass `cursor=tail` to start at the live frontier without replaying history, or omit both to replay available history. Idle feeds send a heartbeat comment every 15 seconds.
 
 ## Drive a turn over MCP
 

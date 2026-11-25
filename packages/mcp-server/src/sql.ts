@@ -1,6 +1,6 @@
 import type { Sql } from "@armada/core";
 import { measureDbAcquire, measureSqlQuery } from "./request-timing.ts";
-import { collectTransactionWakes } from "./wake-bus.ts";
+import { collectTransactionWakes, type PgNotifyClient } from "./wake-bus.ts";
 
 /** The one method of Bun's Postgres client the server uses. */
 export interface SqlDriver {
@@ -66,16 +66,19 @@ export function sqlOver(driver: SqlDriver): Sql {
   };
 }
 
-/** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
-export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { close(): Promise<void> } {
+function isUnnamedPooler(url: string) {
   let address: URL;
   try {
     address = new URL(url);
   } catch {
     throw new Error("Invalid database URL.");
   }
-  const unnamedPooler =
-    address.hostname.toLowerCase().endsWith(".pooler.supabase.com") && ["", "5432", "6543"].includes(address.port);
+  return address.hostname.toLowerCase().endsWith(".pooler.supabase.com") && ["", "5432", "6543"].includes(address.port);
+}
+
+/** `Sql` over Bun's Postgres client, for the privileged `ARMADA_DATABASE_URL` connection. */
+export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { close(): Promise<void> } {
+  const unnamedPooler = isUnnamedPooler(url);
   // Use a single Parse/Bind/Execute exchange on both shared pooler modes, including cold statements.
   // Session mode supports named statements, but preparing a cache miss adds a Describe exchange.
   // Transaction mode additionally cannot retain named statements across backend leases.
@@ -135,4 +138,20 @@ export function bunSql(url: string, max = 3, queryTimeoutMs?: number): Sql & { c
       await Promise.all([client.close(), autonomous.close()]);
     },
   };
+}
+
+export function createPgNotifyClient(url: string) {
+  const client = new Bun.SQL(url, {
+    ...(isUnnamedPooler(url) ? { prepare: false } : {}),
+    max: 1,
+    connectionTimeout: 5,
+    idleTimeout: 0,
+  }) as unknown as {
+    listen(channel: string, onNotify: (payload: string) => void): Promise<{ unlisten(): Promise<void> }>;
+    close(): Promise<void>;
+  };
+  return {
+    listen: (channel, onNotify) => client.listen(channel, onNotify),
+    close: () => client.close(),
+  } satisfies PgNotifyClient;
 }
