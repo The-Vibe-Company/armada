@@ -508,8 +508,10 @@ export function SandboxChat(props: Props) {
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   const unconfirmed = useMemo(() => unconfirmedMessages(outbox, chat.items), [outbox, chat.items]);
   useEffect(() => {
-    pendingRuntimePrompts.current = pendingRuntimePrompts.current.filter((id) =>
-      unconfirmed.some((message) => message.requestId === id && !message.failure),
+    pendingRuntimePrompts.current = pendingRuntimePrompts.current.filter(
+      (id) =>
+        !outbox.some((message) => message.requestId === id) ||
+        unconfirmed.some((message) => message.requestId === id && !message.failure),
     );
     if (unconfirmed.length !== outbox.length) setOutbox((current) => (current === outbox ? unconfirmed : current));
   }, [outbox, unconfirmed]);
