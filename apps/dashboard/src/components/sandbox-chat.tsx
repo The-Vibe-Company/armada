@@ -183,7 +183,7 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
-  const pendingRuntimePrompt = useRef<string | null>(null);
+  const pendingRuntimePrompts = useRef<string[]>([]);
   const [outbox, setOutbox] = useState<PendingMessage[]>([]);
   const [history, setHistory] = useState(initialChatHistory);
   const currentHistory = useRef(initialChatHistory);
@@ -263,7 +263,8 @@ export function SandboxChat(props: Props) {
       const path = loaded ? "events" : "history";
       const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
-      if (pendingRuntimePrompt.current) url.searchParams.set("pending", pendingRuntimePrompt.current);
+      const oldestPending = pendingRuntimePrompts.current[0];
+      if (oldestPending) url.searchParams.set("pending", oldestPending);
       const controller = new AbortController();
       session.controller = controller;
       try {
@@ -380,7 +381,12 @@ export function SandboxChat(props: Props) {
           if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
           else if (session.pendingUpdate) {
             session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
-          } else if (result.active || result.working || result.refreshNeeded || pendingRuntimePrompt.current) {
+          } else if (
+            result.active ||
+            result.working ||
+            result.refreshNeeded ||
+            pendingRuntimePrompts.current.length > 0
+          ) {
             session.timer = setTimeout(() => void readUpdate(), result.working ? WORKING_POLL_MS : IDLE_POLL_MS);
           }
           return;
@@ -502,8 +508,9 @@ export function SandboxChat(props: Props) {
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   const unconfirmed = useMemo(() => unconfirmedMessages(outbox, chat.items), [outbox, chat.items]);
   useEffect(() => {
-    if (!unconfirmed.some((message) => message.requestId === pendingRuntimePrompt.current && !message.failure))
-      pendingRuntimePrompt.current = null;
+    pendingRuntimePrompts.current = pendingRuntimePrompts.current.filter((id) =>
+      unconfirmed.some((message) => message.requestId === id && !message.failure),
+    );
     if (unconfirmed.length !== outbox.length) setOutbox((current) => (current === outbox ? unconfirmed : current));
   }, [outbox, unconfirmed]);
 
@@ -597,7 +604,7 @@ export function SandboxChat(props: Props) {
               running={turnRunning}
               onSending={(message) => setOutbox((current) => [...current, message])}
               onSendSettled={(requestId, promptId) => {
-                if (props.pinnedModel && promptId) pendingRuntimePrompt.current = requestId;
+                if (props.pinnedModel && promptId) pendingRuntimePrompts.current.push(requestId);
                 setOutbox((current) =>
                   current.flatMap((message) => {
                     if (message.requestId !== requestId) return [message];
