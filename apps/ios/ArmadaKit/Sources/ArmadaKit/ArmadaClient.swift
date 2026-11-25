@@ -16,6 +16,16 @@ public struct Organization: Codable, Sendable, Identifiable {
     public let name: String
     public let role: String
 }
+public struct AccountStatus: Decodable, Sendable, Equatable {
+    public struct Membership: Decodable, Sendable, Equatable {
+        public let orgId: String
+        public let role: String
+    }
+    public let userId: String
+    public let orgs: [Membership]
+    public let authentication: String
+    public let version: String
+}
 private struct Organizations: Decodable, Sendable { let orgs: [Organization] }
 private struct ArmadaFailureEnvelope: Decodable {
     struct Detail: Decodable { let code: String; let message: String? }
@@ -41,6 +51,7 @@ public actor ArmadaClient {
     private var refreshing: Task<ArmadaSession, Error>?
     private var refreshID: UUID?
     public private(set) var selectedOrgID: String?
+    public private(set) var currentUserID: String?
     public private(set) var pendingSandboxPrompts: [PendingSandboxPrompt] = []
 
     public init(origin: URL = productionOrigin, transport: any ArmadaTransport = URLSessionTransport(),
@@ -64,7 +75,7 @@ public actor ArmadaClient {
             let prompts = stored.sandboxPrompts ?? []
             try persist(stored.session, org: stored.selectedOrgID, sandboxPrompts: prompts)
             pendingSandboxPrompts = prompts
-            session = stored.session; selectedOrgID = stored.selectedOrgID; generation += 1
+            session = stored.session; selectedOrgID = stored.selectedOrgID; currentUserID = nil; generation += 1
         } catch { throw ArmadaError.secureStorage }
     }
 
@@ -91,7 +102,14 @@ public actor ArmadaClient {
         guard generation == fence else { throw CancellationError() }
         try persist(next, org: nil, sandboxPrompts: [])
         refreshing?.cancel(); refreshing = nil; refreshID = nil; generation += 1
-        pendingSandboxPrompts = []; session = next; selectedOrgID = nil
+        pendingSandboxPrompts = []; session = next; selectedOrgID = nil; currentUserID = nil
+    }
+    public func accountStatus() async throws -> AccountStatus {
+        let fence = generation
+        let result: AccountStatus = try await post("account/status", Empty())
+        guard generation == fence else { throw CancellationError() }
+        currentUserID = result.userId
+        return result
     }
     public func organizations() async throws -> [Organization] {
         let result: Organizations = try await post("org/list", Empty())
@@ -109,7 +127,7 @@ public actor ArmadaClient {
     public func signOut() async throws {
         let token = session?.accessToken
         pendingSandboxPrompts = []
-        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil
+        generation += 1; refreshing?.cancel(); refreshing = nil; refreshID = nil; session = nil; selectedOrgID = nil; currentUserID = nil
         do { try storage.remove() } catch { throw ArmadaError.secureStorage }
         if let token { let _: OK = try await wire("account/logout", Empty(), token: token) }
     }
@@ -177,7 +195,9 @@ public actor ArmadaClient {
     /// 400 never proves that a prompt was not delivered.
     static let sandboxRefusalCodes: Set<String> = [
         "invalid", "invalid_request", "sandbox_not_ready", "unsupported", "payment_required", "rate_limited",
-        "missing_credential", "unauthorized",
+        "missing_credential", "unauthorized", "credential_binding_required", "sandbox_busy",
+        "sandbox_retention_ended", "docker_host_upgrade_required", "provider_not_configured",
+        "provider_routing_unavailable", "conflict", "not_found", "forbidden",
     ]
     private func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil

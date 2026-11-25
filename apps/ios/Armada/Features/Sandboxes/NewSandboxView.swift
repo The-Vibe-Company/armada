@@ -281,16 +281,23 @@ struct NewSandboxView: View {
 
     @ViewBuilder
     private func agentSection(_ catalog: ArmadaKit.SandboxLaunchCatalog) -> some View {
+        let harnesses = catalog.harnesses(for: catalog.golden(model.draft?.goldenID))
         Section("Agent") {
-            Picker("Agent", selection: harnessBinding(catalog)) {
-                ForEach(catalog.harnesses) { harness in
-                    Text(harnessLabel(harness.id)).tag(harness.id)
+            if harnesses.isEmpty {
+                Text("No agent is available for this golden's provider.")
+                    .font(.footnote)
+                    .foregroundStyle(ArmadaTheme.textSecondary)
+            } else {
+                Picker("Agent", selection: harnessBinding(catalog)) {
+                    ForEach(harnesses) { harness in
+                        Text(harnessLabel(harness.id)).tag(harness.id)
+                    }
                 }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("launch.agent")
+                modelFields(catalog)
+                accountField(catalog)
             }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("launch.agent")
-            modelFields(catalog)
-            accountField(catalog)
         }
     }
 
@@ -316,7 +323,7 @@ struct NewSandboxView: View {
                 .font(.footnote)
         }
         let efforts = harness?.efforts(for: model.draft?.model ?? "") ?? []
-        if !efforts.isEmpty {
+        if efforts.count > 1 {
             Picker("Reasoning effort", selection: draftBinding(\.reasoningEffort, default: "")) {
                 ForEach(efforts, id: \.self) { effort in
                     Text(effort.capitalized).tag(effort)
@@ -412,7 +419,12 @@ struct NewSandboxView: View {
     private func goldenBinding(_ catalog: ArmadaKit.SandboxLaunchCatalog) -> Binding<String?> {
         Binding(
             get: { model.draft?.goldenID },
-            set: { id in if let id { model.draft?.adopt(goldenID: id, catalog: catalog) } }
+            set: { id in
+                guard let id else { return }
+                let previousHarness = model.draft?.harness
+                model.draft?.adopt(goldenID: id, catalog: catalog)
+                if model.draft?.harness != previousHarness { model.customModel = false }
+            }
         )
     }
 

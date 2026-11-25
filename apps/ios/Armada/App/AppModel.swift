@@ -35,8 +35,7 @@ final class AppModel {
     /// A short message for the sign-in screen (for example, why the session ended).
     private(set) var signInNotice: String?
     private(set) var sandboxes: any SandboxService
-    /// The signed-in person's id, once ArmadaKit publishes the account identity (`account/status`).
-    /// Until then ownership is shown from server hints only, never inferred.
+    /// The signed-in person's id, populated from `POST /api/v1/account/status` on restore and sign-in.
     private(set) var currentUserID: String?
     /// The conversations read recently, so returning to one shows it at once. In memory only;
     /// emptied when the session ends or another organization is selected.
@@ -121,6 +120,7 @@ final class AppModel {
             return Self.message(for: error)
         }
         signInNotice = nil
+        currentUserID = nil
         await loadOrganizations(client: client)
         return nil
     }
@@ -181,6 +181,7 @@ final class AppModel {
     }
 
     private func loadOrganizations(client: ArmadaClient) async {
+        async let accountStatus = client.accountStatus()
         let loaded: [Organization]
         do {
             loaded = try await client.organizations()
@@ -191,6 +192,9 @@ final class AppModel {
         } catch {
             phase = .unreachable(Self.message(for: error))
             return
+        }
+        if let status = try? await accountStatus {
+            currentUserID = status.userId
         }
         organizations = loaded.map { OrganizationChoice(id: $0.id, name: $0.name, role: $0.role) }
         let selectedID = await client.selectedOrgID

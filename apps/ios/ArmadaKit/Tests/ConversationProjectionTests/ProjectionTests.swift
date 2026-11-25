@@ -105,3 +105,15 @@ private func message(
         #expect(projection.items.map(\.kind) == sample.expected)
     }
 }
+
+@Test func providerIDRecognizesBoatModalDockerAndPreservesUnknownValues() {
+    #expect(ProviderID(rawValue: "boat") == .boat)
+    #expect(ProviderID.boat.rawValue == "boat" && ProviderID.boat.label == "Boat")
+    #expect(ProviderID(rawValue: "modal") == .modal)
+    #expect(ProviderID.modal.rawValue == "modal" && ProviderID.modal.label == "Modal")
+    #expect(ProviderID(rawValue: "docker") == .docker)
+    #expect(ProviderID.docker.rawValue == "docker" && ProviderID.docker.label == "Docker")
+    let future = ProviderID(rawValue: "future")
+    #expect(future == .other("future"))
+    #expect(future.rawValue == "future" && future.label == "future")
+}

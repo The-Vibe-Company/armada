@@ -7,12 +7,14 @@ import Foundation
 enum ProviderID: Hashable, Sendable {
     case boat
     case modal
+    case docker
     case other(String)
 
     init(rawValue: String) {
         switch rawValue {
         case "boat": self = .boat
         case "modal": self = .modal
+        case "docker": self = .docker
         default: self = .other(rawValue)
         }
     }
@@ -21,6 +23,7 @@ enum ProviderID: Hashable, Sendable {
         switch self {
         case .boat: "boat"
         case .modal: "modal"
+        case .docker: "docker"
         case .other(let value): value
         }
     }
@@ -30,6 +33,7 @@ enum ProviderID: Hashable, Sendable {
         switch self {
         case .boat: "Boat"
         case .modal: "Modal"
+        case .docker: "Docker"
         case .other(let value): value
         }
     }
