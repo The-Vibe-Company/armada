@@ -3395,9 +3395,6 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
     });
     expect(resumeCalls).toBe(0);
     expect(await counts(f)).toEqual(before);
-    expect((await db.query("select 1 from public.docker_resume_claims where sandbox_id=$1", [requestId])).rows).toEqual(
-      [],
-    );
     expect((await createDockerSandboxService(sql).get(f.actor, requestId)).status).toBe("stopped");
   }
 });

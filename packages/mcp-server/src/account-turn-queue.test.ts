@@ -64,8 +64,6 @@ beforeAll(async () => {
     create table docker_launch_manifests(sandbox_id uuid primary key,async_launch boolean not null,result_enc bytea);
     create table docker_hosts(id uuid,org_id uuid,installation_id uuid,owner_id uuid,hash text,
       registration_hash text,revoked_at timestamptz);
-    create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
-      installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
     create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb,source_epoch bigint,activated_at timestamptz,conversation_id text,request_hash text);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
@@ -115,7 +113,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_manifests; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; delete from sandbox_transitions; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_launch_manifests; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; delete from sandbox_transitions; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
