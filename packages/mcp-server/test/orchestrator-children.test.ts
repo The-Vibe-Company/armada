@@ -742,6 +742,12 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
         "insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash) values($1,1,1,repeat('a',64))",
         [sandboxId],
       );
+      const deadline = new AbortController();
+      const timeout =
+        outcome === "deadline expired"
+          ? // oxlint-disable-next-line landmines-testing/no-test-doubles -- Drive the internal admission timer without a wall-clock wait.
+            spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal)
+          : undefined;
       const send = services.childWorker.message(token, "message", sandboxId, "follow up", abort.signal);
       async function expectWaiting() {
         expect(await Promise.race([waiting.promise.then(() => "waiting"), send.then((receipt) => receipt.state)])).toBe(
@@ -749,7 +755,7 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
         );
         expect(dispatches).toBe(0);
       }
-      await expectWaiting();
+      await expectWaiting().finally(() => timeout?.mockRestore());
       if (outcome === "succeeds") {
         await db.query("update jobs set state='done' where id=$1", [setup.id]);
         const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
@@ -770,7 +776,7 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
       } else if (outcome === "revoked") {
         await authority.revoke(id);
       } else if (outcome === "deadline expired") {
-        abort.abort(new DOMException("Admission timed out", "TimeoutError"));
+        deadline.abort(new DOMException("Admission timed out", "TimeoutError"));
       } else {
         await db.query("update jobs set state='failed' where id=$1", [setup.id]);
       }
