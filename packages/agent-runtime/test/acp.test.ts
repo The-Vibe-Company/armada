@@ -83,6 +83,7 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         expect(tools).toEqual([
           { id: expect.any(String), name: preview, input: command },
           { id: expect.any(String), name: "tool_result" },
+          { id: expect.any(String), name: "tool_result", input: { title: command, rawInput: { cwd: "/tmp" } } },
           {
             id: expect.any(String),
             name: preview,
@@ -91,7 +92,8 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
           { id: "tool", name: "shell" },
         ]);
         expect(tools[0]?.id).toBe(tools[1]?.id);
-        expect(tools[0]?.id).not.toBe(tools[2]?.id);
+        expect(tools[0]?.id).toBe(tools[2]?.id);
+        expect(tools[0]?.id).not.toBe(tools[3]?.id);
         for (const tool of tools) {
           expect(tool.id.length).toBeGreaterThan(0);
           expect(tool.id.length).toBeLessThanOrEqual(256);

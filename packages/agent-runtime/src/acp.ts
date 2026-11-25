@@ -86,6 +86,7 @@ export class AcpDriver implements Driver {
       stopped = false,
       interrupted = false,
       steering = false;
+    const longToolTitles = new Map<string, string>();
     const pending = new Map<
       number,
       {
@@ -211,9 +212,12 @@ export class AcpDriver implements Driver {
               };
               const label = redactIdentifier(title).trim();
               const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
+              const id = toolCallIdentifier(redactIdentifier(u.toolCallId));
+              const longTitle = label.length > name.length ? redact(title) : undefined;
+              if (longTitle !== undefined) longToolTitles.set(id, longTitle);
+              const command = longTitle ?? (u.rawInput === undefined ? undefined : longToolTitles.get(id));
               let input = u.rawInput;
-              if (label.length > name.length) {
-                const command = redact(title);
+              if (command !== undefined) {
                 input =
                   input === null || input === undefined || input === title
                     ? command
@@ -225,7 +229,7 @@ export class AcpDriver implements Driver {
                 partial: false,
                 tools: [
                   {
-                    id: toolCallIdentifier(redactIdentifier(u.toolCallId)),
+                    id,
                     name,
                     ...(input === undefined ? {} : { input }),
                     ...(u.status === "completed" || u.status === "failed"

@@ -189,6 +189,7 @@ for await (const line of lines) {
         for (const update of [
           { sessionUpdate: "tool_call", toolCallId: command, title: command },
           { sessionUpdate: "tool_call_update", toolCallId: command, title: "" },
+          { sessionUpdate: "tool_call_update", toolCallId: command, rawInput: { cwd: "/tmp" } },
           { sessionUpdate: "tool_call", toolCallId: `${command}2`, title: command, rawInput: { cwd: "/tmp" } },
           { sessionUpdate: "tool_call", toolCallId: "\0", title: "  sh\0ell  " },
         ])
