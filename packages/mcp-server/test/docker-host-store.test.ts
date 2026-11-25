@@ -2995,10 +2995,28 @@ test("a failed startup receipt cannot replace durable stop intent", async () => 
 });
 
 // Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
-test("uninstall drains bound machines through stop/delete ACKs before idempotent revocation", async () => {
-  const a = await boundFixture();
-  await store.submitMachineCreate(a.owner, a.request);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+test("uninstall drains a pre-cutover allocation through stop/delete ACKs before idempotent revocation", async () => {
+  const placement = { sandboxId: randomUUID(), generation: randomUUID(), expiresAt: Date.UTC(2099, 0, 1) };
+  const a = await boundFixture(undefined, placement);
+  const requestId = randomUUID();
+  const create = {
+    operation: "create",
+    request: { ...placement, image: job().request.image, ttlSeconds: 3600 },
+  };
+  await sql.query(
+    `insert into docker_host_jobs(request_id,host_id,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,input_enc)
+     select $1,$2,$3,user_id,epoch,'create',$4 from mcp_actor_epochs where org_id=$5 and user_id=$6`,
+    [
+      requestId,
+      a.hostId,
+      a.sandboxId,
+      await encryptSecret(JSON.stringify({ bound: 1, job: create }), key),
+      a.owner.orgId,
+      a.owner.userId,
+    ],
+  );
+  expect(await store.poll(a.hostToken, a.installationId)).toMatchObject({ ...create, requestId });
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   const stop = await store.poll(a.hostToken, a.installationId, "2.27.0");
   expect(stop?.operation).toBe("stop");
@@ -3040,6 +3058,33 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   await denied(store.poll(a.hostToken, a.installationId));
   await denied(store.unregister(a.hostToken, randomUUID()));
+});
+
+test("host drain waits for a delete admitted after the drain snapshot", async () => {
+  const a = await boundFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
+  const remove = { requestId: randomUUID(), operation: "delete" as const };
+  let interleave = true;
+  const draining = createDockerHostStore(
+    {
+      ...sql,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        if (interleave) {
+          interleave = false;
+          await store.enqueueCleanup(a.owner, a.sandboxId, remove);
+        }
+        return result;
+      },
+    },
+    key,
+  );
+
+  expect(await draining.unregister(a.hostToken, a.installationId)).toBe(false);
+  expect(await store.poll(a.hostToken, a.installationId)).toMatchObject(remove);
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
 });
 
 test("a completed Docker delete proves exit and journals deletion of a failed sandbox", async () => {

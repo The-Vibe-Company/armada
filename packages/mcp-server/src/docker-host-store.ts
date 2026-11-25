@@ -2251,9 +2251,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
              and bound_operation='delete' and outcome is null order by position limit 1`,
             [sandboxId],
           );
-          if (pending && (pending.bound_actor_id !== actor.userId || (requestId && requestId !== pending.request_id)))
-            throw new VaultError("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
-          requestId ??= pending?.request_id;
+          if (pending) {
+            if (!authorizeDelete) return { requestId: pending.request_id };
+            if (pending.bound_actor_id !== actor.userId || (requestId && requestId !== pending.request_id))
+              throw new VaultError("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
+            requestId = pending.request_id;
+          }
         }
         requestId ??= randomUUID();
         id(requestId);
