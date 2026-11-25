@@ -3,7 +3,7 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
-import { toolIdentifier } from "./journal.ts";
+import { toolCallIdentifier, toolIdentifier } from "./journal.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -211,14 +211,18 @@ export class AcpDriver implements Driver {
               };
               const label = redactIdentifier(title).trim();
               const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
-              const input = u.rawInput === undefined && label.length > name.length ? redact(title) : u.rawInput;
+              let input = u.rawInput;
+              if (label.length > name.length) {
+                const command = redact(title);
+                input = input == null || input === title ? command : { title: command, rawInput: input };
+              }
               c.emit({
                 kind: "message",
                 text: "",
                 partial: false,
                 tools: [
                   {
-                    id: toolIdentifier(redactIdentifier(u.toolCallId)),
+                    id: toolCallIdentifier(redactIdentifier(u.toolCallId)),
                     name,
                     ...(input === undefined ? {} : { input }),
                     ...(u.status === "completed" || u.status === "failed"

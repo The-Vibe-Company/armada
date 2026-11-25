@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type { AgentEvent, PromptStatus } from "@armada/core";
 import { describePromptFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
@@ -66,6 +67,12 @@ function boundedPreview(text: string, limit: number): string {
 
 export function toolIdentifier(value: string, fallback = "tool") {
   return boundedPreview(value.replaceAll("\0", ""), 256) || fallback;
+}
+
+export function toolCallIdentifier(value: string) {
+  if (value.length <= 256) return toolIdentifier(value);
+  const suffix = createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return `${boundedPreview(value, 256 - suffix.length - 1)}-${suffix}`;
 }
 
 function maskText(original: string, scrubbed: string, mask: (text: string) => string) {
@@ -566,13 +573,13 @@ export class Journal {
         const original = event.tools[index]!;
         const field = (before: string, after: string) => {
           const text = mask ? maskText(before, after, mask) : after;
-          return toolIdentifier(text.includes("\0") ? this.redactLiteralText(text.replaceAll("\0", "")) : text);
+          return text.includes("\0") ? this.redactLiteralText(text.replaceAll("\0", "")) : text;
         };
         return {
           ...tool,
-          id: field(original.id, tool.id),
-          name: field(original.name, tool.name),
-          ...(tool.server === undefined ? {} : { server: field(original.server!, tool.server) }),
+          id: toolCallIdentifier(field(original.id, tool.id)),
+          name: toolIdentifier(field(original.name, tool.name)),
+          ...(tool.server === undefined ? {} : { server: toolIdentifier(field(original.server!, tool.server)) }),
           ...(mask && tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
           ...(mask && tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
         };

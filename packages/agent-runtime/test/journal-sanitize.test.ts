@@ -97,10 +97,11 @@ test("emits server-valid tool metadata after literal and short application redac
       );
       const redacted = `${"a".repeat(247)}[REDACTED`;
       expect(event.tools).toEqual([
-        { id: redacted, name: redacted, server: redacted },
-        { id: `${"a".repeat(254)}😀`, name: "tool", server: "tool" },
+        { id: expect.any(String), name: redacted, server: redacted },
+        { id: expect.any(String), name: "tool", server: "tool" },
         { id: "other", name: "[REDACTED]" },
       ]);
+      expect(event.tools[0]?.id).not.toBe(event.tools[1]?.id);
     } finally {
       journal.close();
     }
