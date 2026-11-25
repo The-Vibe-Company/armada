@@ -1352,7 +1352,10 @@ async function dispatchModalLaunch(
   const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
   const eligible = `s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
     and s.status='starting' and (s.runtime_transport='dialout' or s.boat_runtime)`;
-  const dispatchTarget = async (tx: Sql, lockLease = false): Promise<Target | undefined> => {
+  const dispatchTarget: (tx: Sql, lockLease?: boolean) => Promise<Target | undefined> = async (
+    tx,
+    lockLease = false,
+  ) => {
     let row: Target | undefined;
     if (lockLease) {
       const {
