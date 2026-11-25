@@ -26,7 +26,7 @@ export default async function OrgsPage() {
   const memberships = await listMemberships(supabase, viewer.id);
 
   return (
-    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-7">
+    <div className="mx-auto flex w-full flex-col gap-7">
       <PageHeader title="Organizations">
         <CreateDialog
           label="New org"

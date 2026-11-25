@@ -19,7 +19,6 @@ import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
-import { ShellPageActions } from "@/components/shell-page-actions";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -549,41 +548,37 @@ function ThreadHeader({
   );
   return (
     <>
-      <ShellPageActions>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <ShellPageActions slot="status">
-              <SandboxState
-                viewerOwns={sandbox.owner_id === viewer.id}
-                status={sandbox.publicStatus}
-                statusMessage={sandbox.status_reason}
-                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-                idlePaused={sandbox.status_reason === "idle_paused"}
-                expiresAt={sandbox.expires_at}
-              />
-            </ShellPageActions>
-            {!docker && (
-              <>
-                {sandbox.publicStatus === "running" &&
-                  sandbox.status_reason &&
-                  sandbox.status_reason !== "idle_paused" && (
-                    <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
-                  )}
-                {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
-                {rowCost}
-              </>
-            )}
-          </div>
-          {docker ? (
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
+          <SandboxState
+            viewerOwns={sandbox.owner_id === viewer.id}
+            status={sandbox.publicStatus}
+            statusMessage={sandbox.status_reason}
+            readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
+            idlePaused={sandbox.status_reason === "idle_paused"}
+            expiresAt={sandbox.expires_at}
+          />
+          {!docker && (
             <>
+              {sandbox.publicStatus === "running" &&
+                sandbox.status_reason &&
+                sandbox.status_reason !== "idle_paused" && (
+                  <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
+                )}
+              {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
               {rowCost}
-              {children}
             </>
-          ) : (
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{children}</div>
           )}
         </div>
-      </ShellPageActions>
+        {docker ? (
+          <>
+            {rowCost}
+            {children}
+          </>
+        ) : (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{children}</div>
+        )}
+      </div>
       {life.notice && (
         <p className="text-sm text-muted-foreground">
           {life.notice.title} · {life.notice.text}
@@ -682,15 +677,13 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
             {HARNESS_LABELS[sandbox.harness] ?? "Agent"} sandbox
           </h1>
-          <ShellPageActions>
-            <SandboxState
-              viewerOwns={false}
-              status={sandbox.status}
-              idlePaused={sandbox.idlePaused === true}
-              readyLabel="Waiting for you"
-              expiresAt={sandbox.expiresAt}
-            />
-          </ShellPageActions>
+          <SandboxState
+            viewerOwns={false}
+            status={sandbox.status}
+            idlePaused={sandbox.idlePaused === true}
+            readyLabel="Waiting for you"
+            expiresAt={sandbox.expiresAt}
+          />
         </div>
       </div>
       <Alert data-restricted role="status">

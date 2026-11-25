@@ -191,6 +191,12 @@
       /* When main scrolls, an absolutely placed descendant (an sr-only label) stays inside it, not below the document. */
       position: relative;
     }
+    [data-shell-content]:has(> [data-fit-viewport]) {
+      display: flex;
+      flex: 1 1 0;
+      flex-direction: column;
+      min-height: 0;
+    }
     [data-fit-viewport],
     [data-fit="column"],
     [data-fit="chat"],
@@ -242,7 +248,7 @@
     }
     /* A phone gives the conversation the room the page's padding took. */
     @media (max-width: 47.99rem) {
-      [data-shell]:has([data-fit-viewport]) > main {
+      [data-shell-content]:has(> [data-fit-viewport]) {
         padding-block: 0.75rem;
       }
     }

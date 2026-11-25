@@ -5,7 +5,7 @@ import { CommandMenu } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
-import { ShellBreadcrumb, ShellSearch } from "@/components/shell-toolbar";
+import { ShellSearch, ShellToolbar } from "@/components/shell-toolbar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -46,16 +46,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     >
       <AppSidebar
         header={header}
-        mobileLaunch={
-          <div data-shell-launch>
-            <SandboxLaunchAction />
-          </div>
-        }
         launch={
-          <div
-            data-shell-launch
-            className="px-3 pb-2 group-data-[state=collapsed]:px-2 group-data-[state=collapsed]:[&_button]:justify-center group-data-[state=collapsed]:[&_button_span]:sr-only group-data-[state=collapsed]:[&_kbd]:hidden [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none fine-hover:[&_button:hover]:bg-[var(--raised)]"
-          >
+          <div data-shell-launch className="px-3 pb-2 group-data-[state=collapsed]:px-2">
             <SandboxLaunchAction shortcut />
           </div>
         }
@@ -96,9 +88,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </AppSidebar>
       <CommandMenu organizationAdmin={selected?.role === "admin"} />
       <Toaster />
-      <main className="w-full min-w-0 flex-1 space-y-6 px-4 py-6 md:px-6 md:py-6">
-        <ShellBreadcrumb organization={selected?.org.name ?? "Armada"} />
-        {children}
+      <main className="min-w-0 flex-1">
+        <ShellToolbar organization={selected?.org.name ?? "Armada"} launch={<SandboxLaunchAction />} />
+        <div data-shell-content className="mx-auto w-full max-w-[1360px] space-y-6 px-5 py-5 md:px-7 md:py-6">
+          {children}
+        </div>
       </main>
     </SidebarProvider>
   );
