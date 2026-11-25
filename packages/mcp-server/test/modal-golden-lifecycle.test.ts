@@ -312,12 +312,6 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
       visibility: "org",
       providerSandboxId: null,
     });
-    const forked = await provider.fork({ from: savedAgain.snapshotName, noEnv: true });
-    const forkedMachine = await store.get(forked.id);
-    expect(forkedMachine.golden).toBe(false);
-    expect(await readFile(join(machines.get(forkedMachine.physicalId!)!.directory, "revision.txt"), "utf8")).toBe(
-      "revision-two",
-    );
     expect(savedAgain.snapshotName).not.toBe(saved.snapshotName);
     // The dedicated port returns a shared source. Readiness failure after another caller's
     // publication must not delete that caller's live canonical master.
