@@ -39,6 +39,7 @@ mock.module("@/lib/supabase/server", () => ({
 }));
 
 function recordFetch(reply: (url: URL) => Response | Promise<Response>) {
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed both real clients HTTP responses and hold the credential response without sockets or timers.
   return spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     return reply(new URL(input instanceof Request ? input.url : String(input)));
   });

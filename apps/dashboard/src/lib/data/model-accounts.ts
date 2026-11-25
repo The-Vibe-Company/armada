@@ -110,7 +110,6 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
   const candidates = new Map(eligible.map(({ id, version }) => [id, { version, count: 0, choices: [] as Choice[] }]));
   const ids = [...candidates.keys()];
   const pageSize = 500;
-  // Keep URL filters bounded and page through the batch so a busy account cannot hide another's candidates.
   for (let start = 0; start < ids.length; start += 50) {
     const batchIds = ids.slice(start, start + 50);
     for (let offset = 0; batchIds.length > 0; offset += pageSize) {
