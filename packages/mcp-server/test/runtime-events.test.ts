@@ -879,11 +879,11 @@ test.each(["current", "superseded", "revoked", "rolled back"] as const)(
         status_reason: "idle_paused",
         stop_requested: true,
         stop_generation: String(Number(before.stop_generation) + 1),
-        due: false,
+        due: scenario === "current",
       });
-      expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='stop'", [f.id])).rows).toEqual([
-        { state: "queued" },
-      ]);
+      expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='stop'", [f.id])).rows).toEqual(
+        scenario === "current" ? [] : [{ state: "queued" }],
+      );
     }
   },
 );
