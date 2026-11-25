@@ -45,7 +45,7 @@ function unknownNote(reason: string): string {
 }
 
 export type StopAuthority = {
-  kind: "activity" | "reconcile";
+  kind: "activity" | "reconcile" | "job";
   token: string;
   generation: number | undefined;
   signal?: AbortSignal | undefined;
@@ -137,12 +137,13 @@ export async function preserveBeforeStop(
   try {
     outcome = await preserveGitWork(sql, provider, id, providerId, progress, source, authority);
   } catch (error) {
-    if (!authority?.signal?.aborted && (await ownsStop())) await finalOutputs(sql, provider, id, started);
+    if (authority?.kind !== "job" && !authority?.signal?.aborted && (await ownsStop()))
+      await finalOutputs(sql, provider, id, started);
     throw error;
   }
   // A pending stop retries later; its final capture runs on that pass.
   if (outcome === "pending" || authority?.signal?.aborted || !(await ownsStop())) return "pending";
-  await finalOutputs(sql, provider, id, started);
+  if (authority?.kind !== "job") await finalOutputs(sql, provider, id, started);
   if (!(await ownsStop())) return "pending";
 }
 

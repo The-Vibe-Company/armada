@@ -21,7 +21,7 @@ import {
 } from "@armada/core/server";
 import type { Caller, CallerResult } from "./caller.ts";
 import type { Job, JobContext, JobResult } from "./jobs/runner.ts";
-import { clearStopCapture, type createJobsStore, recordStopCapture } from "./jobs/store.ts";
+import { clearStopCapture, type createJobsStore, mergeStopOutcome } from "./jobs/store.ts";
 import {
   CAN_WRITE_LIVE,
   collectOutputTransfers,
@@ -447,7 +447,7 @@ export async function stageStopOutputs(
     async stage(tx, output) {
       signal.throwIfAborted();
       if (!(await context.canDispatch(tx))) throw Error("Stop capture claim changed.");
-      await recordStopCapture(tx, job.id, output);
+      await mergeStopOutcome(tx, job.id, { output });
     },
   }).catch(() => {});
 }

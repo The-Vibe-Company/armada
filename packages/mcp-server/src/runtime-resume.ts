@@ -8,7 +8,7 @@ import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
-import { runtimeBridgeTarget, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
+import { runtimeBridgeTarget, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -21,6 +21,7 @@ import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sand
 import {
   confirmRuntimeResumeActivation,
   deferAmbiguousBoatResume,
+  pendingModalStopOutput,
   publishRuntimeWake,
   requestFailedRuntimeResumeStop,
   restoreModalResumeSchedule,
@@ -234,6 +235,11 @@ export function createRuntimeResume(
         current.lifecycleGeneration === undefined
       )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
+      if (
+        current.modalTransport === "dialout" &&
+        (await pendingModalStopOutput(tx, found.id, current.lifecycleGeneration))
+      )
+        throw new VaultError("conflict", "Final stop outputs are awaiting publication. Retry after stop settlement.");
       const proof = (
         await tx.query<{ watermark: string }>(
           `select watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2 and watermark is not null
@@ -577,7 +583,7 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && !usesRuntimeStopJob(found.provider) && placement && !preActivationArchive)
+      if (cleanup === "failed" && !usesDiskStopJob(found.provider) && placement && !preActivationArchive)
         await placement.stop().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(

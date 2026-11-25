@@ -115,10 +115,10 @@ export async function withJobLease<T>(
   });
 }
 
-export async function recordStopCapture(tx: Sql, jobId: string, output: unknown) {
-  await tx.query("update public.jobs set outcome=jsonb_build_object('output',$2::jsonb) where id=$1", [
+export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<string, unknown>) {
+  await tx.query("update public.jobs set outcome=coalesce(outcome,'{}'::jsonb)||$2::jsonb where id=$1", [
     jobId,
-    JSON.stringify(output),
+    JSON.stringify(outcome),
   ]);
 }
 
@@ -700,7 +700,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (
-             select kind, payload_enc is null as boat_stop, case when kind = 'launch' and $6::jsonb is not null
+             select kind, exists(select 1 from public.sandboxes s where s.id=jobs.sandbox_id and s.provider='boat') as boat_stop, case when kind = 'launch' and $6::jsonb is not null
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end ||

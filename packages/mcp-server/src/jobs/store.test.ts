@@ -6,6 +6,7 @@ import {
   createSqlVaultStore,
   decryptSecret,
   encryptSecret,
+  outputEntryCollector,
   ProviderError,
   resolveBoatKey,
   type Sql,
@@ -67,6 +68,7 @@ import {
   runModalLaunch,
 } from "./modal-launch.ts";
 import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
+import { createStopJob } from "./stop.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
 const database = rowOnlyDatabase();
@@ -1496,6 +1498,13 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         return { imageId: "im-retained" };
       },
       async exec(args: string[]) {
+        if (args.includes(outputEntryCollector(null))) {
+          return {
+            stdin: { close: async () => {} },
+            stdout: { readText: async () => "[]" },
+            wait: async () => 0,
+          };
+        }
         if (args.includes("/usr/sbin/runuser")) {
           return {
             stdin: { writeText: async () => {}, close: async () => {} },
@@ -2778,7 +2787,16 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
       "stop",
       { id },
     ),
-  ).toMatchObject({ id, status: "stopped" });
+  ).toMatchObject({ id, status: "stopping" });
+  const stopRunner = createJobsRunner(createJobsStore(f.sql, launchEncryptionKey), {
+    stop: createStopJob(f.sql, launchEncryptionKey, undefined, Date.now, async () => {
+      const target = await data.sandboxes.get(id);
+      if (!target) throw new Error("Stop target disappeared.");
+      return stop(target);
+    }),
+  });
+  expect(await stopRunner.reconcileOne(signal)).toBe(true);
+  await stopRunner.drain();
   const statusContext = {
     caller,
     data,

@@ -43,7 +43,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
-import { usesRuntimeStopJob } from "./provider-runtime-admission.ts";
+import { usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
@@ -55,6 +55,7 @@ import {
 import {
   completeSandboxDeletion,
   enqueueBoatStop,
+  enqueueModalStop,
   expireAfterExtension,
   finishLaunchFailure,
   finishLaunchSuccess,
@@ -62,6 +63,7 @@ import {
   recordObservedProviderState,
   requestStartingModalStop,
   settleRuntimeTurn,
+  unresolvedModalStop,
 } from "./sandbox-lifecycle.ts";
 import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -84,6 +86,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   ownerStop?: true;
+  queueModalStop?: true | string;
   ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -546,7 +549,7 @@ export function createSqlData(
         const row = (
           await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
             `select s.status::text as status,
-             coalesce(s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason=$4 and s.stopped_at is null, false)
+             coalesce(s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason=$4 and s.stopped_at is null, false) or ${unresolvedModalStop("s")}
                as modal_cleanup_owns_exit,
              ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
@@ -978,6 +981,7 @@ export function createSqlData(
             and not (s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
             and not (s.provider='boat' and s.stopped_at is null and s.stop_requested_at is not null)
+            and not ${unresolvedModalStop("s")}
             and not ${SANDBOX_DELETION_MANAGED}`;
         }
         // A read-only reconciler may overlap list readiness. Admission can supersede
@@ -1071,7 +1075,11 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>> & { observationBlocked?: boolean };
-        if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (
+          stopStatus !== undefined ||
+          patch.modalRuntimeExtensionTarget !== undefined ||
+          (patch.deleteRequested && admission)
+        ) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
@@ -1106,8 +1114,20 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
-              if (usesRuntimeStopJob(locked.rows[0]?.provider) && admission && patch.stopRequested)
+              if (usesDiskStopJob(locked.rows[0]?.provider) && admission && patch.stopRequested)
                 await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
+              if (
+                patch.queueModalStop &&
+                (!patch.activityToken ||
+                  !(await enqueueModalStop(
+                    tx,
+                    id,
+                    row.generation,
+                    patch.activityToken,
+                    typeof patch.queueModalStop === "string" ? patch.queueModalStop : undefined,
+                  )))
+              )
+                throw new Error("Modal stop admission lost the exact target.");
             }
             return updated;
           });

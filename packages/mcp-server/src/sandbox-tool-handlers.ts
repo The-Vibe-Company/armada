@@ -7,10 +7,11 @@ import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts"
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import {
+  modalDialoutPlacement,
   requiresMissingMachineObservation,
   retainsDiskOnStop,
   runtimeBridgeTarget,
-  usesRuntimeStopJob,
+  usesDiskStopJob,
 } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
@@ -242,7 +243,6 @@ export function configureTools(
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
-      const provider = usesRuntimeStopJob(found.provider) ? undefined : (await live(found.id, true, found)).provider;
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -268,21 +268,32 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      if (!provider) {
-        const status = found.status === "failed" ? "failed" : "stopping";
+      const modalStop = modalDialoutPlacement(found);
+      if (modalStop || usesDiskStopJob(found.provider)) {
+        if (found.lifecycleGeneration === undefined)
+          throw new VaultError("conflict", "Sandbox generation is unavailable.");
+        const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
         await data.sandboxes.update(found.id, {
           ...stopAdmission,
           ...retainedGuard,
+          ...(modalStop ? { queueModalStop: true } : {}),
           status,
           stoppedAt: null,
           stopRequested: true,
           advanceGeneration: true,
           activityToken: crypto.randomUUID(),
+          expectedGeneration: found.lifecycleGeneration,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-          ...(found.lifecycleGeneration !== undefined && { expectedGeneration: found.lifecycleGeneration }),
         });
-        return { id: found.id, status } as const;
+        return {
+          id: found.id,
+          status,
+          ...(modalStop && checkpoint === null
+            ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }
+            : {}),
+        };
       }
+      const { provider } = await live(found.id, true, found);
       return sandboxActivity(
         data.sandboxes,
         found,

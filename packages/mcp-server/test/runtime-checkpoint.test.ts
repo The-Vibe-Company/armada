@@ -24,6 +24,7 @@ import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
 const prepared = scopedRuntimeFixture(async () => {
@@ -281,25 +282,42 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
       stopped = true;
     },
   } as unknown as RuntimeWorkProvider;
+  const provider = async () =>
+    Object.assign(
+      createRuntimeProvider(
+        host,
+        physicalId,
+        {
+          events: ({ sandboxId: _, ...page }) => createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
+          async getPrompt() {
+            throw Error("No native/live prompt reads during compute stop");
+          },
+        },
+        undefined,
+        f.row.provider === "modal" ? async () => ({ status: "clean" }) : undefined,
+      ),
+      {
+        async runtimeStopMachine() {
+          return {
+            physical: { machineId: physicalId, generation: 2 },
+            stopped,
+            machine: {
+              async stop({ sandboxId, generation }: { sandboxId: string; generation: number }) {
+                await host.stop({ sandboxId: physicalId });
+                return { sandboxId, generation, kind: "image", ref: "image" };
+              },
+            },
+          };
+        },
+      },
+    );
   return {
     context: {
       ...f.context,
       runtimeStopCheckpoint: createRuntimeStopCheckpoint(sql, createRuntimeCheckpoint(sql, ENCRYPTION_KEY, commands)),
-      provider: async () =>
-        createRuntimeProvider(
-          host,
-          physicalId,
-          {
-            events: ({ sandboxId: _, ...page }) =>
-              createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
-            async getPrompt() {
-              throw Error("No native/live prompt reads during compute stop");
-            },
-          },
-          undefined,
-          f.row.provider === "modal" ? async () => ({ status: "clean" }) : undefined,
-        ),
+      provider,
     },
+    complete: (connection = sql) => runClaimedStop(connection, provider),
     calls: () => calls,
   };
 }
@@ -329,10 +347,13 @@ test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls ba
     };
     const data = createSqlData(sql)(f.caller);
     const initial = (await data.sandboxes.get(f.row.id))!;
-    await expect(callSharedTool({ ...stop.context, data }, "stop", { id: f.row.id })).rejects.toThrow();
-    expect(interrupted).toBe(true);
-
+    const request = callSharedTool({ ...stop.context, data }, "stop", { id: f.row.id });
     const admitted = code === "owner_stop_settled";
+    if (admitted) {
+      await expect(request).resolves.toMatchObject({ status: "stopping" });
+      await expect(stop.complete(sql)).rejects.toThrow("stop transaction interrupted");
+    } else await expect(request).rejects.toThrow();
+    expect(interrupted).toBe(true);
     expect(stop.calls()).toBe(Number(admitted));
     expect(await data.sandboxes.get(f.row.id)).toMatchObject({
       status: admitted ? "stopping" : initial.status,
@@ -349,6 +370,7 @@ test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls ba
       ).rows,
     ).toEqual(admitted ? [{ code: "runtime_retained_stop" }] : []);
   } finally {
+    await f.db.query("delete from jobs where sandbox_id=$1 and kind='stop'", [f.row.id]);
     await f.close();
   }
 });
@@ -372,9 +394,10 @@ test("a definite runtime checkpoint refusal still allows compute cleanup", async
     });
     const stop = stopPort(f, commands);
     await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).resolves.toMatchObject({
-      status: "stopped",
+      status: "stopping",
       preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded.",
     });
+    expect((await stop.complete()).result.status).toBe("done");
     expect(stop.calls()).toBe(1);
     expect(
       (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
@@ -485,7 +508,8 @@ test.each(["resume", "reconciliation", "late generation change", "scoped parent 
         );
         blocked = false;
         runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
-        expect(await stopping).toMatchObject({ id, status: "stopped" });
+        expect(await stopping).toMatchObject({ id, status: "stopping" });
+        expect((await stop.complete()).result.status).toBe("done");
         expect(stop.calls()).toBe(1);
         expect(
           (await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1 and completed_at is not null", [id]))
@@ -644,7 +668,8 @@ test("an organization admin can still stop another member's runtime compute", as
     const stop = stopPort(f);
     await expect(
       callSharedTool({ ...stop.context, caller: admin, data: createSqlData(f.sql)(admin) }, "stop", { id: f.row.id }),
-    ).resolves.toMatchObject({ status: "stopped" });
+    ).resolves.toMatchObject({ status: "stopping" });
+    expect((await stop.complete()).result.status).toBe("done");
     expect(stop.calls()).toBe(1);
     expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
       0,
@@ -780,6 +805,7 @@ test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint 
       ).rows,
     ).toEqual([{ actor: "api", code: "runtime_retained_stop" }]);
     if (provider === "boat") expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
+    if (provider === "modal") expect((await stop.complete()).result.status).toBe("done");
     const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
     else {
