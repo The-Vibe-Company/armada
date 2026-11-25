@@ -417,49 +417,6 @@ for (const mode of [
           if (mode === "journal_failure") throw new Error("journal_unwritable");
         },
         fetch: async (url, init) => {
-          if (new URL(url).pathname === "/mcp") {
-            expect(clientFull || clientStopFull).toBe(true);
-            const rpc = JSON.parse(String(init.body));
-            const target = rpc.params?.arguments?.id;
-            const dashboardProvider = providers.find((provider) => sandboxId(provider) === target) ?? "initializing";
-            calls.push(`${dashboardProvider}:mcp:${rpc.method}`);
-            if (rpc.method === "initialize")
-              return Response.json({
-                jsonrpc: "2.0",
-                id: rpc.id,
-                result: {
-                  protocolVersion: rpc.params.protocolVersion,
-                  capabilities: {},
-                  serverInfo: { name: "fixture", version: "1" },
-                },
-              });
-            if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
-            expect(rpc.method).toBe("tools/call");
-            if (clientStopFull) {
-              expect(rpc.params.name).toBe("stop");
-              expect(rpc.params.arguments).toEqual({ id: sandboxId(dashboardProvider) });
-              return Response.json({
-                jsonrpc: "2.0",
-                id: rpc.id,
-                result: {
-                  content: [
-                    { type: "text", text: JSON.stringify(acceptStop(dashboardProvider, rpc.params.arguments)) },
-                  ],
-                },
-              });
-            }
-            expect(rpc.params.name).toBe("send");
-            return Response.json({
-              jsonrpc: "2.0",
-              id: rpc.id,
-              result: {
-                content: [
-                  { type: "text", text: JSON.stringify(acceptClient(dashboardProvider, rpc.params.arguments)) },
-                ],
-              },
-            });
-          }
-
           if (url.endsWith("/healthz"))
             return Response.json(
               mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
@@ -473,7 +430,7 @@ for (const mode of [
             return Response.json({ id, status: "deleted" });
           }
           const { path, body } = parityRequest(url, init);
-          const p = body.org;
+          const p = body.org ?? providers.find((provider) => sandboxId(provider) === body.id);
           calls.push(`${p}:${path}`);
           let result: object;
           switch (path) {
@@ -916,7 +873,9 @@ for (const mode of [
               break;
             case "sandbox/send": {
               if (modalAdmission) expect(modalSetupReads).toBe(2);
-              if (clientFull && String(body.prompt).includes("PARITY_CLIENT_CLI_")) {
+              if (clientFull && /PARITY_CLIENT_(?:DASHBOARD|CLI)_/.test(String(body.prompt))) {
+                if (String(body.prompt).includes("PARITY_CLIENT_DASHBOARD_")) expect(body).not.toHaveProperty("org");
+                else expect(body.org).toBe(p);
                 result = acceptClient(p, body);
                 break;
               }
@@ -1354,7 +1313,7 @@ for (const mode of [
                   return Response.json({ error: { code: "not_found" } }, { status: 404 });
               }
               if (clientStopFull && !body.request_id) {
-                expect(body).toEqual({ org: p, id: sandboxId(p) });
+                expect(body).toEqual(body.org ? { org: p, id: sandboxId(p) } : { id: sandboxId(p) });
                 result = acceptStop(p, body);
                 break;
               }
