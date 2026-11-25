@@ -66,8 +66,6 @@ const childLaunchAuthority = `
     and d.revoked_at is null and d.acknowledged_at is not null and d.expires_at>clock_timestamp()
     and 'worker:launch'=any(d.scopes)`;
 
-// Runtime sessions lock the parent sandbox too. Allow short waits while
-// retaining the locks that fence stop, deletion and authority revocation.
 const childLaunchLockBudget = "set local lock_timeout = '2s'";
 
 export async function lockChildLaunchAdmission(tx: Sql, operation: ChildOperation) {

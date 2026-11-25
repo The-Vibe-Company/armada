@@ -232,7 +232,6 @@ test.each(admissionScenarios)(
                       name: "PostgresError",
                       errno: "55P03",
                     });
-                  // Model the runtime transaction releasing the sandbox row within the lock budget.
                   parentLockHeld = false;
                 }
                 return tx.query<T>(statement, params);
