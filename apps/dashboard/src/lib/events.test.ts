@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
-import { applyChatPage, initialChatHistory, isActiveStatus, parseEventPage } from "./events.ts";
+import { applyChatPage, applyInlineEvent, initialChatHistory, isActiveStatus, parseEventPage } from "./events.ts";
 
 const message = (id: string, text: string) =>
   ({
@@ -102,5 +102,29 @@ describe("events", () => {
     expect(page.events[1]).not.toHaveProperty("messageId");
     expect(page).toMatchObject({ cursor: "4", olderCursor: "1", hasMore: true });
     expect(parseEventPage(null)).toEqual({ events: [], cursor: null, hasMore: false });
+  });
+
+  test("applyInlineEvent skips sequences already covered by runtime history and advances cursor on newer frames", () => {
+    const sandboxId = "11111111-1111-4111-8111-111111111111";
+    const base = applyChatPage(
+      initialChatHistory,
+      { events: [message("m-2", "coalesced")], cursor: `ar1_${sandboxId}_2`, hasMore: false },
+      "latest",
+    )!;
+    expect(applyInlineEvent(base, sandboxId, message("m-1", "stale"), "1")).toBe(base);
+    expect(applyInlineEvent(base, sandboxId, message("m-2", "dup"), "2")).toBe(base);
+
+    const next = applyInlineEvent(base, sandboxId, message("m-3", "live"), "3");
+    expect(next.cursor).toBe(`ar1_${sandboxId}_3`);
+    expect(next.events.map((event) => event.id)).toEqual(["m-2", "m-3"]);
+
+    const legacy = applyChatPage(
+      initialChatHistory,
+      { events: [message("a", "one")], cursor: "opaque-1", hasMore: false },
+      "forward",
+    )!;
+    const merged = applyInlineEvent(legacy, sandboxId, message("a", "updated"), null);
+    expect(merged.cursor).toBe("opaque-1");
+    expect(merged.events).toEqual([message("a", "updated")]);
   });
 });

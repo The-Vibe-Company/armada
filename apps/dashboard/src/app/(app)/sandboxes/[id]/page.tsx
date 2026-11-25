@@ -55,7 +55,6 @@ import { costOfRow } from "@/lib/sandbox-cost";
 import { sandboxListName } from "@/lib/sandbox-list-name";
 import { sandboxUsesRuntime } from "@/lib/sandbox-thread";
 import { createClient, type Supabase } from "@/lib/supabase/server";
-import { usageRevision } from "@/lib/usage-revision";
 
 export const metadata: Metadata = { title: "Sandbox" };
 export const dynamic = "force-dynamic";
@@ -499,6 +498,7 @@ function ThreadConversation({
   return (
     <SandboxChat
       key={sandbox.id}
+      orgId={sandbox.org_id}
       sandboxId={sandbox.id}
       currentConversation={sandbox.conversation_ids.at(-1)}
       initialStatus={sandbox.publicStatus}
@@ -508,7 +508,6 @@ function ThreadConversation({
       initialIdlePaused={sandbox.status_reason === "idle_paused"}
       statusReason={sandbox.status_reason}
       expiresAt={sandbox.expires_at}
-      initialUsageRevision={usageRevision(sandbox.usage_turns)}
       live={isActiveStatus(sandbox.status)}
       harness={sandbox.harness}
       catalog={MODEL_CATALOG}

@@ -1,6 +1,6 @@
 import { LogOutIcon } from "lucide-react";
 import { type CSSProperties, type ReactNode, Suspense } from "react";
-import { AppSidebar, DesktopSidebarTrigger } from "@/components/app-sidebar";
+import { AppSidebar, DesktopSidebarTrigger, SignOutForm } from "@/components/app-sidebar";
 import { CommandMenu } from "@/components/command-menu";
 import { NavLinks } from "@/components/nav-links";
 import { OrgSwitcher } from "@/components/org-switcher";
@@ -102,12 +102,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
 function SignOut({ compact = false }: { compact?: boolean }) {
   return (
-    <form action="/auth/signout" method="post">
+    <SignOutForm>
       <Button type="submit" variant="ghost" size={compact ? "icon" : "sm"} aria-label="Sign out">
         <LogOutIcon />
         {!compact && "Sign out"}
       </Button>
-    </form>
+    </SignOutForm>
   );
 }
 

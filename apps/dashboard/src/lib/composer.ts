@@ -39,6 +39,12 @@ export function pinnedSend(
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export const UNCONFIRMED_ACTION = "This action could not be confirmed. Check the conversation before trying again.";
+export const UNCERTAIN_SEND_MESSAGE =
+  "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying.";
+
+export function isDefiniteComposerRefusal(outcome: { ok: boolean; error?: string }) {
+  return !outcome.ok && outcome.error !== UNCONFIRMED_ACTION && outcome.error !== UNCERTAIN_SEND_MESSAGE;
+}
 
 /** Only curated guidance reaches the composer, never an arbitrary API/provider sentence. */
 export function drivingFailureMessage(
@@ -61,7 +67,7 @@ export function drivingFailureMessage(
 /** A keyed Docker retry checks the same admission; never suggest editing or starting a second message. */
 function plainSendFailure(message: string): string {
   return /\b(pending|uncertain|unknown)\b/i.test(message)
-    ? "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying."
+    ? UNCERTAIN_SEND_MESSAGE
     : "The host could not confirm delivery. Send the same message again without editing it to check.";
 }
 

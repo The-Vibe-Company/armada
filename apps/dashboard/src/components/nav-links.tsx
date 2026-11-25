@@ -30,6 +30,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { warmChatCache } from "@/lib/chat-cache";
 import {
   INLINE_LIVE_LIMIT,
   LIVE_FLEET_REFRESH_EVENT,
@@ -126,7 +127,11 @@ function useLiveSandboxes(
     : initialLive;
 }
 
-function IntentLink({ href, ...props }: Omit<ComponentProps<typeof Link>, "href"> & { href: string }) {
+function IntentLink({
+  href,
+  onIntent,
+  ...props
+}: Omit<ComponentProps<typeof Link>, "href"> & { href: string; onIntent?: (() => void) | undefined }) {
   const router = useRouter();
   const timer = useRef<number | undefined>(undefined);
   function cancel() {
@@ -134,7 +139,10 @@ function IntentLink({ href, ...props }: Omit<ComponentProps<typeof Link>, "href"
   }
   function prefetch() {
     cancel();
-    timer.current = window.setTimeout(() => router.prefetch(href), 60);
+    timer.current = window.setTimeout(() => {
+      router.prefetch(href);
+      onIntent?.();
+    }, 60);
   }
   useEffect(() => () => window.clearTimeout(timer.current), []);
   return (
@@ -220,6 +228,9 @@ export function NavLinks({
                               <li key={sandbox.id}>
                                 <IntentLink
                                   href={`/sandboxes/${sandbox.id}`}
+                                  onIntent={
+                                    organizationId ? () => void warmChatCache(organizationId, sandbox.id) : undefined
+                                  }
                                   onClick={() => setOpenMobile(false)}
                                   title={`${sandbox.label} · ${look.label}`}
                                   aria-current={pathname === `/sandboxes/${sandbox.id}` ? "page" : undefined}

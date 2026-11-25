@@ -2,6 +2,7 @@ import { CircleAlertIcon, MailIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ActionForm, SubmitButton } from "@/components/action-form";
+import { SignOutForm } from "@/components/app-sidebar";
 import { BrandMark } from "@/components/brand-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -131,12 +132,12 @@ const article = (role: string) => (role === "admin" ? "an admin" : "a member");
 /** Signs out and returns to this invitation's sign-in, keeping the link: "use another account". */
 function SwitchAccount({ label, primary = false }: { label: string; primary?: boolean }) {
   return (
-    <form action="/auth/signout" method="post">
+    <SignOutForm>
       <input type="hidden" name="next" value={INVITATION_ACCEPT_PATH} />
       <Button type="submit" variant={primary ? "default" : "outline"} className="w-full sm:w-auto">
         {label}
       </Button>
-    </form>
+    </SignOutForm>
   );
 }
 

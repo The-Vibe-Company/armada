@@ -1,7 +1,25 @@
 import { type AgentEvent, isRecord, PROMPT_STATUSES, type SandboxStatus, type ToolCall } from "@armada/core";
+import { SANDBOX_STATUSES } from "@armada/core/contract";
 import { sandboxUsesRuntime } from "./sandbox-thread";
 
 const ACTIVE: readonly SandboxStatus[] = ["starting", "ready", "running", "stopping"];
+const DECIMAL_SEQUENCE = /^(0|[1-9][0-9]*)$/;
+
+export function isSandboxStatus(value: unknown): value is SandboxStatus {
+  return typeof value === "string" && (SANDBOX_STATUSES as readonly string[]).includes(value);
+}
+
+export function isSuccessfulPage(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  if (!isSandboxStatus(value.status)) return false;
+  if (value.usageRevision !== undefined && typeof value.usageRevision !== "string") return false;
+  if (value.configured !== undefined && typeof value.configured !== "boolean") return false;
+  if (!Array.isArray(value.events)) return false;
+  if (value.cursor !== undefined && value.cursor !== null && typeof value.cursor !== "string") return false;
+  if (typeof value.hasMore !== "boolean") return false;
+  if ("error" in value) return false;
+  return value.prompt === undefined || value.prompt === null || isRecord(value.prompt);
+}
 
 /** Logs of an active sandbox keep changing. */
 export function isActiveStatus(status: SandboxStatus): boolean {
@@ -31,6 +49,27 @@ export const initialChatHistory = {
   olderCursor: null as string | null,
   loaded: false,
 };
+
+export type ChatHistory = typeof initialChatHistory;
+
+function runtimeCursorSequence(cursor: string | null, sandboxId: string) {
+  const prefix = `ar1_${sandboxId}_`;
+  if (!cursor?.startsWith(prefix)) return null;
+  const suffix = cursor.slice(prefix.length);
+  return DECIMAL_SEQUENCE.test(suffix) ? BigInt(suffix) : null;
+}
+
+export function applyInlineEvent(history: ChatHistory, sandboxId: string, event: ChatEvent, sequence: string | null) {
+  const seq = sequence !== null && DECIMAL_SEQUENCE.test(sequence) ? BigInt(sequence) : null;
+  const historySeq = runtimeCursorSequence(history.cursor, sandboxId);
+  if (historySeq !== null && seq !== null && seq <= historySeq) {
+    return history;
+  }
+  const events = mergeEvents(history.events, [event]);
+  const cursor =
+    historySeq !== null && seq !== null && seq > historySeq ? `ar1_${sandboxId}_${sequence}` : history.cursor;
+  return { ...history, events, cursor } satisfies ChatHistory;
+}
 
 export function applyChatPage(
   history: typeof initialChatHistory,
@@ -81,7 +120,7 @@ export function parseEventPage(value: unknown): {
   };
 }
 
-function normalizeEvent(value: unknown): ChatEvent | null {
+export function normalizeEvent(value: unknown): ChatEvent | null {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.at !== "number") return null;
   const base = {
     id: value.id,

@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useMutationState } from "@/components/use-mutation-state";
+import { clearChatCache } from "@/lib/chat-cache";
 import type { Membership } from "@/lib/data/viewer";
 
 export function OrgSwitcher({
@@ -29,7 +30,12 @@ export function OrgSwitcher({
   const section = usePathname();
   const [result, switchTo, pending] = useMutationState(switchOrganization);
   const trigger = useRef<HTMLButtonElement>(null);
+  const previousSelected = useRef(selected);
   useEffect(() => {
+    if (previousSelected.current !== selected) {
+      previousSelected.current = selected;
+      clearChatCache();
+    }
     const element = trigger.current;
     if (!element?.getClientRects().length) return;
     const restoreFocus = refocusOn === selected;
@@ -56,6 +62,7 @@ export function OrgSwitcher({
   const error = result && !result.ok && !pending ? result.error : null;
   function choose(org: string) {
     if (pending || org === selected) return;
+    clearChatCache();
     refocusOn = org;
     const data = new FormData();
     data.set("org", org);
