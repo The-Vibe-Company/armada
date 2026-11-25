@@ -19,7 +19,7 @@ const credential = z.discriminatedUnion("method", [
         .max(64)
         .regex(/^[^\s\p{Cc}\p{Cs}]+$/u)
         .optional(),
-      expires_in: z.number().int().nonnegative().optional(),
+      expires_in: z.number().nonnegative().refine(Number.isInteger).optional(),
       expiry: z.iso.datetime({ offset: true }).max(64).optional(),
     }),
   }),
