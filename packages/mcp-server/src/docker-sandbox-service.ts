@@ -40,6 +40,9 @@ type Row = {
   org_id: string;
   owner_id: string;
   provider: string;
+  lifecycle_generation: string | number;
+  conversation_ids: string[];
+  task_prompt_id: string | null;
   provider_sandbox_id: string;
   docker_host_id: string;
   docker_installation_id: string;
@@ -123,6 +126,9 @@ function record(row: Row) {
     id: row.id,
     provider: "docker" as const,
     providerSandboxId: row.provider_sandbox_id,
+    lifecycleGeneration: Number(row.lifecycle_generation),
+    conversationIds: row.conversation_ids,
+    taskPromptId: row.task_prompt_id,
     hostId: row.docker_host_id,
     installationId: row.docker_installation_id,
     generation: row.docker_generation,

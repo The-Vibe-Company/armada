@@ -1,4 +1,5 @@
-import { HARNESS_CAPABILITIES, isSandboxProvider } from "@armada/core";
+import { createHash } from "node:crypto";
+import { DOCKER_LAUNCH_FAILURE_MESSAGES, HARNESS_CAPABILITIES, isSandboxProvider } from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
@@ -14,6 +15,10 @@ import { failTurnReceipt, resetResumeTurn } from "../account-turn-dispatch.ts";
 import { type AccountTurnQueue, accountTurnInputDigest } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
+import { createDockerHostStore } from "../docker-host-store.ts";
+import { createDockerLaunchEnvironment } from "../docker-launch-environment.ts";
+import { DockerMachinePending } from "../docker-machine-adapter.ts";
+import { createDockerSandboxService } from "../docker-sandbox-service.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import type { createObservedBoatProvider } from "../observed-boat.ts";
 import { recordOperatorDiagnostic } from "../request-observability.ts";
@@ -27,6 +32,7 @@ import type { RuntimeResumeInput, RuntimeResumeReceipt, RuntimeTurnClaim } from 
 import { requireGenerationHeadroom } from "../sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "../sandbox-armada-access.ts";
 import {
+  failDockerStartup,
   pendingModalStopOutput,
   prepareResumeGeneration,
   recordBoatResumeCoverage,
@@ -41,6 +47,8 @@ import { resumeDispatchAuthority } from "./resume-authority.ts";
 import type { JobKind, JobResult } from "./runner.ts";
 import { JOBS_WAKE, recordResumeAuthority, recordResumeBootstrapTicket, withJobLease } from "./store.ts";
 
+type DockerSandbox = Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>;
+
 type Payload = {
   ownerId: string;
   orgId: string;
@@ -50,6 +58,7 @@ type Payload = {
   watermark: number;
   conversationId: string | null;
   boatMachineId?: string;
+  withoutPrompt?: true;
 };
 type Proof = RuntimeResumeReceipt["sourceCheckpoint"] & { target: string };
 
@@ -62,6 +71,7 @@ function resumeProof(input: Payload) {
   } satisfies Proof;
 }
 type Ticket = Parameters<Parameters<ModalProvider["runtimeResumeMachine"]>[0]["ticket"]>[0];
+type ResumePreparation = Promise<Omit<Descriptor, "enrolmentToken"> & { configuration: Record<string, unknown> }>;
 type Descriptor = NonNullable<Awaited<ReturnType<Parameters<ModalProvider["runtimeResumeMachine"]>[0]["ticket"]>>>;
 const conflict = (message = "Resume is pending. Retry with the same request ID.") =>
   new VaultError("conflict", message);
@@ -82,6 +92,9 @@ export function createResumeJob(options: {
     legacyLabels?: Readonly<Record<string, string>>;
     authorize(): Promise<void>;
   }>;
+  docker?: {
+    prepareResume(actor: { userId: string; orgId: string }, id: string): ResumePreparation;
+  };
   prepare(
     sandbox: SandboxView,
   ): Promise<Omit<Descriptor, "enrolmentToken"> & { configuration: Record<string, unknown> }>;
@@ -90,20 +103,45 @@ export function createResumeJob(options: {
   restoreScopedAccess: RestoreScopedRuntimeAccess;
 }) {
   const { sql, key, commands } = options;
-  const authority = createRuntimeEnrolments(sql, key);
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  const dockerHosts = createDockerHostStore(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  const wake = async (caller: Caller, found: SandboxView, requestId: string, claim?: RuntimeTurnClaim) => {
+  const admitResume = async (
+    caller: Caller,
+    found: SandboxView | DockerSandbox,
+    requestId: string,
+    claim?: RuntimeTurnClaim,
+    withoutPrompt = false,
+  ) => {
     if (!HARNESS_CAPABILITIES[found.harness].resume)
       throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
     if (!sql.transaction) throw new Error("Resume requires transactional admission.");
     const id = found.id;
-    if (!isSandboxProvider(found.provider)) throw conflict();
+    const docker = "hostId" in found;
     const provider = found.provider;
-    await environment.validate(provider, { userId: caller.userId, orgId: found.orgId }, id);
+    const boatRuntime = !docker && found.boatRuntime;
+    if (docker && !options.docker) throw conflict("Docker resume is unavailable.");
+    if (isSandboxProvider(provider))
+      await environment.validate(provider, { userId: caller.userId, orgId: found.orgId }, id);
     const lockAccount = async (tx: Sql) => {
       await tx.query("set local lock_timeout = '750ms'");
       await tx.query("lock table public.account_turn_queue in row exclusive mode");
+      if (docker) {
+        await tx.query(
+          `select m.user_id from public.members m join public.docker_hosts h on h.org_id=m.org_id
+           where h.id=$1 and m.user_id in ($2,h.owner_id) order by m.user_id for update of m`,
+          [found.hostId, caller.userId],
+        );
+      }
       await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is unavailable.");
+      if (docker) {
+        const host = await tx.query(
+          `select id from public.docker_hosts where id=$1 and org_id=$2 and installation_id=$3
+             and revoked_at is null and hash is not null and draining_at is null for update`,
+          [found.hostId, found.orgId, found.installationId],
+        );
+        if (!host.rows.length) throw conflict("The retained Docker host is unavailable.");
+      }
     };
     const admit = async (tx: Sql) => {
       const {
@@ -111,7 +149,21 @@ export function createResumeJob(options: {
       } = await tx.query<{ generation: string; expires_at: Date }>(
         `select lifecycle_generation::text as generation,expires_at
          from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3 and provider=$6::public.sandbox_provider and provider_sandbox_id=$7
-           and (boat_runtime or runtime_transport='dialout')
+           and (provider='docker' or boat_runtime or runtime_transport='dialout')
+           and (provider<>'docker' or (exists(
+             select 1 from public.docker_hosts h where h.id=sandboxes.docker_host_id
+               and h.installation_id=sandboxes.docker_installation_id and h.revoked_at is null
+               and h.hash is not null and h.draining_at is null)
+             and not exists(select 1 from public.docker_host_jobs d where d.bound_sandbox_id=sandboxes.id
+               and d.bound_operation='delete' and d.outcome is null)
+             and exists(
+             select 1 from public.docker_machine_bindings b join public.docker_host_jobs a
+               on a.request_id=b.daemon_generation and a.host_id=b.host_id and a.bound_sandbox_id=b.sandbox_id
+             where b.sandbox_id=sandboxes.id and b.host_id=sandboxes.docker_host_id
+               and b.installation_id=sandboxes.docker_installation_id and b.daemon_generation=sandboxes.docker_generation
+               and b.machine_generation<=sandboxes.lifecycle_generation
+               and a.bound_operation in ('create','restore') and a.outcome='completed'
+               and a.cancelled_at is null and a.result_machine_id is not null)))
            and credential_id=$4 and credential_version=$5
            and status='stopped' and stopped_at is not null and stop_requested_at is null and deleted_at is null
            and not application_secret_tainted and activity_lease_id is null and activity_until is null
@@ -130,7 +182,7 @@ export function createResumeJob(options: {
       );
       if (!row || String(found.lifecycleGeneration) !== row.generation)
         throw conflict("Resume requires the admitted retained stop.");
-      const generation = requireGenerationHeadroom(row.generation, found.boatRuntime ? 2 : 1);
+      const generation = requireGenerationHeadroom(row.generation, boatRuntime || docker ? 2 : 1);
       if (await pendingModalStopOutput(tx, id, generation))
         throw conflict("Final stop outputs are awaiting publication.");
       const {
@@ -142,21 +194,21 @@ export function createResumeJob(options: {
             and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)
             and (c.epoch=e.epoch or exists(select 1 from public.jobs wake
               where wake.sandbox_id=e.sandbox_id and wake.kind='resume'
-              and wake.generation between $3::bigint-1 and $3
-              and (wake.state='failed' or (wake.generation<$3 and wake.state in ('queued','leased')))
+              and wake.generation between $3::bigint-1 and $3::bigint
+              and (wake.state='failed' or (wake.generation<$3::bigint and wake.state in ('queued','leased')))
               and coalesce(wake.outcome->'evidence',wake.outcome)->>'boatMachineId'=$4
               and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,epoch}'=c.epoch::text
               and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,watermark}'=c.watermark::text
               and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,target}'=e.epoch::text)
             or exists(select 1 from public.jobs stop where stop.sandbox_id=e.sandbox_id
-              and stop.kind='stop' and stop.state='done' and stop.generation=$3
+              and stop.kind='stop' and stop.state='done' and stop.generation=$3::bigint
               and stop.outcome#>>'{modal_checkpoint,epoch}'=c.epoch::text
               and stop.outcome#>>'{modal_checkpoint,watermark}'=c.watermark::text))
-            and exists(select 1 from public.account_turn_queue q
+            and ($5::boolean or exists(select 1 from public.account_turn_queue q
               join public.mcp_actor_epochs a on a.org_id=q.org_id and a.user_id=q.owner_id and a.epoch=q.actor_epoch
               where q.sandbox_id=e.sandbox_id and q.request_id=$2 and q.state='dispatching'
-                and q.dispatch_generation=$3 for update of q) order by c.epoch desc limit 1`,
-        [id, requestId, row.generation, found.boatRuntime ? found.providerSandboxId : null],
+                and q.dispatch_generation=$3::bigint for update of q)) order by c.epoch desc limit 1`,
+        [id, requestId, row.generation, boatRuntime ? found.providerSandboxId : null, withoutPrompt],
       );
       const conversationId = found.conversationIds.at(-1) ?? null;
       if (!checkpoint || (!conversationId && found.taskPromptId) || !found.model || !found.reasoningEffort)
@@ -170,7 +222,8 @@ export function createResumeJob(options: {
         target: String(BigInt(checkpoint.prior_epoch) + 1n),
         watermark: Number(checkpoint.watermark),
         conversationId,
-        ...(found.boatRuntime ? { boatMachineId: found.providerSandboxId } : {}),
+        ...(withoutPrompt ? { withoutPrompt: true } : {}),
+        ...(boatRuntime ? { boatMachineId: found.providerSandboxId } : {}),
       };
       const moved = await transitionSandbox(tx, {
         sandboxId: id,
@@ -199,6 +252,7 @@ export function createResumeJob(options: {
           expiresAt,
           resumeProof(intent),
           intent.boatMachineId,
+          withoutPrompt,
         ))
       )
         throw conflict("Resume owner authority changed.");
@@ -220,10 +274,54 @@ export function createResumeJob(options: {
       });
     }
     runtimeWakes.notify(JOBS_WAKE);
+  };
+
+  const wake = async (
+    caller: Caller,
+    found: SandboxView | DockerSandbox,
+    requestId: string,
+    claim?: RuntimeTurnClaim,
+  ) => {
+    await admitResume(caller, found, requestId, claim);
     throw new ResumeTurnDeferred();
   };
 
-  const resume = async (caller: Caller, found: SandboxView, input: RuntimeResumeInput) => {
+  const resumeDocker = async (caller: Caller, sandbox: DockerSandbox, requestId: string) => {
+    const { id } = sandbox;
+    if (sandbox.ownerId !== caller.userId) throw new VaultError("not_found", "No owned Docker resume target.");
+    const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
+    const signal = AbortSignal.timeout(30_000);
+    try {
+      let admitted = false;
+      while (!signal.aborted) {
+        const {
+          rows: [prior],
+        } = await sql.query<{ state: string }>(
+          `select j.state from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+           join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+           join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+           where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and j.kind='resume'
+             and coalesce(j.outcome->'evidence',j.outcome)->>'requestId'=$4
+             and coalesce(j.outcome->'evidence',j.outcome)->>'withoutPrompt'='true'
+             and coalesce(j.outcome->'evidence',j.outcome)->>'actorEpoch'=e.epoch::text
+           order by j.generation desc limit 1`,
+          [id, caller.userId, sandbox.orgId, requestId],
+        );
+        if (prior?.state === "done") return { id, status: "ready" as const };
+        if (prior?.state === "failed") throw conflict("Docker resume failed.");
+        if (!prior && !admitted) {
+          await admitResume(caller, sandbox, requestId, undefined, true);
+          admitted = true;
+        }
+        await wait.wait(signal, 250, waitForTimeout);
+      }
+      throw conflict();
+    } finally {
+      wait.close();
+    }
+  };
+
+  const resume = async (caller: Caller, found: SandboxView | DockerSandbox, input: RuntimeResumeInput) => {
     const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
     const signal = AbortSignal.timeout(30_000);
     const request = { id: found.id, request_id: input.request_id, prompt: input.prompt };
@@ -296,21 +394,27 @@ export function createResumeJob(options: {
             expires_at: Date;
             ttl: number;
             cancelled: boolean;
+            docker: boolean;
+            actor_epoch: string;
+            restore_delivered: boolean;
             boat_restore_dispatched: boolean;
             boat_restore_authority: string | null;
             boat_restore_observed: boolean;
           }>(
             `select j.deadline_at, (j.outcome->>'expiresAt')::timestamptz as expires_at,
-               case when s.boat_runtime then
+               case when s.provider='docker' then s.effective_ttl_seconds
+               when s.boat_runtime then
                  greatest(1,ceil(extract(epoch from ((j.outcome->>'expiresAt')::timestamptz-clock_timestamp())))::integer+$5::integer)
                else least(86400,greatest(1,ceil(extract(epoch from ((j.outcome->>'expiresAt')::timestamptz-j.created_at)))::integer+120))
                end as ttl,
+               s.provider='docker' as docker, j.outcome->>'actorEpoch' as actor_epoch,
+               j.outcome ? 'restoreDelivered' as restore_delivered,
                j.outcome ? 'boat_restore_dispatched' as boat_restore_dispatched,
                j.outcome->>'boat_restore_authority' as boat_restore_authority,
                j.outcome ? 'boat_restore_observed' as boat_restore_observed,
                not coalesce(${resumeDispatchAuthority("j", "s")},false) as cancelled
              from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-             where s.id=$1 and j.id=$2 and s.owner_id=$3 and s.org_id=$4 and (s.boat_runtime or s.runtime_transport='dialout')`,
+             where s.id=$1 and j.id=$2 and s.owner_id=$3 and s.org_id=$4 and (s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`,
             [id, job.id, input.ownerId, input.orgId, SANDBOX_STOP_MARGIN_SECONDS],
           )
         ).rows[0];
@@ -321,15 +425,25 @@ export function createResumeJob(options: {
           status: "fail",
           reason: "resume_dispatch_ended",
           outcome: {
+            ...(input.withoutPrompt ? { withoutPrompt: true, actorEpoch: current.actor_epoch } : {}),
             requestId: input.requestId,
             checkpoint: resumeProof(input),
             ...(input.boatMachineId ? { boatMachineId: input.boatMachineId } : {}),
+            ...(current.restore_delivered ? { restoreDelivered: true } : {}),
             ...(current.boat_restore_dispatched ? { boat_restore_dispatched: true } : {}),
             ...(current.boat_restore_observed ? { boat_restore_observed: true } : {}),
           },
           async commit(tx) {
-            await stopUnfinishedResume(tx, id, generation, input.boatMachineId !== undefined);
-            await failTurnReceipt(tx, id, input.requestId);
+            if (current.docker) {
+              await failDockerStartup(
+                tx,
+                id,
+                generation,
+                "docker_startup_failed",
+                DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+              );
+            } else await stopUnfinishedResume(tx, id, generation, input.boatMachineId !== undefined);
+            if (!input.withoutPrompt) await failTurnReceipt(tx, id, input.requestId);
           },
         };
       }
@@ -337,12 +451,12 @@ export function createResumeJob(options: {
         context.signal,
         AbortSignal.timeout(Math.max(1, new Date(current.deadline_at).getTime() - Date.now())),
       ]);
-      const store = createSqlData(sql)(caller).sandboxes;
-      const sandbox = await store.get(id);
+      const dockerActor = { userId: input.ownerId, orgId: input.orgId };
+      const goldenSandbox = current.docker ? null : await createSqlData(sql)(caller).sandboxes.get(id);
+      const sandbox = current.docker ? await createDockerSandboxService(sql).get(dockerActor, id) : goldenSandbox;
       if (!sandbox?.model || !sandbox.reasoningEffort || sandbox.lifecycleGeneration !== generation) return retry;
       const providerId = sandbox.provider;
-      if (!isSandboxProvider(providerId)) return retry;
-      const isBoat = sandbox.boatRuntime === true;
+      const isBoat = goldenSandbox?.boatRuntime === true;
       if (isBoat && sandbox.providerSandboxId !== input.boatMachineId) return retry;
       const guard = async (db: Sql) => {
         if ((await target(db))?.cancelled !== false || !(await context.canDispatch(db))) throw conflict();
@@ -365,17 +479,18 @@ export function createResumeJob(options: {
             () => false,
           );
       try {
-        const boat = isBoat ? await options.boat?.(caller, sandbox) : undefined;
+        const boat = isBoat && goldenSandbox ? await options.boat?.(caller, goldenSandbox) : undefined;
         if (
           boat &&
           current.boat_restore_authority !== null &&
           boat.providerAuthority !== current.boat_restore_authority
         )
           throw conflict("Boat resume authority changed.");
-        const modalProvider = isBoat ? undefined : await options.provider(caller, sandbox);
+        const modalProvider = !isBoat && goldenSandbox ? await options.provider(caller, goldenSandbox) : undefined;
         const provider = boat?.host ?? modalProvider;
-        if (!provider) throw conflict("Runtime resume provider is unavailable.");
+
         const verifyCoverage = async (machineId: string) => {
+          if (!provider) throw conflict("Runtime resume provider is unavailable.");
           const coverage = await provider.get(sandbox.providerSandboxId, { signal });
           const physicalDeadline = coverage.expiresAt?.getTime();
           const minimum = new Date(current.expires_at).getTime() + (isBoat ? SANDBOX_STOP_MARGIN_SECONDS * 1000 : 0);
@@ -389,6 +504,8 @@ export function createResumeJob(options: {
             throw conflict("Restored compute does not cover the sandbox lifetime.");
           return physicalDeadline;
         };
+        const docker =
+          current.docker && !(await enrolled()) ? await dockerHosts.resumeMachineTarget(dockerActor, job) : undefined;
         const binding = {
           recordId: sandbox.providerSandboxId,
           sandboxId: id,
@@ -423,13 +540,16 @@ export function createResumeJob(options: {
               if (boat) await verifyCoverage(request.machineId);
               return descriptor;
             }
-            const { configuration, ...descriptor } = await options.prepare(sandbox);
-            const physicalDeadline = await verifyCoverage(request.machineId);
+            if (docker ? !options.docker : !goldenSandbox) throw conflict();
+            const { configuration, ...descriptor } = docker
+              ? await options.docker!.prepareResume(dockerActor, id)
+              : await options.prepare(goldenSandbox!);
+            const physicalDeadline = docker?.expiresAt ?? (await verifyCoverage(request.machineId));
             const result = await authority.issue({
               ownerId: input.ownerId,
               sandboxId: id,
               expectedGeneration: generation,
-              expectedProviderSandboxId: sandbox.providerSandboxId,
+              ...(docker ? {} : { expectedProviderSandboxId: sandbox.providerSandboxId }),
               commandGrantExpiresAt: physicalDeadline,
               configuration: {
                 ...configuration,
@@ -476,8 +596,38 @@ export function createResumeJob(options: {
               boat.bootstrap,
             )
           : await modalProvider?.runtimeResumeMachine(binding);
-        if (!machine) throw conflict();
-        if (!(await enrolled())) {
+        if (docker) {
+          await guard(sql);
+          const scope = {
+            actor: dockerActor,
+            hostId: docker.hostId,
+            installationId: docker.installationId,
+            async canDispatch(tx: Sql) {
+              return (await target(tx))?.cancelled === false && (await context.canDispatch(tx));
+            },
+          };
+          const identity = await dockerHosts.machine({ ...scope, restoreClaim: job }).resume({
+            sandboxId: id,
+            generation,
+            size: null,
+            computeTtlSeconds: docker.ttl,
+            predecessor: docker.predecessor,
+            signal,
+          });
+          const descriptor = await binding.ticket({ ...identity, bindingRef: job.id });
+          if (descriptor) {
+            const { serverUrl, artifact, enrolmentToken } = descriptor;
+            await dockerHosts
+              .machine({ ...scope, bootstrapDescriptor: { serverUrl, artifact, enrolmentToken } })
+              .bootstrap({
+                ...identity,
+                bindingRef: createHash("sha256").update(descriptor.enrolmentToken).digest("hex"),
+                signal,
+              });
+          }
+          if (!(await enrolled())) return retry;
+        } else if (!(await enrolled())) {
+          if (!machine) throw conflict();
           await guard(sql);
           const identity = await machine.resume({
             sandboxId: id,
@@ -492,14 +642,16 @@ export function createResumeJob(options: {
           if (!(await enrolled())) return retry;
         }
         await agent.health(signal, checkpoint, { expectedEpoch: input.target, assertClaim: guard });
-        await environment.deliver(
-          providerId,
-          { userId: input.ownerId, orgId: input.orgId },
-          id,
-          input.target,
-          signal,
-          guard,
-        );
+        if (current.docker) await createDockerLaunchEnvironment(sql, key)(caller, id, guard);
+        else if (isSandboxProvider(providerId))
+          await environment.deliver(
+            providerId,
+            { userId: input.ownerId, orgId: input.orgId },
+            id,
+            input.target,
+            signal,
+            guard,
+          );
         await options.prepareGitHub?.(caller, id, guard);
         await options.prepareMcp(caller, id, signal, guard);
         await options.restoreScopedAccess(input.ownerId, id, input.target, generationText, signal, guard);
@@ -507,13 +659,19 @@ export function createResumeJob(options: {
         await guard(sql);
         return {
           status: "done",
-          outcome: { requestId: input.requestId, checkpoint: resumeProof(input) },
+          outcome: {
+            requestId: input.requestId,
+            checkpoint: resumeProof(input),
+            ...(current.restore_delivered ? { restoreDelivered: true } : {}),
+            ...(input.withoutPrompt ? { withoutPrompt: true, actorEpoch: current.actor_epoch } : {}),
+          },
           async commit(tx) {
             await restoreResumeSchedule(tx, id);
-            await resetResumeTurn(tx, id, input.requestId, generationText);
+            if (!input.withoutPrompt) await resetResumeTurn(tx, id, input.requestId, generationText);
           },
         };
       } catch (error) {
+        if (error instanceof DockerMachinePending) return { ...retry, unattempted: true };
         recordOperatorDiagnostic("jobs.resume.run", failureDiagnostic(error), {
           sandboxId: id,
           operationId: job.id,
@@ -523,5 +681,5 @@ export function createResumeJob(options: {
       }
     },
   };
-  return { handler, resume, wake };
+  return { handler, resume, resumeDocker, wake };
 }

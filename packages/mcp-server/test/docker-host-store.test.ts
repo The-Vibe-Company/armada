@@ -11,19 +11,26 @@ import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/cor
 import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
+import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
+import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
-import type { Job } from "../src/jobs/runner.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
+import type { Job, JobKind } from "../src/jobs/runner.ts";
 import { createStopJob } from "../src/jobs/stop.ts";
 import { createJobsStore, recordResumeAuthority } from "../src/jobs/store.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
-import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
+import { ResumeTurnDeferred } from "../src/tool-error.ts";
+import { queueMailboxStop, reportDockerExpiry, runDockerStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -794,7 +801,7 @@ test("only a daemon advertising Machine bootstrap replay receives a pending desc
   };
   expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false)).toBe(false);
   expect(await poll({})).toBeNull();
-  expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false, false, false, true)).toBe(true);
+  expect(await store.mayHaveWork(a.hostToken, a.installationId, false, [], false, false, true)).toBe(true);
   expect(await poll({ "x-armada-docker-host-machine-bootstrap": "1" })).toMatchObject({
     operation: "bootstrap",
     generation: a.generation,
@@ -1221,6 +1228,205 @@ async function restoreFixture() {
   return a;
 }
 
+test.each(["competing wakes", "queued send"] as const)(
+  "Docker %s admits one shared resume and pins the checkpoint",
+  async (scenario) => {
+    const a = await prepareRestore(undefined, false, false);
+    const db = database();
+    const requestId = randomUUID();
+    const second = randomUUID();
+    await sql.query("delete from public.jobs where sandbox_id=$1", [a.sandboxId]);
+    await sql.query(
+      "update public.sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now(),lifecycle_generation=1,model='gpt-5',reasoning_effort='high' where id=$1",
+      [a.sandboxId],
+    );
+    await sql.query("insert into public.runtime_enrolments (sandbox_id,lifecycle_generation,epoch) values($1,1,1)", [
+      a.sandboxId,
+    ]);
+    await sql.query(
+      `insert into public.runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+    values($1,1,$2,0,now())`,
+      [a.sandboxId, randomUUID()],
+    );
+    const unavailable = async () => {
+      throw Error("Admission must only enqueue the shared job.");
+    };
+    const enrolments = createRuntimeEnrolments(sql, key);
+    let session: Awaited<ReturnType<typeof enrolments.enrol>>;
+    const conversation = randomUUID();
+    await sql.query("update sandboxes set conversation_ids=array[$2::text] where id=$1", [a.sandboxId, conversation]);
+    const promptId = randomUUID();
+    const runtimeClock = {
+      now: Date.now,
+      async wait() {
+        const { command } = await commands.next(session.runtimeToken, session.epoch);
+        if (command?.op !== "health" && command?.op !== "prompt") throw Error("No resume health or prompt command.");
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: {
+            version: 1,
+            requestId: command.requestId,
+            result:
+              command.op === "health"
+                ? {
+                    ready: true,
+                    generation: session.epoch,
+                    restoredFrom: { epoch: "1", watermark: 0, conversationId: conversation },
+                  }
+                : { promptId, conversationId: conversation, status: "queued" },
+          },
+        });
+      },
+    };
+    const commands = createRuntimeCommands(enrolments, key, runtimeClock);
+    const queue = createAccountTurnQueue(sql, key);
+    const resume = createResumeJob({
+      sql,
+      key,
+      commands,
+      turns: queue,
+      provider: unavailable,
+      prepare: unavailable,
+      docker: {
+        async prepareResume() {
+          return {
+            serverUrl: "https://armada.example",
+            artifact: { sha256: "b".repeat(64), bytes: 123 },
+            cacheDir: "/tmp",
+            configuration: {},
+          };
+        },
+      },
+      async prepareMcp() {
+        return undefined;
+      },
+      async restoreScopedAccess() {},
+    });
+    const caller = {
+      userId: a.owner.userId,
+      orgs: [{ orgId: a.owner.orgId, role: "member" as const }],
+      via: "service" as const,
+    };
+    const jobs = createJobsStore(sql, key);
+    const run = async (kind: string, handler: JobKind) => {
+      const owner = randomUUID();
+      const job = await jobs.claim(kind, owner, 30, 8);
+      if (!job || job.sandbox_id !== a.sandboxId) throw Error(`Missing ${kind} job.`);
+      const result = await handler.run(job, {
+        signal: new AbortController().signal,
+        canDispatch: async (tx) => (await jobs.inspect(job, owner, tx)) === "dispatch",
+        handoffGeneration: (handoff) => jobs.handoffGeneration(job, owner, handoff),
+      });
+      expect(await jobs.complete(job, owner, result)).toBe(true);
+      await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1 and kind=$2", [a.sandboxId, kind]);
+      return result.status;
+    };
+    if (scenario === "queued send") {
+      await sql.query("delete from account_turn_queue where sandbox_id=$1", [a.sandboxId]);
+      await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+      const controls = createDockerSandboxControls(sql, key, {
+        sendEnabled: true,
+        wakeResume: resume.wake,
+        clock: runtimeClock,
+      });
+      const dispatch = createTurnDispatchJob(sql, key, async (actor, input, claim) => {
+        const result = await controls.invoke(actor, "send", { ...input }, claim ? { claim } : {});
+        if (!result.handled) throw Error("Docker sandbox was not handled.");
+        return result.result;
+      });
+      const input = { id: a.sandboxId, request_id: requestId, prompt: "Continue" };
+      await queue.accept(caller, input);
+      expect(await run("turn_dispatch", dispatch)).toBe("retry");
+      expect(await run("resume", resume.handler)).toBe("retry");
+      const restore = await a.poll();
+      if (restore?.operation !== "restore") throw Error("Missing Docker restore job.");
+      await store.complete(a.hostToken, a.installationId, {
+        requestId: restore.requestId,
+        outcome: "completed",
+        machineId: "c".repeat(64),
+      });
+      expect(await run("resume", resume.handler)).toBe("retry");
+      const boot = await store.poll(
+        a.hostToken,
+        a.installationId,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        null,
+        null,
+        [],
+        null,
+        false,
+        true,
+        false,
+        true,
+      );
+      if (boot?.operation !== "bootstrap") throw Error("Missing restored bootstrap job.");
+      session = await enrolments.enrol(boot.bootstrap.enrolmentToken);
+      expect(session.configuration).toMatchObject({
+        restoreCheckpoint: { epoch: "1", watermark: 0, conversationId: conversation },
+      });
+      expect(await run("resume", resume.handler)).toBe("done");
+      expect(await run("turn_dispatch", dispatch)).toBe("done");
+      expect(await queue.accept(caller, input)).toMatchObject({ promptId });
+      expect(
+        (
+          await sql.query(
+            "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+            [a.sandboxId],
+          )
+        ).rows,
+      ).toEqual([{ request_id: `docker_prompt_${requestId}` }]);
+      return;
+    }
+    await sql.query("update public.account_turn_queue set request_id=$2 where sandbox_id=$1", [a.sandboxId, requestId]);
+    await sql.query(
+      `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,
+    credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+    select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation
+    from public.account_turn_queue where sandbox_id=$1 and request_id=$3`,
+      [a.sandboxId, second, requestId],
+    );
+    await sql.query(
+      "update public.account_turn_queue set dispatch_generation=1,dispatch_until='infinity' where sandbox_id=$1",
+      [a.sandboxId],
+    );
+    const snapshot = await createDockerSandboxService(sql).get(a.owner, a.sandboxId);
+    const results = await Promise.allSettled([
+      resume.wake(caller, snapshot, requestId),
+      resume.wake(caller, snapshot, second),
+    ]);
+    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (!failures.some((error) => error instanceof ResumeTurnDeferred))
+      throw new AggregateError(failures, "Admission never committed.");
+    expect(failures).toHaveLength(2);
+    expect(failures.filter((error) => error instanceof ResumeTurnDeferred)).toHaveLength(1);
+    const job = await createJobsStore(sql, key).claim("resume", randomUUID(), 30, 8);
+    expect(job).toMatchObject({
+      sandbox_id: a.sandboxId,
+      generation: "2",
+      payload: { source: "1", target: "2", watermark: 0 },
+    });
+    expect(
+      (
+        await db.query("select lifecycle_generation::text as generation from public.sandboxes where id=$1", [
+          a.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([{ generation: "2" }]);
+    expect(
+      (
+        await db.query("select count(*)::int as total from public.jobs where kind='resume' and sandbox_id=$1", [
+          a.sandboxId,
+        ])
+      ).rows,
+    ).toEqual([{ total: 1 }]);
+  },
+);
+
 test("an admitted stop refuses fresh restore mailbox work", async () => {
   const a = await prepareRestore();
   await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
@@ -1233,34 +1439,31 @@ test("an admitted stop refuses fresh restore mailbox work", async () => {
   }
 });
 
-test("an admitted stop leaves an already dispatched restore available for exact attachment", async () => {
-  const a = await restoreFixture();
-  const {
-    rows: [claim],
-  } = await database().query<Job>(
-    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
-     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
-  );
-  const { requestId } = a.restore;
-  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
-  expect(await a.poll()).toEqual(a.restore);
-  try {
-    const stop = await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
-    expect(stop).toBeString();
-    expect(await store.enqueueSandbox(a.owner, a.sandboxId, a.selection)).toEqual({ requestId });
-
-    const machineId = "c".repeat(64);
-    await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId });
-    expect(await store.attachMachineRestore(a.owner, claim!)).toEqual({
-      sandboxId: a.sandboxId,
-      generation: 2,
-      machineId,
+test.each(["stop", "delete"] as const)(
+  "queued %s reconciles a delivered restore before using a placement",
+  async (operation) => {
+    const a = await restoreFixture();
+    await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+    expect(await a.poll()).toEqual(a.restore);
+    const requestId = randomUUID();
+    if (operation === "stop") {
+      expect(await store.enqueueStop(a.owner, a.sandboxId, requestId)).toBeString();
+      expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
+    } else {
+      await sql.query("update sandboxes set status='failed', lifecycle_generation=3 where id=$1", [a.sandboxId]);
+      await expect(store.enqueueSandbox(a.owner, a.sandboxId, { operation, requestId })).rejects.toThrow();
+    }
+    await store.complete(a.hostToken, a.installationId, {
+      requestId: a.restore.requestId,
+      outcome: "completed",
+      machineId: "c".repeat(64),
     });
-  } finally {
-    await sql.query("delete from jobs where sandbox_id=$1", [a.sandboxId]);
-  }
-});
+    if (operation === "stop") await runDockerStop(sql, key, a.sandboxId);
+    else await store.enqueueSandbox(a.owner, a.sandboxId, { operation, requestId });
+    const cleanup = await a.poll();
+    expect(cleanup).toMatchObject({ operation, request: { generation: a.restore.request.generation } });
+  },
+);
 
 test("the current runner declines a completed restore receipt without a physical ID", async () => {
   const a = await restoreFixture();
@@ -1715,7 +1918,7 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
   const excluded = [a.cleanupId];
   const supportsRestore = true;
   const probe = (running: string[], supports: boolean) =>
-    store.mayHaveWork(a.hostToken, a.installationId, false, running, false, false, supports);
+    store.mayHaveWork(a.hostToken, a.installationId, false, running, false, supports);
   expect(await probe([], false)).toBe(false);
   const route = createDockerHostRoutes(store, async () => {
     throw Error("Host poll used user auth");
@@ -2981,32 +3184,6 @@ test("a completed uninstall ends the drain, so its snapshots report the revoked 
   ).toBe(false);
 });
 
-test("an old drain still refuses a resume while the uninstall's delete is queued, so cleanup cannot delete a resumed workspace", async () => {
-  const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
-  // Uninstall enqueues the delete, then the host goes offline past any former deadline.
-  expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
-  await db.query(`update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1`, [a.hostId]);
-  // A drain has no deadline: the resume is refused, so the queued delete cannot run against a resumed sandbox.
-  await expect(
-    store.enqueueSandbox(a.owner, a.sandboxId, {
-      requestId: randomUUID(),
-      operation: "resume",
-      bootstrapDescriptor: {
-        serverUrl: "https://armada.example",
-        artifact: { sha256: "b".repeat(64), bytes: 123 },
-        enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
-      },
-    }),
-  ).rejects.toBeInstanceOf(DockerHostDraining);
-  const remove = await store.poll(a.hostToken, a.installationId);
-  expect(remove?.operation).toBe("delete");
-  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
-});
-
 test("retention cleanup authenticates the bound host and permanently fences runtime idempotently", async () => {
   const a = await boundStartup("bootstrap");
   await denied(store.cleaned(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
@@ -3569,84 +3746,6 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
   }
 });
 
-test("failed bootstrap history cannot fence a newer Docker resume", async () => {
-  const a = await boundStartup("bootstrap");
-  const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId);
-  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
-  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
-  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
-
-  await database().query(
-    `update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null,
-       lifecycle_generation=lifecycle_generation+1 where id=$1`,
-    [a.sandboxId],
-  );
-  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
-  const resume = { requestId: randomUUID(), operation: "resume" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, {
-    ...resume,
-    bootstrapDescriptor: {
-      serverUrl: "https://armada.example",
-      artifact: { sha256: "b".repeat(64), bytes: 123 },
-      enrolmentToken: ticket.enrolmentToken,
-    },
-  });
-
-  const admitted = await lifecycle(a.sandboxId);
-  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(resume.requestId);
-  expect(await lifecycle(a.sandboxId)).toEqual(admitted);
-  expect(await failureJournal(a.sandboxId)).toEqual([]);
-});
-
-test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume", async () => {
-  const db = database();
-  const a = await boundStartup("bootstrap");
-  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
-  await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
-  const oldStop = { requestId: randomUUID(), operation: "stop" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, oldStop);
-  await store.complete(a.hostToken, a.installationId, { requestId: oldStop.requestId, outcome: "completed" });
-  const oldDelete = { requestId: randomUUID(), operation: "delete" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, oldDelete);
-  // The resume admission marks the retained allocation starting before enqueue.
-  await db.query(`update public.sandboxes set status='starting',stopped_at=null where id=$1`, [a.sandboxId]);
-  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
-  const resume = { requestId: randomUUID(), operation: "resume" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, {
-    ...resume,
-    bootstrapDescriptor: {
-      serverUrl: "https://armada.example",
-      artifact: { sha256: "b".repeat(64), bytes: 123 },
-      enrolmentToken: ticket.enrolmentToken,
-    },
-  });
-  // The original create's physical cleanup arrives after the resume was admitted.
-  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
-  expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
-  await store.complete(a.hostToken, a.installationId, { requestId: resume.requestId, outcome: "completed" });
-  const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId);
-  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
-  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
-  await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
-  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
-  for (const oldJob of [oldStop, oldDelete]) {
-    await store.complete(a.hostToken, a.installationId, { requestId: oldJob.requestId, outcome: "completed" });
-    expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
-  }
-  expect(
-    (
-      await db.query(`select actor from public.sandbox_transitions where sandbox_id=$1 and to_status='deleted'`, [
-        a.sandboxId,
-      ])
-    ).rows,
-  ).toEqual([]);
-  // Cleanup of the latest lifecycle is still authoritative.
-  await store.cleaned(a.hostToken, a.installationId, { requestId: resume.requestId });
-  expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
-});
-
 test("poll reports every generation with pending start intent, and per-generation deadlines persist", async () => {
   const db = database();
   const a = await boundFixture();
@@ -3669,7 +3768,7 @@ test("poll reports every generation with pending start intent, and per-generatio
     .issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
   await store.enqueueSandbox(a.owner, second.sandboxId, {
     requestId: randomUUID(),
-    operation: "resume",
+    operation: "bootstrap",
     bootstrapDescriptor: {
       serverUrl: "https://armada.example",
       artifact: { sha256: "b".repeat(64), bytes: 123 },

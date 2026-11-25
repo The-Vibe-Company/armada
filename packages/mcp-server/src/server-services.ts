@@ -435,6 +435,7 @@ export async function createServerServices(env: Record<string, string | undefine
         },
       };
     },
+    ...(dockerBootstrap ? { docker: dockerBootstrap } : {}),
     prepare: prepareLaunchTicket,
     prepareMcp: runtimeMcp.prepare,
     ...(runtimeGitHub ? { prepareGitHub: runtimeGitHub.prepareLaunch } : {}),
@@ -454,7 +455,7 @@ export async function createServerServices(env: Record<string, string | undefine
       ? createDockerSandboxControls(sql, config.encryptionKey, {
           prepareMcp: runtimeMcp.prepare,
           ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch, github: runtimeGitHub } : {}),
-          ...(dockerBootstrap ? { resume: dockerBootstrap } : {}),
+          ...(dockerBootstrap ? { resume: resume.resumeDocker, wakeResume: resume.wake } : {}),
           sendEnabled: dockerEnabled && Boolean(dockerBootstrap),
         })
       : undefined;

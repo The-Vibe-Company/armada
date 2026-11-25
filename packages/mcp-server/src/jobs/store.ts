@@ -2,14 +2,10 @@ import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/se
 import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   ACCEPTED_RUNTIME_RESUME,
-  CURRENT_DOCKER_RESUME_JOB,
   DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
-  DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE,
-  FAILED_DOCKER_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
-  PENDING_READY_DOCKER_RESUME_ACK,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
@@ -65,18 +61,11 @@ const adjacentRuntimeDispatch = () => `(q.state = 'dispatching'
   and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE})`;
 
 const noAdjacentDispatchEvidence = () => `(s.activity_lease_id is distinct from q.request_id
-  and not ${QUEUED_DISPATCH_EVIDENCE}
-  and (s.provider <> 'docker' or not exists(
-    select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
-  )))`;
+  and not ${QUEUED_DISPATCH_EVIDENCE})`;
 
 const OBSOLETE_RUNTIME_PROMPT = `(s.activity_lease_id is distinct from q.request_id
-  and (s.provider <> 'docker' or (
-    not exists(select 1 from public.docker_resume_claims dc
-      where dc.sandbox_id = s.id and dc.request_id = q.request_id)
-    and not exists(select 1 from public.docker_host_jobs dj
-      where dj.bound_sandbox_id = s.id and dj.request_id = q.request_id)
-  ))
+  and (s.provider <> 'docker' or not exists(select 1 from public.docker_host_jobs dj
+      where dj.bound_sandbox_id = s.id and dj.request_id = q.request_id))
   and exists(
     select 1 from public.runtime_commands c
     join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id
@@ -157,16 +146,24 @@ export async function recordResumeAuthority(
   expiresAt: string,
   checkpoint: object,
   boatMachineId?: string,
+  withoutPrompt = false,
 ) {
   const { rows } = await tx.query(
     `update public.jobs j set outcome=jsonb_build_object('requestId',$3::text,'expiresAt',$4::text,
-       'accountId',s.credential_id,'accountVersion',s.credential_version,'actorEpoch',e.epoch::text,'checkpoint',$5::jsonb)
+       'accountId',s.credential_id,'accountVersion',s.credential_version,'actorEpoch',e.epoch::text,'checkpoint',$5::jsonb,'withoutPrompt',$7::boolean)
        || case when $6::text is not null then jsonb_build_object('boatMachineId',$6::text) else '{}'::jsonb end
      from public.sandboxes s join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
      where s.id=$1 and j.sandbox_id=s.id and j.kind='resume' and j.generation=$2 returning j.id`,
-    [id, generation, requestId, expiresAt, JSON.stringify(checkpoint), boatMachineId ?? null],
+    [id, generation, requestId, expiresAt, JSON.stringify(checkpoint), boatMachineId ?? null, withoutPrompt],
   );
   return rows.length === 1;
+}
+
+export function recordDockerRestoreDelivery(tx: Sql, jobId: string) {
+  return tx.query(
+    `update public.jobs set outcome=outcome||jsonb_build_object('restoreDelivered',true) where id=$1 and kind='resume'`,
+    [jobId],
+  );
 }
 
 export function recordResumeBootstrapTicket(tx: Sql, jobId: string, ciphertext: string) {
@@ -306,7 +303,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           cancelled: boolean;
           queued_with_evidence: boolean;
           native_uncertain: boolean;
-          failed_docker_wake: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
           defer_dispatch_until: string | null;
@@ -318,7 +314,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
-                  (q.state = 'dispatching' and ${FAILED_DOCKER_WAKE}) as failed_docker_wake,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
@@ -329,14 +324,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     as unrecoverable_dispatch,
                   ${unresolvedResume("s")} as resuming,
                   case when ${unresolvedResume("s")} then (statement_timestamp()+interval '1 second')::text
-                    when ${adjacentRuntimeDispatch()}
-                    and (s.status in ('ready','running')
-                      or (s.status = 'starting'
-                        and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
-                    and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
-                    then q.dispatch_until::text
-                    when ${adjacentRuntimeDispatch()} and ${PENDING_READY_DOCKER_RESUME_ACK}
-                    then least(s.expires_at, statement_timestamp() + interval '1 second')::text
                   end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
@@ -350,26 +337,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           return undefined;
         }
-        if (
-          sandbox?.cancelled ||
-          sandbox?.queued_with_evidence ||
-          sandbox?.native_uncertain ||
-          sandbox?.failed_docker_wake
-        ) {
+        if (sandbox?.cancelled || sandbox?.queued_with_evidence || sandbox?.native_uncertain) {
           const reason = sandbox.cancelled
             ? "cancelled_receipt"
             : sandbox.queued_with_evidence
               ? "queued_dispatch_evidence"
-              : sandbox.native_uncertain
-                ? "native_dispatch_uncertain"
-                : "docker_wake_failed";
+              : "native_dispatch_uncertain";
           if (await retireClaim(tx, job, owner, sandbox.generation, reason))
-            await failTurnReceipt(
-              tx,
-              sandboxId,
-              requestId,
-              reason === "native_dispatch_uncertain" || reason === "docker_wake_failed",
-            );
+            await failTurnReceipt(tx, sandboxId, requestId, reason === "native_dispatch_uncertain");
           return job;
         }
         let reset = false;
@@ -397,10 +372,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                  or (q.state = 'dispatching' and ${RUNTIME_LANE}
                    and s.status in ('starting','ready','running')
                    and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
-                   and (${ACCEPTED_RUNTIME_RESUME} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE}
+                   and (${ACCEPTED_RUNTIME_RESUME}
                      or (q.dispatch_until <= clock_timestamp()
                      and (s.activity_lease_id = q.request_id
-                       or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})
                        or (s.activity_lease_id is null and s.status in ('ready','running')
                          and (${CURRENT_DOCKER_PROMPT_COMMAND} or (s.provider in ('boat','modal') and exists(
                            select 1 from public.runtime_commands c
