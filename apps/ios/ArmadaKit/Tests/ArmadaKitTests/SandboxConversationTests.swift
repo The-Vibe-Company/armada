@@ -155,6 +155,12 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(try decode("stopped", settled: true, prompt: "failed").admission == .open)
     #expect(try decode("running", settled: false, prompt: "running").admission == .turnRunning)
     #expect(try decode("ready", settled: true, prompt: "running").admission == .turnRunning)
+    let queuedReady = try decode("ready", settled: true, prompt: "queued")
+    #expect(queuedReady.admission == .turnRunning)
+    #expect(queuedReady.isWorking)
+    let queuedStopped = try decode("stopped", settled: true, prompt: "queued")
+    #expect(queuedStopped.admission == .turnRunning)
+    #expect(queuedStopped.isWorking)
     #expect(try decode("starting", settled: false).admission == .starting)
     #expect(try decode("stopping", settled: true).admission == .stopping)
     #expect(try decode("failed", settled: true).admission == .failed)
@@ -383,15 +389,52 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
         #expect(value.admission(at: now.addingTimeInterval(-1)) == .open)
     }
     for (provider, reason, note, expected) in [
-        ("modal", "manual", "none", SandboxPromptAdmission.open),
+        ("boat", "manual", "none", SandboxPromptAdmission.open),
+        ("modal", "manual", "none", .open),
+        ("docker", "manual", "none", .open),
+        ("docker", "idle_paused", "none", .open),
         ("boat", "manual", "checkpoint_failed_disk_not_retained", .cannotResume),
-        ("docker", "manual", "none", .cannotResume),
-        ("docker", "idle_paused", "none", .open)
+        ("docker", "manual", "checkpoint_failed_disk_not_retained", .cannotResume),
+        ("unknown", "manual", "none", .cannotResume),
+        ("unknown", "idle_paused", "none", .open)
     ] {
         let json = detail(status: "stopped", settled: true)
             .replacingOccurrences(of: "\"provider\":\"modal\"", with: "\"provider\":\"\(provider)\",\"preservationNote\":\"\(note)\"")
             .replacingOccurrences(of: "\"statusReason\":null", with: "\"statusReason\":\"\(reason)\"")
         #expect(try JSONDecoder().decode(SandboxDetail.self, from: Data(json.utf8)).admission(at: now) == expected)
+    }
+}
+
+@Test func sandboxRefusalCodesClassifyAsRefusedAndRetirePendingPrompt() async throws {
+    // Current 14.2.2 HTTP statuses for each server refusal code, plus legacy HTTP 400 fallback.
+    let cases: [(Int, String, SandboxMutationFailure)] = [
+        (409, "credential_binding_required", .refused),
+        (400, "sandbox_busy", .refused),
+        (409, "sandbox_retention_ended", .refused),
+        (409, "docker_host_upgrade_required", .refused),
+        (503, "provider_not_configured", .refused),
+        (503, "provider_routing_unavailable", .refused),
+        (409, "conflict", .refused),
+        (404, "not_found", .noAccess),
+        (403, "forbidden", .noAccess),
+        (400, "credential_binding_required", .refused),
+        (400, "sandbox_retention_ended", .refused),
+        (400, "docker_host_upgrade_required", .refused),
+        (400, "provider_not_configured", .refused),
+        (400, "provider_routing_unavailable", .refused),
+        (400, "conflict", .refused),
+        (400, "not_found", .refused),
+        (400, "forbidden", .refused),
+        (503, "outcome_unknown", .unconfirmed),
+    ]
+    for (status, code, expected) in cases {
+        let body = #"{"error":{"code":"\#(code)","message":"Server refusal."}}"#
+        let (client, _) = try await signedIn([.init(status: status, body: body)])
+        do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Test refusal"); Issue.record("Expected failure for \(status) \(code)") }
+        catch {
+            #expect(SandboxMutationFailure.classify(error) == expected, "\(status) \(code)")
+        }
+        #expect((try await client.unconfirmedSandboxPrompt(id: sandboxID) != nil) == (expected == .unconfirmed), "\(status) \(code)")
     }
 }
 

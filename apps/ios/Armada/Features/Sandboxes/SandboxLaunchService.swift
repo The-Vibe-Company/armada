@@ -49,9 +49,38 @@ extension ArmadaKitServices: SandboxLauncher {
         switch receipt {
         case .allocated(let allocation):
             return .conversation(Self.summary(allocation))
-        case .admitted:
-            return .list
+        case .admitted(let admission):
+            let ownerID = await client.currentUserID ?? ""
+            return .conversation(Self.summary(admission, request: request, ownerID: ownerID))
         }
+    }
+
+    /// An admitted launch receipt can open the conversation directly before `sandbox/list` catches up.
+    private static func summary(
+        _ admission: ArmadaKit.SandboxLaunchReceipt.Admission,
+        request: ArmadaKit.SandboxLaunchRequest,
+        ownerID: String
+    ) -> SandboxSummary {
+        SandboxSummary(
+            id: admission.id,
+            orgID: request.org,
+            ownerID: ownerID,
+            provider: ProviderID(rawValue: request.provider),
+            providerSandboxID: nil,
+            harness: Harness(rawValue: request.harness),
+            harnessRaw: request.harness,
+            model: request.model,
+            reasoningEffort: request.reasoningEffort,
+            status: SandboxStatus(rawValue: admission.status.rawValue),
+            createdAt: Date(),
+            stoppedAt: nil,
+            expiresAt: nil,
+            effectiveTTLSeconds: request.ttlSeconds,
+            machineSize: request.size,
+            displayLabel: "Sandbox \(admission.id)",
+            canOpen: true,
+            canManage: true
+        )
     }
 
     /// The full launch envelope can open a conversation when the list could not be read.

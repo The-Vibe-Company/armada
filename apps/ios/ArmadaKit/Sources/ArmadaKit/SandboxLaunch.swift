@@ -28,6 +28,15 @@ public struct LaunchOptions: Decodable, Sendable, Equatable {
         }
     }
 
+    public struct Provider: Decodable, Sendable, Equatable, Identifiable {
+        public let id: String
+        public let enabled: Bool
+        public let launchSources: [String]
+        public let harnesses: [String]
+        public let capabilities: [String: Bool]
+        public let unsupportedReasons: [String: String]
+    }
+
     public struct TTL: Decodable, Sendable, Equatable {
         public let defaultSeconds: Int
         /// The longest TTL each provider accepts, by provider id.
@@ -37,6 +46,7 @@ public struct LaunchOptions: Decodable, Sendable, Equatable {
     public let harnesses: [Harness]
     public let machineSizes: [String]
     public let ttl: TTL
+    public let providers: [Provider]
 }
 
 /// One golden of `POST /api/v1/golden/list`, already filtered by the server to what the caller may
@@ -176,6 +186,15 @@ public struct SandboxLaunchCatalog: Sendable, Equatable {
 
     public var harnesses: [LaunchOptions.Harness] { options.harnesses }
 
+    public func provider(_ id: String) -> LaunchOptions.Provider? { options.providers.first { $0.id == id } }
+
+    /// Harnesses the selected golden's provider accepts, in server catalog order.
+    public func harnesses(for golden: LaunchGolden?) -> [LaunchOptions.Harness] {
+        guard let golden, let provider = provider(golden.provider) else { return options.harnesses }
+        let allowed = Set(provider.harnesses)
+        return options.harnesses.filter { allowed.contains($0.id) }
+    }
+
     public func harness(_ id: String) -> LaunchOptions.Harness? { options.harnesses.first { $0.id == id } }
 
     public func golden(_ id: String?) -> LaunchGolden? { id.flatMap { id in goldens.first { $0.id == id } } }
@@ -255,11 +274,12 @@ public struct SandboxLaunchDraft: Sendable, Equatable {
     public var ttlSeconds: Int
     public var prompt: String = ""
 
-    /// A draft on the first ready golden and the first harness, with the server's defaults.
+    /// A draft on the first ready golden and its first supported harness, with the server's defaults.
     public init(catalog: SandboxLaunchCatalog) {
         ttlSeconds = catalog.defaultTTLSeconds
-        goldenID = (catalog.goldens.first(where: \.isReady) ?? catalog.goldens.first)?.id
-        if let first = catalog.harnesses.first { adopt(harness: first.id, catalog: catalog) }
+        let initialGolden = catalog.goldens.first(where: \.isReady) ?? catalog.goldens.first
+        goldenID = initialGolden?.id
+        if let first = catalog.harnesses(for: initialGolden).first { adopt(harness: first.id, catalog: catalog) }
     }
 
     /// Applies the harness's default model and effort, and the account the server would pick.
@@ -286,20 +306,31 @@ public struct SandboxLaunchDraft: Sendable, Equatable {
         reasoningEffort = efforts.contains(options.defaultReasoningEffort) ? options.defaultReasoningEffort : (efforts.first ?? "")
     }
 
-    /// Clears a repository the new golden does not record and clamps the TTL to its provider.
+    /// Clears a repository the new golden does not record, switches away from a harness the
+    /// golden's provider does not support, and clamps the TTL to its provider.
     public mutating func adopt(goldenID: String, catalog: SandboxLaunchCatalog) {
         self.goldenID = goldenID
         guard let golden = catalog.golden(goldenID) else { return }
+        let supported = catalog.harnesses(for: golden)
+        if !supported.contains(where: { $0.id == harness }) {
+            adopt(harness: supported.first?.id ?? "", catalog: catalog)
+        }
         if let repository, !catalog.repositories(of: golden).contains(repository) { self.repository = nil }
         if let limit = catalog.maxTTLSeconds(for: golden), ttlSeconds > limit {
             ttlSeconds = catalog.ttlChoices(for: golden).last { $0 <= limit } ?? limit
         }
     }
 
-    public func request(catalog: SandboxLaunchCatalog, now: Date = Date()) -> Result<SandboxLaunchRequest, SandboxLaunchDraftProblem> {
+    public func request(
+        catalog: SandboxLaunchCatalog,
+        now: Date = Date(),
+        idempotencyKey: String = UUID().uuidString.lowercased()
+    ) -> Result<SandboxLaunchRequest, SandboxLaunchDraftProblem> {
         guard let golden = catalog.golden(goldenID) else { return .failure(.missingGolden) }
         guard golden.isReady else { return .failure(.goldenNotReady) }
-        guard let options = catalog.harness(harness) else { return .failure(.missingHarness) }
+        guard let options = catalog.harnesses(for: golden).first(where: { $0.id == harness }) else {
+            return .failure(catalog.harness(harness) == nil ? .missingHarness : .unsupportedHarness)
+        }
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { return .failure(.missingModel) }
         let effort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -330,7 +361,8 @@ public struct SandboxLaunchDraft: Sendable, Equatable {
             repo: repository,
             size: size,
             prompt: prompt,
-            ttlSeconds: ttlSeconds == catalog.defaultTTLSeconds ? nil : ttlSeconds
+            ttlSeconds: ttlSeconds == catalog.defaultTTLSeconds ? nil : ttlSeconds,
+            idempotencyKey: idempotencyKey
         ))
     }
 }
@@ -339,6 +371,7 @@ public enum SandboxLaunchDraftProblem: Error, Sendable, Equatable {
     case missingGolden
     case goldenNotReady
     case missingHarness
+    case unsupportedHarness
     case missingModel
     case unsupportedEffort
     case missingAccount
@@ -353,6 +386,7 @@ public enum SandboxLaunchDraftProblem: Error, Sendable, Equatable {
         case .missingGolden: "Choose a golden."
         case .goldenNotReady: "This golden has no saved snapshot yet."
         case .missingHarness: "Choose an agent."
+        case .unsupportedHarness: "This agent isn't available on the selected golden's provider."
         case .missingModel: "Choose a model."
         case .unsupportedEffort: "Choose a reasoning effort this model accepts."
         case .missingAccount: "Choose the model account this agent runs on."
@@ -367,7 +401,7 @@ public enum SandboxLaunchDraftProblem: Error, Sendable, Equatable {
 
 /// The body of `POST /api/v1/sandbox/launch`, the route `armada new` and the
 /// dashboard use. Omitted optionals leave the server's defaults (golden size policy, account
-/// resolution, default TTL). The request carries the sizing policy version and is sent once.
+/// resolution, default TTL). The request carries an idempotency key and sizing policy version and is sent once.
 public struct SandboxLaunchRequest: Encodable, Sendable, Equatable {
     public static let route = "sandbox/launch"
     /// Launching forks, initializes and starts the agent in one request; the CLI allows ten minutes.
@@ -384,14 +418,15 @@ public struct SandboxLaunchRequest: Encodable, Sendable, Equatable {
     public let size: String?
     public let prompt: String
     public let ttlSeconds: Int?
+    public let idempotencyKey: String
     public let sizePolicyVersion = 1
 
     enum CodingKeys: String, CodingKey {
-        case org, golden, provider, harness, model, reasoningEffort, credentialId, repo, size, prompt, ttlSeconds, sizePolicyVersion
+        case org, golden, provider, harness, model, reasoningEffort, credentialId, repo, size, prompt, ttlSeconds, idempotencyKey, sizePolicyVersion
     }
 }
 
-/// The synchronous launch envelope or the acknowledgement from Modal's launch job.
+/// The synchronous launch envelope or the acknowledgement from an admitted launch job.
 public enum SandboxLaunchReceipt: Decodable, Sendable, Equatable {
     case allocated(Allocation)
     case admitted(Admission)
@@ -467,8 +502,8 @@ public struct SandboxLaunchRefusal: Sendable, Equatable {
     public let detail: String?
 }
 
-/// How a failed launch must be presented. A launch has no idempotency key: it is sent once and an
-/// outcome that is not a definite answer is `unconfirmed`, never retried by the client.
+/// How a failed launch must be presented. Each launch carries an idempotency key and is sent once;
+/// an outcome that is not a definite answer is `unconfirmed`, never retried automatically by the client.
 public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     case signedOut
     /// Refused before anything was started. Every field is kept; fix and launch again.
@@ -486,12 +521,12 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
     /// `GoldenError` and a provider's `invalid_request`/`forbidden` refusal of the fork).
     static let preStartCodes: Set<String> = [
         "invalid", "invalid_request", "invalid_config", "no_credentials", "missing_credential", "forbidden",
-        "not_found", "conflict", "credential_refused",
+        "not_found", "conflict", "credential_refused", "credential_binding_required",
     ]
-    /// Legacy provider refusals of the fork that allocate nothing. Other 5xx codes, including
+    /// Non-allocating 5xx refusals before a machine is started. Other 5xx codes, including
     /// provider/dependency outages and outcome_unknown, do not prove that no machine was allocated.
     static let nonAllocatingServerCodes: Set<String> = [
-        "unauthorized", "payment_required", "provider_not_configured", "not_found",
+        "unauthorized", "payment_required", "provider_not_configured", "provider_routing_unavailable", "not_found",
     ]
     /// Launch steps that fail after the fork (`LaunchError` in `@armada/core`).
     static let postStartCodes: Set<String> = ["start_failed", "init_failed", "prompt_failed"]
@@ -550,12 +585,16 @@ public enum SandboxLaunchFailure: Error, Sendable, Equatable {
             help = ("Provider plan limit reached", "The provider refused to start a machine for this plan or billing state. An admin can check the provider account, then launch again.")
         case "credential_refused":
             help = ("Account credential refused", "The selected account credential was refused, revoked or expired. Its owner can replace or reconnect the account from the dashboard or the CLI, then launch again.")
+        case "credential_binding_required":
+            help = ("Model account required", "This launch requires a bound model account. Add or select one from the dashboard or the CLI, then launch again.")
         case "unauthorized":
             help = ("Provider credential refused", "The provider did not accept the organization's provider credential. An admin reconnects it from the dashboard or the CLI.")
         case "no_credentials", "missing_credential":
             help = ("No model account for this agent", "Neither you nor the organization has an account this agent can use. Add one from the dashboard or the CLI, then launch again.")
         case "provider_not_configured":
             help = ("Provider not connected", "This golden's provider isn't connected for the organization. An admin connects it from the dashboard or the CLI.")
+        case "provider_routing_unavailable":
+            help = ("Provider setup incomplete", "The server's provider configuration is incomplete. Ask an administrator to finish provider setup, then launch again.")
         case "forbidden":
             help = ("Not allowed", "Armada did not let you launch from this golden.")
         case "not_found":
@@ -618,7 +657,7 @@ extension ArmadaClient {
         return SandboxLaunchCatalog(orgID: org, options: try await options, goldens: try await goldens, accounts: try await accounts)
     }
 
-    /// Launches once; never retried by this client, because the route has no idempotency key.
+    /// Launches once with an idempotency key; never retried automatically by this client.
     /// A failure before the request leaves the device (no organization, no fresh session, offline)
     /// is `notSent`, `refused` or `signedOut`, never `unconfirmed`.
     public func launchSandbox(_ request: SandboxLaunchRequest) async throws(SandboxLaunchFailure) -> SandboxLaunchReceipt {
@@ -649,9 +688,9 @@ extension ArmadaClient {
                 throw .unconfirmed
             }
         case .admitted(let admission):
-            // Match the UUID versions, variant and special values in the Modal receipt schema.
+            // Match the UUID versions, variant and special values in the launch admission receipt schema.
             let uuid = #/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff/#
-            guard request.provider == "modal", admission.id.wholeMatch(of: uuid) != nil else {
+            guard ["boat", "modal", "docker"].contains(request.provider), admission.id.wholeMatch(of: uuid) != nil else {
                 throw .unconfirmed
             }
         }

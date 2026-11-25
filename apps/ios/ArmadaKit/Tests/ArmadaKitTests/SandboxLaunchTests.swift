@@ -41,9 +41,16 @@ private let optionsJSON = #"""
   "credentialKinds":["claude_oauth","anthropic"]},
  {"id":"codex","defaultModel":"model-c","defaultReasoningEffort":"medium","reasoningEfforts":["low","medium"],
   "models":[{"id":"model-c","label":"Model C","reasoningEfforts":["low","medium"]}],
-  "credentialKinds":["openai","codex_auth"]}],
+  "credentialKinds":["openai","codex_auth"]},
+ {"id":"antigravity","defaultModel":"model-g","defaultReasoningEffort":"default","reasoningEfforts":["default"],
+  "models":[{"id":"model-g","label":"Model G","reasoningEfforts":["default"]}],
+  "credentialKinds":["antigravity"]}],
  "machineSizes":["small","large"],
- "ttl":{"defaultSeconds":14400,"maxSeconds":{"boat":2592000,"modal":86400}}}
+ "ttl":{"defaultSeconds":14400,"maxSeconds":{"boat":2592000,"modal":86400,"docker":86400}},
+ "providers":[
+  {"id":"boat","enabled":true,"launchSources":["golden"],"harnesses":["claude","codex"],"capabilities":{"launch":true,"resume":true},"unsupportedReasons":{}},
+  {"id":"modal","enabled":true,"launchSources":["golden"],"harnesses":["claude","codex","antigravity"],"capabilities":{"launch":true,"resume":true},"unsupportedReasons":{}},
+  {"id":"docker","enabled":true,"launchSources":["golden","image"],"harnesses":["claude","codex","antigravity"],"capabilities":{"launch":true,"machineSizes":false},"unsupportedReasons":{"machineSizes":"Docker host machine sizing is not available yet."}}]}
 """#
 
 private func golden(id: String, name: String, provider: String = "boat", org: String = "org-a", snapshot: Bool = true, dirs: [String] = ["web"]) -> String {
@@ -51,7 +58,7 @@ private func golden(id: String, name: String, provider: String = "boat", org: St
     return #"{"id":"\#(id)","name":"\#(name)","provider":"\#(provider)","modal":null,"orgId":"\#(org)","visibility":"org","ownerId":"u1","providerSnapshotId":\#(snapshot ? #""snap""# : "null"),"providerSandboxId":null,"repos":\#(dirs.count),"config":{"repos":[\#(repos)],"init":[]}}"#
 }
 
-private let goldensJSON = #"{"goldens":[\#(golden(id: "g-draft", name: "aaa", snapshot: false)),\#(golden(id: "g-web", name: "web", dirs: ["web", "api"])),\#(golden(id: "g-web-modal", name: "web", provider: "modal")),\#(golden(id: "g-other", name: "elsewhere", org: "org-b"))]}"#
+private let goldensJSON = #"{"goldens":[\#(golden(id: "g-draft", name: "aaa", snapshot: false)),\#(golden(id: "g-web", name: "web", dirs: ["web", "api"])),\#(golden(id: "g-web-modal", name: "web", provider: "modal")),\#(golden(id: "g-web-docker", name: "web", provider: "docker")),\#(golden(id: "g-other", name: "elsewhere", org: "org-b"))]}"#
 
 private func credentials(user: String, org: String) -> String {
     #"{"user":[\#(user)],"orgs":[{"id":"org-a","name":"Team","role":"member","credentials":[{"kind":"boat","createdAt":null},\#(org)]}]}"#
@@ -96,8 +103,14 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     let options = try await client.launchOptions()
     let goldens = try await client.launchGoldens()
     let accounts = try await client.launchAccounts()
-    #expect(options.harnesses.map(\.id) == ["claude", "codex"])
-    #expect(goldens.map(\.id) == ["g-draft", "g-web", "g-web-modal"])
+    #expect(options.harnesses.map(\.id) == ["claude", "codex", "antigravity"])
+    #expect(options.providers.map(\.id) == ["boat", "modal", "docker"])
+    let dockerProvider = try #require(options.providers.first { $0.id == "docker" })
+    #expect(dockerProvider.enabled)
+    #expect(dockerProvider.launchSources == ["golden", "image"])
+    #expect(dockerProvider.capabilities["machineSizes"] == false)
+    #expect(dockerProvider.unsupportedReasons["machineSizes"] == "Docker host machine sizing is not available yet.")
+    #expect(goldens.map(\.id) == ["g-draft", "g-web", "g-web-modal", "g-web-docker"])
     // The provider key row has no id and the removed account is not offered.
     #expect(accounts.map(\.id) == [personalClaude, orgClaude])
     #expect(accounts.map(\.scope) == [.user, .org])
@@ -110,18 +123,25 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
 
 @Test func optionsComeFromTheServerCatalogAndReadyGoldensComeFirst() throws {
     let catalog = try catalog()
-    #expect(catalog.goldens.map(\.id) == ["g-web", "g-web-modal", "g-draft"])
+    #expect(catalog.goldens.map(\.id) == ["g-web", "g-web-docker", "g-web-modal", "g-draft"])
     let web = try #require(catalog.golden("g-web"))
+    let modal = try #require(catalog.golden("g-web-modal"))
+    let docker = try #require(catalog.golden("g-web-docker"))
     #expect(catalog.needsProviderLabel(web))
     #expect(!catalog.needsProviderLabel(try #require(catalog.golden("g-draft"))))
+    // Harnesses are filtered by the selected golden's provider (never offering Antigravity on Boat).
+    #expect(catalog.harnesses(for: web).map(\.id) == ["claude", "codex"])
+    #expect(catalog.harnesses(for: modal).map(\.id) == ["claude", "codex", "antigravity"])
+    #expect(catalog.harnesses(for: docker).map(\.id) == ["claude", "codex", "antigravity"])
+    #expect(catalog.harness("antigravity")?.efforts(for: "model-g") == ["default"])
     #expect(catalog.harness("claude")?.efforts(for: "model-b") == ["low", "high"])
     // A model outside the list takes the harness's efforts.
     #expect(catalog.harness("claude")?.efforts(for: "custom") == ["low", "medium", "high"])
     #expect(catalog.offersRepositoryChoice(for: web))
-    #expect(!catalog.offersRepositoryChoice(for: try #require(catalog.golden("g-web-modal"))))
+    #expect(!catalog.offersRepositoryChoice(for: modal))
     #expect(catalog.machineSizes == ["small", "large"])
     // TTL presets stay within the golden's provider and always include the server default.
-    #expect(catalog.ttlChoices(for: catalog.golden("g-web-modal")) == [3_600, 14_400, 28_800, 86_400])
+    #expect(catalog.ttlChoices(for: modal) == [3_600, 14_400, 28_800, 86_400])
     #expect(catalog.ttlChoices(for: web).last == 2_592_000)
 }
 
@@ -162,11 +182,13 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
 
     draft.prompt = "  Fix the flaky test\nand open a PR  "
     let request = try draft.request(catalog: catalog).get()
+    #expect((16...128).contains(request.idempotencyKey.count))
+    #expect(UUID(uuidString: request.idempotencyKey) != nil && request.idempotencyKey == request.idempotencyKey.lowercased())
     let body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
     #expect(body as NSDictionary == [
         "org": "org-a", "golden": "web", "provider": "boat", "harness": "claude", "model": "model-a",
         "reasoningEffort": "medium", "credentialId": personalClaude, "prompt": "Fix the flaky test\nand open a PR",
-        "sizePolicyVersion": 1
+        "idempotencyKey": request.idempotencyKey, "sizePolicyVersion": 1
     ] as NSDictionary)
 
     // Optional choices are sent only when made; a TTL other than the server default is sent.
@@ -194,6 +216,16 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     draft.adopt(goldenID: "g-web-modal", catalog: catalog)
     #expect(draft.repository == nil)
     #expect(draft.ttlSeconds == 86_400)
+    // Switching from Modal (Antigravity) back to Boat falls back to the first Boat-supported harness.
+    draft.adopt(harness: "antigravity", catalog: catalog)
+    #expect(draft.harness == "antigravity")
+    #expect(draft.model == "model-g")
+    #expect(draft.reasoningEffort == "default")
+    draft.adopt(goldenID: "g-web", catalog: catalog)
+    #expect(draft.harness == "claude")
+    #expect(draft.model == "model-a")
+    #expect(draft.reasoningEffort == "medium")
+    #expect(draft.accountID == personalClaude)
 }
 
 @Test func theDraftRefusesWhatTheServerWouldRefuse() throws {
@@ -219,6 +251,8 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(bad.request(catalog: catalog) == .failure(.ttlOutOfRange))
     bad = draft; bad.harness = "opencode"
     #expect(bad.request(catalog: catalog) == .failure(.missingHarness))
+    bad = draft; bad.harness = "antigravity"
+    #expect(bad.request(catalog: catalog) == .failure(.unsupportedHarness))
 }
 
 // MARK: Launching and refusals
@@ -242,24 +276,36 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
 }
 
-@Test(arguments: ["starting", "ready"])
-func modalAdmissionReturnsTheAcknowledgedSandbox(status: String) async throws {
-    let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"\#(status)"}}"#
-    let (client, transport) = try await signedIn([.init(status: 202, body: body)])
-    let catalog = try catalog()
-    var draft = SandboxLaunchDraft(catalog: catalog)
-    draft.goldenID = "g-web-modal"
-    draft.prompt = "Go"
+@Test func admittedReceiptsSucceedAcrossBoatModalAndDocker() async throws {
+    for (provider, goldenID, httpStatus, sandboxStatus) in [
+        ("boat", "g-web", 200, "starting"),
+        ("boat", "g-web", 202, "starting"),
+        ("modal", "g-web-modal", 202, "starting"),
+        ("modal", "g-web-modal", 200, "ready"),
+        ("docker", "g-web-docker", 200, "starting"),
+        ("docker", "g-web-docker", 202, "ready"),
+    ] {
+        let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"\#(sandboxStatus)"}}"#
+        let (client, transport) = try await signedIn([.init(status: httpStatus, body: body)])
+        let catalog = try catalog()
+        var draft = SandboxLaunchDraft(catalog: catalog)
+        draft.adopt(goldenID: goldenID, catalog: catalog)
+        draft.prompt = "Go"
+        let launchRequest = try draft.request(catalog: catalog).get()
+        #expect(launchRequest.provider == provider)
 
-    let result = try await client.launchSandbox(try draft.request(catalog: catalog).get())
+        let result = try await client.launchSandbox(launchRequest)
 
-    guard case .admitted(let admission) = result else {
-        Issue.record("Expected a Modal admission receipt")
-        return
+        guard case .admitted(let admission) = result else {
+            Issue.record("Expected an admission receipt for \(provider)")
+            return
+        }
+        #expect(result.sandboxID == newSandbox)
+        #expect(admission.status.rawValue == sandboxStatus)
+        #expect(await transport.requests.count == 3)
+        let sentBody = try json(try #require(await transport.requests.last))
+        #expect(sentBody["idempotencyKey"] as? String == launchRequest.idempotencyKey)
     }
-    #expect(result.sandboxID == newSandbox)
-    #expect(admission.status.rawValue == status)
-    #expect(await transport.requests.count == 3)
 }
 
 @Test(arguments: [
@@ -269,7 +315,7 @@ func modalAdmissionReturnsTheAcknowledgedSandbox(status: String) async throws {
     #"{"sandbox":{"id":"not-a-uuid","status":"starting"}}"#,
     #"{"sandbox":{"id":"7d1c2b4a-5d6e-0f70-1a9b-0c1d2e3f4a5b","status":"starting"}}"#,
 ])
-func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
+func malformedAdmissionRemainsUnconfirmed(body: String) async throws {
     let (client, _) = try await signedIn([.init(status: 200, body: body)])
     let catalog = try catalog()
     var draft = SandboxLaunchDraft(catalog: catalog)
@@ -280,10 +326,15 @@ func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
     await #expect(throws: SandboxLaunchFailure.unconfirmed) { _ = try await client.launchSandbox(request) }
 }
 
-@Test func aBoatLaunchDoesNotAcceptTheModalAdmissionReceipt() async throws {
+@Test func anUnknownProviderDoesNotAcceptAnAdmissionReceipt() async throws {
     let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"starting"}}"#
     let (client, _) = try await signedIn([.init(status: 200, body: body)])
-    let catalog = try catalog()
+    let options = try JSONDecoder().decode(LaunchOptions.self, from: Data(optionsJSON.utf8))
+    let unknownGoldens = try JSONDecoder().decode(
+        LaunchGoldenList.self,
+        from: Data(#"{"goldens":[\#(golden(id: "g-unknown", name: "web", provider: "future"))]}"#.utf8)
+    ).goldens
+    let catalog = SandboxLaunchCatalog(orgID: "org-a", options: options, goldens: unknownGoldens, accounts: [])
     var draft = SandboxLaunchDraft(catalog: catalog)
     draft.prompt = "Go"
     let request = try draft.request(catalog: catalog).get()
@@ -345,6 +396,14 @@ func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
     }
     #expect(notConnected.title == "Provider not connected")
     #expect(notConnected.detail == "Modal is not configured.")
+    guard case .refused(let routing) = classify(503, #"{"error":{"code":"provider_routing_unavailable"}}"#) else {
+        Issue.record("Expected provider_routing_unavailable refusal"); return
+    }
+    #expect(routing.title == "Provider setup incomplete")
+    guard case .refused(let binding) = classify(409, #"{"error":{"code":"credential_binding_required"}}"#) else {
+        Issue.record("Expected credential_binding_required refusal"); return
+    }
+    #expect(binding.title == "Model account required")
     guard case .refused(let refused) = classify(422, #"{"error":{"code":"credential_refused"}}"#) else {
         Issue.record("Credential refusal must be actionable"); return
     }
