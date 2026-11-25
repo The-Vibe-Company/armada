@@ -4690,8 +4690,6 @@ test.each([
   ["unfinished runtime follow-up", 3, "command", "-infinity", true, false],
   ["older-epoch runtime follow-up", 3, "command", "-infinity", true, false],
   ["published runtime resume", 3, "resume", "infinity", true, false],
-  ["unfinished enrolled runtime resume", 3, "resume", "infinity", true, false],
-  ["unfinished unenrolled runtime resume", 3, "resume", "infinity", true, false],
   ["older-epoch runtime resume", 3, "resume", "infinity", true, false],
   ["unrelated runtime resume", 3, "resume", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
@@ -4732,12 +4730,11 @@ test.each([
       scenario.startsWith("older job") || scenario === "runtime request already at dispatch generation" ? 3 : 2,
     ],
   );
-  const pendingWake = activity === "resume" && scenario.startsWith("unfinished");
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
     scenario === "runtime request advanced after claim" ? 2 : generation,
-    activity === "request" || pendingWake ? requestId : activity === "other" ? crypto.randomUUID() : null,
-    activity === "request" || activity === "other" || pendingWake ? "infinity" : null,
+    activity === "request" ? requestId : activity === "other" ? crypto.randomUUID() : null,
+    activity === "request" || activity === "other" ? "infinity" : null,
   ]);
   await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
     sandboxId,
@@ -4758,24 +4755,17 @@ test.each([
     );
   }
   if (activity === "resume") {
-    const finished = !pendingWake;
     await db.query(
       `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
-       values ($1,$2,$3,case when $4 then repeat('a',64) end)`,
-      [
-        sandboxId,
-        generation,
-        scenario === "older-epoch runtime resume" ? 3 : 2,
-        scenario !== "unfinished unenrolled runtime resume",
-      ],
+       values ($1,$2,$3,repeat('a',64))`,
+      [sandboxId, generation, scenario === "older-epoch runtime resume" ? 3 : 2],
     );
     await db.query(
       `insert into runtime_resumes (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,
          conversation_id,model,reasoning_effort,phase,verified_at,receipt)
        values ($1,$2,1,2,0,repeat('a',64),'fixture','fixture','low',
-         case when $3 then 'complete' else 'dispatched' end,
-         case when $3 then now() end,case when $3 then '{"resumed":true}'::jsonb end)`,
-      [sandboxId, scenario === "unrelated runtime resume" ? crypto.randomUUID() : requestId, finished],
+         'complete',now(),'{"resumed":true}'::jsonb)`,
+      [sandboxId, scenario === "unrelated runtime resume" ? crypto.randomUUID() : requestId],
     );
   }
   const outcome = async () =>
@@ -4840,7 +4830,7 @@ test.each([
     reset ||
     scenario === "published runtime follow-up" ||
     scenario === "published runtime resume" ||
-    scenario === "unfinished enrolled runtime resume" ||
+    scenario === "older-epoch runtime resume" ||
     scenario === "runtime request advanced generation" ||
     scenario === "runtime request already at dispatch generation" ||
     scenario === "runtime request advanced after claim" ||
@@ -5920,9 +5910,19 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
     launch,
     JSON.stringify({ boat_authority: {}, modal_machine: { entry: { machineId: id } } }),
   ]);
+  const resume = await f.store.enqueue("resume", id, 3, "boat", null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    deadline: new Date(Date.now() + 60_000),
+  });
+  await f.db.query(
+    `update public.jobs set state='failed',outcome='{"boat_restore_dispatched":true}'::jsonb where id=$1`,
+    [resume],
+  );
   await f.sql.transaction!((tx) => enqueueBoatStop(tx, id, 4));
   let captures = 0;
   let stops = 0;
+  let active = false;
   let crash = new AbortController();
   const now = Date.now();
   const handler = createBoatStop(
@@ -5934,7 +5934,7 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
       expect(target).toMatchObject({ sandboxId: id, machineId: id, generation: 4, launchGeneration: 1 });
       return {
         machine: {
-          observe: async () => ({ kind: "present", machine: target, phase: "running" }),
+          observe: async () => (active ? { kind: "present", machine: target, phase: "running" } : { kind: "absent" }),
           async stop(request) {
             await authorize();
             expect(request).toMatchObject({ sandboxId: id, machineId: id, generation: 4, retain: true });
@@ -5968,6 +5968,18 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
         throw new Error("Unexpected handoff");
       },
     });
+
+  const archiveOwner = crypto.randomUUID();
+  const archive = (await f.store.claim("stop", archiveOwner, 30, 1))!;
+  const unresolved = await run(archive, archiveOwner);
+  expect(unresolved.status).toBe("retry");
+  expect(await f.store.complete(archive, archiveOwner, unresolved)).toBe(true);
+  expect(stops).toBe(0);
+  expect((await f.db.query("select status::text, stopped_at from sandboxes where id=$1", [id])).rows).toEqual([
+    { status: "stopping", stopped_at: null },
+  ]);
+  await f.db.query("update jobs set run_after=now() where id=$1", [archive.id]);
+  active = true;
 
   const firstOwner = crypto.randomUUID();
   const first = (await f.store.claim("stop", firstOwner, 30, 1))!;

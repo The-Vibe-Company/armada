@@ -13,18 +13,15 @@ import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts"
 import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import type { createResumeJob } from "./jobs/resume.ts";
 import { unresolvedResume } from "./modal-launch-handoff.ts";
-import {
-  canRepeatPinnedRuntimeSettings,
-  modalDialoutPlacement,
-  runtimeBridgeTarget,
-} from "./provider-runtime-admission.ts";
+import { canRepeatPinnedRuntimeSettings, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
-import type { RuntimeResume, RuntimeTurnClaim } from "./runtime-resume.ts";
+import type { RuntimeTurnClaim } from "./runtime-resume.ts";
+import { historicalRuntimeResumeReceipt } from "./runtime-resume-receipts.ts";
 import { appendConversation } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -63,9 +60,8 @@ export function createRuntimeFollowup(
   key: string,
   commands: ReturnType<typeof createRuntimeCommands>,
   prepareMcp?: RuntimeMcp["prepare"],
-  resume?: RuntimeResume,
   restoreScopedAccess?: RestoreScopedRuntimeAccess,
-  wakeModal?: ReturnType<typeof createResumeJob>["wake"],
+  wakeResume?: ReturnType<typeof createResumeJob>["wake"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -108,17 +104,17 @@ export function createRuntimeFollowup(
       assertModalLaunchSetup(setup.state);
       if (setup.prompt_pending) throw new ModalLaunchSetupConflict("modal_launch_prompt_pending");
     };
-    // Route replays by durable operation identity, not today's machine state.
-    // A completed wake may already be running (or paused again) on retry.
-    const waking =
-      !modalDialoutPlacement(found) &&
-      (
-        await sql.query("select request_id from public.runtime_resumes where sandbox_id=$1 and request_id=$2::uuid", [
-          found.id,
-          requestId,
-        ])
-      ).rows.length > 0;
-    if (waking || found.status === "stopped") {
+    if (fromQueue && found.boatRuntime) {
+      const historical = await historicalRuntimeResumeReceipt(sql, caller, {
+        id: found.id,
+        requestId,
+        prompt: input.prompt,
+      });
+      if (historical) return historical;
+    }
+    if (found.status === "stopped") {
+      if (found.stopRequestedAt || found.deletedAt)
+        throw new VaultError("conflict", "Resume requires the admitted retained stop.");
       const previous = (
         await sql.query("select request_id from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
           found.id,
@@ -127,13 +123,9 @@ export function createRuntimeFollowup(
       ).rows[0];
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
-      if (!waking) await assertDirectLaunchReady();
-      if (modalDialoutPlacement(found)) {
-        if (!wakeModal) throw new VaultError("unavailable", "Modal resume jobs are unavailable.");
-        return wakeModal(caller, found, requestId, claim);
-      }
-      if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
-      return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, claim);
+      await assertDirectLaunchReady();
+      if (!wakeResume) throw new VaultError("unavailable", "Runtime resume jobs are unavailable.");
+      return wakeResume(caller, found, requestId, claim);
     }
     if (
       !found.model ||
@@ -233,11 +225,7 @@ export function createRuntimeFollowup(
           )
         ).rows[0];
         if (lease.reconciling) {
-          const wake = await locked.query(
-            "select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$2",
-            [found.id, requestId],
-          );
-          if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId || wake.rows.length)
+          if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId)
             throw new RuntimeFollowupConflict(
               "runtime_reconciliation_active",
               "Runtime admission changed; inspect status before retrying.",
