@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { exactLocalTime, relativeAge } from "@/lib/relative-time";
 
 /** Often enough for "min ago" to stay right to the minute. */
@@ -44,14 +44,12 @@ export function CreatedAt({ iso, now }: { iso: string; now: number }) {
   const age = relativeAge(iso, useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot) ?? now);
   if (age === null) return <span>Unknown</span>;
   return (
-    <TooltipProvider>
-      <Tooltip>
-        {/* A button, so the exact time is reachable from the keyboard as well as by pointer. */}
-        <TooltipTrigger className="cursor-default rounded-sm underline decoration-muted-foreground/50 decoration-dotted underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <time dateTime={iso}>{age}</time>
-        </TooltipTrigger>
-        <TooltipContent>{exactLocalTime(iso)}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      {/* A button, so the exact time is reachable from the keyboard as well as by pointer. */}
+      <TooltipTrigger className="cursor-default rounded-sm underline decoration-muted-foreground/50 decoration-dotted underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <time dateTime={iso}>{age}</time>
+      </TooltipTrigger>
+      <TooltipContent>{exactLocalTime(iso)}</TooltipContent>
+    </Tooltip>
   );
 }

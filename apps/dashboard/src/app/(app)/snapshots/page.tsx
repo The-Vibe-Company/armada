@@ -9,7 +9,7 @@ import { CircleCheckIcon, FolderGit2Icon, GitBranchIcon, LayersIcon, TriangleAle
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Fragment, Suspense } from "react";
+import { type ComponentProps, cache, Fragment, Suspense } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { CatalogBrowser } from "@/components/catalog-browser";
@@ -33,12 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { isUuid } from "@/lib/action";
-import {
-  CAPABILITIES_TIMEOUT_MS,
-  createControlClient,
-  type GoldenCapabilities,
-  readGoldenCapabilities,
-} from "@/lib/control";
+import { CAPABILITIES_TIMEOUT_MS, createControlClient, readGoldenCapabilities } from "@/lib/control";
 import { listSelectedConnections } from "@/lib/data/connections";
 import { readDockerLaunchOption, readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readSelectedDockerSnapshots } from "@/lib/data/docker-snapshots";
@@ -57,7 +52,6 @@ import { hasDockerHost, snapshotLaunchEnabled, snapshotRebuildAvailable, snapsho
 import { mcpUrl } from "@/lib/env";
 import { capacityParts, environmentState } from "@/lib/environments";
 import {
-  type CapacityState,
   editDefaults,
   GOLDEN_PROVIDERS,
   goldenInit,
@@ -71,7 +65,6 @@ import {
 import { DOCKER_HOST_LABEL, dockerHostGroup } from "@/lib/labels";
 import { boatOpenCodeAvailable } from "@/lib/launch-options";
 import { goldenSizing, sizePolicyBlocker } from "@/lib/machine-size";
-import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, connectedProviders } from "@/lib/provider-setup";
 import { relativeAge } from "@/lib/relative-time";
 import { goldenRepositoryDirs } from "@/lib/repository-context";
@@ -108,17 +101,6 @@ export default async function GoldensPage({ searchParams }: Props) {
     items.filter((item) => item.org.id === selected?.org.id),
   );
   const serverUrl = mcpUrl();
-  // Only capability discovery depends on provider status. Other page reads must not queue behind it.
-  const capabilitiesRead = setupRead.then((setup) =>
-    selected
-      ? allCapabilities(
-          serverUrl,
-          viewer.token,
-          selected.org.id,
-          setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : [],
-        )
-      : null,
-  );
   const hostsRead = readSelectedDockerHosts();
   const snapshotsRead = readSelectedDockerSnapshots();
   // Docker discovery determines inventory readiness only when there is a host or snapshot to show.
@@ -129,44 +111,23 @@ export default async function GoldensPage({ searchParams }: Props) {
       ? readDockerLaunchOption()
       : null,
   );
-  const [
-    setup,
-    hostRead,
-    snapshotRead,
-    dockerOption,
-    goldens,
-    history,
-    memberships,
-    directory,
-    github,
-    capabilities,
-    listed,
-    accountList,
-    templateList,
-    vault,
-    removed,
-  ] = await Promise.all([
-    setupRead,
-    hostsRead,
-    snapshotsRead,
-    dockerOptionRead,
-    listGoldens(supabase),
-    listGoldenHistory(supabase),
-    pending,
-    pending.then((items) =>
-      memberDirectory(
-        supabase,
-        items.map((item) => item.org.id),
+  const [setup, hostRead, snapshotRead, dockerOption, goldens, memberships, directory, github, removed] =
+    await Promise.all([
+      setupRead,
+      hostsRead,
+      snapshotsRead,
+      dockerOptionRead,
+      listGoldens(supabase),
+      pending,
+      pending.then((items) =>
+        memberDirectory(
+          supabase,
+          items.map((item) => item.org.id),
+        ),
       ),
-    ),
-    getGitHubConnection(supabase).catch(() => null),
-    capabilitiesRead,
-    listSelectedConnections(),
-    listSelectedAccounts(),
-    listSelectedTemplates(),
-    listSelectedVault(),
-    removedRead,
-  ]);
+      getGitHubConnection(supabase).catch(() => null),
+      removedRead,
+    ]);
   const hosts = hostRead.state === "ready" ? hostRead.list.hosts.filter((host) => host.state !== "revoked") : [];
   const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
   const hasDocker = hasDockerHost(hosts) || snapshots.length > 0;
@@ -174,12 +135,6 @@ export default async function GoldensPage({ searchParams }: Props) {
   const connected = setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : null;
   const canStart = (connected?.length ?? 0) > 0 || hasDocker;
   const tracked = (scope: string) => query[`build.${scope}`] !== undefined || query[`build-key.${scope}`] !== undefined;
-  const connections: LaunchConnections =
-    listed.state === "ready"
-      ? { connections: listed.connections }
-      : { unavailable: listed.state === "error" ? listed.message : "The Armada server is not configured." };
-  const accounts = launchAccounts(accountList, Date.now());
-  const templates = launchTemplates(templateList, goldens, lookupsFrom(goldens, listed, vault));
   const createTracked = selected !== null && tracked(`create.${selected.org.id}`);
   const rebuildsTracked = new Set(
     goldens.filter((golden) => tracked(`rebuild.${golden.id}`)).map((golden) => golden.id),
@@ -187,27 +142,6 @@ export default async function GoldensPage({ searchParams }: Props) {
   if (setupPending && !hasDocker && goldens.length === 0 && !createTracked && rebuildsTracked.size === 0)
     redirect(CLOUD_PROVIDERS_PATH);
   const orgs = new Map(memberships.map((item) => [item.org.id, item]));
-  // Usage comes only from caller-visible server bindings, never historical row counts.
-  const capacities = capabilities
-    ? (Object.fromEntries(
-        Object.entries(capabilities).map(([provider, read]) => [
-          provider,
-          providerCapacity(history, read, provider as SandboxProviderId),
-        ]),
-      ) as Partial<Record<SandboxProviderId, CapacityState>>)
-    : null;
-  const counts = Object.fromEntries(
-    GOLDEN_PROVIDERS.map((provider) => {
-      const read = capabilities?.[provider];
-      const bound = new Set(
-        read?.ok ? read.bindings?.filter((b) => b.relation === "current_backend").map((b) => b.goldenId) : [],
-      );
-      return [
-        provider,
-        history.filter((golden) => golden.provider === provider && golden.removed_at && bound.has(golden.id)).length,
-      ];
-    }),
-  ) as Record<SandboxProviderId, number>;
   const serverReady = serverUrl !== null;
   const githubConnected = Boolean(github && !github.revoked_at);
   const context: RowContext = {
@@ -218,10 +152,6 @@ export default async function GoldensPage({ searchParams }: Props) {
     serverReady,
     connected,
     rebuildsTracked,
-    connections,
-    accounts,
-    templates,
-    templateList,
     hostStates: new Map((hostRead.state === "ready" ? hostRead.list.hosts : []).map((host) => [host.id, host.state])),
   };
 
@@ -240,17 +170,29 @@ export default async function GoldensPage({ searchParams }: Props) {
   const replacements = goldens
     .filter((golden) => rebuildableBoatIds.has(golden.id))
     .map(({ id, name, visibility }) => ({ id, name, visibility }));
-  // Without a confirmed provider the create form is shown only to follow a build this page already tracks.
-  // A build the page tracks reopens the dialog, which follows it.
-  const create =
-    selected && capacities && (canStart || createTracked) ? (
-      <GoldenCreateDialog orgId={selected.org.id} initialOpen={createTracked}>
+  const capacity =
+    selected && connected?.length
+      ? readSnapshotCapacity(supabase, serverUrl, viewer.token, selected.org.id, connected)
+      : null;
+  // A tracked build reopens the dialog even if a provider was disconnected.
+  const create = selected && (canStart || createTracked) ? renderCreateDialog(selected) : undefined;
+
+  function renderCreateDialog({ org, role }: Membership) {
+    async function CreateOptions() {
+      const [connections, accounts, available] = await Promise.all([
+        readSnapshotConnections(),
+        readSnapshotAccounts(),
+        capacity,
+      ]);
+      const launch = { orgId: org.id, catalog: MODEL_CATALOG, connections, accounts };
+      const providers = connected ?? [];
+      return (
         <SnapshotCreateChoice
           githubConnected={githubConnected}
           snapshots={snapshots}
-          launch={{ orgId: selected.org.id, catalog: MODEL_CATALOG, connections, accounts }}
-          orgId={selected.org.id}
-          isAdmin={selected.role === "admin"}
+          launch={launch}
+          orgId={org.id}
+          isAdmin={role === "admin"}
           hosts={hosts}
           canBuild={
             hostRead.state === "ready" &&
@@ -258,35 +200,34 @@ export default async function GoldensPage({ searchParams }: Props) {
             Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens)
           }
           cloudForms={Object.fromEntries(
-            (connected ?? []).map((provider) => [
+            providers.map((provider) => [
               provider,
               <GoldenForm
                 key={provider}
                 mode="create"
-                orgId={selected.org.id}
-                orgName={selected.org.name}
-                isAdmin={selected.role === "admin"}
-                providers={connected ?? []}
-                capacities={capacities}
+                orgId={org.id}
+                orgName={org.name}
+                isAdmin={role === "admin"}
+                providers={providers}
+                capacities={available?.capacities ?? {}}
                 canStart={serverReady}
                 githubConnected={githubConnected}
                 replacements={replacements}
-                launch={{ orgId: selected.org.id, catalog: MODEL_CATALOG, connections, accounts }}
+                launch={launch}
               />,
             ]),
           )}
         />
+      );
+    }
+    return (
+      <GoldenCreateDialog orgId={org.id} initialOpen={createTracked}>
+        <Suspense fallback={<p role="status">Loading snapshot options…</p>}>
+          <CreateOptions />
+        </Suspense>
       </GoldenCreateDialog>
-    ) : undefined;
-  const parts =
-    selected && capacities
-      ? capacityParts(
-          (connected ?? []).flatMap((provider) => {
-            const state = capacities[provider];
-            return state ? [{ provider, state, removed: counts[provider] }] : [];
-          }),
-        )
-      : [];
+    );
+  }
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
   // Build recovery belongs to the page; only an explicit item opens a detail.
   // Otherwise a Back/reload of the list would reopen a dismissed rebuild.
@@ -346,48 +287,14 @@ export default async function GoldensPage({ searchParams }: Props) {
           </AlertDescription>
         </Alert>
       )}
-      {selected &&
-        capacities &&
-        GOLDEN_PROVIDERS.map((provider) => {
-          const read = capabilities?.[provider];
-          const reconcile = history.filter(
-            (g) =>
-              !g.removed_at &&
-              g.provider === provider &&
-              read?.ok &&
-              read.bindings?.some((b) => b.goldenId === g.id && b.relation !== "current_backend"),
-          );
-          return reconcile.length > 0 ? (
-            <LegacyConflict key={provider} provider={provider} goldens={reconcile} />
-          ) : null;
-        })}
+      {capacity && (
+        <Suspense fallback={null}>
+          <SnapshotCapacityNotices capacity={capacity} />
+        </Suspense>
+      )}
     </>
   );
 
-  const footer =
-    parts.length > 0 ? (
-      <p className="text-xs text-muted-foreground" data-capacity-summary>
-        {parts.map((part, index) => (
-          <Fragment key={part.provider}>
-            {index > 0 && <span aria-hidden> · </span>}
-            <span
-              data-capacity={part.kind}
-              data-capacity-provider={part.provider}
-              data-capacity-removed={counts[part.provider]}
-              className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
-            >
-              <span data-capacity-line>{part.text}</span>
-              {part.reason && (
-                <>
-                  {" "}
-                  (<span data-capacity-reason>{part.reason}</span>)
-                </>
-              )}
-            </span>
-          </Fragment>
-        ))}
-      </p>
-    ) : null;
   const empty =
     selected && inventoryIncomplete ? (
       <Empty title="Snapshots are not fully loaded" action={reload} icon={<LayersIcon />}>
@@ -428,11 +335,10 @@ export default async function GoldensPage({ searchParams }: Props) {
     const action =
       selected && host && !blocker ? (
         <EnvironmentLaunchDialog>
-          <LaunchStart
+          <EmptyHostLaunchStart
             orgId={selected.org.id}
             hostId={host.id}
             hostName={name}
-            accounts={accounts}
             unavailable={dockerOption ? dockerUnavailable(dockerOption) : []}
             harnesses={agents.offered}
             initialHarness={agents.initial ?? "codex"}
@@ -481,9 +387,121 @@ export default async function GoldensPage({ searchParams }: Props) {
       actions={create}
       notices={notices}
       empty={empty}
-      footer={footer}
+      footer={
+        capacity && (
+          <Suspense fallback={null}>
+            <SnapshotCapacitySummary capacity={capacity} />
+          </Suspense>
+        )
+      }
     />
   );
+}
+
+async function readSnapshotConnections(): Promise<LaunchConnections> {
+  const listed = await listSelectedConnections();
+  return listed.state === "ready"
+    ? { connections: listed.connections }
+    : { unavailable: listed.state === "error" ? listed.message : "The Armada server is not configured." };
+}
+
+const readSnapshotAccounts = cache(async () => launchAccounts(await listSelectedAccounts(), Date.now()));
+const readSnapshotTemplates = cache(() => listSelectedTemplates());
+const readSnapshotTemplateChoices = cache(async (goldens: GoldenRow[]) => {
+  const [list, connections, vault] = await Promise.all([
+    readSnapshotTemplates(),
+    listSelectedConnections(),
+    listSelectedVault(),
+  ]);
+  return launchTemplates(list, goldens, lookupsFrom(goldens, connections, vault));
+});
+
+async function SnapshotEnvironmentTemplates(props: Omit<ComponentProps<typeof EnvironmentTemplates>, "list">) {
+  return <EnvironmentTemplates {...props} list={await readSnapshotTemplates()} />;
+}
+
+async function EmptyHostLaunchStart(props: Omit<ComponentProps<typeof LaunchStart>, "accounts">) {
+  return <LaunchStart {...props} accounts={await readSnapshotAccounts()} />;
+}
+
+async function readSnapshotCapacity(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  serverUrl: string | null,
+  token: string | null,
+  orgId: string,
+  providers: SandboxProviderId[],
+) {
+  const [history, capabilities] = await Promise.all([
+    listGoldenHistory(supabase),
+    allCapabilities(serverUrl, token, orgId, providers),
+  ]);
+  // Usage comes only from caller-visible server bindings, never historical row counts.
+  const capacities = Object.fromEntries(
+    Object.entries(capabilities).map(([provider, read]) => [
+      provider,
+      providerCapacity(history, read, provider as SandboxProviderId),
+    ]),
+  );
+  return { history, capabilities, capacities, providers };
+}
+
+type CapacityRead = ReturnType<typeof readSnapshotCapacity>;
+
+async function SnapshotCapacityNotices({ capacity }: { capacity: CapacityRead }) {
+  const { capabilities, history } = await capacity;
+  return GOLDEN_PROVIDERS.map((provider) => {
+    const read = capabilities[provider];
+    if (!read?.ok) return null;
+    const reconcile = history.filter(
+      (g) =>
+        !g.removed_at &&
+        g.provider === provider &&
+        read.bindings?.some((b) => b.goldenId === g.id && b.relation !== "current_backend"),
+    );
+    return reconcile.length > 0 ? <LegacyConflict key={provider} provider={provider} goldens={reconcile} /> : null;
+  });
+}
+
+async function SnapshotCapacitySummary({ capacity }: { capacity: CapacityRead }) {
+  const { capabilities, capacities, history, providers } = await capacity;
+  const counts = Object.fromEntries(
+    providers.map((provider) => {
+      const read = capabilities[provider];
+      const bound = new Set(
+        read?.ok ? read.bindings?.filter((b) => b.relation === "current_backend").map((b) => b.goldenId) : [],
+      );
+      return [
+        provider,
+        history.filter((golden) => golden.provider === provider && golden.removed_at && bound.has(golden.id)).length,
+      ];
+    }),
+  );
+  const parts = capacityParts(
+    providers.map((provider) => ({ provider, state: capacities[provider], removed: counts[provider] })),
+  );
+  return parts.length > 0 ? (
+    <p className="text-xs text-muted-foreground" data-capacity-summary>
+      {parts.map((part, index) => (
+        <Fragment key={part.provider}>
+          {index > 0 && <span aria-hidden> · </span>}
+          <span
+            data-capacity={part.kind}
+            data-capacity-provider={part.provider}
+            data-capacity-removed={counts[part.provider]}
+            className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
+          >
+            <span data-capacity-line>{part.text}</span>
+            {part.reason && (
+              <>
+                {" "}
+                (<span data-capacity-reason>{part.reason}</span>)
+              </>
+            )}
+          </span>
+        </Fragment>
+      ))}
+    </p>
+  ) : null;
 }
 
 /**
@@ -496,10 +514,10 @@ async function allCapabilities(
   token: string | null,
   org: string,
   providers: readonly SandboxProviderId[],
-): Promise<Partial<Record<SandboxProviderId, GoldenCapabilities>>> {
-  const read = (provider: SandboxProviderId): Promise<GoldenCapabilities> =>
+) {
+  const read = (provider: SandboxProviderId) =>
     !serverUrl || !token
-      ? Promise.resolve({ ok: false, reason: "The Armada server is not configured for this dashboard." })
+      ? Promise.resolve({ ok: false as const, reason: "The Armada server is not configured for this dashboard." })
       : readGoldenCapabilities(
           createControlClient({ serverUrl, token, timeoutMs: CAPABILITIES_TIMEOUT_MS }),
           org,
@@ -548,11 +566,6 @@ type RowContext = {
   connected: SandboxProviderId[] | null;
   /** Goldens whose rebuild this page tracks in its URL: their form stays to follow the job, even without a provider. */
   rebuildsTracked: Set<string>;
-  connections: LaunchConnections;
-  accounts: LaunchAccounts;
-  /** Every template the viewer can launch, with the environment each starts from. */
-  templates: readonly TemplateLaunchTarget[];
-  templateList: TemplateList;
   /** Listed host states, so a draining host reads as draining rather than merely unavailable. */
   hostStates: Map<string, DockerHostState>;
 };
@@ -633,9 +646,7 @@ function environmentRow(golden: GoldenRow, context: RowContext, now: number): En
         orgId={golden.org_id}
         catalog={MODEL_CATALOG}
         repositories={directories}
-        connections={context.connections}
-        accounts={context.accounts}
-        templates={context.templates.filter((template) => template.definition.goldenId === golden.id)}
+        templateSource={{ goldens: context.all, goldenId: golden.id }}
         {...(sizing.kind === "ready" ? { sizing: { policy: sizing.policy } } : {})}
       />
     ) : state.action === "snapshot" ? (
@@ -666,7 +677,9 @@ function environmentRow(golden: GoldenRow, context: RowContext, now: number): En
           </AlertDescription>
         </Alert>
       ))}
-      <EnvironmentTemplates list={context.templateList} goldenId={golden.id} provider={golden.provider} />
+      <Suspense fallback={<p role="status">Loading templates…</p>}>
+        <SnapshotEnvironmentTemplates goldenId={golden.id} provider={golden.provider} />
+      </Suspense>
       <PanelSection title="Repositories">
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this snapshot.</p>
@@ -899,8 +912,6 @@ function dockerSnapshotRow(
         orgId={snapshot.orgId}
         catalog={MODEL_CATALOG}
         repositories={[]}
-        connections={context.connections}
-        accounts={context.accounts}
       />
     ) : null;
   const organization = context.orgs.get(snapshot.orgId)?.org.name ?? "Organization";
@@ -1041,19 +1052,36 @@ function IdentifierDetails({ children }: { children: import("react").ReactNode }
   );
 }
 
-function SnapshotLaunchDialog(props: LaunchProps) {
+type SnapshotLaunchProps = Omit<LaunchProps, "accounts" | "connections" | "templates"> & {
+  templateSource?: { goldens: GoldenRow[]; goldenId: string };
+};
+
+function SnapshotLaunchDialog(props: SnapshotLaunchProps) {
   return (
     <EnvironmentLaunchDialog>
-      <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
-        <SnapshotLaunchStart {...props} />
-      </Suspense>
+      <SnapshotLaunchStart {...props} />
     </EnvironmentLaunchDialog>
   );
 }
-/** Launch-only Boat harness discovery streams independently of the snapshot inventory. */
-async function SnapshotLaunchStart(props: LaunchProps) {
-  const openCodeAvailable = props.provider === "boat" && boatOpenCodeAvailable(await readLaunchOptions());
-  return <LaunchStart {...props} boatOpenCodeAvailable={openCodeAvailable} dockerLimits={<DockerLaunchLimitList />} />;
+async function SnapshotLaunchStart({ templateSource, ...props }: SnapshotLaunchProps) {
+  const [connections, accounts, templates, boatOptions] = await Promise.all([
+    readSnapshotConnections(),
+    readSnapshotAccounts(),
+    templateSource ? readSnapshotTemplateChoices(templateSource.goldens) : [],
+    props.provider === "boat" ? readLaunchOptions() : null,
+  ]);
+  return (
+    <LaunchStart
+      {...props}
+      connections={connections}
+      accounts={accounts}
+      templates={
+        templateSource ? templates.filter((template) => template.definition.goldenId === templateSource.goldenId) : []
+      }
+      boatOpenCodeAvailable={boatOptions !== null && boatOpenCodeAvailable(boatOptions)}
+      dockerLimits={<DockerLaunchLimitList />}
+    />
+  );
 }
 
 function EnvironmentLaunchDialog({ children }: { children: import("react").ReactNode }) {
@@ -1064,7 +1092,11 @@ function EnvironmentLaunchDialog({ children }: { children: import("react").React
           Launch
         </Button>
       </DialogTrigger>
-      <LaunchDialogContent>{children}</LaunchDialogContent>
+      <LaunchDialogContent>
+        <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
+          {children}
+        </Suspense>
+      </LaunchDialogContent>
     </Dialog>
   );
 }
