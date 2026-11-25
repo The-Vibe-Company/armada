@@ -68,83 +68,54 @@ export function splitMarkdownBlocks(source: string) {
 }
 
 export function parseMarkdownBlock(segment: string) {
-  return parseMarkdown(segment)[0] ?? null;
+  const lines = segment.replace(/\r\n?/g, "\n").split("\n");
+  const line = lines[0] ?? "";
+  if (!line.trim()) return null;
+  const fence = FENCE.exec(line);
+  if (fence) {
+    const marker = fence[1] ?? "```";
+    const closed = lines.length > 1 && (lines.at(-1) ?? "").trimStart().startsWith(marker);
+    return {
+      kind: "code",
+      language: fence[2] ?? "",
+      text: lines.slice(1, closed ? -1 : undefined).join("\n"),
+    } satisfies Block;
+  }
+  if (isRule(line)) return { kind: "rule" } satisfies Block;
+  const title = heading(line);
+  if (title) return { kind: "heading", level: title.level, children: parseInline(title.text) } satisfies Block;
+  if (QUOTE.test(line)) {
+    return {
+      kind: "quote",
+      children: parseInline(lines.map((l) => QUOTE.exec(l)?.[1] ?? "").join("\n")),
+    } satisfies Block;
+  }
+  const numbered = NUMBERED.exec(line);
+  if (BULLET.test(line) || numbered) {
+    const ordered = numbered !== null;
+    const pattern = ordered ? NUMBERED : BULLET;
+    const items: string[] = [];
+    for (const current of lines) {
+      const match = pattern.exec(current);
+      if (match) items.push(match[ordered ? 2 : 1] ?? "");
+      else if (current.trim() && /^\s+/.test(current) && items.length > 0)
+        items[items.length - 1] += `\n${current.trim()}`;
+    }
+    return {
+      kind: "list",
+      ordered,
+      start: ordered ? Number(numbered?.[1] ?? 1) : 1,
+      items: items.map((item) => parseInline(item)),
+    } satisfies Block;
+  }
+  return { kind: "paragraph", children: parseInline(lines.join("\n")) } satisfies Block;
 }
 
 export function parseMarkdown(source: string): Block[] {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index] ?? "";
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-    const fence = FENCE.exec(line);
-    if (fence) {
-      const marker = fence[1] ?? "```";
-      const body: string[] = [];
-      index += 1;
-      while (index < lines.length && !(lines[index] ?? "").trimStart().startsWith(marker)) {
-        body.push(lines[index] ?? "");
-        index += 1;
-      }
-      index += 1;
-      blocks.push({ kind: "code", language: fence[2] ?? "", text: body.join("\n") });
-      continue;
-    }
-    if (isRule(line)) {
-      blocks.push({ kind: "rule" });
-      index += 1;
-      continue;
-    }
-    const title = heading(line);
-    if (title) {
-      blocks.push({ kind: "heading", level: title.level, children: parseInline(title.text) });
-      index += 1;
-      continue;
-    }
-    if (QUOTE.test(line)) {
-      const body: string[] = [];
-      while (index < lines.length && QUOTE.test(lines[index] ?? "")) {
-        body.push(QUOTE.exec(lines[index] ?? "")?.[1] ?? "");
-        index += 1;
-      }
-      blocks.push({ kind: "quote", children: parseInline(body.join("\n")) });
-      continue;
-    }
-    const numbered = NUMBERED.exec(line);
-    if (BULLET.test(line) || numbered) {
-      const ordered = numbered !== null;
-      const pattern = ordered ? NUMBERED : BULLET;
-      const items: string[] = [];
-      while (index < lines.length) {
-        const current = lines[index] ?? "";
-        const match = pattern.exec(current);
-        if (match) items.push(match[ordered ? 2 : 1] ?? "");
-        else if (current.trim() && /^\s+/.test(current) && items.length > 0) {
-          items[items.length - 1] += `\n${current.trim()}`;
-        } else break;
-        index += 1;
-      }
-      blocks.push({
-        kind: "list",
-        ordered,
-        start: ordered ? Number(numbered?.[1] ?? 1) : 1,
-        items: items.map((item) => parseInline(item)),
-      });
-      continue;
-    }
-    const body: string[] = [];
-    while (index < lines.length) {
-      const current = lines[index] ?? "";
-      if (!current.trim() || FENCE.test(current) || heading(current) !== null || QUOTE.test(current)) break;
-      if (body.length > 0 && (BULLET.test(current) || NUMBERED.test(current) || isRule(current))) break;
-      body.push(current);
-      index += 1;
-    }
-    blocks.push({ kind: "paragraph", children: parseInline(body.join("\n")) });
+  for (const segment of splitMarkdownBlocks(source)) {
+    const block = parseMarkdownBlock(segment);
+    if (block) blocks.push(block);
   }
   return blocks;
 }

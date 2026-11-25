@@ -39,7 +39,7 @@ function BlockView({ block }: { block: Block }) {
       return (
         <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/40">
           <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/60 px-3 py-1 text-[11px] text-muted-foreground">
-            <span className="font-mono font-medium select-none" data-code-language>
+            <span className="min-w-0 truncate font-mono font-medium select-none" data-code-language>
               {block.language || "text"}
             </span>
             <CopyButton

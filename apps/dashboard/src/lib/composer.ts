@@ -94,6 +94,7 @@ export type ComposerKeyEvent = {
   metaKey: boolean;
   ctrlKey: boolean;
   altKey?: boolean;
+  repeat?: boolean;
   isComposing?: boolean;
   nativeEvent?: { isComposing?: boolean };
   keyCode?: number;
@@ -102,7 +103,7 @@ export type ComposerKeyEvent = {
 export type ComposerKeyAction = "submit" | "interrupt" | "none";
 
 export function composerKeyAction(event: ComposerKeyEvent, options: { running: boolean; pending: boolean }) {
-  if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229)
+  if (event.repeat || event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229)
     return "none" satisfies ComposerKeyAction;
   if (event.key === "Escape") {
     return (

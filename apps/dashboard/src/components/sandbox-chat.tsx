@@ -1514,7 +1514,11 @@ function Composer({
       if (
         typeof HTMLElement !== "undefined" &&
         target instanceof HTMLElement &&
-        (target.tagName === "SELECT" || target.tagName === "INPUT" || target.closest(OVERLAY_SELECTOR))
+        (target.tagName === "SELECT" ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest(OVERLAY_SELECTOR))
       ) {
         return;
       }

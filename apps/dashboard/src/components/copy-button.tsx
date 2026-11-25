@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+const COPY_LABELS = { idle: "Copy", copied: "Copied", failed: "Failed" } as const;
+
 /** How long the confirmation stays before the button reads "Copy" again. */
 const CONFIRM_MS = 1600;
 
@@ -61,9 +63,7 @@ export function CopyButton({
       ) : (
         <CopyIcon />
       )}
-      {showLabel && (
-        <span aria-hidden="true">{state === "copied" ? "Copied" : state === "failed" ? "Failed" : "Copy"}</span>
-      )}
+      {showLabel && <span aria-hidden="true">{COPY_LABELS[state]}</span>}
       {/* A polite live region without the status role, so it never stands in for a form's own result. */}
       <span aria-live="polite" className="sr-only">
         {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : ""}
