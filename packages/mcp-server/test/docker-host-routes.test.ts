@@ -11,9 +11,9 @@ import { DOCKER_HOST_PREFER_STARTUP_HEADER } from "../../core/src/docker-host-wi
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
-import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { collectTransactionWakes } from "../src/wake-bus.ts";
+import { queueMailboxCreate } from "./docker-create.fixture.ts";
 import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
@@ -214,8 +214,7 @@ test("an authenticated Docker inventory report counts only unknown containers in
     userId,
     new Uint8Array([1]),
   ]);
-  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
-  const sandbox = await sandboxes.reserve(actor, {
+  const sandbox = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
     requestId: randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -669,7 +668,6 @@ test("only the owner changes a drained capable host; policy reaches admission an
     query: (q, p) => db.query(q, p),
     transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
   };
-  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
   const credentialId = randomUUID();
   await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
     credentialId,
@@ -678,8 +676,16 @@ test("only the owner changes a drained capable host; policy reaches admission an
   ]);
   const input = { hostId: host.hostId, image: `worker@sha256:${"a".repeat(64)}`, credentialId, credentialVersion: 1 };
   const rows = [];
-  for (let i = 0; i < 3; i++) rows.push(await sandboxes.reserve(actor, { ...input, requestId: randomUUID() }));
-  await expect(sandboxes.reserve(actor, { ...input, requestId: randomUUID() })).rejects.toThrow("3/3");
+  for (let i = 0; i < 3; i++)
+    rows.push(
+      await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+        ...input,
+        requestId: randomUUID(),
+      }),
+    );
+  await expect(
+    queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
+  ).rejects.toThrow("3/3");
   expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(409);
   const raised = await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 4 });
   expect(raised.status).toBe(200);
@@ -703,9 +709,9 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect(await reset.json()).toMatchObject({ resources: { capacity: 6, mode: "automatic" } });
   await post(endpoint, "fixture-user-token", { ...body, cpus: 4 });
   await store.poll(host.hostToken, installationId, "2.31.0", false, { cpus: 2, memoryBytes: 26 * 1024 ** 3 }, 1);
-  await expect(sandboxes.reserve(actor, { ...input, requestId: randomUUID() })).rejects.toThrow(
-    "Host hardware changed",
-  );
+  await expect(
+    queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
+  ).rejects.toThrow("Host hardware changed");
   expect((await store.list(actor))[0]?.resources).toBeNull();
   expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(200);
 });
@@ -988,7 +994,6 @@ test("a host poll skips work the daemon reports running and hands out another sa
     query: (q, p) => db.query(q, p),
     transaction: (work) => db.transaction((tx) => work({ query: (q, p) => tx.query(q, p) })),
   };
-  const sandboxes = createDockerSandboxService(sql, Buffer.alloc(32, 8).toString("base64"), { enabled: true });
   const credentialId = randomUUID();
   await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
     credentialId,
@@ -996,8 +1001,14 @@ test("a host poll skips work the daemon reports running and hands out another sa
     new Uint8Array([1]),
   ]);
   const input = { hostId: host.hostId, image: `worker@sha256:${"a".repeat(64)}`, credentialId, credentialVersion: 1 };
-  const first = await sandboxes.reserve(actor, { ...input, requestId: randomUUID() });
-  const second = await sandboxes.reserve(actor, { ...input, requestId: randomUUID() });
+  const first = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+    ...input,
+    requestId: randomUUID(),
+  });
+  const second = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+    ...input,
+    requestId: randomUUID(),
+  });
   const job = async (running: string[]) =>
     ((await (await poll(running)).json()) as { job: { requestId: string } | null }).job;
   const head = await job([]);

@@ -1,17 +1,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModalProvider } from "./provider.ts";
+import type { ModalProvider } from "../src/provider.ts";
 export interface GoldenSshRecipe {
   script: string;
   githubToken?: string;
   timeoutMs?: number;
 }
-export async function probeModalSsh(
-  provider: ModalProvider,
-  sandboxId: string,
-  recipe?: GoldenSshRecipe,
-): Promise<void> {
+export async function probeModalSsh(provider: ModalProvider, sandboxId: string, recipe?: GoldenSshRecipe) {
   const dir = await mkdtemp(join(tmpdir(), "armada-modal-ssh-"));
   try {
     const key = join(dir, "key");

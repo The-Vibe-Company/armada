@@ -18,6 +18,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
+import { queueMailboxCreate } from "./docker-create.fixture.ts";
 import { queueMailboxStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
@@ -29,7 +30,7 @@ const sql: Sql = {
 const key = Buffer.alloc(32, 13).toString("base64");
 const service = createDockerRuntimeLifecycle(sql, key, { enabled: true });
 const hosts = createDockerHostStore(sql, key);
-const reservations = createDockerSandboxService(sql, key, { enabled: true });
+const reservations = createDockerSandboxService(sql);
 const authority = createRuntimeEnrolments(sql, key);
 const commands = createRuntimeCommands(authority, key);
 const bootstrap = createDockerBootstrapService(sql, key, {
@@ -69,7 +70,7 @@ async function fixture() {
     userId,
     await encryptSecret(`offline-lifecycle-${randomUUID()}`, key),
   ]);
-  const sandbox = await reservations.reserve(actor, {
+  const sandbox = await queueMailboxCreate(sql, key, actor, {
     requestId: randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,

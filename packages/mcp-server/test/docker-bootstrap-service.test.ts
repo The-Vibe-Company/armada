@@ -25,6 +25,7 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
+import { queueMailboxCreate } from "./docker-create.fixture.ts";
 import {
   bindDockerStopFixture,
   queueMailboxStop,
@@ -71,7 +72,7 @@ const options = {
 };
 const service = createDockerBootstrapService(sql, key, options);
 const hosts = createDockerHostStore(sql, key);
-const reservations = createDockerSandboxService(sql, key, { enabled: true });
+const reservations = createDockerSandboxService(sql);
 async function admittedResume(f: Awaited<ReturnType<typeof fixture>>, requestId: string) {
   const requested = await service.resume(f.actor, f.sandbox.id, requestId);
   if (requested.state === "claiming") {
@@ -107,7 +108,7 @@ async function fixture(ack = true, harness: Harness = "codex") {
     await encryptSecret(secret, key),
     harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
   ]);
-  const sandbox = await reservations.reserve(actor, {
+  const sandbox = await queueMailboxCreate(sql, key, actor, {
     requestId: randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -730,7 +731,7 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
   await db.query("update public.docker_hosts set sandbox_cpus=null where id=$1", [f.hostId]);
   const resumeId = randomUUID();
   await hosts.poll(f.hostToken, f.installationId, "2.31.0", false, { cpus: 2, memoryBytes: 6 * 1024 ** 3 });
-  const occupied = await reservations.reserve(f.actor, {
+  const occupied = await queueMailboxCreate(sql, key, f.actor, {
     hostId: f.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
     credentialId: f.credentialId,
@@ -1139,7 +1140,7 @@ test.each(refusalOrders)(
     await ack(previousStop.requestId);
     const missingAck = order === "missing ACK after daemon restart";
     const earlier = missingAck
-      ? await reservations.reserve(f.actor, {
+      ? await queueMailboxCreate(sql, key, f.actor, {
           requestId: randomUUID(),
           hostId: f.hostId,
           image: `worker@sha256:${"a".repeat(64)}`,

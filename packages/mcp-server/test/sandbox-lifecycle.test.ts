@@ -49,7 +49,7 @@ test("private Docker reservations remain untouched while the generic lifecycle r
     )
   ).rows[0];
   if (!credential) throw Error("missing model account");
-  const docker = await createDockerSandboxService(sql, ENCRYPTION_KEY, { enabled: true }).reserve(actor, {
+  const docker = await createDockerSandboxService(sql).reserve(actor, {
     requestId: crypto.randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,

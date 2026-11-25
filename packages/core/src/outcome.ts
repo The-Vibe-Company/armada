@@ -16,7 +16,7 @@ export type PromptOutcome =
   | { state: "failed"; reason: string; limit?: PlanLimit };
 
 /** Closed, resendable turn interruptions. Boat's raw failed events and normalized events share this mapping. */
-export function turnInterruptionReason(
+function turnInterruptionReason(
   message: string | undefined,
 ): "interrupted_by_provider_move" | "interrupted_by_harness_exit" | undefined {
   if (

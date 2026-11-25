@@ -807,7 +807,7 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   await rejected(f.service().launch({ ...f.caller, orgs: [] }, f.body), "not_found");
   expect(f.resolutions()).toBe(0);
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
-  await createDockerSandboxService(sql, key, { enabled: true }).reserve(f.actor, {
+  await createDockerSandboxService(sql).reserve(f.actor, {
     requestId: f.body.requestId,
     hostId: f.hostId,
     image: officialImage,
@@ -904,7 +904,7 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   const f = await fixture();
   f.setFailure();
   expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
-  const row = await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId);
+  const row = await createDockerSandboxService(sql).get(f.actor, f.body.requestId);
   expect(row.status).toBe("failed");
   expect(
     (
@@ -918,7 +918,7 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
-  expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
+  expect((await createDockerSandboxService(sql).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
 test("Docker launch replay preserves the runtime artifact failure message", async () => {
@@ -3418,7 +3418,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
     expect((await db.query("select 1 from public.docker_resume_claims where sandbox_id=$1", [requestId])).rows).toEqual(
       [],
     );
-    expect((await createDockerSandboxService(sql, key).get(f.actor, requestId)).status).toBe("stopped");
+    expect((await createDockerSandboxService(sql).get(f.actor, requestId)).status).toBe("stopped");
   }
 });
 
