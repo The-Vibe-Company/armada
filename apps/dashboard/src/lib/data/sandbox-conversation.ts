@@ -44,11 +44,11 @@ export async function readSandboxConversation(
 
   const backward = conversationReadDirection(sandbox, source) === "backward";
   let observedStatus: unknown;
-  const queuedDockerPrompt = sandbox.provider === "docker" && isUuid(pending) ? pending : undefined;
-  const statusRead = () => gateway.status(id, queuedDockerPrompt).catch(() => observedStatus ?? {});
+  const queuedPrompt = isUuid(pending) ? pending : undefined;
+  const statusRead = () => gateway.status(id, queuedPrompt).catch(() => observedStatus ?? {});
 
   const metadata = async () => {
-    const detail = (queuedDockerPrompt ? await statusRead() : (observedStatus ?? (await statusRead()))) as {
+    const detail = (queuedPrompt ? await statusRead() : (observedStatus ?? (await statusRead()))) as {
       status?: string;
       statusMessage?: string | null;
       prompt?: unknown;
