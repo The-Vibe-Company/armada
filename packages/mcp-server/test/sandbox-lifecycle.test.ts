@@ -8,7 +8,6 @@ import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
-import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -1235,18 +1234,13 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
 
   const admission = { ownerStop: true, status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
   const { onlyIfIdle: _, ...manualAdmission } = admission;
-  const settlement = {
-    ownerStop: true,
-    status: "stopped",
-    stoppedAt: new Date().toISOString(),
-    stopRequested: false,
-  } as const;
-  const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
-    sandboxActivity(store, sandbox, patch, async () => ({
-      result: "stopped",
-      patch: settlement,
-    }));
-
+  const stop = (patch: Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
+    store.update(sandbox.id, {
+      ...patch,
+      advanceGeneration: true,
+      activityToken: crypto.randomUUID(),
+      ...(sandbox.lifecycleGeneration !== undefined && { expectedGeneration: sandbox.lifecycleGeneration }),
+    });
   await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
   expect(await store.get(id)).toMatchObject({ status, lifecycleGeneration: idle.lifecycleGeneration });
   if (runtime) {
@@ -1257,18 +1251,19 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
     await db.query("update public.sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
     await expect(stop(admission)).rejects.toMatchObject({ code: "sandbox_not_ready" });
     const current = (await store.get(id))!;
-    expect(await stop(admission, current)).toBe("stopped");
+    await stop(admission, current);
   } else {
     expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
       { state },
     ]);
 
-    expect(await stop(manualAdmission)).toBe("stopped");
+    await stop(manualAdmission);
     expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
       { state: "failed" },
     ]);
   }
 
+  expect(await runBoatStop(sql, archivedBoat())).toBe("done");
   const journal = await db.query(
     `select from_status, to_status, actor, code from sandbox_transitions
      where sandbox_id=$1 order by id`,

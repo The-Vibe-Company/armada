@@ -280,7 +280,7 @@ export function configureTools(
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
           ...(found.lifecycleGeneration !== undefined && { expectedGeneration: found.lifecycleGeneration }),
         });
-        return { id: found.id, status };
+        return { id: found.id, status } as const;
       }
       return sandboxActivity(
         data.sandboxes,

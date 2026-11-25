@@ -1105,13 +1105,8 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
-              if (locked.rows[0]?.provider === "boat" && admission && patch.stopRequested) {
-                await tx.query(
-                  "update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1 and lifecycle_generation=$2",
-                  [id, row.generation],
-                );
-                await enqueueBoatStop(tx, id, row.generation);
-              }
+              if (locked.rows[0]?.provider === "boat" && admission && patch.stopRequested)
+                await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
             }
             return updated;
           });

@@ -577,7 +577,13 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
-export async function enqueueBoatStop(tx: Sql, id: string, generation: string | number) {
+export async function enqueueBoatStop(tx: Sql, id: string, generation: string | number, admissionToken?: string) {
+  if (admissionToken)
+    await tx.query(
+      `update public.sandboxes set activity_lease_id=null,activity_until=null
+       where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
+      [id, generation, admissionToken],
+    );
   const {
     rows: [target],
   } = await tx.query<{ org_id: string; deadline: number }>(
