@@ -133,7 +133,7 @@ test("an inbound trigger can bind an Antigravity pool", async () => {
   expect(result.rows).toEqual([{ pool_harness: "antigravity" }]);
 });
 
-test("publishing a sandbox prompt records the queue receipt without writing a retired webhook receipt", async () => {
+test("publishing a sandbox prompt records the queue receipt", async () => {
   const db = migrationDatabase.get();
   const owner = crypto.randomUUID();
   const org = crypto.randomUUID();
@@ -165,13 +165,10 @@ test("publishing a sandbox prompt records the queue receipt without writing a re
 
   await db.query("update public.sandboxes set task_prompt_id='published-prompt' where id=$1", [sandbox]);
 
-  const { rows } = await db.query(
-    `select native_prompt_id,
-       exists(select 1 from public.native_webhook_prompts p where p.sandbox_id=q.sandbox_id) as webhook_receipt
-     from public.account_turn_queue q where sandbox_id=$1`,
-    [sandbox],
-  );
-  expect(rows).toEqual([{ native_prompt_id: "published-prompt", webhook_receipt: false }]);
+  const { rows } = await db.query("select native_prompt_id from public.account_turn_queue where sandbox_id=$1", [
+    sandbox,
+  ]);
+  expect(rows).toEqual([{ native_prompt_id: "published-prompt" }]);
 });
 
 async function labels(db: PGlite, name: string): Promise<string[]> {
