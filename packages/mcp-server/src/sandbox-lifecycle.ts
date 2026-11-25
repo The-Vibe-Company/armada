@@ -1,8 +1,6 @@
 import type { Harness, SandboxPlacementProviderId, SandboxRecord, SandboxStatus, Visibility } from "@armada/core";
 import {
   decryptSecret,
-  HOST_CAPABILITIES,
-  isSandboxProvider,
   type MachineIdentity,
   type OutputFailureReason,
   type Provider,
@@ -22,14 +20,14 @@ import {
   unresolvedResume,
 } from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
-import { requiresMissingMachineObservation, retainsDiskOnStop, usesDiskStopJob } from "./provider-runtime-admission.ts";
+import { requiresMissingMachineObservation, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
-import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
+import { purgeWorkRecovery } from "./work-preservation.ts";
 
 export type ModalLaunchSandbox = {
   goldenId: string;
@@ -119,30 +117,18 @@ export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity, 
   return rows.length === 1;
 }
 
-export type StopFence = [
-  providerId: string | null,
-  token: string | null,
-  generation: number | null,
-  kind: string | null,
-  provider: string | null,
-];
+export type StopFence = [providerId: string, token: string, generation: number];
 
 export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
-  and provider in ('boat','modal')
-  and (provider='modal' or runtime_transport is distinct from 'dialout')
-  and provider_sandbox_id=$2::text and provider::text=$6::text
-  and lifecycle_generation=$4::bigint
-  and (($5::text='activity' and activity_lease_id::text=$3::text and activity_until>clock_timestamp())
-    or ($5::text='reconcile' and reconcile_lease::text=$3::text and reconcile_lease_until>clock_timestamp()
-      and (activity_until is null or activity_until<=clock_timestamp()))
-    or ($5::text='job' and exists(select 1 from public.jobs j where j.id=split_part($3::text,':',1)::uuid and j.lease_epoch::text=split_part($3::text,':',2) and j.sandbox_id=sandboxes.id
-      and j.generation=sandboxes.lifecycle_generation and j.kind='stop' and j.state='leased'
-      and j.lease_until>clock_timestamp())))
+  and provider='modal' and runtime_transport='dialout'
+  and provider_sandbox_id=$2::text and lifecycle_generation=$4::bigint
+  and exists(select 1 from public.jobs j where j.id=split_part($3::text,':',1)::uuid
+    and j.lease_epoch::text=split_part($3::text,':',2) and j.sandbox_id=sandboxes.id
+    and j.generation=sandboxes.lifecycle_generation and j.kind='stop' and j.state='leased'
+    and j.lease_until>clock_timestamp())
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
-export const STOP_EPOCH = `id=$1::uuid
-  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $7::bigint
-  and ($2::text is null or (${WORK_STOP_OWNER}))`;
+export const STOP_EPOCH = `id=$1::uuid and (${WORK_STOP_OWNER}) and stop_generation=$5::bigint`;
 export const COMPLETE_PRESERVATION = `stop_requested_at is not null
   and preservation_stop_generation is not distinct from stop_generation`;
 
@@ -155,7 +141,7 @@ export function writePreservationNote(
   stopToken: string | null,
   fence: StopFence,
 ) {
-  return sql.query(`update public.sandboxes set preservation_note=$8 where ${NOTE_FENCE}`, [
+  return sql.query(`update public.sandboxes set preservation_note=$6 where ${NOTE_FENCE}`, [
     id,
     ...fence,
     stopToken,
@@ -174,11 +160,11 @@ export function recordWorkRecovery(
 ) {
   return sql.query<{ id: string }>(
     `with accepted as (
-    update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint
+    update public.sandboxes set preservation_note=$6,preservation_stop_generation=$5::bigint
     where ${NOTE_FENCE} and not application_secret_tainted returning id
   )
   insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
-    select $9::uuid,id,$10::bytea from accepted returning id`,
+    select $7::uuid,id,$8::bytea from accepted returning id`,
     [id, ...fence, stopToken, note, recoveryId, encrypted],
   );
 }
@@ -186,7 +172,7 @@ export function recordWorkRecovery(
 export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
   return sql.query<{ id: string }>(
     `with accepted as (
-    update public.sandboxes set preservation_note=null,preservation_stop_generation=$7::bigint
+    update public.sandboxes set preservation_note=null,preservation_stop_generation=$5::bigint
     where ${NOTE_FENCE} and not application_secret_tainted returning id
   )
   select id from accepted`,
@@ -889,25 +875,18 @@ export async function publishOwnerStop(
     sandboxId: string;
     generation: string;
     fromState: SandboxStatus;
-    toState: "stopping" | "stopped" | "failed";
+    toState: "stopping" | "failed";
     statusReason?: string | null;
-    confirmedStop?: boolean;
-    code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
+    code: "owner_stop_admitted" | "runtime_retained_stop";
   },
 ) {
-  let generation: string | number = stop.generation;
   if (stop.fromState !== stop.toState) {
     const result = await transitionSandbox(tx, {
       sandboxId: stop.sandboxId,
       expectedGeneration: stop.generation,
       fromStates: [stop.fromState],
       toState: stop.toState,
-      actor:
-        stop.code === "owner_stop_settled"
-          ? "lifecycle_runner"
-          : stop.code === "runtime_retained_stop"
-            ? "api"
-            : "owner",
+      actor: stop.code === "runtime_retained_stop" ? "api" : "owner",
       code: stop.code,
       effects: [],
       ...(stop.statusReason !== undefined
@@ -915,10 +894,7 @@ export async function publishOwnerStop(
         : {}),
     });
     if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
-    generation = result.generation;
   }
-  if (stop.code === "owner_stop_settled" && stop.confirmedStop)
-    await detachBoatExtensionAfterStop(tx, stop.sandboxId, generation);
 }
 
 export async function completeSandboxDeletion(
@@ -1392,7 +1368,6 @@ export function createSandboxLifecycle(
           id: string;
           provider_sandbox_id: string;
           boat_runtime: boolean;
-          runtime_transport: string | null;
           lifecycle_generation: number;
           expiry_epoch: string;
           status: string;
@@ -1416,6 +1391,7 @@ export function createSandboxLifecycle(
             and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
           ) as retained_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
+          and (candidate.provider<>'modal' or candidate.runtime_transport='dialout')
           and not ${unresolvedModalStop("candidate")}
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")} and not ${unresolvedResume("candidate")}
@@ -1446,7 +1422,7 @@ export function createSandboxLifecycle(
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
-        returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
+        returning s.id,s.provider_sandbox_id,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
           due.retained_resume,
           ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
             and s.status='stopping' and s.stop_requested_at is not null and exists(
@@ -1521,9 +1497,7 @@ export function createSandboxLifecycle(
       let resolved = false;
       let observing = false;
       let initialObservation = true;
-      let stopDispatched = false;
       let handingOffObservedResume = false;
-      let waitingForRetention = false;
       const jobOwnsStop = usesDiskStopJob(providerId);
       const requireMissingObservation = requiresMissingMachineObservation(providerId);
       let stoppedAt: Date | undefined;
@@ -1630,15 +1604,7 @@ export function createSandboxLifecycle(
             const { status } = current;
             const interrupted = status === "starting";
             const failed = interrupted || physicalExit;
-            const pendingRetention =
-              waitingForRetention && (status === "ready" || status === "running" || status === "stopping");
-            const toState = failed
-              ? "failed"
-              : terminal && status !== "failed"
-                ? "stopped"
-                : pendingRetention
-                  ? "stopping"
-                  : status;
+            const toState = failed ? "failed" : terminal && status !== "failed" ? "stopped" : status;
             const expiredStop = terminal && expired && status !== "failed" && current.status_reason !== "work_merged";
             const statusReason = interrupted
               ? (current.status_reason ?? INTERRUPTED_LAUNCH_REASON)
@@ -1655,7 +1621,7 @@ export function createSandboxLifecycle(
               : current.stopped_at;
             const stopRequestedAt = terminal
               ? null
-              : interrupted || pendingRetention
+              : interrupted
                 ? (current.stop_requested_at ?? current.settled_at)
                 : current.stop_requested_at;
             if (toState !== status) {
@@ -1669,11 +1635,9 @@ export function createSandboxLifecycle(
                   ? "launch_interrupted"
                   : physicalExit
                     ? "provider_exit_without_checkpoint"
-                    : pendingRetention
-                      ? "stop_requested"
-                      : expiredStop
-                        ? "expired"
-                        : "provider_stopped",
+                    : expiredStop
+                      ? "expired"
+                      : "provider_stopped",
                 effects: [],
                 settlement: { lease: token, statusReason, stopRequestedAt, stoppedAt: exitTime },
               });
@@ -1682,11 +1646,10 @@ export function createSandboxLifecycle(
             if (toState === status) {
               await tx.query(
                 `update public.sandboxes set
-                 status_reason=$3,stop_requested_at=$4,stopped_at=$5,
-                 transition_context=null,
-                 stop_generation=case when $2 and stop_requested_at is null then stop_generation+1 else stop_generation end
+                 status_reason=$2,stop_requested_at=$3,stopped_at=$4,
+                 transition_context=null
                where id=$1`,
-                [row.id, pendingRetention, statusReason, stopRequestedAt, exitTime],
+                [row.id, statusReason, stopRequestedAt, exitTime],
               );
             }
             const saved = await tx.query(
@@ -1723,7 +1686,7 @@ export function createSandboxLifecycle(
           observing = false;
           return info;
         };
-        let info = await observe();
+        const info = await observe();
         initialObservation = false;
         if (
           canDeferInterruptedResume &&
@@ -1770,7 +1733,6 @@ export function createSandboxLifecycle(
         } catch {
           /* Diagnostics cannot change lifecycle settlement. */
         }
-        const host = isSandboxProvider(provider.id) ? HOST_CAPABILITIES[provider.id] : undefined;
         physicalExit = info.physicalExitConfirmed === true;
         const physicalDeadline = info.expiresAt?.getTime() ?? Number.NaN;
         const observedBoatDeadline =
@@ -1829,6 +1791,15 @@ export function createSandboxLifecycle(
         const shortBoatDeadline =
           observedBoatDeadline && physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
         if (jobOwnsStop && shortBoatDeadline) return handoffBoatStop(true);
+        if (
+          jobOwnsStop &&
+          info.state === "stopped" &&
+          info.retainedSnapshot !== "usable" &&
+          !physicalExit &&
+          row.status !== "failed" &&
+          row.status !== "starting"
+        )
+          return handoffBoatStop(false);
         if (jobOwnsStop && row.status === "starting" && !physicalExit && !["stopped", "deleted"].includes(info.state)) {
           if (info.id !== row.provider_sandbox_id) throw Error("Interrupted launch identity changed.");
           return handoffBoatStop(expired);
@@ -1837,13 +1808,12 @@ export function createSandboxLifecycle(
           !jobOwnsStop &&
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
-          !(host?.waitForPendingStop && info.state === "stopping") &&
           (row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting" || expired)
         ) {
           signal?.throwIfAborted();
           if (!sql.transaction) throw new Error("Reconciler stop admission requires a transaction.");
           const stopConflict = new Error("Reconciler stop transition lost ownership.");
-          const owned = await sql
+          await sql
             .transaction(async (tx) => {
               const {
                 rows: [current],
@@ -1875,13 +1845,8 @@ export function createSandboxLifecycle(
                     else status_reason end as status_reason`,
                 [row.id, token, row.lifecycle_generation, expired],
               );
-              if (!current) return false;
-              const queuedStop = row.runtime_transport === "dialout";
-              if (
-                current.status === "ready" ||
-                current.status === "running" ||
-                (queuedStop && current.status === "starting")
-              ) {
+              if (!current) return;
+              if (current.status === "ready" || current.status === "running" || current.status === "starting") {
                 const result = await transitionSandbox(tx, {
                   sandboxId: row.id,
                   expectedGeneration: row.lifecycle_generation,
@@ -1899,69 +1864,19 @@ export function createSandboxLifecycle(
                 });
                 if (result.kind === "conflict") throw stopConflict;
               }
-              if (queuedStop) {
-                if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, token))) throw stopConflict;
-                return false;
-              }
-              return true;
+              if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, token))) throw stopConflict;
             })
             .catch((failure: unknown) => {
-              if (failure === stopConflict) return false;
+              if (failure === stopConflict) return;
               throw failure;
             });
-          if (!owned) return true;
-          signal?.throwIfAborted();
-          signal?.throwIfAborted();
-          if (
-            (await preserveBeforeStop(sql, provider, row.id, row.provider_sandbox_id, "lifecycle_stop", {
-              kind: "reconcile",
-              token,
-              generation: row.lifecycle_generation,
-              signal,
-            }).catch(() => "pending" as const)) === "pending"
-          )
-            throw new ProviderError({
-              provider: provider.id,
-              code: "sandbox_not_ready",
-              retryable: true,
-              message: "Interruption is pending; retry stop after turns settle.",
-            });
-          signal?.throwIfAborted();
-          const requireRetention =
-            !expired &&
-            (row.checkpointed_stop ||
-              retainedResume ||
-              ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
-          recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
-          stopDispatched = true;
-          await operation(signal, () =>
-            provider.stop({
-              sandboxId: row.provider_sandbox_id,
-              ...(requireRetention ? { requireRetention: true } : {}),
-            }),
-          );
-          info = await observe();
+          return true;
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
         stoppedAt = info.stoppedAt;
-        waitingForRetention =
-          retainsDiskOnStop(providerId) &&
-          info.state === "stopped" &&
-          info.retainedSnapshot !== "usable" &&
-          !physicalExit &&
-          row.status !== "failed" &&
-          row.status !== "starting";
-        terminal = !waitingForRetention && (physicalExit || ["stopped", "deleted"].includes(info.state));
-        if (waitingForRetention)
-          error =
-            info.retainedSnapshot === "pending"
-              ? "Boat snapshot is pending. Retrying without deleting retained data."
-              : "Boat archive has no verified retained snapshot. Retrying without deleting retained data.";
-        else if (
-          !terminal &&
-          (expired || shortBoatDeadline || row.status === "stopping" || row.stop_requested_at !== null)
-        )
+        terminal = physicalExit || ["stopped", "deleted"].includes(info.state);
+        if (!terminal && (expired || shortBoatDeadline || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
         if (handingOffObservedResume) throw caught;
@@ -1991,7 +1906,7 @@ export function createSandboxLifecycle(
           if (requireMissingObservation) physicalExit = true;
         } else {
           if (row.status === "stopping") {
-            const phase = observing ? "observe" : stopDispatched ? "stop" : resolved ? "prepare" : "resolve_provider";
+            const phase = observing ? "observe" : resolved ? "prepare" : "resolve_provider";
             recordOperatorFailure(`sandbox.lifecycle.${providerId}.${phase}`, caught, { sandboxId: row.id });
           }
           error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
