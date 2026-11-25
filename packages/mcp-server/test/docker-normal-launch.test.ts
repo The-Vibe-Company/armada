@@ -53,7 +53,7 @@ import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
-import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
@@ -845,6 +845,42 @@ test("the published Docker launch schema admits a first prompt exactly when laun
       admitted ? "unavailable" : "invalid_request",
     );
   }
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
+test("reservation checks the current credential pin before allocating", async () => {
+  const db = database();
+  const f = await fixture();
+  const { credentialId, requestId } = f.body;
+  const reserve = (actor = f.actor, credentialVersion = 2) =>
+    createDockerSandboxService(sql).reserve(actor, {
+      credentialId,
+      credentialVersion,
+      requestId,
+      hostId: f.hostId,
+      image: officialImage,
+    });
+  await expect(reserve({ ...f.actor, userId: f.otherId })).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await expect(reserve(f.actor, 1)).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await db.query("update public.credentials set status='revoked' where id=$1", [credentialId]);
+  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await db.query("update public.credentials set status='active',expires_at=now()-interval '1 second' where id=$1", [
+    credentialId,
+  ]);
+  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+  await db.query("update public.credentials set expires_at=null where id=$1", [credentialId]);
+  expect((await reserve()).status).toBe("starting");
+});
+
+test("a plain Docker launch refuses a draining host even after a long drain", async () => {
+  const db = database();
+  const f = await fixture();
+  await db.query("update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1", [f.hostId]);
+  await expect(f.service().launch(f.caller, f.body)).rejects.toMatchObject({
+    code: "host_draining",
+    message: expect.stringContaining("draining for uninstall"),
+  });
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
 });
 
