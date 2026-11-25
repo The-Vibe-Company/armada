@@ -520,7 +520,7 @@ export class Journal {
       return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask, context));
     };
     this.db = new Database(path, { create: true });
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA secure_delete=ON;
  CREATE TABLE IF NOT EXISTS prompts(id TEXT PRIMARY KEY, conversation TEXT NOT NULL,status TEXT NOT NULL,body TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS sessions(conversation TEXT PRIMARY KEY,harness TEXT NOT NULL,session TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);
