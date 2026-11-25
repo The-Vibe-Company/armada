@@ -283,7 +283,7 @@ async function SandboxesContent({ searchParams }: Props) {
                       {owner}
                     </p>
                   </div>
-                  <div className="col-start-1 row-start-2 min-w-0 truncate md:col-start-2 md:row-start-1 [&>span]:inline [&>span>span]:mr-1.5 [&>span>span]:inline-block [&>span>span]:align-middle">
+                  <div className="col-start-1 row-start-2 flex min-w-0 flex-col md:col-start-2 md:row-start-1">
                     <SandboxState
                       viewerOwns={sandbox.ownerId === viewer.id}
                       status={sandbox.status}
