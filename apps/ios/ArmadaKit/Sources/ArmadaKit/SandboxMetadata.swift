@@ -43,13 +43,14 @@ public enum RecordedTurnState: Hashable, Sendable, Decodable {
     }
     public init(from decoder: Decoder) throws { self.init(rawValue: try decoder.singleValueContainer().decode(String.self)) }
 
-    /// Whether a listed sandbox is working, matching dashboard `sandboxActivityPage` semantics.
+    /// Whether a listed sandbox is working, matching dashboard `isSandboxWorking` semantics.
     public static func isWorking(status: String, turn: RecordedTurnState?, expiresAt: Date? = nil, now: Date = .now) -> Bool {
-        if status == "running" { return true }
+        let live = status == "starting" || status == "ready" || status == "running"
         switch turn {
-        case .queued where status == "stopped": return expiresAt.map { $0 > now } ?? true
-        case .queued, .running: return status == "starting" || status == "ready"
-        case .finished, .other, nil: return false
+        case .queued: return live || (status == "stopped" && (expiresAt.map { $0 > now } ?? true))
+        case .running: return live
+        case .finished: return false
+        case .other, nil: return status == "running"
         }
     }
 }

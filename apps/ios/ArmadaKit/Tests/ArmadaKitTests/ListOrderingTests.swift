@@ -62,9 +62,9 @@ func ordersByGroupThenNewest(rows: [OrderingRow], expected: [String]) {
     let cases: [(String, RecordedTurnState?, Date?, ListStatusGroup)] = [
         ("ready", .running, nil, .working), ("ready", .queued, nil, .working),
         ("ready", .finished, nil, .active), ("ready", .other("paused"), nil, .active),
-        ("starting", .queued, nil, .working), ("stopped", .queued, future, .working),
-        ("stopped", .queued, past, .stopped), ("stopped", .running, future, .stopped),
-        ("failed", .running, nil, .other), ("deleted", .queued, nil, .other),
+        ("running", .finished, nil, .active), ("starting", .queued, nil, .working),
+        ("stopped", .queued, future, .working), ("stopped", .queued, past, .stopped),
+        ("stopped", .running, future, .stopped), ("failed", .running, nil, .other), ("deleted", .queued, nil, .other),
     ]
     for (status, turn, expiry, expected) in cases {
         #expect(ListStatusGroup.sandbox(status, turn: turn, expiresAt: expiry, now: now) == expected)

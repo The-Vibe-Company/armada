@@ -38,7 +38,7 @@ public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
             return .working
         }
         return switch status {
-        case "ready": .active
+        case "ready", "running": .active
         case "starting", "stopping": .transition
         case "stopped": .stopped
         default: .other

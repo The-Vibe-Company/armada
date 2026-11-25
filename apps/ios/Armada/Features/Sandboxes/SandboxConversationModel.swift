@@ -38,7 +38,7 @@ final class SandboxConversationModel {
     var draft = ""
     let feed: ConversationFeed
 
-    private struct AcceptedSteer { let promptID: String; let delivery: String; let text: String; let priorMatches: Int }
+    private struct AcceptedSteer { let promptID: String; let delivery: String; let text: String; let priorKeys: Set<String> }
 
     /// The turn each accepted bubble opened, to retire it once the transcript shows that turn.
     @ObservationIgnored private var acceptedPrompts: [String: String] = [:]
@@ -97,7 +97,7 @@ final class SandboxConversationModel {
     var canStop: Bool { state?.canStop == true && !stopping }
 
     var canInterrupt: Bool {
-        isWorking && !interrupting && !stopping && (state?.status == .ready || state?.status == .running)
+        state?.isWorking == true && !interrupting && !stopping && (state?.status == .ready || state?.status == .running)
     }
 
     var isWorking: Bool {
@@ -204,6 +204,9 @@ final class SandboxConversationModel {
             }
             readIssue = nil
             if phase == .loading { phase = .loaded }
+            if state?.isWorking == false, feed.conversation.running, !isDeleted {
+                Task { try? await self.feed.refresh(self.fetch) }
+            }
             return true
         } catch {
             handleReadFailure(error)
@@ -216,7 +219,9 @@ final class SandboxConversationModel {
     func send(_ text: String, intent: ComposerIntent = .message) {
         guard composerUnavailableReason == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let bubbleID = UUID().uuidString
-        let priorSteers = intent == .steer ? steerMatchCount(text: text, promptID: state?.turn?.promptID) : 0
+        let priorSteerKeys = intent == .steer ? Set(feed.conversation.items.compactMap { item -> String? in
+            if case .steer = item.kind { return item.key }; return nil
+        }) : []
         pending.append(PendingBubble(id: bubbleID, text: text, intent: intent, sentAt: .now, status: .sending))
         draft = ""
         notice = nil
@@ -224,7 +229,7 @@ final class SandboxConversationModel {
             do throws(ServiceFailure) {
                 if intent == .steer {
                     let accepted = try await service.steerSandbox(sandboxID: sandboxID, orgID: orgID, text: text)
-                    acceptedSteers[bubbleID] = AcceptedSteer(promptID: accepted.promptID, delivery: accepted.delivery, text: text, priorMatches: priorSteers)
+                    acceptedSteers[bubbleID] = AcceptedSteer(promptID: accepted.promptID, delivery: accepted.delivery, text: text, priorKeys: priorSteerKeys)
                 } else {
                     let accepted = try await service.sendPrompt(sandboxID: sandboxID, orgID: orgID, text: text)
                     acceptedPrompts[bubbleID] = accepted.promptID
@@ -332,7 +337,10 @@ final class SandboxConversationModel {
             }
             if let steer = acceptedSteers[bubble.id] {
                 let restarted = steer.delivery == "restart" && shown.contains(steer.promptID)
-                let echoed = steerMatchCount(text: steer.text, promptID: steer.promptID) > steer.priorMatches
+                let echoed = feed.conversation.items.contains { item in
+                    guard !steer.priorKeys.contains(item.key), case .steer(let steerText, _) = item.kind, steerText == steer.text else { return false }
+                    return item.promptID == nil || item.promptID == steer.promptID
+                }
                 if restarted || echoed {
                     acceptedSteers[bubble.id] = nil
                     return true
@@ -340,14 +348,6 @@ final class SandboxConversationModel {
             }
             return false
         }
-    }
-
-    private func steerMatchCount(text: String, promptID: String?) -> Int {
-        feed.conversation.items.filter { item in
-            guard case .steer(let steerText, _) = item.kind, steerText == text else { return false }
-            guard let promptID, let itemPromptID = item.promptID else { return true }
-            return itemPromptID == promptID
-        }.count
     }
 
     /// The server refused this conversation: it is no longer shown, nor kept in memory.

@@ -200,7 +200,7 @@ struct SandboxListView: View {
     }
 
     private var pollTaskID: String {
-        "\(app.organization?.id ?? ""):\(isListVisible):\(scenePhase == .active)"
+        "\(model?.orgID ?? ""):\(isListVisible):\(scenePhase == .active)"
     }
 
     /// Reuses the open form of this organization so a dismissed or refused launch keeps its fields.
