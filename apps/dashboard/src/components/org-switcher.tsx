@@ -103,7 +103,7 @@ export function OrgSwitcher({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
-          className="w-(--radix-dropdown-menu-trigger-width) min-w-44 rounded-xl animate-none"
+          className="w-(--radix-dropdown-menu-trigger-width) min-w-44 rounded-xl animate-none!"
         >
           {memberships.map(({ org }) => (
             <DropdownMenuItem

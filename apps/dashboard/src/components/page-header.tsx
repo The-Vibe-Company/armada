@@ -20,7 +20,7 @@ export function PageHeader({
     <header
       className={cn("flex flex-wrap justify-between gap-x-4 gap-y-2", inlineActions ? "items-center" : "items-start")}
     >
-      <div className="min-w-0 max-w-2xl space-y-1.5">
+      <div className="min-w-0 max-w-2xl flex-[1_1_9rem] space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-2.5">
           <h1 className="min-w-0 text-xl! font-semibold tracking-[-0.02em]! wrap-anywhere">{title}</h1>
           {meta !== undefined && <span className="text-sm text-muted-foreground tabular-nums">{meta}</span>}
