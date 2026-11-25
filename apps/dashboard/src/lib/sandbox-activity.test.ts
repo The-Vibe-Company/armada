@@ -3,6 +3,7 @@ import type { SandboxListMetadata } from "./sandbox-access.ts";
 import { type RecordedTurn, sandboxActivityPage } from "./sandbox-activity";
 import { sortSandboxes } from "./sandbox-filters";
 
+const noDeleted = { rows: [], count: 0 };
 const now = new Date("2026-11-16T00:00:00Z");
 function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
   return {
@@ -30,12 +31,12 @@ function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
 test("activity counts cover the full filtered inventory while rendering only the requested page", () => {
   const rows = Array.from({ length: 123 }, (_, i) => row(String(i), { ownerId: i < 60 ? "viewer" : "other" }));
   const turns = Object.fromEntries(rows.map(({ id }) => [id, "finished" as const]));
-  const second = sandboxActivityPage(rows, "viewer", "all", 2, turns, now);
+  const second = sandboxActivityPage(rows, "viewer", "all", 2, turns, now, noDeleted);
   expect(second.rows.map(({ id }) => id)).toEqual(Array.from({ length: 50 }, (_, i) => String(i + 50)));
-  expect(second.counts).toEqual({ all: 123, mine: 60, need: 60, working: 0, stopped: 0, failed: 0 });
-  expect(sandboxActivityPage(rows, "viewer", undefined, 1, turns, now).activity).toBe("all");
-  expect(sandboxActivityPage(rows, "viewer", "mine", 2, turns, now).rows).toHaveLength(10);
-  const waiting = sandboxActivityPage(rows, "viewer", "need", 99, turns, now);
+  expect(second.counts).toEqual({ all: 123, mine: 60, need: 60, working: 0, stopped: 0, failed: 0, deleted: 0 });
+  expect(sandboxActivityPage(rows, "viewer", undefined, 1, turns, now, noDeleted).activity).toBe("all");
+  expect(sandboxActivityPage(rows, "viewer", "mine", 2, turns, now, noDeleted).rows).toHaveLength(10);
+  const waiting = sandboxActivityPage(rows, "viewer", "need", 99, turns, now, noDeleted);
   expect(waiting.page).toBe(2);
   expect(waiting.rows.map(({ id }) => id)).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 50)));
 });
@@ -74,11 +75,11 @@ test("activity tabs separate active turns from owned, live sandboxes with a fini
   delete turns.idle;
   delete turns.unavailable;
 
-  const page = sandboxActivityPage(rows, "viewer", "need", 1, turns, now);
+  const page = sandboxActivityPage(rows, "viewer", "need", 1, turns, now, noDeleted);
   expect(page.rows.map(({ id }) => id)).toEqual(["waiting"]);
-  const working = sandboxActivityPage(rows, "viewer", "working", 1, turns, now);
+  const working = sandboxActivityPage(rows, "viewer", "working", 1, turns, now, noDeleted);
   expect(working.rows.map(({ id }) => id)).toEqual(["stopped-with-queued-turn", "unsettled", "queued", "turn-running"]);
-  expect(working.counts).toEqual({ all: 18, mine: 15, need: 1, working: 4, stopped: 2, failed: 1 });
+  expect(working.counts).toEqual({ all: 18, mine: 15, need: 1, working: 4, stopped: 2, failed: 1, deleted: 0 });
 });
 
 test("attention sort still prioritizes stopped outcomes, preserved work and urgent deadlines", () => {

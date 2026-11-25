@@ -9,6 +9,7 @@ import {
   isInvitationToken,
 } from "@/lib/invitations";
 import { hasSessionCookie, isFront, isLanding, isPublicPath, LANDING_PATH } from "@/lib/routes";
+import { SANDBOX_INVENTORY_HEADER, sandboxInventoryScope } from "@/lib/sandbox-filters";
 import type { Database } from "@/lib/supabase/types";
 
 /** The landing on the visitor's own URL (`/`); `Vary: Cookie`, as a member's `/` is the dashboard. */
@@ -57,14 +58,21 @@ export async function proxy(request: NextRequest) {
   if (isLanding(request)) return NextResponse.next();
   if (isFront(request) && !hasSessionCookie(request)) return landing(request);
   const { url, anonKey } = supabaseEnv();
-  let response = NextResponse.next({ request });
+  const inventoryScope = sandboxInventoryScope(request.nextUrl.pathname, request.nextUrl.searchParams);
+  const continueRequest = () => {
+    const headers = new Headers(request.headers);
+    headers.delete(SANDBOX_INVENTORY_HEADER);
+    if (inventoryScope) headers.set(SANDBOX_INVENTORY_HEADER, inventoryScope);
+    return NextResponse.next({ request: { headers } });
+  };
+  let response = continueRequest();
 
   const supabase = createServerClient<Database>(url, anonKey, {
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(list) {
         for (const { name, value } of list) request.cookies.set(name, value);
-        response = NextResponse.next({ request });
+        response = continueRequest();
         for (const { name, value, options } of list) response.cookies.set(name, value, options);
       },
     },

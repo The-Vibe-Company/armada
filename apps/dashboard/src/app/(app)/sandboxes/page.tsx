@@ -6,7 +6,7 @@ import {
   type SandboxCost,
   type SandboxPlacementProviderId,
 } from "@armada/core";
-import { BoxesIcon, LockIcon, SearchXIcon } from "lucide-react";
+import { BoxesIcon, InfoIcon, LockIcon, SearchXIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -17,19 +17,19 @@ import { ProviderMark } from "@/components/provider-mark";
 import { PullRequestList } from "@/components/pull-requests";
 import { RowCost } from "@/components/sandbox-cost";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
-import { SandboxActivityTabs, SandboxListTabs } from "@/components/sandbox-list-tabs";
+import { SandboxActivityTabs, SandboxListTabs, sandboxRowGrid } from "@/components/sandbox-list-tabs";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
 import { SandboxState } from "@/components/sandbox-state";
 import { SandboxToolbar } from "@/components/sandbox-toolbar";
 import LoadingSandboxes from "@/components/sandboxes-skeleton";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
-import { boundedEnrichment } from "@/lib/bounded-enrichment";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createControlClient } from "@/lib/control";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
-import { loadSandboxInventory } from "@/lib/data/sandbox-inventory";
-import { listSandboxCosts, listSandboxHostNames } from "@/lib/data/sandboxes";
+import { listSandboxMetadata, loadSandboxInventory } from "@/lib/data/sandbox-inventory";
+import { listSandboxEnrichment } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
@@ -50,6 +50,7 @@ import {
 } from "@/lib/sandbox-filters";
 import { sandboxListName } from "@/lib/sandbox-list-name";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Sandboxes" };
 export const dynamic = "force-dynamic";
@@ -93,33 +94,23 @@ async function SandboxesContent({ searchParams }: Props) {
     );
   const serverUrl = mcpUrl();
   const control = serverUrl && viewer.token ? createControlClient({ serverUrl, token: viewer.token }) : null;
-  const inventory = loadSandboxInventory(supabase, selected.org.id, filters, viewer.id, query.activity, control);
-  const hosts = readSelectedDockerHosts();
-  // Enrich rows as soon as their actual dependencies resolve, not after unrelated setup/directory reads.
-  const costsRead = inventory.then(({ rows }) => listSandboxCosts(supabase, rows));
-  const namesRead = Promise.all([inventory, hosts]).then(([{ rows }, hostRead]) =>
-    listSandboxHostNames(supabase, rows, hostRead.state === "ready" ? hostRead.list : null),
+  const inventory = loadSandboxInventory(
+    supabase,
+    selected.org.id,
+    filters,
+    viewer.id,
+    query.activity,
+    control,
+    listSandboxMetadata(selected.org.id),
   );
-  const snapshotsRead = inventory.then(async ({ rows }) => {
-    // Interior fields are read only for rows the server authorizes this viewer to open.
-    const readableIds = rows.filter((row) => row.canOpen).map((row) => row.id);
-    const bindings = await boundedEnrichment("sandboxSnapshotBindings", readableIds, (ids) =>
-      supabase
-        .from("sandboxes")
-        .select("id,goldens!sandboxes_golden_id_fkey(name)")
-        .in("id", ids)
-        .eq("goldens.org_id", selected.org.id),
-    );
-    return new Map(bindings.flatMap(({ id, goldens }) => (goldens?.name ? [[id, goldens.name]] : [])));
-  });
+  const hosts = readSelectedDockerHosts();
+  const enrichmentRead = inventory.then(({ rows }) => listSandboxEnrichment(supabase, selected.org.id, rows));
   const [
     { rows, total, inventoryTotal, skipped, facets, activity, counts, page, workingIds, waitingIds, now },
     directory,
     setup,
     hostRead,
-    costs,
-    hostNames,
-    snapshots,
+    enrichment,
   ] = await Promise.all([
     inventory,
     listMemberships(supabase, viewer.id)
@@ -132,16 +123,16 @@ async function SandboxesContent({ searchParams }: Props) {
       ),
     selected ? readProviderSetup(selected.org.id) : null,
     hosts,
-    costsRead,
-    namesRead,
-    snapshotsRead,
+    enrichmentRead,
   ]);
 
+  const hostNames = new Map(hostRead.state === "ready" ? hostRead.list.hosts.map((host) => [host.id, host.name]) : []);
   const filtered = hasSandboxFilters(filters);
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
   const setupPending = selected !== null && setup?.state === "pending" && !hasDocker;
-  if (setupPending && !filtered && inventoryTotal === 0 && skipped === 0) redirect(CLOUD_PROVIDERS_PATH);
+  if (setupPending && !filtered && inventoryTotal === 0 && counts.deleted === 0 && skipped === 0)
+    redirect(CLOUD_PROVIDERS_PATH);
 
   const launchAction = setupPending ? (
     <Button asChild>
@@ -223,7 +214,7 @@ async function SandboxesContent({ searchParams }: Props) {
         </p>
       )}
 
-      {total === 0 ? (
+      {total === 0 && activity !== "deleted" ? (
         skipped > 0 ? (
           <Empty
             title="Sandboxes are not fully loaded"
@@ -265,69 +256,70 @@ async function SandboxesContent({ searchParams }: Props) {
             const readyLabel = waitingIds.has(sandbox.id) ? "Waiting for you" : "Ready";
             const working = workingIds.has(sandbox.id);
             const activityLabel = working ? "Working" : sandbox.status === "running" ? "Running" : undefined;
+            const facts = enrichment.get(sandbox.id);
+            const hostName =
+              sandbox.provider === "docker" && hostRead.state === "ready" && facts
+                ? facts.hostId === null
+                  ? "Machine not recorded"
+                  : hostNames.has(facts.hostId)
+                    ? (hostNames.get(facts.hostId) ?? "Unnamed machine")
+                    : "Machine name unavailable"
+                : undefined;
+            const model = sandbox.canOpen
+              ? (sandbox.model ?? facts?.cost?.models.join(", ") ?? "Model not reported")
+              : "–";
+            const owner = displayUser(directory, sandbox.ownerId, viewer.id);
+            const lifetime =
+              sandbox.status === "stopped" ? "Retained" : (life.remaining ?? life.lifetime ?? "Not recorded");
             return {
               id: sandbox.id,
               content: (
-                <article className="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-3 px-4 py-[11px] hover:bg-muted/40 md:max-lg:grid-cols-[repeat(2,minmax(0,1fr))_auto] lg:grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] lg:items-center">
-                  <div className="min-w-0 md:max-lg:col-span-2">
-                    <SandboxName sandbox={sandbox} snapshot={snapshots.get(sandbox.id)} />
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <SandboxState
-                        viewerOwns={sandbox.ownerId === viewer.id}
-                        status={sandbox.status}
-                        idlePaused={sandbox.idlePaused}
-                        expiresAt={sandbox.expiresAt}
-                        statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
-                        activityLabel={activityLabel}
-                        readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : readyLabel}
-                      />
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono" title={sandbox.id}>
-                        {sandbox.id.slice(0, 8)}
-                      </span>
-                    </div>
-                    {!working && <ConversationHint sandbox={sandbox} now={now} />}
-                    <OutcomeHint sandbox={sandbox} />
-                    {sandbox.canOpen && sandbox.statusMessage && (
-                      <p className="mt-1 text-xs text-muted-foreground">{sandbox.statusMessage}</p>
+                <article
+                  className={cn(sandboxRowGrid, "relative grid gap-y-2 py-2.5 hover:bg-muted/40 md:h-12 md:py-0")}
+                >
+                  <div className="col-span-2 min-w-0 md:col-span-1">
+                    <SandboxName sandbox={sandbox} />
+                    <p className="truncate text-xs text-muted-foreground" title={owner}>
+                      {owner}
+                    </p>
+                  </div>
+                  <div className="col-start-1 row-start-2 min-w-0 truncate md:col-start-2 md:row-start-1 [&>span]:inline [&>span>span]:mr-1.5 [&>span>span]:inline-block [&>span>span]:align-middle">
+                    <SandboxState
+                      viewerOwns={sandbox.ownerId === viewer.id}
+                      status={sandbox.status}
+                      idlePaused={sandbox.idlePaused}
+                      expiresAt={sandbox.expiresAt}
+                      statusMessage={sandbox.canOpen ? sandbox.statusMessage : null}
+                      activityLabel={activityLabel}
+                      readyLabel={sandbox.taskOutcome?.state === "ready" ? "Finished" : readyLabel}
+                    />
+                    <LifecycleHint notice={life.notice} />
+                  </div>
+                  <div className="col-start-1 row-start-3 min-w-0 text-[13px] md:col-start-3 md:row-start-1">
+                    <p className="truncate">{HARNESS_LABELS[sandbox.harness]}</p>
+                    <p className="truncate text-xs text-muted-foreground" title={model}>
+                      {model}
+                      {sandbox.canOpen && sandbox.reasoningEffort ? ` (${sandbox.reasoningEffort})` : ""}
+                    </p>
+                  </div>
+                  <div className="col-start-2 row-start-3 min-w-0 text-[13px] md:col-start-4 md:row-start-1">
+                    <ProviderPlacement sandbox={sandbox} hostName={hostName} />
+                    {facts?.snapshot && (
+                      <p className="truncate text-xs text-muted-foreground" title={facts.snapshot}>
+                        {facts.snapshot}
+                      </p>
                     )}
                   </div>
-                  <div className="min-w-0 max-md:col-start-1">
-                    <p className="text-[13px]">{HARNESS_LABELS[sandbox.harness]}</p>
-                    <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-                      {sandbox.canOpen
-                        ? (sandbox.model ?? costs.get(sandbox.id)?.models.join(", ") ?? "Model not reported")
-                        : "–"}
-                      {sandbox.canOpen && sandbox.reasoningEffort ? ` · ${sandbox.reasoningEffort}` : ""}
+                  <div className="col-start-2 row-start-2 min-w-0 text-[13px] tabular-nums md:col-start-5 md:row-start-1 md:text-right">
+                    <div className="truncate">
+                      <CostCell cost={facts?.cost} />
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground" title={lifetime}>
+                      {lifetime}
                     </p>
                   </div>
-                  <div className="min-w-0 max-md:col-start-1">
-                    <span className="mb-0.5 block text-xs text-muted-foreground lg:hidden">Snapshot</span>
-                    <p className="truncate font-mono text-[13px]" title={snapshots.get(sandbox.id)}>
-                      {snapshots.get(sandbox.id) ?? "–"}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      <ProviderPlacement sandbox={sandbox} hostName={hostNames.get(sandbox.id)} />
-                    </p>
-                  </div>
-                  <div className="flex min-w-0 items-center gap-2 text-[13px] max-md:col-start-1">
-                    <span
-                      aria-hidden="true"
-                      className="flex size-[22px] shrink-0 items-center justify-center rounded-full border bg-muted text-[9.5px] font-semibold text-muted-foreground"
-                    >
-                      {displayUser(directory, sandbox.ownerId, viewer.id).slice(0, 2).toUpperCase()}
-                    </span>
-                    <span className="truncate">{displayUser(directory, sandbox.ownerId, viewer.id)}</span>
-                  </div>
-                  <div className="min-w-0 text-[13px] text-muted-foreground max-md:col-start-1">
-                    <p>
-                      <span className="lg:hidden">Lifetime: </span>
-                      {sandbox.status === "stopped" ? "Retained" : (life.remaining ?? life.lifetime ?? "Not recorded")}
-                    </p>
-                    <LifecycleHint view={{ ...life, remaining: null }} />
-                    <CostCell cost={sandbox.canOpen ? costs.get(sandbox.id) : undefined} />
-                  </div>
-                  <div className="relative z-10 flex items-center justify-end gap-1 max-md:col-start-2 max-lg:row-start-1 md:max-lg:col-start-3">
+                  <div className="relative z-10 col-start-3 row-start-1 flex w-[72px] items-center justify-end md:col-start-6">
+                    <SandboxRowDetails sandbox={sandbox} working={working} now={now} />
                     <SandboxRowMenu id={sandbox.id} name={sandboxListName(sandbox)} canOpen={sandbox.canOpen} />
                   </div>
                 </article>
@@ -344,24 +336,24 @@ async function SandboxesContent({ searchParams }: Props) {
  * The sandbox's listed name. Its owner and the organization's admins open it; any other member sees the same metadata
  * without a link into its conversation, files or connections (#680). The server enforces that again on every read.
  */
-function SandboxName({ sandbox }: { sandbox: SandboxListMetadata; snapshot?: string | undefined }) {
+function SandboxName({ sandbox }: { sandbox: SandboxListMetadata }) {
   const name = sandboxListName(sandbox);
   if (sandbox.canOpen)
     return (
       <Link
         href={`/sandboxes/${sandbox.id}`}
         // The link covers its whole row (the row is the target), and its focus ring is drawn around the row.
-        className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+        className="flex max-w-full items-center gap-1.5 text-sm font-medium underline-offset-4 outline-none after:absolute after:inset-0 after:content-[''] hover:underline focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
       >
-        <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" title={name}>
+        <span className="min-w-0 truncate" title={name}>
           {name}
         </span>
         <LinkPendingIcon />
       </Link>
     );
   return (
-    <span className="inline-flex max-w-full items-center gap-1.5 text-sm text-muted-foreground" data-restricted>
-      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]" title={name}>
+    <span className="flex max-w-full items-center gap-1.5 text-sm text-muted-foreground" data-restricted>
+      <span className="min-w-0 truncate" title={name}>
         {name}
       </span>
       <LockIcon aria-hidden="true" className="size-3.5 shrink-0" />
@@ -385,46 +377,54 @@ function CostCell({ cost }: { cost: SandboxCost | undefined }) {
   return <RowCost cost={cost} />;
 }
 
-/** Under the status, quietly: the time left, or that the deadline passed or a stop is being retried. */
-function LifecycleHint({ view }: { view: LifecycleView }) {
-  if (view.notice)
-    return (
-      <p className="mt-1 text-xs text-warning" data-lifecycle={view.notice.kind}>
-        {view.notice.kind === "retrying" ? "Stop retrying" : "Past deadline"}
-      </p>
-    );
-  if (view.remaining)
-    return (
-      <p className="mt-1 text-xs text-muted-foreground" data-lifecycle="remaining">
-        {view.remaining}
-      </p>
-    );
-  return null;
+function LifecycleHint({ notice }: { notice: LifecycleView["notice"] }) {
+  if (!notice) return null;
+  return (
+    <p className="truncate text-xs text-warning" data-lifecycle={notice.kind} title={notice.title}>
+      {notice.kind === "retrying" ? "Stop retrying" : "Past deadline"}
+    </p>
+  );
 }
 
-/**
- * Under the status: what the agent reported for its latest finished turn (owner and admins only; the metadata hides it
- * from other members), and a stopped sandbox's work-preservation receipt. The recovery command is on its page.
- */
-function OutcomeHint({ sandbox }: { sandbox: SandboxListMetadata }) {
+function SandboxRowDetails({ sandbox, working, now }: { sandbox: SandboxListMetadata; working: boolean; now: Date }) {
+  const statusMessage = sandbox.canOpen ? sandbox.statusMessage : null;
+  const conversationHint = working ? null : conversationHintText(sandbox, now);
   const pullRequests = sandbox.canOpen ? sandbox.pullRequests : null;
   const outcome = settledOutcome(sandbox.status, sandbox.taskOutcome, pullRequests);
   const preservation = preservationView(sandbox.preservationNote, sandbox.status, sandbox.id, sandbox.canOpen);
-  if (!outcome && !preservation && !pullRequests?.length) return null;
   return (
-    <div className="mt-1 max-w-56 space-y-1 whitespace-normal" data-list-outcome={outcome?.kind}>
-      {outcome && <OutcomeBadge outcome={outcome} />}
-      {outcome && <OutcomeDetail outcome={outcome} className="line-clamp-2 text-xs" />}
-      <PullRequestList pullRequests={pullRequests} />
-      {preservation && (
-        <p
-          data-preservation={preservation.kind}
-          className={preservation.kind === "failed" ? "text-xs text-warning" : "text-xs text-muted-foreground"}
-        >
-          {preservation.text}
-        </p>
-      )}
-    </div>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label={`Details for ${sandboxListName(sandbox)}`}>
+          <InfoIcon aria-hidden />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        aria-label="Sandbox details"
+        className="max-h-[var(--radix-popover-content-available-height)] space-y-2 overflow-auto text-xs [overflow-wrap:anywhere]"
+      >
+        <p className="font-medium">{sandboxListName(sandbox)}</p>
+        {conversationHint && <p className="text-muted-foreground">{conversationHint}</p>}
+        {statusMessage && <p className="text-muted-foreground">{statusMessage}</p>}
+        <p className="font-mono text-muted-foreground">{sandbox.id}</p>
+        {(outcome || preservation || pullRequests?.length) && (
+          <div className="space-y-1" data-list-outcome={outcome?.kind}>
+            {outcome && <OutcomeBadge outcome={outcome} />}
+            {outcome && <OutcomeDetail outcome={outcome} className="text-xs" />}
+            <PullRequestList pullRequests={pullRequests} />
+            {preservation && (
+              <p
+                data-preservation={preservation.kind}
+                className={preservation.kind === "failed" ? "text-warning" : "text-muted-foreground"}
+              >
+                {preservation.text}
+              </p>
+            )}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -439,28 +439,21 @@ function capitalize(value: string): string {
 }
 
 function ProviderPlacement({ sandbox, hostName }: { sandbox: SandboxListMetadata; hostName: string | undefined }) {
+  const label =
+    sandbox.provider === "docker"
+      ? `${DOCKER_HOST_LABEL}${hostName ? ` ${hostName}` : ""}`
+      : sandbox.provider === "modal"
+        ? "Modal cloud"
+        : "Boat cloud";
   return (
-    <span title={sandbox.canOpen ? hostName : undefined} className="inline-flex min-w-0 max-w-full flex-col gap-0.5">
-      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
-        <ProviderMark provider={sandbox.provider} />
-        <span className="min-w-0 truncate">
-          {sandbox.provider === "docker"
-            ? `${DOCKER_HOST_LABEL}${sandbox.canOpen && hostName ? ` ${hostName}` : ""}`
-            : sandbox.provider === "modal"
-              ? "Modal cloud"
-              : "Boat cloud"}
-        </span>
-      </span>
+    <span title={label} className="flex min-w-0 items-center gap-1.5 [&>svg]:shrink-0">
+      <ProviderMark provider={sandbox.provider} />
+      <span className="truncate">{label}</span>
     </span>
   );
 }
 
-/** The state badge stays canonical; touch users also get the next step without a hover tooltip. */
-function ConversationHint({ sandbox, now }: { sandbox: SandboxListMetadata; now: Date }) {
-  const text = idlePauseMessage(sandbox, now)
-    ? "Wakes when you message"
-    : !sandbox.canOpen
-      ? "Only its owner and admins can open it"
-      : null;
-  return text ? <p className="mt-1 max-w-48 text-xs whitespace-normal text-muted-foreground">{text}</p> : null;
+function conversationHintText(sandbox: SandboxListMetadata, now: Date) {
+  if (idlePauseMessage(sandbox, now)) return "Wakes when you message";
+  return sandbox.canOpen ? null : "Only its owner and admins can open it";
 }

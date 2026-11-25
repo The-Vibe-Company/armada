@@ -1,5 +1,20 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import type { SandboxActivity } from "@/lib/sandbox-activity";
+import { cn } from "@/lib/utils";
+
+const ACTIVITY_LABELS = {
+  all: "All",
+  mine: "Mine",
+  working: "Working",
+  need: "Waiting for you",
+  stopped: "Stopped",
+  failed: "Failed",
+  deleted: "Deleted",
+} satisfies Record<SandboxActivity, string>;
+
+export const sandboxRowGrid =
+  "min-w-0 grid-cols-[repeat(2,minmax(0,1fr))_auto] items-center gap-x-3 px-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,.8fr)_auto] md:px-4";
 
 /** Counts cover the filtered inventory; only the requested activity page is rendered. */
 export function SandboxListTabs({
@@ -10,8 +25,8 @@ export function SandboxListTabs({
   search,
 }: {
   rows: { id: string; content: ReactNode }[];
-  counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
-  tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
+  counts: Record<SandboxActivity, number>;
+  tab: SandboxActivity;
   page: number;
   search: string;
 }) {
@@ -25,32 +40,17 @@ export function SandboxListTabs({
   const pages = Math.max(1, Math.ceil(counts[tab] / 50));
   return (
     <section className="min-w-0 space-y-3">
-      <section
-        aria-label={
-          tab === "need"
-            ? "Waiting for you"
-            : tab === "working"
-              ? "Working"
-              : tab === "mine"
-                ? "Mine"
-                : tab === "stopped"
-                  ? "Stopped"
-                  : tab === "failed"
-                    ? "Failed"
-                    : "All"
-        }
-        className="divide-y overflow-hidden rounded-[10px] border bg-card"
-      >
+      <section aria-label={ACTIVITY_LABELS[tab]} className="divide-y overflow-hidden rounded-[10px] border bg-card">
         <div
           aria-hidden="true"
-          className="hidden grid-cols-[minmax(0,2.8fr)_minmax(0,1.3fr)_minmax(0,.8fr)_minmax(0,1fr)_minmax(0,.9fr)_64px] gap-4 bg-muted/40 px-4 py-[9px] text-xs text-muted-foreground lg:grid"
+          className={cn(sandboxRowGrid, "hidden h-9 bg-muted/40 text-xs text-muted-foreground md:grid")}
         >
-          <span>Task</span>
-          <span>Agent</span>
-          <span>Snapshot</span>
-          <span>Owner</span>
-          <span>Lifetime</span>
-          <span />
+          <span>Sandbox</span>
+          <span>Status</span>
+          <span>Harness / Model</span>
+          <span>Machine</span>
+          <span className="text-right">Cost / Time</span>
+          <span className="w-[72px] text-right">Actions</span>
         </div>
         {rows.map((row) => (
           <div key={row.id}>{row.content}</div>
@@ -91,8 +91,8 @@ export function SandboxActivityTabs({
   tab,
   search,
 }: {
-  counts: Record<"all" | "mine" | "need" | "working" | "stopped" | "failed", number>;
-  tab: "all" | "mine" | "need" | "working" | "stopped" | "failed";
+  counts: Record<SandboxActivity, number>;
+  tab: SandboxActivity;
   search: string;
 }) {
   function href(activity: string) {
@@ -102,25 +102,24 @@ export function SandboxActivityTabs({
     return `?${params}`;
   }
   return (
-    <nav className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]" aria-label="Sandbox activity">
-      {(
-        [
-          ["all", "All"],
-          ["mine", "Mine"],
-          ["working", "Working"],
-          ["need", "Waiting for you"],
-          ["stopped", "Stopped"],
-          ["failed", "Failed"],
-        ] as const
-      ).map(([id, label]) => (
+    <nav
+      className="inline-flex max-w-full flex-wrap gap-0.5 rounded-[10px] border bg-muted/50 p-[3px]"
+      aria-label="Sandbox activity"
+    >
+      {(Object.keys(ACTIVITY_LABELS) as SandboxActivity[]).map((id) => (
         <Link
           key={id}
           href={href(id)}
           aria-current={tab === id ? "page" : undefined}
-          className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium focus-visible:outline-2 ${tab === id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          className={cn(
+            "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium whitespace-nowrap outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-ring",
+            tab === id
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+          )}
         >
-          {label}
-          <span className="font-mono text-[11px] text-muted-foreground">{counts[id]}</span>
+          {ACTIVITY_LABELS[id]}
+          <span className="text-[11px] text-muted-foreground tabular-nums">{counts[id]}</span>
         </Link>
       ))}
     </nav>

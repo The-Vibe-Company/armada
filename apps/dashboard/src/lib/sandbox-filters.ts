@@ -50,6 +50,23 @@ export function filtersToSearch(filters: Partial<SandboxFilters>): string {
 export function hasSandboxFilters(filters: SandboxFilters): boolean {
   return Boolean(filters.q || FACETS.some((key) => filters[key].length));
 }
+export const SANDBOX_INVENTORY_HEADER = "x-armada-sandbox-inventory";
+
+export function sandboxInventoryIncludesDeleted(filters: SandboxFilters, activity: Params[string]) {
+  return activity === "deleted" || hasSandboxFilters(filters);
+}
+
+export function sandboxInventoryScope(path: string, search: URLSearchParams) {
+  if (path !== "/sandboxes") return null;
+  const params = Object.fromEntries(
+    [...new Set(search.keys())].map((key) => {
+      const values = search.getAll(key);
+      return [key, values.length === 1 ? values[0] : values];
+    }),
+  );
+  return sandboxInventoryIncludesDeleted(parseSandboxFilters(params), params.activity) ? "all" : "active";
+}
+
 function facetValue(row: SandboxListMetadata, key: Facet): string {
   return key === "owner" ? row.ownerId : key === "size" ? (row.machineSize ?? "unknown") : (row[key] ?? "unknown");
 }
