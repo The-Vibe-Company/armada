@@ -101,7 +101,12 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
   try {
     const element = await GoldensPage({ searchParams: Promise.resolve({}) });
     const stream = await renderToReadableStream(
-      <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
+      <html lang="en">
+        <head />
+        <body>
+          <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>
+        </body>
+      </html>,
     );
     const reader = stream.getReader();
     const decoder = new TextDecoder();
