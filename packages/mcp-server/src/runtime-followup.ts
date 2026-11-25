@@ -12,6 +12,7 @@ import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import type { createResumeJob } from "./jobs/resume.ts";
+import { unresolvedResume } from "./modal-launch-handoff.ts";
 import {
   canRepeatPinnedRuntimeSettings,
   modalDialoutPlacement,
@@ -95,7 +96,8 @@ export function createRuntimeFollowup(
              and (q.request_id is distinct from $5::uuid or q.state<>'dispatching')
          ) as prompt_pending
          from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
-         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4
+           and not ${unresolvedResume("s")}`,
         [found.id, caller.userId, found.orgId, found.lifecycleGeneration, fromQueue ? requestId : null],
       );
       if (!setup)

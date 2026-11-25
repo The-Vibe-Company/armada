@@ -1,5 +1,5 @@
 import { describe, expect, jest, setSystemTime, spyOn, test } from "bun:test";
-import { createMemoryAuthStore } from "@armada/auth";
+import { createMemoryAuthStore, sha256Hex } from "@armada/auth";
 import {
   createSqlVaultStore,
   DelegatedAuthority,
@@ -68,7 +68,68 @@ test("a stopped Antigravity Modal sandbox refuses resume before activation", asy
     code: "unavailable",
     message: "This harness cannot resume a stopped conversation.",
   });
+  const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+  const service = createResumeJob({
+    sql: f.sql,
+    key: ENCRYPTION_KEY,
+    commands: f.bridge,
+    turns,
+    async provider() {
+      throw Error("Unsupported harness must not allocate.");
+    },
+    async prepare() {
+      throw Error("Unsupported harness must not prepare a ticket.");
+    },
+    async prepareMcp() {
+      return undefined;
+    },
+    async restoreScopedAccess() {},
+  });
+  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume, undefined, service.wake);
+  await expect(send(f.caller, input(f.row.id), undefined, { fromQueue: true })).rejects.toMatchObject({
+    code: "unavailable",
+    message: "This harness cannot resume a stopped conversation.",
+  });
+  expect((await f.db.query("select 1 from jobs where sandbox_id=$1 and kind='resume'", [f.row.id])).rows).toEqual([]);
   expect((await f.db.query("select 1 from runtime_resumes where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+});
+
+describe("historical Modal resume receipt", () => {
+  const fixture = scopedRuntimeFixture(() => stopped("codex", "modal"), { perTest: true });
+  test("replays the original durable receipt through the new route", async () => {
+    const f = await fixture();
+    const request = input(f.row.id);
+    const conversation = f.first.conversationId!;
+    const hash = await sha256Hex(
+      JSON.stringify({
+        id: request.id,
+        requestId: request.request_id,
+        conversation,
+        prompt: request.prompt,
+      }),
+    );
+    const receipt = {
+      id: request.id,
+      requestId: request.request_id,
+      promptId: "accepted",
+      conversationId: conversation,
+      status: "running",
+      resumed: true,
+      runtime: { kind: "armada", epoch: "2" },
+      sourceCheckpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
+    };
+    await f.sql.query(
+      `insert into public.runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,
+        conversation_id,model,reasoning_effort,phase,receipt,verified_at)
+        values($1,$2,1,2,$3,$4,$5,'gpt-5.4','high','complete',$6::jsonb,now())`,
+      [request.id, request.request_id, f.cp.checkpoint.watermark, hash, conversation, JSON.stringify(receipt)],
+    );
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge);
+    expect(await resume(f.caller, request)).toEqual(receipt as Awaited<ReturnType<typeof resume>>);
+    expect(await createAccountTurnQueue(f.sql, ENCRYPTION_KEY).accept(f.caller, request)).toEqual(receipt);
+
+    await expect(resume(f.caller, { ...request, prompt: "changed" })).rejects.toMatchObject({ code: "conflict" });
+  });
 });
 
 describe("Modal retained stop", () => {
@@ -1979,7 +2040,21 @@ describe("Modal resume job", () => {
       service.resume,
     );
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, explicit, undefined, service.wake);
-    turns.setDispatch((caller, input, claim) => send(caller, input, claim, { fromQueue: true }));
+    turns.setDispatch(
+      createQueuedSandboxDispatch({
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: {
+          async resolve() {
+            throw Error("Queued Modal resume must not resolve directly.");
+          },
+        },
+        runtimeSend: send,
+      }),
+    );
     const request = input(f.row.id);
     const joined = input(f.row.id);
     const wake = Promise.withResolvers<void>();

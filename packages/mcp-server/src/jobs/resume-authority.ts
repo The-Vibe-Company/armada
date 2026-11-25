@@ -13,9 +13,9 @@ export function resumeDispatchAuthority(job: string, sandbox: string, pendingTic
       and c.version::text=${job}.outcome->>'accountVersion' and c.status='active'
       and (c.expires_at is null or c.expires_at>clock_timestamp())
       and ((c.scope='org' and c.owner_id=${sandbox}.org_id) or (c.scope='user' and c.owner_id=${sandbox}.owner_id)))
-    and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=${sandbox}.id
+    and exists(select 1 from public.account_turn_queue q where q.sandbox_id=${sandbox}.id
       and q.request_id::text=${job}.outcome->>'requestId' and
-        (q.state<>'dispatching' or q.actor_epoch::text is distinct from ${job}.outcome->>'actorEpoch')))`;
+        q.state='dispatching' and q.actor_epoch::text=${job}.outcome->>'actorEpoch'))`;
 }
 
 export function resumeDispatchBlocked(sandboxId: string, pendingTicket = false) {

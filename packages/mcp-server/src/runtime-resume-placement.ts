@@ -30,7 +30,6 @@ export function runtimeResumePlacement<H extends Provider>(
     host(caller: Caller, sandbox: Sandbox): Promise<H>;
     retained(current: SandboxInfo): void;
     admissionError: string;
-    binding?: readonly [provider: string, modalTransport: string];
     maxTtlSeconds: number;
     restore(
       host: H,
@@ -105,8 +104,8 @@ export function runtimeResumePlacement<H extends Provider>(
              and s.stop_requested_at is null and s.deleted_at is null and not s.application_secret_tainted
              and s.expires_at>now() and r.epoch=$4 and c.status='active' and (c.expires_at is null or c.expires_at>now())
              and exists(select 1 from public.members m where m.user_id=s.owner_id and m.org_id=s.org_id)
-             and ($5::text is null or s.provider::text=$5) and ($6::text is null or s.runtime_transport=$6)`,
-                      [...identity, ...(placement.binding ?? [null, null])],
+            `,
+                      identity,
                     )
                   ).rows[0];
                   if (!row) throw Error(placement.admissionError);

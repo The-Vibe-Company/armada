@@ -299,6 +299,12 @@ export function createRuntimeCheckpoint(
         admissionSignal && !old ? new SandboxStopTargetChanged() : undefined,
       );
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
+      if (
+        (await tx.query(`select 1 from public.sandboxes s where s.id=$1 and ${unresolvedResume("s")}`, [sandbox.id]))
+          .rows.length
+      )
+        throw checkpointConflict(sandbox.id, "checkpoint_state_ineligible", "Runtime resume setup is still pending.");
+
       const lease = (
         await tx.query<StopRefusalEvidence & { reconciling: boolean }>(
           `select ${stopRefusalEvidence}, s.reconcile_lease_until>now() as reconciling

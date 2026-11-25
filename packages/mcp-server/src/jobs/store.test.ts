@@ -1797,7 +1797,12 @@ async function modalFirstTurnLane(
     runtimeGitHub,
     runtimeMcp,
     config: { encryptionKey: launchEncryptionKey },
-    resumeJob: { concurrency: 1, run: refuseUnexpected },
+    resumeJob: {
+      concurrency: 1,
+      async run() {
+        throw new Error("Unexpected resume in launch setup fixture.");
+      },
+    },
     options: { logError: () => {} },
     control: { sandboxArmadaAccess },
     langfuse: { exportJob: { concurrency: 1 } },

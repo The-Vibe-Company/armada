@@ -1194,17 +1194,14 @@ export async function confirmRuntimeResumeActivation(
 ) {
   const saved = await sql.query(
     `with active as (
-      select id,provider from public.sandboxes where id=$1 and status='starting'
+      select id from public.sandboxes where id=$1 and boat_runtime and status='starting'
         and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
         and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
         and stop_requested_at is null and deleted_at is null for update
     ), marked as (
       update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
       from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
-      returning r.request_id,active.id,active.provider
-    ), protected as (
-      update public.sandboxes s set reconcile_after='infinity'::timestamptz
-      from marked where s.id=marked.id and marked.provider='modal'
+      returning r.request_id
     )
     select request_id from marked`,
     [sandboxId, requestId, generation],

@@ -17,6 +17,7 @@ import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enro
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import { historicalModalResumeReceipt } from "./runtime-resume-receipts.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
@@ -115,6 +116,12 @@ export function createRuntimeResume(
     if (!HARNESS_CAPABILITIES[found.harness].resume)
       throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
     if (modalDialoutPlacement(found)) {
+      const historical = await historicalModalResumeReceipt(sql, caller, {
+        id: found.id,
+        requestId,
+        prompt: input.prompt,
+      });
+      if (historical) return historical;
       if (!queuedResume) throw new VaultError("unavailable", "Modal resume jobs are unavailable.");
       return queuedResume(caller, found, { ...input, id: found.id, request_id: requestId });
     }

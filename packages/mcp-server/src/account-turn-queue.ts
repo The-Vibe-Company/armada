@@ -38,6 +38,7 @@ import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runti
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
+import { historicalModalResumeReceipt } from "./runtime-resume-receipts.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -61,6 +62,22 @@ type Entry = {
 };
 type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
 const DISPATCH_JOB_BACKFILL_BATCH = 20;
+
+function normalizedTurnInput(input: RuntimeFollowupInput & { request_id: string }) {
+  return {
+    id: input.id,
+    request_id: input.request_id,
+    prompt: input.prompt,
+    model: input.model,
+    reasoning_effort: input.reasoning_effort,
+  };
+}
+
+export function accountTurnInputDigest(input: RuntimeFollowupInput & { request_id: string }) {
+  return createHash("sha256")
+    .update(JSON.stringify(normalizedTurnInput(input)))
+    .digest("hex");
+}
 
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
@@ -152,15 +169,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     resumeOnly = false,
   ) {
     const requestId = input.request_id;
-    const normalized = {
-      id: input.id,
-      request_id: requestId,
-      prompt: input.prompt,
-      model: input.model,
-      reasoning_effort: input.reasoning_effort,
-    };
-    const serialized = JSON.stringify(normalized);
-    const hash = createHash("sha256").update(serialized).digest("hex");
+    const normalized = normalizedTurnInput(input);
+    const hash = accountTurnInputDigest(input);
     // The first insert owns correlation. Keep it outside the idempotency hash.
     const sealed = await encryptSecret(
       JSON.stringify({
@@ -363,6 +373,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   async function accept(caller: Caller, input: RuntimeFollowupInput, { resumeOnly = false } = {}) {
     const requestId = input.request_id?.toLowerCase() ?? randomUUID();
+    if (input.request_id) {
+      const historical = await historicalModalResumeReceipt(sql, caller, {
+        id: input.id,
+        requestId,
+        prompt: input.prompt,
+      });
+      if (historical) return historical;
+    }
     const entry = await persist(caller, { ...input, request_id: requestId }, undefined, resumeOnly);
     if (!entry) return null;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
@@ -498,8 +516,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
            from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
              and q.dispatch_until<=clock_timestamp()
              and (${FAILED_DOCKER_WAKE} or (
-               ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
-               and not ${unresolvedResume("s")}
+               s.provider='boat' and s.boat_runtime
                and s.activity_lease_id is distinct from q.request_id
                and exists(select 1 from public.runtime_resumes r
                  where r.sandbox_id=q.sandbox_id and r.request_id=q.request_id and r.receipt is null)

@@ -1,7 +1,8 @@
+import { HARNESS_CAPABILITIES } from "@armada/core";
 import { decryptSecret, encryptSecret, type Sql, toBytea, VaultError } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { failTurnReceipt, ResumeTurnDeferred, resetResumeTurn } from "../account-turn-dispatch.ts";
-import type { AccountTurnQueue } from "../account-turn-queue.ts";
+import { type AccountTurnQueue, accountTurnInputDigest } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
@@ -66,6 +67,8 @@ export function createResumeJob(options: {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
   const wake = async (caller: Caller, found: SandboxView, requestId: string, claim?: RuntimeTurnClaim) => {
+    if (!HARNESS_CAPABILITIES[found.harness].resume)
+      throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
     if (!sql.transaction) throw new Error("Resume requires transactional admission.");
     const id = found.id;
     await environment.validate("modal", { userId: caller.userId, orgId: found.orgId }, id);
@@ -159,17 +162,21 @@ export function createResumeJob(options: {
     const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
     const signal = AbortSignal.timeout(30_000);
     const request = { id: found.id, request_id: input.request_id, prompt: input.prompt };
+    const digest = accountTurnInputDigest(request);
+    let submitted = false;
     try {
-      if (!(await options.turns.accept(caller, request, { resumeOnly: true }))) throw conflict();
       while (!signal.aborted) {
         const {
           rows: [row],
         } = await sql.query<{
           proof: Proof | null;
           state: string;
+          input_hash: string;
           result_enc: Uint8Array<ArrayBuffer> | null;
         }>(
-          `select j.outcome->'checkpoint' as proof,q.state,q.result_enc from public.account_turn_queue q
+          `select j.outcome->'checkpoint' as proof,q.state,q.input_hash,q.result_enc from public.account_turn_queue q
+             join public.sandboxes s on s.id=q.sandbox_id and s.owner_id=q.owner_id
+               and s.org_id=q.org_id and s.deleted_at is null
              join public.members m on m.org_id=q.org_id and m.user_id=q.owner_id
              join public.mcp_actor_epochs e on e.org_id=q.org_id and e.user_id=q.owner_id and e.epoch=q.actor_epoch
              left join public.jobs j on j.sandbox_id=q.sandbox_id and j.generation=q.queued_generation+1
@@ -177,7 +184,13 @@ export function createResumeJob(options: {
            where q.sandbox_id=$1 and q.request_id=$2 and q.owner_id=$3`,
           [found.id, request.request_id, caller.userId],
         );
-        if (!row) throw new VaultError("not_found", "Resume request ownership changed.");
+        if (!row) {
+          if (submitted) throw new VaultError("not_found", "Resume request ownership changed.");
+          if (!(await options.turns.accept(caller, request, { resumeOnly: true }))) throw conflict();
+          submitted = true;
+          continue;
+        }
+        if (row.input_hash !== digest) throw conflict("Reuse the original resume request ID with identical input.");
         if (row.state === "failed") throw conflict("The queued resume prompt was cancelled.");
         if (row.result_enc) {
           if (!row.proof) throw conflict("The request is not a retained resume.");
