@@ -1,12 +1,6 @@
 import { expect, test } from "bun:test";
-import {
-  createSqlSandboxStore,
-  createSqlVaultStore,
-  type Provider,
-  type ProviderTarget,
-  type SandboxStore,
-  type Sql,
-} from "@armada/core/server";
+import { createSqlVaultStore, type Provider, type ProviderTarget, type Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import { providerRegistry } from "../src/http.ts";
@@ -27,13 +21,7 @@ async function fixture(seed = sharedDatabase) {
   ).rows[0];
   if (!golden) throw Error("missing owned golden");
   const sql: Sql = { query: (q, v) => db.query(q, v) };
-  const core = createSqlSandboxStore(sql);
-  const scoped = createSqlData(sql)({
-    userId: people.owner,
-    orgs: [{ orgId: people.org, role: "member" }],
-    via: "service",
-  }).sandboxes;
-  const input = (): Parameters<SandboxStore["insert"]>[0] => ({
+  const input = (): Parameters<typeof insertSandboxFixture>[1] => ({
     id: crypto.randomUUID(),
     provider: "boat",
     providerSandboxId: `physical-${crypto.randomUUID()}`,
@@ -45,44 +33,23 @@ async function fixture(seed = sharedDatabase) {
     model: "gpt-5.4",
     reasoningEffort: "high",
   });
-  return { db, people, core, scoped, input };
+  return { db, people, sql, input };
 }
-
-// Both query builders own persistence/returning/readback at their real SQL boundary.
-test.each(["core", "scoped"] as const)(
-  "%s store retains an explicit runtime choice while native DTOs stay unchanged",
-  async (surface) => {
-    const f = await fixture(sharedDatabase);
-    const store = f[surface];
-    const native = await store.insert(f.input());
-    expect(native.boatRuntime).toBeUndefined();
-    expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [native.id])).rows).toEqual([
-      { boat_runtime: false },
-    ]);
-    const runtime = await store.insert({ ...f.input(), boatRuntime: true });
-    expect(runtime.boatRuntime).toBe(true);
-    expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
-    await store.update(runtime.id, { effectiveTtlSeconds: 7200 });
-    expect(
-      (await f.db.query("select boat_runtime, effective_ttl_seconds from sandboxes where id=$1", [runtime.id])).rows,
-    ).toEqual([{ boat_runtime: true, effective_ttl_seconds: 7200 }]);
-  },
-);
 
 test("SQL makes routing immutable, target-specific and user-JWT read-only", async () => {
   const f = await fixture();
   try {
-    const native = await f.core.insert(f.input());
-    const runtime = await f.core.insert({ ...f.input(), boatRuntime: true });
+    const native = await insertSandboxFixture(f.sql, f.input());
+    const runtime = await insertSandboxFixture(f.sql, { ...f.input(), boatRuntime: true });
     await expect(f.db.query("update sandboxes set boat_runtime=true where id=$1", [native.id])).rejects.toThrow(
       "runtime selection is immutable",
     );
     await expect(f.db.query("update sandboxes set boat_runtime=false where id=$1", [runtime.id])).rejects.toThrow(
       "runtime selection is immutable",
     );
-    const claude = await f.core.insert({ ...f.input(), harness: "claude", boatRuntime: true });
+    const claude = await insertSandboxFixture(f.sql, { ...f.input(), harness: "claude", boatRuntime: true });
     expect(claude).toMatchObject({ harness: "claude", boatRuntime: true });
-    const opencode = await f.core.insert({ ...f.input(), harness: "opencode", boatRuntime: true });
+    const opencode = await insertSandboxFixture(f.sql, { ...f.input(), harness: "opencode", boatRuntime: true });
     expect(opencode).toMatchObject({ harness: "opencode", boatRuntime: true });
     const modal = (
       await f.db.query<{ id: string }>(
@@ -94,13 +61,19 @@ test("SQL makes routing immutable, target-specific and user-JWT read-only", asyn
     if (!modal) throw Error("missing modal golden");
     // First prove this otherwise-identical Modal insert works, so a provider/alias
     // guard cannot masquerade as runtime target rejection.
-    await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id });
+    await insertSandboxFixture(f.sql, { ...f.input(), provider: "modal", goldenId: modal.id });
     expect(
-      (await f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, modalTransport: "dialout" }))
-        .modalTransport,
+      (
+        await insertSandboxFixture(f.sql, {
+          ...f.input(),
+          provider: "modal",
+          goldenId: modal.id,
+          modalTransport: "dialout",
+        })
+      ).modalTransport,
     ).toBe("dialout");
     await expect(
-      f.core.insert({ ...f.input(), provider: "modal", goldenId: modal.id, boatRuntime: true }),
+      insertSandboxFixture(f.sql, { ...f.input(), provider: "modal", goldenId: modal.id, boatRuntime: true }),
     ).rejects.toThrow("sandboxes_boat_runtime_target");
     expect(
       (
@@ -135,7 +108,7 @@ test("registry and active/historical SQL resolvers preserve immutable runtime ch
     ])
   ).rows[0];
   if (!golden) throw Error("missing owned golden");
-  const record = await createSqlSandboxStore(sql).insert({
+  const record = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "boat",
     providerSandboxId: "physical",

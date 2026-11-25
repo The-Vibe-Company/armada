@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -34,7 +35,7 @@ describe("golden removal authority", () => {
     await db.query("update golden_backend_slots set build_id=$1 where golden_id=$2", [reservation, shared.id]);
     await expect(admin.removeGolden!(shared.id)).rejects.toMatchObject({ code: "conflict" });
     await db.query("select release_golden_backend_slot($1)", [reservation]);
-    const child = await member.sandboxes.insert({
+    const child = await insertSandboxFixture(db, {
       id: crypto.randomUUID(),
       goldenId: shared.id,
       orgId: people.org,

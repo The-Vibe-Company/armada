@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { Sql } from "@armada/core";
-import { createSqlSandboxStore } from "@armada/core";
 import { DelegatedAuthority, newDelegatedEpochSecret } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
@@ -14,8 +14,7 @@ test("managed parent is hidden from generic service/JWT reads; identities cannot
   try {
     const golden =
       (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]?.id ?? "missing-golden";
-    const store = createSqlSandboxStore(sql);
-    const input: Parameters<typeof store.insert>[0] = {
+    const input: Parameters<typeof insertSandboxFixture>[1] = {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "parent",
@@ -28,8 +27,8 @@ test("managed parent is hidden from generic service/JWT reads; identities cannot
       reasoningEffort: "high",
       visibility: "private",
     };
-    const parent = await store.insert(input);
-    const ordinary = await store.insert({
+    const parent = await insertSandboxFixture(sql, input);
+    const ordinary = await insertSandboxFixture(sql, {
       ...input,
       id: crypto.randomUUID(),
       providerSandboxId: "ordinary",
@@ -79,9 +78,8 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
   try {
     const golden =
       (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]?.id ?? "missing-golden";
-    const store = createSqlSandboxStore(sql);
     const sandbox = async (id: string, status: "ready" | "running" = "running") =>
-      store.insert({
+      insertSandboxFixture(sql, {
         id: crypto.randomUUID(),
         provider: "boat",
         providerSandboxId: id,

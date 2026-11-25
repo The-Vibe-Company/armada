@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { createSqlVaultStore, resolveOrg, type Sql } from "@armada/core/server";
-import type { Caller } from "../src/caller.ts";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createScopedSandboxData, createSqlData } from "../src/data.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -9,14 +9,6 @@ import { rowOnlyDatabase } from "./row-only-database.ts";
 const database = rowOnlyDatabase();
 async function fixture() {
   const { db, people } = await database();
-  const caller: Caller = {
-    userId: people.member,
-    via: "supabase",
-    orgs: [
-      { orgId: people.org, role: "member" },
-      { orgId: people.otherOrg, role: "admin" },
-    ],
-  };
   // Descending UUIDs preserve insertion order even when database timestamps tie.
   const ids = [
     "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -32,12 +24,11 @@ async function fixture() {
       ])
     ).rows[0]!.id;
     const ownerId = index === 0 ? people.owner : people.member;
-    const source = createSqlData(db)({ ...caller, userId: ownerId, orgs: [{ orgId, role: "member" }] });
-    await source.sandboxes.insert({
+    await insertSandboxFixture(db, {
       id: ids[index]!,
       goldenId: golden,
       orgId,
-      ownerId: index === 0 ? people.owner : people.member,
+      ownerId,
       provider: "boat",
       providerSandboxId: `bx_list_${index}`,
       harness: index === 0 ? "claude" : "codex",
