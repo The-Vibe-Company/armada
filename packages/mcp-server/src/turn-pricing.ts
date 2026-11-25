@@ -8,7 +8,7 @@ import type {
   TurnPriceContext,
   TurnTokenUsage,
 } from "@armada/core";
-import { type PriceSnapshot, priceTurn, type TokenRates } from "@armada/core/server";
+import { type PriceSnapshot, priceTurn, type Sql, type TokenRates } from "@armada/core/server";
 import { validRates } from "../../core/src/pricing/rates.ts";
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -329,4 +329,11 @@ export function withServerCost(usage: SandboxUsage | null, harness: Harness): Sa
       unpricedTurns: missing === null ? null : unpriced.size + missing,
     },
   };
+}
+
+export async function recordTurnRateLimit(sql: Sql, id: string, promptId: string, retryAt: number | null) {
+  await sql.query(
+    `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
+    [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
+  );
 }

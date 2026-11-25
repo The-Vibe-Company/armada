@@ -11,7 +11,7 @@ import {
 } from "@armada/core/server";
 import { initialLaunchFailed, initialLaunchPending } from "./account-turn-dispatch.ts";
 import type { ChildAuthority } from "./child-authority.ts";
-import { DataError } from "./data.ts";
+import { DataError } from "./data-error.ts";
 import { ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { RuntimeFollowupConflict } from "./runtime-followup.ts";

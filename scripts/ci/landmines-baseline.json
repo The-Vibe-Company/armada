@@ -618,7 +618,7 @@
     "packages/mcp-server/src/credential-binding.ts": 1,
     "packages/mcp-server/src/credential-list-sql.ts": 3,
     "packages/mcp-server/src/credential-list.ts": 5,
-    "packages/mcp-server/src/data.ts": 45,
+    "packages/mcp-server/src/data.ts": 28,
     "packages/mcp-server/src/database-boot.ts": 2,
     "packages/mcp-server/src/database-readiness.ts": 3,
     "packages/mcp-server/src/database-schema.ts": 2,

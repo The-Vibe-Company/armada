@@ -2,7 +2,8 @@ import { sandboxOperations } from "@armada/core/contract";
 import { LaunchError, redact, type SandboxStatus, VaultError } from "@armada/core/server";
 import * as z from "zod";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
+import type { SandboxView, ServerSandboxPatch } from "./data.ts";
+import { DataError } from "./data-error.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import {
