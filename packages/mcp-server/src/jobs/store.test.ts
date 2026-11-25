@@ -4543,6 +4543,39 @@ test("shared turn admission defers without spending an attempt during model repa
   expect(sent).toEqual([id]);
 });
 
+test("an exhausted dispatch job leaves a live receipt available to its sender", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  const request = await f.accept(id);
+  await f.db.query("update jobs set attempts=max_attempts where sandbox_id=$1", [id]);
+  const store = {
+    ...f.store,
+    async complete(...args: Parameters<typeof f.store.complete>) {
+      await f.db.query(
+        `update account_turn_queue set state='dispatching', dispatch_generation=queued_generation,
+         dispatch_until=clock_timestamp()+interval '15 minutes' where sandbox_id=$1 and state='queued'`,
+        [id],
+      );
+      return f.store.complete(...args);
+    },
+  };
+  const runner = f.runnerFor(async () => {
+    throw new Error("The shared runner must not dispatch an exhausted job.");
+  }, store);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(
+    (
+      await f.db.query(
+        `select j.state as job, q.state as receipt, j.attempts=j.max_attempts as exhausted,
+              j.run_after=q.dispatch_until as deferred
+       from jobs j join account_turn_queue q using(sandbox_id) where q.request_id=$1`,
+        [request],
+      )
+    ).rows,
+  ).toEqual([{ job: "queued", receipt: "dispatching", exhausted: true, deferred: true }]);
+});
+
 test.each(["deadline", "attempts"] as const)(
   "the turn handler settles receipts after exhausting %s",
   async (budget) => {

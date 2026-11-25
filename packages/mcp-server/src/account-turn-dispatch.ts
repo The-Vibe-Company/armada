@@ -179,7 +179,7 @@ type TurnClaim = { job: Job; canDispatch(tx?: Sql): Promise<boolean> };
 
 class TurnAdmissionLeaseLost extends Error {}
 
-function turnJobRequest(job: Job) {
+export function turnJobRequest(job: Job) {
   const { kind, sandbox_id, payload } = job;
   if (
     kind !== "turn_dispatch" ||
@@ -322,6 +322,8 @@ async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, claim: Turn
 
 export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => Promise<unknown>;
 
+export const TURN_DISPATCH_BUDGET_EXPIRED = "dispatch_budget_expired";
+
 export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchTurn, now = Date.now) {
   return {
     concurrency: 32,
@@ -330,7 +332,7 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
       if (!(await context.canDispatch()))
         return {
           status: "fail",
-          reason: "dispatch_budget_expired",
+          reason: TURN_DISPATCH_BUDGET_EXPIRED,
           unattempted: true,
           async commit(tx) {
             // WARNING: Waiting for the receipt here can deadlock with receipt-first claim reconciliation.

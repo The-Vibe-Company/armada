@@ -10,6 +10,8 @@ import {
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   resetAbandonedTurn,
+  TURN_DISPATCH_BUDGET_EXPIRED,
+  turnJobRequest,
 } from "../account-turn-dispatch.ts";
 import type { ModalLaunchHandoff } from "../modal-launch-handoff.ts";
 import { unresolvedResume } from "../modal-launch-handoff.ts";
@@ -271,17 +273,8 @@ interface EnqueueOptions {
 
 export function createJobsStore(sql: Sql, encryptionKey?: string) {
   async function reconcileTurnClaim(job: Job, owner: string, phase: "claim" | "no_dispatch" | "after_handler") {
-    const sandboxId = job.sandbox_id;
-    if (
-      !sandboxId ||
-      !job.payload ||
-      typeof job.payload !== "object" ||
-      !("requestId" in job.payload) ||
-      typeof job.payload.requestId !== "string"
-    )
-      throw new Error("Turn job is missing its sandbox or request ID.");
+    const { sandboxId, requestId } = turnJobRequest(job);
     if (!sql.transaction) throw new Error("Turn claim reconciliation requires a transaction.");
-    const requestId = job.payload.requestId;
     const claim = claimKey(job, owner);
     const retiring = phase !== "claim";
     try {
@@ -759,6 +752,25 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const refundAttempt = result.status === "retry" && result.unattempted;
       const complete = async (db: Sql, generation: string | null) => {
+        if (
+          job.kind === "turn_dispatch" &&
+          result.status === "fail" &&
+          result.reason === TURN_DISPATCH_BUDGET_EXPIRED
+        ) {
+          const { requestId } = turnJobRequest(job);
+          // WARNING: Check under the sandbox lock because a draining replica can admit after the claim.
+          const { rows: deferred } = await db.query(
+            `update public.jobs j set state='queued', lease_owner=null, lease_until=null,
+               run_after=q.dispatch_until, attempts=attempts-1
+             from public.account_turn_queue q
+             where ${fence} and j.generation=$4
+               and q.sandbox_id=j.sandbox_id and q.request_id=$5 and q.state='dispatching'
+               and isfinite(q.dispatch_until) and q.dispatch_until>clock_timestamp()
+             returning j.id`,
+            [...claimIdentity(job, owner), generation, requestId],
+          );
+          if (deferred.length) return true;
+        }
         const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' and evidence ? 'docker_actor_epoch'
