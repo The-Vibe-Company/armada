@@ -61,6 +61,7 @@ const sharedFailureCodes = [
   "payment_required",
   "prompt_failed",
   "provider_not_configured",
+  "relay_unavailable",
   "sandbox_not_ready",
   "setup_failed",
   "snapshot_failed",
