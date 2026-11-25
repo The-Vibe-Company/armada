@@ -6,12 +6,13 @@ import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
 import { readEventPages, validateLogPagination } from "./event-pagination.ts";
+import { buildLogsThreadStatus } from "./mcp-read-tools.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { latestPromptEvent } from "./turns.ts";
 
-type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing" | "accountTurns">;
+type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing" | "accountTurns" | "now">;
 
 const { body: logsInput } = readLogsOperation.input;
 const nativePageInput = logsInput.omit({ id: true, org: true });
@@ -32,19 +33,27 @@ export async function readLogs(
   cursor: string | null;
   hasMore: boolean;
   settled: boolean;
+  threadStatus?: ReturnType<typeof buildLogsThreadStatus>["threadStatus"];
   source?: "armada-runtime";
   runtimeFailure?: { status: "failed"; reason: string };
   olderCursor?: string;
 }> {
   validateLogPagination(body);
-  async function project(events: { promptId?: string }[]) {
+  async function project(
+    events: { promptId?: string }[],
+    threadStatus?: ReturnType<typeof buildLogsThreadStatus>["threadStatus"],
+  ) {
+    const items = [
+      ...events,
+      ...(threadStatus?.prompt ? [threadStatus.prompt] : []),
+      ...(threadStatus?.usage?.turns ?? []),
+    ];
     const ids = await options.accountTurns?.publicPromptIds(
       caller,
       id,
-      events.flatMap((e) => (e.promptId ? [e.promptId] : [])),
+      items.flatMap((e) => (e.promptId ? [e.promptId] : [])),
     );
-    for (const event of events)
-      if (event.promptId && ids?.has(event.promptId)) event.promptId = ids.get(event.promptId)!;
+    for (const item of items) if (item.promptId && ids?.has(item.promptId)) item.promptId = ids.get(item.promptId)!;
   }
   if (options.dockerControls) {
     const routed = await options.dockerControls.invoke(caller, "logs", {
@@ -58,7 +67,7 @@ export async function readLogs(
     });
     if (routed.handled) {
       const result = routed.result as Awaited<ReturnType<typeof readLogs>>;
-      await project(result.events);
+      await project(result.events, result.threadStatus);
       return result;
     }
   }
@@ -67,8 +76,8 @@ export async function readLogs(
   const page = parseLogInput(nativePageInput, { ...body, all: body.all === true, follow: body.follow === true });
   const backward = page.direction === "backward";
   const sampledSettlement =
-    page.follow && target.provider.followSettled
-      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!())
+    target.provider.followSettled && (page.follow || target.sandbox)
+      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!(page.follow))
       : undefined;
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor } = await readEventPages(
     (cursor) =>
@@ -102,21 +111,30 @@ export async function readLogs(
         )
       : null;
   const publicEvents = publicLogEvents(events);
-  await project(publicEvents);
+  const followSettledValue =
+    durableSettled ??
+    (runtimeFailure !== undefined ||
+      info?.state === "stopped" ||
+      info?.state === "failed" ||
+      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true));
+  const thread = target.sandbox
+    ? buildLogsThreadStatus(
+        target.sandbox,
+        events,
+        options.now?.() ?? new Date(),
+        page.follow ? followSettledValue : sampledSettlement,
+      )
+    : undefined;
+  await project(publicEvents, thread?.threadStatus);
   return {
     ...(source ? { source } : {}),
     ...(runtimeFailure ? { runtimeFailure } : {}),
     ...(olderCursor ? { olderCursor } : {}),
+    ...(thread ? { threadStatus: thread.threadStatus } : {}),
     events: publicEvents,
     cursor,
     hasMore,
-    settled:
-      !page.follow ||
-      (durableSettled ??
-        (runtimeFailure !== undefined ||
-          info?.state === "stopped" ||
-          info?.state === "failed" ||
-          (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true))),
+    settled: page.follow ? followSettledValue : (thread?.settled ?? true),
   };
 }
 

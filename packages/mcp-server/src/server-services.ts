@@ -556,6 +556,7 @@ export async function createServerServices(env: Record<string, string | undefine
       return {
         provider: await logProvider(sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
+        sandbox,
       };
     },
   };
@@ -572,7 +573,7 @@ export async function createServerServices(env: Record<string, string | undefine
     configureMutationRequest: (request: Request) => control.configureScopedMutationRequest?.(request),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
-  control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
+  control.eventFeed = createEventFeed(sql, delegatedAccess.authority, config.encryptionKey);
   const langfuse = createLangfuse(sql, config.encryptionKey);
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,

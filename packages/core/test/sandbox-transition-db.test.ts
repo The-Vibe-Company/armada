@@ -71,6 +71,8 @@ function ingest(db: Pick<PGlite, "query">) {
 test("committed transition and runtime references share one increasing org cursor", async () => {
   const db = database();
   await seedSandbox(db, "starting");
+  const notified: string[] = [];
+  const unlisten = await db.listen("armada_events", (payload) => notified.push(payload));
 
   await transition(db, ["starting"], "running", "runtime_enrolment", []);
   await db.transaction(async (tx) => {
@@ -78,6 +80,7 @@ test("committed transition and runtime references share one increasing org curso
     expect((await tx.query("select id from event_log where kind = 'runtime_event'")).rows).toEqual([]);
   });
   await ingest(db);
+  await unlisten();
 
   const journal = await db.query<{ id: string }>("select id::text from sandbox_transitions");
   const rows = (await feed(db)).rows;
@@ -88,6 +91,7 @@ test("committed transition and runtime references share one increasing org curso
   ]);
   expect(BigInt(rows[0]!.id)).toBeLessThan(BigInt(rows[1]!.id));
   expect(BigInt(rows[1]!.id)).toBeLessThan(BigInt(rows[2]!.id));
+  expect(notified).toEqual([sandbox, sandbox]);
   expect((await db.query("select distinct org_id, sandbox_id from event_log")).rows).toEqual([
     { org_id: org, sandbox_id: sandbox },
   ]);
@@ -96,6 +100,8 @@ test("committed transition and runtime references share one increasing org curso
 test("rolling back an ingest removes the archive and its feed references", async () => {
   const db = database();
   await seedSandbox(db, "running");
+  const notified: string[] = [];
+  const unlisten = await db.listen("armada_events", (payload) => notified.push(payload));
   await expect(
     db.transaction(async (tx) => {
       await tx.query(
@@ -105,6 +111,8 @@ test("rolling back an ingest removes the archive and its feed references", async
       throw new Error("projection failed");
     }),
   ).rejects.toThrow("projection failed");
+  await unlisten();
+  expect(notified).toEqual([]);
   expect((await db.query("select sequence from runtime_events")).rows).toEqual([]);
   expect((await feed(db)).rows).toEqual([]);
 });

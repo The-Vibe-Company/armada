@@ -5,7 +5,7 @@ const sandbox = "f6bc7a23-f891-4cd6-a034-acee682a9781";
 const encoder = new TextEncoder();
 const headers = { "content-type": "text/event-stream" };
 
-function frame(id: string, kind = "runtime_event") {
+function frame(id: string, kind = "runtime_event", extra: Record<string, unknown> = {}) {
   const event = {
     id,
     kind,
@@ -13,6 +13,7 @@ function frame(id: string, kind = "runtime_event") {
     sequence: kind === "transition" ? null : "5",
     ref: "5",
     createdAt: "2026-11-20T12:00:00.000Z",
+    ...extra,
   };
   return `id: ${id}\ndata: ${JSON.stringify(event)}\n\n`;
 }
@@ -57,6 +58,42 @@ test("streams split frames, reconnects after the last complete event and ignores
   const state = reduceSandboxEvent(reduceSandboxEvent(undefined, initial), next);
   expect(state).toMatchObject({ cursor: second, runtimeEvent: initial, transition: next });
   expect(reduceSandboxEvent(state, initial)).toBe(state);
+});
+
+test("cursor=tail reconnects at tail until the first event and preserves inline event and transition status", async () => {
+  jest.useFakeTimers();
+  const timer = observeRetryTimer();
+  const requests: { query: string; lastId: string | null }[] = [];
+  const inline = { id: "m1", at: 1, kind: "message", text: "hello", partial: false, tools: [] };
+  const client = new Armada({
+    token: "placeholder",
+    fetch: async (url, init) => {
+      const request = new Request(String(url), init);
+      requests.push({ query: new URL(request.url).search, lastId: request.headers.get("last-event-id") });
+      if (requests.length === 1) return new Response(null, { status: 503, headers: { "retry-after": "1" } });
+      if (requests.length === 2) return new Response(frame("10", "runtime_event", { event: inline }), { headers });
+      return new Response(frame("11", "transition", { status: "stopped", statusReason: "idle_paused" }), { headers });
+    },
+  });
+  const stream = client.events.stream({ sandbox, cursor: "tail" });
+  try {
+    const firstPending = stream.next();
+    await timer.scheduled();
+    jest.advanceTimersByTime(1000);
+    const first = (await firstPending).value!;
+    const second = (await stream.next()).value!;
+    expect(first).toMatchObject({ id: "10", kind: "runtime_event", event: inline });
+    expect(second).toMatchObject({ id: "11", kind: "transition", status: "stopped", statusReason: "idle_paused" });
+    expect(requests).toEqual([
+      { query: `?sandbox=${sandbox}&cursor=tail`, lastId: null },
+      { query: `?sandbox=${sandbox}&cursor=tail`, lastId: null },
+      { query: `?sandbox=${sandbox}`, lastId: "10" },
+    ]);
+  } finally {
+    await stream.return();
+    timer.restore();
+    jest.useRealTimers();
+  }
 });
 
 test("aborting a pending read cancels the reader and ends the iterator", async () => {

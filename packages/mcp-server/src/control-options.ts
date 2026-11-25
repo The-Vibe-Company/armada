@@ -18,7 +18,7 @@ import type {
 } from "@armada/core/server";
 import type { Caller, SupabaseProject } from "./caller.ts";
 import type { createSqlCredentialList } from "./credential-list-sql.ts";
-import type { DataSource, ScopedData } from "./data.ts";
+import type { DataSource, SandboxView, ScopedData } from "./data.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
 import type { Invitations } from "./invitations.ts";
 import type { McpControlOptions } from "./mcp-control.ts";
@@ -104,7 +104,10 @@ export interface ControlOptions {
   store: VaultStore;
   encryptionKey: string | undefined;
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
-  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: SandboxLogReader; providerSandboxId: string }>;
+  logs?: (
+    caller: Caller,
+    sandboxId: string,
+  ) => Promise<{ provider: SandboxLogReader; providerSandboxId: string; sandbox?: SandboxView }>;
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   providers?: ProviderRegistry;
