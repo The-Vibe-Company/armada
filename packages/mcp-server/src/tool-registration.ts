@@ -116,6 +116,7 @@ export function createToolRegistration(
             events?: { promptId?: string }[];
             prompt?: { promptId: string };
             usage?: { turns: { promptId: string }[] };
+            threadStatus?: { prompt?: { promptId: string } | null; usage?: { turns: { promptId: string }[] } | null };
           };
           const root = raw as PublicReport;
           const reports = (name === "list" ? (root.sandboxes ?? []) : [root]).map((report) => {
@@ -123,6 +124,8 @@ export function createToolRegistration(
               ...(report.events ?? []),
               ...(report.prompt ? [report.prompt] : []),
               ...(report.usage?.turns ?? []),
+              ...(report.threadStatus?.prompt ? [report.threadStatus.prompt] : []),
+              ...(report.threadStatus?.usage?.turns ?? []),
             ];
             return { sandboxId: report.id ?? ((args as Record<string, unknown>).id as string), items };
           });

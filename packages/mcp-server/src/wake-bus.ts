@@ -69,6 +69,59 @@ export async function waitForTimeout(ms: number, signal: AbortSignal) {
 
 export const eventFeedWakeKey = (sandboxId: string) => `events:${sandboxId.toLowerCase()}`;
 
+export const EVENT_NOTIFY_CHANNEL = "armada_events";
+export interface PgNotifyClient {
+  listen(
+    channel: string,
+    onNotify: (payload: string) => void,
+  ): Promise<{ unlisten(): Promise<void> } | (() => Promise<void>)>;
+  close?(): Promise<void>;
+}
+const NOTIFY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function startEventNotifyListener(
+  client: PgNotifyClient,
+  wakes = runtimeWakes,
+  logError: (line: string) => void = console.error,
+) {
+  let closed = false;
+  let clientClosed = false;
+  let closing: Promise<void> | undefined;
+  let unsubscribe: (() => Promise<void>) | undefined;
+  const closeClient = async () => {
+    if (clientClosed) return;
+    clientClosed = true;
+    await client.close?.().catch(() => {});
+  };
+  const ready = Promise.resolve()
+    .then(async () => {
+      if (closed) return;
+      const handle = await client.listen(EVENT_NOTIFY_CHANNEL, (p) => {
+        if (NOTIFY_UUID.test(p)) wakes.notify(eventFeedWakeKey(p));
+      });
+      const unlisten = typeof handle === "function" ? handle : () => handle.unlisten();
+      if (closed) await unlisten().catch(() => {});
+      else unsubscribe = unlisten;
+    })
+    .catch(async () => {
+      if (!closed) logError("armada: postgres event notify listener unavailable; using recheck timer.");
+      await closeClient();
+    });
+  return {
+    ready,
+    close() {
+      if (closing) return closing;
+      closed = true;
+      closing = (async () => {
+        await ready;
+        await unsubscribe?.().catch(() => {});
+        await closeClient();
+      })();
+      return closing;
+    },
+  };
+}
+
 export const SANDBOX_ADMISSION_WAKE = "sandbox-admission";
 
 export const runtimeWakes = createWakeBus();

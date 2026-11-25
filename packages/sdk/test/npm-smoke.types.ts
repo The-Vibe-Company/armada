@@ -5,6 +5,7 @@ import {
   type LaunchResult,
   type ModalLaunchReceipt,
   type PinnedModalLaunchReceipt,
+  type SandboxEvent,
   type SendInput,
 } from "@the-vibe-company/armada-sdk";
 
@@ -85,3 +86,10 @@ export type StatusProviderIsRequired = Assert<
 >;
 
 export type ModalReceiptFields = Assert<Equal<keyof ModalLaunchReceipt, "sandbox">>;
+
+type TransitionStreamEvent = Extract<SandboxEvent, { kind: "transition" }>;
+type RuntimeStreamEvent = Extract<SandboxEvent, { kind: "runtime_event" }>;
+export type TransitionEventStatus = Assert<Equal<TransitionStreamEvent["statusReason"], string | null | undefined>>;
+export type RuntimeEventInlinePayload = Assert<
+  Equal<NonNullable<RuntimeStreamEvent["event"]>["kind"], "prompt" | "message" | "steer" | "other">
+>;

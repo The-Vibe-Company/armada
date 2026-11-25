@@ -71,6 +71,7 @@ import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, pars
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { LIVE_FLEET_REFRESH_EVENT } from "@/lib/live-sandbox-view";
+import { turnModelDisplay } from "@/lib/sandbox-model";
 import { cn } from "@/lib/utils";
 
 const WORKING_POLL_MS = 1_000;
@@ -591,6 +592,7 @@ export function SandboxChat(props: Props) {
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;
+  const modelNotice = turnModelDisplay(turnModel);
 
   return (
     <div data-fit="chat" className="space-y-2 sm:space-y-4">
@@ -612,20 +614,19 @@ export function SandboxChat(props: Props) {
             </AlertDescription>
           </Alert>
         )}
-        {turnModel?.observedModel && !turnModel.modelSelectionReason && (
-          <p className="text-xs text-muted-foreground">Reported model: {turnModel.observedModel}</p>
+        {modelNotice?.kind === "model" && (
+          <p className="border-b px-4 py-2 text-xs text-muted-foreground sm:px-6">Model: {modelNotice.model}</p>
         )}
-        {turnModel?.modelSelectionReason && (
+        {modelNotice?.kind === "reported" && (
+          <p className="text-xs text-muted-foreground">Reported model: {modelNotice.model}</p>
+        )}
+        {modelNotice?.kind === "notice" && (
           <details className="border-b px-4 py-2 text-sm sm:px-6">
-            <summary className="cursor-pointer text-muted-foreground">
-              {turnModel.modelSelectionReason === "model_selection_mismatch"
-                ? "The agent used a different model"
-                : "The model could not be verified"}
-            </summary>
+            <summary className="cursor-pointer text-muted-foreground">{modelNotice.summary}</summary>
             <div className="space-y-1 pt-2 text-muted-foreground">
-              {turnModel.requestedModel && <p>Requested model: {turnModel.requestedModel}</p>}
-              {turnModel.observedModel && <p>Reported model: {turnModel.observedModel}</p>}
-              {turnModel.modelSelectionMessage && <p>{turnModel.modelSelectionMessage}</p>}
+              {modelNotice.requestedModel && <p>Requested model: {modelNotice.requestedModel}</p>}
+              {modelNotice.observedModel && <p>Reported model: {modelNotice.observedModel}</p>}
+              {modelNotice.message && <p>{modelNotice.message}</p>}
             </div>
           </details>
         )}
