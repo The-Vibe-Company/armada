@@ -917,7 +917,6 @@ test("a held host poll answers as soon as work appears and never beyond its hold
       retentionWrites++;
       return { hostId: randomUUID(), retentionSeconds: undefined };
     },
-    resumeClaimsForHost: async () => [],
     pendingStartsForHost: async () => [],
     async poll(...args: unknown[]) {
       polls++;

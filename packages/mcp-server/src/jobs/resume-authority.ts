@@ -2,6 +2,9 @@ export function resumeDispatchAuthority(job: string, sandbox: string, pendingTic
   return `(${job}.attempts<=${job}.max_attempts and ${job}.deadline_at>clock_timestamp()
     ${pendingTicket ? `and ${job}.state in ('queued','leased')` : `and ${job}.state='leased' and ${job}.lease_until>clock_timestamp()`}
     and ${sandbox}.status in ('starting','ready') and ${sandbox}.stop_requested_at is null and ${sandbox}.deleted_at is null
+    and not (${sandbox}.provider='docker' and exists(select 1 from public.jobs stop
+      where stop.sandbox_id=${sandbox}.id and stop.generation=${sandbox}.lifecycle_generation
+        and stop.kind='stop' and stop.state in ('queued','leased')))
     and not ${sandbox}.application_secret_tainted and ${sandbox}.expires_at>clock_timestamp()
     and date_trunc('milliseconds',${sandbox}.expires_at)=(${job}.outcome->>'expiresAt')::timestamptz
     and exists(select 1 from public.mcp_actor_epochs e join public.members m
@@ -13,9 +16,9 @@ export function resumeDispatchAuthority(job: string, sandbox: string, pendingTic
       and c.version::text=${job}.outcome->>'accountVersion' and c.status='active'
       and (c.expires_at is null or c.expires_at>clock_timestamp())
       and ((c.scope='org' and c.owner_id=${sandbox}.org_id) or (c.scope='user' and c.owner_id=${sandbox}.owner_id)))
-    and exists(select 1 from public.account_turn_queue q where q.sandbox_id=${sandbox}.id
+    and ((${sandbox}.provider='docker' and ${job}.outcome->>'withoutPrompt'='true') or exists(select 1 from public.account_turn_queue q where q.sandbox_id=${sandbox}.id
       and q.request_id::text=${job}.outcome->>'requestId' and
-        q.state='dispatching' and q.actor_epoch::text=${job}.outcome->>'actorEpoch'))`;
+        q.state='dispatching' and q.actor_epoch::text=${job}.outcome->>'actorEpoch')))`;
 }
 
 export function resumeDispatchBlocked(sandboxId: string, pendingTicket = false) {

@@ -15,7 +15,6 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
-  FAILED_DOCKER_WAKE,
   IDLE_STOP_PENDING,
   LAUNCH_PENDING,
   NATIVE_DISPATCH_UNCERTAIN,
@@ -36,7 +35,7 @@ import type { LaunchAuthority } from "./jobs/template-launch-authority.ts";
 import { unresolvedResume } from "./modal-launch-handoff.ts";
 import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
-import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
+import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { historicalRuntimeResumeReceipt } from "./runtime-resume-receipts.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
@@ -551,20 +550,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
           from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
           and q.dispatch_until<=now() and ${NATIVE_DISPATCH_UNCERTAIN}`);
-        const { rows: failedWakes } = await sql.query<{ sandbox_id: string; request_id: string }>(
-          `update public.account_turn_queue q set state='failed',dispatch_until=null,
-             failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
-           from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
-             and q.dispatch_until<=clock_timestamp()
-             and ${FAILED_DOCKER_WAKE}
-           returning q.sandbox_id,q.request_id`,
-        );
-        for (const receipt of failedWakes)
-          recordOperatorDiagnostic(
-            "account_turn.receipt.failed",
-            { errorClass: "Error", message: "Queued wake lost dispatch authority.", stack: [] },
-            { sandboxId: receipt.sandbox_id, operationId: receipt.request_id, code: "wake_dispatch_unavailable" },
-          );
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id

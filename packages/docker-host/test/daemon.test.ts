@@ -956,6 +956,7 @@ test("HTTP registration is single-use and host credentials remain in authorizati
       "x-armada-docker-host-delete-physical": "1",
       "x-armada-docker-host-machine-bootstrap": "1",
       "x-armada-docker-host-restore": "1",
+      "x-armada-docker-host-restore-recovery": "1",
     },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },
     { authorization: `Bearer ${hostToken}`, "content-type": "application/json", "x-armada-docker-host-protocol": "1" },

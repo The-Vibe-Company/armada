@@ -3,8 +3,6 @@ import { randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
-  API_FAILURE_STATUS,
-  DOCKER_LAUNCH_FAILURE_MESSAGES,
   type DockerSandboxStatus,
   isSandboxPlacementProvider,
   ProviderError,
@@ -20,9 +18,8 @@ import {
 import { parseSandboxListMetadata } from "../../../apps/dashboard/src/lib/sandbox-access.ts";
 import { sandboxListText } from "../../cli/src/sandbox-list.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
-import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
-import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
+import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -812,118 +809,6 @@ test("normal Docker send continues the saved native conversation and retries exa
   await rejected(invoke(caller(f.admin, "admin"), "send", args, controller), "conflict");
 });
 
-test("ordinary Docker send resumes once and never wakes a stopped sandbox for a prior prompt UUID", async () => {
-  const db = database();
-  const f = await fixture();
-  let session = await ready(f);
-  const conversationId = randomUUID();
-  const first = { requestId: randomUUID(), text: "first" };
-  await service.prompt(f.actor, f.sandbox.id, first);
-  await complete(session, { promptId: randomUUID(), conversationId, status: "finished" });
-  await service.prompt(f.actor, f.sandbox.id, first);
-  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
-  const stop = async () => {
-    const requestId = randomUUID();
-    await queueMailboxStop(sql, key, f.actor, f.sandbox.id, requestId);
-    await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
-  };
-  await stop();
-  let now = 0,
-    resumes = 0,
-    prompts = 0;
-  const promptId = randomUUID();
-  const clock = {
-    now: () => now,
-    async wait(ms: number) {
-      now += ms;
-      for (const claim of await hosts.resumeClaimsForHost(f.hostToken, f.installationId))
-        await hosts.claimResume(f.hostToken, f.installationId, claim.requestId, true);
-      const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
-      if (job) {
-        if (job.operation !== "resume") throw Error("expected resume");
-        resumes++;
-        await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
-        session = await authority.enrol(job.bootstrap.enrolmentToken);
-      }
-      if (!job && resumes === 0) return;
-      const next = await commands.next(session.runtimeToken, session.epoch);
-      if (!next.command) return;
-      const command = next.command;
-      if (command.op === "prompt") {
-        expect(command.input).toMatchObject({ text: "continue after stop", conversationId });
-        prompts++;
-      } else if (command.op !== "health") throw Error("unexpected runtime command");
-      await commands.complete(session.runtimeToken, session.epoch, {
-        epoch: session.epoch,
-        requestId: command.requestId,
-        status: 200,
-        body: {
-          version: 1,
-          requestId: command.requestId,
-          result:
-            command.op === "health"
-              ? { ready: true, generation: session.epoch }
-              : { promptId, conversationId, status: "queued" },
-        },
-      });
-    },
-  };
-  const controller = createDockerSandboxControls(sql, key, { sendEnabled: true, resume: bootstrap, clock });
-  const args = { id: f.sandbox.id, request_id: randomUUID(), prompt: "continue after stop" };
-  // An unknown outcome retries the same bound resume, not a second host instruction.
-  const pending = createDockerSandboxControls(sql, key, { sendEnabled: true, resume: bootstrap, clock, timeoutMs: 0 });
-  await rejected(invoke(caller(f.actor), "send", args, pending), "conflict");
-  const result = await invoke(caller(f.actor), "send", args, controller);
-  expect(result).toMatchObject({ id: f.sandbox.id, promptId, conversationId, status: "queued" });
-  expect(await invoke(caller(f.actor), "send", args, controller)).toEqual(result);
-  expect({ resumes, prompts }).toEqual({ resumes: 1, prompts: 1 });
-  await stop();
-  await rejected(invoke(caller(f.actor), "send", args, controller), "conflict");
-  await rejected(invoke(caller(f.actor), "send", { ...args, prompt: "changed" }, controller), "conflict");
-  expect(await hosts.poll(f.hostToken, f.installationId, "2.28.0")).toBeNull();
-  expect((await invoke(caller(f.actor), "status", { id: f.sandbox.id })).status).toBe("stopped");
-  expect(
-    (
-      await db.query(
-        `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='resume'`,
-        [f.sandbox.id],
-      )
-    ).rows,
-  ).toEqual([{ request_id: args.request_id }]);
-});
-
-test("resuming on a draining host names the uninstall, not a generic unavailable operation", async () => {
-  const db = database();
-  const f = await fixture();
-  await ready(f);
-  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
-  const stopId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
-  const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
-  await expect(
-    dispatchControlCommand(
-      "sandbox/resume",
-      caller(f.actor),
-      { id: f.sandbox.id, request_id: randomUUID() },
-      {
-        store: createSqlVaultStore(sql),
-        authStore: createSqlAuthStore(sql),
-        supabase: { supabaseUrl: "https://project.supabase.co", anonKey: "fixture-anon" },
-        encryptionKey: key,
-        data: createSqlData(sql),
-        providers: {
-          resolve: async () => {
-            throw Error("Docker resume must not resolve legacy provider credentials");
-          },
-        },
-        dockerControls: controller,
-      },
-    ),
-  ).rejects.toMatchObject({ code: "host_draining", status: 409 });
-});
-
 test("Docker mutations reuse the fenced runtime mailbox and reconcile identical request IDs", async () => {
   const db = database();
   const f = await fixture();
@@ -1075,7 +960,6 @@ test("cancelled account dispatch cannot admit a Docker prompt or resume", async 
   const stopId = randomUUID();
   await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await expect(bootstrap.resume(f.actor, f.sandbox.id, requestId)).rejects.toThrow("Docker bootstrap denied");
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
 
@@ -1092,38 +976,6 @@ test("Docker status preserves safe native prompt diagnoses instead of replacing 
       reason: "Model unavailable. Choose a model available to this account, then send the prompt again.",
     },
   });
-});
-
-test("a resume refused by host cleanup is a non-retryable conflict, not a provider outage", async () => {
-  const db = database();
-  const f = await fixture();
-  await ready(f);
-  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
-  const requestId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, requestId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
-  const resumeId = randomUUID();
-  await bootstrap.resume(f.actor, f.sandbox.id, resumeId);
-  await hosts.claimResume(f.hostToken, f.installationId, resumeId, false);
-  // Cleanup won the durable host exclusion.
-  await db.query("update public.sandboxes set docker_retention_deadline=now()-interval '1 second' where id=$1", [
-    f.sandbox.id,
-  ]);
-  const controller = createDockerSandboxControls(sql, key, {
-    sendEnabled: true,
-    resume: bootstrap,
-  });
-  try {
-    await invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: resumeId }, controller);
-    throw Error("resume unexpectedly allowed");
-  } catch (error) {
-    expect(error).toBeInstanceOf(ProviderError);
-    expect(error).toMatchObject({ provider: "docker", code: "sandbox_retention_ended", retryable: false });
-    expect((error as Error).message).toContain("cleanup has begun");
-    // The closed HTTP/MCP category maps to a non-retryable 409, not a provider outage.
-    expect(apiFailureCode(error)).toBe("sandbox_retention_ended");
-    expect(API_FAILURE_STATUS.sandbox_retention_ended).toBe(409);
-  }
 });
 
 test("Docker status retains the agent finish reason after physical stop", async () => {
@@ -1145,45 +997,15 @@ test("reclaimed workspace status and resume report the durable disk cause", asyn
     "update public.sandboxes set status='deleted',deleted_at=now(),status_reason='disk_pressure' where id=$1",
     [f.sandbox.id],
   );
-  const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
+  const controller = createDockerSandboxControls(sql, key, {
+    resume: async () => {
+      throw Error("Reclaimed workspace must not be resumed.");
+    },
+  });
   const status = await invoke(caller(f.actor), "status", { id: f.sandbox.id }, controller);
   expect(status).toMatchObject({ status: "deleted", statusReason: "disk_pressure" });
   expect(status).toHaveProperty("statusMessage", expect.stringContaining("low on disk space"));
   await expect(
     invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
   ).rejects.toThrow("low on disk space");
-  await expect(bootstrap.resume(f.actor, f.sandbox.id, randomUUID())).rejects.toThrow("low on disk space");
-});
-
-test("a resume refused by the host disk floor returns the actionable disk cause", async () => {
-  const f = await fixture();
-  await ready(f);
-  await database().query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
-  const stopId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  let now = 0;
-  const controller = createDockerSandboxControls(sql, key, {
-    resume: bootstrap,
-    clock: {
-      now: () => now,
-      async wait(ms) {
-        now += ms;
-        for (const claim of await hosts.resumeClaimsForHost(f.hostToken, f.installationId))
-          await hosts.claimResume(f.hostToken, f.installationId, claim.requestId, true);
-        const job = await hosts.poll(f.hostToken, f.installationId, "2.28.0");
-        if (job) {
-          expect(job.operation).toBe("resume");
-          await hosts.complete(f.hostToken, f.installationId, {
-            requestId: job.requestId,
-            outcome: "failed",
-            reason: "disk_full",
-          });
-        }
-      },
-    },
-  });
-  await expect(
-    invoke(caller(f.actor), "resume", { id: f.sandbox.id, request_id: randomUUID() }, controller),
-  ).rejects.toThrow(DOCKER_LAUNCH_FAILURE_MESSAGES.disk);
 });

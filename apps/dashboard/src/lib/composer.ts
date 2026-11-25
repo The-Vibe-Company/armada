@@ -77,7 +77,7 @@ export function messageKeyFor(previous: LaunchKey | null, data: FormData, fresh?
 }
 
 /**
- * Whether the composer may send to a sandbox, and whether that send wakes a retained checkpoint. The persisted stop
+ * Whether the composer may send to a sandbox, and whether that send wakes a retained workspace. The persisted stop
  * reason belongs to the rendered status only: once a poll reports another status, it is unknown until the page
  * re-renders. A Docker merge stop (`work_merged`) wakes from its retained idle checkpoint on send, like an idle pause.
  */
@@ -99,6 +99,6 @@ export function composerAdmission(
       ? sandbox.renderedStatusReason
       : null;
   const refusal = sandboxControlRefusal({ ...sandbox, statusReason }, now);
-  const wakes = sandbox.status === "stopped" && (statusReason === "idle_paused" || statusReason === "work_merged");
+  const wakes = sandbox.status === "stopped" && refusal === null;
   return { refusal, wakes };
 }

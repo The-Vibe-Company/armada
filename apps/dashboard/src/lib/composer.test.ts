@@ -98,12 +98,23 @@ describe("composer admission", () => {
     expect(finished.wakes).toBe(false);
   });
 
+  test("expiry and lost retention prevent a Docker wake", () => {
+    const ordinary = { ...docker, renderedStatusReason: null };
+    for (const change of [
+      { expiresAt: now.toISOString() },
+      { preservationNote: "checkpoint_failed_disk_not_retained" },
+    ]) {
+      const admission = composerAdmission({ ...ordinary, ...change }, now);
+      expect(admission.refusal).toContain("same branch");
+      expect(admission.wakes).toBe(false);
+    }
+  });
+
   test("a rendered stop reason is ignored once a poll reports another status", () => {
     const polled = composerAdmission(
-      { ...docker, renderedStatus: "running", renderedStatusReason: "work_merged" },
+      { ...docker, renderedStatus: "running", renderedStatusReason: "agent_finished" },
       now,
     );
-    expect(polled.refusal).toContain("container is removed");
-    expect(polled.wakes).toBe(false);
+    expect(polled).toEqual({ refusal: null, wakes: true });
   });
 });

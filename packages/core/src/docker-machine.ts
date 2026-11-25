@@ -630,6 +630,24 @@ export function createDockerMachineExecutor(options: {
       context(predecessor.request);
       return allocate(request, predecessor);
     },
+    async reconcileRestore(request: DockerMachineRequest, predecessor: DockerRetainedPredecessor) {
+      const state = await owned(request);
+      const source = `${predecessor.request.generation}/${predecessor.machineId}`;
+      if (state.volume && object(state.volume.Labels)[restoredFrom] !== source) fail("ownership_mismatch");
+      if (state.container) {
+        const machineId = state.container.Id;
+        if (
+          object(object(state.container.Config).Labels)[restoredFrom] !== source ||
+          typeof machineId !== "string" ||
+          !dockerContainerId.test(machineId)
+        )
+          fail("ownership_mismatch");
+        const status = object(state.container.State);
+        if (status.Running === true || status.Status === "exited") return machineId;
+      }
+      if (state.container || state.volume) await remove(request);
+      return null;
+    },
     bootstrap,
     installRuntime,
     stop,
