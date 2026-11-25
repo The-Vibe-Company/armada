@@ -10,8 +10,8 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { runtimeBridgeProfile, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
-
-import { pendingModalStopOutput } from "./sandbox-lifecycle.ts";
+import { changeStoppedSandboxCredential, pendingModalStopOutput } from "./sandbox-lifecycle.ts";
+import { recordSandboxAccountUsagePricing } from "./turn-pricing.ts";
 
 const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
@@ -166,15 +166,14 @@ export function createSandboxAccountChange(
       if (current.credential_id !== before.credential_id || current.credential_version !== before.credential_version)
         throw new VaultError("conflict", "Another account change won. Refresh the sandbox before trying again.");
       // Generation change revokes old runtime/enrolment tokens and sealed configuration via the existing trigger.
-      await tx.query(
-        "update public.sandboxes set credential_id=$2,credential_version=$3,lifecycle_generation=lifecycle_generation+1 where id=$1",
-        [current.id, pin.credentialId, pin.credentialVersion],
-      );
+      await changeStoppedSandboxCredential(tx, current.id, pin.credentialId, pin.credentialVersion);
       // Keep immutable historical launch/turn quotes. Only future admissions select this new book.
-      await tx.query(
-        `insert into public.sandbox_account_usage_pricing(sandbox_id,credential_id,credential_version,context)
-         values($1,$2,$3,$4::jsonb) on conflict do nothing`,
-        [current.id, pin.credentialId, pin.credentialVersion, JSON.stringify(resolved.usagePricing ?? null)],
+      await recordSandboxAccountUsagePricing(
+        tx,
+        current.id,
+        pin.credentialId,
+        pin.credentialVersion,
+        resolved.usagePricing ?? null,
       );
       return { id: current.id, ...pin, harness: current.harness, status: "bound" };
     });

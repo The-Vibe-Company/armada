@@ -11,6 +11,7 @@ import {
 import { capabilities } from "@armada/core/machine-capabilities";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
+import { claimSandboxResourceSample, RESOURCE_SAMPLING_VISIBLE } from "./sandbox-lifecycle.ts";
 
 const resourceProvenance = {
   boat: "boat-dedicated-vm",
@@ -40,8 +41,6 @@ interface ResourceRow extends SandboxRow {
   reconcile_lease_until: string | Date | null;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const VISIBLE = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id) and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid)
-  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 function validNow(now: Date): string {
   if (!Number.isFinite(now.getTime())) throw new LaunchError("invalid_request", "Invalid observation time.");
   return now.toISOString();
@@ -50,12 +49,14 @@ const notFound = () => new GoldenError("not_found", "No such sandbox.");
 const conflict = () => new GoldenError("conflict", "Observation does not match this physical session.");
 /** Privileged SQL must recheck live visibility; scope is never accepted from observation payloads. */
 export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
-  const scope = [caller.orgs.map((org) => org.orgId), caller.userId];
+  const orgIds = caller.orgs.map((org) => org.orgId);
+  const userId = caller.userId;
+  const scope = [orgIds, userId];
   async function target(db: Sql, id: string, lock = false): Promise<ResourceRow> {
     if (!UUID.test(id)) throw notFound();
     const result = await db.query<ResourceRow>(
       `select s.*,s.lifecycle_generation::text as lifecycle_generation,
-        s.resource_sampling_generation::text as resource_sampling_generation from public.sandboxes s where ${VISIBLE} and s.id=$3::uuid${lock ? " for update of s" : ""}`,
+        s.resource_sampling_generation::text as resource_sampling_generation from public.sandboxes s where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid${lock ? " for update of s" : ""}`,
       [...scope, id],
     );
     const row = result.rows[0];
@@ -67,18 +68,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
       const at = validNow(now);
       if (!UUID.test(id)) throw notFound();
       const token = crypto.randomUUID();
-      const admitted = await sql.query<{ token: string }>(
-        `update public.sandboxes s set resource_sampling_claim_id=$4::uuid,
-           resource_sampling_after=$5::timestamptz+interval '10 seconds',resource_sampling_generation=s.lifecycle_generation
-         where ${VISIBLE} and s.id=$3::uuid and s.status in ('ready','running')
-           and s.resource_project is not null and s.resource_project<>'null'::jsonb and s.machine_size->'capacity' is not null
-           and s.machine_size->'capacity'<>'null'::jsonb
-           and (s.resource_sampling_after is null or s.resource_sampling_after <= $5::timestamptz)
-           and (s.activity_until is null or s.activity_until <= $5::timestamptz)
-           and (s.reconcile_lease_until is null or s.reconcile_lease_until <= $5::timestamptz)
-         returning s.resource_sampling_claim_id::text as token`,
-        [...scope, id, token, at],
-      );
+      const admitted = await claimSandboxResourceSample(sql, orgIds, userId, id, token, at);
       if (admitted.rows[0]) return admitted.rows[0].token;
       await target(sql, id);
       return null;
@@ -98,7 +88,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
         const row = await target(db, id, true);
         const replay = await db.query<{ same: boolean }>(
           `select o.observation=$5::text::jsonb as same from public.resource_observations o
-           join public.sandboxes s on s.id=o.sandbox_id where ${VISIBLE} and s.id=$3::uuid and o.admission_claim_id=$4::uuid`,
+           join public.sandboxes s on s.id=o.sandbox_id where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and o.admission_claim_id=$4::uuid`,
           [...scope, id, admissionToken, JSON.stringify(observation)],
         );
         if (replay.rows[0]) {
@@ -128,13 +118,13 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           throw conflict();
         const previous = await db.query<{ observation: ProviderResourceObservation; observed_at: string | Date }>(
           `select o.observation,o.observed_at from public.resource_observations o join public.sandboxes s on s.id=o.sandbox_id
-           where ${VISIBLE} and s.id=$3::uuid order by o.id desc limit 1`,
+           where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid order by o.id desc limit 1`,
           [...scope, id],
         );
         const last = previous.rows[0];
         const existing = await db.query<{ id: string }>(
           `select o.id from public.resource_observations o join public.sandboxes s on s.id=o.sandbox_id
-           where ${VISIBLE} and s.id=$3::uuid and o.physical_id=$4 and o.generation=$5 and o.boot_id=$6::uuid and o.uptime_ms=$7`,
+           where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and o.physical_id=$4 and o.generation=$5 and o.boot_id=$6::uuid and o.uptime_ms=$7`,
           [
             ...scope,
             id,
@@ -163,7 +153,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
             if (prior.generation === observation.generation) throw conflict();
             const seen = await db.query<{ id: string }>(
               `select o.id from public.resource_observations o join public.sandboxes s on s.id=o.sandbox_id
-               where ${VISIBLE} and s.id=$3::uuid and o.physical_id=$4 and o.generation=$5 and o.boot_id=$6::uuid limit 1`,
+               where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and o.physical_id=$4 and o.generation=$5 and o.boot_id=$6::uuid limit 1`,
               [...scope, id, observation.physicalId, observation.generation, observation.reading.bootId],
             );
             if (seen.rows.length) throw conflict();
@@ -172,7 +162,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
         await db.query(
           `insert into public.resource_observations(sandbox_id,physical_id,generation,boot_id,uptime_ms,observed_at,observation,admission_claim_id)
            select s.id,$4,$5,$6::uuid,$7,$8::timestamptz,$9::text::jsonb,$10::uuid from public.sandboxes s
-           where ${VISIBLE} and s.id=$3::uuid`,
+           where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid`,
           [
             ...scope,
             id,
@@ -186,7 +176,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           ],
         );
         await db.query(
-          `delete from public.resource_observations o using public.sandboxes s where o.sandbox_id=s.id and ${VISIBLE} and s.id=$3::uuid
+          `delete from public.resource_observations o using public.sandboxes s where o.sandbox_id=s.id and ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid
            and (o.observed_at < $4::timestamptz-interval '14 days' or o.id not in (
              select r.id from public.resource_observations r where r.sandbox_id=s.id
              and r.observed_at >= $4::timestamptz-interval '14 days' order by r.id desc limit 720))`,
@@ -201,7 +191,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
       if (!selected.resource_project || !selected.machine_size?.capacity)
         return { target: selectedRecord, targetObservation: null, sessions: [] };
       const result = await sql.query<SandboxRow>(
-        `select s.* from public.sandboxes s where ${VISIBLE} and s.owner_id=$3::uuid and s.org_id=$4::uuid
+        `select s.* from public.sandboxes s where ${RESOURCE_SAMPLING_VISIBLE} and s.owner_id=$3::uuid and s.org_id=$4::uuid
          and s.golden_id=$5::uuid and s.provider=$6::public.sandbox_provider and s.harness=$7::public.harness
          and s.model is not distinct from $8::text and s.reasoning_effort is not distinct from $9::text
          and s.resource_project=$10::text::jsonb and s.machine_size->'capacity'=$11::text::jsonb
@@ -221,7 +211,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
       );
       const latest = await sql.query<{ observed_at: string | Date; observation: ProviderResourceObservation }>(
         `select o.observed_at,o.observation from public.resource_observations o join public.sandboxes s on s.id=o.sandbox_id
-         where ${VISIBLE} and s.id=$3::uuid and o.observed_at >= $4::timestamptz-interval '7 days' and o.observed_at <= $4::timestamptz order by o.id desc limit 1`,
+         where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and o.observed_at >= $4::timestamptz-interval '7 days' and o.observed_at <= $4::timestamptz order by o.id desc limit 1`,
         [...scope, id, at],
       );
       const latestRow = latest.rows[0];
@@ -232,7 +222,7 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
       for (const row of result.rows) {
         const readings = await sql.query<{ observed_at: string | Date; observation: ProviderResourceObservation }>(
           `select o.observed_at,o.observation from public.resource_observations o join public.sandboxes s on s.id=o.sandbox_id
-           where ${VISIBLE} and s.id=$3::uuid and o.observed_at >= $4::timestamptz-interval '14 days' and o.observed_at <= $4::timestamptz
+           where ${RESOURCE_SAMPLING_VISIBLE} and s.id=$3::uuid and o.observed_at >= $4::timestamptz-interval '14 days' and o.observed_at <= $4::timestamptz
            order by o.id desc limit 720`,
           [...scope, row.id, at],
         );

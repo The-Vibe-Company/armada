@@ -15,6 +15,15 @@ import {
 import { z } from "zod";
 import type { Job, JobKind, JobResult } from "./jobs/runner.ts";
 import { type createJobsStore, rescheduleRecurringJob, withJobLease } from "./jobs/store.ts";
+import {
+  clearPullRequestMergeProof,
+  commitPullRequestScan,
+  markPullRequestScanUntracked,
+  PULL_REQUEST_SCAN_ELIGIBLE,
+  type PullRequestIdentity,
+  type PullRequestScanTarget,
+  retainPullRequestScan,
+} from "./sandbox-lifecycle.ts";
 
 const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const repoUrl =
@@ -38,42 +47,6 @@ const githubPull = z.object({
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
 });
 const githubCompare = z.object({ status: z.enum(["ahead", "behind", "identical", "diverged"]) });
-
-type Report = { prNumber?: number; prUrl?: string };
-type Identity = { repository: string; number: number };
-type Scan = {
-  // Per repository and branch, every pushed SHA, newest first.
-  pushes: Record<string, [string, string[]][]>;
-  discovered: Identity[];
-  // Sticky: once a push may have escaped the ledger (a ledger gap, a reflog
-  // push it lacks, or a missing hook), coverage is unprovable.
-  untracked?: true;
-  // Per repository and checkout directory, each branch's latest pushed SHA as
-  // that checkout last read it. Kept for a checkout a later grant no longer lists.
-  heads?: Record<string, Record<string, Record<string, string>>>;
-};
-type Target = {
-  id: string;
-  owner_id: string;
-  provider: "boat" | "modal" | "docker";
-  provider_sandbox_id: string;
-  harness: "codex" | "claude" | "opencode";
-  runtime_epoch: string | null;
-  active: boolean;
-  launch_authorized: boolean;
-  // The current turn had settled before this scan read any push evidence.
-  settled: boolean;
-  created_at: string;
-  lifecycle_generation: string;
-  task_prompt_id: string | null;
-  connection_epoch: string;
-  github_id: string;
-  membership_epoch: string;
-  repositories: unknown;
-  repository_dir: string | null;
-  pull_request_scan: Scan | null;
-  pull_request_reports: Record<string, Report>;
-};
 
 const launchBranch = /^(?!-)[A-Za-z0-9._/-]{1,255}$/;
 const maxBranches = 32;
@@ -173,34 +146,6 @@ case "$remote" in
 esac
 ${readPushEvidence}`;
 
-const eligible = `from public.sandboxes s
-          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-          join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
-          join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
-          join lateral (
-            select repositories,priority from (
-              select s.pull_request_source->'repositories' as repositories, 3 as priority, 0::bigint as revision
-              where s.pull_request_source->>'connectionEpoch'=c.connection_epoch::text
-              union all
-              select binding->'repositories', 2, revision
-              from public.runtime_github_capabilities
-              where sandbox_id=s.id and delivered_at is not null
-                and binding->>'connectionEpoch'=c.connection_epoch::text
-                and binding->>'membershipEpoch'=e.epoch::text
-              union all
-              select binding->'identity'->'repositories', 1, revision from public.github_runtime_capabilities
-              where sandbox_id=s.id and binding->'identity'->>'connectionEpoch'=c.connection_epoch::text
-                and binding->'identity'->>'membershipEpoch'=e.epoch::text
-              union all
-              select jsonb_build_array(s.resource_project), 0, 0::bigint
-              where s.provider<>'docker' and s.pull_request_source is null and s.resource_project is not null
-            ) grants order by priority desc, revision desc limit 1
-          ) grant_row on true
-          where ((s.status in ('ready','running') and s.stop_requested_at is null)
-              or (s.status='stopped' and (s.pull_request_scan is not null or s.pull_request_reports<>'{}'::jsonb)))
-            and s.activity_lease_id is null and not s.application_secret_tainted
-            and s.expires_at>now()`;
-
 const scanKind = "pr_scan";
 const scanKey = "periodic";
 const maxAttempts = 3;
@@ -209,7 +154,7 @@ export function createPullRequestScanJob(
   sql: Sql,
   jobs: Pick<ReturnType<typeof createJobsStore>, "enqueue">,
   github: GitHubResolveDeps,
-  exec: (target: Target, request: ExecRequest) => Promise<ExecResult>,
+  exec: (target: PullRequestScanTarget, request: ExecRequest) => Promise<ExecResult>,
   now = Date.now,
 ) {
   const retryAfter = (minutes: number) => new Date(now() + minutes * 60_000);
@@ -218,7 +163,7 @@ export function createPullRequestScanJob(
   async function prepare() {
     if (now() >= nextSeed) {
       const { rows } = await sql.query<{ id: string; org_id: string; generation: string }>(
-        `select s.id,s.org_id,s.lifecycle_generation::text as generation ${eligible}
+        `select s.id,s.org_id,s.lifecycle_generation::text as generation ${PULL_REQUEST_SCAN_ELIGIBLE}
          and not exists(select 1 from public.jobs j where j.kind=$1
            and j.sandbox_id=s.id and j.generation=s.lifecycle_generation)
          order by s.id limit 32`,
@@ -236,29 +181,7 @@ export function createPullRequestScanJob(
     const row = await withJobLease(
       sql,
       job,
-      async (tx) =>
-        (
-          await tx.query<Target>(
-            `with target as (
-          select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,
-            grant_row.repositories,grant_row.priority>0 as launch_authorized
-          ${eligible} and s.id=$1 and s.lifecycle_generation=$2
-        )
-        update public.sandboxes s set pull_request_merge_proof=null from target where s.id=target.id
-        returning s.id,s.owner_id,s.provider::text,s.provider_sandbox_id,s.harness::text,
-          s.status in ('ready','running') as active,
-          (select r.epoch::text from public.runtime_enrolments r
-            where r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null)
-            as runtime_epoch,
-          s.created_at::text,s.lifecycle_generation::text,s.task_prompt_id,
-          (s.task_prompt_id is not null
-            and exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)
-            and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and not t.settled)) as settled,
-          target.connection_epoch::text,target.github_id::text,target.membership_epoch::text,
-          target.repositories,target.launch_authorized,s.repository_dir,s.pull_request_scan,s.pull_request_reports`,
-            [job.sandbox_id, job.generation],
-          )
-        ).rows[0],
+      async (tx) => (await clearPullRequestMergeProof(tx, job.sandbox_id, job.generation)).rows[0],
     );
     if (!row) return null;
     nextScan = now() + 15_000;
@@ -314,14 +237,7 @@ export function createPullRequestScanJob(
         // next read no longer reports it.
         if (lines.some((line) => line === "!untracked" || line === "!unproven")) {
           scan.untracked = true;
-          const sticky = await withJobLease(sql, job, (tx) =>
-            tx.query(
-              `update public.sandboxes set pull_request_merge_proof=null,
-              pull_request_scan=jsonb_set(coalesce(pull_request_scan,'{"pushes":{},"discovered":[]}'::jsonb),'{untracked}','true'::jsonb)
-             where id=$1 returning id`,
-              [row.id],
-            ),
-          );
+          const sticky = await withJobLease(sql, job, (tx) => markPullRequestScanUntracked(tx, row.id));
           if (!sticky?.rows.length) return;
         }
         const pushed = new Map<string, string[]>();
@@ -374,17 +290,12 @@ export function createPullRequestScanJob(
       // Retain push evidence when Git prunes a tracking ref or expires its reflog.
       scan.pushes = Object.fromEntries([...branches].map(([repo, names]) => [repo, [...names]]));
       const retained = await withJobLease(sql, job, (tx) =>
-        tx.query(
-          `update public.sandboxes set pull_request_scan=$2::text::jsonb
-         where id=$1 and lifecycle_generation=$3 and (status='stopped' or stop_requested_at is null)
-           and activity_lease_id is null returning id`,
-          [row.id, JSON.stringify(scan), row.lifecycle_generation],
-        ),
+        retainPullRequestScan(tx, row.id, JSON.stringify(scan), row.lifecycle_generation),
       );
       if (!retained?.rows.length) return;
-      const numbers = new Map<string, Identity>();
-      const discovered = new Map<string, Identity>();
-      const urlFor = ({ repository, number }: Identity) => `https://github.com/${repository}/pull/${number}`;
+      const numbers = new Map<string, PullRequestIdentity>();
+      const discovered = new Map<string, PullRequestIdentity>();
+      const urlFor = ({ repository, number }: PullRequestIdentity) => `https://github.com/${repository}/pull/${number}`;
       for (const identity of scan.discovered) {
         numbers.set(urlFor(identity), identity);
         discovered.set(urlFor(identity), identity);
@@ -641,29 +552,12 @@ export function createPullRequestScanJob(
         after: retryAfter(15),
         async commit(tx) {
           signal.throwIfAborted();
-          const { rows } = await tx.query<{ stopped: boolean }>(
-            `update public.sandboxes s set pull_requests=$2::text::jsonb,pull_request_merge_proof=$3::text::jsonb,
-          pull_request_scan=$9::text::jsonb
-          where s.id=$1 and s.lifecycle_generation=$4 and s.task_prompt_id is not distinct from $5
-            and s.pull_request_reports=$6::text::jsonb and s.activity_lease_id is null
-            and (s.status='stopped' or (s.status in ('ready','running') and s.stop_requested_at is null))
-            and exists(select 1 from public.github_connections c where c.user_id=s.owner_id
-              and c.revoked_at is null and c.connection_epoch=$7)
-            and exists(select 1 from public.mcp_actor_epochs e join public.members m
-              on m.org_id=e.org_id and m.user_id=e.user_id
-              where e.org_id=s.org_id and e.user_id=s.owner_id and e.epoch=$8)
-          returning s.status='stopped' as stopped`,
-            [
-              row.id,
-              JSON.stringify(list),
-              JSON.stringify(proof),
-              row.lifecycle_generation,
-              row.task_prompt_id,
-              JSON.stringify(row.pull_request_reports),
-              row.connection_epoch,
-              row.membership_epoch,
-              JSON.stringify({ ...scan, discovered: [...discovered.values()] }),
-            ],
+          const { rows } = await commitPullRequestScan(
+            tx,
+            row,
+            JSON.stringify(list),
+            JSON.stringify(proof),
+            JSON.stringify({ ...scan, discovered: [...discovered.values()] }),
           );
           signal.throwIfAborted();
           await rescheduleRecurringJob(tx, job, retryAfter(rows[0] ? (rows[0].stopped ? 30 : 5) : 15));

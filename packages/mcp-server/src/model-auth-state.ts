@@ -368,3 +368,59 @@ export function createNativeStateStore(sql: Sql, key: string | undefined) {
     },
   };
 }
+
+export function sealBrokerRefreshHistory(sql: Sql, id: string, version: number, state: Uint8Array) {
+  return sql.query(
+    "update public.model_auth_state set state_enc=$3::bytea where account_id=$1::uuid and account_version=$2",
+    [id, version, state],
+  );
+}
+
+export function completeBrokerRefresh(
+  sql: Sql,
+  id: string,
+  version: number,
+  revision: number,
+  state: Uint8Array,
+  source: string,
+) {
+  return sql.query(
+    "update public.model_auth_state set state_enc=$4::bytea,auth_revision=auth_revision+1,source_generation=$5,updated_at=now() where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing' returning auth_revision",
+    [id, version, revision, state, source],
+  );
+}
+
+export function recordBrokerRefreshFailure(
+  sql: Sql,
+  id: string,
+  version: number,
+  revision: number,
+  state: Uint8Array,
+  source: string,
+) {
+  return sql.query(
+    "update public.model_auth_state set state_enc=$4::bytea,source_generation=$5 where account_id=$1::uuid and account_version=$2 and auth_revision=$3 and source_generation='server:refreshing'",
+    [id, version, revision, state, source],
+  );
+}
+
+export function beginBrokerRefresh(sql: Sql, id: string, version: number, revision: number) {
+  return sql.query(
+    "update public.model_auth_state set source_generation='server:refreshing' where account_id=$1::uuid and account_version=$2 and auth_revision=$3",
+    [id, version, revision],
+  );
+}
+
+export function insertBrokerAuthState(sql: Sql, id: string, version: number, state: Uint8Array, source: string) {
+  return sql.query(
+    "insert into public.model_auth_state(account_id,account_version,state_enc,source_generation) values($1::uuid,$2,$3::bytea,$4)",
+    [id, version, state, source],
+  );
+}
+
+export function adoptBrokerAuthState(sql: Sql, id: string, version: number, source: string, state: Uint8Array) {
+  return sql.query(
+    "update public.model_auth_state set source_generation=$3,state_enc=$4::bytea,updated_at=now() where account_id=$1::uuid and account_version=$2",
+    [id, version, source, state],
+  );
+}
