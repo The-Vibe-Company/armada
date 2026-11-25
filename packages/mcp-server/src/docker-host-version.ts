@@ -1,6 +1,6 @@
 import { API_FAILURE_HELP, DOCKER_HOST_PROTOCOL, VERSION } from "@armada/core";
 
-// 4.0.0 first shipped protocol 1. Advance this floor when that protocol leaves the supported window.
+// WARNING: 4.0.0 first shipped protocol 1. Advance this floor when protocol 1 leaves the supported window.
 export const dockerHostVersionOffer = { targetVersion: VERSION, minimumVersion: "4.0.0" };
 
 const RELEASE_VERSION =
