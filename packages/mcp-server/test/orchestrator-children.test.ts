@@ -422,13 +422,25 @@ test("own children support independent target receipts while unrelated children 
         credential_version: selection.credentialVersion,
       });
     expect(rows).toHaveLength(4); // No synthetic three-child default from the provisional DTO.
-    const first = rows[0]?.sandbox_id,
-      second = rows[1]?.sandbox_id;
+    const readyChildren = [];
+    for (const providerSandboxId of ["receipt-isolation-first", "receipt-isolation-second"]) {
+      const child = await createSqlSandboxStore(sql).insert({
+        id: crypto.randomUUID(),
+        provider: parent.provider,
+        providerSandboxId,
+        goldenId: selection.goldenId,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "claude",
+        status: "ready",
+        model: "claude-sonnet-4-6",
+        reasoningEffort: "medium",
+      });
+      await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+      readyChildren.push(child.id);
+    }
+    const [first, second] = readyChildren;
     if (!first || !second) throw Error("owned child missing");
-    await db.query("update sandboxes set status='ready',provider_sandbox_id='fixture-' || id where id in ($1,$2)", [
-      first,
-      second,
-    ]);
     const one = await children.message(token, "same-key", first, "first ticket");
     expect(one.state).toBe("succeeded");
     expect((await children.message(token, "same-key", second, "second ticket")).state).toBe("succeeded");
