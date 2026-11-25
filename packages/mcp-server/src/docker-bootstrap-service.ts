@@ -27,7 +27,7 @@ type Options = {
   credentials: Pick<LaunchCredentialResolver, "resolve" | "admit">;
   modelAuth?: RuntimeConfigurationInput["modelAuth"];
 };
-export class DockerBootstrapDenied extends Error {
+class DockerBootstrapDenied extends Error {
   constructor() {
     super("Docker bootstrap denied");
     this.name = "DockerBootstrapDenied";

@@ -25,7 +25,7 @@ const owners = [
   ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
   [
     "provider_launch_requests ordinary_launch_receipts native_*",
-    [`${server}/ordinary-launch-receipts.ts`, `${server}/native-*.ts`, `${server}/provider-*.ts`],
+    [`${server}/ordinary-launch-receipts.ts`, `${server}/provider-*.ts`],
   ],
   ["goldens golden_*", [`${core}/golden-*.ts`, `${server}/golden-*.ts`]],
   ["*_skill_defaults", [`${core}/skill-defaults.ts`]],
@@ -51,10 +51,7 @@ const owners = [
   ],
   ["modal_*", [`${server}/modal-*.ts`, "packages/provider-modal/src/**/*.ts"]],
   ["org_langfuse* langfuse_*", [`${server}/langfuse.ts`]],
-  [
-    "outbound_webhook_* notify_subscriptions",
-    [`${server}/outbound-webhooks.ts`, `${server}/native-webhook-prompts.ts`],
-  ],
+  ["outbound_webhook_* notify_subscriptions", [`${server}/outbound-webhooks.ts`]],
   ["resource_observations", [`${server}/resource-store.ts`]],
 ] as const;
 

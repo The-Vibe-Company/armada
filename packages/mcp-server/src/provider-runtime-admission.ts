@@ -1,7 +1,6 @@
 import {
   isSandboxPlacementProvider,
   isSandboxProvider,
-  type LaunchOptions,
   type SandboxPlacementProviderId,
   type SandboxProviderId,
 } from "@armada/core";
@@ -11,7 +10,6 @@ import { capabilities } from "@armada/core/machine-capabilities";
 export const runtimeBridgeProfiles = {
   boat: {
     placement: "boat-runtime",
-    launchDefault: "boatRuntimeDefault",
     hostPorts: true,
     repeatPinnedSettings: true,
     requiresCredentialBinding: false,
@@ -23,7 +21,6 @@ export const runtimeBridgeProfiles = {
   },
   modal: {
     placement: "dialout",
-    launchDefault: "modalRuntimeDefault",
     hostPorts: false,
     repeatPinnedSettings: false,
     requiresCredentialBinding: true,
@@ -49,10 +46,6 @@ export function supportsResourceSampling(provider: unknown) {
 
 export const usesDiskStopJob = (provider: unknown) =>
   isSandboxProvider(provider) && capabilities(provider).stopRetention === "disk";
-
-export function goldenRuntimePlacement(options: LaunchOptions, provider: SandboxProviderId) {
-  return options[runtimeBridgeProfiles[provider].launchDefault];
-}
 
 const missingMachineStopPolicy = {
   boat: "observe-exit",

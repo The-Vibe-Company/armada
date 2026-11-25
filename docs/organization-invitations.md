@@ -110,8 +110,8 @@ an advisory snapshot, not authorization for later acceptance. Acceptance repeats
 all identity/state checks transactionally; it is still a single explicit POST.
 GET (including link preview) never accepts and the API returns 405 for GET.
 
-`InvitationApiError` adds structured `error.reason` to the existing control
-error envelope on invitation-specific failures. Acceptance reasons:
+Invitation-specific failures carry a structured `error.reason` in the control
+error envelope. Acceptance reasons:
 invalid (400), personal_login_required/wrong_email/unverified_email (403),
 not_found (404), expired/revoked/used (409). Duplicate management uses
 already_member or pending_exists (409); missing pending records use not_found

@@ -65,7 +65,7 @@ type Row = {
   credential_version: number;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export class DockerSandboxDenied extends Error {
+class DockerSandboxDenied extends Error {
   constructor() {
     super("Docker sandbox denied");
     this.name = "DockerSandboxDenied";

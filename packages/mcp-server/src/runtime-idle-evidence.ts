@@ -96,22 +96,3 @@ export async function projectRuntimeIdle(
   if (cursor !== archiveSequence) throw Error("Idle evidence ahead of archive.");
   await apply(fresh, sequence);
 }
-
-export function recordNativeIdleTurn(
-  sql: Pick<Sql, "query">,
-  sandboxId: string,
-  reconcileToken: string,
-  generation: number,
-  promptId: string,
-) {
-  return sql.query(
-    `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
-     select id,task_prompt_id,true from public.sandboxes
-     where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
-       and reconcile_lease_until>now() and activity_lease_id is null
-       and task_prompt_id=$4 and stop_requested_at is null
-       and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
-     on conflict(sandbox_id,prompt_id) do update set settled=true`,
-    [sandboxId, reconcileToken, generation, promptId],
-  );
-}
