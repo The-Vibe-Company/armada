@@ -22,10 +22,10 @@ struct StatusDot: View {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
                     let phase = Self.phase(at: context.date)
                     Circle()
-                        .stroke(ArmadaTheme.tone(tone).opacity(0.35), lineWidth: 1)
+                        .stroke(ArmadaTheme.tone(tone).opacity(0.6), lineWidth: 1.5)
                         .frame(width: Self.dotSize, height: Self.dotSize)
-                        .scaleEffect(1 + phase * 0.65)
-                        .opacity(Double(0.7 * (1 - phase)))
+                        .scaleEffect(1 + phase * 0.75)
+                        .opacity(Double(0.85 * (1 - phase)))
                 }
             }
         }
@@ -54,6 +54,21 @@ struct StatusLabel: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Status: \(text)")
+    }
+}
+
+/// A pulsing capsule badge shown in list rows and conversation headers while a turn is active.
+struct WorkingBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            StatusDot(tone: .live)
+            Text("Working").font(.caption.weight(.semibold)).foregroundStyle(ArmadaTheme.live).lineLimit(1)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(ArmadaTheme.live.opacity(0.14), in: Capsule())
+        .overlay { Capsule().stroke(ArmadaTheme.live.opacity(0.28), lineWidth: 0.5) }
+        .fixedSize()
+        .accessibilityElement(children: .ignore).accessibilityLabel("Working")
     }
 }
 

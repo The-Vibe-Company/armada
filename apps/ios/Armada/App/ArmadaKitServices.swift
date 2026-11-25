@@ -24,6 +24,11 @@ struct ArmadaKitServices: SandboxService {
         }
     }
 
+    func listTurns(orgID: String) async throws(ServiceFailure) -> [String: ArmadaKit.RecordedTurnState] {
+        try await requireOrganization(orgID)
+        do { return try await client.sandboxTurns() } catch { throw Self.readFailure(error) }
+    }
+
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState {
         try await requireOrganization(orgID)
         do {
@@ -56,6 +61,20 @@ struct ArmadaKitServices: SandboxService {
         } catch {
             throw Self.sandboxMutationFailure(error, refused: "Armada refused this prompt. The sandbox's latest state is shown; your text is kept.")
         }
+    }
+
+    func steerSandbox(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxSteerAcceptance {
+        try await requireOrganization(orgID)
+        do {
+            let r = try await client.steerSandbox(id: sandboxID, text: text)
+            return SandboxSteerAcceptance(promptID: r.promptId, delivery: r.delivery, mode: r.mode)
+        } catch { throw Self.sandboxMutationFailure(error, refused: "Armada refused to steer this turn. Its latest state is shown; your text is kept.") }
+    }
+
+    func interruptSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxInterruptOutcome {
+        try await requireOrganization(orgID)
+        do { return SandboxInterruptOutcome(interrupted: try await client.interruptSandbox(id: id).interrupted) }
+        catch { throw Self.sandboxMutationFailure(error, refused: "Armada refused to interrupt this turn. Its latest state is shown.") }
     }
 
     func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {

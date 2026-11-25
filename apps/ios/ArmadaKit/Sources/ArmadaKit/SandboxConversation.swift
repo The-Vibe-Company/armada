@@ -110,6 +110,17 @@ public struct SandboxPromptReceipt: Decodable, Sendable, Equatable {
     public let status: String
 }
 
+/// The server's acceptance of a steer (`POST /api/v1/sandbox/steer`).
+public struct SandboxSteerReceipt: Decodable, Sendable, Equatable {
+    public let id: String; public let promptId: String; public let conversationId: String
+    public let delivery: String; public let mode: String?
+}
+
+/// `POST /api/v1/sandbox/interrupt`: interrupts the running turn while keeping the sandbox up.
+public struct SandboxInterruptReceipt: Decodable, Sendable, Equatable {
+    public let id: String; public let interrupted: Bool
+}
+
 /// `POST /api/v1/sandbox/stop` (`armada stop`): retention is reported by the server.
 public struct SandboxStopReceipt: Decodable, Sendable, Equatable {
     public let id: String
@@ -250,6 +261,31 @@ extension ArmadaClient {
     private func retireSandboxPrompt(_ id: UUID) throws {
         guard pendingSandboxPrompts.contains(where: { $0.id == id }) else { return }
         try saveSandboxPrompts(pendingSandboxPrompts.filter { $0.id != id })
+    }
+
+    /// Redirects the running turn once with a lowercase UUID `request_id`; never retried automatically.
+    public func steerSandbox(id: String, text: String) async throws -> SandboxSteerReceipt {
+        struct Steer: Encodable, Sendable {
+            let id: String; let org: String; let text: String; let requestID: String
+            enum CodingKeys: String, CodingKey { case id, org, text, requestID = "request_id" }
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ArmadaError.invalidRequest }
+        let body = Steer(id: try sandboxID(id), org: try sandboxOrganization(), text: text, requestID: UUID().uuidString.lowercased())
+        let result: SandboxSteerReceipt = try await post("sandbox/steer", body)
+        guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
+        return result
+    }
+
+    /// Interrupts the running turn while keeping the sandbox up for the next prompt.
+    public func interruptSandbox(id: String) async throws -> SandboxInterruptReceipt {
+        struct Interrupt: Encodable, Sendable {
+            let id: String; let org: String; let requestID: String
+            enum CodingKeys: String, CodingKey { case id, org, requestID = "request_id" }
+        }
+        let body = Interrupt(id: try sandboxID(id), org: try sandboxOrganization(), requestID: UUID().uuidString.lowercased())
+        let result: SandboxInterruptReceipt = try await post("sandbox/interrupt", body)
+        guard result.id.lowercased() == id.lowercased() else { throw ArmadaError.invalidResponse }
+        return result
     }
 
     /// Stops the machine and reports its preservation outcome.

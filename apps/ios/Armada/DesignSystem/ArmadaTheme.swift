@@ -23,7 +23,9 @@ enum ArmadaTheme {
     // Small inline links need 4.5:1 against the pale assistant bubble as well as white.
     static let linkBlue = adaptive(light: 0x0066CC, dark: 0x0A84FF)
     static let userBubbleLink = adaptive(light: 0x0A84FF, dark: 0x007AFF)
-    static let live = color(0x34C759)
+    /// Active working accent, kept distinct from green `.ready` (`successText`) in both light and
+    /// dark modes while meeting 4.5:1 text contrast on canvas and tinted badge surfaces.
+    static let live = adaptive(light: 0x0058B3, dark: 0x5AC8FA)
     static let danger = color(0xFF3B30)
     static let warning = color(0xFF9500)
 

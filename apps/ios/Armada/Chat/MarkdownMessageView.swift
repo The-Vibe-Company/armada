@@ -729,7 +729,7 @@ private struct MarkdownCodeBlock: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(
                             isCopied
-                                ? ArmadaTheme.live
+                                ? ArmadaTheme.successText
                                 : ArmadaTheme.textSecondary
                         )
                         .frame(minWidth: 44, minHeight: 44)

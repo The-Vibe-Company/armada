@@ -98,6 +98,9 @@ struct SandboxPromptAcceptance: Hashable, Sendable {
     let status: PromptStatus
 }
 
+struct SandboxSteerAcceptance: Hashable, Sendable { let promptID: String; let delivery: String; let mode: String? }
+struct SandboxInterruptOutcome: Hashable, Sendable { let interrupted: Bool }
+
 struct SandboxStopOutcome: Sendable {
     let status: SandboxStatus
     var preservationWarning: String? = nil

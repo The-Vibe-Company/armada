@@ -30,6 +30,31 @@ public struct SandboxMetadataPage: Decodable, Sendable {
     public let nextPage: Int?
 }
 
+/// Recorded turn activity per sandbox id from `POST /api/v1/sandbox/list-turns`.
+public enum RecordedTurnState: Hashable, Sendable, Decodable {
+    case queued, running, finished, other(String)
+    public init(rawValue: String) {
+        switch rawValue {
+        case "queued": self = .queued
+        case "running": self = .running
+        case "finished": self = .finished
+        default: self = .other(rawValue)
+        }
+    }
+    public init(from decoder: Decoder) throws { self.init(rawValue: try decoder.singleValueContainer().decode(String.self)) }
+
+    /// Whether a listed sandbox is working, matching dashboard `isSandboxWorking` semantics.
+    public static func isWorking(status: String, turn: RecordedTurnState?, expiresAt: Date? = nil, now: Date = .now) -> Bool {
+        let live = status == "starting" || status == "ready" || status == "running"
+        switch turn {
+        case .queued: return live || (status == "stopped" && (expiresAt.map { $0 > now } ?? true))
+        case .running: return live
+        case .finished: return false
+        case .other, nil: return status == "running"
+        }
+    }
+}
+
 extension ArmadaClient {
     /// Requires #680 backend deployment. One metadata request only; never enriches
     /// rows via detail/status, even when the current member cannot open them.
@@ -38,5 +63,13 @@ extension ArmadaClient {
         guard let org = selectedOrgID else { throw ArmadaError.forbidden }
         guard (1...1_000_000).contains(page), (1...200).contains(limit) else { throw ArmadaError.invalidResponse }
         return try await post("sandbox/list", List(org: org, page: page, limit: limit))
+    }
+
+    /// `POST /api/v1/sandbox/list-turns`: recorded turn activity for sandboxes the caller can open.
+    public func sandboxTurns() async throws -> [String: RecordedTurnState] {
+        struct Read: Encodable, Sendable { let org: String }
+        guard isSignedIn else { throw ArmadaError.signedOut }
+        guard let org = selectedOrgID else { throw ArmadaError.forbidden }
+        return try await post("sandbox/list-turns", Read(org: org))
     }
 }

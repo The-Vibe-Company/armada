@@ -445,3 +445,52 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(SandboxPresentation.sandboxFailure("expired").contains("deadline"))
     #expect(!SandboxPresentation.sandboxFailure("future_internal_code").contains("future_internal_code"))
 }
+
+@Test func sandboxTurnsReadsRecordedActivityAndDecodesFutureStates() async throws {
+    let (client, transport) = try await signedIn([
+        .init(status: 200, body: #"{"sbx-1":"running","sbx-2":"queued","sbx-3":"finished","sbx-4":"future_state"}"#),
+    ])
+    let turns = try await client.sandboxTurns()
+    #expect(turns == ["sbx-1": .running, "sbx-2": .queued, "sbx-3": .finished, "sbx-4": .other("future_state")])
+    let request = try #require(await transport.requests.last)
+    #expect(request.url?.path == "/api/v1/sandbox/list-turns")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
+    #expect(try body(request) == ["org": "org-a"])
+
+    let signedOut = try ArmadaClient(transport: ScriptedTransport([]), storage: MemoryStorage())
+    await #expect(throws: ArmadaError.signedOut) { _ = try await signedOut.sandboxTurns() }
+}
+
+@Test func steerAndInterruptUseCliRoutesWithRequestIdAndClassifyIdleRefusals() async throws {
+    let (client, transport) = try await signedIn([
+        .init(status: 200, body: #"{"id":"\#(sandboxID)","promptId":"pr_1","conversationId":"c_1","delivery":"in-place","mode":"steer"}"#),
+        .init(status: 200, body: #"{"id":"\#(sandboxID)","promptId":"pr_2","conversationId":"c_1","delivery":"restart","mode":null}"#),
+        .init(status: 409, body: #"{"error":{"code":"no_running_turn","message":"No turn is running."}}"#),
+        .init(status: 200, body: #"{"id":"00000000-0000-4000-8000-000000000000","promptId":"pr_3","conversationId":"c_1","delivery":"in-place","mode":null}"#),
+        .init(status: 200, body: #"{"id":"\#(sandboxID)","interrupted":true}"#),
+        .init(status: 409, body: #"{"error":{"code":"no_running_turn","message":"No turn is running."}}"#),
+        .init(status: 200, body: #"{"id":"00000000-0000-4000-8000-000000000000","interrupted":true}"#),
+    ])
+    #expect(try await client.steerSandbox(id: sandboxID, text: "Focus on tests") == SandboxSteerReceipt(id: sandboxID, promptId: "pr_1", conversationId: "c_1", delivery: "in-place", mode: "steer"))
+    #expect(try await client.steerSandbox(id: sandboxID, text: "Switch branch") == SandboxSteerReceipt(id: sandboxID, promptId: "pr_2", conversationId: "c_1", delivery: "restart", mode: nil))
+    do { _ = try await client.steerSandbox(id: sandboxID, text: "Late"); Issue.record("Expected idle steer refusal") }
+    catch { #expect(ArmadaServerFailure.underlying(error) == .noRunningTurn && SandboxMutationFailure.classify(error) == .refused) }
+    await #expect(throws: ArmadaError.invalidResponse) { _ = try await client.steerSandbox(id: sandboxID, text: "Mismatch") }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.steerSandbox(id: sandboxID, text: " \n ") }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.steerSandbox(id: "../bad", text: "Nope") }
+
+    #expect(try await client.interruptSandbox(id: sandboxID) == SandboxInterruptReceipt(id: sandboxID, interrupted: true))
+    do { _ = try await client.interruptSandbox(id: sandboxID); Issue.record("Expected idle interrupt refusal") }
+    catch { #expect(ArmadaServerFailure.underlying(error) == .noRunningTurn && SandboxMutationFailure.classify(error) == .refused) }
+    await #expect(throws: ArmadaError.invalidResponse) { _ = try await client.interruptSandbox(id: sandboxID) }
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.interruptSandbox(id: "../bad") }
+
+    let requests = Array(await transport.requests.dropFirst(2))
+    #expect(requests.map { $0.url!.path } == Array(repeating: "/api/v1/sandbox/steer", count: 4) + Array(repeating: "/api/v1/sandbox/interrupt", count: 3))
+    let steerBody = try body(requests[0]), steerReqID = try #require(steerBody["request_id"])
+    #expect(UUID(uuidString: steerReqID) != nil && steerReqID == steerReqID.lowercased())
+    #expect(steerBody == ["id": sandboxID, "org": "org-a", "text": "Focus on tests", "request_id": steerReqID])
+    let interruptBody = try body(requests[4]), interruptReqID = try #require(interruptBody["request_id"])
+    #expect(UUID(uuidString: interruptReqID) != nil && interruptReqID == interruptReqID.lowercased())
+    #expect(interruptBody == ["id": sandboxID, "org": "org-a", "request_id": interruptReqID])
+}
