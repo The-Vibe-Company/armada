@@ -549,8 +549,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
     const host =
       (
-        await tx.query<Host & { revoked: boolean }>(
-          `select id,org_id,owner_id,revoked_at is not null as revoked from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
+        await tx.query<Host & { revoked: boolean; draining: boolean }>(
+          `select id,org_id,owner_id,revoked_at is not null as revoked,draining_at is not null as draining from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
        and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
           [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
         )
@@ -595,7 +595,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     const live = await tx.query(`select 1 from public.sandboxes where id=$1 and expires_at>now()`, [row.id]);
     if (!live.rows.length) deny();
   }
-  async function assertIdleStop(tx: Sql, row: Sandbox, hostId: string) {
+  async function assertIdleStop(tx: Sql, row: Sandbox, hostId: string, sequence: string) {
     if (row.status !== "ready") deny();
     const pendingWork = await tx.query(
       `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
@@ -605,8 +605,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
              select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
              union all
              ${unsettledRuntimeCommands("$1", "$2", "$3")}
+             union all select 1 from public.runtime_commands where sandbox_id=$1
+               and starts_with(request_id,'docker_prompt_') and sequence>$4
              limit 1`,
-      [row.id, row.lifecycle_generation, hostId],
+      [row.id, row.lifecycle_generation, hostId, sequence],
     );
     if (pendingWork.rows.length) deny();
   }
@@ -1752,7 +1754,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       actor: Actor,
       sandboxId: string,
       requestId: string | undefined,
-      options: { checkpoint?: string; onlyIfIdle?: boolean } = {},
+      options: { checkpoint?: string; idleSequence?: string } = {},
     ) {
       if (requestId !== undefined) id(requestId);
       return transaction(async (tx) => {
@@ -1761,7 +1763,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (row.deleted_at !== null || row.status === "stopped" || row.stopped_at != null) return null;
         const request =
           requestId && !options.checkpoint
-            ? { ownerId: actor.userId, digest: `${sandboxId}:${options.onlyIfIdle === true}` }
+            ? { ownerId: actor.userId, digest: `${sandboxId}:${options.idleSequence !== undefined}` }
             : undefined;
         const {
           rows: [prior],
@@ -1774,13 +1776,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (
             request &&
             requestId &&
-            row.status !== "stopping" &&
             (prior.idem_key !== jobRequestKey(actor.orgId, "stop", actor.userId, requestId) ||
               prior.request_digest !== request.digest)
           )
             deny();
           return prior.id;
         }
+        if (host.draining) throw new DockerHostDraining();
         const inFlight = await tx.query(
           `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2
            and bound_operation='stop' and outcome is null limit 1`,
@@ -1788,7 +1790,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
         if (inFlight.rows.length) deny();
         const proof = options.checkpoint ? await checkpointedStop(tx, row, options.checkpoint) : undefined;
-        if (options.onlyIfIdle) await assertIdleStop(tx, row, host.id);
+        if (options.idleSequence !== undefined) await assertIdleStop(tx, row, host.id, options.idleSequence);
         const machineId = await allocationReceipt(tx, row);
         const bound = machineId && (await currentMachineCleanup(tx, row));
         if (!bound && row.status !== "starting") deny();
@@ -1812,7 +1814,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 workMerged: proof.work_merged,
                 runtimeEpoch: proof.epoch,
               }
-            : { onlyIfIdle: options.onlyIfIdle ?? false }),
+            : options),
         };
         return createJobsStore(sql, key).enqueue(
           "stop",
@@ -1842,7 +1844,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const proof = await checkpointedStop(tx, row, intent.checkpoint);
         if (proof.work_merged !== intent.workMerged || proof.epoch !== intent.runtimeEpoch) deny();
       }
-      if (intent.onlyIfIdle) await assertIdleStop(tx, row, host.id);
+      if (intent.idleSequence !== undefined) await assertIdleStop(tx, row, host.id, intent.idleSequence);
       const machineGeneration = Number(await currentMachineCleanup(tx, row));
       const machineId = await allocationReceipt(tx, row);
       if (!machineId || !Number.isSafeInteger(machineGeneration)) throw new DockerMachinePending("unknown");
@@ -2243,6 +2245,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
             },
           );
         }
+        if (host.draining && selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
+          const result = await transitionSandbox(tx, {
+            sandboxId,
+            expectedGeneration: row.lifecycle_generation,
+            fromStates: ["starting", "ready", "running"],
+            toState: "stopping",
+            actor: "owner",
+            code: "docker_stop_admitted",
+            effects: [],
+          });
+          if (result.kind === "conflict") deny();
+        }
         return enqueue();
       });
     },
@@ -2278,7 +2292,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           });
         }
         const pending = await tx.query(
-          `select 1 from public.docker_host_jobs where host_id=$1 and outcome is null limit 1`,
+          `select 1 from public.docker_host_jobs where host_id=$1 and outcome is null
+           union all
+           select 1 from public.jobs j join public.sandboxes s on s.id=j.sandbox_id and s.lifecycle_generation=j.generation
+            where s.docker_host_id=$1 and j.kind='stop' and j.state in ('queued','leased') limit 1`,
           [host.id],
         );
         if (!retained.rows.length && !pending.rows.length) {
@@ -2548,7 +2565,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (verified) await startupFailed(tx, verified, row);
             await tx.query(
               `update public.docker_host_jobs set outcome='failed',completed_at=now(),
-               cancelled_at=case when $2 or bound_operation in ('deletePhysical','restore') then now() else cancelled_at end
+               cancelled_at=case when $2 or bound_operation in ('stop','deletePhysical','restore') then now() else cancelled_at end
                where request_id=$1 and outcome is null`,
               [row.request_id, supersededPlacement],
             );
@@ -2775,8 +2792,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (
           logical.stopped_at != null &&
-          (["expired", "agent_finished", "work_merged"].includes(logical.status_reason ?? "") ||
-            (logical.status === "failed" && logical.stop_requested_at != null))
+          logical.stop_requested_at != null &&
+          (logical.status === "failed" ||
+            ["expired", "agent_finished", "work_merged"].includes(logical.status_reason ?? ""))
         )
           return true;
         // A report is physical evidence. ACK only after the worker commits, so the daemon

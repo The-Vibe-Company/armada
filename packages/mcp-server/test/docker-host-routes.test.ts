@@ -694,7 +694,7 @@ test("only the owner changes a drained capable host; policy reaches admission an
   });
   for (const row of rows) {
     await store.complete(host.hostToken, installationId, { requestId: row.id, outcome: "completed" });
-    await reportDockerExpiry(sql, Buffer.alloc(32, 8).toString("base64"), store, host.hostToken, installationId, {
+    await reportDockerExpiry(sql, Buffer.alloc(32, 8).toString("base64"), host.hostToken, installationId, {
       requestId: row.id,
     });
   }

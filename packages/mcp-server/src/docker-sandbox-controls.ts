@@ -590,7 +590,8 @@ export function createDockerSandboxControls(
     const actor = { userId: caller.userId, orgId: row.org_id };
     const hosts = createDockerHostStore(sql, key);
     const stop = operation === "stop";
-    if (!stop) await assertDelete(caller, row.id);
+    if (stop && onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
+      throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>
       current.status === "deleted" ||
       (stop && ["stopped", "failed"].includes(current.status) && current.stopped_at !== null);
@@ -599,7 +600,7 @@ export function createDockerSandboxControls(
       throw failure("conflict", "Stop the Docker sandbox before deleting it.");
     if (!sql.transaction) throw failure("unavailable", "Docker sandbox cleanup is unavailable.");
     const selected = stop
-      ? await hosts.enqueueStop(actor, row.id, requestId, { onlyIfIdle })
+      ? await hosts.enqueueStop(actor, row.id, requestId, onlyIfIdle ? { idleSequence: row.prompt_sequence } : {})
       : await sql.transaction(async (tx) => {
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-cleanup:${row.id}:delete`]);
           const pending = (

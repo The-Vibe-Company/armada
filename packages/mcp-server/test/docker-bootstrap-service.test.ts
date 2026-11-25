@@ -740,7 +740,7 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
   await expect(admittedResume(f, resumeId)).rejects.toThrow("is full");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
   await hosts.complete(f.hostToken, f.installationId, { requestId: occupied.id, outcome: "completed" });
-  await reportDockerExpiry(sql, key, hosts, f.hostToken, f.installationId, { requestId: occupied.id });
+  await reportDockerExpiry(sql, key, f.hostToken, f.installationId, { requestId: occupied.id });
   await admittedResume(f, resumeId);
   const resume = await hosts.poll(f.hostToken, f.installationId);
   if (resume?.operation !== "resume") throw Error("missing resume");
@@ -1053,10 +1053,7 @@ test("a failed resume mailbox insert rolls back admission and can replay the ack
 test("a failed Docker resume ACK only fails the activation admitted for that request", async () => {
   const f = await fixture();
   const stop = async () => {
-    const job = await hosts.enqueueSandbox(f.actor, f.sandbox.id, {
-      operation: "stop",
-      requestId: randomUUID(),
-    });
+    const job = await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
     return job.requestId;
   };

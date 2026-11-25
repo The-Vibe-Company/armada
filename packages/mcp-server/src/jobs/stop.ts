@@ -15,7 +15,7 @@ export interface DockerStopIntent {
   machineId?: string;
   generation: number;
   runtimeEpoch?: string;
-  onlyIfIdle?: boolean;
+  idleSequence?: string;
   exitPending?: true;
   retryAfter?: string;
   daemonGeneration?: string;
@@ -50,13 +50,8 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
               })
             : await recordDockerCleanupReceipt(tx, sandboxId, Number(generation), "stop");
           if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-          await enqueueStopOutput(
-            tx,
-            jobs,
-            sandboxId,
-            expired ? intent.orgId : intent.actor.orgId,
-            expired ? generation : settled.generation,
-          );
+          const orgId = expired ? intent.orgId : intent.actor.orgId;
+          await enqueueStopOutput(tx, jobs, sandboxId, orgId, expired ? generation : settled.generation);
         },
       } satisfies JobResult;
       if (expired) return finish;
@@ -95,44 +90,29 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
         target = await hosts.lockStop(tx, sandboxId, intent);
       };
       const dispatch = async (tx: Sql) => {
-        try {
-          await createDockerHostStore(scopedRuntimeSql(tx), key)
-            .machineCleanup(intent.actor, intent)
-            .stop({
-              sandboxId,
-              ...target,
-              retain: true,
-              signal,
-            });
-        } catch (error) {
+        const machine = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(intent.actor, intent);
+        await machine.stop({ sandboxId, ...target, retain: true, signal }).catch((error) => {
           if (!(error instanceof DockerMachinePending)) throw error;
-        }
+        });
       };
       try {
         if (intent.exitPending) {
-          await withJobLease(
-            sql,
-            job,
-            async (tx) => {
-              if (await context.canDispatch(tx)) await dispatch(tx);
-            },
-            lockPrerequisites,
-          );
+          const dispatchIfCurrent = async (tx: Sql) => {
+            if (await context.canDispatch(tx)) await dispatch(tx);
+          };
+          await withJobLease(sql, job, dispatchIfCurrent, lockPrerequisites);
         } else {
           await context.handoffGeneration({
             lockPrerequisites,
             async advance(tx) {
+              const idleCode = intent.workMerged ? "docker_work_merged" : "docker_idle_paused";
               const result = await transitionSandbox(tx, {
                 sandboxId,
                 expectedGeneration: intent.generation,
                 fromStates: ["starting", "ready", "running"],
                 toState: "stopping",
                 actor: intent.checkpoint ? "idle" : "owner",
-                code: intent.checkpoint
-                  ? intent.workMerged
-                    ? "docker_work_merged"
-                    : "docker_idle_paused"
-                  : "docker_stop_admitted",
+                code: intent.checkpoint ? idleCode : "docker_stop_admitted",
                 effects: [],
               });
               if (result.kind === "conflict") throw new Error("Docker stop target changed.");

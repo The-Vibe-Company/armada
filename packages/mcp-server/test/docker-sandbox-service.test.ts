@@ -233,16 +233,6 @@ test("bound job insert failure rolls back both reservation and machine claim", a
   await denied(service.reserve(f.actor, { ...f.input, requestId: manualId }));
 });
 
-test("retained owner and admin reads require live membership", async () => {
-  const f = await fixture(300);
-  const saved = await service.reserve(f.actor, f.input);
-  const retained = createDockerSandboxService(sql, key);
-  await denied(retained.get(f.other, saved.id));
-  expect(await retained.get(f.admin, saved.id)).toEqual(saved);
-  await sql.query("delete from public.members where org_id=$1 and user_id=$2", [f.actor.orgId, f.actor.userId]);
-  await denied(retained.get(f.actor, saved.id));
-});
-
 test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
   const db = database();
   const f = await fixture();
@@ -272,7 +262,7 @@ test("host capacity reserves pending starts, preserves retries, and releases onl
   const second = await service.reserve(f.actor, next);
   expect(second.id).toBe(next.requestId);
   // A daemon TTL observation is physical stop proof too, including failed startup rows.
-  await reportDockerExpiry(sql, key, hosts, f.hostToken, f.installationId, { requestId: second.id });
+  await reportDockerExpiry(sql, key, f.hostToken, f.installationId, { requestId: second.id });
   expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
 });
 

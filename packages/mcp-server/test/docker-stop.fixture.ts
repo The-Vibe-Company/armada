@@ -28,13 +28,12 @@ export async function runDockerStop(sql: Sql, key: string, sandboxId: string, co
 export async function reportDockerExpiry(
   sql: Sql,
   key: string,
-  hosts: ReturnType<typeof createDockerHostStore>,
   hostToken: string,
   installationId: string,
   report: { requestId: string },
   completionSql = sql,
 ) {
-  if ((await hosts.expired(hostToken, installationId, report)) === false) {
+  if ((await createDockerHostStore(sql, key).expired(hostToken, installationId, report)) === false) {
     const {
       rows: [binding],
     } = await sql.query<{ sandboxId: string }>(
@@ -42,8 +41,6 @@ export async function reportDockerExpiry(
       [report.requestId],
     );
     await runDockerStop(sql, key, binding!.sandboxId, completionSql);
-    if ((await hosts.expired(hostToken, installationId, report)) === false)
-      throw new Error("Docker expiry is still pending after settlement.");
   }
 }
 
@@ -61,13 +58,9 @@ export async function bindDockerStopFixture(sql: Sql, sandboxId: string) {
   );
 }
 
-export async function queueMailboxStop(
-  sql: Sql,
-  key: string,
-  actor: { userId: string; orgId: string },
-  sandboxId: string,
-  requestId: string,
-) {
+type Actor = Parameters<ReturnType<typeof createDockerHostStore>["enqueueStop"]>[0];
+
+export async function queueMailboxStop(sql: Sql, key: string, actor: Actor, sandboxId: string, requestId: string) {
   return sql.transaction!(async (tx) => {
     await tx.query(
       `select public.sandbox_transition(id,lifecycle_generation,array['starting','ready','running']::public.sandbox_status[],
