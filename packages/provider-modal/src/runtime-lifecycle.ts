@@ -197,6 +197,7 @@ export function createRuntimeLifecycle({
                           row.info.state = "stopping";
                           await save();
                           if (!row.quiesced) {
+                            signal?.throwIfAborted();
                             await abortable(distribution.prepareSnapshot(sb, row), signal);
                             row.quiesced = true;
                             await save();
