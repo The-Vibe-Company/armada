@@ -389,6 +389,7 @@ async function main(dialout = false) {
   const github = new GitHubBroker((values) => journal.registerSecrets(values));
   const githubRoot = `${config.root}/github-${createHash("sha256").update(config.grant.generation).digest("hex").slice(0, 16)}`;
   const githubBin = `${githubRoot}/bin`;
+  const githubHome = execEnv.HOME ?? process.env.HOME ?? "/home/user";
   // Fixed before drivers/exec capture their environments. Installation contains no secrets.
   for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
     Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
@@ -423,12 +424,9 @@ async function main(dialout = false) {
       git: "/usr/bin/git",
       homes: [
         ...new Set(
-          [
-            execEnv.HOME ?? process.env.HOME ?? "/home/user",
-            config.claudeEnv.HOME,
-            config.codexEnv.HOME,
-            opencodeEnv.HOME,
-          ].filter((home): home is string => !!home),
+          [githubHome, config.claudeEnv.HOME, config.codexEnv.HOME, opencodeEnv.HOME].filter(
+            (home): home is string => !!home,
+          ),
         ),
       ],
       activation: githubSocket.activation,
@@ -470,6 +468,7 @@ async function main(dialout = false) {
             antigravity: new AntigravityDriver({
               ...antigravity,
               readableVariables,
+              githubTools: { root: githubRoot, home: githubHome },
               root: config.root,
               cwd: config.cwd,
               journal,

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore, sha256Hex } from "@armada/auth";
 import { HARNESSES } from "@armada/core";
 import { modalLaunchReceipt } from "@armada/core/contract";
@@ -33,6 +33,7 @@ import { launchRoute } from "../launch-control.ts";
 import { launchCredentials } from "../launch-credentials.ts";
 import { createModalLaunchAdmission } from "../modal-launch-admission.ts";
 import { ordinaryLaunchFingerprint } from "../ordinary-launch-receipts.ts";
+import { observeGoldenLaunch } from "../request-timing.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
@@ -74,12 +75,17 @@ import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 const database = rowOnlyDatabase();
 const signal = new AbortController().signal;
 
-async function fixture() {
+async function fixture(statements?: string[]) {
   const { db, people, openaiCredentialId } = await database();
+  const recordingDriver = (connection: Pick<typeof db, "query">) => ({
+    unsafe: async (query: string, params: unknown[]) => {
+      statements?.push(query);
+      return (await connection.query(query, params)).rows;
+    },
+  });
   const sql = sqlOver({
-    unsafe: async (query, params) => (await db.query(query, params)).rows,
-    begin: (work) =>
-      db.transaction((tx) => work({ unsafe: async (query, params) => (await tx.query(query, params)).rows })),
+    ...recordingDriver(db),
+    begin: (work) => db.transaction((tx) => work(recordingDriver(tx))),
   });
   return { db, people, openaiCredentialId, sql, store: createJobsStore(sql, btoa("\0".repeat(32))) };
 }
@@ -412,8 +418,8 @@ const workspaceConfig = {
   init: ["printf initialized"],
 };
 
-async function modalAdmissionFixture(visibility: "org" | "private" = "private") {
-  const f = await fixture();
+async function modalAdmissionFixture(visibility: "org" | "private" = "private", statements?: string[]) {
+  const f = await fixture(statements);
   const goldenId = crypto.randomUUID();
   await f.db.query(
     `insert into goldens
@@ -1844,6 +1850,35 @@ test("Modal launches Antigravity with a selected account confined to private enr
     expect.objectContaining({ harness: "antigravity", model: "default", credential_id: account.id }),
   );
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
+});
+
+test("Modal admission and deferred enrolment use at most 89 SQL statements", async () => {
+  const statements: string[] = [];
+  const admission = await modalAdmissionFixture("private", statements);
+  const log = spyOn(console, "info");
+  try {
+    await observeGoldenLaunch("rest", async (timing) => {
+      const { f, id, jobId, makeRunner, enrolPending } = await modalLaunchFixture(admission);
+      const runner = makeRunner(undefined, f.sql, false);
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
+      await enrolPending();
+      await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
+      expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='launch'", [id])).rows).toEqual([
+        { state: "done" },
+      ]);
+      timing.checkpoint("shared_launcher");
+    });
+    const sample = log.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .find(({ event }) => event === "modal_golden_launch_timing");
+    expect(statements.length).toBe(sample?.sqlStatements);
+    expect(statements.length).toBeLessThanOrEqual(89);
+  } finally {
+    log.mockRestore();
+  }
 });
 
 test("JWT inventory keeps an enrolled Modal sandbox starting while launch setup is queued", async () => {
@@ -4008,7 +4043,6 @@ test.each([
   "manifest refresh",
   "final credential recheck",
   "deferred enrolment read",
-  "deferred target read",
 ] as const)("a transient %s leaves the last Modal bootstrap replay attempt available", async (failure) => {
   const { f, id, jobId, makeRunner, effects, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
   await f.db.query("update jobs set max_attempts=2 where id=$1", [jobId]);
@@ -4050,8 +4084,6 @@ test.each([
               if (deferredDispatch && failure === "deferred enrolment read") transientFailure();
               readInitialEnrolment = true;
             }
-            if (deferredDispatch && failure === "deferred target read" && query.includes("as journaled_id"))
-              transientFailure();
             const rows = await tx.query<T>(query, params);
             if (query.includes("update public.runtime_enrolments set configuration_enc=")) {
               updatedManifest = true;
@@ -4068,7 +4100,7 @@ test.each([
   const replacement = makeRunner((step) => {
     if (step !== "dispatch credential" || !refreshedManifest) return;
     if (failure === "final credential recheck") transientFailure();
-    if (failure === "deferred enrolment read" || failure === "deferred target read") {
+    if (failure === "deferred enrolment read") {
       deferredDispatch = true;
       throw new Error("Final credential read temporarily unavailable");
     }
@@ -4278,6 +4310,7 @@ test("enrolment committed before Modal failure settlement prevents cleanup", asy
   await f.db.query("update jobs set run_after='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
 
   let enrolled = false;
+  let enrolmentReads = 0;
   const lateEnrolment: Sql = {
     ...f.sql,
     async transaction(work) {
@@ -4286,7 +4319,7 @@ test("enrolment committed before Modal failure settlement prevents cleanup", asy
         work({
           ...tx,
           async query<T>(query: string, params?: unknown[]) {
-            if (query.includes("as journaled_id")) readFailureTarget = true;
+            if (query.includes("as cancel_without_provider") && ++enrolmentReads === 2) readFailureTarget = true;
             return tx.query<T>(query, params);
           },
         }),

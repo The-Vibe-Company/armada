@@ -327,16 +327,22 @@ export async function admitModalLaunch(
       }
       if (golden.provider_snapshot_id === snapshot)
         await tx.query("select public.lock_golden_snapshot($1, $2)", [provider, snapshot]);
-      const image = input.boat
-        ? { image_id: snapshot }
-        : (
-            await tx.query<{ image_id: string }>(
-              `select record->>'imageId' as image_id from public.modal_images
-             where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
-               and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null`,
-              [scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal }), snapshot],
-            )
-          ).rows[0];
+      const {
+        rows: [snapshotState],
+      } = await tx.query<{ image_id: string | null; sealed: boolean }>(
+        `select (select record->>'imageId' from public.modal_images
+                   where scope=$3 and name=$1 and record #>> '{info,status}'='ready'
+                     and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null
+                ) as image_id,
+                exists(select 1 from public.golden_snapshot_retirements
+                       where provider::text=$2 and old_snapshot=$1 and sealed) as sealed`,
+        [
+          snapshot,
+          provider,
+          input.boat ? null : scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal }),
+        ],
+      );
+      const imageId = input.boat ? snapshot : snapshotState?.image_id;
       const { credentialId: plannedAccount, credentialVersion: plannedVersion } = plannedSandbox;
       // WARNING: Parent turn workers lock the account before the parent sandbox.
       if (child && plannedAccount != null && plannedVersion != null)
@@ -350,7 +356,7 @@ export async function admitModalLaunch(
       const childDigest = child && (await lockChildLaunchAdmission(tx, child));
       childAdmissionPhase = "launch_admission";
       const digest = childDigest ?? reservation?.digest ?? fingerprint ?? sandboxId;
-      const jobId = await store.enqueue(
+      const { id: jobId, inserted } = await store.enqueueWithDisposition(
         "launch",
         sandboxId,
         generation,
@@ -359,7 +365,7 @@ export async function admitModalLaunch(
           allocation: {
             ...allocation,
             size: plannedSandbox.machineSize.effective,
-            source: { kind: "snapshot", ref: image?.image_id },
+            source: { kind: "snapshot", ref: imageId ?? undefined },
           },
           snapshot,
           ...(child ? { childOperationId: child.id } : {}),
@@ -374,25 +380,23 @@ export async function admitModalLaunch(
         },
         tx,
       );
-      const {
-        rows: [receipt],
-      } = await tx.query<LaunchReceiptRow>(
-        `select j.sandbox_id, ${publicSandboxStatusSql} as status, s.golden_id, j.outcome from public.jobs j
+      if (!inserted) {
+        const {
+          rows: [receipt],
+        } = await tx.query<LaunchReceiptRow>(
+          `select j.sandbox_id, ${publicSandboxStatusSql} as status, s.golden_id, j.outcome from public.jobs j
          left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
          where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
-        [jobId, orgId, ownerId],
-      );
-      if (!receipt) throw new Error("Modal launch receipt is missing.");
-      if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, plannedSandbox.goldenId);
+          [jobId, orgId, ownerId],
+        );
+        if (!receipt) throw new Error("Modal launch receipt is missing.");
+        if (receipt.sandbox_id !== sandboxId) return replayLaunchReceipt(receipt, plannedSandbox.goldenId);
+      }
 
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
-      const { rows: sealed } = await tx.query(
-        "select 1 from public.golden_snapshot_retirements where provider::text=$2 and old_snapshot=$1 and sealed",
-        [snapshot, provider],
-      );
-      if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
-      if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
+      if (snapshotState?.sealed) throw new GoldenError("conflict", "Golden snapshot is being retired.");
+      if (!imageId) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
       let sandbox = plannedSandbox;
       let accountSkips: AccountSkip[] = [];
@@ -1049,6 +1053,12 @@ export async function runModalLaunch(
     const {
       rows: [receipt],
     } = await tx.query<{
+      org_id: string;
+      provider_sandbox_id: string | null;
+      journaled_id: string | null;
+      has_intent: boolean;
+      stop_requested: boolean;
+      starting: boolean;
       enrolled: boolean;
       check_after: string | null;
       cancel_without_provider: boolean;
@@ -1056,7 +1066,12 @@ export async function runModalLaunch(
       handoff_staged: boolean;
       ticket_issued: boolean;
     }>(
-      `select s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
+      `select s.org_id, s.provider_sandbox_id,
+              j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
+              j.outcome #> '{modal_machine,entry}' is not null as has_intent,
+              s.stop_requested_at is not null as stop_requested,
+              s.status='starting' as starting,
+              s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
               s.stop_requested_at is not null and (
                 j.outcome #> '{modal_machine,entry}' is null or s.provider_sandbox_id is not null
                 or j.outcome #>> '{modal_machine,entry,machineId}' is not null
@@ -1097,26 +1112,8 @@ export async function runModalLaunch(
   if (waitForEnrolment && pending.check_after) return retryUnattempted(new Date(pending.check_after));
 
   const startingTarget = async (tx: Sql) => {
-    const {
-      rows: [row],
-    } = await tx.query<{
-      org_id: string;
-      provider_sandbox_id: string | null;
-      journaled_id: string | null;
-      has_intent: boolean;
-      stop_requested: boolean;
-    }>(
-      `select s.org_id, s.provider_sandbox_id,
-              j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
-              j.outcome #> '{modal_machine,entry}' is not null as has_intent,
-              s.stop_requested_at is not null as stop_requested
-       from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id
-         and j.org_id=s.org_id and j.request_owner_id=s.owner_id and j.generation=s.lifecycle_generation
-       where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
-         and s.status='starting' and s.deleted_at is null`,
-      [sandboxId, job.id, provider],
-    );
-    return row;
+    const row = await readEnrolment(tx);
+    if (row?.starting) return row;
   };
   let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
   let plan: ModalLaunchPlan | undefined;
@@ -1236,22 +1233,17 @@ export async function runModalLaunch(
   const settlement = await beforeProviderMutation(context, dispatch?.kind === "dispatch_deferred", async () => {
     const afterDispatch = await withJobLease(sql, job, readEnrolment);
     context.signal.throwIfAborted();
-    if (!afterDispatch || afterDispatch.enrolled) return;
-    const target = await withJobLease(sql, job, startingTarget);
-    context.signal.throwIfAborted();
-    if (target) return { afterDispatch, target };
+    if (afterDispatch?.starting && !afterDispatch.enrolled) return afterDispatch;
   });
   if (settlement === "deferred") return retryUnattempted();
   if (!settlement) return done;
-  const { afterDispatch, target } = settlement;
+  const target = settlement;
   if (dispatch?.kind === "dispatch_deferred" && !target.stop_requested) return retryUnattempted();
   if (dispatch?.kind === "bootstrapped" && !target.stop_requested) {
     return {
       status: "retry",
-      after: afterDispatch.check_after
-        ? new Date(afterDispatch.check_after)
-        : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
-      ...(afterDispatch.check_after ? { outcome: "modal_bootstrap_acknowledged" } : {}),
+      after: target.check_after ? new Date(target.check_after) : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+      ...(target.check_after ? { outcome: "modal_bootstrap_acknowledged" } : {}),
     } satisfies JobResult;
   }
 
@@ -1282,8 +1274,8 @@ export async function runModalLaunch(
     status: "fail",
     reason: MODAL_LAUNCH_FAILURE,
     async commit(tx) {
-      if ((await readEnrolment(tx))?.enrolled || !(await startingTarget(tx)))
-        throw new Error("Modal launch settlement target changed.");
+      const current = await readEnrolment(tx);
+      if (!current?.starting || current.enrolled) throw new Error("Modal launch settlement target changed.");
       const transition = await transitionSandbox(tx, {
         sandboxId,
         expectedGeneration: generation,

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { redactKnownTokens } from "@armada/core";
 import { AcpDriver } from "./acp.ts";
 import { HarnessError } from "./errors.ts";
+import { githubRuntimeEnvironment } from "./github-tools.ts";
 import type { Journal } from "./journal.ts";
 import type { Driver, DriverContext, DriverEvent } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
@@ -87,6 +88,7 @@ export class AntigravityDriver implements Driver {
     root: string;
     cwd: string;
     credential: AntigravityCredential;
+    githubTools?: { root: string; home: string };
     readableVariables?: Record<string, string>;
     journal: Pick<Journal, "registerApplicationSecrets">;
   }) {
@@ -104,6 +106,13 @@ export class AntigravityDriver implements Driver {
       AGY_CLI_DISABLE_AUTO_UPDATE: "1",
       AGY_ACP_FORCE_FILE_STORAGE: "1",
       TMPDIR: tmp,
+      ...(options.githubTools
+        ? {
+            ...githubRuntimeEnvironment({}, options.githubTools.root),
+            GIT_CONFIG_GLOBAL: join(options.githubTools.home, ".gitconfig"),
+            HOME: home,
+          }
+        : {}),
     };
     const caBundle = caBundles.find((path) => existsSync(path));
     if (caBundle) env.SSL_CERT_FILE = caBundle;
@@ -139,7 +148,7 @@ export class AntigravityDriver implements Driver {
       Object.keys(variables).some(
         (key) =>
           /^(AGY_|GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_)/.test(key) ||
-          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER)$/.test(key),
+          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER|GIT_CONFIG_GLOBAL|HOME)$/.test(key),
       )
     )
       throw Error("invalid_request");

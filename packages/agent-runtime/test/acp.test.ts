@@ -254,6 +254,7 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
         root,
         cwd: root,
         credential,
+        githubTools: { root: join(root, "github-generation"), home: root },
         journal: {
           registerApplicationSecrets: (values) => {
             registered.push(...values);
@@ -373,6 +374,9 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
     for (const name of ambient) process.env[name] = "ambient-fixture-value";
     const driver = f.driver();
     expect(() => driver.configureReadableVariables({ GEMINI_API_KEY: "replacement" })).toThrow("invalid_request");
+    expect(() => driver.configureReadableVariables({ GIT_CONFIG_GLOBAL: "/tmp/other-config" })).toThrow(
+      "invalid_request",
+    );
     driver.configureReadableVariables({ APP_REGION: "fixture-region" });
     await expect(driver.start(f.context("environment", "default")).done).resolves.toBe("finished");
     const event = f.events.find((value) => value.kind === "message" && !value.partial);
@@ -382,6 +386,12 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
       region: "fixture-region",
       isolated: true,
       privateEnvironment: true,
+      gitHubTools: {
+        firstPath: join(f.root, "github-generation", "bin"),
+        bashEnv: join(f.root, "github-generation", "shell-env.sh"),
+        gitConfig: join(f.root, ".gitconfig"),
+        home: join(f.root, "antigravity"),
+      },
     });
     expect(f.registered).toEqual([apiKey]);
   } finally {
