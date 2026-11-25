@@ -611,7 +611,12 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
 
   const makeDockerSandbox = async (
     request: { image: string; repos?: { url: string; branch: string; dir: string }[] },
-    tamperHash = false,
+    options: {
+      tamperHash?: boolean;
+      skipManifest?: boolean;
+      actorEpoch?: string;
+      snapshotConfig?: { repos: { url: string; branch: string; dir: string }[]; init: string[] };
+    } = {},
   ) => {
     const id = crypto.randomUUID();
     const dockerGeneration = crypto.randomUUID();
@@ -633,21 +638,23 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
     const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY, { allowDockerIssue: true });
     const issued = await authority.issue({ sandboxId: id, ownerId: f.people.owner, configuration: {} });
     await authority.enrol(issued.enrolmentToken);
-    const requestHash = tamperHash ? "0".repeat(64) : dockerLaunchRequestHash(request);
-    const { id: jobId } = await enqueueLaunch(
-      createJobsStore(sql, ENCRYPTION_KEY),
-      id,
-      1,
-      `docker-test-${id}`,
-      { request },
-      {
-        orgId: f.people.org,
-        deadline: new Date(Date.now() + 60_000),
-        maxAttempts: 1,
-        request: { ownerId: f.people.owner, digest: requestHash },
-      },
-    );
-    await recordDockerLaunchEvidence(sql, jobId, { docker_actor_epoch: "1" });
+    if (!options.skipManifest) {
+      const requestHash = options.tamperHash ? "0".repeat(64) : dockerLaunchRequestHash(request);
+      const { id: jobId } = await enqueueLaunch(
+        createJobsStore(sql, ENCRYPTION_KEY),
+        id,
+        1,
+        `docker-test-${id}`,
+        { request, ...(options.snapshotConfig ? { snapshotConfig: options.snapshotConfig } : {}) },
+        {
+          orgId: f.people.org,
+          deadline: new Date(Date.now() + 60_000),
+          maxAttempts: 1,
+          request: { ownerId: f.people.owner, digest: requestHash },
+        },
+      );
+      await recordDockerLaunchEvidence(sql, jobId, { docker_actor_epoch: options.actorEpoch ?? "1" });
+    }
     return id;
   };
 
@@ -657,8 +664,15 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
   expect(githubCalls).toBe(0);
   await expect(service.prepare(caller, plainId)).rejects.toThrow();
 
-  const tamperedId = await makeDockerSandbox({ image: dockerImage }, true);
+  const tamperedId = await makeDockerSandbox({ image: dockerImage }, { tamperHash: true });
   await expect(service.prepareLaunch(caller, tamperedId)).rejects.toThrow();
+  expect(githubCalls).toBe(0);
+
+  const missingManifestId = await makeDockerSandbox({ image: dockerImage }, { skipManifest: true });
+  const staleEpochId = await makeDockerSandbox({ image: dockerImage }, { actorEpoch: "99" });
+  await expect(service.prepareLaunch(caller, missingManifestId)).rejects.toThrow();
+  await expect(service.prepareLaunch(caller, staleEpochId)).rejects.toThrow();
+  expect(githubCalls).toBe(0);
 
   const repoId = await makeDockerSandbox({
     image: dockerImage,
@@ -668,6 +682,7 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
   expect(await service.prepareLaunch(caller, repoId)).toMatchObject({ status: "connected", login: "owner" });
   expect(configured?.repositories).toEqual(["example/web"]);
   expect(rotations).toBe(1);
+  const firstRenewed = activeToken;
   const broker = new GitHubBroker(
     () => {},
     (async (url: Parameters<typeof fetch>[0], init?: RequestInit) =>
@@ -676,7 +691,33 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
     () => clock,
   );
   broker.configure(configured!);
-  expect(await broker.acquire("example/web", "git")).toBe(activeToken);
-  expect(await broker.acquire("example/web", "gh")).toBe(activeToken);
+  expect(await broker.acquire("example/web", "git")).toBe(firstRenewed);
+  clock += 2 * 3_600_000;
+  const midTurnRenewed = await broker.acquire("example/web", "git");
+  expect(midTurnRenewed).toBe(activeToken);
+  expect(midTurnRenewed).not.toBe(firstRenewed);
+  expect(await broker.acquire("example/web", "gh")).toBe(midTurnRenewed);
+  expect(rotations).toBe(2);
   await expect(broker.acquire("example/other", "git")).rejects.toThrow("github_credentials_http_denied");
+
+  const snapshotId = await makeDockerSandbox(
+    { image: dockerImage },
+    {
+      snapshotConfig: {
+        repos: [{ url: "https://github.com/example/snapshot.git", branch: "main", dir: "snapshot" }],
+        init: [],
+      },
+    },
+  );
+  expect(await service.prepareLaunch(caller, snapshotId)).toMatchObject({ status: "connected", login: "owner" });
+  expect(configured?.repositories).toEqual(["example/snapshot"]);
+  broker.configure(configured!);
+  expect(await broker.acquire("example/snapshot", "gh")).toBe(activeToken);
+  await expect(broker.acquire("example/web", "gh")).rejects.toThrow("github_credentials_http_denied");
+
+  await f.db.query("delete from github_connections where user_id=$1", [f.people.owner]);
+  const callsBeforeDisconnect = githubCalls;
+  await expect(service.prepareLaunch(caller, missingManifestId)).rejects.toThrow();
+  await expect(service.prepareLaunch(caller, staleEpochId)).rejects.toThrow();
+  expect(githubCalls).toBe(callsBeforeDisconnect);
 });

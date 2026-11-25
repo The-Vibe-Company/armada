@@ -525,7 +525,7 @@ export function createRuntimeGitHub(options: {
       const hasRepositories = await authority.withOwner(id, s.ownerId, async (tx) => {
         await assertClaim?.(tx);
         const docker = await readDockerLaunchManifest(tx, id);
-        if (!docker) return true;
+        if (!docker) return denied();
         const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
         if (!matchesDockerLaunchRequestHash(manifest.request, docker.request_hash)) return denied();
         return Array.isArray(manifest.request?.repos ?? manifest.snapshotConfig?.repos);
