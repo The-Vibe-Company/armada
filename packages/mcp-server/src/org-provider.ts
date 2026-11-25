@@ -1,5 +1,6 @@
 import { ORG_PROVIDER_CREDENTIAL_MAX_LENGTH, orgProvider } from "@armada/core/contract";
 import {
+  CREDENTIAL_KINDS,
   ProviderError,
   parseCredentialValue,
   parseModalTokenPair,
@@ -54,11 +55,16 @@ export const validateOrgProvider: ProviderValidator = async (provider, value) =>
 export async function orgProviderStatus(store: VaultStore, caller: Caller, ref: string | undefined) {
   const org = await authorizedOrg(store, caller, ref);
   const rows = await store.listCredentials("org", org.id);
-  // The org Boat key is its org's column alone (`credentials_org_boat_chk`): the one launches resolve.
-  const providers = [
-    { provider: "boat" as const, configured: await store.hasOrgBoatKey(org.id) },
-    { provider: "modal" as const, configured: rows.some((row) => row.kind === "modal") },
-  ];
+  // The Boat key lives on the organization itself under credentials_org_boat_chk.
+  const providers = await Promise.all(
+    orgProvider.options.map(async (provider) => ({
+      provider,
+      configured:
+        CREDENTIAL_KINDS[provider].orgStorage === "org-boat-key"
+          ? await store.hasOrgBoatKey(org.id)
+          : rows.some((row) => row.kind === provider),
+    })),
+  );
   return { org, ready: providers.some((provider) => provider.configured), providers };
 }
 

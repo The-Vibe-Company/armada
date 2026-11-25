@@ -9,7 +9,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { applyLaunchAccountDefaults, resolveLaunchConnections, resolveLaunchSkills } from "./launch-plan.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
-import { capabilities } from "./machine-capabilities.ts";
+import { capabilities, openCodeRequiresRuntimeDiscovery } from "./machine-capabilities.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -293,7 +293,7 @@ function checkHarness(provider: Provider, harness: string) {
   if (
     !isHarness(harness) ||
     (!(provider.harnesses as readonly string[]).includes(harness) &&
-      !(provider.id === "boat" && harness === "opencode"))
+      !(openCodeRequiresRuntimeDiscovery(provider.id) && harness === "opencode"))
   ) {
     throw new LaunchError(
       "invalid_request",

@@ -1,6 +1,7 @@
 "use client";
 
-import type { Harness } from "@armada/core";
+import { type Harness, isSandboxProvider } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { BracesIcon, LockIcon, LockKeyholeIcon, PencilIcon, PlugIcon, RocketIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { Children, isValidElement, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -159,7 +160,7 @@ function TemplateForm({
   const [scope, setScope] = useState<TemplateScope>(editing?.scope ?? "personal");
   const [golden, setGolden] = useState(editing?.definition.goldenId ?? "");
   const [placement, setPlacement] = useState(
-    editing?.definition.provider === "docker"
+    editing && "hostId" in editing.definition
       ? `${editing.definition.hostId}:${editing.definition.snapshotId ?? ""}`
       : "",
   );
@@ -748,7 +749,7 @@ export function TemplateLaunchForm({
       <input type="hidden" name="id" value={target.id} />
       <input type="hidden" name="revision" value={target.revision} />
       <input type="hidden" name="request_key" value={requestKey} />
-      {provider !== "docker" && <input type="hidden" name="repo" value={project} />}
+      {capabilities(provider).launchSource === "golden" && <input type="hidden" name="repo" value={project} />}
       {!named && eligible.length > 0 && <input type="hidden" name="model_account" value={chosen ? account : ""} />}
       <LaunchComposer
         id={id}
@@ -818,7 +819,7 @@ export function TemplateLaunchForm({
               project={project}
               onProject={setProject}
             />
-            {provider !== "docker" && chips.machine && target.sizing && (
+            {isSandboxProvider(provider) && chips.machine && target.sizing && (
               <MachineSizeField provider={provider} policy={target.sizing.policy} repositoryDir={project} />
             )}
             {!named && (

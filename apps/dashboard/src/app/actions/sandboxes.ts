@@ -8,7 +8,7 @@ import {
   SANDBOX_PLACEMENT_LABELS,
   validateSkillPins,
 } from "@armada/core";
-import { capabilities } from "@armada/core/machine-capabilities";
+import { capabilities, openCodeRequiresRuntimeDiscovery } from "@armada/core/machine-capabilities";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -253,7 +253,7 @@ export async function launchFromGolden(_previous: ActionResult | null, data: For
     return fail("That request is not valid.");
   // Never trust a posted availability field; reauthorize normal runtime support on this request.
   const discovery =
-    formString(data, "provider") === "boat" && formString(data, "harness") === "opencode"
+    openCodeRequiresRuntimeDiscovery(formString(data, "provider")) && formString(data, "harness") === "opencode"
       ? await readLaunchOptions()
       : undefined;
   const parsed = launchArgs(

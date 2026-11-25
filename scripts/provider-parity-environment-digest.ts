@@ -1,3 +1,4 @@
+import { smokeRequestId } from "./staging-smoke-policy.ts";
 export interface EnvironmentDigestIo {
   request<T>(path: string, body: object): Promise<T>;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts: number, until: number): Promise<T>;
@@ -19,14 +20,14 @@ export async function verifyEnvironmentDigest(
     command,
     cwd: "/tmp",
     timeout_seconds: 30,
-    ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+    ...smokeRequestId(provider),
   });
   if (execution?.exitCode !== 0 || execution.timedOut !== false || execution.stdout?.trim() !== expected)
     fail("delivery_mismatch");
   const turn = await io.request<{ promptId?: string }>("sandbox/send", {
     id,
     prompt,
-    ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+    ...smokeRequestId(provider),
   });
   if (typeof turn?.promptId !== "string" || !turn.promptId) fail("invalid_receipt");
   let cursor: string | undefined;
