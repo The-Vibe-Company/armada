@@ -21,7 +21,7 @@ import {
 } from "@armada/core";
 import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
-import { retainsDiskOnStop, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, runtimeBridgeProfile, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -362,7 +362,7 @@ function report(
   const collectionFenced = machineDown || status === "stopping" || sandbox.stopRequestedAt != null;
   return {
     usage:
-      sandbox.usage && sandbox.provider === "boat" && collectionFenced
+      sandbox.usage && runtimeBridgeProfile(sandbox.provider)?.usageNeedsActiveCompute && collectionFenced
         ? {
             ...sandbox.usage,
             turns: sandbox.usage.turns.map((row) =>
@@ -521,7 +521,8 @@ export async function collectSandboxUsage(
       targetPromptId ? 1 : 0,
       new Set([...rows.values()].map((r) => r.promptId)).size,
     );
-    const hasReliableCompletionTime = provider.id !== "boat" || sandbox.boatRuntime;
+    const hasReliableCompletionTime =
+      runtimeBridgeProfile(provider.id)?.reliableCompletionTime !== "runtime-only" || sandbox.boatRuntime;
     await store.recordUsage(
       sandbox.id,
       {

@@ -138,7 +138,7 @@ async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal
   return image.imageId;
 }
 
-export async function terminateModalCompute(
+async function terminateModalCompute(
   sandbox: Sandbox,
   { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined } = {},
 ) {

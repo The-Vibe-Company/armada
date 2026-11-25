@@ -186,6 +186,17 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
+  test("stop proves absence of the exact container ID, including renamed containers in its inventory", async () => {
+    const f = fixture();
+    const { machineId } = await f.executor.create(request);
+    const [name, container] = [...f.containers.entries()][0]!;
+    f.containers.delete(name);
+    f.containers.set("renamed", container);
+    await expect(f.executor.stop(request, machineId)).rejects.toThrow();
+    f.containers.clear();
+    expect(await f.executor.stop(request, machineId)).toEqual({ absentMachineId: machineId });
+  });
+
   test("stop returns the exact retained container ID and is a no-op on replay", async () => {
     const f = fixture();
     expect(await f.executor.stop(request)).toBeUndefined();

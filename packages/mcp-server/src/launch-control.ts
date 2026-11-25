@@ -255,7 +255,8 @@ async function handleSandboxLaunch({ caller, body, options, request }: ControlRo
         : "Invalid launch request. See the sandbox/launch request schema.",
     );
   const launch = parsed.data;
-  if (launch.provider === "docker") {
+  if ("hostId" in launch || "snapshotId" in launch) {
+    if (!usesHostLaunch(launch.provider)) throw new VaultError("invalid", "Provider does not support host launches.");
     const org = scopedOrg(caller, launch.org);
     const dockerLaunch = options.dockerLaunch;
     if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");

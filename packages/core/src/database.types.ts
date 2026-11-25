@@ -613,6 +613,7 @@ export type Database = {
           cancelled_at: string | null;
           refused_resume_generation: number | null;
           result_machine_id: string | null;
+          absent_machine_id: string | null;
         };
         Insert: {
           request_id: string;
@@ -631,6 +632,7 @@ export type Database = {
           cancelled_at?: string | null;
           refused_resume_generation?: number | null;
           result_machine_id?: string | null;
+          absent_machine_id?: string | null;
         };
         Update: {
           request_id?: string;
@@ -649,6 +651,7 @@ export type Database = {
           cancelled_at?: string | null;
           refused_resume_generation?: number | null;
           result_machine_id?: string | null;
+          absent_machine_id?: string | null;
         };
         Relationships: [
           {

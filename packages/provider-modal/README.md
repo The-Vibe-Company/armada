@@ -142,7 +142,7 @@ an explicit clean-history marker. Golden restore explicitly opens a new generati
 ### Failure/resource provenance receipts
 
 Launch/snapshot/stop failures after an authorized reservation throw ModalOperationError
-with `receipt` and `details.resourceReceipt`; `modalFailureReceipt(error)` returns it.
+with `receipt` and `details.resourceReceipt`.
 The whitelist contains logical/physical IDs, deterministic name, durable/observed phase,
 registryConfirmed, generation, Image/source/recovery references, binding and nonsensitive
 management provenance. No request/env/MCP config, auth, labels, prompt text or raw SDK

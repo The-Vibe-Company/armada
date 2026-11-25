@@ -146,10 +146,11 @@ test.each(["create", "stop", "delete"] as const)(
   },
 );
 
-test.each(["create", "restore", "stop"] as const)(
-  "%s replays the verified container ID after a lost acknowledgement and ledger compaction",
+test.each(["create", "restore", "stop", "absent"] as const)(
+  "%s replays the verified physical result after a lost acknowledgement and ledger compaction",
   async (operation) => {
-    const { job, store, api, executor, state } = fixture(operation === "stop" ? "stop" : "create");
+    const kind = operation === "absent" ? "stop" : operation;
+    const { job, store, api, executor, state } = fixture(kind === "stop" ? "stop" : "create");
     const machineId = "b".repeat(64);
     const allocation: Job =
       operation !== "restore"
@@ -161,14 +162,37 @@ test.each(["create", "restore", "stop"] as const)(
             predecessor: { request: job.request, machineId: "a".repeat(64) },
           };
     let executions = 0;
-    executor[operation] = async () => {
+    const proof = operation === "absent" ? { absentMachineId: machineId } : { machineId };
+    if (operation === "absent") {
+      const ledger = await store.load();
+      ledger.receipts.push({
+        operation: "create",
+        requestId: crypto.randomUUID(),
+        request: allocation.request,
+        machineId,
+        outcome: "completed",
+        cleaned: true,
+      });
+      await store.save(ledger);
+    }
+    executor[kind] = async (_request, expectedId?: unknown) => {
+      if (operation === "absent") expect(expectedId).toBe(machineId);
       executions++;
-      return { machineId };
+      return proof;
     };
+    let advertiseAbsence = true;
     const reported: unknown[] = [];
     const transport = httpApi((async (url: string | URL | Request, init?: RequestInit) => {
       if (String(url).endsWith("/poll"))
-        return Response.json({ job: allocation }, { headers: { "x-armada-docker-stop-identity": "1" } });
+        return Response.json(
+          { job: allocation },
+          {
+            headers: {
+              "x-armada-docker-stop-identity": "1",
+              ...(advertiseAbsence ? { "x-armada-docker-stop-absence": "1" } : {}),
+            },
+          },
+        );
       reported.push(JSON.parse(String(init?.body)));
       if (reported.length === 1) throw new Error("acknowledgement lost");
       return new Response(null, { status: 204 });
@@ -178,12 +202,12 @@ test.each(["create", "restore", "stop"] as const)(
     const run = () => tick(store, api, executor, false, () => 100_000);
 
     await expect(run()).rejects.toThrow("acknowledgement lost");
-    expect(state().receipts).toContainEqual(expect.objectContaining({ outcome: "completed", machineId }));
+    expect(state().receipts).toContainEqual(expect.objectContaining({ outcome: "completed", ...proof }));
     await run();
 
     const cleaned = await store.load();
     const saved = cleaned.receipts.find((receipt) => receipt.requestId === allocation.requestId) ?? fail();
-    if (operation === "stop") {
+    if (kind === "stop") {
       cleaned.retention = [{ request: saved.request, requestId: saved.requestId, deadline: 200_000 }];
     } else saved.cleaned = true;
     cleaned.receipts.push({
@@ -202,9 +226,18 @@ test.each(["create", "restore", "stop"] as const)(
       installationId: state().installationId,
       requestId: allocation.requestId,
       outcome: "completed",
-      machineId,
+      ...proof,
     };
     expect(reported).toEqual([body, body, body]);
+    if (operation === "absent") {
+      advertiseAbsence = false;
+      await run();
+      expect(reported[3]).toEqual({
+        installationId: state().installationId,
+        requestId: allocation.requestId,
+        outcome: "completed",
+      });
+    }
     expect(executions).toBe(1);
   },
 );

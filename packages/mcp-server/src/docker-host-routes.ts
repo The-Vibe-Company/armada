@@ -278,6 +278,7 @@ export function createDockerHostRoutes(
                       : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
               ...("outcome" in body && "machineId" in body ? ["machineId"] : []),
+              ...("outcome" in body && "absentMachineId" in body ? ["absentMachineId"] : []),
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
               ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
@@ -459,7 +460,14 @@ export function createDockerHostRoutes(
             pendingStarts,
             ...(limits === undefined ? {} : { limits }),
           } satisfies DockerHostPollResponse,
-          { headers: { ...headers, "x-armada-docker-retained-stop": "1", "x-armada-docker-stop-identity": "1" } },
+          {
+            headers: {
+              ...headers,
+              "x-armada-docker-retained-stop": "1",
+              "x-armada-docker-stop-identity": "1",
+              "x-armada-docker-stop-absence": "1",
+            },
+          },
         );
       }
       if ("claimed" in body) {
@@ -496,6 +504,12 @@ export function createDockerHostRoutes(
       if ("retained" in body && (body.retained !== true || outcome !== "failed")) throw new InvalidInput();
       const machineId = "machineId" in body ? string(body.machineId) : undefined;
       if (machineId !== undefined && (outcome !== "completed" || !/^[a-f0-9]{64}$/.test(machineId)))
+        throw new InvalidInput();
+      const absentMachineId = "absentMachineId" in body ? string(body.absentMachineId) : undefined;
+      if (
+        absentMachineId !== undefined &&
+        (outcome !== "completed" || machineId !== undefined || !/^[a-f0-9]{64}$/.test(absentMachineId))
+      )
         throw new InvalidInput();
       // A reason explains a failure; it never accompanies a success.
       const reason = body.reason === undefined ? undefined : string(body.reason);
@@ -534,6 +548,7 @@ export function createDockerHostRoutes(
         ...(reason === undefined ? {} : { reason: reason as DockerJobFailureReason }),
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
         ...(machineId === undefined ? {} : { machineId }),
+        ...(absentMachineId === undefined ? {} : { absentMachineId }),
         ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
         ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
         ...(typeof missingRefIndex === "number" ? { missingRefIndex } : {}),

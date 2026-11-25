@@ -2,6 +2,7 @@ import { HARNESS_CAPABILITIES, isSandboxProvider } from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
+  failureDiagnostic,
   SANDBOX_STOP_MARGIN_SECONDS,
   type Sql,
   toBytea,
@@ -9,12 +10,13 @@ import {
 } from "@armada/core/server";
 import type { startBoatRuntime } from "@armada/provider-boat";
 import type { ModalProvider } from "@armada/provider-modal";
-import { failTurnReceipt, ResumeTurnDeferred, resetResumeTurn } from "../account-turn-dispatch.ts";
+import { failTurnReceipt, resetResumeTurn } from "../account-turn-dispatch.ts";
 import { type AccountTurnQueue, accountTurnInputDigest } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import type { createObservedBoatProvider } from "../observed-boat.ts";
+import { recordOperatorDiagnostic } from "../request-observability.ts";
 import { lockRuntimeAccount } from "../runtime-account-admission.ts";
 import { runtimeAgentFor } from "../runtime-agent.ts";
 import type { createRuntimeCommands } from "../runtime-commands.ts";
@@ -32,6 +34,7 @@ import {
   stopUnfinishedResume,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
+import { ResumeTurnDeferred } from "../tool-error.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE, waitForTimeout } from "../wake-bus.ts";
 import { createBoatResumeMachine } from "./boat-resume.ts";
 import { resumeDispatchAuthority } from "./resume-authority.ts";
@@ -510,7 +513,12 @@ export function createResumeJob(options: {
             await resetResumeTurn(tx, id, input.requestId, generationText);
           },
         };
-      } catch {
+      } catch (error) {
+        recordOperatorDiagnostic("jobs.resume.run", failureDiagnostic(error), {
+          sandboxId: id,
+          operationId: job.id,
+          code: "retry",
+        });
         return retry;
       }
     },

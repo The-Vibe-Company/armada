@@ -81,6 +81,8 @@ export function promptFailureReason(message?: string) {
   return `${help.title}. ${help.hint}`;
 }
 
+const dockerStopRetentionLost = "The Docker host confirmed the sandbox container is gone. This sandbox cannot resume.";
+
 export function describeSandboxFailure(reason: string | null | undefined) {
   if (reason && Object.values(RUNTIME_STARTUP_FAILURES).some((message) => message === reason))
     return { title: "Sandbox startup failed", hint: reason };
@@ -94,6 +96,11 @@ export function describeSandboxFailure(reason: string | null | undefined) {
     return { title: "Sandbox preparation failed", hint: reason };
   if (reason === "Docker sandbox startup failed." || reason === "Docker sandbox failed.")
     return { title: "Sandbox startup failed", hint: DOCKER_LAUNCH_FAILURE_MESSAGES.startup };
+  if (reason === "docker_stop_retention_lost" || reason === dockerStopRetentionLost)
+    return {
+      title: "Docker stop retention lost",
+      hint: dockerStopRetentionLost,
+    };
   if (reason === "expired")
     return { title: "Sandbox expired", hint: "The sandbox reached its deadline. Launch a new sandbox to continue." };
   if (reason === "agent_finished")

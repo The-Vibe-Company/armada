@@ -495,6 +495,63 @@ test("own children support independent target receipts while unrelated children 
   }
 });
 
+test("a rolled-back scoped dispatch transaction is reauthorized before sending", async () => {
+  const { close, db, sql, id, p, golden, token } = await fixture();
+  try {
+    const child = await insertSandboxFixture(sql, {
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "child-dispatch-retry",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: "fixture",
+      reasoningEffort: "high",
+      status: "ready",
+      visibility: "private",
+    });
+    await db.query(
+      "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+      [child.id, id, p.org, p.owner],
+    );
+    let aborted = false;
+    const faulted: Sql = {
+      ...sql,
+      transaction: (work) =>
+        sql.transaction!((tx) =>
+          work({
+            ...tx,
+            async query<T>(statement: string, params?: unknown[]) {
+              const result = await tx.query<T>(statement, params);
+              if (!aborted && statement.includes("set dispatched_at=coalesce")) {
+                aborted = true;
+                await tx.query("do $$ begin raise serialization_failure; end $$");
+              }
+              return result;
+            },
+          }),
+        ),
+    };
+    const authority = new DelegatedAuthority(faulted, async () => {});
+    const message = mock(async () => {});
+    const children = createSandboxChildren(sql, authority, {
+      message,
+      async launch() {},
+      async stop() {},
+      async read() {},
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    expect(await children.message(token, "retry-dispatch", child.id, "prompt")).toMatchObject({ state: "succeeded" });
+    expect(aborted).toBe(true);
+    expect(message).toHaveBeenCalledTimes(1);
+  } finally {
+    await close();
+  }
+});
+
 test.each(["launch", "message"] as const)(
   "revocation before dispatch records the failed %s admission",
   async (action) => {

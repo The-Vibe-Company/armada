@@ -83,6 +83,20 @@ function blockedBeforeDispatch(error: unknown) {
     : undefined;
 }
 
+// WARNING: Only transaction-abort SQLSTATEs prove dispatch did not commit.
+async function retryAbortedAdmission<T>(signal: AbortSignal, admit: () => Promise<T>) {
+  for (let attempt = 1; ; attempt++) {
+    signal.throwIfAborted();
+    try {
+      return await admit();
+    } catch (error) {
+      const fields = error as { errno?: string; code?: string } | null;
+      const sqlState = fields?.errno ?? fields?.code;
+      if (attempt >= 3 || (sqlState !== "40P01" && sqlState !== "40001")) throw error;
+    }
+  }
+}
+
 export type StopRecoveryAdmission = (work: (tx: Sql) => Promise<void>) => Promise<void>;
 
 /** Launch commits the job, child relation and operation receipt for the reserved sandbox ID. */
@@ -181,7 +195,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       input.action === "launch"
         ? { ...input.selection, method: "launch" }
         : { method: input.action, childId: input.sandboxId };
-    const receipt = await authority.admit(token, request, async (tx, principal) => {
+    const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
+    const admissionSignal = AbortSignal.any([shutdown.signal, deadline, ...(signal ? [signal] : [])]);
+    const admitBeforeDispatch: ChildAuthority["admit"] = (token, request, reserve) =>
+      retryAbortedAdmission(admissionSignal, () => authority.admit(token, request, reserve));
+    const receipt = await admitBeforeDispatch(token, request, async (tx, principal) => {
       const prior = (
         await tx.query<ChildDispatch & { state: string; request_digest: string; recoverable: boolean }>(
           `select c.id,c.state,c.request_digest,c.target_id,c.orchestrator_id,c.owner_id,c.org_id,c.parent_generation,
@@ -269,13 +287,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         recordUncertainMessageReceipt(receipt, "prior_uncertain_receipt");
       return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
     }
-    const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
-    const admissionSignal = AbortSignal.any([shutdown.signal, deadline, ...(signal ? [signal] : [])]);
     async function admitDispatch(resumingAdmission: boolean) {
       return waitForSandboxAdmission(
         admissionSignal,
         () =>
-          authority.admit(token, request, async (tx) => {
+          admitBeforeDispatch(token, request, async (tx) => {
             if (input.action !== "launch") {
               const {
                 rows: [lease],

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore, sha256Hex } from "@armada/auth";
 import { createSqlVaultStore, type Harness, type Provider } from "@armada/core/server";
 import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
@@ -9,6 +9,7 @@ import { providerRegistry } from "../src/http.ts";
 import { createResumeJob } from "../src/jobs/resume.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore, JOBS_WAKE } from "../src/jobs/store.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
@@ -362,6 +363,7 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
     };
     const wake = Promise.withResolvers<void>();
     const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
+    const toolFailures = spyOn(console, "error");
     try {
       const readReceipt = () =>
         explicit(f.caller, request).then(
@@ -377,6 +379,10 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
         expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
       }
       await runTurn();
+      if (!waiting && scenario !== "exhausted") {
+        expect(toolFailures).not.toHaveBeenCalledWith(expect.stringContaining('"phase":"tool.send"'));
+      }
+      toolFailures.mockRestore();
       if (scenario === "exhausted") {
         expect(await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id)).toMatchObject({
           status: "stopped",
@@ -406,12 +412,26 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
         expect(await jobs.complete(job, owner, result)).toBeTrue();
         return result.status;
       };
+      const expectLoggedRetry = async () => {
+        const logs: string[] = [];
+        expect(await continueRequest(crypto.randomUUID(), take, (line) => logs.push(line))).toBe("retry");
+        expect(logs.map((line) => JSON.parse(line))).toMatchObject([
+          {
+            event: "operator_failure",
+            phase: "jobs.resume.run",
+            sandboxId: f.row.id,
+            operationId: expect.any(String),
+            code: "retry",
+            message: "Exception message withheld",
+          },
+        ]);
+      };
       if (scenario === "credential retry") {
-        expect(await take()).toBe("retry");
+        await expectLoggedRetry();
         expect(allocations).toBe(0);
         await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       }
-      expect(await take()).toBe("retry");
+      await expectLoggedRetry();
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       if (expired) {
         await f.sql.query("update public.jobs set deadline_at=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
@@ -504,6 +524,7 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
       expect(await explicit(f.caller, request)).toEqual(accepted.value);
     } finally {
       unsubscribe();
+      toolFailures.mockRestore();
     }
   });
 });
