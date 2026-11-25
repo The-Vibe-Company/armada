@@ -29,6 +29,7 @@ import { readStatus } from "../src/turns.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -1168,19 +1169,28 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         expect(checkpointRequest).toBeDefined();
         return { status: "clean" as const };
       },
-      async stop(request: Parameters<typeof fake.provider.stop>[0] & { requireRetention?: boolean }) {
-        expect(checkpointRequest).toBeDefined();
-        expect(request.requireRetention).toBe(true);
-        expect(
-          (
-            await sql.query(
-              `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
-              [logicalId],
-            )
-          ).rows[0],
-        ).toEqual({ status_reason: "idle_paused", captured: true });
-        await fake.provider.stop(request);
-        if (loseStopReply) throw Error("synthetic lost compute stop response");
+      async runtimeStopMachine() {
+        return {
+          physical: { machineId: "physical", generation: 1 },
+          stopped: false,
+          machine: {
+            stop: async (request: { retain: boolean; sandboxId: string; generation: number }) => {
+              expect(checkpointRequest).toBeDefined();
+              expect(request.retain).toBe(true);
+              expect(
+                (
+                  await sql.query(
+                    `select status_reason,preservation_stop_generation=stop_generation as captured from sandboxes where id=$1`,
+                    [logicalId],
+                  )
+                ).rows[0],
+              ).toEqual({ status_reason: "idle_paused", captured: true });
+              await fake.provider.stop({ sandboxId: physicalId! });
+              if (loseStopReply) throw Error("synthetic lost compute stop response");
+              return { sandboxId: request.sandboxId, generation: request.generation, kind: "image", ref: "image" };
+            },
+          },
+        };
       },
     };
     const resolved = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, noEnv: true, env: {} });
@@ -1310,7 +1320,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
         stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
         expect(stopped.id).toBe(first.id);
       }
-      expect(stopped.state).toBe(abortRecovery ? "pending" : loseStopReply ? "uncertain" : "succeeded");
+      expect(stopped.state).toBe(abortRecovery ? "pending" : "succeeded");
     } finally {
       releaseCheckpoint.resolve();
       await firstStop;
@@ -1325,6 +1335,8 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     } else {
       expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
     }
+    if (!abortRecovery)
+      expect((await runClaimedStop(sql, async () => host)).result.status).toBe(loseStopReply ? "retry" : "done");
     expect(checkpointCalls).toBe(2);
     expect(fake.stops).toHaveLength(abortRecovery ? 0 : 1);
     expect(

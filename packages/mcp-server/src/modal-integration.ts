@@ -363,9 +363,6 @@ export function createModalIntegration(options: {
       },
       close: () => client.close(),
       resolveRuntimeTicket: async () => null,
-      async prepareCheckpoint() {
-        throw new Error("Modal launch and cleanup cannot prepare a checkpoint.");
-      },
     };
   };
   async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
