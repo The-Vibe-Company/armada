@@ -15,6 +15,8 @@ import { runtimePreservationNote } from "../work-preservation.ts";
 import type { Job, JobContext, JobResult } from "./runner.ts";
 import { createJobsStore } from "./store.ts";
 
+type ExitEvidence = { stoppedAt: Date | undefined };
+
 type Target = MachineIdentity & {
   orgId: string;
   ownerId: string;
@@ -54,13 +56,13 @@ function boatStopMachine(sql: Sql, key: string, deploymentId: string) {
       machineId,
       ...(launchGeneration === null ? { orgId, ownerId } : { launchGeneration }),
     };
-    let exitTime: Date | undefined;
+    let exit: ExitEvidence | undefined;
     const machine = createBoatMachine(
       {
         ...options,
         stopBinding,
         onStopped: (value) => {
-          exitTime = value;
+          exit = { stoppedAt: value };
         },
       },
       host,
@@ -71,7 +73,7 @@ function boatStopMachine(sql: Sql, key: string, deploymentId: string) {
         await authorize();
       },
     );
-    return { machine, outputs: host, stoppedAt: () => exitTime };
+    return { machine, outputs: host, exitEvidence: () => exit };
   };
 }
 
@@ -86,7 +88,7 @@ export function createBoatStop(
   ) => Promise<{
     machine: Pick<Machine, "observe" | "stop">;
     outputs: OutputReader;
-    stoppedAt?: () => Date | undefined;
+    exitEvidence?: () => ExitEvidence | undefined;
   }> = boatStopMachine(sql, key, deploymentId),
 ) {
   const jobs = createJobsStore(sql, key);
@@ -147,7 +149,7 @@ export function createBoatStop(
     const retry = async () =>
       (await context.canDispatch()) ? ({ status: "retry", after: new Date(now() + 2_000) } as const) : hold();
     try {
-      const { machine, outputs, stoppedAt } = await resolve(target, authorize);
+      const { machine, outputs, exitEvidence } = await resolve(target, authorize);
       signal.throwIfAborted();
       const observed = await machine.observe({ ...identity, signal });
       const absent = observed.receipt?.operation === "delete";
@@ -157,11 +159,15 @@ export function createBoatStop(
         await stageStopOutputs(sql, key, job, context, outputs, Math.min(12_000, deadline - 30_000 - now()));
       signal.throwIfAborted();
       if (!absent) {
-        await machine.stop({ ...identity, retain: target.retain, signal });
-        archiveObserved = true;
+        try {
+          await machine.stop({ ...identity, retain: target.retain, signal });
+          archiveObserved = true;
+        } finally {
+          archiveObserved ||= exitEvidence?.() !== undefined;
+        }
       }
       context.signal.throwIfAborted();
-      const exitTime = stoppedAt?.() ?? new Date(now());
+      const exitTime = exitEvidence?.()?.stoppedAt ?? new Date(now());
       const note = target.retain ? await runtimePreservationNote(sql, sandboxId) : null;
       return {
         status: "done",
