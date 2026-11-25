@@ -1163,5 +1163,6 @@ test("an admin controls the host offer and authenticated polls retain the last u
   expect(lastUpdateResult).toMatchObject({ version: "999.0.0", status: "updated", detail: null });
   await poll("999.0.0;updated");
   await poll(`${VERSION};failed`);
+  await poll(`${VERSION};failed;123;startup_failed`);
   expect((await readHost()).lastUpdateResult).toEqual(lastUpdateResult);
 });

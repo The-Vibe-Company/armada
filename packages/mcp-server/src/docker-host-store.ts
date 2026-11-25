@@ -1315,7 +1315,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                $2::jsonb,'{daemonAt}',coalesce(to_jsonb($3::text),last_update_result->'daemonAt','null'::jsonb))
              where id=$1
              and (last_update_result->>'daemonAt' is null
-               or (last_update_result->>'daemonAt')::timestamptz <= $3::timestamptz
+               or (last_update_result->>'daemonAt')::timestamptz < $3::timestamptz
                or ($3::timestamptz is null and
                  string_to_array($2::jsonb->>'version','.')::integer[] >
                  string_to_array(last_update_result->>'version','.')::integer[]))
