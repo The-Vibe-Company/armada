@@ -702,11 +702,23 @@ test.each([
   };
   expect(await handler.run(job, context)).toMatchObject({ status: "retry" });
   const stop = (await store.poll(a.hostToken, a.installationId))!;
-  await store.complete(a.hostToken, a.installationId, {
-    requestId: stop.requestId,
-    outcome: "completed",
-    ...(provedAbsent ? { absentMachineId: a.machine.machineId } : {}),
-  });
+  const route = createDockerHostRoutes(store, async () => ({ ok: false }));
+  const response = await route(
+    new Request("https://armada.example/api/docker-host/results", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${a.hostToken}`,
+        [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+      },
+      body: JSON.stringify({
+        installationId: a.installationId,
+        requestId: stop.requestId,
+        outcome: "completed",
+        ...(provedAbsent ? { absentMachineId: a.machine.machineId } : {}),
+      }),
+    }),
+  );
+  expect(response?.status).toBe(200);
   const result = await handler.run(job, context);
   expect(result.status).toBe(provedAbsent ? "done" : "retry");
   expect(await jobs.complete(job, owner, result)).toBe(true);

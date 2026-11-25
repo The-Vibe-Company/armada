@@ -278,6 +278,7 @@ export function createDockerHostRoutes(
                       : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
               ...("outcome" in body && "machineId" in body ? ["machineId"] : []),
+              ...("outcome" in body && "absentMachineId" in body ? ["absentMachineId"] : []),
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
               ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
