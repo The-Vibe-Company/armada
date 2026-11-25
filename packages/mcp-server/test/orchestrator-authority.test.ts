@@ -256,10 +256,13 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     for (const harness of ["claude", "codex"] as const) {
       launchLocks.length = 0;
       expect(await launch(harness)).toBe(true);
-      expect(launchLocks.slice(0, 3).map((statement) => statement.match(/\bfrom public\.(\w+)/i)?.[1])).toEqual([
+      expect(launchLocks.map((statement) => statement.match(/\bfrom public\.(\w+)/i)?.[1])).toEqual([
         "members",
+        "goldens",
+        "credentials",
         "sandboxes",
         "armada_access_parents",
+        "orchestrator_delegations",
       ]);
       expect(forwarded.at(-1)).toEqual({
         userId: p.owner,
