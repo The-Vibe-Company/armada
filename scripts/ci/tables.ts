@@ -22,13 +22,6 @@ const owners = [
   ["sandbox_launch_stages", [`${core}/launch-stages.ts`, `${server}/launch-stage-record.ts`]],
   ["sandbox_output*", [`${server}/sandbox-outputs.ts`, `${server}/output-transfers.ts`]],
   ["sandbox_*_pricing sandbox_turn_models", [`${core}/sandbox.ts`, `${server}/turn-pricing.ts`]],
-  [
-    "native_drain_delete_operations native_drain_unclaimed_dispatches native_drain_stop_requests",
-    [`${server}/sandbox-lifecycle.ts`],
-  ],
-  ["sandbox_native_exec_attempts", [`${server}/data.ts`]],
-  ["sandbox_native_send_attempts", [`${server}/data.ts`]],
-  ["sandbox_native_preservation_receipts", [`${server}/sandbox-lifecycle.ts`]],
   ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
   [
     "provider_launch_requests ordinary_launch_receipts native_*",

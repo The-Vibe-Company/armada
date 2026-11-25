@@ -27,7 +27,6 @@ type Schema = {
 };
 
 const ROW_ALIASES: Record<string, string> = {
-  native_webhook_prompts: "NativeWebhookPromptRow",
   sandbox_outputs: "SandboxOutputRow",
   sandbox_output_chunks: "SandboxOutputChunkRow",
   sandbox_output_transfers: "SandboxOutputTransferRow",
@@ -36,7 +35,6 @@ const ROW_ALIASES: Record<string, string> = {
   org_langfuse: "OrgLangfuseRow",
   org_langfuse_export_stats: "OrgLangfuseExportStatsRow",
   langfuse_turn_exports: "LangfuseTurnExportRow",
-  native_steer_cursors: "NativeSteerCursorRow",
   agent_defaults: "AgentDefaultsRow",
   account_turn_queue: "AccountTurnQueueRow",
   account_agent_reservations: "AccountAgentReservationRow",
