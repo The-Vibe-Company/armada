@@ -98,6 +98,7 @@ import {
   clearRefusedBoatCreate,
   createJobsStore,
   jobRequestKey,
+  queryWithJobLease,
   recordModalBootstrapTicket,
   withJobLease,
 } from "./store.ts";
@@ -874,24 +875,28 @@ class ModalBootstrapRefused extends Error {}
 export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
   return {
     async lockPrerequisites(tx: Sql) {
-      const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for update", [
-        sandbox.orgId,
-        sandbox.ownerId,
-      ]);
-      if (!member.rows.length) throw new ModalBootstrapRefused("Modal launch owner membership is unavailable.");
-      const credential = await tx.query(
-        `select 1 from public.credentials where id=$1 and version=$2 and kind=any($5::public.credential_kind[])
+      const {
+        rows: [authority],
+      } = await tx.query<{ member: boolean; credential: boolean }>(
+        `with member as materialized (
+           select user_id from public.members where org_id=$1 and user_id=$2 for update
+         ), credential as (
+           select 1 from public.credentials where id=$3 and version=$4 and kind=any($5::public.credential_kind[])
              and status='active' and (expires_at is null or expires_at>clock_timestamp())
-             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+             and (select user_id from member) is not null
+             and ((scope='user' and owner_id=$2) or (scope='org' and owner_id=$1)) for share
+         )
+         select exists(select 1 from member) as member, exists(select 1 from credential) as credential`,
         [
+          sandbox.orgId,
+          sandbox.ownerId,
           sandbox.credentialId,
           sandbox.credentialVersion,
-          sandbox.ownerId,
-          sandbox.orgId,
           HARNESS_KINDS[sandbox.harness],
         ],
       );
-      if (!credential.rows.length) throw new ModalBootstrapRefused("Modal launch account is unavailable.");
+      if (!authority?.member) throw new ModalBootstrapRefused("Modal launch owner membership is unavailable.");
+      if (!authority.credential) throw new ModalBootstrapRefused("Modal launch account is unavailable.");
     },
     async checkAccountPin(tx: Sql) {
       const current = await tx.query(
@@ -1341,28 +1346,45 @@ async function dispatchModalLaunch(
     job.outcome !== null &&
     "result" in job.outcome &&
     job.outcome.result === RECONCILING_ALLOCATION;
-  const dispatchTarget = async (tx: Sql) => {
+  const boat = "boat" in plan;
+  const dispatchTarget = async (tx: Sql, lockLease = false) => {
+    type Target = { provider_sandbox_id: string | null };
+    const statement = (source: string) =>
+      `select s.provider_sandbox_id from ${source}
+         join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+         where s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+           and s.status='starting'`;
+    const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
+    // Boat checks a separate account row after the lease is locked. Keep that
+    // check on the fresh snapshot, as well as the launch-journal create guard.
     const {
       rows: [row],
-    } = await tx.query<{ provider_sandbox_id: string | null }>(
-      `select s.provider_sandbox_id from public.sandboxes s
-         join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
-         join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-         where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
-           and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-           and s.status='starting'
+    } = lockLease
+      ? await queryWithJobLease<Target>(
+          tx,
+          job,
+          `${statement(`locked_sandbox s join locked_job j on ${ownership}`)}
+           and s.provider='modal' and (s.runtime_transport='dialout' or s.boat_runtime) for share of m`,
+        )
+      : await tx.query<Target>(
+          `${statement(`public.sandboxes s join public.jobs j on j.id=$2 and ${ownership}`)}
+           and s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
            and (s.provider<>'boat' or exists(
              select 1 from public.credentials c where c.id=s.credential_id and c.version=s.credential_version
                and c.status='active' and (c.expires_at is null or c.expires_at>clock_timestamp())
                and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
-           ))
-         for share of m`,
-      [sandboxId, job.id, "boat" in plan ? "boat" : "modal"],
-    );
+           )) for share of m`,
+          [sandboxId, job.id, boat ? "boat" : "modal"],
+        );
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx)) && (await launchAuthorized(tx)))
       return row;
   };
-  const target = () => withJobLease(sql, job, dispatchTarget);
+  const withDispatchTarget = <T>(work: (tx: Sql, row: { provider_sandbox_id: string | null } | undefined) => T) => {
+    if (boat) return withJobLease(sql, job, async (tx) => work(tx, await dispatchTarget(tx)));
+    if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
+    return sql.transaction(async (tx) => work(tx, await dispatchTarget(tx, true)));
+  };
+  const target = () => withDispatchTarget((_tx, row) => row);
   const recovering = hasModalMachineJournal(job);
   const deferred = { kind: "dispatch_deferred" } as const;
   async function canDeferPreparation(machineId: string) {
@@ -1376,7 +1398,6 @@ async function dispatchModalLaunch(
     job,
     async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
   );
-  const boat = "boat" in plan;
   const modalTicket = {
     async resolveRuntimeTicket(request: Parameters<PrepareModalTicket>[0]) {
       if ("boat" in plan) throw new Error("Modal ticket preparation requires Modal placement.");
@@ -1478,8 +1499,8 @@ async function dispatchModalLaunch(
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
       throw new Error("Modal launch changed the machine incarnation.");
     const bound = await beforeProviderMutation(context, observed?.kind === "present", () =>
-      withJobLease(sql, job, async (tx) => {
-        if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
+      withDispatchTarget(async (tx, row) => {
+        if (row?.provider_sandbox_id !== null) return false;
         if (
           (boat || observed?.kind === "present") &&
           !(await adoptObservedModalAllocation(tx, job, allocated.machineId))

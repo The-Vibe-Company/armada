@@ -1852,7 +1852,7 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 89 SQL statements", async () => {
+test("Modal admission and deferred enrolment use at most 64 SQL statements", async () => {
   const statements: string[] = [];
   const admission = await modalAdmissionFixture("private", statements);
   const log = spyOn(console, "info");
@@ -1875,7 +1875,7 @@ test("Modal admission and deferred enrolment use at most 89 SQL statements", asy
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(89);
+    expect(statements.length).toBeLessThanOrEqual(64);
   } finally {
     log.mockRestore();
   }
@@ -3243,7 +3243,7 @@ test("owner stop after a lost Modal create reply leaves the exact allocation for
           ...tx,
           async query<T>(query: string, params?: unknown[]) {
             if (query.includes("select public.complete_job")) throw new Error("Worker lost before failure settlement");
-            if (observed && query.includes("select s.provider_sandbox_id from public.sandboxes s"))
+            if (observed && query.includes("select s.provider_sandbox_id from") && query.includes("for share of m"))
               checkedDispatchAfterObservation = true;
             return tx.query<T>(query, params);
           },
