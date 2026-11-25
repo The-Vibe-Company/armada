@@ -33,8 +33,7 @@ from the **same deployed server build** as `/api/runtime/artifacts/<digest>`.
 Other supported installations may choose the arm64 manifest on an arm64 host;
 there is no scheduler/automatic architecture detection. Manifest/origin/architecture
 are server deployment inputs, not request fields. The image must match that ABI and contain working HTTPS CA roots.
-The smoke uses the official Debian-based [buildpack-deps curl image](https://github.com/docker-library/buildpack-deps/blob/master/debian/bookworm/curl/Dockerfile),
-whose recipe explicitly installs ca-certificates; a bare Debian slim image lacks that guarantee.
+The smoke checks the [official sandbox image](official-sandbox-image.md) pinned by the deployed server. Set `DOCKER_IMAGE` to its full immutable image reference.
 The server needs its normal encryption key and model-account configuration.
 Use an org-admin Armada bearer and an active Codex-compatible account ID/version
 that bearer can use (user-owned or this org's). API key/custom endpoint and the
@@ -42,8 +41,7 @@ existing Codex subscription broker are reused; no provider credential is a model
 
 Defaults pending later owner decisions: host credential has no expiry and is
 revocable; default sandbox TTL is the existing four hours; no disk quota. Ordinary
-owner-trusted Docker only. The historical plain-image preview excludes snapshot
-builds, resume, gVisor and multi-tenancy. Each preview sandbox has one conversation.
+owner-trusted Docker only. Each sandbox has one conversation.
 Send follow-up prompts through `sandbox/send` and reuse the same request UUID and
 input when reconciling uncertain delivery.
 Wait for the previous turn's acknowledged finished event before sending a follow-up.
@@ -129,7 +127,7 @@ The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns the original sandbox ID and
 current status (even after stop/delete), never restarts the sandbox.
 
-The API-only CLI uses the same normal route, not the private preview. Normal
+The API-only CLI uses the same normal route. Normal
 API requests, CLI launches and dashboard forms do not accept an image selector.
 Armada chooses the official image pinned by the deployed server's release;
 source/dev builds without a release pin use the server-owned immutable bootstrap
@@ -178,14 +176,14 @@ staging org/account and image (these are public IDs, not credential values):
 ```sh
 export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
 export DOCKER_HOST_ID='70bde9cd-36c9-40af-b15e-65b2f9d3c2a2'
-export DOCKER_IMAGE='buildpack-deps@sha256:58021c2a0204361b62a23d2e0244d144d74c29af2d678e2a1f7e6611885d6949'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 # DOCKER_SSH, ARMADA_ORG and ARMADA_CREDENTIAL: use the previous passed check.
 read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
 export ARMADA_TOKEN
 python3 scripts/smoke-docker-lifecycle.py \
   --server "$ARMADA_STAGING" --org "$ARMADA_ORG" \
   --credential "$ARMADA_CREDENTIAL" --ssh "$DOCKER_SSH" --image "$DOCKER_IMAGE" \
-  --host-id "$DOCKER_HOST_ID" --start-host --normal-launch
+  --host-id "$DOCKER_HOST_ID" --start-host
 unset ARMADA_TOKEN
 ```
 
@@ -352,9 +350,8 @@ bun build packages/docker-host/src/main.ts --compile --target=bun-linux-x64 --ou
 ssh -- "$DOCKER_SSH" 'docker version; docker info --format "{{json .Runtimes}}"; docker ps -a; docker image ls; docker volume ls'
 ssh -- "$DOCKER_SSH" 'set -eu; umask 077; install -d -m 700 "$HOME/.local/bin"; test ! -e "$HOME/.local/state/armada-docker-smoke"; test ! -L "$HOME/.local/state/armada-docker-smoke"; test ! -e "$HOME/.local/bin/armada-docker-host"; test ! -L "$HOME/.local/bin/armada-docker-host"'
 scp dist/armada-docker-host "$DOCKER_SSH:.local/bin/armada-docker-host"
-ssh -- "$DOCKER_SSH" 'chmod 700 "$HOME/.local/bin/armada-docker-host"; docker pull buildpack-deps:bookworm-curl'
-export DOCKER_IMAGE="$(ssh -- "$DOCKER_SSH" 'docker image inspect --format "{{index .RepoDigests 0}}" buildpack-deps:bookworm-curl')"
-# This plain Debian-based image contains CA roots, but no Armada runtime or Codex.
+ssh -- "$DOCKER_SSH" 'chmod 700 "$HOME/.local/bin/armada-docker-host"'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 read -r -s -p 'Staging org-admin Armada bearer: ' ARMADA_TOKEN; printf '\n'
 export ARMADA_TOKEN
 python3 scripts/smoke-docker-lifecycle.py \
@@ -374,10 +371,9 @@ It starts the daemon detached with `nohup setsid`, saving a private PID/log besi
 state. Do not register again if an exchange outcome is unknown: inspect that state
 or use a fresh admin registration ticket after checking whether exchange committed. Never replay an uncertain exchange.
 
-Expected script output: public `HOST_ID`, `SANDBOX_ID`, bootstrap/prompt/cleanup
-request IDs, then `DOCKER_OK` with harness-reported input/output tokens and `PASS`.
-The script waits for create ACK, issues one bootstrap, waits for epoch-bound Runner
-health, enqueues one durable Codex prompt and reads the **acknowledged server journal**
+Expected script output includes `HOST_ID`, `LAUNCH_KEY`, `SANDBOX_ID` and cleanup
+request IDs. The ordinary launch admits the first prompt after runtime enrolment.
+The script reads the **acknowledged server journal**
 until answer, finished status and token counters are present. Missing usage is
 unknown, never estimated; it fails the smoke rather than inventing a count.
 It then waits for stop and delete ACKs. Stages have a bounded ten-minute budget;
@@ -385,7 +381,7 @@ the server holds each daemon poll up to 20 seconds and cold artifacts can take t
 After failure it attempts only this sandbox's stop/delete; offline/uncertain cleanup
 stays unconfirmed, and printed IDs must be retained for reconciliation. Inspect the
 private daemon log, not tokens or credential state. No readiness is inferred from
-a host ACK or an HTTP enqueue response. Cost may remain unknown in this preview.
+a host ACK or an HTTP enqueue response.
 
 Run with `--host-id <printed-HOST_ID>` to reuse a host that is already registered
 and running. Add `--start-host` if its daemon was stopped: the script starts it
@@ -402,19 +398,6 @@ Protocol responses and Docker inspection output are bounded. Raw parser,
 transport, and Docker diagnostics can contain private data and are kept out
 of command error output. The server checks retained-output admission before
 the daemon reads or uploads the archive, fencing tainted or superseded work.
-
-Bearer-only POST JSON under `/api/v1/docker/sandboxes/`; no browser Origin/cookie
-authority. Every body has `org`; all except launch have `sandboxId`.
-
-| Operation | Additional fields | Expected result |
-| --- | --- | --- |
-| `launch` | `requestId`, `hostId`, digest-pinned `image`, `credentialId`, `credentialVersion`; optional `ttlSeconds`, `model`, `reasoningEffort` | 201 private Docker record, initially starting; requestId is sandbox/create ID |
-| `bootstrap` | `requestId` | 202 original bound bootstrap phase; call only after create job completes |
-| `ready` | `requestId` | 202 pending, or 200 ready after real same-epoch health |
-| `journal` | optional numeric sequence `cursor`, `limit` 1..100 | 200 events with sequence, cursor, hasMore and saved usage |
-| `get` | none | 200 safe retained metadata/status |
-| `stop`, `delete` | `requestId` | 202 machine job; delete requires confirmed stopped/failed/deleted state |
-| `job` | `requestId` | pending/completed/failed state, or null if absent |
 
 Keep stable UUIDs for launch/bootstrap/health/cleanup retries. Never generate
 replacement operations for an unknown result. Bootstrap retries cannot rotate a
@@ -501,7 +484,7 @@ a pre-existing binary/state or a shared pulled image. The managed installer belo
 ## Local checks
 
 ```sh
-bun test packages/mcp-server/test/docker-runtime-lifecycle.test.ts packages/mcp-server/test/docker-sandbox-routes.test.ts packages/docker-host/test packages/core/test/docker-machine.test.ts
+bun test packages/mcp-server/test/docker-runtime-lifecycle.test.ts packages/docker-host/test packages/core/test/docker-machine.test.ts
 ```
 
 Migrated SQL plus fake host facts/Docker CLI protect dispatch, admission, durable
@@ -528,7 +511,7 @@ export ARMADA_STAGING='https://armada-mcp-staging.up.railway.app'
 export ARMADA_ORG='YOUR_STAGING_ORG_UUID'
 export ARMADA_CREDENTIAL='YOUR_CODEX_ACCOUNT_UUID'
 export ARMADA_CREDENTIAL_VERSION='1' # current pin from the passed check
-export DOCKER_IMAGE='YOUR_PREVIOUSLY_VERIFIED_DIGEST_PINNED_IMAGE'
+export DOCKER_IMAGE='DEPLOYED_ARMADA_OFFICIAL_IMAGE_DIGEST'
 export DOCKER_HOST_ID='YOUR_EXISTING_REGISTERED_HOST_UUID'
 bun build packages/docker-host/src/main.ts --compile --target=bun-linux-x64 --outfile dist/armada-docker-host
 ssh -- "$DOCKER_SSH" 'set -eu; state="$HOME/.local/state/armada-docker-smoke"; test -f "$state/state.json"; test ! -e "$state/daemon.lock"; test ! -L "$state/daemon.lock"; test ! -e "$HOME/.local/bin/armada-docker-host-1165-next"; test ! -L "$HOME/.local/bin/armada-docker-host-1165-next"'
@@ -1127,7 +1110,7 @@ Old daemons with no availability report retain total-hardware behavior; their
 next poll clears old availability values. New daemons fall back to the earlier
 quota handshake if a preceding server rejects the new fields, preserving manual
 limits during an upgrade. A full host returns HTTP 409 with `host_full` through
-normal control and preview APIs; CLI JSON retains that code and both clients
+the normal control API. CLI JSON retains that code and both clients
 provide stop/raise-limit guidance rather than claiming an unknown launch outcome.
 
 Coordinator-only follow-up acceptance: on the verified owner host, compare idle
@@ -1159,9 +1142,10 @@ ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --onl
 
 The server must advertise its snapshot launch source and capability. The
 probe launches via normal `sandbox/launch` with the selected `snapshotId` and
-`hostId`. Require exact snapshot/host/image/
-organization/owner identity in its receipt, a real finished answer, and confirmed
-stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
+`hostId`. The owner-filtered sandbox inventory in the configured organization
+identifies the launch by its external reference. The status response confirms the
+exact snapshot, host and image. The probe also requires a finished answer and
+confirmed stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
 malformed or mismatched identity cannot pass. A rejected receipt with a known
 sandbox ID is still journaled and cleaned up.
 

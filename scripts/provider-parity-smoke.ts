@@ -681,8 +681,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       snapshotId?: string;
       hostId?: string;
       image?: string;
-      orgId?: string;
-      ownerId?: string;
       visibility?: string;
     };
 
@@ -691,13 +689,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         receipt.snapshotId === snapshot.id &&
         receipt.hostId === snapshot.hostId &&
         receipt.image === snapshot.image &&
-        receipt.orgId === snapshot.orgId &&
-        receipt.ownerId === snapshot.ownerId &&
         receipt.visibility === "private"
       );
     }
 
-    async function launchWithObservation(provider: "modal" | "docker") {
+    async function launchWithObservation(provider: "boat" | "modal" | "docker") {
       const started = io.now();
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const step = dockerSnapshot ? "parity_docker_snapshot_launch" : `parity_${provider}_launch`;
@@ -709,7 +705,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 
       async function claim(sandboxId: string) {
         id = sandboxId;
-        await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
+        if (provider !== "boat") await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
       const dockerInput = launchSource === "host" ? dockerLaunchInput() : undefined;
@@ -738,12 +734,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
           const statusBudget = readBudget();
           if (statusBudget <= 0) return;
-          const status = await request<{
-            id: string;
-            status: string;
-            settled?: boolean;
-            statusMessage?: string | null;
-          }>("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
+          const status = await request<
+            LaunchSandbox & {
+              status: string;
+              settled?: boolean;
+              statusMessage?: string | null;
+            }
+          >("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
           if (status?.id !== row.id) return;
           if (!dockerInput) {
             if (status.settled !== true) return;
@@ -752,22 +749,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           }
           if (status.status !== "ready" && status.status !== "running") return;
           if (!dockerSnapshot) return row;
-          const receiptBudget = readBudget();
-          if (receiptBudget <= 0) return;
-          const receipt = await request<LaunchSandbox & { status: string }>(
-            "docker/sandboxes/get",
-            { org: dockerSnapshot.orgId, sandboxId: row.id },
-            receiptBudget,
-          ).catch(() => undefined);
-          if (!receipt) return;
-          if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))
+          if (status.provider !== provider || !matchesSnapshot(status, dockerSnapshot))
             throw new ParityError({
               ...detail,
               code: "invalid_snapshot_source",
               message: "The recovered sandbox does not match the requested Docker snapshot.",
               requestKey,
             });
-          if (receipt.status === "ready" || receipt.status === "running") return receipt;
+          return status;
         });
       let result: { sandbox: LaunchSandbox } | ModalLaunchReceipt;
       try {
@@ -2217,29 +2206,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     );
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
-                : c.provider === "modal" || c.provider === "docker"
-                  ? await launchWithObservation(c.provider)
-                  : await api<{
-                      sandbox: {
-                        id: string;
-                        provider: string;
-                        snapshotId?: string;
-                        hostId?: string;
-                        image?: string;
-                        orgId?: string;
-                        ownerId?: string;
-                        visibility?: string;
-                      };
-                    }>("sandbox/launch", {
-                      provider: c.provider,
-                      harness: c.harness,
-                      model: c.model,
-                      credentialId: c.modelAccountId,
-                      visibility: "private",
-                      ttlSeconds: 1800,
-                      golden: c.golden,
-                      connections: [],
-                    });
+                : await launchWithObservation(c.provider);
           if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== c.provider)
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;

@@ -4,9 +4,6 @@ import { handleControlRequest } from "./control.ts";
 import { createDockerHostInstallRoute } from "./docker-host-install.ts";
 import { createDockerHostRoutes } from "./docker-host-routes.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
-import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
-import { createDockerSandboxRoutes } from "./docker-sandbox-routes.ts";
-import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createDockerSnapshots } from "./docker-snapshots.ts";
 import { inboundTriggerAdminRoute } from "./inbound-trigger-admin.ts";
 import { inboundTriggerRoute } from "./inbound-trigger-route.ts";
@@ -34,18 +31,10 @@ const triggerMounts: MountFactory = (services) => {
 };
 
 export const dockerMounts: MountFactory = (services, configureRequestTimeout) => {
-  const { env, sql, config, options, store, githubApp, dockerEnabled, dockerBootstrap, dockerLaunchEnabled } = services;
+  const { env, sql, config, options, store, githubApp, dockerLaunchEnabled } = services;
   return [
     ...(env.ARMADA_DOCKER_HOSTS === "1"
       ? [
-          createDockerSandboxRoutes(
-            {
-              sandboxes: createDockerSandboxService(sql, config.encryptionKey, { enabled: dockerEnabled }),
-              ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
-              runtime: createDockerRuntimeLifecycle(sql, config.encryptionKey, { enabled: dockerEnabled }),
-            },
-            authenticate(services),
-          ),
           createDockerHostRoutes(createDockerHostStore(sql, config.encryptionKey), authenticate(services), {
             placement: dockerLaunchEnabled,
             ...(options.log ? { log: options.log } : {}),

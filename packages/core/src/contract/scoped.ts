@@ -110,7 +110,7 @@ const scopedUsage = sandboxUsage.extend({
 const readResult = z.looseObject({
   id: z.uuid(),
   provider: z.enum(SANDBOX_PROVIDERS),
-  providerSandboxId: z.string(),
+  providerSandboxId: z.string().nullable(),
   goldenId: z.uuid(),
   orgId: z.uuid(),
   ownerId: z.uuid(),

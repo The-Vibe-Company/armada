@@ -1,8 +1,11 @@
 import { capabilities } from "@armada/core/machine-capabilities";
 import { resolveBoatKey, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core/server";
-import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
+import { BoatRetentionUnconfirmed, startBoatRuntime } from "@armada/provider-boat";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
+import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
+import { createRuntimeLaunch, type RuntimeLaunchOptions, type RuntimeLaunchPolicy } from "./runtime-launch.ts";
+import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 import { BoatResumeActivationUncertain } from "./runtime-resume.ts";
 import { type RuntimeResumeOptions, runtimeResumePlacement } from "./runtime-resume-placement.ts";
 
@@ -71,4 +74,38 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
     },
     stop: (host, sandbox) => host.stopBestEffort(sandbox.providerSandboxId),
   });
+}
+
+export function createBoatResumePolicy(
+  options: RuntimeLaunchOptions & {
+    modelAuth?: RuntimeConfigurationInput["modelAuth"];
+  },
+) {
+  const startRuntime = createRuntimeLaunch(options, "boat", (sandbox) => sandbox.boatRuntime === true);
+  const manifest = structuredClone(options.manifest);
+  const { architecture, modelAuth } = options;
+  return {
+    supportsScopedAccess: true,
+    async start(input) {
+      const { host, actor, sandbox, credentials } = input;
+      return startRuntime({
+        input,
+        configure: () =>
+          runtimeConfigurationWithVariables(
+            options.sql,
+            {
+              actor,
+              sandbox,
+              credentials,
+              manifest,
+              architecture,
+              ...(modelAuth ? { modelAuth } : {}),
+            },
+            "boat",
+            "boat_runtime_empty_v1",
+          ),
+        bootstrap: () => (request) => startBoatRuntime(host, request),
+      });
+    },
+  } satisfies RuntimeLaunchPolicy;
 }

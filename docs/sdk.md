@@ -22,6 +22,9 @@ The client defaults to the Armada dashboard origin. It sends its service token o
 
 Antigravity launches use `harness: "antigravity"`, a compatible `credentialId`, and optionally `model: "default"`. The server admits Antigravity on Modal and Docker. See [Antigravity runtime](runtime/antigravity.md) for account setup.
 
+For a Docker sandbox launched from a snapshot, `client.status({ id })` reports
+the recorded `snapshotId` alongside the host and image.
+
 Read the Armada ID from `result.sandbox.id`. Ordinary Docker launches and Modal golden launches return the minimal `ModalLaunchReceipt` variant of `LaunchResult`, which contains just `sandbox.id` and `sandbox.status`. The launch answers `starting` at admission and can return a later status on replay. Narrow with `"golden" in result` before using the full envelope's fields. In the full envelope, `promptId` and `conversationId` are null when their IDs are unavailable. Read the provider ID from the full envelope's `sandbox.providerSandboxId` or from a later sandbox list response, where it is nullable.
 
 For a pinned Modal template, pass `PinnedModalLaunchInput` to `launch` with

@@ -12,7 +12,7 @@ observation, never interchangeable with this enum.
 
 | Operation / writer | Transition and evidence |
 | --- | --- |
-| Launch (`core/src/launch.ts`) | Insert starting; initialization publishes ready, or failure records failed. A prompt can begin running. |
+| Launch (`jobs/modal-launch.ts` and the Docker launch producer) | Admission inserts starting with the launch job. Runtime enrolment publishes ready and the job settles launch failure. |
 | Send / turn tracking (`mcp-server/src/tools.ts`, `turns.ts`) | Admit activity under a lease; running reflects a turn, not a new machine. Completion can return to ready or record failure. |
 | Stop (`tools.ts`, `sandbox-lifecycle.ts`) | Reserve stop, attempt bounded best-effort preservation, request provider stop; stopping is not proof of physical exit. |
 | Reconcile (`sandbox-lifecycle.ts`) | Lease and generation-fence observations; stop on explicit request, interrupted starting, or expiry. Confirmed terminal provider state records stopped; failed launches retain failed and their diagnostic. Physical exit without verified recovery records failed. |

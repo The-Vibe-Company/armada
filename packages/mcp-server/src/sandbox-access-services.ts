@@ -1,4 +1,4 @@
-import type { LaunchOptions, LaunchStores } from "@armada/core/server";
+import type { LaunchStores } from "@armada/core/server";
 import {
   createSqlGoldenStore,
   createSqlSandboxStore,
@@ -7,20 +7,19 @@ import {
   mapSandboxRow,
   type ProviderRegistry,
   resolveCredentials,
-  type SandboxProviderId,
   type SandboxRow,
   type Sql,
   sandboxActivity,
 } from "@armada/core/server";
 import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import type { AdmitModalLaunch } from "./modal-launch-admission.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import { ChildLaunchNotAllocated, launchSandboxChild } from "./sandbox-access-child-launch.ts";
+import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import {
   type ChildOperation,
   createSandboxChildren,
@@ -40,12 +39,10 @@ class DelegatedAccessError extends Error {
 
 /** Scoped ordinary-sandbox child operations, with no owner runtime or parent reconciler. */
 export function createSandboxAccessServices(input: {
-  extensionHeadroomSeconds?: number;
   sql: Sql;
   providers: ProviderRegistry;
-  credentials: NamedLaunchCredentials;
   connections: LaunchStores["connections"];
-  runtimePlacements?: Partial<Record<SandboxProviderId, LaunchOptions["modalRuntimeDefault"]>>;
+  admitLaunch?: AdmitModalLaunch;
   runtimeSend?: RuntimeFollowup;
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
@@ -63,8 +60,6 @@ export function createSandboxAccessServices(input: {
   const stores = {
     goldens: createSqlGoldenStore(sql),
     sandboxes: createSqlSandboxStore(sql, { turnModels: true }),
-    credentials: input.credentials,
-    ...(input.connections ? { connections: input.connections } : {}),
   };
   async function child(sandboxId: string, ownerId: string, orgId: string) {
     const row = (
@@ -222,54 +217,26 @@ export function createSandboxAccessServices(input: {
   }
   const executor: SandboxChildExecutor = {
     async launch(operation, chosen) {
+      const { goldenId, credentialVersion, ...selection } = chosen;
       const goldens = await stores.goldens.list(operation.orgId).catch((error) => {
         throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup", error);
       });
-      const golden = goldens.find((g) => g.id === chosen.goldenId);
+      const golden = goldens.find((candidate) => candidate.id === goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
-      const placement = input.runtimePlacements?.[golden.provider];
-      if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
+      if (!input.admitLaunch) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
-      const privateTarget = { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility };
-      const provider = await placement.provider(actor, privateTarget).catch((error) => {
-        throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement", error);
-      });
-      return launchSandboxChild({
-        sql,
-        operation,
-        selection: chosen,
-        ...(input.extensionHeadroomSeconds === undefined
-          ? {}
-          : { extensionHeadroomSeconds: input.extensionHeadroomSeconds }),
-        stores: {
-          ...stores,
-          credentials: placement.credentials,
-          connections: placement.connections,
-          // Children are ordinary sandboxes: initialization owns the same activity
-          // lease as a public launch. The legacy service store does not fence the
-          // lifecycle observer, which otherwise treats "starting" as abandoned.
-          sandboxes: createSqlData(sql)({
-            via: "service",
-            userId: operation.ownerId,
-            orgs: [{ orgId: operation.orgId, role: "member" }],
-          }).sandboxes,
-          goldens: new Proxy(stores.goldens, {
-            get(target, key) {
-              if (key === "findByName")
-                return async (orgId: string, name: string) =>
-                  (await target.findByName(orgId, name)).filter((candidate) => candidate.id === chosen.goldenId);
-              const value = Reflect.get(target, key, target);
-              return typeof value === "function" ? value.bind(target) : value;
-            },
-          }),
-        },
-        namedCredentials: placement.credentials,
-        runtime: placement.policy,
-        provider,
-      });
+      await input.admitLaunch(
+        actor,
+        golden,
+        stores,
+        { ...selection, golden: golden.name, provider: golden.provider },
+        { child: { operation, credentialVersion } },
+      );
     },
     async read(id, ownerId, orgId) {
       const { saved, resolveProvider } = await child(id, ownerId, orgId);
+      if (!saved.providerSandboxId)
+        return { ...saved, providerSandboxId: null, events: [], cursor: null, hasMore: false };
       const provider = await resolveProvider();
       const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
       return {
@@ -310,16 +277,12 @@ export function createSandboxAccessServices(input: {
       signal?.throwIfAborted();
       const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
       const provider = await resolveProvider();
-      const physical = await provider.get(saved.providerSandboxId, { ...(signal ? { signal } : {}) });
-      const closed = physical.state === "stopped";
+      await provider.get(saved.providerSandboxId, { ...(signal ? { signal } : {}) });
       return {
         operationId: operation.id,
         sandboxId: operation.sandboxId,
-        // Current stopped state is closure evidence, NOT proof that this exact
-        // message/stop operation succeeded. Never replay an ambiguous mutation.
+        // A provider observation does not establish the outcome of an exact mutation.
         state: "unknown",
-        providerSandboxId: saved.providerSandboxId,
-        ...(operation.action === "launch" && closed ? { resourceStopped: true } : {}),
       };
     },
   };

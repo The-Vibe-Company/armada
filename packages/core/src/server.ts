@@ -49,12 +49,12 @@ export {
   withGoldenDirs,
 } from "./golden-create-service.ts";
 export { type GoldenGitHubAdapterOptions, goldenGitHubAdapter } from "./golden-github.ts";
+export { prepareGoldenLaunch, requireRuntimeHarness } from "./golden-launch-admission.ts";
 export { snapshotGolden } from "./golden-runtime.ts";
 export { GITHUB_TOKEN_PATTERN, goldenScanScript, scanGoldenSandbox } from "./golden-scan.ts";
 export * from "./golden-snapshot-retirement.ts";
 export { assertSqlGoldenMutation, beginSnapshotLaunch } from "./golden-store.ts";
 export * from "./index.ts";
-export { prepareGoldenLaunch, prepareLaunchWorkspace, requireRuntimeHarness } from "./launch.ts";
 export {
   admitLaunchPlan,
   applyLaunchAccountDefaults,
@@ -66,6 +66,7 @@ export {
 export { assertLaunchSecretBindings, resolveLaunchSecrets } from "./launch-secrets.ts";
 export { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 export { resolveLaunchVariables } from "./launch-variables.ts";
+export { prepareLaunchWorkspace } from "./launch-workspace.ts";
 export * from "./machine.ts";
 export { type FailureDiagnostic, failureDiagnostic, retainFailureDiagnostic } from "./operator-failure.ts";
 export {

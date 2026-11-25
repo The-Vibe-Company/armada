@@ -239,17 +239,15 @@ def main():
     parser.add_argument("--model")
     parser.add_argument("--snapshot", action="store_true", help="Build a private host snapshot from --config, then launch its baked repos/init through the normal route")
     parser.add_argument("--config", help="Versionable golden JSON for --snapshot; product-written snapshot receipt proves baked initialization")
-    parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1; implies --normal-launch")
-    parser.add_argument("--secret", help="Secret binding KEY:UUID:VERSION; expected SHA256 in ARMADA_DOCKER_SECRET_SHA256; implies --normal-launch")
-    parser.add_argument("--variable", help="Readable binding KEY:UUID:VERSION; expected value in ARMADA_DOCKER_VARIABLE_EXPECTED; implies --normal-launch")
+    parser.add_argument("--repository", help="Clone owner/repo before the first prompt and prove git log -1")
+    parser.add_argument("--secret", help="Secret binding KEY:UUID:VERSION; expected SHA256 in ARMADA_DOCKER_SECRET_SHA256")
+    parser.add_argument("--variable", help="Readable binding KEY:UUID:VERSION; expected value in ARMADA_DOCKER_VARIABLE_EXPECTED")
     parser.add_argument("--github", action="store_true", help="Prove gh API credential delivery, explicit refresh and follow-up; requires --repository")
     parser.add_argument("--branch", default="main", help="Repository branch for --repository")
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
-    parser.add_argument("--normal-controls", action="store_true", help="Stop/delete through normal sandbox API")
-    parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
-    parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
+    parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history")
     parser.add_argument("--template", action="store_true", help="Create a temporary Docker template and prove its native first prompt")
     parser.add_argument("--routine", action="store_true", help="Also prove a scheduled owner routine and original-prompt observation; implies --template")
     parser.add_argument("--service-install", action="store_true", help="Restart an installed user service, normal launch and uninstall after cleanup")
@@ -266,8 +264,6 @@ def main():
         args.template = True
     if args.template and args.credential_version is None:
         parser.error("--template/--routine require --credential-version to pin their model account")
-    if args.template or args.mcp or args.skills or args.skill_defaults:
-        args.normal_launch = True
     if bool(args.mcp) != bool(args.mcp_tool):
         parser.error("--mcp and --mcp-tool must be supplied together")
     if args.mcp:
@@ -294,13 +290,10 @@ def main():
                 raise ValueError()
         except (OSError, ValueError, TypeError):
             parser.error("--snapshot config must be bounded golden JSON with an explicit first repo dir")
-        args.normal_launch = True
     elif args.config or not args.image:
         parser.error("Use --image, or --snapshot --config FILE")
     if not args.ssh and (not args.host_id or args.start_host):
         parser.error("--ssh is required to register or start a host")
-    if args.exec or args.steer or args.interrupt:
-        args.normal_launch = True
     if args.cost or args.claude or args.opencode:
         args.normal_lifecycle = True
     variable_binding = None
@@ -316,7 +309,6 @@ def main():
         if not variable_expected or args.claude or args.opencode:
             parser.error("--variable requires nonempty ARMADA_DOCKER_VARIABLE_EXPECTED and Codex command evidence")
         variable_binding = {"key": parts[0], "variableId": variable_id, "version": int(parts[2])}
-        args.normal_launch = True
     secret_binding = None
     secret_sha256 = os.environ.get("ARMADA_DOCKER_SECRET_SHA256", "")
     if args.secret:
@@ -330,7 +322,6 @@ def main():
         if not re.fullmatch(r"[0-9a-f]{64}", secret_sha256) or args.claude or args.opencode:
             parser.error("--secret requires ARMADA_DOCKER_SECRET_SHA256 and Codex command evidence")
         secret_binding = {"key": parts[0], "secretId": secret_id, "version": int(parts[2])}
-        args.normal_launch = True
     if args.github:
         if not args.repository:
             parser.error("--github requires --repository")
@@ -340,16 +331,11 @@ def main():
             parser.error("--repository currently verifies Codex commandExecution evidence only")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", args.repository):
             parser.error("--repository requires owner/repo")
-        args.normal_launch = True
     if args.service_install:
         if not args.host_id or args.start_host:
             parser.error("--service-install requires --host-id for the new managed installation, without --start-host")
-        args.normal_launch = True
     if args.normal_lifecycle:
-        args.normal_launch = True
         args.follow_up = True
-    if args.normal_launch:
-        args.normal_controls = True
     if args.start_host and not args.host_id:
         parser.error("--start-host requires --host-id")
     origin = urllib.parse.urlsplit(args.server)
@@ -385,18 +371,6 @@ def main():
         except (OSError, ValueError):
             raise RuntimeError(f"{path}: response unknown; retain printed IDs for reconciliation") from None
 
-    def wait_for(operation, body, expected):
-        deadline = time.monotonic() + args.timeout
-        while True:
-            value = api("sandboxes/" + operation, body)
-            if value and value.get("state") == expected:
-                return value
-            if value and value.get("state") == "failed":
-                raise RuntimeError(f"{operation}: host job failed")
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"{operation}: timeout; outcome still unknown")
-            time.sleep(2)
-
     def ssh(command, private_input=None, timeout=60):
         # Do not forward the user's API bearer via an SSH SendEnv configuration.
         env = {k: v for k, v in os.environ.items() if k != "ARMADA_TOKEN"}
@@ -426,17 +400,11 @@ def main():
             '>"$state/daemon.log" 2>&1 </dev/null & echo $! >"$state/smoke.pid"')
     sandbox_id = None
     launch = {"hostId": host_id, "credentialId": args.credential}
-    if args.normal_launch:
-        launch["idempotencyKey"] = str(uuid.uuid4())
-        launch["externalRef"] = launch["idempotencyKey"]
-        print("LAUNCH_KEY=" + launch["idempotencyKey"], flush=True)
-    else:
-        sandbox_id = str(uuid.uuid4())
-        print("SANDBOX_ID=" + sandbox_id, flush=True)
-        launch["requestId"] = sandbox_id
-        launch["image"] = args.image  # Existing operator preview only.
-    if args.credential_version is not None or not args.normal_launch:
-        launch["credentialVersion"] = args.credential_version if args.credential_version is not None else 1
+    launch["idempotencyKey"] = str(uuid.uuid4())
+    launch["externalRef"] = launch["idempotencyKey"]
+    print("LAUNCH_KEY=" + launch["idempotencyKey"], flush=True)
+    if args.credential_version is not None:
+        launch["credentialVersion"] = args.credential_version
     if args.model:
         launch["model"] = args.model
     if args.mcp:
@@ -518,41 +486,31 @@ def main():
 
     submitted_normal_launch = False
     try:
-        launch_receipt = None
-        if args.normal_launch:
-            options = api("launch/options", {}, normal=True)
-            docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
-            if docker.get("capabilities", {}).get("launch") is not True:
-                raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
-            if harness not in docker.get("harnesses", []):
-                raise RuntimeError("Requested Docker harness is not advertised by launch/options")
-            launch.update({"provider": "docker", "harness": harness, "visibility": "private",
-                           "prompt": initial_task})
-            submitted_normal_launch = True
-            launched = normal_launch_receipt(api, launch, args.timeout, on_admission=record_admission)
-            placement = api("sandboxes/get", {"sandboxId": sandbox_id})
-            if (placement.get("image") != expected_image
-                    or (args.snapshot and placement.get("snapshotId") != snapshot_id)):
-                raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
-            launch_receipt = launched["prompt"]
-            if args.skills or args.skill_defaults:
-                receipts = launched.get("skills", [])
-                if (not receipts or not set(args.skills).issubset({r.get("reference") for r in receipts})
-                        or any(not isinstance(r.get("checksum"), str) or not r["checksum"].startswith("sha256:")
-                               or len(r["checksum"]) != 71 or r.get("origin") != "https://skillpack.app/v1" for r in receipts)):
-                    raise RuntimeError("Verified Skillpack receipts were not returned before the first prompt")
-                print("PASS: explicit/default skills returned verified receipts before first prompt.")
-            listed = api("sandbox/list", {"owner": "me", "limit": 100}, normal=True)
-            if not any(row.get("id") == sandbox_id and row.get("provider") == "docker"
-                       for row in listed.get("sandboxes", [])):
-                raise RuntimeError("Normal launch did not appear in the normal sandbox list")
-        else:
-            api("sandboxes/launch", launch)
-            wait_for("job", {"sandboxId": sandbox_id, "requestId": sandbox_id}, "completed")
-            bootstrap_id = str(uuid.uuid4())
-            print("BOOTSTRAP_ID=" + bootstrap_id, flush=True)
-            api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
-            wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
+        options = api("launch/options", {}, normal=True)
+        docker = next((p for p in options.get("providers", []) if p.get("id") == "docker"), {})
+        if docker.get("capabilities", {}).get("launch") is not True:
+            raise RuntimeError("Normal Docker launch is not enabled; check server opt-ins and installed runtime manifest")
+        if harness not in docker.get("harnesses", []):
+            raise RuntimeError("Requested Docker harness is not advertised by launch/options")
+        launch.update({"provider": "docker", "harness": harness, "visibility": "private",
+                       "prompt": initial_task})
+        submitted_normal_launch = True
+        launched = normal_launch_receipt(api, launch, args.timeout, on_admission=record_admission)
+        if (launched.get("hostId") != host_id or launched.get("image") != expected_image
+                or (args.snapshot and launched.get("snapshotId") != snapshot_id)):
+            raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
+        launch_receipt = launched["prompt"]
+        if args.skills or args.skill_defaults:
+            receipts = launched.get("skills", [])
+            if (not receipts or not set(args.skills).issubset({r.get("reference") for r in receipts})
+                    or any(not isinstance(r.get("checksum"), str) or not r["checksum"].startswith("sha256:")
+                           or len(r["checksum"]) != 71 or r.get("origin") != "https://skillpack.app/v1" for r in receipts)):
+                raise RuntimeError("Verified Skillpack receipts were not returned before the first prompt")
+            print("PASS: explicit/default skills returned verified receipts before first prompt.")
+        listed = api("sandbox/list", {"owner": "me", "limit": 100}, normal=True)
+        if not any(row.get("id") == sandbox_id and row.get("provider") == "docker"
+                   for row in listed.get("sandboxes", [])):
+            raise RuntimeError("Normal launch did not appear in the normal sandbox list")
         cursor = None
 
         priced_turns = {}
@@ -801,23 +759,17 @@ def main():
                 for operation in ("stop", "delete"):
                     request_id = str(uuid.uuid4())
                     print(operation.upper() + "_ID=" + request_id, flush=True)
-                    if args.normal_controls:
-                        reply = sandbox_cleanup(api, operation, sandbox_id, request_id)
-                        expected = ("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)
-                        if reply.get("status") not in expected:
-                            raise RuntimeError("Normal Docker cleanup ACK was not confirmed")
-                    else:
-                        api("sandboxes/" + operation, {"sandboxId": sandbox_id, "requestId": request_id})
-                        wait_for("job", {"sandboxId": sandbox_id, "requestId": request_id}, "completed")
+                    reply = sandbox_cleanup(api, operation, sandbox_id, request_id)
+                    expected = ("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)
+                    if reply.get("status") not in expected:
+                        raise RuntimeError("Normal Docker cleanup ACK was not confirmed")
             except RuntimeError:
                 print("Cleanup unconfirmed; retain IDs, reconnect host and reconcile stop/delete.", file=sys.stderr)
                 raise
     print("PASS: same-conversation follow-up recalled marker; both turns reported tokens; stop/delete ACKed."
           if args.follow_up else "PASS: one runtime-journal answer with reported tokens; stop/delete ACKed.")
-    if args.normal_controls:
-        print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
-    if args.normal_launch:
-        print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
+    print("PASS: normal Docker status/logs and stop/delete routes confirmed.")
+    print("PASS: normal Docker launch route created, bootstrapped and admitted one prompt; list/status/logs/answer/stop/delete confirmed.")
     if args.cost:
         print("PASS: exact per-turn/session USD and immutable prior quotes survived follow-up and resume.")
     if args.claude or args.opencode:
