@@ -211,10 +211,16 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
   const fixture = scopedRuntimeFixture(() => stopped("codex", placement), { perTest: true });
   const scenarios =
     placement === "boat"
-      ? (["recovered", "expired", "owner stop", "credential retry"] as const)
-      : (["recovered", "expired"] as const);
+      ? (["recovered", "expired", "owner stop", "credential retry", "exhausted"] as const)
+      : (["recovered", "expired", "exhausted"] as const);
   test.each([...scenarios])("reconciles resume across %s", async (scenario) => {
     const expired = scenario === "expired";
+    if (scenario === "exhausted")
+      await f.sql.query("update public.sandboxes set lifecycle_generation=$2::bigint where id=$1", [
+        f.row.id,
+        String(Number.MAX_SAFE_INTEGER - (placement === "boat" ? 1 : 0)),
+      ]);
+
     const f = await fixture();
     const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
     const firstGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
@@ -371,6 +377,17 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
         expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
       }
       await runTurn();
+      if (scenario === "exhausted") {
+        expect(await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id)).toMatchObject({
+          status: "stopped",
+          lifecycleGeneration: firstGeneration,
+        });
+        expect(
+          (await f.sql.query("select id from jobs where sandbox_id=$1 and kind='resume'", [f.row.id])).rows,
+        ).toEqual([]);
+        expect(allocations).toBe(0);
+        return;
+      }
       await wake.promise;
       const receipt = waiting ?? readReceipt();
       if (scenario === "recovered" || scenario === "credential retry")
