@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Empty, PageHeader } from "@/components/page-header";
 import type { ResourceRow } from "@/components/resource-browser";
 import { ResourceBrowser } from "@/components/resource-browser";
-import { RowTag } from "@/components/state-cell";
+import { RowTag, StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -161,7 +161,7 @@ function row(
     ),
     meta,
     subtitle: meta,
-    state: null,
+    state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
     detail: (
       <div className="space-y-4">
         <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />

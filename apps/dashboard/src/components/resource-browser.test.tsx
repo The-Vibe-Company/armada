@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
 import { ResourceBrowser } from "./resource-browser";
 
-test("column-based resources share a semantic table and a responsive card layout", () => {
+test("column-based resources render a desktop table and mobile list items", () => {
   const html = renderToString(
     <ResourceBrowser
       title="Variables"
@@ -28,10 +28,9 @@ test("column-based resources share a semantic table and a responsive card layout
     />,
   );
 
-  expect(html).toMatch(/<table[^>]*aria-label="Settings and secrets"/);
+  expect(html).toMatch(/<table[^>]*aria-label="Settings and secrets"[^>]*md:table/);
   expect(html).toMatch(/<th[^>]*scope="col"[^>]*>Kind<\/th>/);
-  expect(html).toMatch(/<tr[^>]*class="[^"]*grid[^"]*md:table-row[^"]*"/);
-  expect(html).toContain('href="?scope=org&amp;item=region"');
-  expect(html).toContain(">REGION</span>");
-  expect(html).toContain(">Variable</div>");
+  expect(html).toMatch(/<ul[^>]*aria-label="Settings and secrets"[^>]*md:hidden[^>]*><li/);
+  expect(html.slice(html.indexOf("<li"))).toContain('href="?scope=org&amp;item=region"');
+  expect(html).toContain(">Variable</dd>");
 });

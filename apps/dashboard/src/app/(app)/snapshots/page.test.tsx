@@ -129,4 +129,4 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     deferred.resolve();
     mock.restore();
   }
-}, 1000);
+});

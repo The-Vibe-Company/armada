@@ -6,6 +6,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import {
   type ComponentProps,
   createContext,
+  Fragment,
   type ReactNode,
   useCallback,
   useContext,
@@ -370,37 +371,51 @@ export function ResourceBrowser({
               )}
             </p>
           ) : variant === "table" && columns ? (
-            <table
-              aria-label={label}
-              className="block w-full text-left md:table md:border-separate md:border-spacing-0 md:rounded-xl md:border md:bg-card"
-            >
-              <thead className="sr-only bg-muted/60 text-xs text-muted-foreground md:not-sr-only">
-                <tr>
-                  {columns.map((column) => (
-                    <th
-                      key={column}
-                      scope="col"
-                      className="px-2 py-2.5 font-medium first:rounded-tl-xl first:pl-3 last:rounded-tr-xl last:pr-3 lg:px-3"
-                    >
-                      {column}
-                    </th>
+            <>
+              <table
+                aria-label={label}
+                className="hidden w-full border-separate border-spacing-0 rounded-xl border bg-card text-left md:table"
+              >
+                <thead className="bg-muted/60 text-xs text-muted-foreground">
+                  <tr>
+                    {columns.map((column) => (
+                      <th
+                        key={column}
+                        scope="col"
+                        className="px-2 py-2.5 font-medium first:rounded-tl-xl first:pl-3 last:rounded-tr-xl last:pr-3 lg:px-3"
+                      >
+                        {column}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((row) => (
+                    <Row
+                      key={row.key}
+                      row={row}
+                      variant="table"
+                      panelId={panelId}
+                      selected={selected === row.key}
+                      onSelect={() => select(row.key)}
+                    />
                   ))}
-                </tr>
-              </thead>
-              <tbody className="grid gap-2 md:table-row-group">
+                </tbody>
+              </table>
+              <ul aria-label={label} className="grid gap-2 md:hidden">
                 {shown.map((row) => (
                   <Row
                     key={row.key}
                     row={row}
                     columns={columns}
-                    variant="table"
+                    variant="card"
                     panelId={panelId}
                     selected={selected === row.key}
                     onSelect={() => select(row.key)}
                   />
                 ))}
-              </tbody>
-            </table>
+              </ul>
+            </>
           ) : (
             <ul
               aria-label={label}
@@ -550,7 +565,7 @@ function Row({
   panelId,
 }: {
   row: ResourceRow;
-  variant: "grid" | "table" | "list";
+  variant: "grid" | "table" | "list" | "card";
   columns?: string[];
   selected: boolean;
   onSelect: () => void;
@@ -598,35 +613,42 @@ function Row({
   );
   const attrs = { ...row.attrs, "data-selected": selected || undefined };
 
-  if (variant === "table" && columns) {
-    const cellClass = "min-w-0 wrap-anywhere text-[13px] md:table-cell md:border-t md:px-2 md:py-1.5 lg:px-3";
+  if (variant === "table") {
+    const cellClass = "border-t px-2 py-1.5 text-[13px] wrap-anywhere lg:px-3";
     return (
-      <tr
-        {...attrs}
-        className={cn(
-          interaction,
-          "grid gap-2 rounded-xl border bg-card p-3 md:table-row md:h-12 md:rounded-none md:border-0 md:bg-transparent md:p-0",
-        )}
-      >
-        <td className={cn(cellClass, "flex items-center gap-2 md:pl-3")}>
-          {row.mark}
-          {name}
+      <tr {...attrs} className={cn(interaction, "h-12")}>
+        <td className={cn(cellClass, "pl-3")}>
+          <div className="flex min-w-0 items-center gap-2">
+            {row.mark}
+            {name}
+          </div>
         </td>
-        {row.columns?.map((cell, index) => (
-          <td
-            key={cell.key}
-            className={cn(
-              cellClass,
-              "grid grid-cols-[7rem_minmax(0,1fr)] items-baseline gap-2 text-muted-foreground last:md:pr-3",
-            )}
-          >
-            <span aria-hidden className="text-xs md:hidden">
-              {columns[index + 1]}
-            </span>
-            <div className="relative z-10 min-w-0">{cell.content}</div>
+        {row.columns?.map((cell) => (
+          <td key={cell.key} className={cn(cellClass, "text-muted-foreground last:pr-3")}>
+            <div className="min-w-0 [&_button]:relative [&_button]:z-10 [&_a]:relative [&_a]:z-10">{cell.content}</div>
           </td>
         ))}
       </tr>
+    );
+  }
+
+  if (variant === "card" && columns) {
+    return (
+      <li {...attrs} className={cn(interaction, "grid min-w-0 gap-2 rounded-xl border bg-card p-3")}>
+        <div className="flex min-w-0 items-center gap-2">
+          {row.mark}
+          {name}
+        </div>
+        {row.state}
+        <dl className="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1.5 wrap-anywhere text-[13px]">
+          {row.columns?.map((cell, index) => (
+            <Fragment key={cell.key}>
+              <dt className="text-xs text-muted-foreground">{columns[index + 1]}</dt>
+              <dd className="min-w-0 [&_button]:relative [&_button]:z-10 [&_a]:relative [&_a]:z-10">{cell.content}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </li>
     );
   }
 
