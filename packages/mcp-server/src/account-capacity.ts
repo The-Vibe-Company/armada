@@ -139,3 +139,5 @@ export async function checkAccountLimits(
       );
   }
 }
+
+export const RELEASE_UPDATED_SANDBOX_RESERVATIONS = `released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)`;

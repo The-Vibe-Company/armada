@@ -10,7 +10,7 @@ import {
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { apiFailureCode } from "./api-failure.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
-import { DataError } from "./data.ts";
+import { DataError } from "./data-error.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { ToolError } from "./tool-error.ts";
 

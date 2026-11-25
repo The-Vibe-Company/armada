@@ -3,7 +3,8 @@ import { createSqlVaultStore, DelegatedAuthority, encryptSecret, type Sql } from
 import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
-import { createSqlData, DataError } from "../src/data.ts";
+import { createSqlData } from "../src/data.ts";
+import { DataError } from "../src/data-error.ts";
 import { createEventFeed } from "../src/event-feed.ts";
 import { runModalLaunch } from "../src/jobs/modal-launch.ts";
 import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";

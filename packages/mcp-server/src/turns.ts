@@ -20,7 +20,8 @@ import {
   usageUnavailableReason,
 } from "@armada/core";
 import { completedUsageTurns } from "./account-spend.ts";
-import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
+import type { SandboxView, ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { DataError } from "./data-error.ts";
 import { retainsDiskOnStop, runtimeBridgeProfile, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
