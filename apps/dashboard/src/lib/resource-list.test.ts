@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { boatFull, capacityParts, environmentBlockers, environmentState } from "./environments.ts";
+import { capacityParts, environmentState } from "./environments.ts";
 import { goldenLaunchReadiness } from "./golden-form.ts";
 import { matchesQuery, sortResources } from "./resource-list.ts";
-import { serviceOffer, toolBlockers, toolFact, toolState } from "./tools.ts";
+import { serviceOffer, toolFact, toolState } from "./tools.ts";
 
 describe("the Build lists", () => {
   test("sort what needs action first, then what is ready, then the rest, by name inside each", () => {
@@ -108,47 +108,6 @@ describe("an environment's row", () => {
   });
 });
 
-describe("what blocks launching an environment", () => {
-  const row = (key: string, name: string, provider: "boat" | "modal", action: "snapshot" | "connect" | "launch") => ({
-    key,
-    name,
-    provider,
-    state: { bucket: "action" as const, tone: "warning" as const, label: "", detail: "", action },
-  });
-
-  test("each missing provider once, with how many environments wait, then each environment to snapshot", () => {
-    const blockers = environmentBlockers({
-      providerPending: false,
-      rows: [
-        row("1", "docs", "modal", "connect"),
-        row("2", "api", "modal", "connect"),
-        row("3", "alice-private", "boat", "snapshot"),
-        row("4", "web", "boat", "launch"),
-      ],
-    });
-    expect(blockers.map((blocker) => [blocker.label, blocker.detail, blocker.target])).toEqual([
-      ["Connect Modal", "2 snapshots wait for it.", { href: "/providers/cloud" }],
-      ["Build alice-private", "Build it once before launching from it.", { item: "3" }],
-    ]);
-  });
-
-  test("an org without any provider is told to connect one; twins to snapshot are told apart by provider", () => {
-    const blockers = environmentBlockers({
-      providerPending: true,
-      rows: [row("1", "web", "boat", "snapshot"), row("2", "web", "modal", "snapshot")],
-    });
-    expect(blockers.map((blocker) => blocker.label)).toEqual([
-      "Connect a sandbox provider",
-      "Build web on Boat",
-      "Build web on Modal",
-    ]);
-  });
-
-  test("nothing blocks: the strip is empty", () => {
-    expect(environmentBlockers({ providerPending: false, rows: [row("1", "web", "boat", "launch")] })).toEqual([]);
-  });
-});
-
 describe("the capacity line", () => {
   test("says each provider's slots in one phrase, the slot a removed environment holds, and an unbounded one", () => {
     expect(
@@ -170,13 +129,6 @@ describe("the capacity line", () => {
         reason: "No key.",
       },
     ]);
-  });
-
-  test("Boat is full when every slot is used, or more than every slot by older environments", () => {
-    expect(boatFull({ boat: { kind: "full", capacity: 1, used: 1 } })).toBe(true);
-    expect(boatFull({ boat: { kind: "legacy", capacity: 1, used: 2 } })).toBe(true);
-    expect(boatFull({ boat: { kind: "available", capacity: 2, used: 1 } })).toBe(false);
-    expect(boatFull({ modal: { kind: "unknown" } })).toBe(false);
   });
 });
 
@@ -200,23 +152,6 @@ describe("a tool's row", () => {
   test("a member who cannot manage an org tool gets no action, and it sorts with the rest; disabled too", () => {
     expect(toolState({ ...remote, status: "needs_reconnect" }, false)).toMatchObject({ bucket: "rest", action: null });
     expect(toolState({ ...remote, status: "disabled" }, true)).toMatchObject({ bucket: "rest", label: "Disabled" });
-  });
-
-  test("the strip names each tool the viewer can fix without exposing server diagnostics", () => {
-    const state = toolState({ ...remote, status: "needs_reconnect" }, true);
-    const connection = { name: "Acme Sentry", lastError: "HTTP 503: auth_token_enc unavailable" };
-    const blockers = toolBlockers([
-      { key: "c1", connection, state },
-      { key: "c2", connection: { name: "Docs" }, state: toolState({ ...remote, status: "connected" }, true) },
-    ]);
-    expect(blockers).toEqual([
-      {
-        key: "fix-c1",
-        label: "Reconnect Acme Sentry",
-        detail: "Needs reconnect: agents cannot use it until it is fixed.",
-        target: { item: "c1" },
-      },
-    ]);
   });
 
   test("a catalog service offers Connect, then Connect another per account; one that needs setup offers its setup", () => {

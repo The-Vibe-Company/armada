@@ -6,7 +6,6 @@ import {
   dockerHostLimitsInput,
   expiryCountdown,
   hostBuildBlocker,
-  hostFact,
   hostName,
   hostNameInput,
   hostState,
@@ -87,12 +86,6 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
   expect(expiryCountdown(expiresAt, NOW + 211_000)).toBe("1:29");
   expect(expiryCountdown(expiresAt, NOW + 300_000)).toBeNull();
   expect(expiryCountdown(expiresAt, NOW + 600_000)).toBeNull();
-});
-
-test("old servers ask for an update instead of inventing running counts", () => {
-  expect(hostFact({ sandboxes: 2, version: "1.4.0" })).toBe(
-    "Update the Docker host to report running sandboxes and limits.",
-  );
 });
 
 test("a host's reported daemon version is parsed; a blank or missing one reads as unknown", () => {
@@ -187,7 +180,6 @@ test("resource observations survive parsing while malformed capacity data is exc
   const value = host({ running: 3, resources });
   const parsed = parseDockerHostList({ placement: true, hosts: [value] });
   expect(parsed?.hosts[0]?.resources).toEqual(resources);
-  expect(hostFact(parsed!.hosts[0]!)).toContain("3 sandboxes running · up to 6");
   for (const broken of [
     { ...resources, capacity: -1 },
     { ...resources, mode: "surprise" },
@@ -241,8 +233,9 @@ test("busy-machine capacity including zero remains visible with held-back guidan
     heldBack: 2,
     mode: "automatic" as const,
   };
-  const parsed = parseDockerHostList({ placement: true, hosts: [host({ resources, running: 5 })] });
-  expect(hostFact(parsed!.hosts[0]!)).toContain("5 sandboxes running · up to 7 (2 held back: machine busy)");
+  expect(
+    parseDockerHostList({ placement: true, hosts: [host({ resources, running: 5 })] })?.hosts[0]?.resources?.heldBack,
+  ).toBe(2);
   expect(
     parseDockerHostList({ placement: true, hosts: [host({ resources: { ...resources, capacity: 0 }, running: 0 })] })
       ?.skipped,

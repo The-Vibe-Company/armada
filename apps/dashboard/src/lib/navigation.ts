@@ -58,12 +58,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 export const isActiveLink = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
 /**
- * Whether the sidebar shows anything about organizations: the switcher only to someone who belongs to more than one,
- * and the "create one" prompt to someone with none in scope. A single organization shows nothing.
- */
-export const showsOrganizations = (memberships: number, selected: boolean) => !selected || memberships > 1;
-
-/**
  * Switch at section level, never carrying item IDs or filters into another organization.
  * Canonical sections come from the navigation catalog; older entry points stay supported.
  */

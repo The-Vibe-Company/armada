@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveLink, NAV_GROUPS, organizationSwitchDestination, showsOrganizations } from "./navigation.ts";
+import { isActiveLink, NAV_GROUPS, organizationSwitchDestination } from "./navigation.ts";
 
 describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order", () => {
@@ -20,12 +20,6 @@ describe("sidebar navigation", () => {
   test("links Machines to provider setup", () => {
     const machines = NAV_GROUPS.flatMap((group) => group.links).find((link) => link.label === "Machines");
     expect(machines?.href).toBe("/providers/cloud");
-  });
-
-  test("shows organizations only to a member of several, or to someone with none", () => {
-    expect(showsOrganizations(1, true)).toBe(false);
-    expect(showsOrganizations(2, true)).toBe(true);
-    expect(showsOrganizations(0, false)).toBe(true);
   });
 });
 
