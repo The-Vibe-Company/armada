@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import {
   isNativePathSource,
   isNonTestSource,
-  providerAdapterExclusions,
+  isProviderBranchSource,
   providerBranchPattern,
   scanNativePaths,
 } from "./architecture-rules";
@@ -39,7 +39,7 @@ export function countArchitecture(files: ReadonlyMap<string, string>) {
           nativeReferences += matches;
           nativeReferenceFiles += Number(matches > 0);
         }
-        if (!providerAdapterExclusions.test(path)) {
+        if (isProviderBranchSource(path)) {
           providerIdBranchesOutsideAdapters += Array.from(content.matchAll(providerBranchPattern)).length;
         }
       }

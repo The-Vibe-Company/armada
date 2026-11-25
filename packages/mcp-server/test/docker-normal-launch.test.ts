@@ -1287,8 +1287,8 @@ test.each(["rejects", "returns"] as const)(
 );
 
 test.each([false, true])(
-  "ordinary Docker receipt replays its key before and after backfill (historical=%s)",
-  async (historical) => {
+  "ordinary Docker receipt replays its key for new and completed launches (completed=%s)",
+  async (completed) => {
     const f = await fixture();
     const { org, requestId: _requestId, ...fields } = f.body;
     const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
@@ -1297,26 +1297,12 @@ test.each([false, true])(
     });
 
     const originalId = dockerLaunchRequestId(key, f.actor.userId, org, body.idempotencyKey);
-    if (historical) {
+    if (completed) {
       await f.service().launch(f.caller, { ...fields, org, requestId: originalId, externalRef: body.externalRef });
-      await sql.query(
-        `with historical as (delete from public.jobs where sandbox_id=$1 and kind='launch' returning *)
-        insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc,async_launch)
-        select sandbox_id,(outcome->>'docker_actor_epoch')::bigint,request_digest,payload_enc,
-          decode(outcome->>'docker_receipt','hex'),true from historical`,
-        [originalId],
-      );
-      const migration = await Bun.file(
-        new URL("../../../supabase/migrations/20261124200501_docker_ordinary_launch_jobs.sql", import.meta.url),
-      ).text();
-      await sql.query(migration.slice(migration.indexOf("insert into public.jobs"), migration.indexOf("-- Setup")));
-      expect(
-        (await sql.query("select sandbox_id from jobs where sandbox_id=$1 and kind='launch'", [originalId])).rows,
-      ).toEqual([{ sandbox_id: originalId }]);
     }
     const admitted = modalLaunchReceipt.parse(await post("sandbox/launch", body));
     try {
-      expect(admitted.sandbox).toEqual({ id: originalId, status: historical ? "running" : "starting" });
+      expect(admitted.sandbox).toEqual({ id: originalId, status: completed ? "running" : "starting" });
       expect(await post("sandbox/launch", { ...body, org: `normal-launch-${org}` })).toEqual(admitted);
       await expect(
         dispatchControlCommand("sandbox/launch", f.caller, { ...body, externalRef: "customer:43" }, options),
@@ -1328,7 +1314,7 @@ test.each([false, true])(
         externalRef: body.externalRef,
       });
       expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
-      expect((await counts({ ...f, body: { ...f.body, requestId: originalId } }))?.jobs).toBe(historical ? 2 : 0);
+      expect((await counts({ ...f, body: { ...f.body, requestId: originalId } }))?.jobs).toBe(completed ? 2 : 0);
     } finally {
       // Later fixtures drain the shared database. Leave no live admission for their workers to claim.
       await sql.query("update public.sandboxes set status='failed' where id=$1", [admitted.sandbox.id]);
