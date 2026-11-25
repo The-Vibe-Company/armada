@@ -51,6 +51,7 @@ import {
 import { createDockerMachineGenerationBindings, projectDockerMachineInventory } from "./docker-machine-bindings.ts";
 import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./docker-machine-inventory.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { resumeDispatchAuthority } from "./jobs/resume-authority.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
 import type { DockerStopIntent } from "./jobs/stop.ts";
 import { createJobsStore, dockerStopPending, jobRequestKey } from "./jobs/store.ts";
@@ -783,14 +784,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function requireRestoreRunner(tx: Sql, runnerJobId: unknown, logical: Sandbox, leaseEpoch?: string) {
     id(runnerJobId);
     const { rows } = await tx.query(
-      `with locked_runner as materialized (
-         select deadline_at,lease_until,lease_epoch,state from public.jobs
-         where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
-         and kind='resume' and state in ('queued','leased') and attempts <= max_attempts
-         for update
-       )
-       select 1 from locked_runner where deadline_at > clock_timestamp()
-         and ($5::bigint is null or (state='leased' and lease_epoch=$5 and lease_until > clock_timestamp()))`,
+      `select 1 from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+       where j.id=$1 and j.org_id=$2 and j.sandbox_id=$3 and j.generation=$4
+         and j.kind='resume' and s.lifecycle_generation=j.generation
+         and case when $5::bigint is null then ${resumeDispatchAuthority("j", "s", true)}
+           else j.state='leased' and j.lease_epoch=$5 and j.lease_until>clock_timestamp()
+             and j.deadline_at>clock_timestamp() and j.attempts<=j.max_attempts end
+       for update of j`,
       [runnerJobId, logical.org_id, logical.id, logical.lifecycle_generation, leaseEpoch ?? null],
     );
     if (!rows.length) deny();
@@ -2156,6 +2156,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             deny();
           const epoch = await permission(tx, actor, row, "restore");
           await fenceFreshStartup(tx, row);
+          await requireRestoreRunner(tx, claim.id, row);
           await refuseDraining(tx, host.id);
           await admitDockerCapacity(tx, host.id);
           if (scope.canDispatch && !(await scope.canDispatch(tx, epoch))) deny();
