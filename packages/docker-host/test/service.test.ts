@@ -439,7 +439,7 @@ test.skipIf(process.platform !== "linux")(
     await f.recovery().beforeStart(f.state);
     const candidate = f.daemon(f.target);
     await candidate.checkStartup(f.state, async () => expect(candidate.result()).toBeUndefined());
-    expect(candidate.result()).toBe(`${f.target};updated`);
+    expect(candidate.result()).toBe(`${f.target};updated;${f.config.now}`);
     await f.recovery().beforeStart(f.state);
     expect(f.files.get(f.binary)).toEqual(f.candidate);
   },
@@ -472,7 +472,7 @@ test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
     await restored.checkStartup(f.state, async () => {
       throw new Error("Unexpected candidate health check");
     });
-    expect(restored.result()).toBe(`${f.target};failed`);
+    expect(restored.result()).toBe(`${f.target};failed;${f.config.now};startup_failed`);
     const next = "2.0.1";
     expect(await restored.stage(f.state, next)).toBe(false);
     f.config.now = 60 * 60_000;

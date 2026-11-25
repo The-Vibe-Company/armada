@@ -714,6 +714,10 @@ export type Database = {
           snapshot_baseline_version: number | null;
           daemon_protocol: number | null;
           restore_recovery_supported: boolean;
+          update_policy: string;
+          pinned_version: string | null;
+          update_requested: boolean;
+          last_update_result: Json | null;
         };
         Insert: {
           id: string;
@@ -745,6 +749,10 @@ export type Database = {
           snapshot_baseline_version?: number | null;
           daemon_protocol?: number | null;
           restore_recovery_supported?: boolean;
+          update_policy?: string;
+          pinned_version?: string | null;
+          update_requested?: boolean;
+          last_update_result?: Json | null;
         };
         Update: {
           id?: string;
@@ -776,6 +784,10 @@ export type Database = {
           snapshot_baseline_version?: number | null;
           daemon_protocol?: number | null;
           restore_recovery_supported?: boolean;
+          update_policy?: string;
+          pinned_version?: string | null;
+          update_requested?: boolean;
+          last_update_result?: Json | null;
         };
         Relationships: [
           {

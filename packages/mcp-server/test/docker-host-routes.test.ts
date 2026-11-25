@@ -7,6 +7,7 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core";
+import { DOCKER_HOST_UPDATE_RESULT_HEADER } from "@armada/core/contract";
 import { DOCKER_HOST_PREFER_STARTUP_HEADER } from "../../core/src/docker-host-wire.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
@@ -100,6 +101,7 @@ function inventoryRouteFixture(requestOrigin?: string) {
       ...store,
       inventoryOwnership: async () => ({ hostId, rows: [] }),
       retentionForHost: async () => ({ hostId, retentionSeconds: undefined }),
+      updateOffer: async () => ({ targetVersion: VERSION, updatePolicy: "automatic" }),
       poll: async () => null,
       pendingStartsForHost: async () => [],
     },
@@ -550,6 +552,10 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     resources: null,
     version: null,
     versionStatus: "unknown",
+    updatePolicy: "automatic",
+    pinnedVersion: null,
+    updateRequested: false,
+    lastUpdateResult: null,
     protocol: null,
     upgradeRequired: true,
   });
@@ -920,6 +926,7 @@ test("a held host poll answers as soon as work appears and never beyond its hold
       retentionWrites++;
       return { hostId: randomUUID(), retentionSeconds: undefined };
     },
+    updateOffer: async () => ({ targetVersion: VERSION, updatePolicy: "automatic" }),
     pendingStartsForHost: async () => [],
     async poll(...args: unknown[]) {
       polls++;
@@ -1085,4 +1092,58 @@ test("a host poll skips work the daemon reports running and hands out another sa
   expect(await (await poll([])).json()).toMatchObject({ job: { operation: "stop" } });
   expect(await (await poll([], preferStartup)).json()).toMatchObject({ job: { requestId: next!.requestId } });
   expect(await (await poll([next!.requestId], preferStartup)).json()).toMatchObject({ job: { operation: "stop" } });
+});
+
+test("an admin controls the host offer and authenticated polls retain the last update result", async () => {
+  const { post, orgId } = await fixture();
+  const admin = "fixture-user-token";
+  const owner = "/api/v1/docker/hosts/";
+  const ticket = await (await post(`${owner}register-token`, admin, { org: orgId })).json();
+  const installationId = randomUUID();
+  const host = await (await post("/api/docker-host/register", ticket.registrationToken, { installationId })).json();
+  const body = { org: orgId, hostId: host.hostId };
+  const policy = (policy: string, pinnedVersion?: string) =>
+    post(`${owner}update-policy`, admin, { ...body, policy, pinnedVersion });
+  const poll = async (report?: string) => {
+    const response = await post(
+      "/api/docker-host/poll",
+      host.hostToken,
+      { installationId },
+      report
+        ? {
+            [DOCKER_HOST_UPDATE_RESULT_HEADER]: report,
+          }
+        : {},
+    );
+    expect(response.status).toBe(200);
+    return response.json();
+  };
+  expect(await poll()).toMatchObject({ updatePolicy: "automatic", targetVersion: VERSION });
+  expect((await policy("manual")).status).toBe(200);
+  expect((await poll()).targetVersion).toBeUndefined();
+  expect((await post(`${owner}update-now`, "fixture-member-token", body)).status).toBe(403);
+  expect((await post(`${owner}update-now`, admin, body)).status).toBe(200);
+  expect(await poll()).toMatchObject({ updatePolicy: "manual", targetVersion: VERSION });
+  expect((await poll()).targetVersion).toBeUndefined();
+  expect((await policy("pinned", "https://example.invalid")).status).toBe(400);
+  expect((await policy("pinned", "1.0.0")).status).toBe(200);
+  expect(await poll()).toMatchObject({ updatePolicy: "pinned" });
+  expect((await poll()).targetVersion).toBeUndefined();
+  expect((await policy("pinned", VERSION)).status).toBe(200);
+  expect((await poll()).targetVersion).toBe(VERSION);
+
+  const readHost = async () => (await (await post(`${owner}list`, admin, { org: orgId })).json()).hosts[0];
+  await poll(`${VERSION};failed;123;startup_failed`);
+  expect(await readHost()).toMatchObject({
+    pinnedVersion: VERSION,
+    updateRequested: false,
+    lastUpdateResult: { version: VERSION, status: "failed", at: "1970-01-01T00:00:00.123Z", detail: "startup_failed" },
+  });
+  await poll(`${VERSION};failed;124;untrusted-detail`);
+  expect((await readHost()).lastUpdateResult.at).toBe("1970-01-01T00:00:00.123Z");
+  await poll(`${VERSION};updated`);
+  const { lastUpdateResult } = await readHost();
+  expect(lastUpdateResult).toMatchObject({ version: VERSION, status: "updated", detail: null });
+  await poll(`${VERSION};updated`);
+  expect((await readHost()).lastUpdateResult).toEqual(lastUpdateResult);
 });

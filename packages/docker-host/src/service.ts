@@ -3,6 +3,10 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  type DockerHostUpdateResult,
+  dockerHostReleasePattern as releasePattern,
+} from "../../core/src/contract/docker-host.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
@@ -108,6 +112,7 @@ type ManagedInstallation = {
     version: string;
     at: number;
     status: "failed" | "updated" | "pending" | "starting";
+    detail?: NonNullable<DockerHostUpdateResult["detail"]>;
   };
 };
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -195,7 +200,6 @@ export async function validateInstallation(state: State, home = homedir(), insta
   return marker;
 }
 
-const releasePattern = /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
 function validUpdate(value: NonNullable<ManagedInstallation["update"]>, pending?: string) {
   return (
     value &&
@@ -327,8 +331,10 @@ export function createManagedUpdater(
   let staged: { bytes: Uint8Array; digest: string; marker: ManagedInstallation } | undefined;
   return {
     result() {
-      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed")
-        return `${lastAttempt.version};${lastAttempt.status}`;
+      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed") {
+        const { version, status, at, detail } = lastAttempt;
+        return `${version};${status};${at}${detail ? `;${detail}` : ""}`;
+      }
     },
     async checkStartup(state: State, healthy: () => Promise<void>) {
       const marker = await readMarker(state).catch(() => undefined);
@@ -388,7 +394,18 @@ export function createManagedUpdater(
       const marker = { ...loaded, update };
       await save(marker);
       lastAttempt = update;
-      const { bytes, digest } = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", target);
+      const { bytes, digest } = await pinnedUpgrade(
+        io,
+        state.server,
+        marker,
+        "inspect the installer release",
+        target,
+      ).catch(async (error: unknown) => {
+        const failed = { ...update, detail: "download_failed" as const };
+        await save({ ...marker, update: failed });
+        lastAttempt = failed;
+        throw error;
+      });
       if (!bytes) return false;
       staged = { bytes, digest, marker };
       return true;
@@ -430,7 +447,7 @@ export function createManagedUpdater(
           throw new Error("Previous Docker host binary failed verification.");
         await files.atomicReplace(p.binary, previous, 0o700);
       }
-      await save({ ...stable, update: { ...update, status: "failed", at: io.now() } });
+      await save({ ...stable, update: { ...update, status: "failed", at: io.now(), detail: "startup_failed" } });
     },
   };
 }

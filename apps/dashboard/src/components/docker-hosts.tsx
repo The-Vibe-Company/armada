@@ -4,6 +4,7 @@ import { CircleCheckIcon, Loader2Icon, ServerIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  configureDockerHostUpdate,
   dockerHostConnected,
   registerDockerHost,
   revokeDockerHost,
@@ -441,6 +442,67 @@ function HostLimitsForm({ orgId, host, onSaved }: { orgId: string; host: DockerH
         </Button>
       </div>
     </form>
+  );
+}
+
+export function HostUpdateSettings({ orgId, host, isAdmin }: { orgId: string; host: DockerHost; isAdmin: boolean }) {
+  const preserve = usePreservedActionForm();
+  const [state, action, pending] = useMutationState(configureDockerHostUpdate);
+  const result = host.lastUpdateResult;
+  return (
+    <div className="space-y-3 text-sm">
+      <p>
+        Policy: {host.updatePolicy ?? "Unknown"}
+        {host.pinnedVersion ? ` · ${host.pinnedVersion}` : ""}
+      </p>
+      <p>
+        Last update:{" "}
+        {result
+          ? `${result.status === "updated" ? "Updated" : "Failed"} · ${result.version} · ${result.at}`
+          : "None reported"}
+      </p>
+      {result?.detail === "download_failed" && <p>Could not download or verify the release.</p>}
+      {result?.detail === "startup_failed" && <p>The previous binary was restored after startup failed.</p>}
+      {host.updateRequested && <p>Update requested. Waiting for check-in.</p>}
+      {isAdmin && host.state !== "revoked" && (
+        <>
+          <form ref={preserve} action={action} className="space-y-2">
+            <input type="hidden" name="org" value={orgId} />
+            <input type="hidden" name="hostId" value={host.id} />
+            <Label htmlFor={`policy-${host.id}`}>Update policy</Label>
+            <select
+              id={`policy-${host.id}`}
+              name="policy"
+              defaultValue={host.updatePolicy}
+              className="block rounded-md border bg-background px-2 py-1"
+            >
+              <option value="automatic">Automatic</option>
+              <option value="manual">Manual</option>
+              <option value="pinned">Pinned</option>
+            </select>
+            <Label htmlFor={`pin-${host.id}`}>Release version for pinned policy</Label>
+            <Input
+              id={`pin-${host.id}`}
+              name="pinnedVersion"
+              defaultValue={host.pinnedVersion ?? ""}
+              placeholder="4.0.0"
+            />
+            <Button type="submit" variant="outline" disabled={pending}>
+              Save policy
+            </Button>
+          </form>
+          <form action={action}>
+            <input type="hidden" name="org" value={orgId} />
+            <input type="hidden" name="hostId" value={host.id} />
+            <input type="hidden" name="intent" value="now" />
+            <Button type="submit" variant="outline" disabled={pending || host.updateRequested}>
+              Update now
+            </Button>
+          </form>
+          {state && <p role="status">{state.ok ? state.message : state.error}</p>}
+        </>
+      )}
+    </div>
   );
 }
 

@@ -6,6 +6,13 @@ import {
   type DockerJobFailureReason,
   OUTPUT_ARCHIVE_LIMIT,
 } from "@armada/core";
+import {
+  DOCKER_HOST_UPDATE_HEALTH_HEADER,
+  DOCKER_HOST_UPDATE_RESULT_HEADER,
+  dockerHostReleasePattern,
+  isDockerHostUpdatePolicy,
+  parseDockerHostUpdateReport,
+} from "@armada/core/contract";
 import { isSnapshotBaselineTool } from "@armada/core/server";
 import {
   DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
@@ -52,6 +59,8 @@ const ownerPaths = [
   "/api/v1/docker/hosts/list",
   "/api/v1/docker/hosts/limits",
   "/api/v1/docker/hosts/retention",
+  "/api/v1/docker/hosts/update-policy",
+  "/api/v1/docker/hosts/update-now",
   "/api/v1/docker/hosts/register-token",
   "/api/v1/docker/hosts/revoke",
 ];
@@ -155,17 +164,23 @@ export function createDockerHostRoutes(
             headers,
           });
         }
+        const updatePolicy = path.endsWith("/update-policy");
+        const updateNow = path.endsWith("/update-now");
         fields(
           body,
-          path.endsWith("/retention")
-            ? ["org", "hostId", "retentionSeconds"]
-            : path.endsWith("/limits")
-              ? ["org", "hostId", ...["cpus", "memoryBytes", "maxSandboxes", "auto"].filter((k) => k in body)]
-              : path.endsWith("/revoke")
-                ? ["org", "hostId"]
-                : path.endsWith("/register-token") && "name" in body
-                  ? ["org", "name"]
-                  : ["org"],
+          updatePolicy
+            ? ["org", "hostId", "policy", ...("pinnedVersion" in body ? ["pinnedVersion"] : [])]
+            : updateNow
+              ? ["org", "hostId"]
+              : path.endsWith("/retention")
+                ? ["org", "hostId", "retentionSeconds"]
+                : path.endsWith("/limits")
+                  ? ["org", "hostId", ...["cpus", "memoryBytes", "maxSandboxes", "auto"].filter((k) => k in body)]
+                  : path.endsWith("/revoke")
+                    ? ["org", "hostId"]
+                    : path.endsWith("/register-token") && "name" in body
+                      ? ["org", "name"]
+                      : ["org"],
         );
         const orgId = string(body.org);
         const listing = path.endsWith("/list");
@@ -179,6 +194,26 @@ export function createDockerHostRoutes(
         )
           throw new DockerHostDenied();
         actor = { userId: result.caller.userId, orgId };
+        if (updatePolicy || updateNow) {
+          const hostId = string(body.hostId);
+          if (!uuid.test(hostId)) throw new InvalidInput();
+          if (updateNow) await store.configureUpdate(actor, hostId, "now");
+          else {
+            const { policy, pinnedVersion } = body;
+            if (!isDockerHostUpdatePolicy(policy)) throw new InvalidInput();
+            if (
+              policy === "pinned"
+                ? typeof pinnedVersion !== "string" || !dockerHostReleasePattern.test(pinnedVersion)
+                : pinnedVersion !== undefined
+            )
+              throw new InvalidInput();
+            await store.configureUpdate(actor, hostId, {
+              policy,
+              pinnedVersion: typeof pinnedVersion === "string" ? pinnedVersion : null,
+            });
+          }
+          return Response.json({ ok: true }, { headers });
+        }
         if (retention)
           return Response.json(await store.setRetention(actor, string(body.hostId), body.retentionSeconds as number), {
             headers,
@@ -461,11 +496,26 @@ export function createDockerHostRoutes(
         }
         const pendingStarts = await store.pendingStartsForHost(token, installationId, supportsRestore);
         const limits = body.resourcePolicyVersion === 1 ? await store.limitsForHost(token, installationId) : undefined;
+        const offer =
+          request.signal.aborted || request.headers.get(DOCKER_HOST_UPDATE_HEALTH_HEADER) === "1"
+            ? {}
+            : await store
+                .updateOffer(
+                  token,
+                  installationId,
+                  dockerHostVersionOffer.targetVersion,
+                  parseDockerHostUpdateReport(request.headers.get(DOCKER_HOST_UPDATE_RESULT_HEADER)),
+                )
+                .catch((error: unknown) => {
+                  if (!(error instanceof DockerHostDenied)) throw error;
+                  return {};
+                });
         return Response.json(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            ...dockerHostVersionOffer,
+            minimumVersion: dockerHostVersionOffer.minimumVersion,
+            ...offer,
             containerInventory: 1,
             containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
             resumeClaims: [],

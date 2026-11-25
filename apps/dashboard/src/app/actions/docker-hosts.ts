@@ -1,6 +1,7 @@
 "use server";
 
 import { type Harness, validateSkillPins } from "@armada/core";
+import { dockerHostReleasePattern, isDockerHostUpdatePolicy } from "@armada/core/contract";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import { CONNECTION_CHOICE_FIELD, launchSelection } from "@/lib/connections";
@@ -265,5 +266,29 @@ export async function updateDockerHostRetention(_previous: ActionResult | null, 
         ? "Only the member who added this Docker host can change retention."
         : "Could not update retention.",
     );
+  }
+}
+
+export async function configureDockerHostUpdate(_previous: ActionResult | null, data: FormData) {
+  const org = formString(data, "org");
+  const hostId = formString(data, "hostId");
+  const policy = formString(data, "policy");
+  const pinnedVersion = formString(data, "pinnedVersion").trim();
+  const now = formString(data, "intent") === "now";
+  if (!isUuid(hostId) || (!now && !isDockerHostUpdatePolicy(policy))) return fail("That request is not valid.");
+  const control = await adminControl(org);
+  if ("ok" in control) return control;
+  try {
+    if (now) await control.configureUpdate(org, hostId, "now");
+    else if (isDockerHostUpdatePolicy(policy)) {
+      if (policy === "pinned" && !dockerHostReleasePattern.test(pinnedVersion))
+        return fail("Enter a release version such as 4.0.0.");
+      await control.configureUpdate(org, hostId, { policy, ...(policy === "pinned" ? { pinnedVersion } : {}) });
+    }
+    revalidatePath(HOSTS_PATH);
+    return done(now ? "Update requested for the next check-in." : "Update policy saved.");
+  } catch (error) {
+    if (!(error instanceof ControlError)) throw error;
+    return fail("Could not change this host's update settings.");
   }
 }

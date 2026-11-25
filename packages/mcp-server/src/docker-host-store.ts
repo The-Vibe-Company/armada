@@ -12,6 +12,12 @@ import {
   type Sql,
 } from "@armada/core";
 import {
+  type DockerHostUpdatePolicy,
+  type DockerHostUpdateResult,
+  isDockerHostUpdateResult,
+  type parseDockerHostUpdateReport,
+} from "@armada/core/contract";
+import {
   decryptSecret,
   encryptSecret,
   isSnapshotBaselineTool,
@@ -1187,6 +1193,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
           running: number;
           daemon_version: string | null;
           daemon_protocol: number | null;
+          update_policy: DockerHostUpdatePolicy;
+          pinned_version: string | null;
+          update_requested: boolean;
+          last_update_result: unknown;
           name: string | null;
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
@@ -1203,6 +1213,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
             h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.daemon_protocol,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.update_policy,h.pinned_version,h.update_requested,h.last_update_result,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -1237,10 +1248,71 @@ export function createDockerHostStore(sql: Sql, key: string) {
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
-          versionStatus: dockerHostVersionStatus(host.daemon_version),
+          versionStatus: dockerHostVersionStatus(host.daemon_version, host.pinned_version ?? undefined),
           protocol: host.daemon_protocol,
+          updatePolicy: host.update_policy,
+          pinnedVersion: host.pinned_version,
+          updateRequested: host.update_requested,
+          lastUpdateResult: isDockerHostUpdateResult(host.last_update_result) ? host.last_update_result : null,
           upgradeRequired: !supportsDockerHostProtocol(host.daemon_protocol),
         }));
+      });
+    },
+    configureUpdate(
+      actor: Actor,
+      hostId: string,
+      command: { policy: DockerHostUpdatePolicy; pinnedVersion: string | null } | "now",
+    ) {
+      return transaction(async (tx) => {
+        const host = await owned(tx, actor, hostId);
+        if (command === "now") {
+          await tx.query("update public.docker_hosts set update_requested=true where id=$1", [host.id]);
+        } else {
+          await tx.query(
+            "update public.docker_hosts set update_policy=$2,pinned_version=$3,update_requested=false where id=$1",
+            [host.id, command.policy, command.pinnedVersion],
+          );
+        }
+      });
+    },
+    updateOffer(
+      hostToken: string,
+      installationId: string,
+      target: string,
+      report: ReturnType<typeof parseDockerHostUpdateReport>,
+    ) {
+      return transaction(async (tx) => {
+        const host = await authenticate(tx, hostToken, installationId);
+        const row = (
+          await tx.query<{
+            update_policy: DockerHostUpdatePolicy;
+            pinned_version: string | null;
+            update_requested: boolean;
+            draining: boolean;
+          }>(
+            `select update_policy,pinned_version,update_requested,(${hostDrainingSql("h")}) as draining
+           from public.docker_hosts h where id=$1`,
+            [host.id],
+          )
+        ).rows[0];
+        if (!row) return deny();
+        if (report) {
+          const result: DockerHostUpdateResult = { ...report, at: report.at ?? new Date().toISOString() };
+          await tx.query(
+            `update public.docker_hosts set last_update_result=$2::jsonb where id=$1
+             and (last_update_result - 'at' is distinct from $2::jsonb - 'at'
+               or ($3::boolean and last_update_result->>'at' is distinct from $2::jsonb->>'at'))`,
+            [host.id, JSON.stringify(result), report.at !== null],
+          );
+        }
+        const offer =
+          !row.draining &&
+          (row.update_policy === "pinned"
+            ? row.pinned_version === target
+            : row.update_policy === "automatic" || row.update_requested);
+        if (row.update_requested && !row.draining)
+          await tx.query("update public.docker_hosts set update_requested=false where id=$1", [host.id]);
+        return { updatePolicy: row.update_policy, ...(offer ? { targetVersion: target } : {}) };
       });
     },
     setRetention(actor: Actor, hostId: string, retentionSeconds: number) {
