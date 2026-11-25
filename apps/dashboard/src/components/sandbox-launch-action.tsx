@@ -1,14 +1,32 @@
 "use client";
 
 import { RocketIcon } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
-import { DockerLimitList } from "@/components/launch-composer";
-import { DiscoveredLaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+
+function loadLaunchStart() {
+  return import("@/components/launch-dialog").then((module) => module.DiscoveredLaunchStart);
+}
+
+const DiscoveredLaunchStart = dynamic(loadLaunchStart, { ssr: false, loading: LaunchLoading });
+
+function prefetchLaunch() {
+  void loadLaunchStart().catch(() => undefined);
+}
+
+function LaunchLoading() {
+  return (
+    <DialogHeader className="p-6">
+      <DialogTitle>Launch a sandbox</DialogTitle>
+      <DialogDescription>Loading starting points…</DialogDescription>
+    </DialogHeader>
+  );
+}
 
 export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }) {
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
@@ -17,6 +35,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
   async function onOpenChange(next: boolean) {
     setOpen(next);
     if (!next || loading) return;
+    prefetchLaunch();
     setLoading(true);
     try {
       setOptions(await readLaunchDialogOptions());
@@ -43,6 +62,8 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
       <DialogTrigger asChild>
         <Button
           aria-label="Launch a sandbox"
+          onMouseEnter={prefetchLaunch}
+          onFocus={prefetchLaunch}
           onKeyDown={(event) => {
             if (shortcut && event.key.toLowerCase() === "l" && !event.metaKey && !event.ctrlKey && !event.altKey) {
               event.preventDefault();
@@ -56,16 +77,9 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
       </DialogTrigger>
       <LaunchDialogContent>
         {loading ? (
-          <DialogHeader className="p-6">
-            <DialogTitle>Launch a sandbox</DialogTitle>
-            <DialogDescription>Loading starting points…</DialogDescription>
-          </DialogHeader>
+          <LaunchLoading />
         ) : options && target ? (
-          <DiscoveredLaunchStart
-            target={target}
-            options={options}
-            dockerLimits={<DockerLimitList unavailable={options.dockerLimits} />}
-          />
+          <DiscoveredLaunchStart target={target} options={options} />
         ) : (
           <DialogHeader className="overflow-y-auto p-6 pr-12 text-left">
             <DialogTitle>Launch a sandbox</DialogTitle>
