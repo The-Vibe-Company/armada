@@ -46,6 +46,9 @@ function fixture(stage: "scrub" | "snapshot" | "missing image", { productionDeta
       work(structuredClone(stored), async (value) => {
         stored = structuredClone(value);
       }),
+    saveStop: async (_tx: unknown, row: Machine) => {
+      stored = structuredClone(row);
+    },
     saveImage: async (image: SavedImage) => {
       images = [...images.filter((x) => x.info.name !== image.info.name), structuredClone(image)];
     },
@@ -265,8 +268,16 @@ test("a missing Modal image receipt preserves the enrolled source", async () => 
   const f = fixture("missing image");
   f.state().golden = false;
   f.state().commonRuntime = true;
-  const stop = () =>
-    f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 });
+  const stop = async () => {
+    const { physical, machine } = await f.provider.runtimeStopMachine({
+      recordId: "logical",
+      sandboxId: "logical",
+      generation: 2,
+      checkpoint: { epoch: "1", watermark: 1 },
+      write: (work) => work({} as never),
+    });
+    return machine.stop({ machineId: physical.machineId, generation: 2, sandboxId: "logical", retain: true });
+  };
 
   await expect(stop()).rejects.toMatchObject({ code: "unavailable" });
   await expect(stop()).rejects.toMatchObject({ code: "conflict" });

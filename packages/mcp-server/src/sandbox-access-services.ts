@@ -19,9 +19,11 @@ import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import {
   type ChildOperation,
+  ChildStopNotAdmitted,
   createSandboxChildren,
   type SandboxChildExecutor,
   type StopRecoveryAdmission,
@@ -96,6 +98,22 @@ export function createSandboxAccessServices(input: {
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    if (
+      admitRecovery &&
+      saved.modalTransport === "dialout" &&
+      ["stopping", "stopped", "failed"].includes(saved.status)
+    ) {
+      await admitRecovery(async (tx) => {
+        const proof = await tx.query(
+          `select 1 from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+           where s.id=$1 and s.lifecycle_generation=$2 and j.kind='stop' and j.state in ('queued','leased','done')
+             and j.outcome->>'modal_child_operation'=$3 and s.status in ('stopping','stopped','failed') for update of s`,
+          [saved.id, saved.lifecycleGeneration, operation.id],
+        );
+        if (!proof.rows.length) throw new DelegatedAccessError("conflict");
+      });
+      return;
+    }
     if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
     const retained =
       saved.modalTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
@@ -108,8 +126,15 @@ export function createSandboxAccessServices(input: {
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
     const scoped = createSqlData(sql)(caller).sandboxes;
-    if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
-    const provider = await resolveProvider();
+    if (!admitRecovery) {
+      try {
+        if (await scoped.requestStartingModalStop?.(saved)) return;
+      } catch (error) {
+        if (error instanceof SandboxStopTargetChanged) throw new ChildStopNotAdmitted("stop_target_changed");
+        throw error;
+      }
+      if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
+    }
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -159,6 +184,21 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
+    if (saved.modalTransport === "dialout") {
+      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+      await stopStore.update(saved.id, {
+        ...stopAdmission,
+        queueModalStop: operation.id,
+        status: stoppingStatus,
+        stopRequested: true,
+        statusReason,
+        advanceGeneration: true,
+        activityToken: crypto.randomUUID(),
+        expectedGeneration: saved.lifecycleGeneration,
+      });
+      return;
+    }
+    const provider = await resolveProvider();
     await sandboxActivity(
       stopStore,
       saved,
@@ -221,8 +261,14 @@ export function createSandboxAccessServices(input: {
     },
     async read(id, ownerId, orgId) {
       const { saved, resolveProvider } = await child(id, ownerId, orgId);
-      if (!saved.providerSandboxId)
-        return { ...saved, providerSandboxId: null, events: [], cursor: null, hasMore: false };
+      if (saved.status === "starting" || !saved.providerSandboxId)
+        return {
+          ...saved,
+          providerSandboxId: saved.providerSandboxId || null,
+          events: [],
+          cursor: null,
+          hasMore: false,
+        };
       const provider = await resolveProvider();
       const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
       return {
