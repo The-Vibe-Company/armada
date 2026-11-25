@@ -38,7 +38,8 @@ enum ServiceFailure: Error, Hashable, Sendable {
     /// A read could not reach Armada. Safe to retry.
     case offline
     /// The server or the client refused the request with a safe, presentable reason.
-    case rejected(String)
+    /// `transientWhileStarting` marks HTTP 400/409 read refusals that clear once a starting sandbox is ready.
+    case rejected(String, transientWhileStarting: Bool = false)
 
     indirect case explained(ServiceFailure, String)
 
@@ -55,6 +56,14 @@ enum ServiceFailure: Error, Hashable, Sendable {
         }
     }
 
+    var isTransientWhileStarting: Bool {
+        switch self {
+        case .explained(let cause, _): cause.isTransientWhileStarting
+        case .rejected(_, let transient): transient
+        default: false
+        }
+    }
+
     var message: String {
         switch self {
         case .explained(_, let reason): reason
@@ -63,7 +72,7 @@ enum ServiceFailure: Error, Hashable, Sendable {
         case .noAccess: "You don't have access to this, or it no longer exists."
         case .uncertain: "Armada did not confirm this request. Check the conversation before sending it again."
         case .offline: "Armada can't be reached. Check your connection."
-        case .rejected(let reason): reason
+        case .rejected(let reason, _): reason
         }
     }
 }

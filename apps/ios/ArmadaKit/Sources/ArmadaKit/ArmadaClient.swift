@@ -179,7 +179,7 @@ public actor ArmadaClient {
         if authenticated, generation != fence { throw CancellationError() }
         return result
     }
-    private func wire<Response: Decodable & Sendable, Body: Encodable & Sendable>(
+    private nonisolated func wire<Response: Decodable & Sendable, Body: Encodable & Sendable>(
         _ route: String, _ body: Body, token: String?
     ) async throws -> Response {
         return try await request(route, method: "POST", body: JSONEncoder().encode(body), token: token)
@@ -203,7 +203,7 @@ public actor ArmadaClient {
     static let sandboxNonDeliveringServerCodes: Set<String> = [
         "provider_not_configured", "provider_routing_unavailable",
     ]
-    private func request<Response: Decodable & Sendable>(
+    private nonisolated func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
     ) async throws -> Response {
         var components = URLComponents(url: origin.appendingPathComponent("api/v1/" + route), resolvingAgainstBaseURL: false)!

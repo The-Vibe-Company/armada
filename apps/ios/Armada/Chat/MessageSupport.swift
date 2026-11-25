@@ -19,12 +19,27 @@ struct DetectedLink: Equatable, Sendable {
 }
 
 /// Finds bare, tappable URLs after Markdown parsing removed source-only punctuation. Callers
-/// exclude code and already-linked runs.
+/// exclude code and already-linked runs. Reuses a bounded pool off the main thread.
 enum MessageLinkDetector {
+    private final class DetectorPool: @unchecked Sendable {
+        private let lock = NSLock()
+        private var available: [NSDataDetector] = []
+
+        func borrow() -> NSDataDetector? {
+            if let cached = lock.withLock({ available.popLast() }) { return cached }
+            return try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        }
+
+        func release(_ detector: NSDataDetector) {
+            lock.withLock { if available.count < 8 { available.append(detector) } }
+        }
+    }
+
+    private static let pool = DetectorPool()
+
     static func detect(in text: String) -> [DetectedLink] {
-        guard !text.isEmpty,
-              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
-        else { return [] }
+        guard !text.isEmpty, let detector = pool.borrow() else { return [] }
+        defer { pool.release(detector) }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return detector.matches(in: text, options: [], range: range).compactMap { result in
             guard let url = result.url, LinkPolicy.isAllowed(url) else { return nil }

@@ -54,6 +54,15 @@ struct AgentEvent: Identifiable, Hashable, Sendable {
     let body: Body
 }
 
+/// Live thread status and settlement returned alongside events by `POST /api/v1/logs/read`.
+struct ConversationThreadState: Hashable, Sendable {
+    let status: SandboxStatus
+    let settled: Bool
+    let promptID: String?
+    let promptStatus: PromptStatus?
+    let promptReason: String?
+}
+
 struct ConversationEventPage: Sendable {
     let events: [AgentEvent]
     /// Opaque, poll-safe forward cursor: the live frontier. Nil only on an empty first read.
@@ -62,4 +71,6 @@ struct ConversationEventPage: Sendable {
     let hasMore: Bool
     /// Backward reads only: continues before the oldest event of the page.
     var olderCursor: String? = nil
+    /// Live thread status and settlement when `logs/read` returns them alongside events.
+    var threadState: ConversationThreadState? = nil
 }

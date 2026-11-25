@@ -47,6 +47,10 @@ private func body(_ request: URLRequest) throws -> [String: String] {
     try JSONDecoder().decode([String: String].self, from: request.httpBody ?? Data())
 }
 
+private func jsonBody(_ request: URLRequest) throws -> [String: JSONValue] {
+    try JSONDecoder().decode([String: JSONValue].self, from: request.httpBody ?? Data())
+}
+
 private func detail(status: String, settled: Bool, prompt: String? = nil) -> String {
     let turn = prompt.map { #"{"promptId":"pr_1","conversationId":"c_1","state":"\#($0)","reason":null}"# } ?? "null"
     return #"{"id":"\#(sandboxID)","golden":"web","visibility":"org","harness":"claude","repositoryDir":null,"model":"opus","reasoningEffort":"high","machineSize":null,"status":"\#(status)","statusReason":null,"provider":"modal","providerState":"ready","conversationIds":["c_1"],"expiresAt":null,"prompt":\#(turn),"settled":\#(settled)}"#
@@ -74,8 +78,8 @@ private func detail(status: String, settled: Bool, prompt: String? = nil) -> Str
     #expect(requests.map { $0.url!.path } == ["/api/v1/sandbox/status", "/api/v1/logs/read", "/api/v1/logs/read"])
     #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access" })
     #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a"])
-    #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a"])
-    #expect(try body(requests[2]) == ["id": sandboxID, "org": "org-a", "cursor": "opaque/+cursor="])
+    #expect(try jsonBody(requests[1]) == ["id": .string(sandboxID), "org": .string("org-a"), "limit": .number(200), "coalesce": .bool(true)])
+    #expect(try jsonBody(requests[2]) == ["id": .string(sandboxID), "org": .string("org-a"), "cursor": .string("opaque/+cursor="), "limit": .number(200), "coalesce": .bool(true)])
 }
 
 @Test func interiorRefusalIsReportedAndNeverInferredClientSide() async throws {
@@ -194,13 +198,13 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     #expect(older.olderCursor == "o1")
     #expect(!older.hasMore)
     let requests = Array(await transport.requests.dropFirst(2))
-    #expect(try body(requests[0]) == ["id": sandboxID, "org": "org-a", "direction": "backward"])
-    #expect(try body(requests[1]) == ["id": sandboxID, "org": "org-a", "cursor": "o9", "direction": "backward"])
+    #expect(try jsonBody(requests[0]) == ["id": .string(sandboxID), "org": .string("org-a"), "direction": .string("backward"), "limit": .number(200), "coalesce": .bool(true)])
+    #expect(try jsonBody(requests[1]) == ["id": .string(sandboxID), "org": .string("org-a"), "cursor": .string("o9"), "direction": .string("backward"), "limit": .number(200), "coalesce": .bool(true)])
     let next = try await client.sandboxEvents(id: sandboxID, cursor: "frontier")
     #expect(next.cursor == "frontier")
     let allReads = Array(await transport.requests.dropFirst(2))
     #expect(allReads.count == 3)
-    #expect(try body(allReads[2]) == ["id": sandboxID, "org": "org-a", "cursor": "frontier"])
+    #expect(try jsonBody(allReads[2]) == ["id": .string(sandboxID), "org": .string("org-a"), "cursor": .string("frontier"), "limit": .number(200), "coalesce": .bool(true)])
 }
 
 @Test func anInvalidHistoryReadIsNotRetriedWithAnotherBudget() async throws {
@@ -212,7 +216,7 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     }
     let reads = Array(await transport.requests.dropFirst(2))
     #expect(reads.count == 1)
-    #expect(try body(reads[0]) == ["id": sandboxID, "org": "org-a", "cursor": "invalid"])
+    #expect(try jsonBody(reads[0]) == ["id": .string(sandboxID), "org": .string("org-a"), "cursor": .string("invalid"), "limit": .number(200), "coalesce": .bool(true)])
 }
 
 @Test func closedInterruptionReasonsOfferManualResendWithoutBlockingAdmission() throws {
@@ -493,4 +497,45 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
     let interruptBody = try body(requests[4]), interruptReqID = try #require(interruptBody["request_id"])
     #expect(UUID(uuidString: interruptReqID) != nil && interruptReqID == interruptReqID.lowercased())
     #expect(interruptBody == ["id": sandboxID, "org": "org-a", "request_id": interruptReqID])
+}
+
+@Test func sandboxEventsDecodesThreadStatusAndToleratesUnfamiliarPromptPayloads() async throws {
+    let (client, _) = try await signedIn([
+        .init(status: 200, body: #"{"events":[],"cursor":"c1","hasMore":false,"settled":false,"threadStatus":{"status":"running","statusMessage":"Working","prompt":{"promptId":"pr_7","conversationId":"c_1","state":"running","reason":null}}}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"c2","hasMore":false,"settled":true,"threadStatus":{"status":"ready","statusMessage":null,"prompt":{"unexpectedShape":123}}}"#),
+        .init(status: 200, body: #"{"events":[],"cursor":"c3","hasMore":false}"#),
+    ])
+    let first = try await client.sandboxEvents(id: sandboxID, backward: true)
+    #expect(first.settled == false && first.threadStatus?.status == "running" && first.threadStatus?.prompt?.promptId == "pr_7" && first.threadStatus?.prompt?.isActive == true)
+    let second = try await client.sandboxEvents(id: sandboxID, cursor: first.cursor)
+    #expect(second.settled == true && second.threadStatus?.status == "ready" && second.threadStatus?.prompt == nil)
+    let third = try await client.sandboxEvents(id: sandboxID, cursor: second.cursor)
+    #expect(third.settled == nil && third.threadStatus == nil)
+    await #expect(throws: ArmadaError.invalidRequest) { _ = try await client.sandboxEvents(id: sandboxID, limit: 0) }
+}
+
+private actor RoutingTransport: ArmadaTransport {
+    private let replies: [String: ScriptedTransport.Reply]
+    init(_ replies: [String: ScriptedTransport.Reply]) { self.replies = replies }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        guard let reply = replies[request.url?.path ?? ""] else { throw URLError(.badServerResponse) }
+        return (Data(reply.body.utf8), HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+@Test func parallelDetailAndEventsDecodeWithoutBlockingEachOther() async throws {
+    let transport = RoutingTransport([
+        "/api/v1/auth/email/verify": .init(status: 200, body: login),
+        "/api/v1/org/list": .init(status: 200, body: orgs),
+        "/api/v1/sandbox/status": .init(status: 200, body: detail(status: "running", settled: false, prompt: "running")),
+        "/api/v1/logs/read": .init(status: 200, body: #"{"events":[{"id":"e1","at":1762646400000,"kind":"prompt","text":"Hi","status":"running","conversationId":"c_1","promptId":"pr_1"}],"cursor":"c1","hasMore":false,"settled":false}"#),
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    try await client.selectOrganization("org-a")
+    async let detailRead = client.sandboxDetail(id: sandboxID)
+    async let eventsRead = client.sandboxEvents(id: sandboxID, backward: true)
+    let (loadedDetail, loadedEvents) = try await (detailRead, eventsRead)
+    #expect(loadedDetail.id == sandboxID && loadedDetail.isWorking)
+    #expect(loadedEvents.events.map(\.id) == ["e1"] && loadedEvents.settled == false)
 }

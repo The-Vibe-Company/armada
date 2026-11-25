@@ -1,4 +1,5 @@
 import class ArmadaKit.ConversationCache
+import enum ArmadaKit.ConversationFollowBackoff
 import class ArmadaKit.ConversationLoader
 import struct ArmadaKit.ConversationPage
 import enum ArmadaKit.ConversationRead
@@ -60,6 +61,14 @@ final class ConversationFeed {
         self.key = key
         self.memory = memory
         loader = ConversationLoader(key: key, cache: memory)
+        if loader.snapshot.hasTail,
+           let cached: Presentation = memory?.cachedPresentation(for: key, events: loader.snapshot.events) {
+            conversation = cached.conversation
+            cache = cached.markdown
+            documents = cached.markdown.mapValues(\.document)
+            hasLoaded = true
+            hasOlder = loader.hasOlder
+        }
     }
 
     /// Reads what is new now (pull to refresh) up to the newest event. Safe beside `follow`:
@@ -70,8 +79,13 @@ final class ConversationFeed {
     }
 
     /// Shows what is known, reads the latest page, then follows forward until the calling task is
-    /// cancelled (the screen disappears) or the stream stops.
-    func follow(_ fetch: @escaping Fetch, onSignedOut: @MainActor () -> Void) async {
+    /// cancelled (the screen disappears) or the stream stops. Transient 400/409 rejections while
+    /// the sandbox is starting back off instead of permanently stopping live follow.
+    func follow(
+        _ fetch: @escaping Fetch,
+        isStarting: @MainActor @escaping () -> Bool = { false },
+        onSignedOut: @MainActor () -> Void
+    ) async {
         await loader.run(
             clock: ContinuousClock(),
             fetch: Self.read(fetch),
@@ -82,6 +96,13 @@ final class ConversationFeed {
                 switch error.category {
                 case .signedOut:
                     onSignedOut()
+                    return nil
+                case .rejected where error.isTransientWhileStarting:
+                    if let backoff = ConversationFollowBackoff.startingRejection(consecutiveFailures: failures, isStarting: isStarting()) {
+                        self.connection = .connecting
+                        return backoff
+                    }
+                    self.connection = .stopped(error)
                     return nil
                 case .unavailable, .noAccess, .rejected:
                     self.connection = .stopped(error)

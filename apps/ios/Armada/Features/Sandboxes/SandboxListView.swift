@@ -148,14 +148,14 @@ struct SandboxListView: View {
             }
             .navigationDestination(for: SandboxSummary.self) { sandbox in
                 if sandbox.canOpen {
-                    SandboxConversationView(sandbox: sandbox, initiallyWorking: model?.isWorking(sandbox) ?? false)
+                    SandboxConversationView(sandbox: sandbox, app: app, initiallyWorking: model?.isWorking(sandbox) ?? false)
                 } else {
                     SandboxDetailView(sandbox: sandbox)
                 }
             }
             // With sandbox metadata, open its conversation and follow the first turn.
             .navigationDestination(item: $launched) { sandbox in
-                SandboxConversationView(sandbox: sandbox)
+                SandboxConversationView(sandbox: sandbox, app: app)
             }
             .sheet(isPresented: $showingAccount) {
                 AccountView()

@@ -1,5 +1,6 @@
 // Carried over from Companion `8e01b20970c36efa8779d29a1a2c02f45e20b338`
 // (`apps/ios/Companion/Screens/MarkdownMessageView.swift`) with Armada's theme and link policy.
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -56,24 +57,22 @@ enum MarkdownDocumentRenderer {
 
         guard !pending.isEmpty else { return rendered }
 
-        let sourcesToRender = pending
-        let newlyRendered = await withTaskGroup(
-            of: [String: CachedMarkdownDocument].self,
-            returning: [String: CachedMarkdownDocument].self
-        ) { group in
-            group.addTask { [sourcesToRender] in
-                var documents: [String: CachedMarkdownDocument] = [:]
-                for source in sourcesToRender {
-                    guard !Task.isCancelled else { break }
-                    documents[source.eventID] = CachedMarkdownDocument(
-                        source: source.content,
-                        document: MarkdownDocument(markdown: source.content)
-                    )
+        let maxConcurrency = min(pending.count, max(2, ProcessInfo.processInfo.activeProcessorCount))
+        let newlyRendered = await withTaskGroup(of: (String, CachedMarkdownDocument)?.self, returning: [String: CachedMarkdownDocument].self) { group in
+            func enqueue(_ source: MarkdownDocumentSource) {
+                group.addTask(priority: .userInitiated) {
+                    guard !Task.isCancelled else { return nil }
+                    return (source.eventID, CachedMarkdownDocument(source: source.content, document: MarkdownDocument(markdown: source.content)))
                 }
-                return documents
             }
-
-            return await group.next() ?? [:]
+            var iterator = pending.makeIterator()
+            for _ in 0..<maxConcurrency { if let source = iterator.next() { enqueue(source) } }
+            var documents = [String: CachedMarkdownDocument](minimumCapacity: pending.count)
+            for await result in group {
+                if let (eventID, cached) = result { documents[eventID] = cached }
+                if !Task.isCancelled, let next = iterator.next() { enqueue(next) }
+            }
+            return documents
         }
 
         for (eventID, document) in newlyRendered {
@@ -109,6 +108,18 @@ struct MarkdownNode: Identifiable, Equatable, Sendable {
     let kind: Kind
     let content: AttributedString
     let children: [MarkdownNode]
+    /// Precomputed off the main thread during `MarkdownDocument.init` so SwiftUI rendering never invokes `NSDataDetector`.
+    let detectedLinks: [DetectedLink]
+    let hasOwnInteractiveLink: Bool
+    let containsInteractiveLink: Bool
+
+    init(id: Int, kind: Kind, content: AttributedString, children: [MarkdownNode]) {
+        self.id = id; self.kind = kind; self.content = content; self.children = children
+        let analysis = Self.analyzeLinks(in: content, kind: kind)
+        detectedLinks = analysis.detectedLinks
+        hasOwnInteractiveLink = analysis.hasExplicitLink || !analysis.detectedLinks.isEmpty
+        containsInteractiveLink = hasOwnInteractiveLink || children.contains(where: \.containsInteractiveLink)
+    }
 
     static func plainText(_ source: String) -> MarkdownNode {
         MarkdownNode(
@@ -119,20 +130,25 @@ struct MarkdownNode: Identifiable, Equatable, Sendable {
         )
     }
 
-    var containsInteractiveLink: Bool {
-        content.containsInteractiveLink || children.contains(where: \.containsInteractiveLink)
-    }
-}
-
-private extension AttributedString {
-    var containsInteractiveLink: Bool {
-        runs.contains { run in
-            if run.link.map(LinkPolicy.isAllowed) == true { return true }
-            guard run.inlinePresentationIntent?.contains(.code) != true else { return false }
-            return !MessageLinkDetector.detect(
-                in: String(self[run.range].characters)
-            ).isEmpty
+    private static func analyzeLinks(in content: AttributedString, kind: Kind) -> (hasExplicitLink: Bool, detectedLinks: [DetectedLink]) {
+        if case .codeBlock = kind { return (false, []) }
+        if case .thematicBreak = kind { return (false, []) }
+        var hasExplicitLink = false
+        var detected: [DetectedLink] = []
+        var utf16Offset = 0
+        for run in content.runs {
+            let fragment = String(content[run.range].characters)
+            let fragmentLength = (fragment as NSString).length
+            if let link = run.link, LinkPolicy.isAllowed(link) {
+                hasExplicitLink = true
+            } else if run.inlinePresentationIntent?.contains(.code) != true {
+                for match in MessageLinkDetector.detect(in: fragment) {
+                    detected.append(DetectedLink(url: match.url, utf16Location: utf16Offset + match.utf16Location, utf16Length: match.utf16Length))
+                }
+            }
+            utf16Offset += fragmentLength
         }
+        return (hasExplicitLink, detected)
     }
 }
 
@@ -212,7 +228,7 @@ private struct MarkdownNodeView: View {
         switch node.kind {
         case .paragraph:
             MarkdownParagraphView(
-                content: node.content,
+                node: node,
                 foreground: foreground,
                 linkColor: linkColor
             )
@@ -220,6 +236,8 @@ private struct MarkdownNodeView: View {
         case .heading(let level):
             MarkdownText(
                 content: node.content,
+                hasInteractiveLink: node.hasOwnInteractiveLink,
+                detectedLinks: node.detectedLinks,
                 foreground: foreground,
                 linkColor: linkColor,
                 typography: .heading(level)
@@ -299,10 +317,12 @@ private struct MarkdownNodeView: View {
 }
 
 private struct MarkdownParagraphView: View {
-    let content: AttributedString
+    let node: MarkdownNode
     let foreground: Color
     let linkColor: Color
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var content: AttributedString { node.content }
 
     var body: some View {
         if let link = standaloneLink {
@@ -354,6 +374,8 @@ private struct MarkdownParagraphView: View {
         } else {
             MarkdownText(
                 content: content,
+                hasInteractiveLink: node.hasOwnInteractiveLink,
+                detectedLinks: node.detectedLinks,
                 foreground: foreground,
                 linkColor: linkColor,
                 typography: .body
@@ -395,6 +417,8 @@ private struct MarkdownParagraphView: View {
 
 private struct MarkdownText: View {
     let content: AttributedString
+    let hasInteractiveLink: Bool
+    let detectedLinks: [DetectedLink]
     let foreground: Color
     let linkColor: Color
     var typography: MarkdownInlineTypography = .body
@@ -409,9 +433,10 @@ private struct MarkdownText: View {
 
     @ViewBuilder
     private var text: some View {
-        if containsLink {
+        if hasInteractiveLink {
             MarkdownLinkedTextView(
                 content: content,
+                detectedLinks: detectedLinks,
                 foreground: foreground,
                 linkColor: linkColor,
                 typography: typography,
@@ -421,10 +446,6 @@ private struct MarkdownText: View {
             Text(content)
                 .font(typography.font)
         }
-    }
-
-    private var containsLink: Bool {
-        content.containsInteractiveLink
     }
 }
 
@@ -472,6 +493,7 @@ private enum MarkdownInlineTypography {
 
 private struct MarkdownLinkedTextView: UIViewRepresentable {
     let content: AttributedString
+    let detectedLinks: [DetectedLink]
     let foreground: Color
     let linkColor: Color
     let typography: MarkdownInlineTypography
@@ -572,16 +594,15 @@ private struct MarkdownLinkedTextView: UIViewRepresentable {
 
             if let link = run.link, LinkPolicy.isAllowed(link) {
                 rendered.addAttribute(.link, value: link, range: fragmentRange)
-            } else if !isCode {
-                for detected in MessageLinkDetector.detect(in: fragment) {
-                    let range = NSRange(
-                        location: utf16Offset + detected.utf16Location,
-                        length: detected.utf16Length
-                    )
-                    rendered.addAttribute(.link, value: detected.url, range: range)
-                }
             }
             utf16Offset += fragmentLength
+        }
+
+        let totalLength = rendered.length
+        for detected in detectedLinks {
+            let range = NSRange(location: detected.utf16Location, length: detected.utf16Length)
+            guard range.location >= 0, NSMaxRange(range) <= totalLength else { continue }
+            rendered.addAttribute(.link, value: detected.url, range: range)
         }
 
         return rendered
@@ -860,6 +881,8 @@ private struct MarkdownTableView: View {
                         }
                         MarkdownTableCell(
                             content: cell?.content ?? AttributedString(),
+                            hasInteractiveLink: cell?.hasOwnInteractiveLink ?? false,
+                            detectedLinks: cell?.detectedLinks ?? [],
                             header: headerText(column: column),
                             alignment: columns[column],
                             isHeader: isHeader(row),
@@ -921,6 +944,8 @@ private struct MarkdownTableView: View {
 
 private struct MarkdownTableCell: View {
     let content: AttributedString
+    let hasInteractiveLink: Bool
+    let detectedLinks: [DetectedLink]
     let header: String?
     let alignment: MarkdownNode.TableAlignment
     let isHeader: Bool
@@ -939,6 +964,8 @@ private struct MarkdownTableCell: View {
     var body: some View {
         MarkdownText(
             content: content,
+            hasInteractiveLink: hasInteractiveLink,
+            detectedLinks: detectedLinks,
             foreground: foreground,
             linkColor: linkColor,
             typography: isHeader ? .tableHeader : .tableBody,
