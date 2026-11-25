@@ -396,6 +396,60 @@ const diagnosticProvider = {
   sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }),
 } as unknown as Provider;
 
+test("lease cancellation after SSH key registration prevents guest dispatch", async () => {
+  const lease = new AbortController();
+  const { deps } = diagnosticTransport();
+  const guestSshSpawns: string[] = [];
+  const spawnImpl = deps.spawn!;
+  const provider = {
+    ...diagnosticProvider,
+    async sshKey() {
+      const connection = await diagnosticProvider.sshKey({ sandboxId: "bx-test", key: "public" });
+      queueMicrotask(() => lease.abort());
+      return connection;
+    },
+  };
+  const input = { sandboxId: "bx-test", token: "private", script: "true", signal: lease.signal };
+  const result = sshStdinCheckout(provider, input, {
+    ...deps,
+    spawn: ((file: string, args: string[], options: object) => {
+      if (file === "ssh") guestSshSpawns.push(file);
+      return spawnImpl(file, args, options);
+    }) as typeof spawn,
+  });
+  await result.catch(() => {});
+  expect(guestSshSpawns).toHaveLength(0);
+  await expect(result).rejects.toBe(lease.signal.reason);
+});
+
+test("lease cancellation kills the active guest SSH process", async () => {
+  const lease = new AbortController();
+  const { deps } = diagnosticTransport();
+  const spawnImpl = deps.spawn!;
+  const signals: string[] = [];
+  const input = { sandboxId: "bx-test", token: "private", script: "true", signal: lease.signal };
+  const result = sshStdinCheckout(diagnosticProvider, input, {
+    ...deps,
+    spawn: ((file: string, args: string[], options: object) => {
+      if (file !== "ssh") return spawnImpl(file, args, options);
+      const child = new EventEmitter() as ChildProcess;
+      Object.assign(child, {
+        kill: (signal: string) => signals.push(signal),
+        stdin: {
+          end: () =>
+            queueMicrotask(() => {
+              lease.abort();
+              child.emit("close", signals.length ? null : 0);
+            }),
+        },
+      });
+      return child;
+    }) as typeof spawn,
+  });
+  await expect(result).rejects.toBeInstanceOf(DOMException);
+  expect(signals).toEqual(["SIGKILL"]);
+});
+
 test("GitHub hydration provisions absent system Python without passing the payload to package tools", async () => {
   const transport = diagnosticTransport();
   await sshHydrateGitHubToken(

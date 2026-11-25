@@ -29,10 +29,10 @@ import type { ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
-import { controlLaunchReceiptPayload } from "./ordinary-launch-receipts.ts";
+import { controlLaunchReceiptPayload, freshBoatAdmission } from "./ordinary-launch-receipts.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
-import { defineRoutes } from "./routes.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
 
 type LaunchControlOptions = Pick<
@@ -242,6 +242,100 @@ function configureDockerLaunch(options: ControlOptions, request: Request | undef
   if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
 }
 
+async function handleSandboxLaunch({ caller, body, options, request }: ControlRouteContext) {
+  if (usesHostLaunch(body.provider)) configureDockerLaunch(options, request);
+  const { store, encryptionKey } = options;
+  const userId = caller.userId;
+  const parsed = launchOperation.input.body.safeParse(body);
+  if (!parsed.success)
+    throw new VaultError(
+      "invalid",
+      usesHostLaunch(body.provider) && Object.hasOwn(body, "image")
+        ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
+        : "Invalid launch request. See the sandbox/launch request schema.",
+    );
+  const launch = parsed.data;
+  if (launch.provider === "docker") {
+    const org = scopedOrg(caller, launch.org);
+    const dockerLaunch = options.dockerLaunch;
+    if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+    const organization = await resolveOrg(store, userId, org);
+    const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
+    if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
+    const { idempotencyKey, ...request } = launch;
+    const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
+    const { sandbox } = await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId });
+    return { sandbox: { id: sandbox.id, status: sandbox.status } };
+  }
+  if ("id" in launch) {
+    const template = launch;
+    const templateOrg = scopedOrg(caller, template.org);
+    if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
+    if (template.prompt === undefined && !options.runtimeSend)
+      throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
+    const base = templateRuntime(options, caller);
+    if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
+    const {
+      provider,
+      harness,
+      runtimeVersion: _runtimeVersion,
+      modalTransport: _runtimeTransport,
+      org: _org,
+      idempotencyKey,
+      ...input
+    } = template;
+    const organization = await resolveOrg(store, userId, templateOrg);
+    const requestKey = `pinned-modal/${createHash("sha256").update(JSON.stringify(idempotencyKey)).digest("hex")}`;
+    const receipt = await launchTemplate(
+      options.templates,
+      caller,
+      { ...input, org: organization.id, requestKey },
+      {
+        ...base,
+        explicitModal: true,
+        validateDefinition: (definition) => {
+          if (definition.provider !== provider || definition.harness !== harness)
+            throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
+        },
+      },
+      "template_rest",
+    );
+    if (receipt.state === "succeeded") {
+      const { templateId, revision, revisionId, account, definition, variables, resolvedSkills, golden } =
+        receipt.manifest as Record<string, unknown>;
+      return pinnedModalLaunchReceipt.parse({
+        sandbox: {
+          id: receipt.id,
+          status: receipt.status,
+          templateManifest: {
+            templateId,
+            revision,
+            revisionId,
+            golden,
+            account,
+            definition,
+            variables,
+            resolvedSkills,
+          },
+        },
+      });
+    }
+    throw pinnedModalFailure(receipt);
+  }
+  scopedOrg(caller, launch.org);
+  if ("runtimeVersion" in launch) {
+    if ("modalTransport" in launch) {
+      if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
+      if (launch.prompt === undefined && !options.runtimeSend)
+        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
+      return launchRoute(options, caller, launch, "modal");
+    }
+    return { ...(await launchRoute(options, caller, launch, true)) };
+  }
+  return launchRoute(options, caller, launch);
+}
+
 export const launchRoutes = defineRoutes("launch", {
   [launchOptionsOperation.route.path.slice("/api/v1/".length)]: {
     methods: [launchOptionsOperation.route.method],
@@ -251,98 +345,11 @@ export const launchRoutes = defineRoutes("launch", {
       return readLaunchOptions(options);
     },
   },
-  "sandbox/launch": async ({ caller, body, options, request }) => {
-    if (usesHostLaunch(body.provider)) configureDockerLaunch(options, request);
-    const { store, encryptionKey } = options;
-    const userId = caller.userId;
-    const parsed = launchOperation.input.body.safeParse(body);
-    if (!parsed.success)
-      throw new VaultError(
-        "invalid",
-        usesHostLaunch(body.provider) && Object.hasOwn(body, "image")
-          ? "Remove the image field and retry. Armada chooses the Docker environment automatically."
-          : "Invalid launch request. See the sandbox/launch request schema.",
-      );
-    const launch = parsed.data;
-    if (launch.provider === "docker") {
-      const org = scopedOrg(caller, launch.org);
-      const dockerLaunch = options.dockerLaunch;
-      if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
-      const organization = await resolveOrg(store, userId, org);
-      const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
-      if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
-      const { idempotencyKey, ...request } = launch;
-      const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
-      const { sandbox } = await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId });
-      return { sandbox: { id: sandbox.id, status: sandbox.status } };
-    }
-    if ("id" in launch) {
-      const template = launch;
-      const templateOrg = scopedOrg(caller, template.org);
-      if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
-      if (template.prompt === undefined && !options.runtimeSend)
-        throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-      if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-      const base = templateRuntime(options, caller);
-      if (!base) throw new VaultError("unavailable", "Template launching unavailable.");
-      const {
-        provider,
-        harness,
-        runtimeVersion: _runtimeVersion,
-        modalTransport: _runtimeTransport,
-        org: _org,
-        idempotencyKey,
-        ...input
-      } = template;
-      const organization = await resolveOrg(store, userId, templateOrg);
-      const requestKey = `pinned-modal/${createHash("sha256").update(JSON.stringify(idempotencyKey)).digest("hex")}`;
-      const receipt = await launchTemplate(
-        options.templates,
-        caller,
-        { ...input, org: organization.id, requestKey },
-        {
-          ...base,
-          explicitModal: true,
-          validateDefinition: (definition) => {
-            if (definition.provider !== provider || definition.harness !== harness)
-              throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
-          },
-        },
-        "template_rest",
-      );
-      if (receipt.state === "succeeded") {
-        const { templateId, revision, revisionId, account, definition, variables, resolvedSkills, golden } =
-          receipt.manifest as Record<string, unknown>;
-        return pinnedModalLaunchReceipt.parse({
-          sandbox: {
-            id: receipt.id,
-            status: receipt.status,
-            templateManifest: {
-              templateId,
-              revision,
-              revisionId,
-              golden,
-              account,
-              definition,
-              variables,
-              resolvedSkills,
-            },
-          },
-        });
-      }
-      throw pinnedModalFailure(receipt);
-    }
-    scopedOrg(caller, launch.org);
-    if ("runtimeVersion" in launch) {
-      if ("modalTransport" in launch) {
-        if (!options.admitModalLaunch) throw new VaultError("unavailable", "Modal launch admission is unavailable.");
-        if (launch.prompt === undefined && !options.runtimeSend)
-          throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
-        return launchRoute(options, caller, launch, "modal");
-      }
-      return launchRoute(options, caller, launch, true);
-    }
-    return launchRoute(options, caller, launch);
+  "sandbox/launch": {
+    methods: ["POST"],
+    responseStatus: (result) =>
+      typeof result === "object" && result !== null && freshBoatAdmission in result ? 202 : 200,
+    handler: handleSandboxLaunch,
   },
   [controlRouteKey(launchTemplateOperation.route)]: ({ caller, body, options, request }) => {
     configureDockerLaunch(options, request);

@@ -46,6 +46,7 @@ import {
   prepareModalLaunchHandoff,
 } from "../modal-launch-handoff.ts";
 import {
+  freshBoatAdmission,
   type OrdinaryLaunchFailure,
   ordinaryLaunchFingerprint,
   replayOrdinaryLaunchFailure,
@@ -474,7 +475,10 @@ export async function admitModalLaunch(
       admissionCallbackCompleted = true;
       return envelope;
     });
-    if (admissionCallbackCompleted) recordModalLaunchAdmission(receipt.sandbox.id);
+    if (admissionCallbackCompleted) {
+      recordModalLaunchAdmission(receipt.sandbox.id);
+      if (input.boat) Object.defineProperty(receipt, freshBoatAdmission, { value: true });
+    }
     return receipt;
   } catch (error) {
     const databaseError = error as { errno?: string; code?: string } | null;

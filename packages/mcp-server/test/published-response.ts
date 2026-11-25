@@ -4,21 +4,22 @@ import adminPublished from "../openapi-admin.json";
 
 type Operation = Record<
   "post" | "delete",
-  { responses: { "200": { content: { "application/json": { schema: unknown } } } } }
+  { responses: Record<string, { content: { "application/json": { schema: unknown } } }> }
 >;
 
-/** The checked-in OpenAPI HTTP 200 schema of a route, as a validator for handler responses. */
+/** The checked-in OpenAPI success schema of a route, as a validator for handler responses. */
 export function publishedResponse(
   route: string,
   method: "post" | "delete" = "post",
   audience: "integration" | "admin" = "integration",
+  status = 200,
 ): z.ZodType {
   const document = audience === "admin" ? adminPublished : published;
   const operation = (document.paths as unknown as Record<string, Operation>)[`/api/v1/${route}`];
   if (!operation) throw new Error(`No published route ${route}`);
-  return z.fromJSONSchema(
-    operation[method].responses["200"].content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
-  );
+  const schema = operation[method].responses[status]?.content["application/json"].schema;
+  if (!schema) throw new Error(`No published JSON ${status} for ${method} ${route}`);
+  return z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0]);
 }
 
 type GetOperation = {

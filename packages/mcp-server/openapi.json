@@ -1015,7 +1015,7 @@
         },
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Success, including replay of an ordinary Boat launch with its current sandbox state.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1345,6 +1345,43 @@
                       "additionalProperties": false
                     }
                   ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "A new ordinary Boat launch was durably admitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "sandbox": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "Armada sandbox ID."
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "starting"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "sandbox"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
