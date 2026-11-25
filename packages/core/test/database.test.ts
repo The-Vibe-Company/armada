@@ -201,8 +201,6 @@ describe("database", () => {
           id === "account_turn_queue.credential_version" ||
           id === "sandboxes.credential_id" ||
           id === "sandboxes.credential_version" ||
-          id === "modal_server_harnesses.credential_id" ||
-          id === "modal_server_harnesses.credential_version" ||
           id === "sandbox_account_usage_pricing.credential_id" ||
           id === "sandbox_account_usage_pricing.credential_version"
         ) {
@@ -245,7 +243,6 @@ describe("database", () => {
         "docker_launch_manifests.result_enc",
         "docker_launch_requests.request_enc",
         "docker_launch_requests.result_enc",
-        "docker_queued_prompts.input_enc",
         "github_connections.access_token_enc",
         "github_connections.refresh_token_enc",
         "github_runtime_issued.token_enc",

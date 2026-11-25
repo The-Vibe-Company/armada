@@ -79,12 +79,6 @@ OAuth refresh. Native auth may maintain separate encrypted state keyed by the
 pinned account ID/version and rotate that state with its own auth revision;
 routine refresh must not advance the account binding version.
 
-Modal bootstrap precedes the public sandbox INSERT. Core launch therefore passes
-safe account ID/version labels; the private `modal_server_harnesses` policy pins
-them for every physical generation. Restore validates that same account/revision,
-not a current default. Legacy Modal machines without a known binding require explicit owner recovery
-rather than selecting a different billing account on restore.
-
 ## Recover a legacy unbound Modal workspace
 
 `POST /api/v1/sandbox/bind-credential` takes `{id, credentialId, org?}`.
@@ -105,10 +99,9 @@ placements; see [existing sandbox billing accounts](account-binding-change.md).
 That flow can safely stop ready compute before changing the pin; it is not
 limited to legacy unbound Modal recovery.
 
-Recovery atomically CAS-pins the same ID/version on the public sandbox, private
-Modal harness policy and safe machine labels. It preserves conversation IDs,
-physical identity, generation, recovery image and workspace; it performs no
-provider request, restart, resume or allocation for the stopped legacy recovery
-case described here. A later normal send resumes the
-same retained workspace using the explicitly selected account. Success is the
-safe DTO `{id, credentialId, credentialVersion, harness, status:"bound"}`.
+When the selected binding changes, recovery updates the sandbox's account ID
+and version, advances its lifecycle generation and records pricing context for
+future admissions in one transaction. The stopped workspace and its
+conversation IDs are preserved. A later send resumes the retained workspace
+using the selected account. Success is the safe DTO
+`{id, credentialId, credentialVersion, harness, status:"bound"}`.
