@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { DOCKER_LAUNCH_FAILURE_MESSAGES, HARNESS_CAPABILITIES, isSandboxProvider } from "@armada/core";
+import {
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
+  dockerWorkspaceReclaimedMessage,
+  HARNESS_CAPABILITIES,
+  isSandboxProvider,
+  ProviderError,
+} from "@armada/core";
 import {
   decryptSecret,
   encryptSecret,
@@ -16,7 +23,7 @@ import { type AccountTurnQueue, accountTurnInputDigest } from "../account-turn-q
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
 import { createDockerHostStore } from "../docker-host-store.ts";
-import { DockerHostUpgradeRequired } from "../docker-host-version.ts";
+import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "../docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "../docker-launch-environment.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerSandboxService } from "../docker-sandbox-service.ts";
@@ -305,8 +312,46 @@ export function createResumeJob(options: {
     throw new ResumeTurnDeferred();
   };
 
-  const resumeDocker = async (caller: Caller, sandbox: DockerSandbox, requestId: string) => {
-    const { id } = sandbox;
+  const resumeDocker = async (
+    caller: Caller,
+    target: {
+      id: string;
+      owner_id: string;
+      org_id: string;
+      harness: DockerSandbox["harness"];
+      status: string;
+      status_reason: string | null;
+      docker_host_id: string;
+    },
+    requestId?: string,
+  ) => {
+    const { id } = target;
+    if (target.owner_id !== caller.userId)
+      throw new ProviderError({
+        provider: "docker",
+        code: "not_found",
+        message: "Sandbox not found.",
+        retryable: false,
+      });
+    if (!HARNESS_CAPABILITIES[target.harness].resume)
+      throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
+    if (target.status === "deleted" && dockerWorkspaceReclaimedMessage(target.status_reason))
+      throw new DockerRetentionEnded(target.status_reason);
+    if (!requestId)
+      throw new ProviderError({
+        provider: "docker",
+        code: "invalid_request",
+        message: "Invalid Docker sandbox request.",
+        retryable: false,
+      });
+    const {
+      rows: [host],
+    } = await sql.query<{ daemon_protocol: number | null }>(
+      "select daemon_protocol from public.docker_hosts where id=$1 and org_id=$2",
+      [target.docker_host_id, target.org_id],
+    );
+    if (!supportsDockerHostProtocol(host?.daemon_protocol)) throw new DockerHostUpgradeRequired();
+    const sandbox = await createDockerSandboxService(sql).get({ userId: caller.userId, orgId: target.org_id }, id);
     if (sandbox.ownerId !== caller.userId) throw new VaultError("not_found", "No owned Docker resume target.");
     const readReceipt = async () => {
       const {

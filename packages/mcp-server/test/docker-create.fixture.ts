@@ -2,17 +2,21 @@ import type { Sql } from "@armada/core";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 
-export async function queueMailboxCreate(
+export async function queueMachineAllocation(
   sql: Sql,
   key: string,
   actor: Parameters<ReturnType<typeof createDockerSandboxService>["reserve"]>[0],
   input: Parameters<ReturnType<typeof createDockerSandboxService>["reserve"]>[1],
 ) {
   const sandbox = await createDockerSandboxService(sql).reserve(actor, input);
-  await createDockerHostStore(sql, key).enqueueSandbox(actor, sandbox.id, {
-    requestId: sandbox.id,
-    operation: "create",
+  const allocation = await createDockerHostStore(sql, key).submitMachineCreate(actor, {
+    sandboxId: sandbox.id,
+    generation: sandbox.lifecycleGeneration,
+    source: { kind: "image", ref: input.image },
+    size: null,
+    computeTtlSeconds: sandbox.ttlSeconds,
   });
+  if (allocation.kind !== "pending") throw new Error("Expected pending Docker allocation.");
   return sandbox;
 }
 
@@ -25,14 +29,9 @@ export async function queueMachineCreate(
   input: Parameters<ReturnType<typeof createDockerSandboxService>["reserve"]>[1],
   installationId: string,
 ) {
-  const sandbox = await createDockerSandboxService(sql).reserve(actor, input);
+  const sandbox = await queueMachineAllocation(sql, key, actor, input);
+  if (sandbox.installationId !== installationId) throw new Error("Unexpected Docker installation.");
   const target = { sandboxId: sandbox.id, generation: sandbox.lifecycleGeneration };
-  const allocation = await createDockerHostStore(sql, key).submitMachineCreate(
-    actor,
-    { ...target, source: { kind: "image", ref: input.image }, size: null, computeTtlSeconds: sandbox.ttlSeconds },
-    { hostId: input.hostId, installationId },
-  );
-  if (allocation.kind !== "pending") throw new Error("Expected pending Docker allocation.");
   const context = {
     signal: new AbortController().signal,
     canDispatch: async () => true,
