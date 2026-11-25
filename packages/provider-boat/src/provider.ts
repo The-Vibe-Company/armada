@@ -5,7 +5,6 @@ import type {
   ExecRequest,
   ExecResult,
   ForkRequest,
-  Page,
   PromptRequest,
   Provider,
   SandboxInfo,
@@ -43,7 +42,6 @@ import {
   type CreateSandboxRequest,
   type Sandbox,
   SandboxLastSnapshotStatusEnum,
-  type SandboxListResponse,
   type SavedSnapshot,
   StopOperationResponseFromJSON,
   StopOperationStatusEnum,
@@ -163,7 +161,7 @@ function snapshotInfo(snapshot: SavedSnapshot): SnapshotInfo {
 export interface BoatProviderOptions {
   /** The boat API key. It stays in this object: no error or event carries it. */
   apiKey: string;
-  /** Stable, nonsecret environment + server identity. Omit to leave inventory unbound. */
+  /** Stable, nonsecret environment + server identity. Used to label managed forks. */
   deploymentId?: string;
   baseUrl?: string;
   /** Seconds before boat stops a sandbox by itself, when a call names none. */
@@ -188,10 +186,6 @@ function ttl(requested: number | undefined, fallback: number): number {
   return seconds;
 }
 
-function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boolean } | undefined): Page<T> {
-  return { items, cursor: pageInfo?.hasMore ? pageInfo.nextCursor : null };
-}
-
 /** Compute-only runtime ports; intentionally not required by legacy managed adapters. */
 interface BoatRuntimeHost {
   resumeRuntime(
@@ -202,19 +196,10 @@ interface BoatRuntimeHost {
   ): Promise<void>;
 }
 
-/** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
-export interface BoatProvider extends Provider {
-  /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
-   * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
-  listSandboxInventory(request?: {
-    cursor?: string;
-    signal?: AbortSignal;
-  }): Promise<Page<{ sandboxId: string; deploymentId: string; createdAt: Date }>>;
-}
-
 const DEPLOYMENT_LABEL = "armada.deployment";
 
-export function createBoatProvider(options: BoatProviderOptions): BoatProvider & BoatRuntimeHost {
+/** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
+export function createBoatProvider(options: BoatProviderOptions): Provider & BoatRuntimeHost {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
   const deploymentId = options.deploymentId?.trim();
   const deploymentLabel = deploymentId ? createHash("sha256").update(deploymentId).digest("hex") : undefined;
@@ -410,7 +395,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
   const requiresRuntime = async (): Promise<never> => {
     throw invalidRequest("Boat agent operations require an enrolled Armada runtime.");
   };
-  const provider: BoatProvider & BoatRuntimeHost = {
+  const provider: Provider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
     capabilities: boatCapabilities,
@@ -573,36 +558,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       }
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
     },
-    async listSandboxInventory({ cursor, signal } = {}) {
-      if (!deploymentId || !deploymentLabel) return { items: [], cursor: null };
-      signal?.throwIfAborted();
-      const timeout = AbortSignal.timeout(10_000);
-      const response = await call<SandboxListResponse>(() =>
-        api.sandboxes(
-          { label: [`${DEPLOYMENT_LABEL}=${deploymentLabel}`], sort: "desc", ...(cursor ? { cursor } : {}) },
-          { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
-        ),
-      );
-      signal?.throwIfAborted();
-      if (response.pageInfo?.hasMore && (!response.pageInfo.nextCursor || response.pageInfo.nextCursor === cursor)) {
-        throw unexpectedAnswer("sandbox inventory cursor");
-      }
-      const items = [];
-      for (const sandbox of response.sandboxes ?? []) {
-        if (
-          sandbox.labels?.[DEPLOYMENT_LABEL] === deploymentLabel &&
-          sandbox.labels.armada === "sandbox" &&
-          sandbox.machineProvider &&
-          sandbox.id?.trim() &&
-          sandbox.createdAt &&
-          Number.isFinite(sandbox.createdAt.getTime())
-        ) {
-          items.push({ sandboxId: sandbox.id, deploymentId, createdAt: sandbox.createdAt });
-        }
-      }
-      return page(items, response.pageInfo);
-    },
-
     async exec(request: ExecRequest): Promise<ExecResult> {
       const commandRequest = {
         command: request.command,

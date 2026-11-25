@@ -387,7 +387,6 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
   ].join("\n");
 
   return `// Generated from supabase/migrations by \`bun run db:types\`. Do not edit.
-import type { LaunchPercentiles } from "./launch-stages.ts";
 import type { SandboxListMetadata } from "./sandbox-access.ts";
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
@@ -403,7 +402,10 @@ ${tables}
     Functions: {
       sandbox_detail_status: { Args: { target_id: string; target_org: string }; Returns: SandboxStatus | null };
       sandbox_list_metadata: { Args: Record<string, never>; Returns: SandboxListMetadata[] };
-      sandbox_launch_percentiles: { Args: { target_org: string }; Returns: LaunchPercentiles[] };
+      sandbox_launch_percentiles: {
+        Args: { target_org: string };
+        Returns: { provider: string; kind: "launch" | "resume"; count: number; p50Ms: number; p90Ms: number }[];
+      };
       can_open_sandbox: { Args: { target_org: string; target_owner: string }; Returns: boolean };
     };
     Enums: {

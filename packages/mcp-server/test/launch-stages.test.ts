@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { LAUNCH_STAGES, launchReadyPercentiles } from "@armada/core";
+import { LAUNCH_STAGES } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
@@ -149,9 +149,6 @@ test("the first resume of a sandbox launched before measurement stays a resume",
     )
   ).rows;
   expect(rows.map((row) => `${row.activation}:${row.stage}`)).toEqual(["2:accepted", "2:harness_ready"]);
-  expect(
-    launchReadyPercentiles(rows.map((row) => ({ ...row, sandbox_id: sandbox.id, provider: "boat" }))),
-  ).toMatchObject([{ provider: "boat", kind: "resume", count: 1 }]);
   const owner = createSqlData(sql)({
     userId: people.owner,
     orgs: [{ orgId: people.org, role: "member" }],
