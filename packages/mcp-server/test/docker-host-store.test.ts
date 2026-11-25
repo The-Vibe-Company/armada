@@ -1250,6 +1250,12 @@ test.each(["explicit replay", "queued send", "ordinary retained stop"] as const)
        values($1,1,$2,0,now())`,
       [a.sandboxId, randomUUID()],
     );
+    if (scenario === "ordinary retained stop") {
+      await sql.query("insert into runtime_checkpoints (sandbox_id,epoch,request_id) values($1,2,$2)", [
+        a.sandboxId,
+        randomUUID(),
+      ]);
+    }
     const unavailable = async () => {
       throw Error("Admission must only enqueue the shared job.");
     };
@@ -1461,7 +1467,13 @@ test.each(["active", "revoked"])(
     expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
     const jobs = createJobsStore(sql, key);
     const worker = randomUUID();
-    const resumed = await jobs.claim("resume", worker, 30, 8);
+    const {
+      rows: [resumed],
+    } = await sql.query<Job>(
+      `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity'
+       where id=$1 returning id,sandbox_id,generation::text,kind,lease_epoch::text`,
+      [a.selection.runnerJobId, worker],
+    );
     if (!resumed) throw Error("Missing restore runner.");
     expect(
       await jobs.complete(resumed, worker, {
@@ -1975,10 +1987,10 @@ test("poll retires obsolete work without fencing a delayed physical completion",
   expect(await lifecycle(a.sandboxId)).toEqual(before);
 });
 
-test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
+test("an unattached restore output probe does not read the archive before custody is known", async () => {
   const a = await restoreFixture();
   await a.poll();
-  await reportDockerExpiry(sql, key, a.hostToken, a.installationId, { requestId: a.restore.requestId });
+  expect(await store.expired(a.hostToken, a.installationId, { requestId: a.restore.requestId })).toBe(false);
   const signal = new AbortController().signal;
   const outputs = (token: string, installation: string, body: ReadableStream<Uint8Array> | null) =>
     store.retainedOutputs(token, installation, a.restore.requestId, body, signal);

@@ -199,7 +199,7 @@ export function createResumeJob(options: {
             coalesce(c.watermark,archive.watermark)::text as watermark,c.epoch is null as retained_workspace
           from public.runtime_enrolments e
           cross join lateral (select coalesce(max(sequence),0) as watermark from public.runtime_events where sandbox_id=$1) archive
-          left join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id and (not $6::boolean or c.epoch=e.epoch)
+          left join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id and (not $6::boolean or (c.epoch=e.epoch and c.completed_at is not null))
           where e.sandbox_id=$1 and e.runtime_hash is null
             and (($6::boolean and c.epoch is null and e.epoch>0)
               or (c.completed_at is not null and c.watermark=archive.watermark
