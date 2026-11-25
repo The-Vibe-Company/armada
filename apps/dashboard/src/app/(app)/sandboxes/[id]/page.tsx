@@ -6,7 +6,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { ConnectionStatusBadge, ScopeBadge } from "@/components/connections";
-import { CreatedAt } from "@/components/created-at";
+import { CopyButton } from "@/components/copy-button";
 import { InstalledSkills } from "@/components/installed-skills";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { PullRequestSection } from "@/components/pull-requests";
@@ -52,6 +52,7 @@ import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
+import { sandboxListName } from "@/lib/sandbox-list-name";
 import { sandboxUsesRuntime } from "@/lib/sandbox-thread";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -162,14 +163,14 @@ export default async function SandboxPage({ params }: Props) {
   const machineSize = describeEvidence(sandbox.provider, sandbox);
   // The interior row is returned only to a viewer who may open the sandbox, so the recovery command is theirs to run.
 
-  const facts: [string, string][] = [
+  const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
     ["Snapshot", golden ? `${golden.name}${golden.removed_at ? " (removed)" : ""}` : "Unknown"],
     ["Org", org?.org.name ?? "Unknown"],
     ["Provider", sandboxProviderLabel(sandbox.provider)],
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-    ["Account", account.name],
+    ["Account", account.kindLabel ? `${account.name} (${account.kindLabel})` : account.name],
     ["Billing type", account.billing],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
@@ -181,10 +182,13 @@ export default async function SandboxPage({ params }: Props) {
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
     ...(lifecycle.expiresAt
       ? [
-          ["Deadline", `${formatDate(lifecycle.expiresAt)}${life.remaining ? `, ${life.remaining}` : ""}`] as [
-            string,
-            string,
-          ],
+          [
+            "Deadline",
+            <>
+              <span>{formatDate(lifecycle.expiresAt)}</span>
+              {life.remaining && <span className="block xl:hidden">{life.remaining}</span>}
+            </>,
+          ] as Fact,
         ]
       : []),
     ...(lifecycle.lastObservedAt ? [["Last checked", formatDate(lifecycle.lastObservedAt)] as [string, string]] : []),
@@ -194,109 +198,50 @@ export default async function SandboxPage({ params }: Props) {
 
   return (
     <ThreadLayout
-      sandbox={sandbox}
-      lifetime={life.remaining ?? life.lifetime}
-      header={
+      bar={
         <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} cost={cost}>
           {configured &&
             (sandbox.status === "ready" || sandbox.status === "running") &&
             (owner || org?.role === "admin") &&
-            sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" />}
-          {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" />}
+            sandbox.expires_at && <AddSandboxTime sandboxId={sandbox.id} label="Extend" compact />}
+          {configured && isActiveStatus(sandbox.status) && <StopButton sandboxId={sandbox.id} size="sm" compact />}
         </ThreadHeader>
       }
-      details={
+      overview={
         <>
-          <section className="space-y-4 text-sm" aria-label="About">
-            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
-            <AgentFacts sandbox={sandbox} />
-            <BillingAccountSummary account={account} />
-            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
-            <Facts
-              facts={[
-                ["Snapshot", golden?.name ?? "Unknown"],
-                ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
-                ["Provider", sandboxProviderLabel(sandbox.provider)],
-                ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
-              ]}
+          <Facts facts={[...facts, ["Who can open it", "Owner and organization admins"]]} />
+          {recovery && owner && canShowAccountChoice(sandbox.status) && (
+            <SandboxAccountChoice
+              sandboxId={sandbox.id}
+              status={sandbox.status}
+              alreadyBound={sandbox.credential_id !== null}
+              owner={owner}
+              {...(choices ? { choices } : {})}
+              harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
             />
-            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
-            <Facts
-              facts={[
-                ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
-                ["Who can open it", "Owner and organization admins"],
-                ["ID", sandbox.id],
-              ]}
-            />
-            {recovery && owner && canShowAccountChoice(sandbox.status) && (
-              <details>
-                <summary className="cursor-pointer text-muted-foreground">Change account</summary>
-                {
-                  <SandboxAccountChoice
-                    sandboxId={sandbox.id}
-                    status={sandbox.status}
-                    alreadyBound={sandbox.credential_id !== null}
-                    owner={owner}
-                    {...(choices ? { choices } : {})}
-                    harnessLabel={HARNESS_LABELS[sandbox.harness] ?? sandbox.harness}
-                  />
-                }
-              </details>
-            )}
+          )}
+          <LifetimeProgress sandbox={sandbox} />
+          <ThreadDetails sandbox={sandbox} />
+        </>
+      }
+      usage={
+        <>
+          <SandboxCostCard cost={cost} showTotal={false} />
+          <section aria-label="Skills" className="space-y-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Skills</h2>
+            <InstalledSkills receipts={sandbox.skills} />
           </section>
-          <section className="space-y-3 text-xs">
-            <h2 className="font-medium text-muted-foreground">Lifetime</h2>
-            <p className="font-mono">{life.remaining ?? life.lifetime ?? "No time limit recorded"}</p>
-            {lifecycle.expiresAt && lifecycle.effectiveTtlSeconds && isActiveStatus(sandbox.status) ? (
-              <div
-                role="progressbar"
-                aria-label="Lifetime remaining"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(
-                  Math.max(
-                    0,
-                    Math.min(
-                      100,
-                      (Date.parse(lifecycle.expiresAt) - Date.now()) / (lifecycle.effectiveTtlSeconds * 10),
-                    ),
-                  ),
-                )}
-                className="h-1 overflow-hidden rounded-full bg-muted"
-              >
-                <div
-                  className="h-full rounded-full bg-foreground/55"
-                  style={{
-                    width: `${Math.max(0, Math.min(100, (Date.parse(lifecycle.expiresAt) - Date.now()) / (lifecycle.effectiveTtlSeconds * 10)))}%`,
-                  }}
-                />
-              </div>
-            ) : null}
-            <p className="leading-relaxed text-muted-foreground">
-              Stopping keeps the disk and the conversation. Send a prompt to resume.
-            </p>
+          <section aria-label="Tools" className="space-y-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Tools</h2>
+            <AppliedConnections applied={applied} />
           </section>
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
-          <ThreadDetails sandbox={sandbox} facts={facts} cost={cost} />
-
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Skills</summary>
-            <div className="pt-3">
-              <InstalledSkills receipts={sandbox.skills} />
-            </div>
-          </details>
-
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Tools</summary>
-            <div className="pt-3">
-              <AppliedConnections applied={applied} />
-            </div>
-          </details>
         </>
       }
     >
+      <WorkspaceNotices sandbox={sandbox} viewer={viewer} life={life} />
       <ThreadConversation sandbox={sandbox} configured={configured} />
     </ThreadLayout>
   );
@@ -341,7 +286,7 @@ function DockerSandbox({
     ["Image", image.label, image.detail ?? undefined],
     ...(sandbox.provider_sandbox_id ? [["Container", sandbox.provider_sandbox_id] as Fact] : []),
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-    ["Account", billing.name],
+    ["Account", billing.kindLabel ? `${billing.name} (${billing.kindLabel})` : billing.name],
     ["Billing type", billing.billing],
     ["Model", sandbox.model ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
@@ -351,10 +296,13 @@ function DockerSandbox({
     ...(life.lifetime ? [["Lifetime", life.lifetime] as [string, string]] : []),
     ...(lifecycle.expiresAt
       ? [
-          ["Deadline", `${formatDate(lifecycle.expiresAt)}${life.remaining ? `, ${life.remaining}` : ""}`] as [
-            string,
-            string,
-          ],
+          [
+            "Deadline",
+            <>
+              <span>{formatDate(lifecycle.expiresAt)}</span>
+              {life.remaining && <span className="block xl:hidden">{life.remaining}</span>}
+            </>,
+          ] as Fact,
         ]
       : []),
     ["Stopped", sandbox.stopped_at ? formatDate(sandbox.stopped_at) : "Not stopped"],
@@ -362,10 +310,8 @@ function DockerSandbox({
   ];
   return (
     <ThreadLayout
-      sandbox={sandbox}
-      lifetime={life.remaining ?? life.lifetime}
       docker
-      header={
+      bar={
         <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} cost={cost}>
           {configured && (
             <SandboxActions
@@ -378,26 +324,10 @@ function DockerSandbox({
           )}
         </ThreadHeader>
       }
-      details={
+      overview={
         <>
-          {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
-            <SandboxCommand sandboxId={sandbox.id} />
-          )}
-          <section className="space-y-3 text-sm">
-            <h2 className="text-xs font-medium text-muted-foreground">Agent</h2>
-            <AgentFacts sandbox={sandbox} />
-            <h2 className="text-xs font-medium text-muted-foreground">Workspace</h2>
-            <BillingAccountSummary account={billing} />
-            <h2 className="text-xs font-medium text-muted-foreground">Access</h2>
-            <Facts
-              facts={[
-                ["Started", <CreatedAt key="started" iso={sandbox.created_at} now={Date.now()} />],
-                ["Ends", lifecycle.expiresAt ? formatDate(lifecycle.expiresAt) : "No time limit recorded"],
-                ["Who can open it", "Owner and organization admins"],
-              ]}
-            />
-          </section>
-          <ThreadDetails sandbox={sandbox} facts={facts} cost={cost} />
+          <Facts facts={[...facts, ["Who can open it", "Owner and organization admins"]]} />
+          <ThreadDetails sandbox={sandbox} />
           {controls.unavailable.length > 0 && (
             <Card className="gap-3 py-5" data-docker-unavailable>
               <CardHeader className="px-5">
@@ -417,7 +347,17 @@ function DockerSandbox({
           )}
         </>
       }
+      usage={
+        <>
+          <SandboxCostCard cost={cost} showTotal={false} />
+          {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
+            <SandboxCommand sandboxId={sandbox.id} />
+          )}
+        </>
+      }
     >
+      <WorkspaceNotices sandbox={sandbox} viewer={viewer} life={life} />
+      <p className="text-xs text-muted-foreground">Docker host sandboxes have a fixed time limit.</p>
       {ownerCanChange && canShowAccountChoice(sandbox.status) && (
         <SandboxAccountChoice
           sandboxId={sandbox.id}
@@ -441,15 +381,26 @@ function DockerSandbox({
   );
 }
 
-function AgentFacts({ sandbox }: { sandbox: SandboxDetail }) {
+function LifetimeProgress({ sandbox }: { sandbox: SandboxDetail }) {
+  const { expiresAt, effectiveTtlSeconds } = readLifecycle(sandbox);
+  const remaining =
+    expiresAt && effectiveTtlSeconds
+      ? Math.round(Math.max(0, Math.min(100, (Date.parse(expiresAt) - Date.now()) / (effectiveTtlSeconds * 10))))
+      : null;
   return (
-    <Facts
-      facts={[
-        ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-        ["Model", sandbox.model ?? "Provider default"],
-        ["Effort", sandbox.reasoning_effort ?? "Provider default"],
-      ]}
-    />
+    <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
+      {remaining !== null && isActiveStatus(sandbox.status) && (
+        <div
+          role="progressbar"
+          aria-label="Lifetime remaining"
+          aria-valuenow={remaining}
+          className="h-1 overflow-hidden rounded-full bg-muted"
+        >
+          <div className="h-full rounded-full bg-foreground/55" style={{ width: `${remaining}%` }} />
+        </div>
+      )}
+      <p>Stopping keeps the disk and the conversation. Send a prompt to resume.</p>
+    </div>
   );
 }
 
@@ -485,15 +436,7 @@ function ThreadConversation({
   );
 }
 
-function ThreadDetails({
-  sandbox,
-  facts,
-  cost,
-}: {
-  sandbox: SandboxDetail;
-  facts: Fact[];
-  cost: ReturnType<typeof costOfRow>;
-}) {
+function ThreadDetails({ sandbox }: { sandbox: SandboxDetail }) {
   const outcome = settledOutcome(
     sandbox.status,
     parseTaskOutcome(sandbox.task_outcome),
@@ -503,27 +446,13 @@ function ThreadDetails({
   return (
     <>
       <PullRequestSection value={sandbox.pull_requests} />
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
-        <div className="pt-4">
-          <Facts facts={facts} />
-          {outcome && (
-            <div className="mt-2 space-y-1">
-              <OutcomeBadge outcome={outcome} />
-              <OutcomeDetail outcome={outcome} />
-            </div>
-          )}
-          {preservation && <PreservationNotice preservation={preservation} />}
+      {outcome && (
+        <div className="space-y-1">
+          <OutcomeBadge outcome={outcome} />
+          <OutcomeDetail outcome={outcome} />
         </div>
-      </details>
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted-foreground">
-          Usage · <RowCost cost={cost} />
-        </summary>
-        <div className="pt-3">
-          <SandboxCostCard cost={cost} />
-        </div>
-      </details>
+      )}
+      {preservation && <PreservationNotice preservation={preservation} />}
     </>
   );
 }
@@ -541,99 +470,88 @@ function ThreadHeader({
   cost: ReturnType<typeof costOfRow>;
   children: ReactNode;
 }) {
-  const docker = capabilities(sandbox.provider).launchSource === "host";
-  const rowCost = (
-    <span className="text-xs text-muted-foreground">
-      <RowCost cost={cost} />
-    </span>
-  );
+  const name = sandboxListName({
+    providerSandboxId: sandbox.provider_sandbox_id,
+    displayLabel: null,
+    harness: sandbox.harness,
+    createdAt: sandbox.created_at,
+  });
   return (
     <>
-      <ShellPageActions>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:gap-x-3">
-            <ShellPageActions slot="status">
-              <SandboxState
-                viewerOwns={sandbox.owner_id === viewer.id}
-                status={sandbox.publicStatus}
-                statusMessage={sandbox.status_reason}
-                readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting for you"}
-                idlePaused={sandbox.status_reason === "idle_paused"}
-                expiresAt={sandbox.expires_at}
-              />
-            </ShellPageActions>
-            {!docker && (
-              <>
-                {sandbox.publicStatus === "running" &&
-                  sandbox.status_reason &&
-                  sandbox.status_reason !== "idle_paused" && (
-                    <span className="text-sm text-muted-foreground">{sandbox.status_reason}</span>
-                  )}
-                {life.remaining && <span className="text-sm text-muted-foreground">{life.remaining}</span>}
-                {rowCost}
-              </>
-            )}
-          </div>
-          {docker ? (
-            <>
-              {rowCost}
-              {children}
-            </>
-          ) : (
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{children}</div>
-          )}
-        </div>
-      </ShellPageActions>
+      <Button variant="ghost" size="icon-sm" asChild>
+        <Link href="/sandboxes" aria-label="Back to sandboxes" title="Back to sandboxes">
+          <LinkPendingIcon>
+            <ArrowLeftIcon />
+          </LinkPendingIcon>
+        </Link>
+      </Button>
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-sm font-semibold leading-tight" title={name}>
+          {name}
+        </h1>
+        <span className="block font-mono text-[10px] leading-tight text-muted-foreground">
+          {sandbox.id.slice(0, 8)}
+        </span>
+      </div>
+      <CopyButton value={sandbox.id} label="Copy sandbox ID" />
+      <span
+        title={sandbox.status_reason ?? undefined}
+        className="shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 [&>span]:gap-1 [&>span]:text-[11px]"
+      >
+        <SandboxState
+          viewerOwns={sandbox.owner_id === viewer.id}
+          status={sandbox.publicStatus}
+          statusMessage={sandbox.status_reason}
+          readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting"}
+          idlePaused={sandbox.status_reason === "idle_paused"}
+          expiresAt={sandbox.expires_at}
+        />
+      </span>
+      {life.remaining && (
+        <span className="hidden whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground xl:inline">
+          {life.remaining}
+        </span>
+      )}
+      <RowCost
+        cost={cost}
+        className="rounded-full border px-1.5 py-0.5 font-mono text-[10px] tabular-nums sm:px-2 sm:text-xs"
+      />
+      {children}
+    </>
+  );
+}
+
+function WorkspaceNotices({ sandbox, viewer, life }: { sandbox: SandboxDetail; viewer: Viewer; life: LifecycleView }) {
+  return (
+    <>
       {life.notice && (
         <p className="text-sm text-muted-foreground">
           {life.notice.title} · {life.notice.text}
         </p>
       )}
       <SandboxAttention sandbox={sandbox} viewer={viewer} />
-      {docker && (
-        <p className="text-sm text-muted-foreground">
-          {life.remaining} · Docker host sandboxes have a fixed time limit.
-        </p>
-      )}
     </>
   );
 }
 
 function ThreadLayout({
-  sandbox,
-  lifetime,
   docker,
-  header,
-  details,
+  bar,
+  overview,
+  usage,
   children,
 }: {
-  sandbox: Pick<SandboxDetail, "model" | "provider" | "harness">;
-  lifetime: string | null | undefined;
   docker?: boolean;
-  header: ReactNode;
-  details: ReactNode;
+  bar: ReactNode;
+  overview: ReactNode;
+  usage: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div data-fit-viewport data-docker-sandbox={docker || undefined} className="space-y-3 md:space-y-4">
-      {header}
-      <div
-        data-fit="body"
-        className="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-2 md:gap-6 lg:grid-cols-[minmax(0,1fr)_19.5rem] lg:has-[[data-details-open=false]]:grid-cols-1"
-      >
-        <div data-fit="column" className="min-w-0 space-y-2 md:space-y-6">
-          {children}
-          <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
-            <span>{sandbox.model ?? "Provider default"}</span>
-            <span>
-              {sandbox.provider} · {HARNESS_LABELS[sandbox.harness]}
-            </span>
-            <span>{lifetime}</span>
-            <span>⌘ / Ctrl + Enter to send</span>
-          </footer>
-        </div>
-        <SandboxDetailsPanel>{details}</SandboxDetailsPanel>
-      </div>
+    <div data-fit-viewport data-docker-sandbox={docker || undefined} className="min-w-0 space-y-3">
+      <SandboxDetailsPanel bar={bar} overview={overview} usage={usage}>
+        {children}
+      </SandboxDetailsPanel>
     </div>
   );
 }
@@ -725,7 +643,7 @@ function Facts({ facts }: { facts: Fact[] }) {
           className="grid min-w-0 grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-3 py-2 first:pt-0 last:pb-0"
         >
           <dt className="shrink-0 text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 break-words" title={detail}>
+          <dd className="min-w-0 font-mono text-xs break-words tabular-nums" title={detail}>
             {value}
           </dd>
         </div>
@@ -769,13 +687,4 @@ function AppliedConnections({ applied }: { applied: SandboxConnections }) {
 
 function formatDate(iso: string): string {
   return `${new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" })} UTC`;
-}
-
-function BillingAccountSummary({ account }: { account: BillingAccount }) {
-  return (
-    <p className="text-xs break-words text-muted-foreground [overflow-wrap:anywhere]" data-sandbox-billing-account>
-      Account: <span className="font-medium text-foreground">{account.name}</span>
-      {account.kindLabel ? ` (${account.kindLabel})` : ""}
-    </p>
-  );
 }

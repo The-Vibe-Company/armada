@@ -31,6 +31,7 @@ import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/san
 import { Markdown } from "@/components/markdown";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
+import { SandboxInspectorEvents } from "@/components/sandbox-details-panel";
 import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ import {
   toolText,
 } from "@/lib/chat";
 import { chatEventStream } from "@/lib/chat-event-stream";
+import { type PendingMessage, unconfirmedMessages } from "@/lib/chat-outbox";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
@@ -64,7 +66,8 @@ import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
 
-const FALLBACK_POLL_MS = 2000;
+const WORKING_POLL_MS = 1_000;
+const IDLE_POLL_MS = 3_000;
 const STREAM_READ_DELAY_MS = 100;
 const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 8000;
@@ -127,7 +130,7 @@ type PollSession = {
 };
 
 type ReadResult =
-  | { kind: "success"; more: boolean; active: boolean; refreshNeeded: boolean }
+  | { kind: "success"; more: boolean; active: boolean; working: boolean; refreshNeeded: boolean }
   | { kind: "retryable"; message: string }
   | { kind: "access-ended"; message: string }
   | { kind: "aborted" };
@@ -180,6 +183,7 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
+  const [outbox, setOutbox] = useState<PendingMessage[]>([]);
   const [history, setHistory] = useState(initialChatHistory);
   const currentHistory = useRef(initialChatHistory);
   const { events, loaded, olderCursor } = history;
@@ -301,6 +305,9 @@ export function SandboxChat(props: Props) {
           kind: "success",
           more: !backward && page.hasMore,
           active: isActiveStatus(metadata.next),
+          working:
+            metadata.next === "running" ||
+            (isRecord(body.prompt) && (body.prompt.state === "queued" || body.prompt.state === "running")),
           refreshNeeded: metadata.refreshNeeded,
         };
       } catch (error) {
@@ -342,7 +349,7 @@ export function SandboxChat(props: Props) {
   const tick = useCallback(
     async function readUpdate() {
       const session = sessionRef.current;
-      if (!session || !isCurrent(session) || session.paused) return;
+      if (!session || !isCurrent(session) || session.paused || document.hidden) return;
       if (session.reading) {
         session.pendingUpdate = true;
         return;
@@ -353,7 +360,7 @@ export function SandboxChat(props: Props) {
       session.timer = undefined;
       try {
         const result = await read(session);
-        if (!isCurrent(session)) return;
+        if (!isCurrent(session) || document.hidden) return;
         if (result.kind === "aborted") return;
         if (result.kind === "success") {
           session.retries = 0;
@@ -362,8 +369,8 @@ export function SandboxChat(props: Props) {
           if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
           else if (session.pendingUpdate) {
             session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
-          } else if ((result.active && !session.stream.waitingForEvents) || (!result.active && result.refreshNeeded)) {
-            session.timer = setTimeout(() => void readUpdate(), FALLBACK_POLL_MS);
+          } else if (result.active || result.refreshNeeded) {
+            session.timer = setTimeout(() => void readUpdate(), result.working ? WORKING_POLL_MS : IDLE_POLL_MS);
           }
           return;
         }
@@ -445,7 +452,8 @@ export function SandboxChat(props: Props) {
       reading: false,
       pendingUpdate: false,
       stream: chatEventStream(sandboxId, () => {
-        if (!isCurrent(session) || session.paused || session.retries > 0 || session.pendingUpdate) return;
+        if (!isCurrent(session) || session.paused || document.hidden || session.retries > 0 || session.pendingUpdate)
+          return;
         session.pendingUpdate = true;
         if (session.reading) return;
         clearTimeout(session.timer);
@@ -457,8 +465,18 @@ export function SandboxChat(props: Props) {
       controller: null,
     };
     sessionRef.current = session;
+    function visibilityChanged() {
+      if (document.hidden) {
+        clearTimeout(session.timer);
+        session.stream.close();
+      } else {
+        void tick();
+      }
+    }
+    document.addEventListener("visibilitychange", visibilityChanged);
     void tick();
     return () => {
+      document.removeEventListener("visibilitychange", visibilityChanged);
       session.active = false;
       session.paused = true;
       clearTimeout(session.timer);
@@ -470,6 +488,11 @@ export function SandboxChat(props: Props) {
 
   const { currentConversation } = props;
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
+  const unconfirmed = useMemo(() => unconfirmedMessages(outbox, chat.items), [outbox, chat.items]);
+  useEffect(() => {
+    if (unconfirmed.length !== outbox.length) setOutbox((current) => (current === outbox ? unconfirmed : current));
+  }, [outbox, unconfirmed]);
+
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
   const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
@@ -516,7 +539,18 @@ export function SandboxChat(props: Props) {
         <Notices status={status} reason={reason} poll={poll} onRetry={retryPolling} />
 
         <Transcript
-          items={chat.items}
+          items={[
+            ...chat.items,
+            ...unconfirmed.map(
+              (message): ChatItem => ({
+                kind: "user",
+                key: `prompt:${message.promptId}`,
+                at: message.at,
+                text: message.text,
+                status: "queued",
+              }),
+            ),
+          ]}
           running={turnRunning}
           loaded={loaded}
           poll={poll}
@@ -524,7 +558,6 @@ export function SandboxChat(props: Props) {
           onMore={() => void loadOlder()}
         />
 
-        <div id="sandbox-mobile-about" className="px-4 md:hidden" />
         {props.configured &&
           (props.composerUnavailable ? (
             <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
@@ -536,15 +569,25 @@ export function SandboxChat(props: Props) {
               status={status}
               idlePaused={idlePaused}
               running={turnRunning}
+              onSending={(message) => setOutbox((current) => [...current, message])}
+              onSendSettled={(requestId, promptId) => {
+                setOutbox((current) =>
+                  current.flatMap((message) => {
+                    if (message.requestId !== requestId) return [message];
+                    return promptId ? [{ ...message, promptId }] : [];
+                  }),
+                );
+              }}
               onDone={() => {
-                router.refresh();
                 resumePolling();
               }}
             />
           ))}
       </Card>
 
-      <TechnicalEvents events={chat.technical} />
+      <SandboxInspectorEvents>
+        <TechnicalEvents events={chat.technical} />
+      </SandboxInspectorEvents>
     </div>
   );
 }
@@ -706,7 +749,7 @@ function Transcript({
             </p>
           ) : (
             // The shape of a conversation while it loads: nothing jumps when the messages arrive.
-            <div className="mx-auto flex max-w-[780px] flex-col gap-[22px]" data-testid="history-loading">
+            <div className="mx-auto flex max-w-[740px] flex-col gap-6" data-testid="history-loading">
               <span className="sr-only">Loading…</span>
               <Skeleton className="h-10 w-2/5 self-end rounded-2xl" />
               <div className="space-y-2">
@@ -718,7 +761,7 @@ function Transcript({
             </div>
           )
         ) : (
-          <ol className="mx-auto flex max-w-[780px] flex-col gap-[22px]">
+          <ol className="mx-auto flex max-w-[740px] flex-col gap-6">
             {groups.map((group) =>
               group.kind === "tools" ? (
                 <li key={group.key}>
@@ -781,7 +824,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl border bg-muted px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="max-w-[min(85%,36rem)] rounded-2xl border bg-[var(--raised)] px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
             title={title}
           >
             {item.text || <span className="opacity-75">(empty prompt)</span>}
@@ -793,7 +836,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
       return (
         <div className="flex flex-col items-end gap-1">
           <div
-            className="max-w-[min(85%,36rem)] rounded-2xl border bg-muted px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="max-w-[min(85%,36rem)] rounded-2xl border bg-[var(--raised)] px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
             title={title}
           >
             {item.text}
@@ -804,7 +847,7 @@ function ChatEntry({ item }: { item: ChatItem }) {
     case "assistant":
       return (
         <div title={title} data-streaming={item.streaming || undefined}>
-          <Markdown text={item.text} />
+          <Markdown text={item.text} className="text-[15px] leading-7" />
           {item.streaming && (
             <span
               className="mt-1 inline-block h-4 w-1.5 rounded-sm bg-foreground/60 motion-safe:animate-pulse"
@@ -853,13 +896,13 @@ function ToolGroup({ tools, running }: { tools: ToolActivity[]; running: boolean
     <Collapsible
       open={!complete || open}
       onOpenChange={setOpen}
-      className="overflow-hidden rounded-[10px] border bg-card"
+      className="overflow-hidden rounded-xl border border-border/80 bg-[var(--surface)]"
     >
       <CollapsibleTrigger asChild>
         <Button
           type="button"
           variant="ghost"
-          className="h-auto w-full justify-start gap-2 rounded-none px-3 py-2 text-[13px] text-muted-foreground"
+          className="h-auto w-full justify-start gap-2 rounded-none px-3 py-1.5 text-xs text-muted-foreground"
         >
           <ChevronRightIcon
             aria-hidden
@@ -1022,6 +1065,8 @@ function Composer({
   status,
   running,
   onDone,
+  onSending,
+  onSendSettled,
   idlePaused,
   provider,
   preservationNote,
@@ -1033,6 +1078,8 @@ function Composer({
   running: boolean;
   idlePaused: boolean;
   onDone: () => void;
+  onSending: (message: PendingMessage) => void;
+  onSendSettled: (requestId: string, promptId: string | undefined) => void;
 }) {
   const form = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState("");
@@ -1094,17 +1141,20 @@ function Composer({
       sendKey.current = messageKeyFor(sendKey.current, data);
       data.set(SEND_KEY_FIELD, sendKey.current.key);
     }
+    const requestId = intent === "send" ? sendKey.current?.key : undefined;
+    if (requestId) onSending({ requestId, promptId: requestId, text: draft.trim(), at: Date.now() });
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
     setWaking(intent === "send" && wakes);
     setPending(intent);
     setResult(null);
     startTransition(async () => {
-      let outcome: ActionResult;
+      let outcome: ActionResult & { promptId?: string | undefined };
       try {
         outcome = await action(null, data);
       } catch {
         outcome = { ok: false, error: UNCONFIRMED_ACTION };
       }
+      if (requestId) onSendSettled(requestId, outcome.ok ? outcome.promptId : undefined);
       setPending(null);
       setWaking(false);
       setResult(outcome);
@@ -1147,7 +1197,7 @@ function Composer({
       noValidate
       onSubmit={onSubmit}
       onChange={readOverride}
-      className="mx-4 mb-[max(0.75rem,env(safe-area-inset-bottom))] space-y-2 rounded-2xl border border-border bg-card px-2.5 pt-2 pb-2 shadow-md sm:mx-7"
+      className="mx-1 mb-[max(0.75rem,env(safe-area-inset-bottom))] w-[calc(100%-0.5rem)] max-w-[740px] self-center space-y-2 rounded-2xl border border-border bg-[var(--surface)] p-2.5 shadow-md"
       aria-label="Message the agent"
     >
       <input type="hidden" name="sandbox" value={sandboxId} />
@@ -1292,39 +1342,22 @@ function Composer({
 }
 
 function TechnicalEvents({ events }: { events: ChatEvent[] }) {
-  const [open, setOpen] = useState(false);
-  if (events.length === 0) return null;
+  if (events.length === 0) return <p className="text-xs text-muted-foreground">No technical events yet.</p>;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border text-sm">
-      <CollapsibleTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-auto w-full justify-start rounded-lg px-4 py-2 sm:px-6 sm:py-3"
-        >
-          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-          Technical details · events ({events.length})
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        {open && (
-          <ol data-fit="technical-list" className="space-y-2 px-4 pt-1 pb-3 sm:px-6" aria-label="Technical events">
-            {events.map((event) => (
-              <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-mono font-medium">{event.kind === "other" ? event.type : event.kind}</span>
-                  <time className="text-muted-foreground" dateTime={new Date(event.at).toISOString()}>
-                    {new Date(event.at).toISOString().slice(11, 19)} UTC
-                  </time>
-                </div>
-                <pre className="mt-1 max-h-60 overflow-auto font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground">
-                  {toolText(event.kind === "other" ? event.data : event)}
-                </pre>
-              </li>
-            ))}
-          </ol>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
+    <ol data-fit="technical-list" className="space-y-2" aria-label="Technical events">
+      {events.map((event) => (
+        <li key={event.id} className="rounded-md border bg-muted/30 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-mono font-medium">{event.kind === "other" ? event.type : event.kind}</span>
+            <time className="text-muted-foreground" dateTime={new Date(event.at).toISOString()}>
+              {new Date(event.at).toISOString().slice(11, 19)} UTC
+            </time>
+          </div>
+          <pre className="mt-1 max-h-60 overflow-auto font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground">
+            {toolText(event.kind === "other" ? event.data : event)}
+          </pre>
+        </li>
+      ))}
+    </ol>
   );
 }
