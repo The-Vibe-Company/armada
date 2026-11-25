@@ -390,6 +390,7 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
         firstPath: join(f.root, "github-generation", "bin"),
         bashEnv: join(f.root, "github-generation", "shell-env.sh"),
         gitConfig: join(f.root, ".gitconfig"),
+        ghConfig: join(f.root, "antigravity", "gh"),
       },
     });
     expect(f.registered).toEqual([apiKey]);

@@ -110,6 +110,7 @@ export class AntigravityDriver implements Driver {
         ? {
             ...githubRuntimeEnvironment({}, options.githubTools.root),
             GIT_CONFIG_GLOBAL: join(options.githubTools.home, ".gitconfig"),
+            GH_CONFIG_DIR: join(home, "gh"),
           }
         : {}),
     };
@@ -120,6 +121,7 @@ export class AntigravityDriver implements Driver {
       withDirectory(root, false, (directory) => {
         withDirectory(join(directory, "antigravity-tmp"), true, () => {});
         withDirectory(join(directory, "antigravity"), true, (profile) => {
+          if (options.githubTools) withDirectory(join(profile, "gh"), true, () => {});
           if (credential.method === "google")
             withDirectory(join(profile, appDataDir), true, (data) => writeToken(data, credential.token));
         });
@@ -147,7 +149,7 @@ export class AntigravityDriver implements Driver {
       Object.keys(variables).some(
         (key) =>
           /^(AGY_|GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_)/.test(key) ||
-          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER|GIT_CONFIG_GLOBAL)$/.test(key),
+          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER|GIT_CONFIG_GLOBAL|GH_CONFIG_DIR)$/.test(key),
       )
     )
       throw Error("invalid_request");

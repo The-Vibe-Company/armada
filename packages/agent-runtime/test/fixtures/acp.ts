@@ -132,6 +132,7 @@ for await (const line of lines) {
               firstPath: process.env.PATH?.split(":")[0],
               bashEnv: process.env.BASH_ENV,
               gitConfig: process.env.GIT_CONFIG_GLOBAL,
+              ghConfig: process.env.GH_CONFIG_DIR,
             },
             privateEnvironment:
               !!process.env.TMPDIR &&
