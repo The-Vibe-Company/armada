@@ -85,6 +85,41 @@ test("connection checks batch eligible accounts and keep each account's recent c
   ]);
 });
 
+test("connection checks exclude accounts that reached their cap from the next page", async () => {
+  const first = parseAccount(account)!;
+  const second: ModelAccount = { ...first, id: secondId };
+  const row = {
+    owner_id: viewer.id,
+    org_id: selected.org.id,
+    provider: "modal",
+    boat_runtime: false,
+    status: "running",
+    stop_requested_at: null,
+    credential_id: first.id,
+    credential_version: first.version,
+    harness: "codex",
+    created_at: timestamp,
+  };
+  const queries: URLSearchParams[] = [];
+  recordFetch((url) => {
+    queries.push(url.searchParams);
+    return queries.length === 1
+      ? Response.json(Array.from({ length: 500 }, (_, index) => ({ ...row, id: `first-${index}` })))
+      : Response.json([{ ...row, id: "second", credential_id: second.id }]);
+  });
+
+  const result = await readConnectionTestChoices([first, second]);
+  expect(queries).toHaveLength(2);
+  expect(queries[1]?.get("credential_id")).toBe(`in.(${secondId})`);
+  expect(queries[1]?.getAll("or")).toContain(
+    `(created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.gt.first-499))`,
+  );
+  expect(result.state === "ready" && result.sandboxes.map(({ id }) => id)).toEqual([
+    ...Array.from({ length: 50 }, (_, index) => `first-${index}`),
+    "second",
+  ]);
+});
+
 test("account listing starts the model read while the credential response is pending", async () => {
   const listed = Promise.withResolvers<Response>();
   const listStarted = Promise.withResolvers<void>();

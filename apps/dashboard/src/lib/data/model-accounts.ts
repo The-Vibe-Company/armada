@@ -110,10 +110,14 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
   const candidates = new Map(eligible.map(({ id, version }) => [id, { version, count: 0, choices: [] as Choice[] }]));
   const ids = [...candidates.keys()];
   const pageSize = 500;
-  for (let start = 0; start < ids.length; start += 50) {
-    const batchIds = ids.slice(start, start + 50);
-    for (let offset = 0; batchIds.length > 0; offset += pageSize) {
-      const { data, error } = await supabase
+  for (let start = 0; start < ids.length; start += 25) {
+    let pending = ids.slice(start, start + 25);
+    let cursor: { id: string; created_at: string } | undefined;
+    while (pending.length > 0) {
+      const versions = pending.map(
+        (id) => `and(credential_id.eq.${id},credential_version.eq.${candidates.get(id)!.version})`,
+      );
+      let query = supabase
         .from("sandboxes")
         .select(
           "id,owner_id,org_id,provider,boat_runtime,status,stop_requested_at,credential_id,credential_version,harness,created_at",
@@ -123,11 +127,15 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
         .in("provider", ["modal", "boat"])
         .or("provider.eq.modal,boat_runtime.eq.true")
         .is("stop_requested_at", null)
-        .in("credential_id", batchIds)
-        .in("status", ["ready", "running"])
-        .order("created_at", { ascending: false })
-        .order("id")
-        .range(offset, offset + pageSize - 1);
+        .in("credential_id", pending)
+        .or(versions.join(","))
+        .in("status", ["ready", "running"]);
+      if (cursor) {
+        query = query.or(
+          `created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+        );
+      }
+      const { data, error } = await query.order("created_at", { ascending: false }).order("id").limit(pageSize);
       if (error) return { state: "unavailable" };
       for (const row of data ?? []) {
         const accountId = row.credential_id;
@@ -155,8 +163,9 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
           });
         }
       }
-      if ((data?.length ?? 0) < pageSize) break;
-      if (batchIds.every((id) => candidates.get(id)?.count === 50)) break;
+      if (!data || data.length < pageSize) break;
+      cursor = data.at(-1);
+      pending = pending.filter((id) => candidates.get(id)!.count < 50);
     }
   }
   return { state: "ready", sandboxes: [...candidates.values()].flatMap(({ choices }) => choices) };
