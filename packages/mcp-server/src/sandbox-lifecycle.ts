@@ -14,7 +14,7 @@ import {
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
-import { createJobsStore, mergeStopOutcome } from "./jobs/store.ts";
+import { createJobsStore, dockerStopPending, mergeStopOutcome } from "./jobs/store.ts";
 import {
   installModalLaunchHandoff,
   type ModalLaunchHandoff,
@@ -1152,6 +1152,7 @@ export async function failDockerStartup(
     `update public.sandboxes set lifecycle_generation=lifecycle_generation+1
      where id=$1 and lifecycle_generation=$2 and provider='docker'
        and status=any($3::public.sandbox_status[]) and stop_requested_at is null
+       and not ${dockerStopPending("sandboxes.id", "sandboxes.lifecycle_generation")}
      returning lifecycle_generation::text as generation`,
     [sandboxId, expectedGeneration, [...dockerStartupStates]],
   );
@@ -1184,6 +1185,7 @@ export async function failDockerResumeActivation(
      from public.docker_host_jobs resumed
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
        and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null
+       and not ${dockerStopPending("s.id", "s.lifecycle_generation")}
        and resumed.request_id=$3 and resumed.bound_sandbox_id=s.id and resumed.host_id=s.docker_host_id
        and resumed.bound_operation='resume'
        and not exists (

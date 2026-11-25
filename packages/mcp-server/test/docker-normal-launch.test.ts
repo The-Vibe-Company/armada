@@ -1734,6 +1734,44 @@ test("a daemon incapable of Machine bootstrap cannot receive a Machine launch cr
   expect(f.jobs).toHaveLength(1);
 });
 
+test.each(["available", "expired", "exhausted"] as const)(
+  "committed create replay after launch yields respects the stop budget (%s)",
+  async (budget) => {
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    await server.launch(f.caller, f.body);
+    f.setDrive(false);
+    await server.runClaim();
+    expect(f.jobs).toHaveLength(0);
+    const { requestId: sandboxId } = f.body;
+    const requestId = randomUUID();
+    const stop = await hosts.enqueueStop(f.actor, sandboxId, requestId);
+    expect(stop).toBeString();
+    try {
+      await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
+      await server.runClaim();
+      if (budget === "expired") await sql.query("update jobs set deadline_at='-infinity' where id=$1", [stop]);
+      if (budget === "exhausted") await sql.query("update jobs set attempts=max_attempts where id=$1", [stop]);
+      await f.step();
+      if (budget !== "available") {
+        expect(f.jobs).toHaveLength(0);
+        return;
+      }
+      expect(f.jobs).toEqual([expect.objectContaining({ operation: "create" })]);
+      await runDockerStop(sql, key, sandboxId);
+      await f.step();
+      await runDockerStop(sql, key, sandboxId);
+      expect(f.jobs).toEqual([
+        expect.objectContaining({ operation: "create" }),
+        expect.objectContaining({ operation: "stop" }),
+      ]);
+      expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
+    } finally {
+      await sql.query("delete from jobs where sandbox_id=$1 and kind='stop'", [sandboxId]);
+    }
+  },
+);
+
 test("stop after accepted starting launch bypasses queued startup and settles without allocating or prompting", async () => {
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
@@ -1767,43 +1805,68 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
 });
 
-test.each([false, true])("deadline recovery preserves the first turn (uncertain ACK: %s)", async (uncertain) => {
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
-  f.deferFirstPrompt();
-  await server.drain();
-  expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
-  await sql.query(
-    "update jobs set run_after=now(),deadline_at=now()-interval '1 second' where sandbox_id=$1 and kind='launch'",
-    [f.body.requestId],
-  );
-  const recovered = f.service(sql, true, 10000, officialImage, true);
-  await recovered.runClaim();
-  expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
+test.each(["deadline", "uncertain ACK", "owner stop"] as const)(
+  "inactive launch recovery preserves the first turn (%s)",
+  async (cause) => {
+    const uncertain = cause === "uncertain ACK";
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    await server.launch(f.caller, f.body);
+    f.deferFirstPrompt();
+    await server.drain();
+    expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
+    if (cause === "owner stop") {
+      const requestId = randomUUID();
+      const stop = await hosts.enqueueStop(f.actor, f.body.requestId, requestId);
+      expect(stop).toBeString();
+      expect(await hosts.enqueueStop(f.actor, f.body.requestId, requestId)).toBe(stop);
+      expect(await runDockerStop(sql, key, f.body.requestId)).toMatchObject({ status: "retry", unattempted: true });
+      const { runtimeToken, epoch } = f.session()!;
+      expect((await createRuntimeCommands(authority, key).next(runtimeToken, epoch)).command?.op).toBe("getPrompt");
+    }
+    await sql.query(
+      `update jobs set run_after=now(),
+      deadline_at=case when $2 then now()-interval '1 second' else deadline_at end
+      where sandbox_id=$1 and kind='launch'`,
+      [f.body.requestId, cause !== "owner stop"],
+    );
+    const recovered = f.service(sql, true, 10000, officialImage, true);
+    await recovered.runClaim();
+    expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
 
-  await f.acknowledgeFirstPrompt(uncertain);
-  await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
-  await recovered.runClaim();
-  const final = await recovered.launch(f.caller, f.body);
-  expect(final.sandbox.status).toBe(uncertain ? "starting" : "running");
-  if (!uncertain) {
-    expect(final.conversationId).toBe(f.receipt.conversationId);
-    expect(final.promptId).toBe(f.receipt.promptId);
+    await f.acknowledgeFirstPrompt(uncertain);
+    await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
+    await recovered.runClaim();
+    const final = await recovered.launch(f.caller, f.body);
+    expect(final.sandbox.status).toBe(uncertain ? "starting" : "running");
+    if (!uncertain) {
+      expect(final.conversationId).toBe(f.receipt.conversationId);
+      expect(final.promptId).toBe(f.receipt.promptId);
+      expect(
+        (await sql.query("select conversation_ids,task_prompt_id from sandboxes where id=$1", [f.body.requestId])).rows,
+      ).toEqual([{ conversation_ids: [f.receipt.conversationId], task_prompt_id: f.receipt.promptId }]);
+    }
+    expect(await authority.withSession(f.session()!.runtimeToken, f.session()!.epoch, async () => true)).toBe(true);
     expect(
-      (await sql.query("select conversation_ids,task_prompt_id from sandboxes where id=$1", [f.body.requestId])).rows,
-    ).toEqual([{ conversation_ids: [f.receipt.conversationId], task_prompt_id: f.receipt.promptId }]);
-  }
-  expect(await authority.withSession(f.session()!.runtimeToken, f.session()!.epoch, async () => true)).toBe(true);
-  expect(
-    (
-      await sql.query(
-        "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
-        [f.body.requestId],
-      )
-    ).rows,
-  ).toHaveLength(1);
-});
+      (
+        await sql.query(
+          "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+          [f.body.requestId],
+        )
+      ).rows,
+    ).toHaveLength(1);
+    if (cause === "owner stop") {
+      await runDockerStop(sql, key, f.body.requestId);
+      await f.step();
+      await runDockerStop(sql, key, f.body.requestId);
+      expect(await recovered.launch(f.caller, f.body)).toMatchObject({
+        sandbox: { status: "stopped" },
+        promptId: f.receipt.promptId,
+        conversationId: f.receipt.conversationId,
+      });
+    }
+  },
+);
 
 test.each(["never delivered", "journaled before restart", "actor revoked", "attempts exhausted"] as const)(
   "an inactive Docker first prompt only reads the existing journal (%s)",

@@ -24,6 +24,17 @@ import type { Job, JobStore } from "./runner.ts";
 
 export const JOBS_WAKE = "jobs";
 
+export function dockerStopPending(sandboxId: string, generation: string, requireDispatchBudget = false) {
+  const budget = requireDispatchBudget
+    ? `and stop.deadline_at > clock_timestamp()
+       and (stop.attempts < stop.max_attempts or
+         (stop.state='leased' and stop.lease_until > clock_timestamp() and stop.attempts = stop.max_attempts))`
+    : "";
+  return `exists(select 1 from public.jobs stop
+    where stop.sandbox_id=${sandboxId} and stop.generation=${generation}
+      and stop.kind='stop' and stop.state in ('queued','leased') ${budget})`;
+}
+
 export function jobRequestKey(orgId: string, kind: string, ownerId: string, key: string) {
   return JSON.stringify(["request", orgId, kind, ownerId, key]);
 }
@@ -649,6 +660,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         `select case when j.generation is not null and s.lifecycle_generation is distinct from j.generation
                        then 'stale'
                      when j.attempts > j.max_attempts or j.deadline_at <= clock_timestamp()
+                       or (j.kind='launch' and s.provider='docker' and ${dockerStopPending("s.id", "j.generation")})
                        then 'reconcile'
                      else 'dispatch' end as state
          from public.jobs j left join public.sandboxes s on s.id = j.sandbox_id

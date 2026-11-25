@@ -270,8 +270,10 @@ export function createStopJob(
       const mayDispatch = await context.canDispatch();
       if (advanced || (intent.exitPending && !mayDispatch)) return retry(mayDispatch ? 2_000 : 30_000);
       if (!mayDispatch) return { status: "fail", reason: "stop_dispatch_deadline" };
-      if (!job.outcome && !intent.exitPending)
+      if (!job.outcome && !intent.exitPending) {
+        if (await hosts.pendingLaunchPrompt(sandboxId, intent)) return { ...retry(), unattempted: true };
         await capture(job, context, readOutputs(sandboxId, intent.runtimeEpoch), intent.captureUntil - now());
+      }
       signal.throwIfAborted();
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
       let target: Awaited<ReturnType<typeof hosts.lockStop>>;
@@ -314,7 +316,8 @@ export function createStopJob(
         }
       } catch (error) {
         signal.throwIfAborted();
-        if (error instanceof DockerMachinePending) return retry();
+        if (error instanceof DockerMachinePending)
+          return error.outcome === "pending" ? { ...retry(), unattempted: true } : retry();
         if (error instanceof DockerHostDenied) return { status: "fail", reason: "stop_authority_changed" };
         throw error;
       }
