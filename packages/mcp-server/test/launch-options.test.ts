@@ -7,8 +7,18 @@ const present = () => {
 const launchServices = {
   boatLaunchEnabled: true,
   admitModalLaunch: present,
-  templates: { command: present } as NonNullable<LaunchDiscoveryOptions["templates"]>,
-  runtimeMcp: {} as NonNullable<LaunchDiscoveryOptions["runtimeMcp"]>,
+  templates: {
+    command: present,
+    validateBindingInTransaction: present,
+    revalidateDockerLaunch: present,
+    revalidateGoldenJob: present,
+    completeDockerLaunch: present,
+  },
+  runtimeMcp: {
+    prepare: present,
+    preflight: present,
+    connections: { defaults: present, validate: present, bind: present, prepare: present },
+  },
   runtimeSend: present,
 } satisfies LaunchDiscoveryOptions;
 
