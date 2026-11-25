@@ -55,7 +55,7 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     resourceSampler: false,
     sizeResources: "none",
     idleStop: false,
-    resumeAfterStop: false,
+    resumeAfterStop: true,
     sizes: Object.freeze([]),
   }),
 };

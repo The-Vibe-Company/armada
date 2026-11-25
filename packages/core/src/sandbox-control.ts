@@ -21,7 +21,13 @@ export function sandboxControlRefusal(
   const retained = sandbox.statusReason === "idle_paused" || sandbox.statusReason === "work_merged";
   const stoppedWithWork =
     sandbox.status === "stopped" && !expired && sandbox.preservationNote !== "checkpoint_failed_disk_not_retained";
-  if (operation === "send" && stoppedWithWork && (retained || machine?.resumeAfterStop)) return null;
+  if (
+    operation === "send" &&
+    stoppedWithWork &&
+    (retained || machine?.resumeAfterStop) &&
+    sandbox.statusReason !== "agent_finished"
+  )
+    return null;
   if (!expired && !["stopped", "failed", "expired", "deleted", "removed"].includes(sandbox.status)) return null;
   const reason = expired ? "expired" : sandbox.status;
   const prefix = `Cannot control ${sandbox.provider} sandbox: ${reason}. `;

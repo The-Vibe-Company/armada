@@ -714,6 +714,7 @@ export type Database = {
           stopped_sandbox_bytes: number | null;
           snapshot_baseline_version: number | null;
           daemon_protocol: number | null;
+          restore_recovery_supported: boolean;
         };
         Insert: {
           id: string;
@@ -744,6 +745,7 @@ export type Database = {
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
           daemon_protocol?: number | null;
+          restore_recovery_supported?: boolean;
         };
         Update: {
           id?: string;
@@ -774,6 +776,7 @@ export type Database = {
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
           daemon_protocol?: number | null;
+          restore_recovery_supported?: boolean;
         };
         Relationships: [
           {

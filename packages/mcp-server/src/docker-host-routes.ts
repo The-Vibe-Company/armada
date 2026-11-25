@@ -10,6 +10,7 @@ import { isSnapshotBaselineTool } from "@armada/core/server";
 import {
   DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
   DOCKER_HOST_PREFER_STARTUP_HEADER,
+  DOCKER_HOST_RESTORE_RECOVERY_HEADER,
   type DockerHostPollResponse,
 } from "../../core/src/docker-host-wire.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
@@ -383,9 +384,11 @@ export function createDockerHostRoutes(
             : undefined,
         );
         let job: Awaited<ReturnType<typeof store.poll>>;
+        let restoreRecovery: Awaited<ReturnType<typeof store.restoreRecoveryForHost>>;
+        const supportsRestoreRecovery = request.headers.get(DOCKER_HOST_RESTORE_RECOVERY_HEADER) === "1";
         const skipSnapshots = body.skipSnapshots === true;
         const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
-        const supportsRestore = request.headers.get("x-armada-docker-host-restore") === "1";
+        const supportsRestore = supportsRestoreRecovery && request.headers.get("x-armada-docker-host-restore") === "1";
         const supportsMachineBootstrap = request.headers.get(DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER) === "1";
         const preferStartup = request.headers.get(DOCKER_HOST_PREFER_STARTUP_HEADER) === "1";
         const runningIds = (running as string[] | undefined) ?? [];
@@ -408,8 +411,11 @@ export function createDockerHostRoutes(
               supportsRestore,
               preferStartup,
               supportsMachineBootstrap,
+              supportsRestoreRecovery,
             );
-            if (job) break;
+            if (supportsRestoreRecovery)
+              restoreRecovery = await store.restoreRecoveryForHost(token, installationId, runningIds);
+            if (job || restoreRecovery) break;
             // Recheck every second with a read-only probe; the full poll above
             // (host reconciliation, heartbeat and claim writes) runs again only
             // when something may be ready, not once a second per idle host.
@@ -451,6 +457,7 @@ export function createDockerHostRoutes(
             containerInventory: 1,
             containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
             resumeClaims: [],
+            ...(restoreRecovery ? { restoreRecovery } : {}),
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
             // fences all of them, not only the single job it was handed.

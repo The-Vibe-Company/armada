@@ -122,6 +122,10 @@ export interface Executor {
     request: DockerMachineRequest,
     predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
   ): Promise<unknown>;
+  reconcileRestore?(
+    request: DockerMachineRequest,
+    predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
+  ): Promise<string | null>;
   create(request: DockerMachineRequest): Promise<unknown>;
   stop(request: DockerMachineRequest, machineId?: string): Promise<unknown>;
   delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
@@ -566,6 +570,35 @@ async function admitLocked(
     state = await store.load();
     state.retention ??= [];
     expiredGenerations = expired(state);
+  }
+  if (polled?.restoreRecovery && executor.reconcileRestore) {
+    const recovery = parseDockerHostJob(polled.restoreRecovery);
+    if (recovery.operation !== "restore") throw Error("Invalid restore reconciliation");
+    if (!options.running?.has(recovery.requestId) && !options.sandboxes?.has(recovery.request.sandboxId)) {
+      const inputHash = createHash("sha256")
+        .update(JSON.stringify({ requestId: recovery.requestId, input: canonicalDockerHostJob(recovery) }))
+        .digest("hex");
+      let receipt = state.receipts.find((entry) => entry.requestId === recovery.requestId);
+      if (receipt && (receipt.operation !== "restore" || receipt.inputHash !== inputHash))
+        throw Error("Changed restore reconciliation");
+      if (!receipt?.outcome) {
+        const machineId = await executor.reconcileRestore(recovery.request, recovery.predecessor);
+        receipt = {
+          requestId: recovery.requestId,
+          request: recovery.request,
+          operation: "restore",
+          inputHash,
+          predecessorKey: generationKey(recovery.predecessor.request),
+          outcome: machineId ? "completed" : "failed",
+          ...(machineId ? { machineId } : {}),
+        };
+        state.receipts = state.receipts.filter((entry) => entry.requestId !== recovery.requestId);
+        state.receipts.push(receipt);
+        updateActiveTtl(state, receipt);
+        await store.save(state);
+      }
+      await api.result(state, receipt);
+    }
   }
   const restoreHolds = new Map<string, string>();
   for (const receipt of state.receipts) {

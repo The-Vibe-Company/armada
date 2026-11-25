@@ -6,6 +6,7 @@ import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/sr
 import {
   DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
   DOCKER_HOST_PREFER_STARTUP_HEADER,
+  DOCKER_HOST_RESTORE_RECOVERY_HEADER,
   type DockerHostPollRequest,
   type DockerHostPollResponse,
   type DockerHostResultRequest,
@@ -202,6 +203,7 @@ export function httpApi(
           ? {
               "x-armada-docker-host-delete-physical": "1",
               "x-armada-docker-host-restore": "1",
+              [DOCKER_HOST_RESTORE_RECOVERY_HEADER]: "1",
               [DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER]: "1",
             }
           : {}),

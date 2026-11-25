@@ -54,7 +54,7 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { resumeDispatchAuthority } from "./jobs/resume-authority.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
 import type { DockerStopIntent } from "./jobs/stop.ts";
-import { createJobsStore, dockerStopPending, jobRequestKey, recordDockerRestoreDelivery } from "./jobs/store.ts";
+import { createJobsStore, dockerStopPending, jobRequestKey, recordDockerRestoreEvidence } from "./jobs/store.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -823,7 +823,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     await validateRestoreTarget(tx, logical, job);
     await requireRestoreRunner(tx, runnerJobId, logical);
-    if (deliver) await recordDockerRestoreDelivery(tx, runnerJobId);
+    if (deliver) await recordDockerRestoreEvidence(tx, runnerJobId, { restoreDelivered: true });
     return job;
   }
 
@@ -1407,6 +1407,27 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ],
         );
         return result.rows[0]?.found === true;
+      });
+    },
+    restoreRecoveryForHost(hostToken: string, installationId: string, running: readonly string[]) {
+      return transaction(async (tx) => {
+        const host = await reconcileHost(tx, hostToken, installationId);
+        const {
+          rows: [row],
+        } = await tx.query<StoredJob>(
+          `select h.* from public.docker_host_jobs h
+           join public.docker_machine_bindings b on b.daemon_generation=h.request_id and b.host_id=h.host_id
+           join public.jobs j on j.sandbox_id=b.sandbox_id and j.generation=b.machine_generation and j.kind='resume'
+           where h.host_id=$1 and h.bound_operation='restore' and h.cancelled_at is not null
+             and b.installation_id=$2 and b.sandbox_id=h.bound_sandbox_id and not(h.request_id=any($3::uuid[]))
+             and coalesce(j.outcome->'evidence',j.outcome)->>'restoreDelivered'='true'
+           order by h.position limit 1`,
+          [host.id, installationId, running],
+        );
+        if (!row) return undefined;
+        const job = await readJob(row);
+        if (job.operation !== "restore") deny();
+        return job;
       });
     },
     /** Every generation with a queued resume/bootstrap, so the daemon fences all of them, not only the head job. */
@@ -2414,6 +2435,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       supportsRestore = false,
       preferStartup = false,
       supportsMachineBootstrap = false,
+      supportsRestoreRecovery?: boolean,
     ): Promise<Job | null> {
       const priority = preferStartup
         ? `case when j.bound_operation in ('create','bootstrap') then 0 else 1 end,${dispatchPriority}`
@@ -2472,7 +2494,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
             : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,daemon_protocol=coalesce($6::integer,daemon_protocol) where id=$1`,
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,daemon_protocol=coalesce($6::integer,daemon_protocol),
+             restore_recovery_supported=coalesce($7::boolean,restore_recovery_supported) where id=$1`,
           [
             host.id,
             version ?? null,
@@ -2480,6 +2503,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             diskFreeBytes ?? null,
             stoppedSandboxBytes ?? null,
             protocol ?? null,
+            supportsRestoreRecovery ?? null,
           ],
         );
         if (resources) {
@@ -3081,6 +3105,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         } else if (result.imageId !== undefined) deny();
+        if (job.bound_operation === "restore" && result.outcome === "failed") {
+          const { runnerJobId } = await readStoredJob(job);
+          if (runnerJobId)
+            await recordDockerRestoreEvidence(tx, runnerJobId, { restoreFailure: result.reason ?? "restore_failed" });
+        }
         const staleRestorePredecessor =
           supersededPlacement || (logical !== undefined && (await supersededLifecycle(tx, job, true)));
         if (logical && !staleRestorePredecessor && result.outcome === "failed")

@@ -1,5 +1,7 @@
 begin;
 
+alter table public.docker_hosts add column restore_recovery_supported boolean not null default false;
+
 do $migration$
 declare
   original text := pg_get_functiondef('public.sandboxes_provider_guard()'::regprocedure);

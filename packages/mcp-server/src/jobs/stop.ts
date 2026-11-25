@@ -235,7 +235,7 @@ export function createStopJob(
               : await recordDockerCleanupReceipt(
                   tx,
                   sandboxId,
-                  Number(generation),
+                  Number(job.generation),
                   retentionLost ? "stop_retention_lost" : "stop",
                 );
             if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
@@ -271,6 +271,7 @@ export function createStopJob(
       signal.throwIfAborted();
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
       let target: Awaited<ReturnType<typeof hosts.lockStop>>;
+      let retainedWithoutDispatch = false;
       const lockPrerequisites = async (tx: Sql) => {
         target = await hosts.lockStop(tx, sandboxId, intent);
       };
@@ -284,7 +285,9 @@ export function createStopJob(
       try {
         if (intent.exitPending) {
           const dispatchIfCurrent = async (tx: Sql) => {
-            if (await context.canDispatch(tx)) await dispatch(tx);
+            if (!(await context.canDispatch(tx))) return;
+            if (target) await dispatch(tx);
+            else retainedWithoutDispatch = true;
           };
           await withJobLease(sql, job, dispatchIfCurrent, lockPrerequisites);
         } else {
@@ -305,6 +308,7 @@ export function createStopJob(
               if (target) return dispatch(tx);
               const settled = await recordDockerCleanupReceipt(tx, sandboxId, result.generation, "stop");
               if (settled.kind === "conflict") throw new Error("Docker stop settlement changed generation.");
+              retainedWithoutDispatch = true;
             },
           });
         }
@@ -315,7 +319,7 @@ export function createStopJob(
         if (error instanceof DockerHostDenied) return { status: "fail", reason: "stop_authority_changed" };
         throw error;
       }
-      return retry();
+      return retainedWithoutDispatch ? finish() : retry();
     },
   } satisfies JobKind;
 }

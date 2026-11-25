@@ -159,10 +159,14 @@ export async function recordResumeAuthority(
   return rows.length === 1;
 }
 
-export function recordDockerRestoreDelivery(tx: Sql, jobId: string) {
+export function recordDockerRestoreEvidence(
+  tx: Sql,
+  jobId: string,
+  evidence: { restoreDelivered: true } | { restoreFailure: string },
+) {
   return tx.query(
-    `update public.jobs set outcome=outcome||jsonb_build_object('restoreDelivered',true) where id=$1 and kind='resume'`,
-    [jobId],
+    `update public.jobs set outcome=outcome||$2::jsonb where id=$1 and kind='resume' and state in ('queued','leased')`,
+    [jobId, JSON.stringify(evidence)],
   );
 }
 

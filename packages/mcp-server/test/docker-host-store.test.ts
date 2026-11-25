@@ -1229,24 +1229,27 @@ async function restoreFixture() {
   return a;
 }
 
-test.each(["explicit replay", "queued send"] as const)(
+test.each(["explicit replay", "queued send", "ordinary retained stop"] as const)(
   "Docker %s admits one shared resume and pins the checkpoint",
   async (scenario) => {
     const a = await prepareRestore(undefined, false, false);
     const requestId = randomUUID();
     await sql.query("delete from public.jobs where sandbox_id=$1", [a.sandboxId]);
     await sql.query(
-      "update public.sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now(),lifecycle_generation=1,model='gpt-5',reasoning_effort='high' where id=$1",
-      [a.sandboxId],
+      `update public.sandboxes set status=case when $2::boolean then 'ready'::public.sandbox_status else 'stopped'::public.sandbox_status end,
+        status_reason=case when not $2::boolean then 'idle_paused' end,
+        stopped_at=case when not $2::boolean then now() end,lifecycle_generation=1,model='gpt-5',reasoning_effort='high' where id=$1`,
+      [a.sandboxId, scenario === "ordinary retained stop"],
     );
     await sql.query("insert into public.runtime_enrolments (sandbox_id,lifecycle_generation,epoch) values($1,1,1)", [
       a.sandboxId,
     ]);
-    await sql.query(
-      `insert into public.runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+    if (scenario !== "ordinary retained stop")
+      await sql.query(
+        `insert into public.runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
     values($1,1,$2,0,now())`,
-      [a.sandboxId, randomUUID()],
-    );
+        [a.sandboxId, randomUUID()],
+      );
     const unavailable = async () => {
       throw Error("Admission must only enqueue the shared job.");
     };
@@ -1323,8 +1326,23 @@ test.each(["explicit replay", "queued send"] as const)(
       return result.status;
     };
     await sql.query("delete from account_turn_queue where sandbox_id=$1", [a.sandboxId]);
-    await sql.query("update docker_hosts set daemon_protocol=$2 where id=$1", [a.hostId, DOCKER_HOST_PROTOCOL]);
+    await sql.query("update docker_hosts set daemon_protocol=$2,restore_recovery_supported=true where id=$1", [
+      a.hostId,
+      DOCKER_HOST_PROTOCOL,
+    ]);
     await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+    if (scenario === "ordinary retained stop") {
+      await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
+      await runDockerStop(sql, key, a.sandboxId);
+      const stop = await a.poll();
+      if (stop?.operation !== "stop") throw Error("Missing ordinary stop job.");
+      await store.complete(a.hostToken, a.installationId, {
+        requestId: stop.requestId,
+        outcome: "completed",
+        machineId: "a".repeat(64),
+      });
+      expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "done" });
+    }
     const controls = createDockerSandboxControls(sql, key, {
       sendEnabled: true,
       wakeResume: resume.wake,
@@ -1364,9 +1382,11 @@ test.each(["explicit replay", "queued send"] as const)(
     const boot = await a.poll([], true, store, true);
     if (boot?.operation !== "bootstrap") throw Error("Missing restored bootstrap job.");
     session = await enrolments.enrol(boot.bootstrap.enrolmentToken);
-    expect(session.configuration).toMatchObject({
-      restoreCheckpoint: { epoch: "1", watermark: 0, conversationId: conversation },
-    });
+    if (scenario === "ordinary retained stop") expect(session.configuration).not.toHaveProperty("restoreCheckpoint");
+    else
+      expect(session.configuration).toMatchObject({
+        restoreCheckpoint: { epoch: "1", watermark: 0, conversationId: conversation },
+      });
     expect(await run("resume", resume.handler)).toBe("done");
     runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
     if (receipts) {
@@ -1383,7 +1403,9 @@ test.each(["explicit replay", "queued send"] as const)(
         ).rows,
       ).toEqual([{ request_id: `docker_prompt_${requestId}` }]);
     }
-    expect(await lifecycle(a.sandboxId)).toMatchObject({ lifecycle_generation: "2" });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({
+      lifecycle_generation: scenario === "ordinary retained stop" ? "3" : "2",
+    });
     expect(
       (await sql.query("select count(*)::int as total from jobs where kind='resume' and sandbox_id=$1", [a.sandboxId]))
         .rows,
@@ -1428,6 +1450,80 @@ test.each(["stop", "delete"] as const)(
     expect(cleanup).toMatchObject({ operation, request: { generation: a.restore.request.generation } });
   },
 );
+
+test("a lost restore pickup with an empty daemon ledger cannot strand stop or start a replacement", async () => {
+  const a = await restoreFixture();
+  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+  expect(await a.poll()).toEqual(a.restore);
+  await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
+  expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
+  const route = createDockerHostRoutes(store, async () => {
+    throw Error("Unexpected caller authentication.");
+  });
+  const poll = async (recover: boolean) => {
+    const response = await route(
+      new Request("https://armada.example/api/docker-host/poll", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${a.hostToken}`,
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          "x-armada-docker-host-restore": "1",
+          ...(recover ? { "x-armada-docker-host-restore-recovery": "1" } : {}),
+        },
+        body: JSON.stringify({ installationId: a.installationId, version: "13.0.0" }),
+      }),
+    );
+    if (!response?.ok) throw Error("Docker poll failed.");
+    return (await response.json()) as DockerHostPollResponse;
+  };
+  expect(await poll(false)).not.toHaveProperty("restoreRecovery");
+  const recovery = await poll(true);
+  expect(recovery.restoreRecovery).toEqual(a.restore);
+  let saved: State = {
+    server: "https://armada.example",
+    hostId: a.hostId,
+    installationId: a.installationId,
+    hostToken: a.hostToken,
+    receipts: [],
+  };
+  const ledger: Store = {
+    async load() {
+      return structuredClone(saved);
+    },
+    async save(state) {
+      saved = structuredClone(state);
+    },
+  };
+  const unexpected = async () => {
+    throw Error("Recovery must only inspect.");
+  };
+  await tick(
+    ledger,
+    {
+      register: unexpected,
+      poll: async () => recovery,
+      async result(_state, receipt) {
+        expect(saved.receipts).toContainEqual(receipt);
+        if (!receipt.outcome) throw Error("Missing durable outcome.");
+        await store.complete(a.hostToken, a.installationId, { requestId: receipt.requestId, outcome: receipt.outcome });
+      },
+    },
+    {
+      create: unexpected,
+      restore: unexpected,
+      delete: unexpected,
+      stop: unexpected,
+      stopIfExpired: async () => false,
+      async reconcileRestore(request, predecessor) {
+        expect({ request, predecessor }).toEqual({ request: a.restore.request, predecessor: a.restore.predecessor });
+        return null;
+      },
+    },
+  );
+  expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "done" });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
+  expect(await poll(true)).not.toHaveProperty("restoreRecovery");
+});
 
 test("the current runner declines a completed restore receipt without a physical ID", async () => {
   const a = await restoreFixture();
@@ -1895,6 +1991,7 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
           authorization: `Bearer ${a.hostToken}`,
           [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
           "x-armada-docker-host-restore": capability,
+          "x-armada-docker-host-restore-recovery": "1",
         },
         body: JSON.stringify({ installationId: a.installationId, version: "4.0.0", running }),
       }),

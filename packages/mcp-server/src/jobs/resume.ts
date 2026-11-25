@@ -16,6 +16,7 @@ import { type AccountTurnQueue, accountTurnInputDigest } from "../account-turn-q
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
 import { createDockerHostStore } from "../docker-host-store.ts";
+import { DockerHostUpgradeRequired } from "../docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "../docker-launch-environment.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerSandboxService } from "../docker-sandbox-service.ts";
@@ -59,6 +60,7 @@ type Payload = {
   conversationId: string | null;
   boatMachineId?: string;
   withoutPrompt?: true;
+  retainedWorkspace?: true;
 };
 type Proof = RuntimeResumeReceipt["sourceCheckpoint"] & { target: string };
 
@@ -135,19 +137,24 @@ export function createResumeJob(options: {
       }
       await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is unavailable.");
       if (docker) {
-        const host = await tx.query(
-          `select id from public.docker_hosts where id=$1 and org_id=$2 and installation_id=$3
+        const host = await tx.query<{ restore_recovery_supported: boolean }>(
+          `select restore_recovery_supported from public.docker_hosts where id=$1 and org_id=$2 and installation_id=$3
              and revoked_at is null and hash is not null and draining_at is null for update`,
           [found.hostId, found.orgId, found.installationId],
         );
         if (!host.rows.length) throw conflict("The retained Docker host is unavailable.");
+        if (!host.rows[0]?.restore_recovery_supported) throw new DockerHostUpgradeRequired();
       }
     };
     const admit = async (tx: Sql) => {
       const {
         rows: [row],
-      } = await tx.query<{ generation: string; expires_at: Date }>(
-        `select lifecycle_generation::text as generation,expires_at
+      } = await tx.query<{ generation: string; expires_at: Date; ordinary_docker_stop: boolean }>(
+        `select lifecycle_generation::text as generation,expires_at,
+           (provider='docker' and status_reason is null and exists(
+             select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
+               and t.generation=sandboxes.lifecycle_generation and t.code='docker_stop_completed'
+           )) as ordinary_docker_stop
          from public.sandboxes where id=$1 and owner_id=$2 and org_id=$3 and provider=$6::public.sandbox_provider and provider_sandbox_id=$7
            and (provider='docker' or boat_runtime or runtime_transport='dialout')
            and (provider<>'docker' or (exists(
@@ -187,11 +194,15 @@ export function createResumeJob(options: {
         throw conflict("Final stop outputs are awaiting publication.");
       const {
         rows: [checkpoint],
-      } = await tx.query<{ epoch: string; prior_epoch: string; watermark: string }>(
-        `select c.epoch::text,e.epoch::text as prior_epoch,c.watermark::text from public.runtime_enrolments e
-          join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id
-          where e.sandbox_id=$1 and c.completed_at is not null and e.runtime_hash is null
-            and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)
+      } = await tx.query<{ epoch: string; prior_epoch: string; watermark: string; retained_workspace: boolean }>(
+        `select coalesce(c.epoch,e.epoch)::text as epoch,e.epoch::text as prior_epoch,
+            coalesce(c.watermark,archive.watermark)::text as watermark,c.epoch is null as retained_workspace
+          from public.runtime_enrolments e
+          cross join lateral (select coalesce(max(sequence),0) as watermark from public.runtime_events where sandbox_id=$1) archive
+          left join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id
+          where e.sandbox_id=$1 and e.runtime_hash is null
+            and (($6::boolean and c.epoch is null and e.epoch>0)
+              or (c.completed_at is not null and c.watermark=archive.watermark
             and (c.epoch=e.epoch or exists(select 1 from public.jobs wake
               where wake.sandbox_id=e.sandbox_id and wake.kind='resume'
               and wake.generation between $3::bigint-1 and $3::bigint
@@ -203,12 +214,19 @@ export function createResumeJob(options: {
             or exists(select 1 from public.jobs stop where stop.sandbox_id=e.sandbox_id
               and stop.kind='stop' and stop.state='done' and stop.generation=$3::bigint
               and stop.outcome#>>'{modal_checkpoint,epoch}'=c.epoch::text
-              and stop.outcome#>>'{modal_checkpoint,watermark}'=c.watermark::text))
+              and stop.outcome#>>'{modal_checkpoint,watermark}'=c.watermark::text))))
             and ($5::boolean or exists(select 1 from public.account_turn_queue q
               join public.mcp_actor_epochs a on a.org_id=q.org_id and a.user_id=q.owner_id and a.epoch=q.actor_epoch
               where q.sandbox_id=e.sandbox_id and q.request_id=$2 and q.state='dispatching'
                 and q.dispatch_generation=$3::bigint for update of q)) order by c.epoch desc limit 1`,
-        [id, requestId, row.generation, boatRuntime ? found.providerSandboxId : null, withoutPrompt],
+        [
+          id,
+          requestId,
+          row.generation,
+          boatRuntime ? found.providerSandboxId : null,
+          withoutPrompt,
+          row.ordinary_docker_stop,
+        ],
       );
       const conversationId = found.conversationIds.at(-1) ?? null;
       if (!checkpoint || (!conversationId && found.taskPromptId) || !found.model || !found.reasoningEffort)
@@ -222,6 +240,7 @@ export function createResumeJob(options: {
         target: String(BigInt(checkpoint.prior_epoch) + 1n),
         watermark: Number(checkpoint.watermark),
         conversationId,
+        ...(checkpoint.retained_workspace ? { retainedWorkspace: true } : {}),
         ...(withoutPrompt ? { withoutPrompt: true } : {}),
         ...(boatRuntime ? { boatMachineId: found.providerSandboxId } : {}),
       };
@@ -292,8 +311,8 @@ export function createResumeJob(options: {
     const readReceipt = async () => {
       const {
         rows: [prior],
-      } = await sql.query<{ state: string }>(
-        `select j.state from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+      } = await sql.query<{ state: string; reason: string | null }>(
+        `select j.state,j.outcome->>'reason' as reason from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
            where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and j.kind='resume'
@@ -312,7 +331,8 @@ export function createResumeJob(options: {
       while (!signal.aborted) {
         const prior = await readReceipt();
         if (prior?.state === "done") return { id, status: "ready" as const };
-        if (prior?.state === "failed") throw conflict("Docker resume failed.");
+        if (prior?.state === "failed")
+          throw conflict(prior.reason === "disk_full" ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk : "Docker resume failed.");
         if (!prior && !admitted) {
           try {
             await admitResume(caller, sandbox, requestId, undefined, true);
@@ -405,6 +425,7 @@ export function createResumeJob(options: {
             docker: boolean;
             actor_epoch: string;
             restore_delivered: boolean;
+            restore_failure: string | null;
             boat_restore_dispatched: boolean;
             boat_restore_authority: string | null;
             boat_restore_observed: boolean;
@@ -417,6 +438,7 @@ export function createResumeJob(options: {
                end as ttl,
                s.provider='docker' as docker, j.outcome->>'actorEpoch' as actor_epoch,
                j.outcome ? 'restoreDelivered' as restore_delivered,
+               j.outcome->>'restoreFailure' as restore_failure,
                j.outcome ? 'boat_restore_dispatched' as boat_restore_dispatched,
                j.outcome->>'boat_restore_authority' as boat_restore_authority,
                j.outcome ? 'boat_restore_observed' as boat_restore_observed,
@@ -428,10 +450,10 @@ export function createResumeJob(options: {
         ).rows[0];
       const current = await withJobLease(sql, job, target);
       if (!current) return { ...retry, unattempted: true };
-      if (current.cancelled || !(await context.canDispatch())) {
+      if (current.restore_failure || current.cancelled || !(await context.canDispatch())) {
         return {
           status: "fail",
-          reason: "resume_dispatch_ended",
+          reason: current.restore_failure ?? "resume_dispatch_ended",
           outcome: {
             ...(input.withoutPrompt ? { withoutPrompt: true, actorEpoch: current.actor_epoch } : {}),
             requestId: input.requestId,
@@ -562,7 +584,9 @@ export function createResumeJob(options: {
               configuration: {
                 ...configuration,
                 grant: { ...(configuration.grant as object), expiresAt: physicalDeadline },
-                restoreCheckpoint: { ...checkpoint, model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
+                ...(!input.retainedWorkspace && {
+                  restoreCheckpoint: { ...checkpoint, model: sandbox.model, reasoningEffort: sandbox.reasoningEffort },
+                }),
               },
               assertClaim: guard,
               ticketGuard: {
@@ -649,7 +673,10 @@ export function createResumeJob(options: {
           await machine.bootstrap({ ...identity, bindingRef: job.id, signal });
           if (!(await enrolled())) return retry;
         }
-        await agent.health(signal, checkpoint, { expectedEpoch: input.target, assertClaim: guard });
+        await agent.health(signal, input.retainedWorkspace ? undefined : checkpoint, {
+          expectedEpoch: input.target,
+          assertClaim: guard,
+        });
         if (current.docker) await createDockerLaunchEnvironment(sql, key)(caller, id, guard);
         else if (isSandboxProvider(providerId))
           await environment.deliver(
