@@ -413,6 +413,46 @@ async function machineCreateFixture(
   return { ...a, request };
 }
 
+test("admitted Docker stop prevents a leased launch from dispatching new compute", async () => {
+  const allocation = await machineCreateFixture();
+  const jobs = createJobsStore(sql, key);
+  const worker = randomUUID();
+  const request = { ownerId: allocation.owner.userId, digest: "fixture" };
+  await jobs.enqueue(
+    "launch",
+    allocation.sandboxId,
+    1,
+    randomUUID(),
+    {},
+    {
+      orgId: allocation.owner.orgId,
+      deadline: new Date(Date.UTC(2099, 0, 1)),
+      maxAttempts: 2,
+      request,
+    },
+  );
+  const launch = (await jobs.claim("launch", worker, 30, 1))!;
+  expect(await jobs.inspect(launch, worker)).toBe("dispatch");
+  try {
+    expect(await store.enqueueStop(allocation.owner, allocation.sandboxId, randomUUID())).toBeString();
+    expect(await jobs.inspect(launch, worker)).toBe("reconcile");
+    expect(await jobs.claim("stop", randomUUID(), 30, 1)).toBeUndefined();
+  } finally {
+    await sql.query("delete from jobs where sandbox_id=$1", [allocation.sandboxId]);
+  }
+});
+
+test("an admitted stop refuses fresh Machine create before anything reaches the mailbox", async () => {
+  const a = await machineCreateFixture();
+  try {
+    await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
+    await denied(store.submitMachineCreate(a.owner, a.request));
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  } finally {
+    await sql.query("delete from jobs where sandbox_id=$1", [a.sandboxId]);
+  }
+});
+
 test("Machine create replays one intent and recovers the authenticated container ID", async () => {
   const a = await machineCreateFixture();
   const create = () => store.submitMachineCreate(a.owner, a.request);
@@ -1019,6 +1059,47 @@ async function restoreFixture() {
   await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
   return a;
 }
+
+test("an admitted stop refuses fresh restore mailbox work", async () => {
+  const a = await prepareRestore();
+  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+  try {
+    expect(await store.enqueueStop(a.owner, a.sandboxId, randomUUID())).toBeString();
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, a.selection));
+    expect(await a.poll()).toBeNull();
+  } finally {
+    await sql.query("delete from jobs where sandbox_id=$1", [a.sandboxId]);
+  }
+});
+
+test("an admitted stop leaves an already dispatched restore available for exact attachment", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  const { requestId } = a.restore;
+  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+  expect(await a.poll()).toEqual(a.restore);
+  try {
+    const stop = await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
+    expect(stop).toBeString();
+    expect(await store.enqueueSandbox(a.owner, a.sandboxId, a.selection)).toEqual({ requestId });
+
+    const machineId = "c".repeat(64);
+    await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId });
+    expect(await store.attachMachineRestore(a.owner, claim!)).toEqual({
+      sandboxId: a.sandboxId,
+      generation: 2,
+      machineId,
+    });
+  } finally {
+    await sql.query("delete from jobs where sandbox_id=$1", [a.sandboxId]);
+  }
+});
 
 test("the current runner declines a completed restore receipt without a physical ID", async () => {
   const a = await restoreFixture();
