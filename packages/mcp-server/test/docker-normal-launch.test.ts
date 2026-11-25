@@ -1252,7 +1252,10 @@ test.each(["rejects", "returns"] as const)(
      where sandbox_id=$1 and request_id=$2`,
       [id, requestId],
     );
-    await sql.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='turn_dispatch'", [id]);
+    await sql.query(
+      "update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='turn_dispatch' and state='leased'",
+      [id],
+    );
     expect(await b.runner.reconcileOne(signal)).toBe(true);
     await b.entered.promise;
     try {
