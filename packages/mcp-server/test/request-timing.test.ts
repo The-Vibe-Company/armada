@@ -4,6 +4,7 @@ import {
   measureSqlQuery,
   observeGoldenLaunch,
   RequestTiming,
+  recordModalLaunchAdmission,
   withRequestTiming,
 } from "../src/request-timing.ts";
 
@@ -110,7 +111,7 @@ test("fresh golden launch samples partition SQL calls and time without changing 
         await sql.query("select 2");
         time = 125;
         launch.checkpoint("shared_launcher");
-        launch.launched({ provider: "modal", id: sandboxId });
+        recordModalLaunchAdmission(sandboxId);
         return sandboxId;
       });
 
@@ -130,6 +131,7 @@ test("fresh golden launch samples partition SQL calls and time without changing 
         stages: [
           { name: "admission", ms: 10, sqlStatements: 1 },
           { name: "shared_launcher", ms: 15, sqlStatements: 1 },
+          { name: "receipt_admission", ms: 0, sqlStatements: 0 },
           { name: "response_publication", ms: 0, sqlStatements: 0 },
         ],
       }),

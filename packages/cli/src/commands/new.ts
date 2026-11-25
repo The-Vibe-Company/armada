@@ -1,8 +1,15 @@
 import { AuthError } from "@armada/auth";
-import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
+import {
+  GoldenError,
+  HARNESSES,
+  type LaunchResult,
+  MODEL_CATALOG,
+  resolveModelChoice,
+  SANDBOX_PLACEMENT_LABELS,
+} from "@armada/core";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "../agent-validation.ts";
-import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
+import { flag, parseArgs, providerFlag, single, usesHostLaunch, values } from "../args.ts";
 import { rememberSandbox } from "../current-sandbox.ts";
 import { prepareLaunch } from "../devx.ts";
 import { launchDocker } from "../docker-launch.ts";
@@ -32,7 +39,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     ],
     ["--armada-access", "--keep-after-merge"],
   );
-  if (single(args, "--provider") === "docker") {
+  if (usesHostLaunch(single(args, "--provider"))) {
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, deps.sandboxFile);
   }
   if (
@@ -203,7 +210,7 @@ function launchText(result: LaunchWireResult, now: Date) {
     `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
     "Access: enforced by the server; metadata hints do not grant interior access.",
     `Sandbox: ${sandbox.id}`,
-    `${sandbox.provider === "boat" ? "Boat" : "Modal"} sandbox: ${sandbox.providerSandboxId}`,
+    `${SANDBOX_PLACEMENT_LABELS[sandbox.provider]} sandbox: ${sandbox.providerSandboxId}`,
     `Status: ${sandbox.status}`,
     ...(sandbox.machineSize
       ? [
@@ -220,7 +227,7 @@ function launchText(result: LaunchWireResult, now: Date) {
     lines.push(`Credential account: ${sandbox.credentialId} (revision ${sandbox.credentialVersion}).`);
   if (result.conversationId) lines.push(`Conversation: ${result.conversationId}`);
   else lines.push("No prompt sent: the sandbox is ready for the first prompt.");
-  lines.push(githubLine(result, now));
+  lines.push(githubLine(result.github, now));
   if (result.github.status === "connected" && result.github.message) lines.push(`Note: ${result.github.message}`);
   lines.push(
     result.expiresAt
@@ -230,19 +237,14 @@ function launchText(result: LaunchWireResult, now: Date) {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: Pick<LaunchResult, "sandbox" | "github">, now: Date) {
-  const { github } = result;
+function githubLine(github: LaunchResult["github"], now: Date) {
   if (github.status === "connected") {
     const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
     const lifetime =
       expiry && Number.isFinite(expiry.getTime())
         ? `launch token expires at ${expiry.toISOString()} (~${Math.max(0, Math.floor((expiry.getTime() - now.getTime()) / 60_000))} minutes remaining)`
         : "launch token remaining lifetime unknown";
-    const repair =
-      result.sandbox.provider === "boat"
-        ? `Use armada api github/refresh '{"id":"${result.sandbox.id}"}' for a running legacy sandbox; automatic next-prompt repair is experimental and off by default.`
-        : "Reconnect GitHub if needed and resume to re-resolve credentials.";
-    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). ${repair}`;
+    return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). Reconnect GitHub if needed and resume to re-resolve credentials.`;
   }
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
