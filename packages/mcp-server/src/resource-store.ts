@@ -1,5 +1,6 @@
 import {
   GoldenError,
+  isSandboxPlacementProvider,
   LaunchError,
   mapSandboxRow,
   type ProviderResourceObservation,
@@ -7,9 +8,9 @@ import {
   type SandboxRow,
   type Sql,
 } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
-import { supportsResourceSampling } from "./provider-runtime-admission.ts";
 
 const resourceProvenance = {
   boat: "boat-dedicated-vm",
@@ -118,7 +119,8 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           throw conflict();
         if (
           observation.providerSandboxId !== row.provider_sandbox_id ||
-          !supportsResourceSampling(row.provider) ||
+          !isSandboxPlacementProvider(row.provider) ||
+          !capabilities(row.provider).resourceSampler ||
           observation.runtimeProvenance !== resourceProvenance[row.provider]
         )
           throw conflict();
