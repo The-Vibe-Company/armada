@@ -1,5 +1,4 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
-import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
@@ -181,21 +180,10 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
     delayMs: idleDelayMs,
     ...(dockerBootstrap
       ? {
-          dockerStop: async (actor, id, requestId) => {
-            const unbound = await sql.query(
-              `select 1 from public.sandboxes s where s.id=$1 and not exists(
-                 select 1 from public.docker_machine_bindings b where b.sandbox_id=s.id
-                   and b.host_id=s.docker_host_id and b.installation_id=s.docker_installation_id
-                   and b.daemon_generation=s.docker_generation)`,
-              [id],
-            );
-            if (unbound.rows.length) await captureDockerStopOutputs(sql, config.encryptionKey, id);
-            return createDockerHostStore(sql, config.encryptionKey).enqueueSandbox(actor, id, {
-              operation: "stop",
-              requestId,
-              idleCheckpointRequest: requestId,
-            });
-          },
+          dockerStop: (actor, id, requestId) =>
+            createDockerHostStore(sql, config.encryptionKey).enqueueStop(actor, id, requestId, {
+              checkpoint: requestId,
+            }),
         }
       : {}),
   });
