@@ -254,7 +254,7 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
   });
 });
 
-async function resumeWithModalJob(
+async function resumeWithJob(
   { f, service }: Awaited<ReturnType<typeof fixture>>,
   request: Parameters<ReturnType<typeof createRuntimeResume>>[1],
 ) {
@@ -296,6 +296,48 @@ async function resumeWithModalJob(
       };
       return machine as ModalProvider;
     },
+    async boat() {
+      let active = false;
+      return {
+        host: {
+          async get(id: string) {
+            return {
+              id,
+              name: "retained",
+              labels: {},
+              providerState: active ? "ready" : "archived",
+              state: active ? ("ready" as const) : ("stopped" as const),
+              retainedSnapshot: "usable" as const,
+              expiresAt: new Date(Date.now() + 86_400_000),
+            };
+          },
+          async resumeRuntime() {
+            active = true;
+          },
+        } as unknown as ReturnType<typeof import("../src/observed-boat.ts").createObservedBoatProvider>,
+        providerAuthority: "fixture",
+        async authorize() {},
+        async bootstrap(_host, { enrolmentToken }) {
+          const scope = await f.authority.withBootstrap(enrolmentToken, async () => true);
+          if (!scope) throw Error("Expected a current runtime ticket.");
+          const {
+            rows: [checkpoint],
+          } = await f.sql.query<{ epoch: string; watermark: string }>(
+            "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1",
+            [f.row.id],
+          );
+          await f.reboot(
+            {
+              epoch: checkpoint!.epoch,
+              watermark: Number(checkpoint!.watermark),
+              conversationId: f.first.conversationId!,
+            },
+            true,
+            enrolmentToken,
+          );
+        },
+      };
+    },
     async prepare() {
       return {
         serverUrl: PUBLIC_URL,
@@ -307,25 +349,8 @@ async function resumeWithModalJob(
     prepareMcp: service.prepare,
     async restoreScopedAccess() {},
   });
-  const resume = createRuntimeResume(
-    f.sql,
-    ENCRYPTION_KEY,
-    f.bridge,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    resumeJob.resume,
-  );
-  const send = createRuntimeFollowup(
-    f.sql,
-    ENCRYPTION_KEY,
-    f.bridge,
-    service.prepare,
-    resume,
-    undefined,
-    resumeJob.wake,
-  );
+  const resume = createRuntimeResume(f.sql, resumeJob.resume);
+  const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare, undefined, resumeJob.wake);
   turns.setDispatch((caller, input, claim) => send(caller, input, claim, { fromQueue: true }));
   const signal = new AbortController().signal;
   const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), { resume: resumeJob.handler });
@@ -365,26 +390,13 @@ describe.each(["boat", "modal"] as const)("checkpoint and resume (%s)", (provide
     await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
       f.row.id,
     ]);
-    const resume = createRuntimeResume(
-      f.sql,
-      ENCRYPTION_KEY,
-      f.bridge,
-      async () => ({
-        start: async (_signal, restore) => f.reboot(restore),
-        async checkDispatchCoverage() {},
-        stop: async () => {
-          throw Error("Healthy resume must not stop");
-        },
-      }),
-      x.service.prepare,
-    );
     const request = {
       id: f.row.id,
       request_id: crypto.randomUUID(),
       runtimeVersion: 1 as const,
       prompt: "first resumed MCP turn",
     };
-    const refreshed = provider === "modal" ? await resumeWithModalJob(x, request) : await resume(f.caller, request);
+    const refreshed = await resumeWithJob(x, request);
     const next = x.configuration();
     expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
     expect(refreshed.runtime.epoch).toBe("2");

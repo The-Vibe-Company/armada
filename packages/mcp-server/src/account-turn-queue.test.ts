@@ -1254,97 +1254,71 @@ test("uppercase request UUIDs preserve one queue identity and status alias", asy
   expect(await queue.status(caller, input.id, uppercase)).toEqual({ nativePromptId: "case_actual_prompt" });
 });
 
-test.each([
-  ["docker", "ready"],
-  ["docker", "failed acknowledgement"],
-  ["docker", "refused acknowledgement"],
-  ["boat", "ready"],
-  ["boat", "unconfirmed restore"],
-  ["modal", "ready"],
-  ["modal", "unconfirmed restore"],
-] as const)("shared %s wake reconciles the original request after %s", async (provider, outcome) => {
-  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
-  const docker = provider === "docker";
-  const host = ids[0]!;
-  const installation = ids[2]!;
-  const machine = requests[1]!;
-  await sql.query(
-    `update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',
+test.each(["ready", "failed acknowledgement", "refused acknowledgement"] as const)(
+  "shared Docker wake reconciles the original request after %s",
+  async (outcome) => {
+    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
+    const host = ids[0]!;
+    const installation = ids[2]!;
+    const machine = requests[1]!;
+    await sql.query(
+      `update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',
        status_reason=$5,stopped_at=now(),docker_host_id=$6,docker_installation_id=$7,docker_generation=$8 where id=$1`,
-    [
-      input.id,
-      provider,
-      provider === "boat",
-      provider === "modal" ? "dialout" : null,
-      docker ? "idle_paused" : null,
-      docker ? host : null,
-      docker ? installation : null,
-      docker ? machine : null,
-    ],
-  );
-  if (docker)
+      [input.id, "docker", false, null, "idle_paused", host, installation, machine],
+    );
     await sql.query("insert into docker_hosts(id,org_id,installation_id,owner_id,hash) values($1,$2,$3,$4,'host')", [
       host,
       org,
       installation,
       owner,
     ]);
-  await queue.accept(caller, input);
+    await queue.accept(caller, input);
 
-  const requestsSeen: unknown[] = [];
-  const dispatch = sharedDispatcher(async (_caller, request, claim) => {
-    requestsSeen.push(request);
-    if (requestsSeen.length === 1) {
-      if (!claim) throw new Error("Expected shared wake ownership.");
-      const generation = await claim.handoffGeneration({
-        async lockPrerequisites() {},
-        async advance(tx) {
-          await tx.query(
-            `update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,
+    const requestsSeen: unknown[] = [];
+    const dispatch = sharedDispatcher(async (_caller, request, claim) => {
+      requestsSeen.push(request);
+      if (requestsSeen.length === 1) {
+        if (!claim) throw new Error("Expected shared wake ownership.");
+        const generation = await claim.handoffGeneration({
+          async lockPrerequisites() {},
+          async advance(tx) {
+            await tx.query(
+              `update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,
                activity_lease_id=$2,activity_until='infinity' where id=$1`,
-            [input.id, input.request_id],
-          );
-          if (docker) {
+              [input.id, input.request_id],
+            );
             await tx.query(
               `insert into docker_resume_claims(sandbox_id,request_id,actor_id,host_id,installation_id,generation,lifecycle_generation,accepted)
-               values($1,$2,$3,$4,$5,$6,1,true)`,
+             values($1,$2,$3,$4,$5,$6,1,true)`,
               [input.id, input.request_id, owner, host, installation, machine],
             );
             await tx.query(
               `insert into docker_host_jobs(bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch)
-               values($1,1,$2,$3,$4,'resume',1)`,
+             values($1,1,$2,$3,$4,'resume',1)`,
               [input.id, input.request_id, owner, host],
             );
-          } else {
-            await tx.query(
-              `insert into runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,phase,activated_at)
-               values($1,$2,1,2,'dispatched',now())`,
-              [input.id, input.request_id],
-            );
-          }
-        },
-      });
-      expect(generation).toBe("2");
-      throw Error("wake still pending");
-    }
-    return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
-  });
-  await dispatch();
-  expect(requestsSeen).toEqual([input]);
-  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
-    { sandbox_id: input.id },
-  ]);
-  const jobs = () =>
-    sql.query<{ id: string; generation: string; state: string; attempts: number; reason: string | null }>(
-      "select id,generation::text,state,attempts,outcome->>'reason' as reason from jobs",
-    );
-  const [pending] = (await jobs()).rows;
-  if (!pending) throw new Error("Expected a durable wake retry.");
-  expect(pending).toMatchObject({ generation: "2", state: "queued", reason: null });
-  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: false });
+          },
+        });
+        expect(generation).toBe("2");
+        throw Error("wake still pending");
+      }
+      return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
+    });
+    await dispatch();
+    expect(requestsSeen).toEqual([input]);
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+      { sandbox_id: input.id },
+    ]);
+    const jobs = () =>
+      sql.query<{ id: string; generation: string; state: string; attempts: number; reason: string | null }>(
+        "select id,generation::text,state,attempts,outcome->>'reason' as reason from jobs",
+      );
+    const [pending] = (await jobs()).rows;
+    if (!pending) throw new Error("Expected a durable wake retry.");
+    expect(pending).toMatchObject({ generation: "2", state: "queued", reason: null });
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: false });
 
-  if (outcome === "ready") {
-    if (docker) {
+    if (outcome === "ready") {
       await sql.query("update sandboxes set status='ready',activity_lease_id=null where id=$1", [input.id]);
       await sql.query("update jobs set run_after='-infinity'");
       await dispatch();
@@ -1353,114 +1327,86 @@ test.each([
       await sql.query("update docker_host_jobs set outcome='completed' where request_id=$1", [input.request_id]);
     } else {
       await sql.query(
-        "insert into runtime_enrolments(sandbox_id,epoch,lifecycle_generation,runtime_hash) values($1,2,2,'active')",
-        [input.id],
+        `update docker_host_jobs set outcome=case when $2 then 'failed' end,
+           refused_resume_generation=case when not $2 then 2 end where request_id=$1`,
+        [input.request_id, outcome === "failed acknowledgement"],
       );
     }
-  } else if (docker) {
-    await sql.query(
-      `update docker_host_jobs
-       set outcome=case when $2 then 'failed' end,refused_resume_generation=case when not $2 then 2 end
-       where request_id=$1`,
-      [input.request_id, outcome === "failed acknowledgement"],
-    );
-  } else {
-    await sql.query("update runtime_resumes set phase='failed' where request_id=$1", [input.request_id]);
-    await sql.query("update sandboxes set status='failed',lifecycle_generation=3,activity_lease_id=null where id=$1", [
-      input.id,
-    ]);
-  }
-  await sql.query("update jobs set run_after='-infinity'");
-  await dispatch();
+    await sql.query("update jobs set run_after='-infinity'");
+    await dispatch();
 
-  if (outcome === "ready") {
-    expect(requestsSeen).toEqual([input, input]);
-    expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "resumed_prompt" });
-    expect((await jobs()).rows).toEqual([{ ...pending, state: "done", attempts: 2 }]);
-    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
-  } else {
-    expect(requestsSeen).toEqual([input]);
-    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
-    expect((await jobs()).rows).toEqual([
-      { ...pending, state: "failed", attempts: 2, reason: docker ? "docker_wake_failed" : "cancelled_receipt" },
-    ]);
-    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
-      { sandbox_id: input.id },
-    ]);
-  }
-});
+    if (outcome === "ready") {
+      expect(requestsSeen).toEqual([input, input]);
+      expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "resumed_prompt" });
+      expect((await jobs()).rows).toEqual([{ ...pending, state: "done", attempts: 2 }]);
+      expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+    } else {
+      expect(requestsSeen).toEqual([input]);
+      expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+      expect((await jobs()).rows).toEqual([{ ...pending, state: "failed", attempts: 2, reason: "docker_wake_failed" }]);
+      expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+        { sandbox_id: input.id },
+      ]);
+    }
+  },
+);
 
-test.each(["boat", "docker"] as const)(
-  "the account turn worker settles an expired %s wake that cannot dispatch",
-  async (provider) => {
-    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake with a queued prompt" };
-    const docker = provider === "docker";
-    const host = crypto.randomUUID();
-    const installation = crypto.randomUUID();
-    const machine = crypto.randomUUID();
-    await sql.query(
-      `update sandboxes set provider=$2,boat_runtime=($2='boat'),
+test("the account turn worker settles an expired Docker wake that cannot dispatch", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake with a queued prompt" };
+  const host = crypto.randomUUID();
+  const installation = crypto.randomUUID();
+  const machine = crypto.randomUUID();
+  await sql.query(
+    `update sandboxes set provider=$2,boat_runtime=($2='boat'),
            runtime_transport=null,status='stopped',stopped_at=now(),
            status_reason=case when $2='docker' then 'idle_paused' end,
            docker_host_id=$3,docker_installation_id=$4,docker_generation=$5
          where id=$1`,
-      [input.id, provider, docker ? host : null, docker ? installation : null, docker ? machine : null],
+    [input.id, "docker", host, installation, machine],
+  );
+  await sql.query("insert into docker_hosts(id,org_id,installation_id,owner_id,hash) values($1,$2,$3,$4,'host')", [
+    host,
+    org,
+    installation,
+    owner,
+  ]);
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  const signal = new AbortController().signal;
+  const sent: string[] = [];
+  worker.setDispatch(async (_, request) => {
+    sent.push(request.request_id!);
+    await sql.query("update sandboxes set status=$2,stopped_at=null,lifecycle_generation=2 where id=$1", [
+      input.id,
+      "starting",
+    ]);
+    await sql.query(
+      `insert into docker_resume_claims
+           (sandbox_id,request_id,actor_id,host_id,installation_id,generation,lifecycle_generation,accepted)
+         values($1,$2,$3,$4,$5,$6,1,true)`,
+      [input.id, input.request_id, owner, host, installation, machine],
     );
-    if (docker)
-      await sql.query("insert into docker_hosts(id,org_id,installation_id,owner_id,hash) values($1,$2,$3,$4,'host')", [
-        host,
-        org,
-        installation,
-        owner,
-      ]);
-    const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-    const signal = new AbortController().signal;
-    const sent: string[] = [];
-    worker.setDispatch(async (_, request) => {
-      sent.push(request.request_id!);
-      await sql.query("update sandboxes set status=$2,stopped_at=null,lifecycle_generation=2 where id=$1", [
-        input.id,
-        docker ? "starting" : "ready",
-      ]);
-      if (docker) {
-        await sql.query(
-          `insert into docker_resume_claims
-             (sandbox_id,request_id,actor_id,host_id,installation_id,generation,lifecycle_generation,accepted)
-           values($1,$2,$3,$4,$5,$6,1,true)`,
-          [input.id, input.request_id, owner, host, installation, machine],
-        );
-        await sql.query(
-          `insert into docker_host_jobs
-             (bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch,refused_resume_generation)
-           values($1,1,$2,$3,$4,'resume',1,2)`,
-          [input.id, input.request_id, owner, host],
-        );
-      } else {
-        await sql.query(
-          "insert into runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,phase) values($1,$2,1,2,'dispatched')",
-          [input.id, input.request_id],
-        );
-        await sql.query(
-          "insert into runtime_enrolments(sandbox_id,epoch,lifecycle_generation,runtime_hash) values($1,2,2,'active')",
-          [input.id],
-        );
-      }
-      throw new Error("Wake ended before the prompt was dispatched.");
-    });
+    await sql.query(
+      `insert into docker_host_jobs
+           (bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch,refused_resume_generation)
+         values($1,1,$2,$3,$4,'resume',1,2)`,
+      [input.id, input.request_id, owner, host],
+    );
 
-    expect(await worker.accept(caller, input)).toMatchObject({ status: "queued" });
-    expect(await worker.reconcileOne(signal)).toBe(true);
-    await worker.drain();
-    const replayed = await worker.reconcileOne(signal);
-    await worker.drain();
-    expect(replayed).toBe(false);
-    expect(sent).toEqual([input.request_id]);
-    expect(await worker.status(caller, input.id, input.request_id)).toMatchObject({
-      requestId: input.request_id,
-      failed: true,
-    });
-  },
-);
+    throw new Error("Wake ended before the prompt was dispatched.");
+  });
+
+  expect(await worker.accept(caller, input)).toMatchObject({ status: "queued" });
+  expect(await worker.reconcileOne(signal)).toBe(true);
+  await worker.drain();
+  const replayed = await worker.reconcileOne(signal);
+  await worker.drain();
+  expect(replayed).toBe(false);
+  expect(sent).toEqual([input.request_id]);
+  expect(await worker.status(caller, input.id, input.request_id)).toMatchObject({
+    requestId: input.request_id,
+    failed: true,
+  });
+});
 
 test("native invalid model settings are rejected before a durable prompt is queued", async () => {
   await expect(

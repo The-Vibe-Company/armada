@@ -18,11 +18,12 @@ import {
   resolveBoatKey,
   VaultError,
 } from "@armada/core/server";
+import { startBoatRuntime } from "@armada/provider-boat";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
-import { boatRuntimeResume, createBoatResumePolicy } from "./boat-runtime-resume.ts";
+import { createBoatRuntimePolicy } from "./boat-runtime-launch.ts";
 import { boatDeploymentId } from "./config.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
@@ -40,7 +41,7 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
-import { boatLaunchJobs } from "./jobs/boat-launch.ts";
+import { boatLaunchBinding, boatLaunchJobs } from "./jobs/boat-launch.ts";
 import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createResumeJob } from "./jobs/resume.ts";
 import type { JobKind } from "./jobs/runner.ts";
@@ -228,7 +229,7 @@ export async function createServerServices(env: Record<string, string | undefine
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
   const runtimeLaunch = boat
-    ? createBoatResumePolicy({
+    ? createBoatRuntimePolicy({
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
@@ -392,9 +393,6 @@ export async function createServerServices(env: Record<string, string | undefine
     if (!admit) throw new VaultError("unavailable", "Boat launch admission is unavailable.");
     return admit(actor, golden, ...rest);
   };
-  const boatResume = runtimeLaunch
-    ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
-    : undefined;
   const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const resume = createResumeJob({
     turns: accountTurns,
@@ -402,27 +400,52 @@ export async function createServerServices(env: Record<string, string | undefine
     key: config.encryptionKey,
     commands: runtimeCommands,
     provider: (caller, sandbox) => modalRuntimeHostFor(sandbox, caller),
+    boat: async (caller, sandbox) => {
+      if (!boat) throw new VaultError("unavailable", "Boat runtime artifacts are unavailable.");
+      const credential = () =>
+        resolveBoatKey(store, config.encryptionKey, {
+          userId: caller.userId,
+          orgId: sandbox.orgId,
+          visibility: sandbox.sourceGoldenVisibility ?? sandbox.visibility ?? "private",
+        });
+      const authority = await credential();
+      const host = createObservedBoatProvider({ apiKey: authority.key }, sandbox.id);
+      const {
+        rows: [launch],
+      } = await sql.query<{ scope: string | null; backend: string | null }>(
+        `select launch.authority->>'scope' as scope,launch.authority->>'backendId' as backend
+         from public.sandboxes s join lateral (${boatLaunchBinding}) launch on true
+         where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3`,
+        [sandbox.id, sandbox.lifecycleGeneration, sandbox.providerSandboxId],
+      );
+      const backend = await host.backendIdentity?.();
+      if (!backend || (launch && (launch.backend !== backend.id || launch.scope !== authority.scope)))
+        throw new VaultError("forbidden", "Boat resume authority changed.");
+      return {
+        host,
+        bootstrap: startBoatRuntime,
+        providerAuthority: JSON.stringify([authority.scope, backend.id]),
+        ...(!launch
+          ? { legacyLabels: { armada: "sandbox", sandbox: sandbox.id, org: sandbox.orgId, owner: sandbox.ownerId } }
+          : {}),
+        async authorize() {
+          const current = await credential();
+          if (current.key !== authority.key || current.scope !== authority.scope)
+            throw new VaultError("forbidden", "Boat resume authority changed.");
+        },
+      };
+    },
     prepare: prepareLaunchTicket,
     prepareMcp: runtimeMcp.prepare,
     ...(runtimeGitHub ? { prepareGitHub: runtimeGitHub.prepareLaunch } : {}),
     restoreScopedAccess: sandboxArmadaAccess.restoreEnrolled,
   });
-  const runtimeResume = createRuntimeResume(
-    sql,
-    config.encryptionKey,
-    runtimeCommands,
-    boatResume,
-    runtimeMcp.prepare,
-    runtimeGitHub?.prepareLaunch,
-    sandboxArmadaAccess.restoreEnrolled,
-    resume.resume,
-  );
+  const runtimeResume = createRuntimeResume(sql, resume.resume);
   const runtimeSend = createRuntimeFollowup(
     sql,
     config.encryptionKey,
     runtimeCommands,
     runtimeMcp.prepare,
-    runtimeResume,
     sandboxArmadaAccess.restoreEnrolled,
     resume.wake,
   );

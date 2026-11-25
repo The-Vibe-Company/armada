@@ -214,7 +214,6 @@ export async function markOutputCollectorSupported(sql: Sql, id: string, generat
   return verified.rows.length > 0;
 }
 
-export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
 export async function attachDockerRestorePlacement(
@@ -566,7 +565,7 @@ export async function settleBoatStop(tx: Sql, id: string, generation: number, no
     });
     if (settled.kind !== "applied") throw new Error("Boat stop settlement changed.");
   }
-  await detachBoatExtensionAfterStop(tx, id, generation);
+  await detachBoatExtension(tx, id, generation);
   await releaseAccountCapacity(tx, id);
 }
 
@@ -641,9 +640,10 @@ export async function prepareResumeGeneration(tx: Sql, id: string, generation: n
     "update public.sandboxes set task_prompt_id=null,task_outcome=null where id=$1 and lifecycle_generation=$2 and status='starting'",
     [id, generation],
   );
+  await detachBoatExtension(tx, id, generation, true);
 }
 
-export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generation: number) {
+export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generation: number, boat: boolean) {
   await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
@@ -654,8 +654,8 @@ export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generatio
     effects: [
       {
         kind: "stop",
-        idem_key: "modal-stop",
-        max_attempts: 8,
+        idem_key: boat ? "boat" : "modal-stop",
+        max_attempts: boat ? 60 : 8,
         deadline_at: new Date(Date.now() + 120_000).toISOString(),
       },
     ],
@@ -857,15 +857,16 @@ export async function clearStartingModalStop(tx: Sql, sandboxId: string, generat
   );
 }
 
-async function detachBoatExtensionAfterStop(tx: Sql, sandboxId: string, generation: number | string) {
+async function detachBoatExtension(tx: Sql, sandboxId: string, generation: number | string, resuming = false) {
   await tx.query(
     `update public.boat_runtime_extension_state e set pending_job_id=null
      from public.sandboxes s, public.jobs j
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='boat' and s.boat_runtime
-       and s.status in ('stopped','failed') and s.stopped_at is not null
+       and (case when $3::boolean then s.status='starting' and j.generation<s.lifecycle_generation
+         else s.status in ('stopped','failed') and s.stopped_at is not null end)
        and e.sandbox_id=s.id and j.id=e.pending_job_id and j.sandbox_id=s.id
        and j.kind='boat_runtime_extend' and j.generation<=s.lifecycle_generation`,
-    [sandboxId, generation],
+    [sandboxId, generation, resuming],
   );
 }
 
@@ -1029,8 +1030,7 @@ export async function recordObservedProviderState(
           [sandboxId, reason, stoppedAt],
         );
       if (stoppedAt !== null) {
-        if (toState === "stopped" || toState === "failed")
-          await detachBoatExtensionAfterStop(tx, sandboxId, result.generation);
+        if (toState === "stopped" || toState === "failed") await detachBoatExtension(tx, sandboxId, result.generation);
         await releaseAccountCapacity(tx, sandboxId);
       }
     }
@@ -1038,82 +1038,29 @@ export async function recordObservedProviderState(
   });
 }
 
-export async function deferAmbiguousBoatResume(
-  tx: Sql,
-  sandboxId: string,
-  requestId: string,
-  generation: number | undefined,
-) {
-  await tx.query(
-    `update public.sandboxes set activity_until=clock_timestamp(),reconcile_after=clock_timestamp()
-     where id=$1 and provider='boat' and boat_runtime and status='starting'
-       and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
-       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
-       and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())`,
-    [sandboxId, requestId, generation],
-  );
-}
-
-export async function confirmRuntimeResumeActivation(
-  sql: Sql,
-  sandboxId: string,
-  requestId: string,
-  generation: number | undefined,
-) {
-  const saved = await sql.query(
-    `with active as (
-      select id from public.sandboxes where id=$1 and boat_runtime and status='starting'
-        and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
-        and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
-        and stop_requested_at is null and deleted_at is null for update
-    ), marked as (
-      update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
-      from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
-      returning r.request_id
-    )
-    select request_id from marked`,
-    [sandboxId, requestId, generation],
-  );
-  return saved.rows.length > 0;
-}
-
-export async function restoreModalResumeSchedule(tx: Sql, sandboxId: string) {
+export async function restoreResumeSchedule(tx: Sql, sandboxId: string) {
   await tx.query("update public.sandboxes set reconcile_after=now() where id=$1", [sandboxId]);
 }
 
-export async function requestFailedRuntimeResumeStop(
+export async function recordBoatResumeCoverage(
   tx: Sql,
-  sandboxId: string,
-  requestId: string,
-  generation: number | undefined,
-  retained: boolean,
+  id: string,
+  machineId: string,
+  generation: number,
+  deadline: number,
 ) {
-  if (generation === undefined) return;
-  const {
-    rows: [sandbox],
-  } = await tx.query<{ application_secret_tainted: boolean }>(
-    "select application_secret_tainted from public.sandboxes where id=$1 for update",
-    [sandboxId],
+  const saved = await tx.query(
+    `insert into public.boat_runtime_extension_state
+       (sandbox_id,observed_provider_id,observed_generation,observed_at,observed_expires_at)
+     select id,provider_sandbox_id,lifecycle_generation,clock_timestamp(),$4::timestamptz from public.sandboxes
+     where id=$1 and boat_runtime and provider_sandbox_id=$2 and lifecycle_generation=$3
+       and $4::timestamptz >= expires_at + $5::integer * interval '1 second'
+     on conflict (sandbox_id) do update set observed_provider_id=excluded.observed_provider_id,
+       observed_generation=excluded.observed_generation,observed_at=excluded.observed_at,
+       observed_expires_at=excluded.observed_expires_at returning sandbox_id`,
+    [id, machineId, generation, new Date(deadline).toISOString(), SANDBOX_STOP_MARGIN_SECONDS],
   );
-  if (!sandbox) return;
-  const toState = retained && !sandbox.application_secret_tainted ? "stopping" : "failed";
-  const result = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: generation,
-    fromStates: ["starting"],
-    toState,
-    actor: "runtime_resume",
-    code: toState === "stopping" ? UNENROLLED_RESUME_STOP : "restore_unconfirmed",
-    effects: [],
-    settlement: {
-      lease: null,
-      activityLease: requestId,
-      statusReason: null,
-      stopRequestedAt: null,
-      stoppedAt: null,
-    },
-  });
-  if (result.kind === "applied") return toState;
+  if (!saved.rows.length) throw Error("Boat resume compute coverage changed.");
 }
 
 const dockerStartupStates = ["starting", "ready", "running"] as const;
@@ -1276,58 +1223,6 @@ export async function confirmRefusedDockerResumeRetention(
   });
 }
 
-async function recoverInterruptedRuntimeResume(
-  tx: Sql,
-  sandboxId: string,
-  lease: string,
-  generation: number,
-  observedProviderId: string | null,
-) {
-  const {
-    rows: [resume],
-  } = await tx.query<{ request_id: string }>(
-    `select r.request_id from public.sandboxes s
-     join public.runtime_resumes r on r.sandbox_id=s.id and r.request_id=s.activity_lease_id
-     join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
-     join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
-     where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
-       and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
-       and s.status='starting'
-       and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-       and not s.application_secret_tainted
-       and r.phase='dispatched' and r.receipt is null
-       and e.runtime_hash is null
-       and (
-         (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$4::text or r.activated_at is not null
-           or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
-       )
-       and c.watermark=r.watermark
-       and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)`,
-    [sandboxId, lease, generation, observedProviderId],
-  );
-  if (!resume) return false;
-
-  const transition = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: generation,
-    fromStates: ["starting"],
-    toState: "stopping",
-    actor: "runtime_resume",
-    code: UNENROLLED_RESUME_STOP,
-    effects: [],
-    settlement: { lease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
-  });
-  if (transition.kind === "conflict") return false;
-
-  const abandoned = await tx.query(
-    `update public.runtime_resumes set phase='abandoned'
-     where sandbox_id=$1 and request_id=$2 and phase='dispatched' and receipt is null returning request_id`,
-    [sandboxId, resume.request_id],
-  );
-  if (!abandoned.rows.length) throw Error("Interrupted runtime resume changed before abandonment.");
-  return true;
-}
-
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
@@ -1373,23 +1268,16 @@ export function createSandboxLifecycle(
           status: string;
           status_reason: string | null;
           task_prompt_id: string | null;
-          activity_lease_id: string | null;
           application_secret_tainted: boolean;
           owner_is_member: boolean;
-          retained_resume: boolean;
           checkpointed_stop: boolean;
-          interrupted_resume: boolean;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         from (
-          select candidate.id,recovery.retained_resume from public.sandboxes candidate
-          cross join lateral (select candidate.status='stopping' and exists(
-            select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
-            and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
-          ) as retained_resume) recovery
+          select candidate.id from public.sandboxes candidate
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and (candidate.provider<>'modal' or candidate.runtime_transport='dialout')
           and not ${unresolvedModalStop("candidate")}
@@ -1399,15 +1287,12 @@ export function createSandboxLifecycle(
           and not ((candidate.provider='modal' or candidate.boat_runtime) and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure
             where failure.sandbox_id=candidate.id and failure.generation=candidate.lifecycle_generation
-              and failure.actor='lifecycle_runner' and failure.code=$5
+              and failure.actor='lifecycle_runner' and failure.code=$3
               and failure.from_status='starting' and failure.to_status='failed'
           ))
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
-          -- Only this worker understands the retained-resume handoff. Old
-          -- replicas see an infinite schedule and cannot claim it.
-          and (candidate.reconcile_after<=now()
-            or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
+          and candidate.reconcile_after<=now()
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
           -- Skip known contention before LIMIT. The lease trigger checks again under the row lock.
@@ -1416,45 +1301,22 @@ export function createSandboxLifecycle(
               and ((j.kind='boat_runtime_extend' and j.state='leased' and j.lease_until>now())
                 or (j.kind='stop' and j.generation=candidate.lifecycle_generation))
           ))
-          order by case
-            when recovery.retained_resume then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
-            else candidate.reconcile_after end
+          order by candidate.reconcile_after
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
-        returning s.id,s.provider_sandbox_id,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
-          due.retained_resume,
+        returning s.id,s.provider_sandbox_id,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
           ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
             and s.status='stopping' and s.stop_requested_at is not null and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
               and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
               and t.actor='api' and t.code='runtime_retained_stop' and t.to_status='stopping'
           )) as checkpointed_stop,
-          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
-            select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
-              and r.phase='dispatched' and r.receipt is null
-          )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`, MODAL_LAUNCH_FAILURE],
+          [token, providerId, MODAL_LAUNCH_FAILURE],
         )
       ).rows[0];
       if (!row) return false;
-      const recoverInterruptedResume = async (observedProviderId: string | null) => {
-        if (!row.interrupted_resume) return false;
-        if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
-        return sql.transaction(async (tx) => {
-          const owned = await tx.query(
-            `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
-               and reconcile_lease_until>clock_timestamp() for update`,
-            [row.id, token, row.lifecycle_generation],
-          );
-          return (
-            owned.rows.length > 0 &&
-            (await recoverInterruptedRuntimeResume(tx, row.id, token, row.lifecycle_generation, observedProviderId))
-          );
-        });
-      };
-      if (await recoverInterruptedResume(null)) return true;
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
@@ -1496,26 +1358,11 @@ export function createSandboxLifecycle(
       let error: string | null = null;
       let resolved = false;
       let observing = false;
-      let initialObservation = true;
-      let handingOffObservedResume = false;
       const jobOwnsStop = usesDiskStopJob(providerId);
       const requireMissingObservation = requiresMissingMachineObservation(providerId);
       let stoppedAt: Date | undefined;
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
       const expired = logicalDeadline <= now();
-      const retainedResume = row.retained_resume;
-      const canDeferInterruptedResume =
-        row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
-      const deferInterruptedResume = () =>
-        sql.query(
-          `update public.sandboxes set reconcile_after=now()+interval '1 minute',
-             reconcile_lease=null,reconcile_lease_until=null
-           where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3 and status='starting'
-             and reconcile_lease_until>clock_timestamp() and activity_lease_id=$4
-             and activity_until<=clock_timestamp() and expires_at>clock_timestamp()
-             and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
-          [row.id, token, row.lifecycle_generation, row.activity_lease_id],
-        );
       const handoffBoatStop = async (expiry: boolean) => {
         if (!sql.transaction) throw Error("Boat stop handoff requires a transaction.");
         await sql.transaction(async (tx) => {
@@ -1654,21 +1501,20 @@ export function createSandboxLifecycle(
             }
             const saved = await tx.query(
               `update public.sandboxes set
-               last_observed_at=case when $3::text is null then now() else last_observed_at end,
+               last_observed_at=case when $2::text is null then now() else last_observed_at end,
                activity_lease_id=null,
                activity_until=null,
-               lifecycle_error=$3,
-               reconcile_after=case when $5 and not $2 then 'infinity'::timestamptz else now()+interval '1 minute' end,
-               reconcile_lease=case when $4 then reconcile_lease else null end,
-               reconcile_lease_until=case when $4 then reconcile_lease_until
-                 when $5 and not $2 then now()+interval '1 minute' else null end
-             where id=$1 and reconcile_lease=$6::uuid and lifecycle_generation=$7
+               lifecycle_error=$2,
+               reconcile_after=now()+interval '1 minute',
+               reconcile_lease=case when $3 then reconcile_lease else null end,
+               reconcile_lease_until=case when $3 then reconcile_lease_until else null end
+             where id=$1 and reconcile_lease=$4::uuid and lifecycle_generation=$5
                and reconcile_lease_until>clock_timestamp()
              returning id`,
-              [row.id, terminal, error, signal?.aborted ?? false, retainedResume, token, row.lifecycle_generation],
+              [row.id, error, signal?.aborted ?? false, token, row.lifecycle_generation],
             );
             if (!saved.rows.length) throw lostLease;
-            if (terminal) await detachBoatExtensionAfterStop(tx, row.id, row.lifecycle_generation);
+            if (terminal) await detachBoatExtension(tx, row.id, row.lifecycle_generation);
             return true;
           })
           .catch((failure: unknown) => {
@@ -1687,26 +1533,6 @@ export function createSandboxLifecycle(
           return info;
         };
         const info = await observe();
-        initialObservation = false;
-        if (
-          canDeferInterruptedResume &&
-          info.id === row.provider_sandbox_id &&
-          ["starting", "stopping", "failed"].includes(info.state) &&
-          !info.physicalExitConfirmed
-        ) {
-          handingOffObservedResume = true;
-          await deferInterruptedResume();
-          return true;
-        }
-        if (
-          row.interrupted_resume &&
-          (info.state === "stopped" ||
-            ((info.state === "ready" || info.state === "running") && !info.physicalExitConfirmed))
-        ) {
-          handingOffObservedResume = true;
-          if (await recoverInterruptedResume(info.id)) return true;
-          handingOffObservedResume = false;
-        }
         // Name the persisted selection and provider observation before any capture.
         // No secret values or provider error bodies enter this diagnostic.
         try {
@@ -1879,7 +1705,6 @@ export function createSandboxLifecycle(
         if (!terminal && (expired || shortBoatDeadline || row.status === "stopping" || row.stop_requested_at !== null))
           error = "Provider stop is not yet confirmed. Retrying without deleting retained data.";
       } catch (caught) {
-        if (handingOffObservedResume) throw caught;
         const authorityLost =
           (caught instanceof VaultError &&
             ["missing_credential", "forbidden", "not_found", "credential_refused"].includes(caught.code)) ||
@@ -1887,13 +1712,6 @@ export function createSandboxLifecycle(
         if (authorityLost && operatorStop && !signal?.aborted) {
           await deferToOperator("original provider authority unavailable.");
           return true;
-        }
-        if (canDeferInterruptedResume && initialObservation && observing) {
-          signal?.throwIfAborted();
-          if (caught instanceof ProviderError && caught.code !== "not_found" && !authorityLost) {
-            await deferInterruptedResume();
-            return true;
-          }
         }
         if (
           resolved &&
@@ -1939,39 +1757,4 @@ export function createSandboxLifecycle(
       return false;
     },
   };
-}
-
-export async function publishRuntimeWake(
-  tx: Sql,
-  sandboxId: string,
-  generation: number,
-  requestId: string,
-  promptId: string,
-  conversationIds: string[],
-) {
-  const published = await tx.query(
-    `update public.sandboxes s set task_prompt_id=$4,conversation_ids=$5::text[],status_reason=null,
-       activity_lease_id=null,activity_until=null
-     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
-       and s.status='starting' and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
-       and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
-       and not s.application_secret_tainted
-       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
-       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-     returning s.id`,
-    [sandboxId, generation, requestId, promptId, conversationIds],
-  );
-  if (!published.rows.length) throw new VaultError("conflict", "Runtime wake publication is stale.");
-  const transition = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: generation,
-    fromStates: ["starting"],
-    toState: "running",
-    actor: "runtime_enrolment",
-    code: "runtime_enrolled",
-    effects: [],
-  });
-  if (transition.kind === "conflict") throw new VaultError("conflict", "Runtime wake publication is stale.");
-  await releaseAccountCapacity(tx, sandboxId);
-  await settleRuntimeTurn(tx, sandboxId, generation);
 }

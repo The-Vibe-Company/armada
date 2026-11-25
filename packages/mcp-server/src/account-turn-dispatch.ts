@@ -83,9 +83,12 @@ export const TURN_FIFO_ELIGIBLE = `((s.provider is distinct from 'docker' and no
       and earlier.model is not distinct from q.model and earlier.sequence<q.sequence
       and not ${lifecycleBlocksTurn("target", "earlier")}))`;
 
+export const ACCEPTED_RUNTIME_RESUME = `exists(
+  select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id and r.receipt is not null
+)`;
 export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
-  or exists(select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id)
+  or ${ACCEPTED_RUNTIME_RESUME}
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
 const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stopped' and exists(
   select 1 from public.docker_resume_claims c where c.sandbox_id=s.id and c.request_id=q.request_id
@@ -96,42 +99,6 @@ const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stop
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
-export const COMPLETED_RUNTIME_WAKE = `(s.boat_runtime and s.provider='boat'
-  and s.status in ('ready','running') and s.activity_lease_id is null
-  and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
-  and exists(
-    select 1 from public.runtime_resumes r
-    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.target_epoch
-    where r.sandbox_id=s.id and r.request_id=q.request_id
-      and r.phase='complete' and r.receipt is not null and e.runtime_hash is not null
-      and e.lifecycle_generation=s.lifecycle_generation
-  ))`;
-export const ENROLLED_PENDING_RUNTIME_WAKE = `(
-  s.provider='boat' and s.boat_runtime
-  and s.status in ('starting','ready','running') and s.activity_lease_id=q.request_id
-  and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
-  and exists(
-    select 1 from public.runtime_resumes r
-    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.target_epoch
-    where r.sandbox_id=s.id and r.request_id=q.request_id
-      and r.phase='dispatched' and r.receipt is null and e.runtime_hash is not null
-      and e.lifecycle_generation=s.lifecycle_generation
-  ))`;
-export const CONFIRMED_WAKE_WITHOUT_TICKET = `(
-  q.state='dispatching'
-  and s.provider='boat' and s.boat_runtime
-  and s.status='starting' and s.activity_lease_id=q.request_id and s.activity_until>clock_timestamp()
-  and s.lifecycle_generation=q.dispatch_generation+1
-  and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-  and not s.application_secret_tainted
-  and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
-  and exists(
-    select 1 from public.runtime_resumes r
-    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
-    where r.sandbox_id=s.id and r.request_id=q.request_id and r.target_epoch=e.epoch+1
-      and r.phase='dispatched' and r.receipt is null and r.activated_at is not null
-      and e.runtime_hash is null and e.enrolment_hash is null and e.lifecycle_generation<s.lifecycle_generation
-  ))`;
 const dockerResumeJob = (outcome: string) => `(s.provider = 'docker' and exists(
   select 1 from public.docker_resume_claims c
   join public.docker_host_jobs h_job on h_job.request_id = c.request_id
@@ -354,8 +321,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
            where q.sandbox_id=$1 and q.request_id=$2
              and (${FAILED_DOCKER_WAKE}) is not true
              and (${PENDING_READY_DOCKER_RESUME_ACK}) is not true
-             and (${DISPATCH_ABANDONED} or ${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
-               or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE})`,
+             and (${DISPATCH_ABANDONED} or ${TURN_RECOVERY_ELIGIBLE} or ${ACCEPTED_RUNTIME_RESUME} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE})`,
           [candidate.sandbox_id, candidate.request_id],
         );
         if (!rows.length) return null;
