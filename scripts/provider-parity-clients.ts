@@ -1,5 +1,5 @@
 import { createControlClient } from "../apps/dashboard/src/lib/control.ts";
-import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
+import { GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
 import { AuthError } from "../packages/auth/src/index.ts";
 import { ArmadaApiError } from "../packages/cli/src/api-responses.ts";
 import prompt from "../packages/cli/src/commands/prompt.ts";
@@ -48,7 +48,6 @@ export async function createParityClients(
       url.search ||
       url.hash ||
       ![
-        "/mcp",
         `/api/v1/sandbox/${action}`,
         ...(action === "send" ? ["/api/v1/logs/read"] : ["/api/v1/sandbox/status"]),
       ].includes(url.pathname) ||
@@ -56,19 +55,9 @@ export async function createParityClients(
     )
       fail(`client_${action}_unexpected_request`);
     const body = object(JSON.parse(String(init.body)));
-    let business = false;
-    if (url.pathname === "/mcp") {
-      if (body.method === "tools/call") {
-        const params = object(body.params),
-          args = object(params.arguments);
-        if (params.name !== action || args.id !== input.id) fail(`client_${action}_unexpected_request`);
-        business = true;
-      } else if (!["initialize", "notifications/initialized"].includes(String(body.method)))
-        fail(`client_${action}_unexpected_request`);
-    } else {
-      if (body.id !== input.id || body.org !== input.org) fail(`client_${action}_unexpected_request`);
-      business = url.pathname === `/api/v1/sandbox/${action}`;
-    }
+    const business = url.pathname === `/api/v1/sandbox/${action}`;
+    if (body.id !== input.id || (business && client === "dashboard" ? "org" in body : body.org !== input.org))
+      fail(`client_${action}_unexpected_request`);
     const remaining = io.until - io.now();
     if (remaining <= 0) {
       expired = true;
@@ -106,7 +95,6 @@ export async function createParityClients(
   };
   const api = await createSdkCommandClient(auth);
   const dashboard = sandboxGateway(
-    createGateway({ url: `${input.origin}/mcp`, token: input.token, fetch: relay as typeof fetch }),
     createControlClient({ serverUrl: input.origin, token: input.token, fetch: relay as typeof fetch }),
   );
   return {
