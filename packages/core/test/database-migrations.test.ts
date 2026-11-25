@@ -133,6 +133,47 @@ test("an inbound trigger can bind an Antigravity pool", async () => {
   expect(result.rows).toEqual([{ pool_harness: "antigravity" }]);
 });
 
+test("publishing a sandbox prompt records the queue receipt without writing a retired webhook receipt", async () => {
+  const db = migrationDatabase.get();
+  const owner = crypto.randomUUID();
+  const org = crypto.randomUUID();
+  const golden = crypto.randomUUID();
+  const sandbox = crypto.randomUUID();
+  const account = crypto.randomUUID();
+  await db.query("insert into auth.users(id) values ($1)", [owner]);
+  await db.query("insert into public.orgs(id,name) values ($1,'Queue fixture')", [org]);
+  await db.query(
+    "insert into public.goldens(id,org_id,name,boat_snapshot_id,visibility,owner_id) values ($1,$2,'Queue fixture','snapshot','org',$3)",
+    [golden, org, owner],
+  );
+  await db.query("insert into public.credentials(id,scope,owner_id,kind,value_enc) values ($1,'user',$2,'openai',$3)", [
+    account,
+    owner,
+    new Uint8Array([1]),
+  ]);
+  await db.query(
+    `insert into public.sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status)
+     values ($1,'boat','queue-fixture',$2,$3,$4,'codex','ready')`,
+    [sandbox, golden, org, owner],
+  );
+  await db.query(
+    `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,
+       credential_version,input_hash,input_enc,conversation_id,state)
+     values ($1,$2,$3,$4,$5,1,1,'fixture',$6,'conversation','dispatching')`,
+    [sandbox, crypto.randomUUID(), account, owner, org, new Uint8Array([1])],
+  );
+
+  await db.query("update public.sandboxes set task_prompt_id='published-prompt' where id=$1", [sandbox]);
+
+  const { rows } = await db.query(
+    `select native_prompt_id,
+       exists(select 1 from public.native_webhook_prompts p where p.sandbox_id=q.sandbox_id) as webhook_receipt
+     from public.account_turn_queue q where sandbox_id=$1`,
+    [sandbox],
+  );
+  expect(rows).toEqual([{ native_prompt_id: "published-prompt", webhook_receipt: false }]);
+});
+
 async function labels(db: PGlite, name: string): Promise<string[]> {
   const result = await db.query<{ label: string }>(
     `select e.enumlabel as label

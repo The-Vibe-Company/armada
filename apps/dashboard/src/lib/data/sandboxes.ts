@@ -48,7 +48,6 @@ export type SandboxDetail = Omit<
   Sandbox,
   | "boat_id"
   | "harness"
-  | "native_drain_pending"
   | "docker_retention_deadline"
   | "external_ref"
   | "outputs_attempt_count"
