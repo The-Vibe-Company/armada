@@ -19,7 +19,7 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import type { Job } from "../src/jobs/runner.ts";
 import { createStopJob } from "../src/jobs/stop.ts";
-import { createJobsStore } from "../src/jobs/store.ts";
+import { createJobsStore, recordResumeAuthority } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
@@ -1170,6 +1170,28 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
       maxAttempts: 2,
     },
   );
+  const credential = randomUUID();
+  const turn = randomUUID();
+  const sealed = await encryptSecret("fixture", key);
+  await db.query("insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+    credential,
+    a.owner.userId,
+    sealed,
+  ]);
+  await db.query("update public.sandboxes set credential_id=$2,credential_version=1 where id=$1", [
+    a.sandboxId,
+    credential,
+  ]);
+  await db.query(
+    `insert into public.account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
+        conversation_id,state,dispatch_generation)
+     select $1,$2,$3,user_id,org_id,epoch,1,'fixture',$6,'first','dispatching',1
+       from public.mcp_actor_epochs where user_id=$4 and org_id=$5`,
+    [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, sealed],
+  );
+  if (!(await recordResumeAuthority(sql, a.sandboxId, 2, turn, new Date(expiresAt).toISOString(), {})))
+    throw new Error("Missing Docker resume authority.");
   const selection = { ...restore, lifecycleGeneration: 2, runnerJobId };
   const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
     hostStore.poll(
@@ -1186,7 +1208,7 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
       false,
       supportsRestore,
     );
-  return { ...a, restore, selection, cleanupId, poll, putIntent };
+  return { ...a, restore, selection, cleanupId, poll, putIntent, credential };
 }
 
 async function restoreFixture() {
@@ -1389,6 +1411,13 @@ test("restore enqueue preserves the frozen host-local snapshot binding", async (
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, changed));
   await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
   await expect(a.poll()).resolves.toEqual(a.restore);
+});
+
+test("a Docker host cannot pick up a restore after its pinned account is revoked", async () => {
+  const a = await restoreFixture();
+  await sql.query("update public.credentials set status='revoked' where id=$1", [a.credential]);
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
+  expect(await a.poll([a.cleanupId])).toBeNull();
 });
 
 test("an expired restore runner prevents redelivery but permits a late physical receipt", async () => {
