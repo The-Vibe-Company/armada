@@ -9,13 +9,14 @@ import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
-const DiscoveredLaunchStart = dynamic(
-  () => import("@/components/launch-dialog").then((module) => module.DiscoveredLaunchStart),
-  { ssr: false, loading: LaunchLoading },
-);
+function loadLaunchStart() {
+  return import("@/components/launch-dialog").then((module) => module.DiscoveredLaunchStart);
+}
+
+const DiscoveredLaunchStart = dynamic(loadLaunchStart, { ssr: false, loading: LaunchLoading });
 
 function prefetchLaunch() {
-  void import("@/components/launch-dialog").catch(() => undefined);
+  void loadLaunchStart().catch(() => undefined);
 }
 
 function LaunchLoading() {
@@ -75,7 +76,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>
-        {!open ? null : loading ? (
+        {loading ? (
           <LaunchLoading />
         ) : options && target ? (
           <DiscoveredLaunchStart target={target} options={options} />

@@ -74,10 +74,15 @@ export function NavMobileTrigger() {
   );
 }
 
-function useLiveSandboxes(organizationId: string | null, initialLive: LiveSandboxes | null | undefined) {
+function useLiveSandboxes(
+  organizationId: string | null,
+  initialLive: LiveSandboxes | null | undefined,
+  mobileDrawer: boolean,
+  enabled: boolean,
+) {
   const [update, setUpdate] = useState<{ initial: typeof initialLive; organizationId: string; live: LiveSandboxes }>();
   useEffect(() => {
-    if (!organizationId || initialLive === undefined) return;
+    if (!enabled || !organizationId || initialLive === undefined) return;
     const scope = organizationId;
     const url = `/api/fleet/live?organizationId=${encodeURIComponent(organizationId)}`;
     let pending: AbortController | undefined;
@@ -109,6 +114,7 @@ function useLiveSandboxes(organizationId: string | null, initialLive: LiveSandbo
       }
     }
 
+    if (mobileDrawer) void poll();
     const interval = window.setInterval(poll, 30_000);
     window.addEventListener("focus", onActivity);
     window.addEventListener("blur", onActivity);
@@ -120,7 +126,7 @@ function useLiveSandboxes(organizationId: string | null, initialLive: LiveSandbo
       document.removeEventListener("visibilitychange", onActivity);
       pending?.abort();
     };
-  }, [organizationId, initialLive]);
+  }, [enabled, initialLive, mobileDrawer, organizationId]);
   return update && update.initial === initialLive && update.organizationId === organizationId
     ? update.live
     : initialLive;
@@ -166,8 +172,8 @@ export function NavLinks({
   initialLive?: LiveSandboxes | null;
 }) {
   const pathname = usePathname();
-  const { setOpenMobile } = useSidebar();
-  const live = useLiveSandboxes(organizationId, initialLive);
+  const { isMobile, openMobile, setOpenMobile } = useSidebar();
+  const live = useLiveSandboxes(organizationId, initialLive, isMobile === true, !isMobile || openMobile);
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
