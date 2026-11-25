@@ -1,6 +1,6 @@
 "use client";
 
-import type { Harness } from "@armada/core";
+import { type Harness, isSandboxProvider } from "@armada/core";
 import { capabilities } from "@armada/core/machine-capabilities";
 import { BracesIcon, LockIcon, LockKeyholeIcon, PencilIcon, PlugIcon, RocketIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
@@ -819,7 +819,7 @@ export function TemplateLaunchForm({
               project={project}
               onProject={setProject}
             />
-            {capabilities(provider).sizes.length > 0 && chips.machine && target.sizing && (
+            {isSandboxProvider(provider) && chips.machine && target.sizing && (
               <MachineSizeField provider={provider} policy={target.sizing.policy} repositoryDir={project} />
             )}
             {!named && (

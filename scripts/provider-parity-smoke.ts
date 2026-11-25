@@ -2,7 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import { isHarness } from "../packages/core/src/harnesses.ts";
 import type { LaunchProviderOption } from "../packages/core/src/index.ts";
-import { capabilities } from "../packages/core/src/machine-capabilities.ts";
+import { capabilities, openCodeRequiresRuntimeDiscovery } from "../packages/core/src/machine-capabilities.ts";
 import {
   HOST_CAPABILITIES,
   isSandboxPlacementProvider,
@@ -1635,7 +1635,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (
-        requiresMcpRuntimeEpoch(c.provider) &&
+        openCodeRequiresRuntimeDiscovery(c.provider) &&
         c.harness === "opencode" &&
         (feature === "mcp" || feature === "mcp-resume") &&
         (!option.harnesses.includes("opencode") ||
@@ -1646,7 +1646,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         continue;
       }
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
-      if (requiresMcpRuntimeEpoch(c.provider) && c.harness === "opencode" && options.boatRuntime?.opencodeVersion !== 1)
+      if (
+        openCodeRequiresRuntimeDiscovery(c.provider) &&
+        c.harness === "opencode" &&
+        options.boatRuntime?.opencodeVersion !== 1
+      )
         throw new Error("boat_opencode_runtime_not_advertised");
       if (feature === "client-stop" || (!feature && c.clientStop === true)) {
         const missing = (["stop", "resume", "followupPrompts", "logs", "status"] as const).find(

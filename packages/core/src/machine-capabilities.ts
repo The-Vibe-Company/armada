@@ -60,7 +60,6 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
   }),
 };
 
-// Runtime admission and account probing are independent of the Machine contract.
 const runtimePolicies = {
   boat: { openCodeRequiresDiscovery: true, connectionTest: "runtime-enrollment" },
   modal: { openCodeRequiresDiscovery: false, connectionTest: "supported" },
