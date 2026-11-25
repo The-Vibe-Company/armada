@@ -7,7 +7,7 @@ import type { BoatProviderOptions } from "./provider.ts";
 import { startBoatRuntime } from "./runtime-bootstrap.ts";
 
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
-type Ticket = Omit<Parameters<typeof startBoatRuntime>[1], "sandboxId">;
+type Ticket = Omit<Parameters<typeof startBoatRuntime>[1], "sandboxId" | "signal">;
 type StopBinding = MachineIdentity &
   ({ readonly launchGeneration: number } | { readonly orgId: string; readonly ownerId: string });
 
@@ -157,7 +157,7 @@ export function createBoatMachine(
       const ticket = await resolveTicket(request, expiresAt);
       if (!ticket) return;
       const sshKey: Provider["sshKey"] = (key) => mutate(request.signal, () => host.sshKey(key));
-      await bootstrapRuntime({ ...host, sshKey }, { ...ticket, sandboxId: request.machineId });
+      await bootstrapRuntime({ ...host, sshKey }, { ...ticket, sandboxId: request.machineId, signal: request.signal });
     },
     async stop(request) {
       const tags = stopLabels(request);

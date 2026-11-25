@@ -934,9 +934,9 @@ describe("control API", () => {
         }
         const response = await launch(repo === undefined ? {} : { repo });
         if (!response) throw new Error("missing response");
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(202);
         const text = await response.text();
-        expect(modalLaunchReceipt.parse(JSON.parse(text)).sandbox.status).toBe("starting");
+        publishedResponse("sandbox/launch", "post", "integration", response.status).parse(JSON.parse(text));
         expect(boat.forks).toHaveLength(0);
         expect((await db.query("select provider_sandbox_id from sandboxes")).rows).toEqual([
           { provider_sandbox_id: null },
@@ -1057,14 +1057,13 @@ describe("control API", () => {
       expect(malformed?.status).toBe(400);
       expect(boat.forks).toHaveLength(0);
       const first = await call("sandbox/launch", request);
-      expect(first?.status).toBe(200);
+      expect(first?.status).toBe(202);
       const body = await first!.json();
-      publishedResponse("sandbox/launch").parse(body);
       const { sandbox: launched } = modalLaunchReceipt.parse(body);
       expect(launched.status).toBe("starting");
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
-      expect(await replay!.json()).toEqual(body);
+      expect(publishedResponse("sandbox/launch").parse(await replay!.json())).toEqual(body);
       expect(boat.forks).toHaveLength(0);
       const changed = await call("sandbox/launch", { ...request, externalRef: "tender:2" });
       expect(changed?.status).toBe(409);

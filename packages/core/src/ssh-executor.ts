@@ -30,6 +30,7 @@ export async function sshStdinCheckout(
   input: {
     sandboxId: string;
     buildId?: string;
+    signal?: AbortSignal | undefined;
     token: string;
     script: string;
     timeoutMs?: number;
@@ -207,6 +208,7 @@ async function sshExchange(
   input: {
     sandboxId: string;
     buildId?: string;
+    signal?: AbortSignal | undefined;
     token: string;
     script: string;
     repositories?: readonly string[];
@@ -224,16 +226,22 @@ async function sshExchange(
     chmod: deps.chmod ?? chmod,
   };
   const run = deps.spawn ?? spawn;
+  const { signal } = input;
+  signal?.throwIfAborted();
   const dir = await fs.mkdtemp(join(tmpdir(), "armada-ssh-"));
   const key = join(dir, "key"),
     known = join(dir, "known_hosts");
   let step: "keygen" | "local_storage" | "authorization" | "connection" | "remote" = "keygen";
   try {
-    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", false, timeoutMs);
+    await command(run, "ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], "", {
+      timeoutMs,
+      signal,
+    });
     step = "local_storage";
     await fs.chmod(key, 0o600);
     const pub = await (deps.readPublicKey ?? ((p: string) => Bun.file(p).text()))(`${key}.pub`);
     step = "authorization";
+    signal?.throwIfAborted();
     const c = await provider.sshKey({ sandboxId: input.sandboxId, key: pub.trim() });
     step = "connection";
     const username = c.username === undefined ? "user" : c.username;
@@ -281,15 +289,18 @@ async function sshExchange(
         remote,
       ],
       `${input.token}\n${pub.trim()}\n${input.script}`,
-      capture,
-      timeoutMs,
-      deps.onWarning,
-      privateTransport,
-      input.sandboxId,
-      deps.githubHydration === true,
-      input.repositories,
-      input.refs,
-      input.buildId,
+      {
+        capture,
+        timeoutMs,
+        onWarning: deps.onWarning,
+        privateTransport,
+        sandboxId: input.sandboxId,
+        githubHydration: deps.githubHydration === true,
+        repositories: input.repositories,
+        refs: input.refs,
+        buildId: input.buildId,
+        signal,
+      },
     );
   } catch (error) {
     if (!privateTransport || error instanceof PrivateSshError) throw error;
@@ -353,17 +364,32 @@ function command(
   file: string,
   args: string[],
   stdin: string,
-  capture = false,
-  timeoutMs = capture ? 30_000 : 600_000,
-  onWarning?: (warning: GoldenBuildWarning) => void,
-  privateTransport = false,
-  sandboxId?: string,
-  githubHydration = false,
-  repositories?: readonly string[],
-  refs?: readonly string[],
-  buildId?: string,
+  {
+    capture = false,
+    timeoutMs = capture ? 30_000 : 600_000,
+    onWarning,
+    privateTransport = false,
+    sandboxId,
+    githubHydration = false,
+    repositories,
+    refs,
+    buildId,
+    signal,
+  }: {
+    capture?: boolean;
+    timeoutMs?: number;
+    onWarning?: SshExecDeps["onWarning"];
+    privateTransport?: boolean;
+    sandboxId?: string;
+    githubHydration?: boolean;
+    repositories?: readonly string[] | undefined;
+    refs?: readonly string[] | undefined;
+    buildId?: string | undefined;
+    signal?: AbortSignal | undefined;
+  },
 ) {
   return new Promise<string>((resolve, reject) => {
+    signal?.throwIfAborted();
     // Typed as the base ChildProcess, not the stdio-narrowed overload: which @types/node overload
     // that resolves to (and whether it still carries EventEmitter's own members) depends on the
     // exact @types/node version a workspace package without its own pin happens to get hoisted.
@@ -392,6 +418,12 @@ function command(
       timedOut = true;
       c.kill("SIGKILL");
     }, timeoutMs);
+    const abort = () => c.kill("SIGKILL");
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     c.stderr?.on("data", (d) => {
       if (capture && !privateTransport) return;
       // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
@@ -467,7 +499,8 @@ function command(
       }
     });
     c.on("error", () => {
-      clearTimeout(timer);
+      cleanup();
+      if (signal?.aborted) return reject(signal.reason);
       reject(
         privateTransport
           ? new PrivateSshError("skillpack_ssh_remote_failed")
@@ -478,7 +511,8 @@ function command(
       /* Close/error owns the sanitized failure. */
     });
     c.on("close", (code: number | null) => {
-      clearTimeout(timer);
+      cleanup();
+      if (signal?.aborted) return reject(signal.reason);
       if (code === 0 && !overflow) resolve(Buffer.concat(output).toString("utf8"));
       else {
         if (privateTransport) {

@@ -14,6 +14,8 @@ export type OrdinaryLaunchFailure =
       retryAfterSeconds?: number;
     };
 
+export const freshBoatAdmission = Symbol("freshBoatAdmission");
+
 // WARNING: These discriminators are part of existing receipt hashes. Changing them invalidates replay.
 const controlReceiptFields = {
   ordinaryRoute: "native",

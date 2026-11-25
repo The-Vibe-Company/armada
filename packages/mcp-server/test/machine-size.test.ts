@@ -121,9 +121,9 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
       JSON.stringify({ version: 1, golden: "large", repositories: {} }),
     ]);
     const sized = await launch({ size: "small" });
-    expect(sized?.status).toBe(200);
+    expect(sized?.status).toBe(202);
     const defaults = await launch({});
-    expect(defaults?.status).toBe(200);
+    expect(defaults?.status).toBe(202);
     expect(
       (await db.query("select machine_size->>'effective' as size from sandboxes order by created_at")).rows,
     ).toEqual([{ size: "small" }, { size: "large" }]);
