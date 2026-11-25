@@ -66,7 +66,9 @@ test("the GitHub client reports a broker deadline without exposing the transport
     stderr += line.toString();
     return true;
   });
+  const inheritedTokens = ["GH_TOKEN", "GITHUB_TOKEN"].map((name) => [name, process.env[name]] as const);
   try {
+    for (const [name] of inheritedTokens) delete process.env[name];
     const status = await runGitHubClient([
       "gh",
       "/offline/credentials.sock",
@@ -80,6 +82,9 @@ test("the GitHub client reports a broker deadline without exposing the transport
     expect(status).toBe(1);
     expect(stderr).toBe("Managed GitHub credentials unavailable (broker_timeout).\n");
   } finally {
+    for (const [name, value] of inheritedTokens) {
+      if (value !== undefined) process.env[name] = value;
+    }
     output.mockRestore();
     transport.mockRestore();
     deadline.mockRestore();
