@@ -31,7 +31,7 @@ import { interruptSandbox, sendToSandbox, steerSandbox } from "@/app/actions/san
 import { Markdown } from "@/components/markdown";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
-import { SandboxInspectorEvents } from "@/components/sandbox-details-panel";
+import { SandboxInspectorEvents, SandboxInspectorPhoneSlot } from "@/components/sandbox-details-panel";
 import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -542,13 +542,14 @@ export function SandboxChat(props: Props) {
           items={[
             ...chat.items,
             ...unconfirmed.map(
-              (message): ChatItem => ({
-                kind: "user",
-                key: `prompt:${message.promptId}`,
-                at: message.at,
-                text: message.text,
-                status: "queued",
-              }),
+              (message) =>
+                ({
+                  kind: "user",
+                  key: `prompt:${message.promptId}`,
+                  at: message.at,
+                  text: message.text,
+                  status: "queued",
+                }) satisfies ChatItem,
             ),
           ]}
           running={turnRunning}
@@ -558,6 +559,7 @@ export function SandboxChat(props: Props) {
           onMore={() => void loadOlder()}
         />
 
+        <SandboxInspectorPhoneSlot />
         {props.configured &&
           (props.composerUnavailable ? (
             <p className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6" data-composer-unavailable>
@@ -578,9 +580,7 @@ export function SandboxChat(props: Props) {
                   }),
                 );
               }}
-              onDone={() => {
-                resumePolling();
-              }}
+              onDone={resumePolling}
             />
           ))}
       </Card>
