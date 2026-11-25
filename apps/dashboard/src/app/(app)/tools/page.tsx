@@ -35,10 +35,22 @@ const TITLE = "Tools";
 const DESCRIPTION = "Services your agents can call while they work.";
 
 export default async function ToolsPage({ searchParams }: Props) {
-  const selected = await selectedOrganization();
-  const list = await listSelectedConnections();
-  const query = await searchParams;
-  const returned = oauthReturn(query);
+  const selectedRead = selectedOrganization();
+  const detailsRead = selectedRead.then(
+    (selected) =>
+      selected
+        ? Promise.allSettled([
+            searchParams.then((query) => {
+              const returned = oauthReturn(query);
+              return returned ? returnNotice(returned, selected.org.id) : null;
+            }),
+            listSelectedCatalog(selected.org.id),
+            listSelectedTemplates(),
+          ])
+        : null,
+    () => null,
+  );
+  const [selected, list, query] = await Promise.all([selectedRead, listSelectedConnections(), searchParams]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
   if (!selected || list.state === "no-org") {
@@ -97,11 +109,13 @@ export default async function ToolsPage({ searchParams }: Props) {
   }
 
   const isAdmin = selected.role === "admin";
-  const [notice, catalog, templates] = await Promise.all([
-    returned ? returnNotice(returned, selected.org.id) : null,
-    listSelectedCatalog(selected.org.id),
-    listSelectedTemplates(),
-  ]);
+  const [noticeRead, catalogRead, templatesRead] = (await detailsRead)!;
+  if (noticeRead.status === "rejected") throw noticeRead.reason;
+  if (catalogRead.status === "rejected") throw catalogRead.reason;
+  if (templatesRead.status === "rejected") throw templatesRead.reason;
+  const { value: notice } = noticeRead;
+  const { value: catalog } = catalogRead;
+  const { value: templates } = templatesRead;
   const services = catalog.state === "ready" ? catalog.services : [];
   const org = { orgId: selected.org.id, orgName: selected.org.name, isAdmin };
 
