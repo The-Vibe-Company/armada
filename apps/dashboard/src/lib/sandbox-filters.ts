@@ -53,7 +53,20 @@ export function hasSandboxFilters(filters: SandboxFilters): boolean {
 export const SANDBOX_INVENTORY_HEADER = "x-armada-sandbox-inventory";
 
 export function sandboxInventoryIncludesDeleted(filters: SandboxFilters, activity: Params[string]) {
-  return activity === "deleted" || hasSandboxFilters(filters);
+  return filters.status.includes("deleted") || (activity === "deleted" && !filters.status.length);
+}
+
+export type SandboxSearchRow = Pick<
+  SandboxListMetadata,
+  "id" | "displayLabel" | "providerSandboxId" | "harness" | "createdAt"
+>;
+
+export function matchesSandboxSearch(row: SandboxSearchRow, query: string) {
+  const q = query.toLocaleLowerCase();
+  if (!q) return true;
+  return [row.id, row.displayLabel, row.providerSandboxId, sandboxListName(row)].some((value) =>
+    value?.toLocaleLowerCase().includes(q),
+  );
 }
 
 export function sandboxInventoryScope(path: string, search: URLSearchParams) {
@@ -80,13 +93,7 @@ export function filterSandboxes(
   const q = filters.q.toLocaleLowerCase();
   return rows.filter((row) => {
     if (except !== "status" && !filters.status.length && row.status === "deleted") return false;
-    if (
-      q &&
-      ![row.id, row.displayLabel, row.providerSandboxId, sandboxListName(row)].some((value) =>
-        value?.toLocaleLowerCase().includes(q),
-      )
-    )
-      return false;
+    if (q && !matchesSandboxSearch(row, q)) return false;
     return FACETS.every(
       (key) =>
         key === except ||

@@ -1,3 +1,4 @@
+import { HARNESSES } from "@armada/core";
 import { headers } from "next/headers";
 import { cache } from "react";
 import type { ControlClient } from "../control";
@@ -5,13 +6,18 @@ import { parseSandboxListMetadata, type SandboxListMetadata } from "../sandbox-a
 import { type RecordedTurn, sandboxActivityPage } from "../sandbox-activity";
 import {
   filterSandboxes,
+  matchesSandboxSearch,
   type parseSandboxFilters,
   SANDBOX_INVENTORY_HEADER,
+  type SandboxFilters,
+  type SandboxSearchRow,
   sandboxFacetCounts,
   sandboxInventoryIncludesDeleted,
   sortSandboxes,
 } from "../sandbox-filters";
 import { createClient, type Supabase } from "../supabase/server";
+
+const DELETED_SEARCH_COLUMNS = "id,providerSandboxId,displayLabel,harness,createdAt";
 
 export async function loadSandboxInventory(
   supabase: Supabase,
@@ -28,23 +34,25 @@ export async function loadSandboxInventory(
   });
   const viewingDeleted = requestedActivity === "deleted";
   const includeDeleted = sandboxInventoryIncludesDeleted(filters, requestedActivity);
-  const [{ inventory, skipped }, turns, deletedCount] = await Promise.all([
+  const [{ inventory, skipped }, turns, deletedFacetCount] = await Promise.all([
     metadata,
     turnsRead ?? {},
-    includeDeleted ? null : countDeletedSandboxes(supabase, orgId),
+    includeDeleted ? null : countDeletedSandboxes(supabase, orgId, filters, viewerId),
   ]);
-  const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
   const now = new Date();
+  const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort, now);
+  const allowsDeleted = !filters.status.length || filters.status.includes("deleted");
   const matchingDeleted =
-    deletedCount === null && (!filters.status.length || filters.status.includes("deleted"))
+    deletedFacetCount === null && allowsDeleted
       ? filterSandboxes(inventory, { ...filters, status: ["deleted"] }, viewerId)
       : [];
+  const deletedTabCount = allowsDeleted ? (deletedFacetCount ?? matchingDeleted.length) : 0;
   const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page, turns, now, {
     rows: viewingDeleted ? sortSandboxes(matchingDeleted, filters.sort, now) : [],
-    count: deletedCount ?? matchingDeleted.length,
+    count: deletedTabCount,
   });
   const facets = sandboxFacetCounts(inventory, filters, viewerId);
-  if (!includeDeleted) facets.status.set("deleted", deletedCount ?? matchingDeleted.length);
+  if (deletedFacetCount !== null) facets.status.set("deleted", deletedFacetCount);
   return {
     ...activityPage,
     now,
@@ -55,13 +63,92 @@ export async function loadSandboxInventory(
   };
 }
 
-async function countDeletedSandboxes(supabase: Supabase, orgId: string) {
-  const { count, error } = await supabase
-    .rpc("sandbox_list_metadata", {}, { head: true, count: "exact" })
-    .eq("orgId", orgId)
-    .eq("status", "deleted");
-  if (error) throw new Error(error.message);
-  if (count === null) throw new Error("The deleted sandbox count was unavailable.");
+function postgrestIn(values: readonly string[]) {
+  return `(${values.map((value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(",")})`;
+}
+
+type DeletedFacetQuery<T> = {
+  eq(column: "orgId" | "status", value: string): T;
+  in(column: "provider" | "harness" | "ownerId" | "machineSize", values: readonly string[]): T;
+  is(column: "machineSize", value: null): T;
+  filter(column: "model", operator: "in", value: string): T;
+  or(filters: string): T;
+};
+
+function applyDeletedFacetFilters<Q extends DeletedFacetQuery<Q>>(
+  query: Q,
+  orgId: string,
+  filters: SandboxFilters,
+  viewerId: string,
+) {
+  let filtered = query.eq("orgId", orgId).eq("status", "deleted");
+  if (filters.provider.length) filtered = filtered.in("provider", filters.provider);
+  if (filters.harness.length) filtered = filtered.in("harness", filters.harness);
+  if (filters.owner.length) {
+    const owners = [...new Set(filters.owner.map((value) => (value === "me" ? viewerId : value)))];
+    filtered = filtered.in("ownerId", owners);
+  }
+  if (filters.size.length) {
+    const known = filters.size.filter((value) => value !== "unknown");
+    if (!filters.size.includes("unknown")) filtered = filtered.in("machineSize", known);
+    else if (known.length === 0) filtered = filtered.is("machineSize", null);
+    else filtered = filtered.or(`machineSize.is.null,machineSize.in.(${known.join(",")})`);
+  }
+  if (filters.model.length) {
+    const quoted = postgrestIn(filters.model);
+    if (filters.model.includes("unknown")) filtered = filtered.or(`model.is.null,model.in.${quoted}`);
+    else filtered = filtered.filter("model", "in", quoted);
+  }
+  return filtered;
+}
+
+function isSearchableDeletedRow(value: unknown): value is SandboxSearchRow {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.id === "string" &&
+    row.id.length > 0 &&
+    typeof row.displayLabel === "string" &&
+    row.displayLabel.length > 0 &&
+    typeof row.createdAt === "string" &&
+    !Number.isNaN(Date.parse(row.createdAt)) &&
+    (row.providerSandboxId === null || typeof row.providerSandboxId === "string") &&
+    typeof row.harness === "string" &&
+    (HARNESSES as readonly string[]).includes(row.harness)
+  );
+}
+
+async function countDeletedSandboxes(supabase: Supabase, orgId: string, filters: SandboxFilters, viewerId: string) {
+  if (!filters.q) {
+    const { count, error } = await applyDeletedFacetFilters(
+      supabase.rpc("sandbox_list_metadata", {}, { head: true, count: "exact" }),
+      orgId,
+      filters,
+      viewerId,
+    );
+    if (error) throw new Error(error.message);
+    if (count === null) throw new Error("The deleted sandbox count was unavailable.");
+    return count;
+  }
+  const q = filters.q.toLocaleLowerCase();
+  let count = 0;
+  for (let from = 0; ; from += 500) {
+    const { data, error } = await applyDeletedFacetFilters(
+      supabase.rpc("sandbox_list_metadata").select(DELETED_SEARCH_COLUMNS),
+      orgId,
+      filters,
+      viewerId,
+    )
+      .order("id")
+      .range(from, from + 499);
+    if (error?.code === "PGRST103") break;
+    if (error) throw new Error(error.message);
+    if (!Array.isArray(data)) throw new Error("The deleted sandbox list did not match its contract.");
+    for (const item of data) {
+      if (isSearchableDeletedRow(item) && matchesSandboxSearch(item, q)) count++;
+    }
+    if (data.length < 500) break;
+  }
   return count;
 }
 
