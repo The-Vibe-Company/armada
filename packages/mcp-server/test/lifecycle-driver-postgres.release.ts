@@ -2,17 +2,23 @@
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
 import { expect, test } from "bun:test";
+import { encryptSecret } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { SQL } from "bun";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
+import { RuntimeCheckpointRejected } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { sqlOver } from "../src/sql.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 
 // CI provides a migrated THROWAWAY PostgreSQL database. Never use a production URL.
 // The actual Bun int8 decoder is essential here: PGlite returns a number and hid #571.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
-test("real Bun.SQL bigint reads complete shared send and stop through the Boat SDK", async () => {
+const key = Buffer.alloc(32, 7).toString("base64");
+test("real Bun.SQL bigint reads complete runtime send and shared stop", async () => {
   const client = new SQL(url!, { max: 1 });
   try {
     await client.begin(async (tx) => {
@@ -35,6 +41,13 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
       );
       const caller = { via: "service" as const, userId: owner, orgs: [{ orgId: org, role: "admin" as const }] };
       const data = createSqlData(sql)(caller);
+      const {
+        rows: [account],
+      } = await sql.query<{ id: string; version: number }>(
+        "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'openai',$2) returning id,version",
+        [owner, await encryptSecret("fixture", key)],
+      );
+      if (!account) throw Error("Missing fixture account");
       await data.sandboxes.insert({
         id,
         provider: "boat",
@@ -42,9 +55,12 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
         goldenId: golden,
         orgId: org,
         ownerId: owner,
-        harness: "claude",
+        harness: "codex",
         status: "ready",
-        model: "claude-sonnet-5",
+        model: "gpt-5.4",
+        boatRuntime: true,
+        credentialId: account.id,
+        credentialVersion: account.version,
         reasoningEffort: "high",
       });
       // Start at the exact production failure value, not just the insert default.
@@ -52,6 +68,34 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
       const raw = await tx.unsafe("select lifecycle_generation from sandboxes where id=$1", [id]);
       expect(typeof raw[0].lifecycle_generation).toBe("string");
       expect(raw[0].lifecycle_generation).toBe("2");
+      const authority = createRuntimeEnrolments(sql, key);
+      const ticket = await authority.issue({ sandboxId: id, ownerId: owner, configuration: {} });
+      const { epoch, runtimeToken } = await authority.enrol(ticket.enrolmentToken);
+      const requestId = crypto.randomUUID();
+      const promptId = crypto.randomUUID();
+      const conversationId = `first_${requestId}`;
+      let prompts = 0;
+      // The runtime polls and acknowledges over SQL in the same turn, without waiting on a timer.
+      const commands = createRuntimeCommands(authority, key, {
+        now: () => 0,
+        async wait() {
+          const { command } = await commands.next(runtimeToken, epoch);
+          if (command?.op !== "prompt") throw Error("Expected a durable runtime prompt");
+          expect(command.requestId).toBe(`follow_${requestId}`);
+          expect(command.input).toMatchObject({ sandboxId: id, text: "continue", conversationId });
+          prompts++;
+          await commands.complete(runtimeToken, epoch, {
+            epoch,
+            requestId: command.requestId,
+            status: 200,
+            body: {
+              version: 1,
+              requestId: command.requestId,
+              result: { promptId, conversationId, status: "queued" },
+            },
+          });
+        },
+      });
       let stopped = false;
       const requests: string[] = [];
       const provider = createBoatProvider({
@@ -60,19 +104,24 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
           const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
           const path = new URL(request.url).pathname;
           requests.push(`${request.method} ${path}`);
-          if (path.endsWith("/prompt"))
-            return Response.json({ ok: true, promptId: "p", conversationId: "c", status: "queued" });
           if (path.endsWith("/stop")) {
             stopped = true;
             return Response.json({ ok: true });
           }
-          return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "idle" }) });
+          if (request.method === "GET")
+            return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "idle" }) });
+          throw Error(`Unexpected fixture request: ${request.method} ${path}`);
         }) as typeof fetch,
       });
       const context = {
         caller,
         data,
         provider: async () => provider,
+        runtimeSend: createRuntimeFollowup(sql, key, commands),
+        // Guest checkpointing is outside this contract. Exercise compute stop after checkpoint refusal.
+        runtimeStopCheckpoint: async () => {
+          throw new RuntimeCheckpointRejected();
+        },
         launchCredentials: {
           resolve: async () => {
             throw Error("not a launch");
@@ -80,41 +129,47 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
         },
         exposedSecrets: async () => [],
         now: () => new Date(),
-        sleep: async () => {},
+        sleep: async () => {
+          throw Error("Unexpected fixture sleep");
+        },
       };
-      const before = await data.sandboxes.get(id);
-      await callSharedTool(context, "send", { id, prompt: "continue" });
-      expect(before?.lifecycleGeneration).toBe(2);
-      expect(typeof before?.lifecycleGeneration).toBe("number");
-      const running = await data.sandboxes.get(id);
-      expect(running?.status).toBe("running");
-      expect(running?.lifecycleGeneration).toBe(4);
-      expect(typeof running?.lifecycleGeneration).toBe("number");
-      expect(running?.conversationIds).toEqual(["c"]);
-      await callSharedTool(context, "stop", { id });
+      expect((await data.sandboxes.get(id))?.lifecycleGeneration).toBe(2);
+      expect(await callSharedTool(context, "send", { id, prompt: "continue", request_id: requestId })).toMatchObject({
+        id,
+        requestId,
+        runtime: { kind: "armada", epoch },
+        promptId,
+        conversationId,
+        status: "queued",
+      });
+      expect(await data.sandboxes.get(id)).toMatchObject({
+        lifecycleGeneration: 2,
+        taskPromptId: promptId,
+        conversationIds: [conversationId],
+      });
+      expect(prompts).toBe(1);
+      expect(requests).toEqual([]);
+
+      // Stop needs room for both admission and settlement. Reject before taking the lease or calling Boat.
+      const exhaustedGeneration = String(Number.MAX_SAFE_INTEGER - 1);
+      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [id, exhaustedGeneration]);
+      await expect(callSharedTool(context, "stop", { id })).rejects.toMatchObject({
+        code: "internal",
+        cause: { message: "Sandbox lifecycle generation cannot be advanced safely." },
+      });
+      expect(
+        (await tx.unsafe("select lifecycle_generation,activity_lease_id from sandboxes where id=$1", [id]))[0],
+      ).toMatchObject({ lifecycle_generation: exhaustedGeneration, activity_lease_id: null });
+      expect(requests).toEqual([]);
+
+      await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
+      expect(await callSharedTool(context, "stop", { id })).toMatchObject({ id, status: "stopped" });
       const ended = await data.sandboxes.get(id);
-      expect(ended?.status).toBe("stopped");
-      expect(ended?.lifecycleGeneration).toBe(6);
+      expect(ended).toMatchObject({ status: "stopped", lifecycleGeneration: 4 });
       expect(ended?.stoppedAt).not.toBeNull();
       const lease = (await tx.unsafe("select activity_lease_id,activity_until from sandboxes where id=$1", [id]))[0];
       expect(lease.activity_lease_id).toBeNull();
       expect(lease.activity_until).toBeNull();
-      expect(requests.filter((r) => r.endsWith("/prompt"))).toHaveLength(1);
-      expect(requests.filter((r) => r.endsWith("/stop"))).toHaveLength(1);
-      // Exercise counter exhaustion on a controllable row: a stopped row must refuse
-      // at terminal-state preflight before reaching the generation guard.
-      // Counter exhaustion must fail before admission/provider mutation, not round a CAS.
-      await sql.query("update sandboxes set status='ready',stopped_at=null,lifecycle_generation=$2 where id=$1", [
-        id,
-        String(Number.MAX_SAFE_INTEGER),
-      ]);
-      await expect(callSharedTool(context, "send", { id, prompt: "must not queue" })).rejects.toMatchObject({
-        code: "internal",
-      });
-      expect(
-        (await tx.unsafe("select lifecycle_generation from sandboxes where id=$1", [id]))[0].lifecycle_generation,
-      ).toBe(String(Number.MAX_SAFE_INTEGER));
-      expect(requests.filter((r) => r.endsWith("/prompt"))).toHaveLength(1);
       expect(requests.filter((r) => r.endsWith("/stop"))).toHaveLength(1);
       // Roll back fixtures, including the org's last admin (whose normal deletion is guarded).
       throw rollback;
