@@ -413,6 +413,21 @@ async function machineCreateFixture(
   return { ...a, request };
 }
 
+test("Docker stop refuses insufficient headroom before admitting a job", async () => {
+  const { owner, sandboxId } = await machineCreateFixture();
+  await sql.query("update public.sandboxes set lifecycle_generation=$2::bigint where id=$1", [
+    sandboxId,
+    String(Number.MAX_SAFE_INTEGER - 1),
+  ]);
+  await expect(store.enqueueStop(owner, sandboxId, randomUUID())).rejects.toMatchObject({
+    name: "DockerHostUnavailable",
+    cause: { message: "Sandbox lifecycle generation cannot be advanced safely." },
+  });
+  expect((await sql.query("select id from public.jobs where sandbox_id=$1 and kind='stop'", [sandboxId])).rows).toEqual(
+    [],
+  );
+});
+
 test("admitted Docker stop prevents a leased launch from dispatching new compute", async () => {
   const allocation = await machineCreateFixture();
   const jobs = createJobsStore(sql, key);

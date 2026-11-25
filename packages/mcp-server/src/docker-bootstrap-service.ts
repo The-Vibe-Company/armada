@@ -251,8 +251,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
              and docker_resume_claims.installation_id=excluded.installation_id and docker_resume_claims.generation=excluded.generation
              and docker_resume_claims.lifecycle_generation=excluded.lifecycle_generation
              returning accepted,lifecycle_generation::text`,
-            // Reserve the resume admission and its failure fence before asking the daemon to claim.
-            [requestId, sandboxId, actor.userId, Number.MAX_SAFE_INTEGER - 2],
+            [requestId, sandboxId, actor.userId, Number.MAX_SAFE_INTEGER - 3],
           );
           if (!claim.rows.length) deny();
           if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();

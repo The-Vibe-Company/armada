@@ -1814,7 +1814,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           actor,
           actorEpoch,
           ...(bound && machineId ? { machineId, daemonGeneration: row.docker_generation } : {}),
-          generation: requireGenerationHeadroom(row.lifecycle_generation, exitPending ? 0 : 1),
+          generation: requireGenerationHeadroom(row.lifecycle_generation, exitPending ? 0 : 2),
           ...(exitPending ? { exitPending: true } : {}),
           ...(retryAfter ? { retryAfter } : {}),
           hostId: host.id,
@@ -2288,7 +2288,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           );
         }
         if (host.draining && selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
-          requireGenerationHeadroom(row.lifecycle_generation, 1);
+          requireGenerationHeadroom(row.lifecycle_generation, 2);
           const result = await transitionSandbox(tx, {
             sandboxId,
             expectedGeneration: row.lifecycle_generation,
@@ -2843,10 +2843,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // A report is physical evidence. ACK only after the worker commits, so the daemon
         // keeps its expiry report and retained-output upload pending across server crashes.
         const jobs = createJobsStore(sql, key);
+        const expiryAdvances = ["stopped", "failed"].includes(logical.status) ? 0 : 1;
         const jobId = await jobs.enqueue(
           "stop",
           logical.id,
-          Number(logical.lifecycle_generation),
+          requireGenerationHeadroom(logical.lifecycle_generation, expiryAdvances),
           `expiry:${result.requestId}`,
           { expired: true, orgId: logical.org_id },
           { orgId: logical.org_id, maxAttempts: 8, deadline: new Date(Date.now() + 120_000) },

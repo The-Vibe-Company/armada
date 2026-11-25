@@ -253,7 +253,6 @@ export function createRuntimeResume(
           "conflict",
           "No current synchronized checkpoint; a fresh conversation will not be substituted.",
         );
-      // Resume admission advances once, and failure handling can advance again.
       requireGenerationHeadroom(current.lifecycleGeneration, 2);
       const op: Operation = {
         source_epoch: epoch.epoch,

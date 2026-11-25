@@ -403,6 +403,24 @@ describe("retained Boat extension supersession", () => {
 describe("runtime resume admission rollback", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
+  test("runtime resume refuses insufficient headroom before writing the intent", async () => {
+    const f = await fixture();
+    await f.db.query("update public.sandboxes set lifecycle_generation=$2::bigint where id=$1", [
+      f.row.id,
+      String(Number.MAX_SAFE_INTEGER - 1),
+    ]);
+    let prepared = false;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+      prepared = true;
+      throw Error("Unexpected placement preparation");
+    });
+    await expect(resume(f.caller, input(f.row.id))).rejects.toThrow(
+      "Sandbox lifecycle generation cannot be advanced safely.",
+    );
+    expect(prepared).toBe(false);
+    expect((await f.db.query("select 1 from runtime_resumes where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  });
+
   const faults = [
     "generation conflict",
     "elapsed expiry",

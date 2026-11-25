@@ -137,10 +137,10 @@ export function createSandboxAccessServices(input: {
       if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
     }
     const modalStop = saved.modalTransport === "dialout";
-    const sharedStop = modalStop || usesDiskStopJob(saved.provider);
-    if (sharedStop) {
+    let stopGeneration: number | undefined;
+    if (modalStop || usesDiskStopJob(saved.provider)) {
       if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
-      requireGenerationHeadroom(saved.lifecycleGeneration, 1);
+      stopGeneration = requireGenerationHeadroom(saved.lifecycleGeneration, 1);
     }
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
@@ -191,7 +191,7 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    if (sharedStop) {
+    if (stopGeneration !== undefined) {
       await stopStore.update(saved.id, {
         ...stopAdmission,
         ...(modalStop ? { queueModalStop: operation.id } : {}),
@@ -200,7 +200,7 @@ export function createSandboxAccessServices(input: {
         statusReason,
         advanceGeneration: true,
         activityToken: crypto.randomUUID(),
-        expectedGeneration: saved.lifecycleGeneration,
+        expectedGeneration: stopGeneration,
       });
       return;
     }

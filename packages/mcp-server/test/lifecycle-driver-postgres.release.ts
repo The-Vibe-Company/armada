@@ -108,8 +108,8 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
       let stopped = false;
       const requests: string[] = [];
       const unexpectedRequests: string[] = [];
-      fetchStub.mockImplementation(async (input, init) => {
-        const request = new Request(input, init);
+      const fetchBoat = async (...[input, init]: Parameters<typeof fetch>) => {
+        const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
         const path = new URL(request.url).pathname;
         const operation = `${request.method} ${path}`;
         requests.push(operation);
@@ -136,7 +136,9 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
           });
         unexpectedRequests.push(operation);
         throw Error(`Unexpected fixture request: ${operation}`);
-      });
+      };
+      // oxlint-disable-next-line landmines-testing/no-test-doubles -- Intercept only Boat HTTP for the actual worker and SDK. Release contracts run offline.
+      fetchStub.mockImplementation(Object.assign(fetchBoat, { preconnect: fetch.preconnect }));
       let checkpoints = 0;
       const context = {
         caller,

@@ -245,12 +245,11 @@ export function configureTools(
       if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
       signal?.throwIfAborted();
       const modalStop = modalDialoutPlacement(found);
-      const sharedStop = modalStop || usesDiskStopJob(found.provider);
-      if (sharedStop) {
+      let stopGeneration: number | undefined;
+      if (modalStop || usesDiskStopJob(found.provider)) {
         if (found.lifecycleGeneration === undefined)
           throw new VaultError("conflict", "Sandbox generation is unavailable.");
-        // The shared worker settles against the admission generation.
-        requireGenerationHeadroom(found.lifecycleGeneration, 1);
+        stopGeneration = requireGenerationHeadroom(found.lifecycleGeneration, 1);
       }
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -276,7 +275,7 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      if (sharedStop) {
+      if (stopGeneration !== undefined) {
         const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
         await data.sandboxes.update(found.id, {
           ...stopAdmission,
@@ -287,7 +286,7 @@ export function configureTools(
           stopRequested: true,
           advanceGeneration: true,
           activityToken: crypto.randomUUID(),
-          expectedGeneration: found.lifecycleGeneration,
+          expectedGeneration: stopGeneration,
           ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
         });
         return {
