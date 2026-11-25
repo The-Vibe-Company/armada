@@ -198,8 +198,16 @@ const boatAdmissionProvider = (boat: ReturnType<typeof fakeBoat>) => ({
   managementIdentity: async () => ({ scope: "org" as const, ownerId: "fixture" }),
 });
 
-test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "contended Boat admission"] as const)(
-  "delegated admission is durable and fenced after %s",
+const admissionScenarios = [
+  "revoked Boat",
+  "lost Modal acknowledgement",
+  "rolled back Boat",
+  "brief parent contention",
+  "contended Boat admission",
+];
+
+test.each(admissionScenarios)(
+  "delegated child launch admission preserves its durable authority fence after %s",
   async (scenario) => {
     const provider = scenario === "lost Modal acknowledgement" ? "modal" : "boat";
     const { close, db, sql, p, authority, id, token, selection } = await fixture("running", "anthropic", provider);
@@ -207,19 +215,31 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "co
       const boat = fakeBoat();
       const fixtureProvider = { ...boatAdmissionProvider(boat), id: provider };
       let armed = false;
+      let authorityOutsideTransaction = false;
       const guarded: Sql = {
         ...sql,
+        async query<T>(statement: string, params?: unknown[]) {
+          if (statement.includes("orchestrator_child_operations") && /for share of [\w,]*\bs\b/.test(statement))
+            authorityOutsideTransaction = true;
+          return sql.query<T>(statement, params);
+        },
         transaction: async (work) => {
           const result = await sql.transaction!(async (tx) => {
+            let parentLockHeld = scenario === "brief parent contention" || scenario === "contended Boat admission";
             const value = await work({
               ...tx,
               async query<T>(statement: string, params?: unknown[]) {
-                if (
-                  armed &&
-                  scenario === "contended Boat admission" &&
-                  statement.includes("for no key update of c nowait")
-                )
-                  throw Object.assign(new Error("could not obtain lock"), { name: "PostgresError", errno: "55P03" });
+                if (armed && parentLockHeld && /for share of [\w,]*\bs\b/.test(statement)) {
+                  const { rows } = await tx.query<{ lock_timeout: string }>("show lock_timeout");
+                  const noWait = /\bnowait\b/i.test(statement);
+                  if (!noWait) expect(rows[0]?.lock_timeout).toBe("2s");
+                  if (noWait || scenario === "contended Boat admission")
+                    throw Object.assign(new Error("parent sandbox lock unavailable"), {
+                      name: "PostgresError",
+                      errno: "55P03",
+                    });
+                  parentLockHeld = false;
+                }
                 return tx.query<T>(statement, params);
               },
             });
@@ -340,12 +360,13 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "co
         await authority.revoke(id);
         const send = mock(async () => ({}));
         const turn = (await jobs.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
-        await createTurnDispatchJob(sql, ENCRYPTION_KEY, send).run(turn, {
+        await createTurnDispatchJob(guarded, ENCRYPTION_KEY, send).run(turn, {
           signal: new AbortController().signal,
           canDispatch: async () => true,
           handoffGeneration: async () => "1",
         });
         expect(send).not.toHaveBeenCalled();
+        expect(authorityOutsideTransaction).toBe(false);
         expect((await db.query("select state from account_turn_queue where request_id=$1", [setup.id])).rows).toEqual([
           { state: "failed" },
         ]);

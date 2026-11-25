@@ -544,17 +544,22 @@ export async function dispatchAccountTurn(
       );
       if (!saved.rows.length) throw new VaultError("forbidden", "Initial launch turn authorization changed.");
     };
+    const checkLaunchAuthority = async (tx?: Sql) => {
+      if (tx || !launchAuthority?.childOperationId) return assertLaunchAuthority(tx ?? sql);
+      if (!sql.transaction) throw new VaultError("unavailable", "Transactional launch authority unavailable.");
+      return sql.transaction(assertLaunchAuthority);
+    };
     const guarded =
       claim && launchAuthority
         ? {
             ...claim,
             async canDispatch(tx?: Sql) {
-              await assertLaunchAuthority(tx ?? sql);
+              await checkLaunchAuthority(tx);
               return claim.canDispatch(tx);
             },
           }
         : claim;
-    await assertLaunchAuthority(sql);
+    await checkLaunchAuthority();
     const result = await continueRequest(correlationId, () =>
       dispatch(caller, { id, request_id, prompt, model, reasoning_effort }, guarded),
     );
