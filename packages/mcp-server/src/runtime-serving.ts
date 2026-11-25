@@ -202,11 +202,11 @@ export function createRuntimeServing(sql: Sql, key: string) {
         : undefined,
       captureRuntimeWork,
     );
-    if (typeof apiKey === "string" || sandbox.provider !== "modal") return provider;
-    const modal = apiKey as ModalProvider;
+    if (!("runtimeStopMachine" in host) || typeof host.runtimeStopMachine !== "function") return provider;
+    const runtimeHost = host as Provider & Pick<ModalProvider, "runtimeStopMachine">;
     return Object.assign(provider, {
       runtimeStopMachine: (binding: Parameters<ModalProvider["runtimeStopMachine"]>[0]) =>
-        modal.runtimeStopMachine(binding),
+        runtimeHost.runtimeStopMachine(binding),
     });
   };
 }

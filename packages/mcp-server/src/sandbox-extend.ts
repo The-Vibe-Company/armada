@@ -9,6 +9,7 @@ import {
   sandboxActivity,
 } from "@armada/core/server";
 import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { runtimeBridgeProfile } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -93,7 +94,10 @@ export async function extendSandbox(
           if (error.code === "not_found") return new ToolError("extension_not_found", "Sandbox not found.");
           if (error.code === "forbidden")
             return new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
-          if (error.code === "invalid_request" && provider.id === "modal")
+          if (
+            error.code === "invalid_request" &&
+            runtimeBridgeProfile(provider.id)?.extensionInvalidRequest === "physical-deadline"
+          )
             return new ToolError("extension_maximum", "Requested lifetime exceeds the physical provider deadline.");
           if (["invalid_request", "sandbox_not_ready"].includes(error.code))
             return stateRefusal("provider_state_refused");

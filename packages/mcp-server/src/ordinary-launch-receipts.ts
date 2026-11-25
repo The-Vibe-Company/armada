@@ -19,18 +19,22 @@ export const freshBoatAdmission = Symbol("freshBoatAdmission");
 // WARNING: These discriminators are part of existing receipt hashes. Changing them invalidates replay.
 const controlReceiptFields = {
   ordinaryRoute: "native",
+  runtimeRoutes: { boat: "boat-runtime", modal: "modal-runtime" },
   modalTransportField: "runtimeTransport",
 };
 
 export function controlLaunchReceiptPayload(
   body: Record<string, unknown>,
   goldenId: string,
-  runtime: boolean | "modal",
+  runtimeProvider?: keyof typeof controlReceiptFields.runtimeRoutes,
 ) {
   const { idempotencyKey: _key, modalTransport, ...request } = body;
   return {
     surface: "control",
-    route: runtime === "modal" ? "modal-runtime" : runtime ? "boat-runtime" : controlReceiptFields.ordinaryRoute,
+    route:
+      runtimeProvider === undefined
+        ? controlReceiptFields.ordinaryRoute
+        : controlReceiptFields.runtimeRoutes[runtimeProvider],
     request: {
       ...request,
       ...(modalTransport === undefined ? {} : { [controlReceiptFields.modalTransportField]: modalTransport }),
