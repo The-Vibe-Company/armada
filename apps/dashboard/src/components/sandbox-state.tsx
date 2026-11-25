@@ -50,7 +50,10 @@ export function SandboxState({
             : "bg-muted-foreground/60";
   return (
     <span
-      className={cn("inline-flex items-center gap-2 text-sm", status === "failed" && viewerOwns && "text-destructive")}
+      className={cn(
+        "inline-flex max-w-full min-w-0 items-center gap-2 text-sm",
+        status === "failed" && viewerOwns && "text-destructive",
+      )}
     >
       <span
         aria-hidden="true"
@@ -64,7 +67,7 @@ export function SandboxState({
           </>
         )}
       </span>
-      {label}
+      <span className="min-w-0 truncate">{label}</span>
     </span>
   );
 }
