@@ -242,7 +242,7 @@ export async function admitModalLaunch(
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
 
-  let admitted = false;
+  let admissionCallbackCompleted = false;
   let childAdmissionPhase = "parent_authority_lock";
   try {
     const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
@@ -471,16 +471,14 @@ export async function admitModalLaunch(
           [reservation.id, JSON.stringify(result)],
         );
       }
-      admitted = true;
+      admissionCallbackCompleted = true;
       return envelope;
     });
-    if (admitted) recordModalLaunchAdmission(receipt.sandbox.id);
+    if (admissionCallbackCompleted) recordModalLaunchAdmission(receipt.sandbox.id);
     return receipt;
   } catch (error) {
-    // A statement lock failure aborts admission before the callback can reach COMMIT.
-    // Errors after the callback completes can still be a lost commit acknowledgement.
     const databaseError = error as { errno?: string; code?: string } | null;
-    if (child && !admitted && (databaseError?.errno ?? databaseError?.code) === "55P03")
+    if (child && !admissionCallbackCompleted && (databaseError?.errno ?? databaseError?.code) === "55P03")
       throw new ChildLaunchNotAllocated("admission_lock_contended", childAdmissionPhase, error);
     if (error instanceof ConflictingJobRequest)
       throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
