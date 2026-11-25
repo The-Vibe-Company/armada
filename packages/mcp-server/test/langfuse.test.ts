@@ -605,11 +605,26 @@ test("resolveLangfuseContext enforces PR precedence and contentWithheld isolatio
     branch: "main",
     headSha: "1234567",
   });
-  expect(resolveLangfuseContext({}, ev, { promptId: "t1" })).toMatchObject({
-    prRepo: "org/ev-repo",
-    prNumber: 99,
-    prUrl: "https://github.com/org/ev-repo/pull/99",
-  });
+  expect(
+    resolveLangfuseContext(
+      {
+        pullRequestSource: { repositories: [{ url: "https://github.com/org/src-repo.git", dir: "app" }] },
+        taskOutcome: { state: "ready", prUrl: "https://gitlab.example/org/repo/pull/7", prNumber: 7 },
+      },
+      [
+        {
+          id: "m",
+          at: 1100,
+          promptId: "t1",
+          kind: "message",
+          partial: false,
+          text: "Opened https://github.com/org/ev-repo/pull/99.",
+          tools: [],
+        },
+      ],
+      { promptId: "t1" },
+    ),
+  ).toMatchObject({ prRepo: "org/ev-repo", prNumber: 99, prUrl: "https://github.com/org/ev-repo/pull/99" });
   expect(
     resolveLangfuseContext(
       {
@@ -667,13 +682,29 @@ test("tool spans emit mcp_server, duration_ms, ERROR level, and 32 KiB scrubbed 
   expect(Buffer.byteLength(attr(tool, "langfuse.observation.input")!)).toBeLessThanOrEqual(32 * 1024);
   expect(Buffer.byteLength(attr(tool, "langfuse.observation.output")!)).toBeLessThanOrEqual(32 * 1024);
   expect(JSON.stringify(spans)).not.toContain("toktok");
-  const withheldTool = langfuseSpans("sb", toolEvents, [], false, {
+  const withheldSpans = langfuseSpans("sb", toolEvents, [], true, {
     contentWithheld: "application_secret_bindings",
-  }).find((s) => attr(s, "langfuse.observation.type") === "tool")!;
-  expect([withheldTool.name, attr(withheldTool, "langfuse.observation.metadata.mcp_server")]).toEqual([
-    "tool",
-    undefined,
-  ]);
+  });
+  const withheldRoot = withheldSpans.find((s) => attr(s, "langfuse.observation.type") === "agent")!;
+  const withheldTool = withheldSpans.find((s) => attr(s, "langfuse.observation.type") === "tool")!;
+  expect([
+    withheldTool.name,
+    attr(withheldTool, "langfuse.observation.metadata.mcp_server"),
+    attr(withheldTool, "langfuse.observation.input"),
+    attr(withheldTool, "langfuse.observation.output"),
+    attr(withheldRoot, "langfuse.observation.input"),
+    attr(withheldRoot, "langfuse.observation.output"),
+  ]).toEqual(["tool", undefined, undefined, undefined, undefined, undefined]);
+
+  const noStartSpans = langfuseSpans(
+    "sb",
+    [toolEvents[1]!, toolEvents[3]!],
+    [{ promptId: "t", model: "m", inputTokens: 1, outputTokens: 1, cachedTokens: null }],
+    false,
+  );
+  const noStartGen = noStartSpans.find((s) => attr(s, "langfuse.observation.type") === "generation")!;
+  expect(attr(noStartGen, "langfuse.observation.completion_start_time")).toBeUndefined();
+  expect(langfuseTurnScores("sb", [toolEvents[1]!, toolEvents[3]!]).find((s) => s.name === "ttft_ms")).toBeUndefined();
 });
 
 test("langfuseTurnScores are deterministic and score delivery failures never fail export", async () => {

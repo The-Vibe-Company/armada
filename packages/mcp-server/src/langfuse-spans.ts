@@ -75,7 +75,8 @@ const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const REPO_URL =
   /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)(?:[/?#].*)?$/i;
-const PR_SCAN = /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)(?![A-Za-z0-9_.-])/gi;
+const PR_SCAN =
+  /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/gi;
 const SHA = /^[a-f0-9]{7,40}$/i;
 const PR_STATES = new Set(["open", "merged", "closed"]);
 const DIMS = [
@@ -184,24 +185,27 @@ export function resolveLangfuseContext(
     if (trusted && picked.headBranch) branch = picked.headBranch;
   } else if (trusted) {
     const reports = Object.entries(ctx.pullRequestReports ?? {});
-    const suffix = opts.promptId ? `:${opts.promptId}` : "";
+    const isPromptKey = (k: string) => Boolean(opts.promptId) && k.slice(k.indexOf(":") + 1) === opts.promptId;
     const cands = [
-      ...(suffix ? reports.filter(([k]) => k.endsWith(suffix)).map(([, v]) => v) : []),
+      ...reports.filter(([k]) => isPromptKey(k)).map(([, v]) => v),
       ...(outReady ? [outReady] : []),
       ...[...reports]
         .reverse()
-        .filter(([k]) => !suffix || !k.endsWith(suffix))
+        .filter(([k]) => !isPromptKey(k))
         .map(([, v]) => v),
     ];
     for (const c of cands) {
-      const p = parsePr(c.prUrl) ?? (c.prNumber ? makePr(baseRepo, c.prNumber) : undefined);
-      pr =
-        p ??
-        (typeof c.prNumber === "number" && Number.isSafeInteger(c.prNumber) && c.prNumber > 0
-          ? { prNumber: c.prNumber }
-          : pr);
+      if (c.prUrl !== undefined) {
+        const p = parsePr(c.prUrl);
+        if (!p) continue;
+        pr = p;
+      } else if (typeof c.prNumber === "number" && Number.isSafeInteger(c.prNumber) && c.prNumber > 0) {
+        pr = makePr(baseRepo, c.prNumber) ?? { prNumber: c.prNumber };
+      } else {
+        continue;
+      }
       if (c.headSha && SHA.test(c.headSha)) headSha = c.headSha;
-      if (pr.prUrl || pr.prNumber) break;
+      break;
     }
     if (!pr.prUrl && !pr.prNumber) {
       const disc = [...(ctx.pullRequestScan?.discovered ?? [])]
@@ -279,13 +283,16 @@ function collectTurn(
     }
   }
   const turnKey = `${sandboxId}/${promptId}`;
-  const validFirst = firstAt !== undefined && firstAt >= startAt ? firstAt : undefined;
+  const endAt = Math.max(startAt, end.at);
+  const timingComplete = Boolean(start?.at && end.at > startAt);
+  const validFirst =
+    timingComplete && firstAt !== undefined && firstAt >= startAt && firstAt <= endAt ? firstAt : undefined;
   return {
     promptId,
     start,
     startAt,
-    endAt: Math.max(startAt, end.at),
-    timingComplete: Boolean(start?.at && end.at > startAt),
+    endAt,
+    timingComplete,
     durationMs: start?.at && end.at >= startAt ? end.at - startAt : undefined,
     turnKey,
     traceId: hash(turnKey, 32),
@@ -295,7 +302,7 @@ function collectTurn(
     tools,
     toolCount: tools.size,
     toolErrorCount: [...tools.values()].filter((t) => t.tool.result?.isError).length,
-    ttftMs: start?.at && validFirst !== undefined ? validFirst - startAt : undefined,
+    ttftMs: validFirst !== undefined ? validFirst - startAt : undefined,
     completionStartTime: validFirst !== undefined ? new Date(validFirst).toISOString() : undefined,
     resolved: resolveLangfuseContext(ctx, history, { promptId, contentWithheld: Boolean(withheld) }),
   };
@@ -328,6 +335,7 @@ export function langfuseSpans(
 ) {
   const spans = [];
   const trusted = !marks.contentWithheld;
+  const exportFull = full && trusted;
   for (const end of events) {
     if (end.kind !== "prompt" || !isFinalPromptStatus(end.status) || !end.promptId) continue;
     const f = collectTurn(sandboxId, end, events, context, marks.contentWithheld);
@@ -416,8 +424,9 @@ export function langfuseSpans(
       ),
     });
 
-    const rootIn = full ? boundedScrub(f.start?.text || end.text || undefined, ROOT_MAX) : undefined;
-    const rootOut = full && f.messages.size ? boundedScrub([...f.messages.values()].join("\n"), ROOT_MAX) : undefined;
+    const rootIn = exportFull ? boundedScrub(f.start?.text || end.text || undefined, ROOT_MAX) : undefined;
+    const rootOut =
+      exportFull && f.messages.size ? boundedScrub([...f.messages.values()].join("\n"), ROOT_MAX) : undefined;
     const rootLevel =
       end.status === "failed" ? "ERROR" : end.status !== "finished" || f.toolErrorCount > 0 ? "WARNING" : "DEFAULT";
     spans.push(
@@ -437,7 +446,7 @@ export function langfuseSpans(
           "metadata.timing_incomplete": f.timingComplete ? undefined : true,
           "metadata.history_unavailable": marks.historyUnavailable || undefined,
           "metadata.content_withheld": marks.contentWithheld,
-          "metadata.failure_reason": full ? end.reason : end.status === "failed" ? "turn_failed" : undefined,
+          "metadata.failure_reason": exportFull ? end.reason : end.status === "failed" ? "turn_failed" : undefined,
           "metadata.input_truncated": rootIn?.truncated ? true : undefined,
           "metadata.output_truncated": rootOut?.truncated ? true : undefined,
         },
@@ -477,8 +486,8 @@ export function langfuseSpans(
       );
     }
     for (const [id, t] of f.tools) {
-      const toolIn = full ? boundedScrub(t.tool.input, TOOL_MAX) : undefined;
-      const toolOut = full ? boundedScrub(t.tool.result?.output, TOOL_MAX) : undefined;
+      const toolIn = exportFull ? boundedScrub(t.tool.input, TOOL_MAX) : undefined;
+      const toolOut = exportFull ? boundedScrub(t.tool.result?.output, TOOL_MAX) : undefined;
       spans.push(
         mk(
           hash(`${f.turnKey}/${id}`, 16),
