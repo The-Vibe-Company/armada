@@ -45,16 +45,26 @@ function idleStopPending(sandbox: string) {
 
 export const IDLE_STOP_PENDING = idleStopPending("s");
 
-function lifecycleBlocksTurn(sandbox: string, turn: string) {
-  return `(${idleStopPending(sandbox)} or exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
-    and (setup.state='failed' or (setup.state in ('queued','leased') and setup.id<>${turn}.request_id)
-      or exists(
+export function initialLaunchPending(sandbox: string, requestId = "null") {
+  return `(exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql(sandbox)}
+    and setup.id is distinct from ${requestId}
+    and (setup.state in ('queued','leased') or exists(
       select 1 from public.account_turn_queue initial
       where initial.sandbox_id=${sandbox}.id and initial.request_id=setup.id
-        and initial.state in ('queued','dispatching') and initial.request_id<>${turn}.request_id)))
+        and initial.state in ('queued','dispatching'))))
     or ${deferredDockerLaunch(sandbox, true)}
     or exists(select 1 from public.docker_queued_prompts pending
       where pending.sandbox_id=${sandbox}.id and pending.status in ('queued','dispatching')))`;
+}
+
+export function initialLaunchFailed(sandbox: string) {
+  return `exists(select 1 from public.jobs setup
+    where setup.idem_key=${modalLaunchSetupKeySql(sandbox)} and setup.state='failed')`;
+}
+
+function lifecycleBlocksTurn(sandbox: string, turn: string) {
+  return `(${idleStopPending(sandbox)} or ${initialLaunchFailed(sandbox)}
+    or ${initialLaunchPending(sandbox, `${turn}.request_id`)})`;
 }
 
 export const TURN_LIFECYCLE_WAITING = lifecycleBlocksTurn("s", "q");
@@ -178,7 +188,7 @@ export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
   or (not (${IDLE_STOP_PENDING} and s.lifecycle_generation=q.queued_generation)
     and (s.stop_requested_at is not null
       or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_PENDING}))))
-  or exists(select 1 from public.jobs setup where setup.idem_key=${modalLaunchSetupKeySql()} and setup.state='failed'))`;
+  or ${initialLaunchFailed("s")})`;
 export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
   or s.stop_requested_at is not null or s.status in ('deleted','stopping','failed'))`;
 
