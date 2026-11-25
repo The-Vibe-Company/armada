@@ -47,6 +47,8 @@ The CLI emits the API receipt with `--json`, for example
 `armada new review --provider modal --agent codex --json`.
 Read the Armada ID from `sandbox.id`. Public Boat and Modal golden launches through REST
 and MCP return `{sandbox:{id,status}}`. A fresh receipt returns `starting`.
+Ordinary Boat REST launches return HTTP 202 on fresh admission. A keyed replay
+returns HTTP 200 with the same sandbox ID and its current status.
 After enrolment, read status or logs to find the first prompt. Explicit pinned
 Modal launches also include the frozen manifest at `sandbox.templateManifest`.
 The separate `templates/launch` operation returns a durable template receipt.
