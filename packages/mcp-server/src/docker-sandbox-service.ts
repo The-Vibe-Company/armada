@@ -20,7 +20,7 @@ import {
   DockerLimitsRefused,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL } from "./docker-host-store.ts";
+import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
@@ -183,13 +183,6 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     ).rows[0];
     return row ?? deny();
   }
-  function cleanup(actor: Actor, sandboxId: string, requestId: string, operation: "stop" | "delete") {
-    return transaction(async (tx) => {
-      await visible(tx, actor, sandboxId);
-      id(requestId);
-      return createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, sandboxId, { requestId, operation });
-    });
-  }
   return {
     reserve(
       actor: Actor,
@@ -347,28 +340,6 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
     },
     get(actor: Actor, sandboxId: string) {
       return transaction(async (tx) => record(await visible(tx, actor, sandboxId)));
-    },
-    stop(actor: Actor, sandboxId: string, requestId: string) {
-      return cleanup(actor, sandboxId, requestId, "stop");
-    },
-    delete(actor: Actor, sandboxId: string, requestId: string) {
-      return cleanup(actor, sandboxId, requestId, "delete");
-    },
-    job(actor: Actor, sandboxId: string, requestId: string) {
-      return transaction(async (tx) => {
-        await visible(tx, actor, sandboxId);
-        id(requestId);
-        const job = (
-          await tx.query<{ request_id: string; bound_operation: string; outcome: "completed" | "failed" | null }>(
-            `select request_id,bound_operation,${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome
-             from public.docker_host_jobs j where request_id=$1 and bound_sandbox_id=$2`,
-            [requestId, sandboxId],
-          )
-        ).rows[0];
-        return job
-          ? { requestId: job.request_id, operation: job.bound_operation, state: job.outcome ?? "pending" }
-          : null;
-      });
     },
   };
 }

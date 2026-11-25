@@ -31,13 +31,12 @@ import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts
 import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
 import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
-import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
-import { currentRequestId, observeProviderCall } from "./request-observability.ts";
+import { observeProviderCall } from "./request-observability.ts";
 import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
@@ -138,8 +137,6 @@ export function createDockerSandboxControls(
     prepareSnapshotGitHub?: RuntimeGitHub["prepareLaunch"];
     sendEnabled?: boolean;
     resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
-    /** Final output capture before a user stop (tests inject the runtime reader). */
-    outputs?: Parameters<typeof captureDockerStopOutputs>[3];
   } = {},
 ) {
   const clock = options.clock ?? realClock;
@@ -582,46 +579,6 @@ export function createDockerSandboxControls(
       throw error;
     }
   }
-  async function logStopReceiptTimeout(sandboxId: string, stopRequestId: string) {
-    try {
-      const evidence = (
-        await sql.query(
-          `select s.docker_host_id as "hostId", h.last_seen_at as "hostLastSeenAt",
-                  s.lifecycle_generation::text as "generation", s.status,
-                  d.worker_expires_at as "launchWorkerExpiresAt", d.result_enc is not null as "launchReceiptPublished",
-                  (select jsonb_object_agg(l.stage,l.at) from public.sandbox_launch_stages l
-                   where l.sandbox_id=s.id and l.activation=1) as "launchStages",
-                  (select jsonb_agg(jsonb_build_object(
-                     'requestId',j.request_id,'operation',j.bound_operation,'outcome',j.outcome,
-                     'createdAt',j.created_at,'completedAt',j.completed_at,'cancelledAt',j.cancelled_at
-                   ) order by j.position)
-                   from (
-                     select request_id,bound_operation,outcome,created_at,completed_at,cancelled_at,position
-                     from public.docker_host_jobs where bound_sandbox_id=s.id and bound_operation in ('create','bootstrap')
-                     union all
-                     select request_id,bound_operation,outcome,created_at,completed_at,cancelled_at,position
-                     from public.docker_host_jobs where bound_sandbox_id=s.id and request_id=$2 and bound_operation='stop'
-                   ) j) as "hostJobs"
-           from public.sandboxes s
-           left join public.docker_hosts h on h.id=s.docker_host_id
-           left join public.docker_launch_manifests d on d.sandbox_id=s.id
-           where s.id=$1 and s.provider='docker'`,
-          [sandboxId, stopRequestId],
-        )
-      ).rows[0];
-      console.warn(
-        JSON.stringify({
-          event: "docker_stop_receipt_timeout",
-          requestId: currentRequestId(),
-          sandboxId,
-          stopRequestId,
-          evidence: evidence ?? null,
-        }),
-      );
-    } catch {
-      return;
-    }
-  }
   async function cleanup(
     caller: Caller,
     row: Row,
@@ -629,78 +586,59 @@ export function createDockerSandboxControls(
     requestId?: string,
     onlyIfIdle = false,
   ) {
-    if (requestId !== undefined && !UUID.test(requestId)) throw invalid();
-    if (operation === "delete") await assertDelete(caller, row.id);
-    if (onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
+    const result = (current: Row) => ({ id: current.id, status: current.status });
+    const actor = { userId: caller.userId, orgId: row.org_id };
+    const hosts = createDockerHostStore(sql, key);
+    const stop = operation === "stop";
+    if (!stop) await assertDelete(caller, row.id);
+    if (stop && onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
       throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>
-      operation === "delete"
-        ? current.status === "deleted"
-        : current.status === "deleted" ||
-          (["stopped", "failed"].includes(current.status) && current.stopped_at !== null);
-    const result = (current: Row) => ({ id: current.id, status: current.status });
+      current.status === "deleted" ||
+      (stop && ["stopped", "failed"].includes(current.status) && current.stopped_at !== null);
     if (done(row)) return result(row);
-    if (operation === "delete" && !["stopped", "failed"].includes(row.status))
+    if (!stop && !["stopped", "failed"].includes(row.status))
       throw failure("conflict", "Stop the Docker sandbox before deleting it.");
-    // Final declared-output capture while the runtime still accepts commands (#2570). Bounded
-    // and optional; skipped when a stop is already pending (a retried request).
-    if (operation === "stop")
-      await captureDockerStopOutputs(sql, key, row.id, {
-        reader: createDockerOutputReader(sql, key, { now: clock.now, wait: (ms) => clock.wait(ms) }),
-        ...options.outputs,
-      });
-    // Serialize selection with existing store admission. Reuse unknown pending
-    // intent; a new caller request may retry a known failure. Never wait under SQL locks.
     if (!sql.transaction) throw failure("unavailable", "Docker sandbox cleanup is unavailable.");
-    const selected = await sql.transaction(async (tx) => {
-      await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [`docker-cleanup:${row.id}:${operation}`]);
-      const pending = (
-        await tx.query<{ request_id: string; bound_actor_id: string; shared_stop: boolean }>(
-          `select h.request_id,h.bound_actor_id, ($2='stop' and exists (
-            select 1 from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
-            where j.sandbox_id=h.bound_sandbox_id and j.kind='stop' and j.generation=s.lifecycle_generation
-              and j.state in ('queued','leased') and s.status='stopping'
-          )) as shared_stop from public.docker_host_jobs h where h.bound_sandbox_id=$1 and h.bound_operation=$2
-         and h.outcome is null order by h.position limit 1`,
-          [row.id, operation],
-        )
-      ).rows[0];
-      if (
-        pending &&
-        !pending.shared_stop &&
-        (pending.bound_actor_id !== caller.userId || (requestId !== undefined && requestId !== pending.request_id))
-      )
-        throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
-      const id = requestId ?? pending?.request_id ?? randomUUID();
-      const scoped = scopedRuntimeSql(tx);
-      if (operation === "delete") await assertDelete(caller, row.id, scoped);
-      const admitted = await createDockerHostStore(scoped, key).enqueueSandbox(
-        { userId: caller.userId, orgId: row.org_id },
-        row.id,
-        {
-          requestId: id,
-          operation,
-          ...(operation === "stop" && onlyIfIdle ? { onlyIfIdle: true } : {}),
-        },
-      );
-      return admitted.requestId;
-    });
+    const selected = stop
+      ? await hosts.enqueueStop(actor, row.id, requestId, onlyIfIdle ? { idleSequence: row.prompt_sequence } : {})
+      : await sql.transaction(async (tx) => {
+          await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-cleanup:${row.id}:delete`]);
+          const pending = (
+            await tx.query<{ request_id: string; bound_actor_id: string }>(
+              `select request_id,bound_actor_id from public.docker_host_jobs where bound_sandbox_id=$1
+             and bound_operation='delete' and outcome is null order by position limit 1`,
+              [row.id],
+            )
+          ).rows[0];
+          if (pending && (pending.bound_actor_id !== caller.userId || (requestId && requestId !== pending.request_id)))
+            throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
+          const scoped = scopedRuntimeSql(tx);
+          await assertDelete(caller, row.id, scoped);
+          return (
+            await createDockerHostStore(scoped, key).enqueueSandbox(actor, row.id, {
+              requestId: requestId ?? pending?.request_id ?? randomUUID(),
+              operation: "delete",
+            })
+          ).requestId;
+        });
+    if (!selected) return result(await visible(caller, row.id));
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     for (;;) {
+      const {
+        rows: [job],
+      } = await sql.query<{ state: string }>(
+        stop
+          ? "select state::text from public.jobs where id=$1 and sandbox_id=$2 and kind='stop'"
+          : "select outcome as state from public.docker_host_jobs where request_id=$1 and bound_sandbox_id=$2 and bound_operation='delete'",
+        [selected, row.id],
+      );
       const current = await visible(caller, row.id);
-      const job = (
-        await sql.query<{ outcome: string | null }>(
-          `select outcome from public.docker_host_jobs where request_id=$1 and bound_sandbox_id=$2 and bound_operation=$3`,
-          [selected, row.id, operation],
-        )
-      ).rows[0];
-      if (job?.outcome === "completed" && done(current)) return result(current);
-      if (job?.outcome === "failed")
+      if (done(current) && (stop || job?.state === "completed")) return result(current);
+      if (job?.state === "failed" || job?.state === "done")
         throw failure("conflict", "Docker sandbox cleanup failed. Use a new request ID to retry.");
-      if (clock.now() >= deadline) {
-        if (operation === "stop") void logStopReceiptTimeout(row.id, selected);
+      if (clock.now() >= deadline)
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
-      }
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }

@@ -5,6 +5,7 @@ import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import type { dockerRuntimeConfiguration } from "../src/docker-runtime-configuration.ts";
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
+import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
 const database = useMigratedDatabase();
@@ -135,11 +136,6 @@ test("member allocation and lost-commit-response retry retain one SQL-derived bo
   ).toHaveLength(1);
   await hosts.complete(f.hostToken, f.installationId, { requestId: retried.id, outcome: "completed" });
   expect((await service.get(f.actor, retried.id)).status).toBe("starting");
-  expect(await service.job(f.actor, retried.id, retried.id)).toEqual({
-    requestId: retried.id,
-    operation: "create",
-    state: "completed",
-  });
   expect(JSON.stringify(retried)).not.toMatch(/golden|boat|value_enc|input_enc/);
 });
 
@@ -237,53 +233,6 @@ test("bound job insert failure rolls back both reservation and machine claim", a
   await denied(service.reserve(f.actor, { ...f.input, requestId: manualId }));
 });
 
-test("retained owner/admin diagnostics and delegated cleanup are independent of allocation flag", async () => {
-  const db = database();
-  const f = await fixture(300),
-    saved = await service.reserve(f.actor, f.input);
-  expect(
-    (
-      await db.query<{ requested_ttl_seconds: number }>(
-        `select requested_ttl_seconds from public.sandboxes where id=$1`,
-        [saved.id],
-      )
-    ).rows[0]?.requested_ttl_seconds,
-  ).toBe(300);
-  const retained = createDockerSandboxService(sql, key);
-  await denied(retained.get(f.other, saved.id));
-  await denied(retained.job(f.other, saved.id, saved.id));
-  await denied(retained.stop(f.other, saved.id, randomUUID()));
-  expect(await retained.get(f.admin, saved.id)).toEqual(saved);
-  expect(await retained.job(f.actor, saved.id, randomUUID())).toBeNull();
-  await hosts.complete(f.hostToken, f.installationId, { requestId: saved.id, outcome: "completed" });
-  const stopId = randomUUID(),
-    deleteId = randomUUID();
-  await retained.stop(f.admin, saved.id, stopId);
-  const stopping = await retained.get(f.actor, saved.id);
-  expect(stopping.status).toBe("stopping");
-  expect(stopping.stopRequestedAt).not.toBeNull();
-  expect(await hosts.poll(f.hostToken, f.installationId)).toMatchObject({ requestId: stopId, operation: "stop" });
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  expect(await retained.get(f.actor, saved.id)).toMatchObject({ status: "stopped", stopRequestedAt: null });
-  expect((await service.reserve(f.actor, f.input)).generation).toBe(saved.generation);
-  await retained.delete(f.actor, saved.id, deleteId);
-  expect((await retained.get(f.actor, saved.id)).status).toBe("stopped");
-  await hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
-  const deleted = await retained.get(f.actor, saved.id);
-  expect(deleted.status).toBe("deleted");
-  expect(deleted.deletedAt).not.toBeNull();
-  await hosts.revoke(f.admin, f.hostId);
-  await denied(service.reserve(f.actor, f.input));
-  expect(await retained.job(f.admin, saved.id, deleteId)).toEqual({
-    requestId: deleteId,
-    operation: "delete",
-    state: "completed",
-  });
-  expect((await retained.get(f.actor, saved.id)).status).toBe("deleted");
-  await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
-  await denied(retained.get(f.actor, saved.id));
-});
-
 test("host capacity reserves pending starts, preserves retries, and releases only confirmed physical stops", async () => {
   const db = database();
   const f = await fixture();
@@ -307,13 +256,13 @@ test("host capacity reserves pending starts, preserves retries, and releases onl
   );
   await hosts.complete(f.hostToken, f.installationId, { requestId: first.id, outcome: "completed" });
   const stop = randomUUID();
-  await service.stop(f.actor, first.id, stop);
+  await queueMailboxStop(sql, key, f.actor, first.id, stop);
   await expect(service.reserve(f.actor, next)).rejects.toThrow("is full");
   await hosts.complete(f.hostToken, f.installationId, { requestId: stop, outcome: "completed" });
   const second = await service.reserve(f.actor, next);
   expect(second.id).toBe(next.requestId);
   // A daemon TTL observation is physical stop proof too, including failed startup rows.
-  await hosts.expired(f.hostToken, f.installationId, { requestId: second.id });
+  await reportDockerExpiry(sql, key, f.hostToken, f.installationId, { requestId: second.id });
   expect((await service.reserve(f.actor, { ...f.input, requestId: randomUUID() })).status).toBe("starting");
 });
 

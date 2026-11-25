@@ -14,6 +14,7 @@ import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { collectTransactionWakes } from "../src/wake-bus.ts";
+import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const connection = rowOnlyConnection();
@@ -693,7 +694,9 @@ test("only the owner changes a drained capable host; policy reaches admission an
   });
   for (const row of rows) {
     await store.complete(host.hostToken, installationId, { requestId: row.id, outcome: "completed" });
-    await store.expired(host.hostToken, installationId, { requestId: row.id });
+    await reportDockerExpiry(sql, Buffer.alloc(32, 8).toString("base64"), host.hostToken, installationId, {
+      requestId: row.id,
+    });
   }
   const reset = await post(endpoint, "fixture-user-token", { ...body, auto: true });
   expect(reset.status).toBe(200);
@@ -1007,7 +1010,7 @@ test("a host poll skips work the daemon reports running and hands out another sa
   // completion is recorded, then is handed out on the next recheck, not after the hold.
   let time = 0;
   const steps = [
-    () => sandboxes.stop(actor, first.id, randomUUID()),
+    () => queueMailboxStop(sql, Buffer.alloc(32, 8).toString("base64"), actor, first.id, randomUUID()),
     () => store.complete(host.hostToken, installationId, { requestId: head!.requestId, outcome: "completed" }),
   ];
   const held = createDockerHostRoutes(store, fixtureAuth, {
