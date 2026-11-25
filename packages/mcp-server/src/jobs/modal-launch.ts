@@ -299,13 +299,17 @@ export async function admitModalLaunch(
         provider_sandbox_id: string;
         modal: { workspace: string; environment: string; appId: string };
       }>(
-        `select g.visibility,g.config,g.provider_snapshot_id,g.provider_sandbox_id,
-                jsonb_build_object('workspace',g.modal_workspace,'environment',g.modal_environment,'appId',g.modal_app_id) as modal
-         from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
-         where g.id=$1 and g.org_id=$2 and g.provider::text=$4 and g.removed_at is null
-           and (g.visibility='org' or g.owner_id=$3)
-         for update of g for share of m`,
-        [plannedSandbox.goldenId, orgId, ownerId, provider],
+        `with golden as materialized (
+           select g.visibility,g.config,g.provider_snapshot_id,g.provider_sandbox_id,
+                  jsonb_build_object('workspace',g.modal_workspace,'environment',g.modal_environment,'appId',g.modal_app_id) as modal
+           from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
+           where g.id=$1 and g.org_id=$2 and g.provider::text=$4 and g.removed_at is null
+             and (g.visibility='org' or g.owner_id=$3)
+           for update of g for share of m
+         )
+         select golden.*, case when provider_snapshot_id=$5 then public.lock_golden_snapshot($4,$5) end
+         from golden`,
+        [plannedSandbox.goldenId, orgId, ownerId, provider, allocation.source.ref],
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
@@ -326,8 +330,7 @@ export async function admitModalLaunch(
           throw new GoldenError("conflict", "Frozen template snapshot or provider binding changed.");
         }
       }
-      if (golden.provider_snapshot_id === snapshot)
-        await tx.query("select public.lock_golden_snapshot($1, $2)", [provider, snapshot]);
+      // WARNING: Read the retirement seal with a fresh snapshot after acquiring the advisory lock.
       const {
         rows: [snapshotState],
       } = await tx.query<{ image_id: string | null; sealed: boolean }>(
@@ -844,7 +847,7 @@ interface ModalPlacementPlan {
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
-  canUseModalCredential(tx: Sql): Promise<boolean>;
+  modalCredential(): Promise<{ id: string; version: number }>;
 }
 type BoatLaunchPlan = {
   boat: string;
@@ -934,7 +937,7 @@ export function createModalLaunchJob(
   encryptionKey: string,
   openMachine: (
     ...args: Parameters<OpenModalMachine>
-  ) => Promise<Awaited<ReturnType<OpenModalMachine>> & Pick<ModalLaunchPlan, "canUseModalCredential">>,
+  ) => Promise<Awaited<ReturnType<OpenModalMachine>> & Pick<ModalPlacementPlan, "modalCredential">>,
   prepareRuntimeTicket: (sandbox: RuntimeConfigurationTarget) => ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>,
 ) {
   return {
@@ -997,7 +1000,7 @@ export function createModalLaunchJob(
             },
             bindingRef: job.id,
             machine,
-            canUseModalCredential: machine.canUseModalCredential,
+            modalCredential: machine.modalCredential,
             prepareRuntimeTicket: () => prepareRuntimeTicket(sandbox),
           };
         });
@@ -1352,48 +1355,65 @@ async function dispatchModalLaunch(
   const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
   const eligible = `s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
     and s.status='starting' and (s.runtime_transport='dialout' or s.boat_runtime)`;
-  const dispatchTarget: (tx: Sql, lockLease?: boolean) => Promise<Target | undefined> = async (
-    tx,
-    lockLease = false,
-  ) => {
-    let row: Target | undefined;
-    if (lockLease) {
-      const {
-        rows: [locked],
-      } = await queryWithJobLease<Target & { owner_member: boolean }>(
-        tx,
-        job,
-        `select s.provider_sandbox_id, exists (
-           select 1 from public.members m where m.org_id=j.org_id and m.user_id=j.request_owner_id for share of m
-         ) as owner_member
-         from locked_sandbox s join locked_job j on ${ownership}
-         where ${eligible} and s.provider='modal' and j.lease_until>clock_timestamp()`,
-      );
-      if (!locked) return;
-      if (!locked.owner_member) return dispatchTarget(tx);
-      row = locked;
-    } else {
-      const { rows } = await tx.query<Target>(
-        `select s.provider_sandbox_id from public.sandboxes s
-         join public.jobs j on j.id=$2 and ${ownership}
-         join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-         where s.id=$1 and s.provider::text=$3 and ${eligible}
-           and (s.provider<>'boat' or exists(
-             select 1 from public.credentials c where c.id=s.credential_id and c.version=s.credential_version
-               and c.status='active' and (c.expires_at is null or c.expires_at>clock_timestamp())
-               and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
-           )) for share of m`,
-        [sandboxId, job.id, boat ? "boat" : "modal"],
-      );
-      row = rows[0];
-    }
+  const boatTarget = async (tx: Sql) => {
+    if (!boat) return;
+    const {
+      rows: [row],
+    } = await tx.query<Target>(
+      `select s.provider_sandbox_id from public.sandboxes s
+       join public.jobs j on j.id=$2 and ${ownership}
+       join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+       where s.id=$1 and s.provider='boat' and ${eligible}
+         and exists(
+           select 1 from public.credentials c where c.id=s.credential_id and c.version=s.credential_version
+             and c.status='active' and (c.expires_at is null or c.expires_at>clock_timestamp())
+             and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
+         ) for share of m`,
+      [sandboxId, job.id],
+    );
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx)) && (await launchAuthorized(tx)))
       return row;
   };
-  const withDispatchTarget = <T>(work: (tx: Sql, row: Target | undefined) => T) => {
-    if (boat) return withJobLease(sql, job, async (tx) => work(tx, await dispatchTarget(tx)));
+  const modalTarget = async (tx: Sql) => {
+    if (boat || signal.aborted) return;
+    const { id, version } = await plan.modalCredential();
+    const { credentialScope, credentialOwnerId } = plan.placement.managementAuthority;
+    const readTarget = async () =>
+      (
+        await queryWithJobLease<Target & { owner_member: boolean; dispatchable: boolean }>(
+          tx,
+          job,
+          `, member as materialized (
+         select s.provider_sandbox_id, exists (
+           select 1 from public.members m where m.org_id=j.org_id and m.user_id=j.request_owner_id for share of m
+         ) as owner_member
+         from locked_sandbox s join locked_job j on ${ownership}
+         where ${eligible} and s.provider='modal' and j.lease_until>clock_timestamp()
+       ), credential as materialized (
+         select expires_at from public.credentials
+         where id=$6 and version=$7 and kind='modal' and scope=$8 and owner_id=$9 and status='active'
+           and (select owner_member from member)
+         for share
+       )
+       select member.*, case when exists (
+         select 1 from credential where expires_at is null or expires_at>clock_timestamp()
+       ) then exists (
+         select 1 from locked_job j
+         where j.lease_owner=$10 and j.lease_until>clock_timestamp() and j.attempts<=j.max_attempts
+           and (j.deadline_at is null or j.deadline_at>clock_timestamp())
+       ) else false end as dispatchable from member`,
+          [id, version, credentialScope, credentialOwnerId, job.lease_owner ?? null],
+        )
+      ).rows[0];
+    let row = await readTarget();
+    // WARNING: The membership snapshot may predate acquisition of the sandbox lock.
+    if (row && !row.owner_member) row = await readTarget();
+    if (row?.dispatchable && !signal.aborted && (await launchAuthorized(tx))) return row;
+  };
+  const withDispatchTarget = <T>(work: (tx: Sql, row: Target | undefined) => T | Promise<T>) => {
+    if (boat) return withJobLease(sql, job, async (tx) => work(tx, await boatTarget(tx)));
     if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
-    return sql.transaction(async (tx) => work(tx, await dispatchTarget(tx, true)));
+    return sql.transaction(async (tx) => work(tx, await modalTarget(tx)));
   };
   const target = () => withDispatchTarget((_tx, row) => row);
   const recovering = hasModalMachineJournal(job);
@@ -1405,9 +1425,8 @@ async function dispatchModalLaunch(
   let recoveredAllocation = false;
   let ticketResolutionStarted = false;
   const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
-  const journal = createJobsStore(sql).modalLaunchJournal(
-    job,
-    async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
+  const journal = createJobsStore(sql).modalLaunchJournal(job, (write) =>
+    withDispatchTarget(async (tx, row) => row?.provider_sandbox_id === null && write(tx)),
   );
   const modalTicket = {
     async resolveRuntimeTicket(request: Parameters<PrepareModalTicket>[0]) {

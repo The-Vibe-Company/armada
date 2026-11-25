@@ -7,6 +7,7 @@ export interface Job {
   sandbox_id: string | null;
   generation: string | null;
   lease_epoch: string;
+  lease_owner?: string;
   attempts: number;
   max_attempts: number;
   dispatchBudgetMs?: number;
