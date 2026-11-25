@@ -101,6 +101,7 @@ export interface Api {
       waitSeconds?: number;
       running?: string[];
       preferStartup?: boolean;
+      updateResult?: string;
     },
   ): Promise<DockerHostPollResponse & { retainedStopProof?: true | undefined }>;
   result(state: State, receipt: Receipt, expired?: true, retained?: true): Promise<void>;
@@ -300,6 +301,8 @@ export type TickOptions = {
   deferUncertain?: ReadonlySet<string>;
   preferStartup?: boolean;
   restoreConflicts?: Map<string, string>;
+  update?: ((state: State, target: string | undefined) => Promise<boolean>) | undefined;
+  updateResult?: (() => string | undefined) | undefined;
   dispatch?: (job: Job, work: Promise<void>) => void;
 };
 
@@ -358,6 +361,8 @@ export async function runJobs(
     stopping(): boolean;
     sleep(ms: number): Promise<unknown>;
     beforeTick?(): Promise<void>;
+    update?: TickOptions["update"];
+    updateResult?: TickOptions["updateResult"];
     failed?(what: "tick" | "job", phase: IterationPhase, error: unknown): void;
     now?: () => number;
   },
@@ -393,6 +398,8 @@ export async function runJobs(
           deferUncertain: excluded,
           preferStartup,
           restoreConflicts,
+          update: loop.update,
+          updateResult: loop.updateResult,
           dispatch(job, work) {
             const done = work
               .catch((error) => {
@@ -548,11 +555,13 @@ async function admitLocked(
   const reload = Boolean(options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
+  const updateResult = options.updateResult?.();
   let polled: Awaited<ReturnType<Api["poll"]>> | undefined;
   let pollFailure: { phase: "poll" | "resume_claim"; error: unknown } | undefined;
   try {
     polled = await api.poll(state, {
       skipSnapshots,
+      ...(updateResult ? { updateResult } : {}),
       ...(options.waitSeconds === undefined
         ? {}
         : {
@@ -561,6 +570,7 @@ async function admitLocked(
             ...(options.preferStartup ? { preferStartup: true } : {}),
           }),
     });
+    if (await options.update?.(state, polled.targetVersion)) return "idle";
   } catch (error) {
     pollFailure = { phase: "poll", error };
   } finally {

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { State } from "../src/daemon.ts";
 import {
+  createManagedUpdater,
   installService,
   instanceName,
   removeInstallation,
@@ -340,3 +341,159 @@ test("verified namespaced upgrade atomically replaces its own binary and preserv
     await rm(f.home, { recursive: true, force: true });
   }
 });
+
+function selfUpdateFixture() {
+  const home = "/owner";
+  const directory = stateDirectory(home);
+  const binary = join(home, ".local/bin/armada-docker-host");
+  const unit = join(home, ".config/systemd/user/armada-docker-host.service");
+  const hook = join(`${unit}.d`, "armada-update.conf");
+  const previous = `${binary}.previous`;
+  const marker = join(directory, "managed.json");
+  const old = Buffer.from("installed executable");
+  const candidate = Buffer.from("new release executable");
+  const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const state: State = {
+    server: "https://armada.example",
+    installationId: "installation",
+    hostId: "host",
+    hostToken: "fixture-token",
+    receipts: [],
+  };
+  const files = new Map<string, Buffer>([
+    [binary, old],
+    [marker, Buffer.from(JSON.stringify({ installationId: state.installationId, binarySha256: hash(old), unit }))],
+  ]);
+  const requests: string[] = [];
+  const target = "999999999.0.0";
+  const config = { now: 0, version: target, bytes: candidate, interruptedSwap: false, managed: true };
+  const ownedFile = async (path: string) => {
+    const bytes = files.get(path);
+    if (!bytes) throw new Error("File missing");
+    return bytes;
+  };
+  const io = {
+    home,
+    now: () => config.now,
+    service: async (args: string[]) => {
+      if (args.includes("--value")) return files.has(hook) ? hook : "";
+      if (args.includes("show"))
+        return [
+          `MainPID=${config.managed ? process.pid : 0}`,
+          `FragmentPath=${unit}`,
+          `DropInPaths=${files.has(hook) ? hook : ""}`,
+          "NeedDaemonReload=no",
+          `Restart=${files.has(hook) ? "always" : "on-failure"}`,
+        ].join("\n");
+    },
+    fetch: async (url: string) => {
+      requests.push(url);
+      return url.endsWith("/install.json")
+        ? Response.json({ version: config.version, [process.arch]: hash(candidate) })
+        : new Response(config.bytes);
+    },
+    files: {
+      ownedFile,
+      async validateInstallation() {
+        return JSON.parse((await ownedFile(marker)).toString());
+      },
+      async atomicReplace(path: string, bytes: Uint8Array) {
+        if (config.interruptedSwap && path === binary) throw new Error("Interrupted atomic swap");
+        files.set(path, Buffer.from(bytes));
+      },
+      mkdir: async () => undefined,
+      syncDirectory: async () => {},
+      safeAncestors: async () => {},
+    },
+  };
+  const daemon = () => createManagedUpdater(directory, false, binary, io)!;
+  const recovery = () => createManagedUpdater(directory, true, previous, io)!;
+  return { binary, previous, files, old, candidate, state, config, target, requests, hash, daemon, recovery };
+}
+
+test.skipIf(process.platform !== "linux")(
+  "self-update uses verified platform bytes and commits after startup health",
+  async () => {
+    const f = selfUpdateFixture();
+    const daemon = f.daemon();
+    expect(await daemon.stage(f.state, f.target)).toBe(true);
+    expect(f.requests).toEqual([
+      `${f.state.server}/api/docker-host/install.json`,
+      `${f.state.server}/api/runtime/artifacts/${f.hash(f.candidate)}`,
+    ]);
+    expect(f.files.get(f.binary)).toEqual(f.old);
+    expect(await daemon.swap()).toBe(true);
+    expect(f.files.get(f.previous)).toEqual(f.old);
+    await f.recovery().beforeStart(f.state);
+    const candidate = f.daemon();
+    let checked = false;
+    await candidate.checkStartup(f.state, async () => {
+      checked = true;
+    });
+    expect(checked).toBe(true);
+    expect(candidate.result()).toBe(`${f.target};updated`);
+    await f.recovery().beforeStart(f.state);
+    expect(f.files.get(f.binary)).toEqual(f.candidate);
+  },
+);
+
+test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
+  "self-update recovers from a failed %s and retries only different versions after cooldown",
+  async (phase) => {
+    const f = selfUpdateFixture();
+    const daemon = f.daemon();
+    expect(await daemon.stage(f.state, f.target)).toBe(true);
+    if (phase === "swap") {
+      f.config.interruptedSwap = true;
+      await expect(daemon.swap()).rejects.toThrow("Interrupted atomic swap");
+      f.config.interruptedSwap = false;
+    } else {
+      await daemon.swap();
+      await f.recovery().beforeStart(f.state);
+      if (phase === "health") {
+        await expect(
+          f.daemon().checkStartup(f.state, async () => {
+            throw new Error("Offline");
+          }),
+        ).rejects.toThrow("Offline");
+      }
+    }
+    await f.recovery().beforeStart(f.state);
+    expect(f.files.get(f.binary)).toEqual(f.old);
+    const restored = f.daemon();
+    await restored.checkStartup(f.state, async () => {
+      throw new Error("Unexpected candidate health check");
+    });
+    expect(restored.result()).toBe(`${f.target};failed`);
+    const next = "999999999.0.1";
+    expect(await restored.stage(f.state, next)).toBe(false);
+    f.config.now = 60 * 60_000;
+    expect(await restored.stage(f.state, f.target)).toBe(false);
+    expect(f.requests).toHaveLength(2);
+    f.config.version = next;
+    expect(await restored.stage(f.state, next)).toBe(true);
+  },
+);
+
+test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"])(
+  "self-update leaves the active binary alone on %s refusal",
+  async (refusal) => {
+    const f = selfUpdateFixture();
+    const daemon = f.daemon();
+    if (refusal === "version") {
+      f.config.version = "3.0.0";
+      await expect(daemon.stage(f.state, f.target)).rejects.toThrow("does not match the offered release");
+      expect(f.requests).toHaveLength(1);
+    } else if (refusal === "digest") {
+      f.config.bytes = Buffer.from("wrong artifact");
+      await expect(daemon.stage(f.state, f.target)).rejects.toThrow("SHA-256 mismatch");
+    } else {
+      f.config.managed = false;
+      expect(await daemon.stage(f.state, f.target)).toBe(false);
+      expect(f.requests).toEqual([]);
+    }
+    expect(await daemon.swap()).toBe(false);
+    expect(f.files.get(f.binary)).toEqual(f.old);
+    expect(f.files.has(f.previous)).toBe(false);
+  },
+);

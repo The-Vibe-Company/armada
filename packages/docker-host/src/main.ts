@@ -32,8 +32,10 @@ import {
 import { cleanupOfficialImages } from "./image-retention.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
+  createManagedUpdater,
   installService,
   inventory,
+  notifyServiceReady,
   removeInstallation,
   servicePreflight,
   stateDirectory,
@@ -42,6 +44,8 @@ import {
   upgradeService,
   validateInstallation,
 } from "./service.ts";
+
+const RESTART_AFTER_UPDATE = 75;
 
 const usage = `Usage:
   armada-docker-host register --server https://ARMADA_ORIGIN --state-dir /absolute/private/directory
@@ -86,7 +90,9 @@ async function main(args: string[]) {
   }
   if (
     !command ||
-    !["register", "run", "install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command)
+    !["register", "run", "install", "upgrade", "reuse-registration", "status", "uninstall", "recover-update"].includes(
+      command,
+    )
   )
     throw new Error("Invalid arguments");
   const managed = ["install", "upgrade", "reuse-registration", "status", "uninstall"].includes(command);
@@ -187,6 +193,12 @@ async function main(args: string[]) {
     }
   };
   try {
+    const updater = createManagedUpdater(directory, command === "recover-update");
+    if (command === "recover-update") {
+      if (!updater) throw new Error("Docker host recovery is restricted to the managed previous binary.");
+      await updater.beforeStart(await store.load());
+      return;
+    }
     const sampleDisk = () => dockerDiskFreeBytes(dockerCli);
     let stoppedSampleAt = 0;
     let stoppedSample: number | null = null;
@@ -272,7 +284,16 @@ async function main(args: string[]) {
       state.retentionSeconds = seconds;
       await store.save(state);
     }
+    let notified = false;
+    await updater?.checkStartup(state, async () => {
+      if ((await dockerCli.run(["info"])).exitCode !== 0 || !Object.hasOwn(await api.poll(state), "job"))
+        throw new Error("Updated Docker host did not pass startup health checks.");
+      await notifyServiceReady();
+      notified = true;
+    });
+    if (updater && !notified) await notifyServiceReady();
     let stopping = false;
+    let updating = false;
     const stop = () => {
       stopping = true;
       void api.stopInventory();
@@ -297,7 +318,16 @@ async function main(args: string[]) {
     try {
       let nextImageCleanup = 0;
       await runJobs(store, api, runtime, {
-        stopping: () => stopping,
+        stopping: () => stopping || updating,
+        async update(state, target) {
+          try {
+            if (!stopping && (await updater?.stage(state, target))) updating = !stopping;
+          } catch {
+            console.error("Docker host self-update staging failed.");
+          }
+          return updating;
+        },
+        updateResult: updater?.result,
         sleep: Bun.sleep,
         async beforeTick() {
           if (Date.now() < nextImageCleanup) return;
@@ -319,6 +349,10 @@ async function main(args: string[]) {
       clearInterval(expiryTimer);
       await Promise.all(scans);
       await Promise.all([expiry.drain(), outputs.drain(), api.stopInventory()]);
+    }
+    if (updating && !stopping && (await updater?.swap())) {
+      await release();
+      process.exit(RESTART_AFTER_UPDATE);
     }
   } finally {
     await release();
