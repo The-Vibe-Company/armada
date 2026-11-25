@@ -90,11 +90,13 @@ function createFixtureSql(getDatabase: typeof getDb) {
         params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
       )
         return db.query<T>(statement, params);
-      let entry = prepared.get(statement);
+      const unnamedBindTypes = params.map((value) => (typeof value === "number" ? "bigint" : "unknown"));
+      const signature = JSON.stringify([statement, unnamedBindTypes]);
+      let entry = prepared.get(signature);
       if (!entry) {
         const name = `modal_fixture_${prepared.size}`;
-        entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
-        prepared.set(statement, entry);
+        entry = db.exec(`prepare ${name}(${unnamedBindTypes.join(",")}) as ${statement}`).then(() => name);
+        prepared.set(signature, entry);
       }
       const name = await entry;
       const args = params
