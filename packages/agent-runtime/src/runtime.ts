@@ -796,7 +796,7 @@ export class Runner {
       const timer = setTimeout(() => {
         this.outboxWindow = undefined;
         flush();
-      }, 50).unref();
+      }, 20).unref();
       this.outboxWindow = { timer, firstSequence };
     };
     this.outboxRetry = setInterval(flush, 1000).unref();

@@ -68,7 +68,7 @@ function outboxFixture(append: IngestClient["append"]) {
   return { journal, runner, write };
 }
 
-test.each([1, 10])("posts a batch of %i at 50 ms after the first write", async (count) => {
+test.each([1, 10])("posts a batch of %i at 20 ms after the first write", async (count) => {
   jest.useFakeTimers();
   const batches: string[][] = [];
   const { journal, runner, write } = outboxFixture(async ({ events }) => {
@@ -81,7 +81,7 @@ test.each([1, 10])("posts a batch of %i at 50 ms after the first write", async (
     jest.advanceTimersByTime(999);
     const ids = Array.from({ length: count }, (_, index) => String(index));
     write(ids[0]!);
-    jest.advanceTimersByTime(49);
+    jest.advanceTimersByTime(19);
     for (const id of ids.slice(1)) write(id);
     expect(batches).toEqual([]);
     jest.advanceTimersByTime(1);
@@ -104,10 +104,10 @@ test("retries an unacknowledged write on the one-second interval", async () => {
   try {
     runner.startOutboxDelivery();
     write("first");
-    jest.advanceTimersByTime(50);
+    jest.advanceTimersByTime(20);
     expect(sequences).toEqual([[1]]);
     expect(journal.ack).toBe(0);
-    jest.advanceTimersByTime(949);
+    jest.advanceTimersByTime(979);
     expect(sequences).toEqual([[1]]);
     jest.advanceTimersByTime(1);
     expect(sequences).toEqual([[1], [1]]);
@@ -131,10 +131,10 @@ test("write and retry timers share one in-flight flush", async () => {
   try {
     runner.startOutboxDelivery();
     write("first");
-    jest.advanceTimersByTime(50);
+    jest.advanceTimersByTime(20);
     expect(batches).toEqual([[1]]);
     write("second");
-    jest.advanceTimersByTime(950);
+    jest.advanceTimersByTime(980);
     expect(batches).toEqual([[1]]);
     firstAck.resolve({ acknowledgedSequence: 1 });
     await runner.flushOutbox();
@@ -158,14 +158,14 @@ test("an early ACK leaves the next write window open for batching", async () => 
   try {
     runner.startOutboxDelivery();
     write("first");
-    jest.advanceTimersByTime(50);
+    jest.advanceTimersByTime(20);
     expect(batches).toEqual([["first"]]);
     jest.advanceTimersByTime(10);
     write("second");
     firstAck.resolve({ acknowledgedSequence: 1 });
     await firstAck.promise;
     await Promise.resolve();
-    jest.advanceTimersByTime(49);
+    jest.advanceTimersByTime(19);
     expect(journal.ack).toBe(1);
     expect(batches).toEqual([["first"]]);
     write("third");
