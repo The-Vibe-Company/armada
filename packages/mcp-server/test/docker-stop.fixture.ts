@@ -54,12 +54,10 @@ export const stopFixtureMachineId = "d".repeat(64);
 
 export async function bindDockerStopFixture(sql: Sql, sandboxId: string) {
   await sql.query(
-    `with placement as (
-       insert into docker_machine_bindings(sandbox_id,machine_generation,host_id,installation_id,daemon_generation)
-       select id,lifecycle_generation,docker_host_id,docker_installation_id,docker_generation from sandboxes where id=$1
-       returning sandbox_id, daemon_generation)
-     update docker_host_jobs j set result_machine_id=$2, request_id=p.daemon_generation
-     from placement p where j.bound_sandbox_id=p.sandbox_id and j.bound_operation='create'`,
+    `update docker_host_jobs j set result_machine_id=$2, request_id=b.daemon_generation
+     from docker_machine_bindings b join sandboxes s
+       on s.id=b.sandbox_id and s.lifecycle_generation=b.machine_generation
+     where s.id=$1 and j.bound_sandbox_id=s.id and j.bound_operation='create'`,
     [sandboxId, stopFixtureMachineId],
   );
 }

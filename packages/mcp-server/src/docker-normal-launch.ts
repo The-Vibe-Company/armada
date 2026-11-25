@@ -652,7 +652,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             dispatchPossible = true;
             return load(tx, actor, request, hash, explicitModel);
           }
-          await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
+          await createDockerSandboxService(scopedRuntimeSql(tx)).reserve(
             actor,
             {
               requestId: request.requestId,
@@ -679,7 +679,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                   return candidate;
                 }
               : undefined,
-            true,
           );
           if (request.externalRef !== undefined)
             await tx.query("update public.sandboxes set external_ref=$2 where id=$1", [

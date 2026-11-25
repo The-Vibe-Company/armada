@@ -9,8 +9,8 @@ import {
   MODAL_IMAGE_LOCK,
   type ModalProvider,
   modalImage,
-  probeModalSsh,
 } from "../src/index.ts";
+import { probeModalSsh } from "./ssh-probe.ts";
 
 if (import.meta.main) {
   const reference = process.argv[2];

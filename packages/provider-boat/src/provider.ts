@@ -62,7 +62,7 @@ const DEFAULT_TTL_SECONDS = 3600;
 const MAX_TTL_SECONDS = 2_592_000;
 
 /** Native Boat and the runtime currently expose the same harness capabilities. */
-export const BOAT_CAPABILITIES = Object.fromEntries(
+const boatCapabilities = Object.fromEntries(
   HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null).map((id) => [id, HARNESS_CAPABILITIES[id]]),
 ) as Pick<typeof HARNESS_CAPABILITIES, "claude" | "codex">;
 
@@ -413,7 +413,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
   const provider: BoatProvider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
-    capabilities: BOAT_CAPABILITIES,
+    capabilities: boatCapabilities,
     maxGoldens: 1,
     async backendIdentity() {
       const response = await call(() => api.me({ signal: AbortSignal.timeout(10_000) }));

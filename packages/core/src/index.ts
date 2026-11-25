@@ -240,11 +240,8 @@ export {
 export { type HelperNegotiation, type HelperReceipt, type HelperRefusal, negotiateHelper } from "./helper.ts";
 export * from "./invitations.ts";
 export {
-  LAUNCH_FAILURE_REASONS,
-  LAUNCH_INITIALIZATION_STAGES,
   LaunchError,
   type LaunchErrorCode,
-  type LaunchFailureReason,
   type LaunchInitializationStage,
 } from "./launch-error.ts";
 export {
@@ -313,7 +310,6 @@ export {
   type PromptOutcome,
   promptOutcome,
   readPromptEvents,
-  turnInterruptionReason,
 } from "./outcome.ts";
 export { codexPlanLimit, type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 export { MORPH_MODEL_IDS } from "./pricing/model-options.generated.ts";

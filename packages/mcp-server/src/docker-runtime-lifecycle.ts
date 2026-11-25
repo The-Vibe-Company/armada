@@ -95,7 +95,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       identity(actor, sandboxId);
       const scoped = scopedRuntimeSql(tx);
       const authority = createRuntimeEnrolments(scoped, key);
-      const snapshot = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
+      const snapshot = await createDockerSandboxService(scoped).get(actor, sandboxId);
       if (snapshot.ownerId !== actor.userId) deny();
       // Same order as bootstrap, native publication and source revocation: membership,
       // then account, then host/sandbox/runtime. withOwner reuses this transaction.
@@ -146,7 +146,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         if (pending.rows.length) return { state: "pending" as const };
       }
       return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
-        const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
+        const current = await createDockerSandboxService(scoped).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
         await assertClaim?.(scoped);
         const result = await work(scoped, authority, current, scope.epoch, scope.lifecycleGeneration);

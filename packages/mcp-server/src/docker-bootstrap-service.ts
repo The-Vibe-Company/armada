@@ -114,7 +114,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
     try {
       if (options.enabled !== true || !uuid.test(requestId) || !sql.transaction) deny();
       // This read must precede resolution: an admin may diagnose, but not bootstrap, an owner's sandbox.
-      const snapshot = await createDockerSandboxService(sql, key).get(actor, sandboxId);
+      const snapshot = await createDockerSandboxService(sql).get(actor, sandboxId);
       if (snapshot.ownerId !== actor.userId) deny();
       if (resume && snapshot.status === "deleted" && dockerWorkspaceReclaimedMessage(snapshot.statusReason))
         throw new DockerRetentionEnded(snapshot.statusReason);
@@ -219,7 +219,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       async function admit(tx: Sql) {
         const scoped = scopedRuntimeSql(tx);
         async function requireStableSandbox() {
-          const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
+          const current = await createDockerSandboxService(scoped).get(actor, sandboxId);
           const enrolledDuringReplay = machine && known && snapshot.status === "starting" && current.status === "ready";
           const expected = enrolledDuringReplay ? { ...snapshot, status: "ready" } : snapshot;
           if (JSON.stringify(current) !== JSON.stringify(expected) || (turnClaim && current.stopRequestedAt !== null))
