@@ -69,6 +69,31 @@ test("the vendored model catalog preserves the pre-consolidation values", () => 
   expect(MODEL_CATALOG).toEqual(catalog.harnesses);
   const { antigravity, ...preConsolidationHarnesses } = MODEL_CATALOG;
   expect(antigravity.defaultModel).toBe("default");
+  expect(antigravity.defaultReasoningEffort).toBe("default");
+  expect(antigravity.reasoningEfforts).toEqual(["default"]);
+  expect(antigravity.models.map(({ id }) => id)).toEqual([
+    "default",
+    "gemini-4-neon-low",
+    "gemini-4-neon-medium",
+    "gemini-4-neon-high",
+    "gemini-4-neon-xhigh",
+    "gemini-4-hydrogen-low",
+    "gemini-4-hydrogen-medium",
+    "gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-xhigh",
+    "gemini-4-argon-low",
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-4-carbon-low",
+    "gemini-4-carbon-medium",
+    "gemini-4-carbon-high",
+  ]);
+  expect(
+    antigravity.models.every(
+      ({ label, reasoningEfforts }) =>
+        !label.includes("confirm on staging") && reasoningEfforts.length === 1 && reasoningEfforts[0] === "default",
+    ),
+  ).toBe(true);
   const generatedMorph = { models: MORPH_MODEL_IDS, ...MORPH_ENDPOINTS };
   expect<unknown>(generatedMorph).toEqual(catalog.compatibleProviders.morph);
   expect<unknown>(CONNECTION_MODELS).toEqual(catalog.snapshot.providers);

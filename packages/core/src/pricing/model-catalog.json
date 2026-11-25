@@ -3036,13 +3036,73 @@
           "reasoningEfforts": ["default"]
         },
         {
-          "id": "gemini-2.5-pro",
-          "label": "Gemini 2.5 Pro (confirm on staging)",
+          "id": "gemini-4-neon-low",
+          "label": "Gemini 4 Neon (Low)",
           "reasoningEfforts": ["default"]
         },
         {
-          "id": "gemini-2.5-flash",
-          "label": "Gemini 2.5 Flash (confirm on staging)",
+          "id": "gemini-4-neon-medium",
+          "label": "Gemini 4 Neon (Medium)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-neon-high",
+          "label": "Gemini 4 Neon (High)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-neon-xhigh",
+          "label": "Gemini 4 Neon (XHigh)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-hydrogen-low",
+          "label": "Gemini 4 Hydrogen (Low)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-hydrogen-medium",
+          "label": "Gemini 4 Hydrogen (Medium)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-hydrogen-high",
+          "label": "Gemini 4 Hydrogen (High)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-hydrogen-xhigh",
+          "label": "Gemini 4 Hydrogen (XHigh)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-argon-low",
+          "label": "Gemini 4 Argon (Low)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-argon-medium",
+          "label": "Gemini 4 Argon (Medium)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-argon-high",
+          "label": "Gemini 4 Argon (High)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-carbon-low",
+          "label": "Gemini 4 Carbon (Low)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-carbon-medium",
+          "label": "Gemini 4 Carbon (Medium)",
+          "reasoningEfforts": ["default"]
+        },
+        {
+          "id": "gemini-4-carbon-high",
+          "label": "Gemini 4 Carbon (High)",
           "reasoningEfforts": ["default"]
         }
       ]

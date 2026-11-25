@@ -14,7 +14,6 @@ import {
 import { EFFORT_LABEL, HARNESS_LABELS } from "./labels.ts";
 import { accountProblem, accountsFor, type LaunchAccounts } from "./model-accounts";
 import { type ModelFields, modelChoice } from "./model-choice.ts";
-import { dashboardHarnessModels } from "./model-picker.ts";
 import type { Bucket, ResourceState } from "./resource-list.ts";
 import { skillLaunchFailure } from "./skills";
 
@@ -242,9 +241,7 @@ export function templateState(
 
 /** The model's name as the catalog says it, or its id. */
 export function modelLabel(harness: Harness, model: string): string {
-  return (
-    dashboardHarnessModels(harness, MODEL_CATALOG[harness]).models.find((option) => option.id === model)?.label ?? model
-  );
+  return MODEL_CATALOG[harness].models.find((option) => option.id === model)?.label ?? model;
 }
 
 /** "Claude Code · Opus 5.5 · High": the agent, model and effort of a revision. */
