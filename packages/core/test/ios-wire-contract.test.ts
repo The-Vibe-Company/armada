@@ -6,7 +6,7 @@ import {
   HARNESSES,
   MACHINE_SIZES,
   PROMPT_STATUSES,
-  SANDBOX_PROVIDERS,
+  SANDBOX_PLACEMENT_PROVIDERS,
   type SandboxListMetadata,
   type SandboxStatus,
 } from "../src/index.ts";
@@ -35,7 +35,7 @@ const values = {
   agentEventKind: every<AgentEvent["kind"]>()(["prompt", "message", "steer", "other"]),
   textMode: every<NonNullable<MessageEvent["textMode"]>>()(["delta", "snapshot"]),
   promptStatus: PROMPT_STATUSES,
-  provider: SANDBOX_PROVIDERS,
+  provider: SANDBOX_PLACEMENT_PROVIDERS,
   harness: HARNESSES,
   machineSize: MACHINE_SIZES,
   sandboxStatus: every<SandboxStatus>()(["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"]),

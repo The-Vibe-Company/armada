@@ -148,20 +148,21 @@ const handlers = {
       repository: field(shape.repository, body, "repository"),
     });
   },
-} satisfies Record<keyof typeof sandboxCheckOperations, (context: ControlRouteContext) => unknown>;
-
-export const sandboxRoutes = defineRoutes("sandbox", {
-  ...Object.fromEntries(
-    Object.values(sandboxCheckOperations).map(({ name, route }) => [
-      route.path.slice("/api/v1/".length),
-      { methods: [route.method], handler: handlers[name] },
-    ]),
-  ),
-  "sandbox/list-turns": ({ body, caller, options }: ControlRouteContext) => {
-    const org = field(z.uuid(), body, "org");
+  listSandboxTurns: ({ body, caller, options }: ControlRouteContext) => {
+    const org = field(sandboxCheckOperations.listSandboxTurns.input.body.shape.org, body, "org");
     if (caller.via !== "supabase" || !caller.orgs.some(({ orgId }) => orgId === org))
       throw new VaultError("forbidden", "Organization membership is required.");
     if (!options.sandboxListTurns) throw new VaultError("unavailable", "Sandbox activity is unavailable.");
     return options.sandboxListTurns(caller, org);
   },
-});
+} satisfies Record<keyof typeof sandboxCheckOperations, (context: ControlRouteContext) => unknown>;
+
+export const sandboxRoutes = defineRoutes(
+  "sandbox",
+  Object.fromEntries(
+    Object.values(sandboxCheckOperations).map(({ name, route }) => [
+      route.path.slice("/api/v1/".length),
+      { methods: [route.method], handler: handlers[name] },
+    ]),
+  ),
+);

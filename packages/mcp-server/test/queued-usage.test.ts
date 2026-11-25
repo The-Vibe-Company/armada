@@ -27,6 +27,7 @@ test("queued status usage uses the public receipt without relabelling other turn
           handled: true,
           result: {
             id: input.id,
+            provider: "docker",
             golden: null,
             visibility: "private",
             harness: "codex",

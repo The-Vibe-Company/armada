@@ -36,18 +36,43 @@ export function coalesceEventMessages(events: AgentEvent[]): AgentEvent[] {
       event.messageId === previous.messageId &&
       event.conversationId === previous.conversationId &&
       event.promptId === previous.promptId &&
+      event.parentToolUseId === previous.parentToolUseId &&
+      (event.responseKind ?? "assistant") === (previous.responseKind ?? "assistant") &&
+      event.retracted === previous.retracted &&
       event.textMode &&
-      previous.textMode === "snapshot"
+      previous.textMode
     ) {
-      const tools = new Map(previous.tools.map((tool) => [tool.id, tool]));
-      for (const tool of event.tools) tools.set(tool.id, tool);
-      result[result.length - 1] = {
-        ...event,
-        text: event.textMode === "snapshot" ? event.text : previous.text + event.text,
-        textMode: "snapshot",
-        tools: [...tools.values()],
-      };
-    } else result.push(event);
+      const model = previous.model !== undefined && event.model === undefined ? { model: previous.model } : {};
+      const responseKind =
+        previous.responseKind !== undefined && event.responseKind === undefined
+          ? { responseKind: previous.responseKind }
+          : {};
+      if (previous.textMode === "snapshot") {
+        const tools = new Map(previous.tools.map((tool) => [tool.id, tool]));
+        for (const tool of event.tools) tools.set(tool.id, tool);
+        result[result.length - 1] = {
+          ...event,
+          ...model,
+          ...responseKind,
+          text: event.textMode === "snapshot" ? event.text : previous.text + event.text,
+          textMode: "snapshot",
+          tools: [...tools.values()],
+        };
+        continue;
+      }
+      if (previous.tools.length === 0 && (event.textMode === "snapshot" || event.tools.length === 0)) {
+        result[result.length - 1] = {
+          ...event,
+          ...model,
+          ...responseKind,
+          text: event.textMode === "snapshot" ? event.text : previous.text + event.text,
+          textMode: event.textMode,
+          tools: [...event.tools],
+        };
+        continue;
+      }
+    }
+    result.push(event);
   }
   return result;
 }

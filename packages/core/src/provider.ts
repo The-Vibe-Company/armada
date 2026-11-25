@@ -366,7 +366,7 @@ export interface EventsRequest {
   limit?: number;
   /** UTF-8 JSON events-array budget (256..1048576; default 262144). A larger event is returned alone, or replaced by event_truncated above 1 MiB. */
   maxBytes?: number;
-  /** Coalesce consecutive identified messages only from an authoritative snapshot; delta-only runs remain raw. */
+  /** Coalesce consecutive identified messages, preserving delta mode for delta-only runs, snapshot precedence, and tool events. */
   coalesce?: boolean;
 }
 

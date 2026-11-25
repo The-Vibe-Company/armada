@@ -239,6 +239,7 @@ test.each([
     "invalid",
     "repository is required.",
   ],
+  ["sandbox/list-turns", { org: "not-a-uuid" }, 400, "invalid", "org must be text."],
 ] as const)("%s preserves the refusal for %j", async (route, body, status, code, message) => {
   const preflight = () => {
     throw new Error("Invalid input reached the preflight service.");

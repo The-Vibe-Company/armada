@@ -80,5 +80,8 @@ export type ListBoatAliasRemoved = Assert<Equal<Extract<"boatId", keyof SandboxL
 export type DockerStatusSnapshot = Assert<
   Equal<Awaited<ReturnType<Armada["status"]>>["snapshotId"], string | undefined>
 >;
+export type StatusProviderIsRequired = Assert<
+  Equal<Awaited<ReturnType<Armada["status"]>>["provider"], "boat" | "modal" | "docker">
+>;
 
 export type ModalReceiptFields = Assert<Equal<keyof ModalLaunchReceipt, "sandbox">>;

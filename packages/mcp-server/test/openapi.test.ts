@@ -311,9 +311,17 @@ test("the published trigger UUID schemas accept uppercase input", () => {
 });
 
 test("the CLI consent operations require a personal session in the public document", () => {
-  for (const route of ["/api/v1/auth/device/inspect", "/api/v1/auth/device/decide"] as const)
+  for (const route of [
+    "/api/v1/auth/device/inspect",
+    "/api/v1/auth/device/decide",
+    "/api/v1/sandbox/list-turns",
+  ] as const)
     expect(published.paths[route].post.security).toEqual([{ personalSession: [] }]);
   expect(published.components.securitySchemes.personalSession).toMatchObject({ type: "http", scheme: "bearer" });
+  const statusSchema =
+    published.paths["/api/v1/sandbox/status"].post.responses["200"].content["application/json"].schema;
+  expect(statusSchema.required).toContain("provider");
+  expect(statusSchema.properties.provider.enum).toEqual(["boat", "modal", "docker"]);
 });
 
 test("the administrative logout document requires a personal session", () => {
