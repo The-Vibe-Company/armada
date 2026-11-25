@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   composerAdmission,
   drivingFailureMessage,
+  isDefiniteComposerRefusal,
   messageKeyFor,
   modelChange,
   PINNED_MODEL,
   pinnedSend,
+  UNCERTAIN_SEND_MESSAGE,
   UNCONFIRMED_ACTION,
 } from "./composer.ts";
 
@@ -116,5 +118,23 @@ describe("composer admission", () => {
       now,
     );
     expect(polled).toEqual({ refusal: null, wakes: true });
+  });
+
+  test("isDefiniteComposerRefusal excludes unconfirmed and outcome_unknown failures", () => {
+    expect(isDefiniteComposerRefusal({ ok: true })).toBe(false);
+    expect(isDefiniteComposerRefusal({ ok: false, error: UNCONFIRMED_ACTION })).toBe(false);
+    expect(isDefiniteComposerRefusal({ ok: false, error: UNCERTAIN_SEND_MESSAGE })).toBe(false);
+    expect(
+      isDefiniteComposerRefusal({
+        ok: false,
+        error: drivingFailureMessage({ message: "unknown", code: "outcome_unknown" }, true),
+      }),
+    ).toBe(false);
+    expect(
+      isDefiniteComposerRefusal({
+        ok: false,
+        error: drivingFailureMessage({ message: "Sandbox stopped", code: "sandbox_terminal" }, true),
+      }),
+    ).toBe(true);
   });
 });

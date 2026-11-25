@@ -14,7 +14,6 @@ import {
   XIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   createContext,
   type Dispatch,
@@ -56,18 +55,35 @@ import {
   toolSummary,
   toolText,
 } from "@/lib/chat";
-import { chatEventStream } from "@/lib/chat-event-stream";
-import { failPendingMessage, type PendingMessage, unconfirmedMessages } from "@/lib/chat-outbox";
+import { type ChatTurnModel, deleteChatCache, getChatCache, setChatCache } from "@/lib/chat-cache";
+import { type ChatStreamFrame, chatEventStream } from "@/lib/chat-event-stream";
+import {
+  failPendingMessage,
+  hasActivePendingMessages,
+  type PendingMessage,
+  unconfirmedMessages,
+} from "@/lib/chat-outbox";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
+  isDefiniteComposerRefusal,
   messageKeyFor,
   modelChange,
   PINNED_MODEL,
   SEND_KEY_FIELD,
   UNCONFIRMED_ACTION,
 } from "@/lib/composer";
-import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
+import {
+  applyChatPage,
+  applyInlineEvent,
+  type ChatEvent,
+  type ChatHistory,
+  initialChatHistory,
+  isActiveStatus,
+  isSandboxStatus,
+  isSuccessfulPage,
+  parseEventPage,
+} from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { LIVE_FLEET_REFRESH_EVENT } from "@/lib/live-sandbox-view";
@@ -76,7 +92,6 @@ import { cn } from "@/lib/utils";
 
 const WORKING_POLL_MS = 1_000;
 const IDLE_POLL_MS = 3_000;
-const STREAM_READ_DELAY_MS = 100;
 const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 8000;
 const MAX_RETRIES = 5;
@@ -94,6 +109,7 @@ const CLOSED_COMPOSER: Record<Exclude<SandboxStatus, (typeof CAN_SEND)[number]>,
 };
 
 type Props = {
+  orgId: string;
   sandboxId: string;
   initialStatus: SandboxStatus;
   provider?: string;
@@ -102,7 +118,6 @@ type Props = {
   /** The persisted stop reason of `initialStatus`; ignored once a conversation read reports another status. */
   statusReason?: string | null;
   expiresAt?: string | null;
-  initialUsageRevision: string;
   live: boolean;
   harness: Harness;
   catalog: ModelCatalog;
@@ -129,49 +144,26 @@ type Poll = {
 type PollSession = {
   active: boolean;
   reading: boolean;
-  pendingUpdate: boolean;
+  synced: boolean;
+  pendingCatchUp: boolean;
+  bufferedFrames: ChatStreamFrame[];
   stream: ReturnType<typeof chatEventStream>;
   paused: boolean;
   retries: number;
   timer: ReturnType<typeof setTimeout> | undefined;
   controller: AbortController | null;
+  activeSandbox: boolean;
+  working: boolean;
 };
 
 type ReadResult =
-  | { kind: "success"; more: boolean; active: boolean; working: boolean; refreshNeeded: boolean }
+  | { kind: "success"; more: boolean; active: boolean; working: boolean }
   | { kind: "retryable"; message: string }
   | { kind: "access-ended"; message: string }
   | { kind: "aborted" };
 
-const SANDBOX_STATUSES: readonly SandboxStatus[] = [
-  "starting",
-  "ready",
-  "running",
-  "stopping",
-  "stopped",
-  "failed",
-  "deleted",
-];
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isSandboxStatus(value: unknown): value is SandboxStatus {
-  return typeof value === "string" && SANDBOX_STATUSES.includes(value as SandboxStatus);
-}
-
-/** A successful page has a stable outer shape; individual events remain lenient in parseEventPage. */
-function isSuccessfulPage(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  if (!isSandboxStatus(value.status)) return false;
-  if (value.usageRevision !== undefined && typeof value.usageRevision !== "string") return false;
-  if (value.configured !== undefined && typeof value.configured !== "boolean") return false;
-  if (!Array.isArray(value.events)) return false;
-  if (value.cursor !== undefined && value.cursor !== null && typeof value.cursor !== "string") return false;
-  if (typeof value.hasMore !== "boolean") return false;
-  if ("error" in value) return false;
-  return value.prompt === undefined || value.prompt === null || isRecord(value.prompt);
 }
 
 function isAbortError(error: unknown): boolean {
@@ -224,56 +216,41 @@ export function ThreadSandboxState(props: Parameters<typeof SandboxState>[0]) {
 }
 
 /**
- * The sandbox as a conversation: the prompts, the agent's answers and its tool calls, read from the event stream
- * by cursor when the event feed changes, with a composer for the next message.
+ * The sandbox as a conversation: the prompts, the agent's answers and its tool calls, hydrated from the client LRU
+ * cache and updated inline from SSE frames (with HTTP fallback polling only while SSE is disconnected).
  */
 export function SandboxChat(props: Props) {
-  const { sandboxId, initialStatus } = props;
-  const router = useRouter();
+  const { orgId, sandboxId, initialStatus } = props;
   const setThreadState = useContext(ThreadStateContext)?.setLive;
   const pendingRuntimePrompt = useRef<string | undefined>(undefined);
+  const [initialCache] = useState(() => getChatCache(orgId, sandboxId));
   const [outbox, setOutbox] = useState<PendingMessage[]>([]);
-  const [history, setHistory] = useState(initialChatHistory);
-  const currentHistory = useRef(initialChatHistory);
+  const [history, setHistory] = useState<ChatHistory>(() => initialCache?.history ?? initialChatHistory);
+  const currentHistory = useRef<ChatHistory>(initialCache?.history ?? initialChatHistory);
   const { events, loaded, olderCursor } = history;
-  const [status, setStatus] = useState(initialStatus);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [hasLiveStatus, setHasLiveStatus] = useState(false);
-  const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
+  const [status, setStatus] = useState<SandboxStatus>(() => initialCache?.status ?? initialStatus);
+  const [statusMessage, setStatusMessage] = useState<string | null>(() => initialCache?.statusMessage ?? null);
+  const [hasLiveStatus, setHasLiveStatus] = useState(() => initialCache?.hasLiveStatus ?? false);
+  const [idlePaused, setIdlePaused] = useState(() => initialCache?.idlePaused ?? props.initialIdlePaused === true);
   const [poll, setPoll] = useState<Poll>({
     error: null,
     configured: true,
     retryAvailable: false,
     accessEnded: false,
   });
-  const [turnModel, setTurnModel] = useState<{
-    rateLimit?: { waiting: boolean; message: string; retryCount: number; totalWaitMs: number } | null;
-    state?: string;
-    conversationId?: string | null;
-    requestedModel?: string | null;
-    observedModel?: string | null;
-    modelSelectionReason?: string | null;
-    modelSelectionMessage?: string | null;
-  } | null>(null);
+  const [turnModel, setTurnModel] = useState<ChatTurnModel | null>(() => initialCache?.turnModel ?? null);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const known = useRef(initialStatus);
-  const rendered = useRef({ status: initialStatus, usage: props.initialUsageRevision });
-  const refreshing = useRef(false);
-  const refreshAfterPending = useRef(false);
-  const [refreshPending, startRefresh] = useTransition();
-  useLayoutEffect(() => {
-    rendered.current = { status: initialStatus, usage: props.initialUsageRevision };
-  }, [initialStatus, props.initialUsageRevision]);
-  useLayoutEffect(() => {
-    refreshing.current = refreshPending;
-  }, [refreshPending]);
+  const known = useRef<SandboxStatus>(initialCache?.status ?? initialStatus);
+  const hasActiveOutboxRef = useRef(false);
   const sessionRef = useRef<PollSession | null>(null);
   const isCurrent = useCallback((session: PollSession) => session.active && sessionRef.current === session, []);
 
   const applyMetadata = useCallback(
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
-      const prompt = isRecord(body.prompt) ? body.prompt : null;
+      const prompt = isRecord(body.prompt)
+        ? (body.prompt as ChatTurnModel & { promptId?: unknown; reason?: unknown })
+        : null;
       if (body.prompt !== undefined) setTurnModel(prompt);
       if (prompt?.state === "failed" && typeof prompt.promptId === "string") {
         const id = prompt.promptId;
@@ -284,17 +261,10 @@ export function SandboxChat(props: Props) {
       setHasLiveStatus(true);
       setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
-      const statusChanged = next !== known.current;
-      const usageChanged = typeof body.usageRevision === "string" && body.usageRevision !== rendered.current.usage;
-      if (statusChanged) {
+      if (next !== known.current) {
         known.current = next;
         setStatus(next);
       }
-      // Only committed page props acknowledge the card's revision. A discarded or
-      // stale RSC refresh must remain retryable on the next successful read.
-      const refreshNeeded = next !== rendered.current.status || usageChanged;
-      if (refreshing.current) refreshAfterPending.current = refreshNeeded;
-      else if (refreshNeeded) startRefresh(() => router.refresh());
       const error = typeof body.error === "string" ? body.error : null;
       const configured = typeof body.configured === "boolean" ? body.configured : true;
       setPoll((current) =>
@@ -302,15 +272,77 @@ export function SandboxChat(props: Props) {
           ? current
           : { error, configured, retryAvailable: false, accessEnded: false },
       );
-      return { next, refreshNeeded };
+      return { next };
     },
-    [isCurrent, router],
+    [isCurrent],
+  );
+
+  const applyStreamFrame = useCallback(
+    (session: PollSession, frame: ChatStreamFrame) => {
+      if (!isCurrent(session)) return;
+      if (frame.kind === "runtime_event") {
+        const next = applyInlineEvent(currentHistory.current, sandboxId, frame.event, frame.sequence);
+        if (next === currentHistory.current) return;
+        currentHistory.current = next;
+        setHistory(next);
+        if (!frame.event) return;
+        if (frame.event.kind === "prompt") {
+          const promptEvent = frame.event;
+          const ended =
+            promptEvent.status === "finished" ||
+            promptEvent.status === "failed" ||
+            promptEvent.status === "interrupted";
+          setTurnModel((current) => ({
+            ...current,
+            state: promptEvent.status,
+            ...(promptEvent.conversationId ? { conversationId: promptEvent.conversationId } : {}),
+            ...(ended ? { rateLimit: null } : {}),
+          }));
+          session.working =
+            session.activeSandbox && (promptEvent.status === "queued" || promptEvent.status === "running");
+          if (promptEvent.status === "failed" && promptEvent.promptId) {
+            const id = promptEvent.promptId;
+            const reason = promptEvent.reason ?? "The turn failed.";
+            setOutbox((current) => failPendingMessage(current, id, reason));
+          }
+        }
+        return;
+      }
+      if (frame.kind === "transition" && frame.status) {
+        const nextStatus = frame.status;
+        const nextIdlePaused = nextStatus === "stopped" && frame.statusReason === "idle_paused";
+        const nextStatusMessage = idlePauseMessage(
+          { status: nextStatus, statusReason: frame.statusReason ?? null, expiresAt: props.expiresAt ?? null },
+          new Date(),
+        );
+        known.current = nextStatus;
+        setStatus(nextStatus);
+        setIdlePaused(nextIdlePaused);
+        setStatusMessage(nextStatusMessage);
+        setHasLiveStatus(true);
+        session.activeSandbox = isActiveStatus(nextStatus);
+        if (!session.activeSandbox) {
+          session.working = false;
+          if (nextStatus === "failed" || nextStatus === "deleted") {
+            setTurnModel((current) => (current ? { ...current, state: nextStatus, rateLimit: null } : current));
+          }
+          if (!hasActiveOutboxRef.current) {
+            session.stream.close();
+            clearTimeout(session.timer);
+            session.timer = undefined;
+          }
+        } else if (nextStatus === "running") {
+          session.working = true;
+        }
+      }
+    },
+    [isCurrent, props.expiresAt, sandboxId],
   );
 
   const read = useCallback(
     async (session: PollSession): Promise<ReadResult> => {
       const { cursor: cursorBefore, loaded } = currentHistory.current;
-      const path = loaded ? "events" : "history";
+      const path = loaded && cursorBefore ? "events" : "history";
       const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
       const oldestPending = pendingRuntimePrompt.current;
@@ -367,7 +399,6 @@ export function SandboxChat(props: Props) {
           working:
             metadata.next === "running" ||
             (isRecord(body.prompt) && (body.prompt.state === "queued" || body.prompt.state === "running")),
-          refreshNeeded: metadata.refreshNeeded,
         };
       } catch (error) {
         if (isAbortError(error) || !isCurrent(session)) return { kind: "aborted" };
@@ -404,41 +435,57 @@ export function SandboxChat(props: Props) {
     }
   };
 
-  /** Serialize reads and coalesce stream notifications received while a page is in flight. */
+  /** Serialize HTTP reads (initial sync + fallback polling only while SSE is disconnected). */
   const tick = useCallback(
     async function readUpdate() {
       const session = sessionRef.current;
       if (!session || !isCurrent(session) || session.paused || document.hidden) return;
-      if (session.reading) {
-        session.pendingUpdate = true;
-        return;
-      }
+      if (session.reading) return;
       session.reading = true;
-      session.pendingUpdate = false;
+      session.pendingCatchUp = false;
       clearTimeout(session.timer);
       session.timer = undefined;
       try {
         const result = await read(session);
         if (!isCurrent(session) || document.hidden) return;
         if (result.kind === "aborted") {
-          if (session.pendingUpdate) session.timer = setTimeout(() => void readUpdate(), 0);
+          if (session.synced && session.bufferedFrames.length > 0) {
+            for (const frame of session.bufferedFrames.splice(0)) applyStreamFrame(session, frame);
+          }
+          if (session.pendingCatchUp) session.timer = setTimeout(() => void readUpdate(), 0);
           return;
         }
         if (result.kind === "success") {
           session.retries = 0;
-          if (!result.active && !result.working) session.stream.close();
+          session.activeSandbox = result.active;
+          session.working = result.working;
+          if (!result.more) {
+            session.synced = true;
+            if (session.bufferedFrames.length > 0) {
+              const frames = session.bufferedFrames.splice(0);
+              for (const frame of frames) applyStreamFrame(session, frame);
+            }
+          }
+          const keepAlive = session.activeSandbox || session.working || hasActiveOutboxRef.current;
+          if (!keepAlive) session.stream.close();
           else if (props.configured) session.stream.connect();
-          if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
-          else if (session.pendingUpdate) {
-            session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
-          } else if (result.active || result.working || result.refreshNeeded || pendingRuntimePrompt.current) {
-            session.timer = setTimeout(() => void readUpdate(), result.working ? WORKING_POLL_MS : IDLE_POLL_MS);
+          if (result.more || session.pendingCatchUp) {
+            session.timer = setTimeout(() => void readUpdate(), 0);
+          } else if (pendingRuntimePrompt.current || (!session.stream.connected && keepAlive)) {
+            session.timer = setTimeout(
+              () => void readUpdate(),
+              session.working || hasActiveOutboxRef.current ? WORKING_POLL_MS : IDLE_POLL_MS,
+            );
           }
           return;
+        }
+        if (session.synced && session.bufferedFrames.length > 0) {
+          for (const frame of session.bufferedFrames.splice(0)) applyStreamFrame(session, frame);
         }
         if (result.kind === "access-ended") {
           session.paused = true;
           session.stream.close();
+          deleteChatCache(orgId, sandboxId);
           setPoll((current) => ({
             ...current,
             error: result.message,
@@ -471,14 +518,8 @@ export function SandboxChat(props: Props) {
         session.reading = false;
       }
     },
-    [isCurrent, props.configured, read],
+    [applyStreamFrame, isCurrent, orgId, props.configured, read, sandboxId],
   );
-
-  useEffect(() => {
-    if (refreshPending || !refreshAfterPending.current) return;
-    refreshAfterPending.current = false;
-    void tick();
-  }, [refreshPending, tick]);
 
   const retryPolling = useCallback(() => {
     const session = sessionRef.current;
@@ -486,21 +527,31 @@ export function SandboxChat(props: Props) {
     session.paused = false;
     session.retries = 0;
     setPoll((current) => ({ ...current, error: null, retryAvailable: false, accessEnded: false }));
+    if (props.configured && (isActiveStatus(known.current) || hasActiveOutboxRef.current)) {
+      session.stream.connect();
+    }
     void tick();
-  }, [isCurrent, tick]);
+  }, [isCurrent, props.configured, tick]);
 
   const resumePolling = useCallback(() => {
     const session = sessionRef.current;
     if (!session || !isCurrent(session)) return;
     session.paused = false;
     session.retries = 0;
-    void tick();
-  }, [isCurrent, tick]);
+    if (props.configured) session.stream.connect();
+    if (!session.stream.connected) void tick();
+  }, [isCurrent, props.configured, tick]);
 
   // A server action such as Stop re-renders the page with the new status: show it in the same paint as the header,
   // close the stream when the sandbox becomes inactive, and read the latest conversation.
+  const previousProps = useRef({ status: initialStatus, idlePaused: props.initialIdlePaused === true });
   useLayoutEffect(() => {
-    setIdlePaused(props.initialIdlePaused === true);
+    const nextPropIdlePaused = props.initialIdlePaused === true;
+    if (previousProps.current.status === initialStatus && previousProps.current.idlePaused === nextPropIdlePaused) {
+      return;
+    }
+    previousProps.current = { status: initialStatus, idlePaused: nextPropIdlePaused };
+    setIdlePaused(nextPropIdlePaused);
     if (initialStatus === known.current) return;
     known.current = initialStatus;
     setStatus(initialStatus);
@@ -512,31 +563,66 @@ export function SandboxChat(props: Props) {
     const session: PollSession = {
       active: true,
       reading: false,
-      pendingUpdate: false,
-      stream: chatEventStream(sandboxId, () => {
-        if (!isCurrent(session) || session.paused || document.hidden || session.retries > 0 || session.pendingUpdate)
-          return;
-        session.pendingUpdate = true;
-        if (session.reading) return;
-        clearTimeout(session.timer);
-        session.timer = setTimeout(() => void tick(), STREAM_READ_DELAY_MS);
+      synced: false,
+      pendingCatchUp: false,
+      bufferedFrames: [],
+      stream: chatEventStream(sandboxId, {
+        onOpen: ({ fromTail }) => {
+          if (!isCurrent(session) || session.paused || document.hidden) return;
+          if (!pendingRuntimePrompt.current) {
+            clearTimeout(session.timer);
+            session.timer = undefined;
+          }
+          if (fromTail && session.synced) {
+            if (session.reading) session.pendingCatchUp = true;
+            else void tick();
+          }
+        },
+        onFrame: (frame) => {
+          if (!isCurrent(session) || session.paused || document.hidden) return;
+          if (!session.synced || session.reading) {
+            session.bufferedFrames.push(frame);
+            return;
+          }
+          applyStreamFrame(session, frame);
+        },
+        onDisconnect: () => {
+          if (!isCurrent(session) || session.paused || document.hidden || session.reading || session.timer) return;
+          if (session.activeSandbox || session.working || pendingRuntimePrompt.current || hasActiveOutboxRef.current) {
+            session.timer = setTimeout(
+              () => void tick(),
+              session.working || hasActiveOutboxRef.current ? WORKING_POLL_MS : IDLE_POLL_MS,
+            );
+          }
+        },
       }),
       paused: false,
       retries: 0,
       timer: undefined,
       controller: null,
+      activeSandbox: isActiveStatus(known.current),
+      working: known.current === "running",
     };
     sessionRef.current = session;
     function visibilityChanged() {
       if (document.hidden) {
         clearTimeout(session.timer);
+        session.timer = undefined;
         session.controller?.abort();
         session.stream.close();
       } else {
+        session.synced = false;
+        session.bufferedFrames = [];
+        if (props.configured && (isActiveStatus(known.current) || hasActiveOutboxRef.current)) {
+          session.stream.connect();
+        }
         void tick();
       }
     }
     document.addEventListener("visibilitychange", visibilityChanged);
+    if (props.configured && (isActiveStatus(known.current) || hasActiveOutboxRef.current)) {
+      session.stream.connect();
+    }
     void tick();
     return () => {
       document.removeEventListener("visibilitychange", visibilityChanged);
@@ -547,14 +633,31 @@ export function SandboxChat(props: Props) {
       session.controller?.abort();
       if (sessionRef.current === session) sessionRef.current = null;
     };
-  }, [isCurrent, sandboxId, tick]);
+  }, [applyStreamFrame, isCurrent, props.configured, sandboxId, tick]);
+
+  useEffect(() => {
+    if (!history.loaded || poll.accessEnded) return;
+    setChatCache(orgId, sandboxId, {
+      history,
+      status,
+      statusMessage,
+      hasLiveStatus,
+      idlePaused,
+      turnModel,
+      updatedAt: Date.now(),
+    });
+  }, [hasLiveStatus, history, idlePaused, orgId, poll.accessEnded, sandboxId, status, statusMessage, turnModel]);
 
   const { currentConversation } = props;
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
+  const chatItemsRef = useRef(chat.items);
+  chatItemsRef.current = chat.items;
   const unconfirmed = useMemo(() => unconfirmedMessages(outbox, chat.items), [outbox, chat.items]);
+  const hasActiveOutbox = useMemo(() => hasActivePendingMessages(unconfirmed), [unconfirmed]);
+  hasActiveOutboxRef.current = hasActiveOutbox;
   useLayoutEffect(() => {
     const oldest = props.pinnedModel
-      ? unconfirmed.find((message) => message.accepted && !message.failure)?.requestId
+      ? unconfirmed.find((message) => message.kind !== "steer" && message.accepted && !message.failure)?.requestId
       : undefined;
     const previous = pendingRuntimePrompt.current;
     pendingRuntimePrompt.current = oldest;
@@ -566,9 +669,9 @@ export function SandboxChat(props: Props) {
     if (retained.length !== outbox.length) setOutbox((current) => (current === outbox ? retained : current));
   }, [outbox, unconfirmed]);
 
-  // A stopped or failed machine runs no live steer/interrupt turn; queued wake only marks Working display state.
+  // A stopped or failed machine runs no live steer/interrupt turn; queued wake or active outbox marks Working immediately.
   const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
-  const working = turnRunning || (status === "stopped" && turnModel?.state === "queued");
+  const working = turnRunning || hasActiveOutbox || (status === "stopped" && turnModel?.state === "queued");
   const previousWorking = useRef<boolean | null>(null);
   useEffect(() => {
     if (setThreadState) {
@@ -635,26 +738,40 @@ export function SandboxChat(props: Props) {
         <Transcript
           items={[
             ...chat.items,
-            ...unconfirmed.flatMap((message) => [
-              {
-                kind: "user",
-                key: `prompt:${message.promptId}`,
-                at: message.at,
-                text: message.text,
-                status: message.failure ? "failed" : "queued",
-              } satisfies ChatItem,
-              ...(message.failure
-                ? [
-                    {
-                      kind: "outcome",
-                      key: `outcome:prompt:${message.promptId}`,
-                      at: message.at,
-                      status: "failed",
-                      reason: message.failure,
-                    } satisfies ChatItem,
-                  ]
-                : []),
-            ]),
+            ...unconfirmed.flatMap((message) => {
+              const items: ChatItem[] =
+                message.kind === "steer"
+                  ? [
+                      {
+                        kind: "steer",
+                        key: `steer:${message.requestId}`,
+                        at: message.at,
+                        text: message.text,
+                        ...(message.mode ? { mode: message.mode } : {}),
+                      },
+                    ]
+                  : [
+                      {
+                        kind: "user",
+                        key: `prompt:${message.promptId}`,
+                        at: message.at,
+                        text: message.text,
+                        status: message.failure ? "failed" : "queued",
+                      },
+                      ...(message.failure
+                        ? [
+                            {
+                              kind: "outcome" as const,
+                              key: `outcome:prompt:${message.promptId}`,
+                              at: message.at,
+                              status: "failed" as const,
+                              reason: message.failure,
+                            },
+                          ]
+                        : []),
+                    ];
+              return items;
+            }),
           ]}
           running={working}
           loaded={loaded}
@@ -675,7 +792,16 @@ export function SandboxChat(props: Props) {
               status={status}
               idlePaused={idlePaused}
               running={turnRunning}
-              onSending={(message) => setOutbox((current) => [...current, message])}
+              onSending={(message) =>
+                setOutbox((current) => {
+                  if (message.kind !== "steer") return [...current, message];
+                  const confirmedBefore =
+                    chatItemsRef.current.filter((item) => item.kind === "steer" && item.text === message.text).length +
+                    current.filter((item) => item.kind === "steer" && !item.failure && item.text === message.text)
+                      .length;
+                  return [...current, { ...message, confirmedBefore }];
+                })
+              }
               onSendSettled={(requestId, promptId) => {
                 setOutbox((current) =>
                   current.flatMap((message) => {
@@ -1158,7 +1284,7 @@ type Intent = "send" | "steer" | "interrupt";
 
 /**
  * The next message. Send opens a new turn (with an optional model or effort for that turn); while a turn runs,
- * Steer redirects it and Interrupt stops it. The draft stays until the server accepts it.
+ * Steer redirects it and Interrupt stops it. The draft clears immediately and restores only on definite refusal.
  */
 function Composer({
   sandboxId,
@@ -1187,6 +1313,8 @@ function Composer({
 }) {
   const form = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState("");
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, setPending] = useState<Intent | null>(null);
   const [waking, setWaking] = useState(false);
@@ -1233,7 +1361,9 @@ function Composer({
   function run(intent: Intent) {
     if (!form.current || pending) return;
     const data = new FormData(form.current);
-    if (intent !== "interrupt" && !draft.trim()) {
+    const submittedDraft = draft;
+    const trimmed = submittedDraft.trim();
+    if (intent !== "interrupt" && !trimmed) {
       setResult({ ok: false, error: "Write the message to send." });
       return;
     }
@@ -1241,12 +1371,34 @@ function Composer({
       setResult({ ok: false, error: INCOMPLETE_MODEL });
       return;
     }
+    data.set("prompt", submittedDraft);
+    let submittedKey: LaunchKey | null = null;
     if (intent === "send") {
-      sendKey.current = messageKeyFor(sendKey.current, data);
-      data.set(SEND_KEY_FIELD, sendKey.current.key);
+      submittedKey = messageKeyFor(sendKey.current, data);
+      sendKey.current = submittedKey;
+      data.set(SEND_KEY_FIELD, submittedKey.key);
     }
-    const requestId = intent === "send" ? sendKey.current?.key : undefined;
-    if (requestId) onSending({ requestId, promptId: requestId, text: draft.trim(), at: Date.now() });
+    const requestId =
+      intent === "send"
+        ? submittedKey?.key
+        : intent === "steer"
+          ? typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `steer-${Date.now()}-${Math.random().toString(36).slice(2)}`
+          : undefined;
+    if (requestId) {
+      onSending({
+        requestId,
+        promptId: requestId,
+        text: trimmed,
+        at: Date.now(),
+        kind: intent === "steer" ? "steer" : "user",
+      });
+    }
+    const hadOverride = override;
+    if (intent !== "interrupt") {
+      setDraft("");
+    }
     const action = intent === "send" ? sendToSandbox : intent === "steer" ? steerSandbox : interruptSandbox;
     setWaking(intent === "send" && wakes);
     setPending(intent);
@@ -1258,17 +1410,25 @@ function Composer({
       } catch {
         outcome = { ok: false, error: UNCONFIRMED_ACTION };
       }
-      if (requestId) onSendSettled(requestId, outcome.ok ? outcome.promptId : undefined);
+      if (requestId) onSendSettled(requestId, outcome.ok ? (outcome.promptId ?? requestId) : undefined);
       setPending(null);
       setWaking(false);
       setResult(outcome);
-      if (!outcome.ok) return;
+      if (!outcome.ok) {
+        if (intent !== "interrupt" && isDefiniteComposerRefusal(outcome) && draftRef.current === "") {
+          if (intent === "send" && submittedKey) sendKey.current = submittedKey;
+          setDraft(submittedDraft);
+        }
+        return;
+      }
       sendKey.current = null;
-      if (intent !== "interrupt") {
-        // An accepted action owns only the draft it submitted, not text typed during its round trip.
-        const submitted = String(data.get("prompt") ?? "");
-        setDraft((current) => (current === submitted ? "" : current));
+      if (intent !== "interrupt" && hadOverride) {
+        const promptField = form.current?.elements.namedItem("prompt");
+        const typedFollowUp = promptField instanceof HTMLTextAreaElement ? promptField.value : null;
         form.current?.reset();
+        if (promptField instanceof HTMLTextAreaElement && typedFollowUp !== null) {
+          promptField.value = typedFollowUp;
+        }
         setOverride(false);
       }
       onDone();
@@ -1360,6 +1520,10 @@ function Composer({
               <span className="sr-only">Model change: </span>
               New turn only
             </p>
+          ) : pending === "interrupt" ? (
+            <p role="status" className="min-w-0 flex-1 text-xs text-muted-foreground">
+              Interrupting…
+            </p>
           ) : (
             result && (
               <p
@@ -1384,7 +1548,7 @@ function Composer({
                 onClick={() => run("interrupt")}
               >
                 {pending === "interrupt" ? <Loader2Icon className="animate-spin" /> : <CircleStopIcon />}
-                <span className="max-sm:sr-only">Interrupt</span>
+                <span className="max-sm:sr-only">{pending === "interrupt" ? "Interrupting…" : "Interrupt"}</span>
               </Button>
             )}
             {running && (

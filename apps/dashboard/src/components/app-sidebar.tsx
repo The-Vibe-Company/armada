@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { Sidebar, SidebarFooter, SidebarHeader, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import { clearChatCache } from "@/lib/chat-cache";
 
 /** The full header belongs to the sidebar, which becomes a drawer on mobile. */
 export function AppSidebar({
@@ -38,4 +39,12 @@ export function AppSidebar({
 export function DesktopSidebarTrigger() {
   const { isMobile } = useSidebar();
   return isMobile ? null : <SidebarTrigger className="hidden md:flex" aria-label="Collapse navigation" />;
+}
+
+export function SignOutForm({ children }: { children: ReactNode }) {
+  return (
+    <form action="/auth/signout" method="post" onSubmit={() => clearChatCache()}>
+      {children}
+    </form>
+  );
 }

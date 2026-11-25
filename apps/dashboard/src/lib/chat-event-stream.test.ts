@@ -1,5 +1,5 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test";
-import { chatEventStream } from "./chat-event-stream.ts";
+import { type ChatStreamFrame, chatEventStream } from "./chat-event-stream.ts";
 
 const originalEventSource = globalThis.EventSource;
 const connections: BrowserStream[] = [];
@@ -8,7 +8,7 @@ class BrowserStream {
   closed = false;
   onopen?: () => void;
   onerror?: () => void;
-  onmessage?: (message: { lastEventId: string }) => void;
+  onmessage?: (message: { lastEventId: string; data: string }) => void;
 
   constructor(readonly url: string) {
     connections.push(this);
@@ -26,25 +26,64 @@ afterEach(() => {
   connections.length = 0;
 });
 
-test("resumes after the newest event and ignores duplicate and stale notifications", () => {
+test("connects at cursor=tail, parses inline runtime_event and transition frames, and resumes after newest id", () => {
   globalThis.EventSource = BrowserStream as unknown as typeof EventSource;
   setSystemTime(new Date(0));
-  let updates = 0;
-  const stream = chatEventStream(sandboxId, () => updates++);
+  const frames: ChatStreamFrame[] = [];
+  const opens: boolean[] = [];
+  let disconnects = 0;
+  const stream = chatEventStream(sandboxId, {
+    onFrame: (frame) => frames.push(frame),
+    onOpen: ({ fromTail }) => {
+      opens.push(fromTail);
+    },
+    onDisconnect: () => {
+      disconnects += 1;
+    },
+  });
   try {
     stream.connect();
     const [first] = connections;
-    expect(first!.url).toBe(`/api/v1/events?sandbox=${sandboxId}&cursor=0`);
+    expect(first!.url).toBe(`/api/v1/events?sandbox=${sandboxId}&cursor=tail`);
+    expect(stream.connected).toBe(false);
+
     first!.onopen!();
-    first!.onmessage!({ lastEventId: "9007199254740993" });
-    first!.onmessage!({ lastEventId: "9007199254740992" });
-    first!.onmessage!({ lastEventId: "9007199254740993" });
-    expect(updates).toBe(2);
+    expect(stream.connected).toBe(true);
+    expect(opens).toEqual([true]);
+
+    first!.onmessage!({
+      lastEventId: "9007199254740993",
+      data: JSON.stringify({
+        id: "9007199254740993",
+        sandboxId,
+        sequence: "10",
+        kind: "runtime_event",
+        event: { id: "ev-10", at: 100, kind: "message", text: "Hello", partial: false, tools: [] },
+      }),
+    });
+    first!.onmessage!({
+      lastEventId: "9007199254740992",
+      data: JSON.stringify({ id: "9007199254740992", sequence: "9", kind: "transition", status: "ready" }),
+    });
+    first!.onmessage!({
+      lastEventId: "9007199254740993",
+      data: JSON.stringify({ id: "9007199254740993", sequence: "10", kind: "transition", status: "ready" }),
+    });
+    first!.onmessage!({ lastEventId: "9007199254740994", data: "not-json" });
+
+    expect(frames).toEqual([
+      {
+        id: "9007199254740993",
+        sequence: "10",
+        kind: "runtime_event",
+        event: { id: "ev-10", at: 100, kind: "message", text: "Hello", partial: false, tools: [] },
+      },
+    ]);
 
     first!.onerror!();
     expect(first!.closed).toBe(true);
-    expect(stream.waitingForEvents).toBe(false);
-    expect(updates).toBe(3);
+    expect(stream.connected).toBe(false);
+    expect(disconnects).toBe(1);
     stream.connect();
     expect(connections).toHaveLength(1);
 
@@ -53,14 +92,37 @@ test("resumes after the newest event and ignores duplicate and stale notificatio
     const second = connections[1]!;
     expect(second.url).toBe(`/api/v1/events?sandbox=${sandboxId}&cursor=9007199254740993`);
     second.onopen!();
-    first!.onmessage!({ lastEventId: "9007199254740994" });
-    second.onmessage!({ lastEventId: "9007199254740994" });
-    expect(updates).toBe(5);
+    expect(opens).toEqual([true, false]);
+    first!.onmessage!({
+      lastEventId: "9007199254740994",
+      data: JSON.stringify({ id: "9007199254740994", sequence: null, kind: "transition", status: "stopped" }),
+    });
+    second.onmessage!({
+      lastEventId: "9007199254740994",
+      data: JSON.stringify({
+        id: "9007199254740994",
+        sequence: null,
+        kind: "transition",
+        status: "stopped",
+        statusReason: "idle_paused",
+      }),
+    });
+    expect(frames).toHaveLength(2);
+    expect(frames[1]).toEqual({
+      id: "9007199254740994",
+      sequence: null,
+      kind: "transition",
+      status: "stopped",
+      statusReason: "idle_paused",
+    });
 
     stream.close();
-    second.onmessage!({ lastEventId: "9007199254740995" });
-    expect(second.closed).toBe(true);
-    expect(updates).toBe(5);
+    expect(stream.connected).toBe(false);
+    second.onmessage!({
+      lastEventId: "9007199254740995",
+      data: JSON.stringify({ id: "9007199254740995", sequence: null, kind: "transition", status: "ready" }),
+    });
+    expect(frames).toHaveLength(2);
   } finally {
     stream.close();
     setSystemTime();
@@ -69,9 +131,11 @@ test("resumes after the newest event and ignores duplicate and stale notificatio
 
 test("allows JSON fallback when the browser lacks EventSource", () => {
   globalThis.EventSource = undefined as unknown as typeof EventSource;
-  const stream = chatEventStream(sandboxId, () => {
-    throw Error("No events should arrive without a stream");
+  const stream = chatEventStream(sandboxId, {
+    onFrame: () => {
+      throw Error("No events should arrive without a stream");
+    },
   });
   stream.connect();
-  expect(stream.waitingForEvents).toBe(false);
+  expect(stream.connected).toBe(false);
 });

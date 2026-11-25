@@ -5,8 +5,11 @@ import { PathnameContext, SearchParamsContext } from "next/dist/shared/lib/hooks
 import { renderToReadableStream, renderToString } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import SandboxesPage from "@/app/(app)/sandboxes/page";
+import * as sandboxActions from "@/app/actions/sandboxes";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { clearChatCache, setChatCache } from "@/lib/chat-cache";
+import { SEND_KEY_FIELD } from "@/lib/composer";
 import * as dockerHosts from "@/lib/data/docker-hosts";
 import * as providerSetup from "@/lib/data/provider-setup";
 import * as sandboxInventory from "@/lib/data/sandbox-inventory";
@@ -40,6 +43,7 @@ const router = {
 } satisfies AppRouterInstance;
 
 afterEach(() => {
+  clearChatCache();
   /* oxlint-disable landmines-testing/no-test-doubles -- Restore browser globals in the DOM-free renderer. */
   Object.assign(globalThis, orig);
   /* oxlint-enable landmines-testing/no-test-doubles */
@@ -220,10 +224,10 @@ test("ThreadSandboxState live-updates between Working and Ready as turns start a
             />
           </header>
           <SandboxChat
+            orgId="org-1"
             sandboxId="11111111-1111-4111-8111-111111111111"
             currentConversation="conv-1"
             initialStatus="running"
-            initialUsageRevision="rev-1"
             live
             harness="codex"
             catalog={MODEL_CATALOG}
@@ -393,5 +397,377 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     );
   } finally {
     mock.restore();
+  }
+});
+
+function mountChat(
+  sandboxId: string,
+  initialStatus: "ready" | "running",
+  routerOverride: AppRouterInstance = router,
+  createNodeMock?: (el: { type: unknown }) => unknown,
+) {
+  return create(
+    <AppRouterContext.Provider value={routerOverride}>
+      <SandboxThreadStateProvider>
+        <header>
+          <ThreadSandboxState viewerOwns status={initialStatus} readyLabel="Ready" />
+        </header>
+        <SandboxChat
+          orgId="org-1"
+          sandboxId={sandboxId}
+          currentConversation="c1"
+          initialStatus={initialStatus}
+          live
+          harness="claude"
+          catalog={MODEL_CATALOG}
+          launchedModel={null}
+          configured
+          pinnedModel
+        />
+      </SandboxThreadStateProvider>
+    </AppRouterContext.Provider>,
+    createNodeMock ? { createNodeMock } : undefined,
+  );
+}
+
+test("SandboxChat connects SSE cursor=tail in parallel with history, stitches buffered inline frames, pauses polling, and avoids router.refresh", async () => {
+  const sandboxId = "22222222-2222-4222-8222-222222222222";
+  const streams: Array<{
+    url: string;
+    onopen?: () => void;
+    onerror?: () => void;
+    onmessage?: (message: { lastEventId: string; data: string }) => void;
+  }> = [];
+  class FakeEventSource {
+    onopen?: () => void;
+    onerror?: () => void;
+    onmessage?: (message: { lastEventId: string; data: string }) => void;
+    constructor(readonly url: string) {
+      streams.push(this);
+    }
+    close() {}
+  }
+  let resolveHistory!: (response: Response) => void;
+  const fetchedUrls: string[] = [];
+  const scheduledPolls: number[] = [];
+  let refreshCalls = 0;
+  installDom(async (input) => {
+    fetchedUrls.push(String(input));
+    if (fetchedUrls.length === 1)
+      return new Promise<Response>((resolve) => {
+        resolveHistory = resolve;
+      });
+    return Response.json({
+      status: "ready",
+      configured: true,
+      cursor: `ar1_${sandboxId}_3`,
+      hasMore: false,
+      events: [],
+    });
+  });
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply deterministic EventSource and timer spy in the DOM-free renderer. */
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+  const origSetTimeout = globalThis.setTimeout;
+  const spyRouter = { ...router, refresh: () => (refreshCalls += 1) } satisfies AppRouterInstance;
+  globalThis.setTimeout = ((fn: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay === 1_000 || delay === 3_000) scheduledPolls.push(delay);
+    return origSetTimeout(fn, delay, ...args);
+  }) as unknown as typeof setTimeout;
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = mountChat(sandboxId, "running", spyRouter);
+    });
+    expect(streams[0]!.url).toBe(`/api/v1/events?sandbox=${sandboxId}&cursor=tail`);
+    expect(fetchedUrls).toHaveLength(1);
+
+    await act(async () => {
+      streams[0]!.onopen!();
+      streams[0]!.onmessage!({
+        lastEventId: "10",
+        data: JSON.stringify({
+          id: "10",
+          sandboxId,
+          sequence: "2",
+          kind: "runtime_event",
+          event: { id: "ev-2", at: 2, kind: "message", text: "early inline reply", partial: false, tools: [] },
+        }),
+      });
+    });
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("early inline reply");
+
+    await act(async () => {
+      resolveHistory(
+        Response.json({
+          status: "running",
+          configured: true,
+          cursor: `ar1_${sandboxId}_1`,
+          hasMore: false,
+          backward: true,
+          prompt: { state: "running", conversationId: "c1" },
+          events: [
+            { id: "ev-1", at: 1, kind: "prompt", text: "hi", status: "running", promptId: "p1", conversationId: "c1" },
+          ],
+        }),
+      );
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain("early inline reply");
+    expect(fetchedUrls).toHaveLength(1);
+    expect(scheduledPolls).toEqual([]);
+
+    await act(async () => {
+      streams[0]!.onmessage!({
+        lastEventId: "11",
+        data: JSON.stringify({
+          id: "11",
+          sandboxId,
+          sequence: "3",
+          kind: "runtime_event",
+          event: {
+            id: "ev-3",
+            at: 3,
+            kind: "prompt",
+            text: "hi",
+            status: "finished",
+            promptId: "p1",
+            conversationId: "c1",
+          },
+        }),
+      });
+      streams[0]!.onmessage!({
+        lastEventId: "12",
+        data: JSON.stringify({
+          id: "12",
+          sandboxId,
+          sequence: null,
+          kind: "transition",
+          status: "ready",
+          statusReason: null,
+        }),
+      });
+    });
+    expect(fetchedUrls).toHaveLength(1);
+    expect(refreshCalls).toBe(0);
+    expect(scheduledPolls).toEqual([]);
+    expect(renderer.root.findByType("header").findAllByProps({ "data-pulse": true })).toHaveLength(0);
+
+    await act(async () => {
+      streams[0]!.onmessage!({
+        lastEventId: "13",
+        data: JSON.stringify({
+          id: "13",
+          sandboxId,
+          sequence: "1",
+          kind: "runtime_event",
+          event: {
+            id: "ev-1",
+            at: 1,
+            kind: "prompt",
+            text: "hi",
+            status: "running",
+            promptId: "p1",
+            conversationId: "c1",
+          },
+        }),
+      });
+    });
+    expect(renderer.root.findByType("header").findAllByProps({ "data-pulse": true })).toHaveLength(0);
+
+    await act(async () => {
+      streams[0]!.onerror!();
+    });
+    expect(scheduledPolls).toEqual([3_000]);
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    await act(async () => renderer.unmount());
+  }
+});
+
+test("SandboxChat runs a catch-up read when a cursor=tail stream opens after history already synced", async () => {
+  const sandboxId = "44444444-4444-4444-8444-444444444444";
+  const streams: Array<{ onopen?: () => void }> = [];
+  class FakeEventSource {
+    onopen?: () => void;
+    onerror?: () => void;
+    onmessage?: (message: { lastEventId: string; data: string }) => void;
+    constructor(readonly url: string) {
+      streams.push(this);
+    }
+    close() {}
+  }
+  const fetchedUrls: string[] = [];
+  installDom(async (input) => {
+    fetchedUrls.push(String(input));
+    return Response.json({
+      status: "ready",
+      configured: true,
+      cursor: `ar1_${sandboxId}_${fetchedUrls.length}`,
+      hasMore: false,
+      backward: fetchedUrls.length === 1,
+      prompt: { state: "finished", conversationId: "c1" },
+      events:
+        fetchedUrls.length === 2
+          ? [{ id: "ev-gap", at: 2, kind: "message", text: "caught up", partial: false, tools: [] }]
+          : [],
+    });
+  });
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply deterministic EventSource for tail-open catch-up verification. */
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = mountChat(sandboxId, "ready", router);
+    });
+    expect(fetchedUrls).toHaveLength(1);
+    await act(async () => {
+      streams[0]!.onopen!();
+    });
+    expect(fetchedUrls).toHaveLength(2);
+    expect(JSON.stringify(renderer.toJSON())).toContain("caught up");
+  } finally {
+    await act(async () => renderer.unmount());
+  }
+});
+
+test("SandboxChat hydrates synchronously from LRU cache and supports 0ms optimistic send, steer, and interrupt", async () => {
+  const sandboxId = "33333333-3333-4333-8333-333333333333";
+  setChatCache("org-1", sandboxId, {
+    history: {
+      events: [{ id: "ev-1", at: 1, kind: "message", text: "hydrated from cache", partial: false, tools: [] }],
+      cursor: `ar1_${sandboxId}_1`,
+      olderCursor: null,
+      loaded: true,
+    },
+    status: "ready",
+    statusMessage: null,
+    hasLiveStatus: true,
+    idlePaused: false,
+    turnModel: { state: "finished", conversationId: "c1" },
+    updatedAt: Date.now(),
+  });
+
+  const fetchedUrls: string[] = [];
+  installDom(async (input) => {
+    fetchedUrls.push(String(input));
+    return new Promise<Response>(() => {});
+  });
+  let resolveSend!: (result: { ok: true; message: string; promptId?: string } | { ok: false; error: string }) => void;
+  let resolveSteer!: (result: { ok: true; message: string } | { ok: false; error: string }) => void;
+  let resolveInterrupt!: (result: { ok: true; message: string } | { ok: false; error: string }) => void;
+  const sentKeys: string[] = [];
+  /* oxlint-disable landmines-testing/no-test-doubles -- Control server action settlement timing to assert 0ms optimistic UI state. */
+  spyOn(sandboxActions, "sendToSandbox").mockImplementation(async (_prev, data) => {
+    sentKeys.push(String(data.get(SEND_KEY_FIELD) ?? ""));
+    return new Promise((resolve) => {
+      resolveSend = resolve;
+    });
+  });
+  spyOn(sandboxActions, "steerSandbox").mockImplementation(
+    async () =>
+      new Promise((resolve) => {
+        resolveSteer = resolve;
+      }),
+  );
+  spyOn(sandboxActions, "interruptSandbox").mockImplementation(
+    async () =>
+      new Promise((resolve) => {
+        resolveInterrupt = resolve;
+      }),
+  );
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  let renderer!: ReactTestRenderer;
+  const formStub = { elements: { namedItem: () => null }, reset: noop, requestSubmit: noop };
+  const nodeMock = (el: { type: unknown }) => (el.type === "form" ? formStub : null);
+  const textarea = () => renderer.root.findByType("textarea");
+  const buttonText = (node: ReturnType<typeof renderer.root.findByType>) =>
+    node
+      .findAll((child) => child.children.some((c) => typeof c === "string"))
+      .flatMap((child) => child.children.filter((c): c is string => typeof c === "string"))
+      .join("");
+  const buttonByText = (label: string) =>
+    renderer.root.findAllByType("button").find((node) => buttonText(node).includes(label))!;
+  try {
+    await act(async () => {
+      renderer = mountChat(sandboxId, "ready", router, nodeMock);
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain("hydrated from cache");
+    expect(renderer.root.findAllByProps({ "data-testid": "history-loading" })).toHaveLength(0);
+    expect(fetchedUrls[0]).toContain(`/api/sandboxes/${sandboxId}/events?cursor=ar1_${sandboxId}_1`);
+
+    await act(async () => {
+      textarea().props.onChange({ target: { value: "Fix tests" } });
+    });
+    await act(async () => {
+      buttonByText("Send").props.onClick();
+    });
+    expect(textarea().props.value).toBe("");
+    expect(textarea().props.disabled).toBeUndefined();
+    expect(JSON.stringify(renderer.toJSON())).toContain("Fix tests");
+    expect(renderer.root.findAllByProps({ "data-testid": "agent-working" })).toHaveLength(1);
+    expect(renderer.root.findByType("header").findAllByProps({ "data-pulse": true })).toHaveLength(1);
+
+    await act(async () => {
+      resolveSend({ ok: false, error: "This sandbox needs an account before it can resume." });
+    });
+    expect(textarea().props.value).toBe("Fix tests");
+    await act(async () => {
+      buttonByText("Send").props.onClick();
+    });
+    expect(sentKeys[0]).toBe(sentKeys[1]);
+    await act(async () => {
+      textarea().props.onChange({ target: { value: "Follow-up draft" } });
+    });
+    await act(async () => {
+      resolveSend({ ok: true, message: "Sent.", promptId: "p-accepted" });
+    });
+    expect(textarea().props.value).toBe("Follow-up draft");
+    await act(async () => renderer.unmount());
+
+    setChatCache("org-1", sandboxId, {
+      history: {
+        events: [
+          { id: "ev-p", at: 1, kind: "prompt", text: "work", status: "running", promptId: "p1", conversationId: "c1" },
+        ],
+        cursor: `ar1_${sandboxId}_2`,
+        olderCursor: null,
+        loaded: true,
+      },
+      status: "running",
+      statusMessage: null,
+      hasLiveStatus: true,
+      idlePaused: false,
+      turnModel: { state: "running", conversationId: "c1" },
+      updatedAt: Date.now(),
+    });
+    await act(async () => {
+      renderer = mountChat(sandboxId, "running", router, nodeMock);
+    });
+    await act(async () => {
+      textarea().props.onChange({ target: { value: "Check edge cases" } });
+    });
+    await act(async () => {
+      buttonByText("Steer").props.onClick();
+    });
+    expect(textarea().props.value).toBe("");
+    expect(JSON.stringify(renderer.toJSON())).toContain("Check edge cases");
+    await act(async () => {
+      resolveSteer({ ok: true, message: "Steered." });
+    });
+
+    await act(async () => {
+      buttonByText("Interrupt").props.onClick();
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain("Interrupting…");
+    await act(async () => {
+      resolveInterrupt({ ok: true, message: "Interrupt requested." });
+    });
+  } finally {
+    mock.restore();
+    await act(async () => renderer?.unmount());
   }
 });
