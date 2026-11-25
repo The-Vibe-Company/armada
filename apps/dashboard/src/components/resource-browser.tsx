@@ -89,6 +89,13 @@ export function useResourceSelected(key: string): boolean {
   return useBrowser().selected === key;
 }
 
+/** Responsive variants share row keys. Skip controls in the layout CSS has hidden. */
+function visibleControl(root: HTMLElement | null, selector: string) {
+  return [...(root?.querySelectorAll<HTMLElement>(selector) ?? [])].find(
+    (control) => control.getClientRects().length > 0,
+  );
+}
+
 export function ResourceBrowser({
   title,
   description,
@@ -161,7 +168,7 @@ export function ResourceBrowser({
     const back = opener.current ?? selected;
     opener.current = null;
     requestAnimationFrame(() => {
-      const row = back && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(back)}"]`);
+      const row = back && visibleControl(rootRef.current, `[data-select-item="${CSS.escape(back)}"]`);
       // Deleting a row may intentionally focus a page action (for example Add).
       // Do not overwrite that valid handoff with our missing-row fallback.
       const active = document.activeElement;
@@ -174,8 +181,8 @@ export function ResourceBrowser({
         !rootRef.current?.contains(active)
       )
         return;
-      const fallback = rootRef.current?.querySelector<HTMLElement>("input, [data-select-item]");
-      (row && row.getClientRects().length > 0 ? row : (fallback ?? rootRef.current))?.focus();
+      const fallback = visibleControl(rootRef.current, "input, [data-select-item]");
+      (row || fallback || rootRef.current)?.focus();
     });
   }, [selected]);
 
@@ -185,8 +192,8 @@ export function ResourceBrowser({
   const restoreHistoryFocus = useCallback(() => {
     if (selected !== null) return;
     const key = resourceReturnFocus();
-    const row = key && rootRef.current?.querySelector<HTMLElement>(`[data-select-item="${CSS.escape(key)}"]`);
-    if (!row || row.getClientRects().length === 0) return;
+    const row = key && visibleControl(rootRef.current, `[data-select-item="${CSS.escape(key)}"]`);
+    if (!row) return;
     if (returnedRow.current !== row || document.activeElement === document.body) row.focus();
     returnedRow.current = row;
   }, [selected]);
@@ -357,48 +364,54 @@ export function ResourceBrowser({
                 </Button>
               )}
             </p>
-          ) : columns ? (
-            <div className="overflow-x-auto rounded-[10px] border bg-card">
-              <table aria-label={label} className="w-full min-w-[760px] table-fixed text-left">
-                <thead className="bg-muted text-xs text-muted-foreground">
-                  <tr>
-                    {columns.map((column) => (
-                      <th key={column} scope="col" className="px-4 py-2 font-normal">
-                        {column}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {shown.map((row) => (
-                    <Row
-                      key={row.key}
-                      row={row}
-                      panelId={panelId}
-                      selected={selected === row.key}
-                      onSelect={() => select(row.key)}
-                      table
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
           ) : (
-            <ul
-              aria-label={label}
-              className="grid grid-cols-1 gap-x-4 divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1fr)_10rem_fit-content(12rem)_auto]"
-            >
-              {shown.map((row) => (
-                <Row
-                  key={row.key}
-                  row={row}
-                  catalog={!!catalogFilters}
-                  panelId={panelId}
-                  selected={selected === row.key}
-                  onSelect={() => select(row.key)}
-                />
-              ))}
-            </ul>
+            <>
+              {columns && (
+                <div className="hidden overflow-x-auto rounded-[10px] border bg-card md:block">
+                  <table aria-label={label} className="w-full min-w-[760px] table-fixed text-left">
+                    <thead className="bg-muted text-xs text-muted-foreground">
+                      <tr>
+                        {columns.map((column) => (
+                          <th key={column} scope="col" className="px-4 py-2 font-normal">
+                            {column}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((row) => (
+                        <Row
+                          key={row.key}
+                          row={row}
+                          panelId={panelId}
+                          selected={selected === row.key}
+                          onSelect={() => select(row.key)}
+                          table
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <ul
+                aria-label={label}
+                className={cn(
+                  "grid grid-cols-1 gap-x-4 divide-y overflow-hidden rounded-xl border bg-card shadow-xs @xl:grid-cols-[minmax(0,1fr)_10rem_auto] @3xl:grid-cols-[minmax(0,1fr)_10rem_fit-content(12rem)_auto]",
+                  columns && "md:hidden",
+                )}
+              >
+                {shown.map((row) => (
+                  <Row
+                    key={row.key}
+                    row={row}
+                    catalog={!!catalogFilters}
+                    panelId={panelId}
+                    selected={selected === row.key}
+                    onSelect={() => select(row.key)}
+                  />
+                ))}
+              </ul>
+            </>
           )}
           {footer}
         </div>
@@ -586,7 +599,7 @@ function Row({
           </div>
         </div>
       </Cell>
-      {row.columns ? (
+      {table && row.columns ? (
         row.columns.map((cell) => (
           <Cell key={cell.key} className="min-w-0 px-4 py-[9px] text-[13px] text-muted-foreground">
             {cell.content}

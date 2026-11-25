@@ -449,7 +449,7 @@ function HeaderFields({
     <fieldset className="space-y-2">
       <legend className="text-sm font-medium">Headers</legend>
       {rows.map((row, index) => (
-        <div key={row.key} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+        <div key={row.key} className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
           <div className="space-y-1">
             <Label htmlFor={`${idPrefix}-hn-${row.key}`} className="text-xs text-muted-foreground">
               Header {index + 1} name

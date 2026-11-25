@@ -108,7 +108,9 @@ function RepositoryDetails({ embedded, children }: { embedded: boolean; children
     children
   ) : (
     <details className="contents">
-      <summary className="col-start-3 row-start-1 cursor-pointer py-2 text-sm">Details</summary>
+      <summary className="col-start-2 row-start-2 cursor-pointer py-2 text-sm sm:col-start-3 sm:row-start-1">
+        Details
+      </summary>
       {children}
     </details>
   );
@@ -440,9 +442,9 @@ function ScopedGoldenForm({
               {rows.map((row, index) => (
                 <li
                   key={row.key}
-                  className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 border-b py-2"
+                  className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 border-b py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,auto)_auto_auto]"
                 >
-                  <div className="min-w-0 space-y-1">
+                  <div className="col-span-full min-w-0 space-y-1 sm:col-span-1">
                     <Label className="sr-only" htmlFor={`${id}-url-${row.key}`}>
                       Repository {index + 1}
                     </Label>
@@ -457,9 +459,11 @@ function ScopedGoldenForm({
                       required={index === 0}
                     />
                   </div>
-                  <span className="text-xs text-muted-foreground">{row.branch || "Default branch"}</span>
+                  <span className="min-w-0 break-all text-xs text-muted-foreground">
+                    {row.branch || "Default branch"}
+                  </span>
                   <RepositoryDetails embedded={Boolean(embedded)}>
-                    <div className="col-span-full row-start-2 grid gap-3 py-2 sm:grid-cols-2">
+                    <div className="col-span-full row-start-3 grid gap-3 py-2 sm:row-start-2 sm:grid-cols-2">
                       <div className="space-y-1">
                         <Label htmlFor={`${id}-branch-${row.key}`}>Branch</Label>
                         <Input
@@ -511,7 +515,7 @@ function ScopedGoldenForm({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="col-start-4 row-start-1"
+                    className="col-start-3 row-start-2 sm:col-start-4 sm:row-start-1"
                     aria-label={`Remove repository ${index + 1}`}
                     disabled={rows.length === 1}
                     onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}
