@@ -13,20 +13,40 @@ export const runtimeBridgeProfiles = {
     placement: "boat-runtime",
     launchDefault: "boatRuntimeDefault",
     hostPorts: true,
-    stopDispatch: "disk-job",
     repeatPinnedSettings: true,
+    requiresCredentialBinding: false,
+    modelCheck: "runtime-command",
+    usageNeedsActiveCompute: true,
+    reliableCompletionTime: "runtime-only",
+    preserveStateOnDeleteError: false,
   },
   modal: {
     placement: "dialout",
     launchDefault: "modalRuntimeDefault",
     hostPorts: false,
-    stopDispatch: "image-job",
     repeatPinnedSettings: false,
+    requiresCredentialBinding: true,
+    modelCheck: "provider-activity",
+    usageNeedsActiveCompute: false,
+    reliableCompletionTime: "always",
+    preserveStateOnDeleteError: true,
   },
 } as const satisfies Record<SandboxProviderId, object>;
 
+export function runtimeBridgeProfile(provider: unknown) {
+  return isSandboxProvider(provider) ? runtimeBridgeProfiles[provider] : undefined;
+}
+
+export function requiresCredentialBinding(provider: unknown) {
+  return runtimeBridgeProfile(provider)?.requiresCredentialBinding === true;
+}
+
+export function supportsResourceSampling(provider: unknown) {
+  return isSandboxPlacementProvider(provider) && capabilities(provider).resourceSampler;
+}
+
 export const usesDiskStopJob = (provider: unknown) =>
-  isSandboxProvider(provider) && runtimeBridgeProfiles[provider].stopDispatch === "disk-job";
+  isSandboxProvider(provider) && capabilities(provider).stopRetention === "disk";
 
 export function goldenRuntimePlacement(options: LaunchOptions, provider: SandboxProviderId) {
   return options[runtimeBridgeProfiles[provider].launchDefault];

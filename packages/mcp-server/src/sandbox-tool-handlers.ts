@@ -6,7 +6,12 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { modalDialoutPlacement, runtimeBridgeTarget, usesDiskStopJob } from "./provider-runtime-admission.ts";
+import {
+  modalDialoutPlacement,
+  requiresCredentialBinding,
+  runtimeBridgeTarget,
+  usesDiskStopJob,
+} from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import {
@@ -56,7 +61,7 @@ export function configureTools(
         "Experimental runtime supports initial launch, reads and compute stop/delete only.",
       );
     if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${sandboxId}' is deleted.`);
-    if (!allowUnbound && found.provider === "modal" && !found.credentialId)
+    if (!allowUnbound && requiresCredentialBinding(found.provider) && !found.credentialId)
       throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
     return {
       sandbox: found,

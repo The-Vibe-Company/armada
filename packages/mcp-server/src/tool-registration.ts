@@ -6,6 +6,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView } from "./data.ts";
 import { validateLogPagination } from "./event-pagination.ts";
 import { logicalExpiry } from "./mcp-read-tools.ts";
+import { requiresCredentialBinding } from "./provider-runtime-admission.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ResumeTurnDeferred, ToolError } from "./tool-error.ts";
 import { errorResult } from "./tool-failure.ts";
@@ -90,8 +91,11 @@ export function createToolRegistration(
             ? await data.sandboxes.controlState(input.id as string)
             : await visible(input.id as string);
           if (!found) throw new ToolError("not_found", `No sandbox with id '${input.id}' that you can see.`);
-          // WARNING: Retained legacy Modal workspaces require explicit account binding before any control.
-          if (found.provider === "modal" && !found.credentialId && !sandboxControlRefusal(found, context.now(), "send"))
+          if (
+            requiresCredentialBinding(found.provider) &&
+            !found.credentialId &&
+            !sandboxControlRefusal(found, context.now(), "send")
+          )
             throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
           const refusal = sandboxControlRefusal(found, context.now(), name);
           if (refusal) throw new ToolError("sandbox_terminal", refusal);

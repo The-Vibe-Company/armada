@@ -5,6 +5,7 @@ import { z } from "zod";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
 import { sandboxToolRoutes } from "./control-tool-routes.ts";
 import { launchCredentials } from "./launch-credentials.ts";
+import { runtimeBridgeProfile } from "./provider-runtime-admission.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
 function field<T extends z.ZodType>(schema: T, body: Record<string, unknown>, name: string, invalidText?: string) {
@@ -29,8 +30,10 @@ const handlers = {
     if (!found) throw new VaultError("not_found", "Sandbox not found.");
     if (found.ownerId !== caller.userId)
       throw new VaultError("forbidden", "Only the sandbox owner may test its model connection.");
+    const modelCheck = runtimeBridgeProfile(found.provider)?.modelCheck;
     if (
-      !(found.provider === "modal" || (found.provider === "boat" && found.boatRuntime)) ||
+      !modelCheck ||
+      (modelCheck === "runtime-command" && !found.boatRuntime) ||
       !["ready", "running"].includes(found.status) ||
       found.stopRequestedAt ||
       !found.credentialId ||
@@ -72,7 +75,7 @@ const handlers = {
         throw new VaultError("unavailable", "Invalid connection-test receipt.");
       return result;
     };
-    if (found.provider === "boat" && found.boatRuntime) {
+    if (modelCheck === "runtime-command") {
       const test = await testConnection(AbortSignal.timeout(30000));
       return { id: found.id, test };
     }
