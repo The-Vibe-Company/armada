@@ -66,6 +66,8 @@ struct AccountView: View {
                     }
                 }
                 .padding(20)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
             .background(ArmadaTheme.canvas)
             .navigationTitle("Account")

@@ -57,6 +57,8 @@ struct ChatComposer: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
         .background(ArmadaTheme.canvas)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isAgentWorking)
         .accessibilityIdentifier("chat.composer-controls")

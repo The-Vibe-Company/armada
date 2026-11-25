@@ -86,6 +86,8 @@ struct SandboxDetailView: View {
                     }
                 }
                 .padding(20)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
         }
         .background(ArmadaTheme.canvas)
@@ -232,9 +234,11 @@ struct SandboxConversationView: View {
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows sandbox details")
             }
-            ToolbarItemGroup(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("Details", systemImage: "info.circle") { showingDetails = true }
                     .accessibilityIdentifier("sandbox.details")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Details", systemImage: "info.circle") { showingDetails = true }
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
@@ -302,6 +306,8 @@ struct SandboxConversationView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
         .background(ArmadaTheme.canvas.opacity(0.001))
     }
 }
