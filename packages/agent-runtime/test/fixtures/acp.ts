@@ -212,7 +212,7 @@ for await (const line of lines) {
       }
       if (text === "tool-title-completed") {
         const longTitle = `echo ${"x".repeat(32768)}`;
-        for (let i = 0; i < 40; i++) {
+        for (let i = 0; i < 66; i++) {
           const toolCallId = `done-${i}`;
           send({
             method: "session/update",
