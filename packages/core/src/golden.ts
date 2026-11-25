@@ -160,24 +160,22 @@ export async function connectGolden(
       throw new GoldenError("conflict", `Golden '${golden.name}' has no saved snapshot to restore.`);
     }
     if (!store.replaceSandbox) throw new GoldenError("conflict", "Golden restore persistence is not configured.");
-    if (sharedSource && !provider.restoreGoldenMaster)
-      throw new GoldenError(
-        "conflict",
-        "This Modal adapter requires the authorized golden restore port. No worker fork was created.",
-      );
-    const fork = provider.fork;
-    if (!sharedSource && !fork)
-      throw new GoldenError("conflict", "This adapter does not support fresh-fork golden restore.");
     const restoreSnapshot = golden.providerSnapshotId;
-    uncertain = true;
     const restored = await (async () => {
       try {
-        return sharedSource
-          ? await provider.restoreGoldenMaster!({
-              snapshotId: restoreSnapshot,
-              ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
-            })
-          : await fork.call(provider, { from: restoreSnapshot, noEnv: true });
+        if (sharedSource) {
+          if (!provider.restoreGoldenMaster)
+            throw new GoldenError("conflict", "This Modal adapter requires the authorized golden restore port.");
+          uncertain = true;
+          return await provider.restoreGoldenMaster({
+            snapshotId: restoreSnapshot,
+            ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
+          });
+        }
+        if (!provider.fork)
+          throw new GoldenError("conflict", "This adapter does not support fresh-fork golden restore.");
+        uncertain = true;
+        return await provider.fork({ from: restoreSnapshot, noEnv: true });
       } catch (error) {
         if (isNonMutatingProviderRefusal(error)) uncertain = false;
         throw error;
