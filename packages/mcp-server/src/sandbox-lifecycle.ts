@@ -74,9 +74,9 @@ export async function insertStartingDockerSandbox(
     credentialId: string;
     credentialVersion: number;
     ttlSeconds: number;
-    requestedTtlSeconds?: number;
+    requestedTtlSeconds: number | null;
     harness: Harness;
-    snapshotId?: string;
+    snapshotId: string | null;
     stopWhenWorkMerged?: boolean;
     externalRef?: string;
   },
@@ -101,9 +101,9 @@ export async function insertStartingDockerSandbox(
       sandbox.credentialId,
       sandbox.credentialVersion,
       sandbox.ttlSeconds,
-      sandbox.requestedTtlSeconds ?? null,
+      sandbox.requestedTtlSeconds,
       sandbox.harness,
-      sandbox.snapshotId ?? null,
+      sandbox.snapshotId,
       sandbox.stopWhenWorkMerged ?? true,
       sandbox.externalRef ?? null,
     ],

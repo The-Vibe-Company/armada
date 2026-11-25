@@ -235,8 +235,8 @@ export function createDockerSandboxService(sql: Sql) {
             physical,
             installationId: host.installation_id,
             generation,
-            requestedTtlSeconds: input.ttlSeconds,
-            snapshotId,
+            requestedTtlSeconds: input.ttlSeconds ?? null,
+            snapshotId: snapshotId ?? null,
           })) ?? deny();
         return record(row);
       });
