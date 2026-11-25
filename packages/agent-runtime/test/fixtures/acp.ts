@@ -141,10 +141,11 @@ for await (const line of lines) {
           });
         if (echo) {
           if (!process.env.SSH_CONNECTION || process.env.GEMINI_API_KEY !== undefined) throw Error("wrong_google_env");
-          const { token } = JSON.parse(
+          const { token, auth_method } = JSON.parse(
             readFileSync(join(profile, "antigravity-acp", "antigravity-oauth-token"), "utf8"),
           );
-          text = Object.values(token).join(" ");
+          if (auth_method !== "consumer") throw Error("wrong_google_auth_method");
+          text = [token.access_token, token.refresh_token, token.expiry, token.token_type, token.expires_in].join(" ");
           send({
             method: "session/update",
             params: {
