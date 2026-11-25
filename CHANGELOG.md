@@ -1,5 +1,14 @@
 # Changelog
 
+## [14.4.1](https://github.com/The-Vibe-Company/armada/compare/v14.4.0...v14.4.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **dashboard:** prevent pulsing Working halo clipping on /sandboxes rows and sibling status cells ([#4315](https://github.com/The-Vibe-Company/armada/issues/4315)) ([bef9d61](https://github.com/The-Vibe-Company/armada/commit/bef9d61d95bb7e8d9cda70bd223f8ccac0dd66c0))
+* **github:** sandbox GitHub credentials not renewed after a long turn or resume ([#4317](https://github.com/The-Vibe-Company/armada/issues/4317)) ([6eded4f](https://github.com/The-Vibe-Company/armada/commit/6eded4fe11639601fa862cfdfbad48f6bd8046f1))
+* **runtime:** bound ACP retained long tool titles per turn ([#4314](https://github.com/The-Vibe-Company/armada/issues/4314)) ([c198665](https://github.com/The-Vibe-Company/armada/commit/c198665ee45c2de4334fadaa8afa9fa271bb57f9))
+
 ## [14.4.0](https://github.com/The-Vibe-Company/armada/compare/v14.3.0...v14.4.0) (2026-11-25)
 
 
