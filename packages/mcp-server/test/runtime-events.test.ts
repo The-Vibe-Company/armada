@@ -1333,7 +1333,7 @@ test("completed API turns publish exact monthly spend once and count unknown tur
 
 test("runtime ingest wakes the authorized event feed after commit and suppresses replay wakes", async () => {
   const f = await fixture();
-  const feed = createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {}));
+  const feed = createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {}), ENCRYPTION_KEY);
   const actor = {
     userId: f.people.owner,
     orgs: [{ orgId: f.people.org, role: "member" as const }],
@@ -1348,12 +1348,32 @@ test("runtime ingest wakes the authorized event feed after commit and suppresses
   try {
     const active = await f.enrol();
     const item = { sequence: 1, event: f.other("live") };
-    expect((await f.publish(active, [item])).ok).toBe(true);
+    const privateItem = {
+      sequence: 2,
+      event: { id: "u1", at: 2, kind: "other" as const, type: "usage_report", data: {} },
+    };
+    expect((await f.publish(active, [item, privateItem])).ok).toBe(true);
     expect(notifications).toBe(1);
-    expect(await promise).toEqual([expect.objectContaining({ kind: "runtime_event", sequence: "1", ref: "1" })]);
+    const page = (await promise)!;
+    expect(page).toEqual([
+      expect.objectContaining({ kind: "runtime_event", sequence: "1", ref: "1", event: item.event }),
+      expect.objectContaining({ kind: "runtime_event", sequence: "2", ref: "2" }),
+    ]);
+    expect(page[1]?.event).toBeUndefined();
+    expect(await feed.ownerTail?.(actor, f.id)).toBe(page[1]!.id);
+    expect(await feed.ownerTail?.({ ...actor, userId: f.people.member }, f.id)).toBeNull();
     expect(await feed.owner({ ...actor, userId: f.people.member }, f.id)("0")).toBeNull();
     expect((await f.publish(active, [item])).ok).toBe(true);
     expect(notifications).toBe(1);
+    await f.db.query(
+      'update sandboxes set status=\'stopped\',status_reason=\'idle_paused\',stopped_at=now(),transition_context=\'{"actor":"idle","code":"idle_paused"}\'::jsonb where id=$1',
+      [f.id],
+    );
+    const transitions = await feed.owner(actor, f.id)(page[1]!.id);
+    expect(transitions).toEqual([
+      expect.objectContaining({ kind: "transition", sequence: null, status: "stopped", statusReason: "idle_paused" }),
+    ]);
+    expect(await feed.ownerTail?.(actor, f.id)).toBe(transitions![0]!.id);
   } finally {
     close();
     await f.close();

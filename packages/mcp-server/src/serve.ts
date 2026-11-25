@@ -6,6 +6,8 @@ import type { RuntimeSocketData } from "./runtime-sockets.ts";
 import { createServerRequestDrain } from "./server-request-drain.ts";
 import { createServerServices, type ServerOptions } from "./server-services.ts";
 import { installServerShutdown } from "./server-shutdown.ts";
+import { createPgNotifyClient } from "./sql.ts";
+import { runtimeWakes, startEventNotifyListener } from "./wake-bus.ts";
 
 export { bunSql } from "./sql.ts";
 
@@ -66,12 +68,21 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // Held Docker polls, archive uploads and artifact downloads set their own bounded ingress timeouts.
   configureRequestTimeout = (request, seconds) => server.timeout(ingressRequest(request), seconds);
   const workers = assembly.planWorkers().start();
+  const eventNotify = startEventNotifyListener(
+    createPgNotifyClient(config.databaseUrl),
+    runtimeWakes,
+    options.logError,
+  );
+  let eventNotifyClosed: Promise<void> | undefined;
   installServerShutdown(server, {
     ...assembly.shutdown,
+    closePools: () =>
+      Promise.allSettled([eventNotifyClosed ?? eventNotify.close()]).then(() => assembly.shutdown.closePools()),
     closeAntigravityLogin: () => control.antigravityLogin?.shutdown(),
     beginDrain: () => {
       requestDrain.beginDrain();
       eventStreamShutdown.abort();
+      eventNotifyClosed ??= eventNotify.close();
       workers.stop();
     },
     workersDone: workers.done,

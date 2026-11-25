@@ -12041,7 +12041,7 @@
     "/api/v1/events": {
       "get": {
         "operationId": "streamSandboxEvents",
-        "description": "Stream committed sandbox event references using fetch with a bearer header (owner, scoped child, or viewer grant). Each data frame contains an event reference and uses its global decimal ID as the SSE id. Resume exclusively after Last-Event-ID, which takes precedence over cursor. Without a cursor, replay retained history. Idle streams send a heartbeat comment every 15 seconds.",
+        "description": "Stream committed sandbox events using fetch with a bearer header (owner, scoped child, or viewer grant). Each data frame uses its global decimal ID as the SSE id, carrying inline decrypted event data for public runtime events and status/statusReason for transitions. Resume exclusively after Last-Event-ID, which takes precedence over cursor. Pass cursor=tail to start at the live frontier without replaying history, or omit cursor to replay retained history. Idle streams send a heartbeat comment every 15 seconds.",
         "x-armada-direct-server": true,
         "security": [
           {
@@ -12072,9 +12072,9 @@
             "required": false,
             "schema": {
               "$schema": "http://json-schema.org/draft-07/schema#",
-              "description": "A decimal event ID from 0 through 9223372036854775807.",
+              "description": "A decimal event ID from 0 through 9223372036854775807, or \"tail\" to subscribe at the live frontier.",
               "type": "string",
-              "pattern": "^(?:0|[1-9][0-9]{0,17}|9223372036854775807|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6])$"
+              "pattern": "^(?:tail|0|[1-9][0-9]{0,17}|9223372036854775807|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6])$"
             }
           },
           {
@@ -12133,6 +12133,56 @@
                       "type": "string",
                       "format": "date-time",
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "event": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "number"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "prompt",
+                            "message",
+                            "steer",
+                            "other"
+                          ]
+                        },
+                        "conversationId": {
+                          "type": "string"
+                        },
+                        "promptId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "at",
+                        "kind"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "starting",
+                        "ready",
+                        "running",
+                        "stopping",
+                        "stopped",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "statusReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [

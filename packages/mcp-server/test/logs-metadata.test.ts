@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { type Provider, ProviderError } from "@armada/core";
+import { readLogs } from "../src/control-logs.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
 
@@ -46,8 +47,79 @@ test.each([false, true])("logs retain runtime diagnostics across pages (all=%s)"
     hasMore: false,
     source: "armada-runtime",
     runtimeFailure: failure,
+    settled: true,
+    threadStatus: { status: "failed", statusMessage: null, prompt: null, usage: null },
   });
   expect(cursors).toEqual(all ? [undefined, "next"] : [undefined]);
+});
+
+test("Boat and Modal logs return threadStatus and settled matching Docker's shape", async () => {
+  const now = new Date("2026-11-25T12:00:00Z");
+  const usage = { computeSeconds: null, turnCount: 1, turns: [] };
+  const base = {
+    id: "sandbox",
+    ownerId: "owner",
+    orgId: "org",
+    provider: "modal" as const,
+    providerSandboxId: "mx",
+    status: "running" as const,
+    taskPromptId: "pr_1",
+    conversationIds: ["conv_1"],
+    usage,
+  };
+  const mcpFixture = {
+    ...context(async () => ({
+      events: [
+        { id: "e1", at: 1, kind: "prompt", promptId: "pr_1", conversationId: "conv_1", text: "hi", status: "running" },
+      ],
+      cursor: "c1",
+      hasMore: false,
+    })),
+    data: { sandboxes: { get: async () => base } },
+    now: () => now,
+  } as unknown as ToolContext;
+  expect(await callSharedTool(mcpFixture, "logs", { id: "sandbox" })).toMatchObject({
+    settled: false,
+    threadStatus: {
+      status: "running",
+      statusMessage: null,
+      prompt: { promptId: "pr_1", state: "running", reason: null },
+      usage,
+    },
+  });
+  const paused = {
+    ...base,
+    provider: "boat" as const,
+    status: "stopped" as const,
+    statusReason: "idle_paused",
+    expiresAt: "2026-11-25T13:00:00Z",
+  };
+  expect(
+    await readLogs(
+      {
+        now: () => now,
+        logs: async () => ({
+          providerSandboxId: "bx",
+          sandbox: paused as never,
+          provider: {
+            events: async () => ({ events: [], cursor: "c2", hasMore: false }),
+            followSettled: async () => true,
+          } as never,
+        }),
+      },
+      mcpFixture.caller,
+      "sandbox",
+      {},
+    ),
+  ).toMatchObject({
+    settled: true,
+    threadStatus: {
+      status: "stopped",
+      statusMessage: "Paused — wakes on your next message",
+      prompt: { promptId: "pr_1", state: "interrupted", reason: null },
+      usage,
+    },
+  });
 });
 
 test("MCP logs rejects a backward drain even when the provider is unavailable", async () => {

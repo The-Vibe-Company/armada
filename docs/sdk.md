@@ -74,15 +74,16 @@ The checked-in [OpenAPI 3.1 description](../packages/mcp-server/openapi.json) pr
 
 Run `bun scripts/generate-openapi.ts` after contract changes. The generator reads the operation schemas and uses the HTTP field names for launch and logs. The drift test compares the checked-in artifact with the generated document.
 
-### Stream sandbox event references
+### Stream sandbox events
 
 Use the direct Armada server URL and pass a sandbox UUID to `client.events.stream({ sandbox, cursor }, { signal })`.
-The async iterator replays retained references when you omit `cursor`. It reconnects after a disconnect and resumes
-after the last yielded ID. Keep IDs as strings and save the last processed ID if you need to resume in a new process.
-Call `abort()` on the signal's controller to stop following. Request timeouts apply to each connection.
+Pass `cursor: "tail"` to start at the live frontier without replaying history, or omit `cursor` to replay retained history.
+The async iterator reconnects after a disconnect and resumes after the last yielded ID. Keep IDs as strings and save the
+last processed ID if you need to resume in a new process. Call `abort()` on the signal's controller to stop following.
+Request timeouts apply to each connection.
 
-`SandboxEvent` distinguishes transition references from runtime event references. Use
-`reduceSandboxEvent(state, event)` to retain the latest reference of each kind and the cursor for a single sandbox.
-Use the status and logs methods to retrieve content for the references.
+`SandboxEvent` distinguishes transition events (with optional `status` and `statusReason`) from runtime events (with
+optional inline decrypted `event` payload for public events). Use `reduceSandboxEvent(state, event)` to retain the latest
+event of each kind and the cursor for a single sandbox.
 
 Steer receipts use `in-place` for delivery into the active turn and `restart` for a replacement turn in the same conversation.

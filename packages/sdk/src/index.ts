@@ -1,4 +1,4 @@
-import { API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
+import { type AgentEvent, API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
 import type {
   DockerLaunchInput,
   ExecInput,
@@ -49,11 +49,14 @@ interface EventReference {
 }
 
 export type SandboxEvent = EventReference &
-  ({ kind: "transition"; sequence: null } | { kind: "runtime_event"; sequence: string });
+  (
+    | { kind: "transition"; sequence: null; status?: SandboxStatus["status"]; statusReason?: string | null }
+    | { kind: "runtime_event"; sequence: string; event?: AgentEvent }
+  );
 
 export interface EventStreamInput {
   sandbox: string;
-  /** Last processed global event ID. Omit to replay retained history. */
+  /** Last processed global event ID, or `"tail"` to start at the live frontier. Omit to replay retained history. */
   cursor?: string;
 }
 
@@ -259,7 +262,7 @@ export class Armada {
           const query = new URLSearchParams({ sandbox });
           const headers = new Headers({ accept: outputMediaType });
           if (lastId !== undefined) {
-            if (initial) query.set("cursor", lastId);
+            if (initial || lastId === "tail") query.set("cursor", lastId);
             else headers.set("last-event-id", lastId);
           }
           initial = false;

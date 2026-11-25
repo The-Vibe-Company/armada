@@ -3,8 +3,14 @@ import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { streamSandboxEvents } from "@armada/core/contract";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { EVENT_PAGE_SIZE, type EventFeed } from "../src/event-feed.ts";
-import { createEventStream } from "../src/event-stream.ts";
-import { eventFeedWakeKey, runtimeWakes } from "../src/wake-bus.ts";
+import { AUTH_REVALIDATE_MS, createEventStream } from "../src/event-stream.ts";
+import {
+  createWakeBus,
+  EVENT_NOTIFY_CHANNEL,
+  eventFeedWakeKey,
+  runtimeWakes,
+  startEventNotifyListener,
+} from "../src/wake-bus.ts";
 
 async function fixture() {
   const authStore = createMemoryAuthStore();
@@ -13,7 +19,7 @@ async function fixture() {
   const sandbox = crypto.randomUUID();
   const owner = generateToken("service");
   authStore.addMembership(userId, { orgId, name: "Example", role: "member" });
-  await authStore.insertToken("service", {
+  const tokenRecord = await authStore.insertToken("service", {
     userId,
     orgId,
     hash: await sha256Hex(owner),
@@ -26,6 +32,7 @@ async function fixture() {
   const feed: EventFeed = {
     owner: (caller, id) => (caller.userId === userId && id === sandbox ? read : async () => null),
     child: () => async () => null,
+    ownerTail: async (caller, id) => (caller.userId === userId && id === sandbox ? (events.at(-1)?.id ?? "0") : null),
   };
   const options: ControlOptions = {
     authStore,
@@ -50,7 +57,7 @@ async function fixture() {
       ref: "19",
       createdAt: "2026-11-19T00:00:00Z",
     });
-  return { options, request, sandbox, add };
+  return { options, request, sandbox, add, authStore, tokenId: tokenRecord.id, userId };
 }
 
 const decoder = new TextDecoder();
@@ -163,4 +170,75 @@ test("a drain during authorization sends the retryable drain refusal before stre
   expect(refusal?.status).toBe(503);
   expect(refusal?.headers.get("retry-after")).toBe("5");
   expect(await refusal?.json()).toEqual({ error: "temporarily_unavailable" });
+});
+
+test("cursor=tail starts at frontier, caches auth for AUTH_REVALIDATE_MS, and wires pg notify wakes", async () => {
+  const f = await fixture();
+  f.add(1n);
+  expect(
+    (await handleControlRequest(f.request("&cursor=tail", undefined, crypto.randomUUID()), f.options))?.status,
+  ).toBe(403);
+  let now = 0;
+  let lookups = 0;
+  const use = f.authStore.useServiceToken.bind(f.authStore);
+  f.authStore.useServiceToken = async (hash, at) => {
+    lookups++;
+    return use(hash, at);
+  };
+  const response = await createEventStream({
+    now: () => now,
+    wait: async (ms) => {
+      now += ms;
+    },
+  })(f.request("&cursor=tail"), f.options);
+  const reader = response.body!.getReader();
+  try {
+    expect(decoder.decode((await reader.read()).value)).toBe(": connected\n\n");
+    f.add(2n);
+    runtimeWakes.notify(eventFeedWakeKey(f.sandbox));
+    expect(frames((await reader.read()).value)).toEqual(["2"]);
+    expect(decoder.decode((await reader.read()).value)).toBe(": heartbeat\n\n");
+    expect(lookups).toBe(1);
+    await f.authStore.revokeToken("service", { id: f.tokenId, userId: f.userId, revokedAt: new Date().toISOString() });
+    now = AUTH_REVALIDATE_MS;
+    expect((await reader.read()).done).toBe(true);
+    expect(lookups).toBe(2);
+  } finally {
+    await reader.cancel();
+  }
+
+  const bus = createWakeBus();
+  const id = crypto.randomUUID();
+  let cb: ((p: string) => void) | undefined;
+  let unlistened = 0;
+  let closed = 0;
+  const woken: string[] = [];
+  const off = bus.subscribe(eventFeedWakeKey(id), () => woken.push(id));
+  const listener = startEventNotifyListener(
+    {
+      listen: async (ch, fn) => {
+        expect(ch).toBe(EVENT_NOTIFY_CHANNEL);
+        cb = fn;
+        return { unlisten: async () => void unlistened++ };
+      },
+      close: async () => void closed++,
+    },
+    bus,
+  );
+  await listener.ready;
+  cb?.("not-a-uuid");
+  cb?.(id.toUpperCase());
+  expect(woken).toEqual([id]);
+  await listener.close();
+  expect([unlistened, closed]).toEqual([1, 1]);
+  off();
+  const errors: string[] = [];
+  const failing = startEventNotifyListener(
+    { listen: async () => Promise.reject(new Error("unsupported")) },
+    bus,
+    (line) => errors.push(line),
+  );
+  await failing.ready;
+  expect(errors).toHaveLength(1);
+  await failing.close();
 });

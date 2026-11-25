@@ -398,6 +398,7 @@ test("a competing accepted turn invalidates an older finished probe before admis
   const f = await fixture(await sharedDatabase());
   const done = Promise.withResolvers<"finished">();
   try {
+    await f.db.query("delete from public.runtime_idle_turns where sandbox_id=$1", [f.row.id]);
     const generation = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
     let competing: Awaited<ReturnType<typeof f.send>> | undefined;
     f.race(async () => {
@@ -468,6 +469,7 @@ describe("Boat extension contention", () => {
 test("a newly enrolled generation after the prompt probe refuses admission even if the task matches", async () => {
   const f = await fixture(await sharedDatabase());
   try {
+    await f.db.query("delete from public.runtime_idle_turns where sandbox_id=$1", [f.row.id]);
     const store = createSqlData(f.sql)(f.caller).sandboxes;
     const before = (await store.get(f.row.id))!;
     const generation = before.lifecycleGeneration!;
@@ -490,6 +492,48 @@ test("a newly enrolled generation after the prompt probe refuses admission even 
       taskPromptId,
     });
     expect(f.starts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("follow-up skips getPrompt when runtime_idle_turns is settled and skips unchanged MCP/env preflight", async () => {
+  const f = await fixture(await sharedDatabase(), "modal", "codex");
+  try {
+    const ops: string[] = [];
+    let mcpCalls = 0;
+    const send = createRuntimeFollowup(
+      f.sql,
+      ENCRYPTION_KEY,
+      {
+        ...f.bridge,
+        async call(ownerId, command, options) {
+          ops.push(command.op);
+          return f.bridge.call(ownerId, command, options);
+        },
+      },
+      async () => {
+        mcpCalls++;
+        return undefined;
+      },
+    );
+    await f.db.query(
+      "insert into public.mcp_bootstraps(sandbox_id,physical_generation,revision,configured) values($1,$2,'rev',true)",
+      [f.row.id, `runtime:${f.active.epoch}`],
+    );
+    const receipt = await send(f.caller, f.input("fast follow-up"));
+    expect(receipt.promptId).not.toBe(f.first.promptId);
+    expect(ops).not.toContain("getPrompt");
+    expect(mcpCalls).toBe(0);
+
+    await f.db.query(
+      `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,false)
+       on conflict(sandbox_id,prompt_id) do update set settled=false`,
+      [f.row.id, receipt.promptId],
+    );
+    await send(f.caller, f.input("checked follow-up"));
+    expect(ops).toContain("getPrompt");
+    expect(mcpCalls).toBe(0);
   } finally {
     await f.close();
   }

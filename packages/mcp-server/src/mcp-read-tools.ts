@@ -1,4 +1,4 @@
-import { idlePauseMessage } from "@armada/core";
+import { type AgentEvent, idlePauseMessage, observedPromptOutcome } from "@armada/core";
 import {
   DEFAULT_WAIT_SECONDS,
   sandboxIdInput as id,
@@ -15,7 +15,15 @@ import { publicLogEvents } from "./model-usage.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolRegistrar } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
-import { isStatusReadFenced, readStatus, recordedStatus, type StatusReport, waitSettled } from "./turns.ts";
+import {
+  isStatusReadFenced,
+  latestPromptEvent,
+  type PromptReport,
+  readStatus,
+  recordedStatus,
+  type StatusReport,
+  waitSettled,
+} from "./turns.ts";
 
 export { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "@armada/core/contract";
 
@@ -248,8 +256,8 @@ export function registerLogsTool(
         ...LOGS_OUTPUT,
         settled:
           surface === "rest"
-            ? LOGS_OUTPUT.settled.describe("Docker only. Use status or wait to check whether a turn has settled.")
-            : LOGS_OUTPUT.settled.describe("Docker only. Use status to check whether a turn has settled."),
+            ? LOGS_OUTPUT.settled.describe("Whether the current turn has settled. Use status or wait for live probes.")
+            : LOGS_OUTPUT.settled.describe("Whether the current turn has settled. Use status for live probes."),
       },
       readOnly: true,
     },
@@ -258,6 +266,10 @@ export function registerLogsTool(
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
       const resolveProvider = context.logProvider ?? context.storedProviders?.[found.provider] ?? context.provider;
       const provider = await resolveProvider(found);
+      const durableSettled =
+        "followSettled" in provider && typeof provider.followSettled === "function"
+          ? await provider.followSettled()
+          : undefined;
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
@@ -266,9 +278,63 @@ export function registerLogsTool(
         ...(args.maxBytes ? { maxBytes: args.maxBytes } : {}),
         ...(args.coalesce !== undefined ? { coalesce: args.coalesce } : {}),
       });
-      return { ...page, events: page.events.map((item) => ({ ...item })) };
+      const { threadStatus, settled } = buildLogsThreadStatus(found, page.rawEvents, context.now(), durableSettled);
+      return {
+        ...page.response,
+        events: page.response.events.map((item) => ({ ...item })),
+        threadStatus,
+        settled,
+      };
     },
   );
+}
+
+export function buildLogsThreadStatus(
+  sandbox: SandboxView,
+  events: readonly AgentEvent[],
+  now: Date,
+  durableSettled?: boolean,
+) {
+  const latest = latestPromptEvent(events);
+  const terminal = sandbox.status === "stopped" || sandbox.status === "failed" || sandbox.status === "deleted";
+  const terminalState = sandbox.status === "failed" ? ("failed" as const) : ("interrupted" as const);
+  let prompt: PromptReport | null = null;
+  if (latest?.kind === "prompt" && latest.promptId) {
+    const outcome = observedPromptOutcome(latest.status, latest.promptId, events);
+    const state = outcome.state === "running" && terminal ? terminalState : outcome.state;
+    const reason = outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null;
+    prompt = {
+      promptId: latest.promptId,
+      conversationId: latest.conversationId ?? null,
+      state,
+      reason: state === "failed" || state === "interrupted" ? reason : null,
+      ...(outcome.state === "failed" && outcome.limit ? { limit: outcome.limit } : {}),
+    };
+  } else if (sandbox.taskPromptId && (durableSettled !== undefined || sandbox.status === "running" || terminal)) {
+    prompt = {
+      promptId: sandbox.taskPromptId,
+      conversationId: sandbox.conversationIds?.at(-1) ?? null,
+      state: terminal ? terminalState : durableSettled ? "finished" : "running",
+      reason: null,
+    };
+  }
+  const down =
+    sandbox.status === "stopped" ||
+    sandbox.status === "deleted" ||
+    (sandbox.status === "failed" && !sandbox.stopRequestedAt);
+  const baseSettled =
+    !sandbox.stopRequestedAt &&
+    sandbox.status !== "stopping" &&
+    (down || (prompt ? prompt.state !== "running" : sandbox.status !== "running" && sandbox.status !== "starting"));
+  return {
+    threadStatus: {
+      status: sandbox.status,
+      statusMessage: idlePauseMessage(sandbox, now),
+      prompt,
+      usage: sandbox.usage ?? null,
+    },
+    settled: durableSettled === undefined ? baseSettled : baseSettled && durableSettled,
+  };
 }
 
 async function readLogs(
@@ -297,11 +363,14 @@ async function readLogs(
     args.all === true,
   );
   return {
-    ...(olderCursor ? { olderCursor } : {}),
-    ...(source ? { source } : {}),
-    ...(runtimeFailure ? { runtimeFailure } : {}),
-    events: publicLogEvents(events),
-    cursor,
-    hasMore,
+    rawEvents: events,
+    response: {
+      ...(olderCursor ? { olderCursor } : {}),
+      ...(source ? { source } : {}),
+      ...(runtimeFailure ? { runtimeFailure } : {}),
+      events: publicLogEvents(events),
+      cursor,
+      hasMore,
+    },
   };
 }

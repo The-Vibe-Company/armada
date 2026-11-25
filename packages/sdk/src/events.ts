@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@armada/core";
 import { streamSandboxEvents } from "@armada/core/contract/sandbox-events";
 import type { EventStreamInput, SandboxEvent } from "./index.ts";
 
@@ -19,7 +20,7 @@ export const sandboxEventStream: (
 
     const before = lastId;
     for await (const event of readEvents(connection.body, sandbox.toLowerCase(), signal)) {
-      if (lastId !== undefined && BigInt(event.id) <= BigInt(lastId)) continue;
+      if (lastId !== undefined && lastId !== "tail" && BigInt(event.id) <= BigInt(lastId)) continue;
       lastId = event.id;
       yield event;
     }
@@ -66,10 +67,27 @@ function parseFrame(frame: string, sandbox: string) {
   const event = streamSandboxEvents.output.parse(JSON.parse(data.join("\n")));
   if (event.id !== id || event.sandboxId.toLowerCase() !== sandbox)
     throw new TypeError("Event stream returned an inconsistent event reference.");
+  const base = {
+    id: event.id,
+    sandboxId: event.sandboxId,
+    ref: event.ref,
+    createdAt: event.createdAt,
+  };
   if (event.kind === "transition" && event.sequence === null)
-    return { ...event, kind: event.kind, sequence: event.sequence } satisfies SandboxEvent;
+    return {
+      ...base,
+      kind: event.kind,
+      sequence: event.sequence,
+      ...(event.status !== undefined ? { status: event.status } : {}),
+      ...(event.statusReason !== undefined ? { statusReason: event.statusReason } : {}),
+    } satisfies SandboxEvent;
   if (event.kind === "runtime_event" && event.sequence === event.ref)
-    return { ...event, kind: event.kind, sequence: event.sequence } satisfies SandboxEvent;
+    return {
+      ...base,
+      kind: event.kind,
+      sequence: event.sequence,
+      ...(event.event !== undefined ? { event: event.event as unknown as AgentEvent } : {}),
+    } satisfies SandboxEvent;
   throw new TypeError("Event stream returned an inconsistent event sequence.");
 }
 
