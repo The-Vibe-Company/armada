@@ -1,9 +1,11 @@
-import { PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
+import { isSandboxPlacementProvider, PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
 
 export const MACHINE_SIZES = ["small", "medium", "large", "xlarge"] as const;
 export type MachineSize = (typeof MACHINE_SIZES)[number];
 
 export interface MachineCapabilities {
+  readonly openCodeRequiresRuntimeDiscovery: boolean;
+  readonly modelConnectionTest: "unsupported" | "runtime-enrollment" | "supported";
   readonly launchSource: "golden" | "host";
   readonly maxTtlSeconds: number;
   readonly stopRetention: "disk" | "image" | "container";
@@ -20,6 +22,8 @@ export interface MachineCapabilities {
 const catalogSizes = Object.freeze([...MACHINE_SIZES]);
 const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCapabilities>> = {
   boat: Object.freeze({
+    openCodeRequiresRuntimeDiscovery: true,
+    modelConnectionTest: "runtime-enrollment",
     launchSource: "golden",
     maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,
     stopRetention: "disk",
@@ -33,6 +37,8 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     sizes: catalogSizes,
   }),
   modal: Object.freeze({
+    openCodeRequiresRuntimeDiscovery: false,
+    modelConnectionTest: "supported",
     launchSource: "golden",
     maxTtlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds,
     stopRetention: "image",
@@ -46,6 +52,8 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     sizes: catalogSizes,
   }),
   docker: Object.freeze({
+    openCodeRequiresRuntimeDiscovery: false,
+    modelConnectionTest: "unsupported",
     launchSource: "host",
     maxTtlSeconds: PROVIDER_LIMITS.docker.maxTtlSeconds,
     stopRetention: "container",
@@ -59,6 +67,10 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     sizes: Object.freeze([]),
   }),
 };
+
+export function openCodeRequiresRuntimeDiscovery(provider: unknown) {
+  return isSandboxPlacementProvider(provider) && capabilities(provider).openCodeRequiresRuntimeDiscovery;
+}
 
 export function capabilities(providerId: SandboxPlacementProviderId) {
   return machineCapabilities[providerId];

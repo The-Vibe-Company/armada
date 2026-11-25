@@ -1,4 +1,5 @@
-import type { Harness, ModelConnectionTestResult } from "@armada/core";
+import { type Harness, isSandboxPlacementProvider, type ModelConnectionTestResult } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import type { ActionResult } from "./action";
 
 /** Only the viewer's recent running Modal/Boat-runtime sandboxes; no physical IDs or private config. */
@@ -29,13 +30,16 @@ export function matchesConnectionTestSandbox(
 ): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
+  const testSupport = isSandboxPlacementProvider(row.provider)
+    ? capabilities(row.provider).modelConnectionTest
+    : undefined;
   return (
     row.id === expected.id &&
     row.owner_id === expected.ownerId &&
     row.org_id === expected.orgId &&
     row.credential_id === expected.accountId &&
     row.credential_version === expected.version &&
-    (row.provider === "modal" || (row.provider === "boat" && row.boat_runtime === true)) &&
+    (testSupport === "supported" || (testSupport === "runtime-enrollment" && row.boat_runtime === true)) &&
     row.stop_requested_at === null &&
     typeof row.status === "string" &&
     ["ready", "running"].includes(row.status)

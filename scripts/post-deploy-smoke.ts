@@ -1,5 +1,6 @@
 import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES } from "../packages/core/src/docker-api.ts";
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
+import { capabilities } from "../packages/core/src/machine-capabilities.ts";
 import { describePromptFailure, promptFailureReason } from "../packages/core/src/prompt-failure.ts";
 import { RUNTIME_STARTUP_FAILURES } from "../packages/core/src/runtime-startup-failure.ts";
 import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
@@ -14,7 +15,14 @@ import {
   saveSmokeJournal,
 } from "./smoke-sandbox-cleanup.ts";
 import { timedSmokeStep } from "./smoke-step.ts";
-import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
+import {
+  BOAT_STAGING_NOTICE,
+  isCoordinatorSmokeProvider,
+  isStagingSmokeProvider,
+  reconcilesTemplateByExternalRef,
+  smokeReceiptProvider,
+  stagingSmokeCases,
+} from "./staging-smoke-policy.ts";
 /** API-only smoke; ARMADA_SMOKE=create_real_compute explicitly authorizes compute.
  * ARMADA_URL must be an HTTPS origin; ARMADA_TOKEN is the only credential.
  * ARMADA_SMOKE_CASES is a JSON array of {provider, harness, org, golden, model,
@@ -464,7 +472,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const modalCases = [];
     const dockerCases = [];
     for (const item of parsed) {
-      if (item?.provider === "docker") dockerCases.push(item);
+      if (isSandboxPlacementProvider(item?.provider) && capabilities(item.provider).launchSource === "host")
+        dockerCases.push(item);
       else modalCases.push(item);
     }
     if (!modalCases.length) fail("invalid_configuration");
@@ -732,13 +741,18 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       const input = body as { provider?: string; externalRef?: string };
       const admission = receipt && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
-      if (sandboxLaunch && input.provider === "docker" && !admission)
+      if (
+        sandboxLaunch &&
+        isSandboxPlacementProvider(input.provider) &&
+        capabilities(input.provider).launchSource === "host" &&
+        !admission
+      )
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       // Keep the trusted handle even when other receipt fields fail validation.
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
-        if (provider === "boat") fail("invalid_response");
+        if (isCoordinatorSmokeProvider(provider)) fail("invalid_response");
         if (!admission && provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
@@ -2324,8 +2338,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     return false;
   }
   // Historical receipts did not record provider. Never contact Boat to classify them.
-  const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
-  rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
+  const deferred = rows.filter((row) => !isStagingSmokeProvider(row.provider));
+  rows = rows.filter((row) => isStagingSmokeProvider(row.provider));
   if (deferred.length)
     io.out(
       JSON.stringify({
@@ -2380,8 +2394,13 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         state?: unknown;
         id?: unknown;
       } | null;
-      const keyedDockerLaunch = url.endsWith("/sandbox/launch") && requestKey === key && body.provider === "docker";
-      const keyedModalLaunch = args[0] === "--parity" && requestKey === key && body.provider === "modal";
+      const keyedDockerLaunch =
+        url.endsWith("/sandbox/launch") &&
+        requestKey === key &&
+        isSandboxPlacementProvider(body.provider) &&
+        capabilities(body.provider).launchSource === "host";
+      const keyedModalLaunch =
+        args[0] === "--parity" && requestKey === key && reconcilesTemplateByExternalRef(body.provider);
       const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const admissionProvider =
@@ -2399,7 +2418,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         (!response.ok ||
           provider !== body.provider ||
           (!admissionProvider && result?.sandbox?.provider !== body.provider) ||
-          (keyedDockerLaunch && admissionProvider !== "docker"));
+          (keyedDockerLaunch && admissionProvider !== body.provider));
       if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
@@ -2407,7 +2426,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
           id,
           ...(provider ? { provider } : {}),
         };
-        if (!row.provider || row.provider === "boat") unknownLaunch = true;
+        if (!isStagingSmokeProvider(row.provider)) unknownLaunch = true;
         rows.push(row);
         await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
         io.out(JSON.stringify({ step: "smoke_sandbox_receipt", ...row }));
@@ -2421,8 +2440,8 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     passed = await runAllowedSmoke(env, args, trackedIo);
   } finally {
     unknownLaunch ||= unacknowledgedLaunches.size > 0;
-    deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
-    rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
+    deferred.push(...rows.filter((row) => !isStagingSmokeProvider(row.provider)));
+    rows = rows.filter((row) => isStagingSmokeProvider(row.provider));
     const parityFailures = rows.filter((row) => parityDeletes.get(`${row.org}/${row.id}`) === false);
     const untouched = rows.filter((row) => !parityDeletes.has(`${row.org}/${row.id}`));
     rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, untouched, io, { limit: 64 });
