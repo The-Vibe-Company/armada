@@ -11,6 +11,8 @@ import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
+import { pendingModalStopOutput } from "./sandbox-lifecycle.ts";
+
 const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
   "An account can change only when no turn is running. Wait for the turn and any start or stop operation to finish, then try again.";
@@ -24,6 +26,7 @@ type Target = {
   boat_runtime: boolean;
   model: string | null;
   status: string;
+  lifecycle_generation: string;
   deleted_at: unknown;
   stopped_at: unknown;
   leased: boolean;
@@ -155,6 +158,11 @@ export function createSandboxAccountChange(
           "credential_binding_unsafe",
           "The sandbox is stopping to change accounts. Wait until it is stopped, then retry.",
         );
+      if (
+        current.runtime_transport === "dialout" &&
+        (await pendingModalStopOutput(tx, current.id, current.lifecycle_generation))
+      )
+        throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
       if (current.credential_id !== before.credential_id || current.credential_version !== before.credential_version)
         throw new VaultError("conflict", "Another account change won. Refresh the sandbox before trying again.");
       // Generation change revokes old runtime/enrolment tokens and sealed configuration via the existing trigger.

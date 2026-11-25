@@ -40,6 +40,7 @@ const jobsLane: LaneFactory = ({
   jobs,
   store,
   config,
+  providers,
   runtimeCommands,
   runtimeGitHub,
   runtimeMcp,
@@ -106,7 +107,13 @@ const jobsLane: LaneFactory = ({
         : {}),
       ...(config.encryptionKey
         ? {
-            stop: createStopJob(sql, config.encryptionKey),
+            stop: createStopJob(
+              sql,
+              config.encryptionKey,
+              undefined,
+              undefined,
+              createMcpSandboxProviderResolver(sql, providers),
+            ),
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
               sql,
               config.encryptionKey,
