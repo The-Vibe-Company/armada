@@ -700,10 +700,17 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
       admitLaunch,
-      async runtimeSend(...args) {
+      async runtimeSend(caller, request) {
         dispatches++;
-        // Run the real readiness guard if the handler sends before launch admission is open.
-        return initialPromptAdmitted ? {} : directSend(...args);
+        if (!initialPromptAdmitted) return directSend(caller, request);
+        return {
+          id: request.id,
+          requestId: request.request_id!,
+          promptId: request.request_id!,
+          conversationId: "child-conversation",
+          status: "running",
+          runtime: { kind: "armada", epoch: "1" },
+        };
       },
     });
     try {
