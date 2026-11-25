@@ -61,12 +61,17 @@ export async function insertStartingModalSandbox(
 ) {
   const { sandboxId, orgId, ownerId, generation, visibility, snapshot, provider = "modal" } = target;
   await tx.query(
-    `insert into public.sandboxes
+    `with sandbox as (
+       insert into public.sandboxes
        (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
         visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
         expires_at, credential_id, credential_version, external_ref, stop_when_work_merged, machine_size, resource_project, boat_runtime)
      values ($1,$2,$3,$3,$4,$19::public.sandbox_provider,'starting',case when $19::public.sandbox_provider='modal' then 'dialout' end,$5,$6,$7,$8,$9,$10,$11,$12,
-             now()+$12::integer*interval '1 second',$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb,$19::public.sandbox_provider='boat')`,
+             now()+$12::integer*interval '1 second',$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb,$19::public.sandbox_provider='boat')
+       returning id
+     )
+     insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
+     select id,$20 from sandbox`,
     [
       sandboxId,
       orgId,
@@ -87,12 +92,9 @@ export async function insertStartingModalSandbox(
       JSON.stringify(sandbox.machineSize),
       sandbox.resourceProject ? JSON.stringify(sandbox.resourceProject) : null,
       provider,
+      snapshot,
     ],
   );
-  await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
-    sandboxId,
-    snapshot,
-  ]);
 }
 
 export async function taintStartingModalSandbox(tx: Sql, sandboxId: string, generation: number) {
