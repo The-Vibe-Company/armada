@@ -78,7 +78,7 @@ struct ConversationEventPage: Sendable {
 /// Live SSE items emitted by `GET /api/v1/events`.
 enum ConversationStreamEvent: Equatable, Sendable {
     case connected
-    case event(id: String, AgentEvent)
+    case event(id: String, sequence: String?, AgentEvent)
     case transition(id: String, status: SandboxStatus?, statusReason: String?)
     case advance(id: String)
 }

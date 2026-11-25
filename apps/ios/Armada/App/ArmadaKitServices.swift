@@ -66,16 +66,14 @@ struct ArmadaKitServices: SandboxService {
                         case .connected: c.yield(.connected)
                         case .frame(let f):
                             switch f.kind {
-                            case .runtimeEvent(let e): c.yield(e.map { .event(id: f.id, Self.agentEvent($0)) } ?? .advance(id: f.id))
+                            case .runtimeEvent(let e): c.yield(e.map { .event(id: f.id, sequence: f.sequence, Self.agentEvent($0)) } ?? .advance(id: f.id))
                             case .transition(let s, let r): c.yield(.transition(id: f.id, status: s.map(SandboxStatus.init(rawValue:)), statusReason: r))
                             case .unknown: c.yield(.advance(id: f.id))
                             }
                         }
                     }
                     c.finish()
-                } catch is CancellationError { c.finish(throwing: CancellationError()) }
-                catch let f as ServiceFailure { c.finish(throwing: f) }
-                catch { c.finish(throwing: Self.sandboxReadFailure(error)) }
+                } catch is CancellationError { c.finish(throwing: CancellationError()) } catch let f as ServiceFailure { c.finish(throwing: f) } catch { c.finish(throwing: Self.sandboxReadFailure(error)) }
             }
             c.onTermination = { @Sendable _ in task.cancel() }
         }

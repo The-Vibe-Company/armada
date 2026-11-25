@@ -78,9 +78,7 @@ public final class URLSessionTransport: ArmadaTransport, Sendable {
                     }
                     if !chunk.isEmpty { c.yield(.data(Data(chunk))) }
                     c.finish()
-                } catch is CancellationError { c.finish(throwing: CancellationError()) }
-                catch let e as URLError where e.code == .cancelled { c.finish(throwing: CancellationError()) }
-                catch { c.finish(throwing: error) }
+                } catch is CancellationError { c.finish(throwing: CancellationError()) } catch let e as URLError where e.code == .cancelled { c.finish(throwing: CancellationError()) } catch { c.finish(throwing: error) }
             }
             c.onTermination = { @Sendable _ in task.cancel() }
         }

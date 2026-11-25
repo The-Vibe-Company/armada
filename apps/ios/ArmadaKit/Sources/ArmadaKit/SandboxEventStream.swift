@@ -16,16 +16,12 @@ public struct SandboxStreamFrame: Decodable, Sendable, Equatable {
         }
     }
 }
-
 public enum SandboxStreamEvent: Sendable, Equatable { case connected, frame(SandboxStreamFrame) }
-
-/// Incremental SSE parser with UTF-8 safe byte buffering and numeric ID deduplication.
 struct SSEFrameParser: Sendable {
     private static let maxLineBytes = 4 * 1024 * 1024, maxCursor: UInt64 = 9_223_372_036_854_775_807
     private let sandboxID: String
     private var rawLine: [UInt8] = [], sawCR = false, isFirstLine = true, frameID: String? = nil, dataLines: [String] = []
     private(set) var lastEventID: String?
-
     init(sandboxID: String, lastEventID: String? = nil) { self.sandboxID = sandboxID.lowercased(); self.lastEventID = lastEventID }
     static func isValidCursorID(_ v: String) -> Bool {
         !v.isEmpty && v.count <= 19 && v.allSatisfy { $0.isASCII && $0.isNumber } && (v.count == 1 || v.first != "0") && (UInt64(v).map { $0 <= maxCursor } ?? false)
@@ -72,9 +68,8 @@ extension ArmadaClient {
                         switch item {
                         case .response(let http):
                             switch http.statusCode {
-                            case 200..<300:
-                                guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true else { throw ArmadaError.invalidResponse }
-                                c.yield(.connected)
+                            case 200..<300 where http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true: c.yield(.connected)
+                            case 200..<300: throw ArmadaError.invalidResponse
                             case 401: throw ArmadaError.signedOut
                             case 403: throw ArmadaError.forbidden
                             case 400: throw ArmadaError.invalidRequest
@@ -85,10 +80,7 @@ extension ArmadaClient {
                         }
                     }
                     c.finish()
-                } catch is CancellationError { c.finish(throwing: CancellationError()) }
-                catch let e as URLError where e.code == .cancelled { c.finish(throwing: CancellationError()) }
-                catch let e as ArmadaError { c.finish(throwing: e) }
-                catch { c.finish(throwing: ArmadaError.unavailable) }
+                } catch is CancellationError { c.finish(throwing: CancellationError()) } catch let e as URLError where e.code == .cancelled { c.finish(throwing: CancellationError()) } catch let e as ArmadaError { c.finish(throwing: e) } catch { c.finish(throwing: ArmadaError.unavailable) }
             }
             c.onTermination = { @Sendable _ in task.cancel() }
         }

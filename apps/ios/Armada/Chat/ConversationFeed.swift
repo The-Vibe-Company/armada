@@ -163,13 +163,12 @@ final class ConversationFeed {
                     let needsGap = lastEventID == nil && !opened; opened = true; failures = 0
                     switch item {
                     case .connected: setSSEConnected(true); connection = .live; if needsGap { try? await loader.catchUp(Self.read(fetch), show: show) }
-                    case .event(let id, let event): lastEventID = id; await loader.applyLiveEvent(event, show: show)
+                    case .event(let id, let seq, let event): lastEventID = id; await loader.applyLiveEvent(event, sequence: seq, show: show)
                     case .transition(let id, let status, let reason): lastEventID = id; onTransition(status, reason)
                     case .advance(let id): lastEventID = id
                     }
                 }
-            } catch is CancellationError { setSSEConnected(false); return }
-            catch {
+            } catch is CancellationError { setSSEConnected(false); return } catch {
                 setSSEConnected(false); guard !Task.isCancelled else { return }
                 if let f = error as? ServiceFailure {
                     if f.category == .signedOut { onSignedOut(); return }
@@ -178,8 +177,7 @@ final class ConversationFeed {
                 failures += 1; try? await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5)))); continue
             }
             setSSEConnected(false); guard !Task.isCancelled else { return }
-            if !opened { failures += 1 }
-            try? await Task.sleep(for: opened ? .seconds(1) : .seconds(min(30, 1 << min(failures, 5))))
+            if !opened { failures += 1 }; try? await Task.sleep(for: opened ? .seconds(1) : .seconds(min(30, 1 << min(failures, 5))))
         }
     }
 
