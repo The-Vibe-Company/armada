@@ -66,13 +66,21 @@ const childLaunchAuthority = `
     and d.revoked_at is null and d.acknowledged_at is not null and d.expires_at>clock_timestamp()
     and 'worker:launch'=any(d.scopes)`;
 
+// Runtime sessions lock the parent sandbox too. Allow short waits while
+// retaining the locks that fence stop, deletion and authority revocation.
+const childLaunchLockBudget = "set local lock_timeout = '2s'";
+
 export async function lockChildLaunchAdmission(tx: Sql, operation: ChildOperation) {
+  await tx.query(childLaunchLockBudget);
   const {
     rows: [row],
   } = await tx.query<{ request_digest: string }>(
-    `select c.request_digest ${childLaunchAuthority} and c.state='pending'
-      and c.org_id=$3 and c.owner_id=$4 and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
-      for no key update of c nowait for share of o,s,m,d nowait`,
+    `with locked as materialized (
+      select c.request_digest,d.expires_at ${childLaunchAuthority} and c.state='pending'
+        and c.org_id=$3 and c.owner_id=$4 and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
+        for no key update of c for share of o,s,m,d
+    )
+    select request_digest from locked where expires_at>clock_timestamp()`,
     [
       operation.id,
       operation.sandboxId,
@@ -99,11 +107,15 @@ export async function completeChildLaunchAdmission(tx: Sql, operation: ChildOper
 
 export async function childLaunchAuthorized(tx: Sql, sandboxId: string, operationId?: string) {
   if (operationId === undefined) return true;
+  await tx.query(childLaunchLockBudget);
   const { rows } = await tx.query(
-    `select 1 ${childLaunchAuthority} and c.state='succeeded'
-      and exists(select 1 from public.orchestrator_children r where r.sandbox_id=c.target_id
-        and r.orchestrator_id=c.orchestrator_id and r.org_id=c.org_id and r.owner_id=c.owner_id)
-      for share of o,s,m,d nowait`,
+    `with locked as materialized (
+      select d.expires_at ${childLaunchAuthority} and c.state='succeeded'
+        and exists(select 1 from public.orchestrator_children r where r.sandbox_id=c.target_id
+          and r.orchestrator_id=c.orchestrator_id and r.org_id=c.org_id and r.owner_id=c.owner_id)
+        for share of o,s,m,d
+    )
+    select 1 from locked where expires_at>clock_timestamp()`,
     [operationId, sandboxId],
   );
   return rows.length > 0;

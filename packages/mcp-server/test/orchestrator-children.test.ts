@@ -198,8 +198,16 @@ const boatAdmissionProvider = (boat: ReturnType<typeof fakeBoat>) => ({
   managementIdentity: async () => ({ scope: "org" as const, ownerId: "fixture" }),
 });
 
-test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "contended Boat admission"] as const)(
-  "delegated admission is durable and fenced after %s",
+const admissionScenarios = [
+  "revoked Boat",
+  "lost Modal acknowledgement",
+  "rolled back Boat",
+  "brief parent contention",
+  "contended Boat admission",
+] as const;
+
+test.each(admissionScenarios)(
+  "delegated child launch admission preserves its durable authority fence after %s",
   async (scenario) => {
     const provider = scenario === "lost Modal acknowledgement" ? "modal" : "boat";
     const { close, db, sql, p, authority, id, token, selection } = await fixture("running", "anthropic", provider);
@@ -211,15 +219,22 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "co
         ...sql,
         transaction: async (work) => {
           const result = await sql.transaction!(async (tx) => {
+            let parentLockHeld = scenario === "brief parent contention" || scenario === "contended Boat admission";
             const value = await work({
               ...tx,
               async query<T>(statement: string, params?: unknown[]) {
-                if (
-                  armed &&
-                  scenario === "contended Boat admission" &&
-                  statement.includes("for no key update of c nowait")
-                )
-                  throw Object.assign(new Error("could not obtain lock"), { name: "PostgresError", errno: "55P03" });
+                if (armed && parentLockHeld && /for share of [\w,]*\bs\b/.test(statement)) {
+                  const { rows } = await tx.query<{ lock_timeout: string }>("show lock_timeout");
+                  const noWait = /\bnowait\b/i.test(statement);
+                  if (!noWait) expect(rows[0]?.lock_timeout).toBe("2s");
+                  if (noWait || scenario === "contended Boat admission")
+                    throw Object.assign(new Error("parent sandbox lock unavailable"), {
+                      name: "PostgresError",
+                      errno: "55P03",
+                    });
+                  // Model the runtime transaction releasing the sandbox row within the lock budget.
+                  parentLockHeld = false;
+                }
                 return tx.query<T>(statement, params);
               },
             });
