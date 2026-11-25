@@ -567,14 +567,9 @@ export function createSqlData(
         }
         if (patch.status !== undefined && stopStatus === undefined)
           throw new DataError("Sandbox status changes require a lifecycle transition.");
-        const { result, admission, observeRefusal } = await applyScopedSandboxPatch(
-          sql,
-          scope,
-          id,
-          patch,
-          stopStatus,
-          reason,
-        );
+        const applied = await applyScopedSandboxPatch(sql, scope, id, patch, stopStatus, reason);
+        if (!applied) return;
+        const { result, admission, observeRefusal } = applied;
         if (!result.rows[0]?.id) {
           // Record only admission predicates. The provider has not received this delete.
           if (observeRefusal)
