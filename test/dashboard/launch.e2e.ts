@@ -28,7 +28,9 @@ for (const organization of [
     browser,
   }) => {
     await app.open("/sandboxes");
-    await screen.getByRole("button", "Launch a sandbox").tap();
+    const launch = screen.getByRole("button", /^Launch a sandbox/);
+    await expect(launch).toHaveCount(1);
+    await launch.tap();
     await screen.getByLabel("Task").fill(`Inspect the ${organization.name} fixture`);
     if (organization.repository) {
       await screen.getByRole("button", "No repository", { exact: true }).tap();
@@ -68,6 +70,28 @@ for (const organization of [
     });
   });
 }
+
+test("Acme: empty Sandboxes has one launch entry", { session: "alice" }, async ({ app, screen }) => {
+  await configureFixture("sandbox-inventory", { hidden: true });
+  try {
+    await app.open("/sandboxes");
+    await expect(screen.getByText("No sandboxes yet", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", /^Launch a sandbox/)).toHaveCount(1);
+  } finally {
+    await configureFixture("sandbox-inventory", { hidden: false });
+  }
+});
+
+test("Acme: launch is available from a page without a header launch action", { session: "alice" }, async ({
+  app,
+  screen,
+}) => {
+  await app.open("/variables");
+  const launch = screen.getByRole("button", /^Launch a sandbox/);
+  await expect(launch).toHaveCount(1);
+  await launch.tap();
+  await expect(screen.getByRole("dialog", "Launch a sandbox")).toBeVisible();
+});
 
 test("Acme: an agent without an account cannot launch", { session: "alice" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");

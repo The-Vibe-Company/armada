@@ -139,11 +139,12 @@ function row(
   templates: TemplateList,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
+  const hiddenValue = "Not shown";
   const meta = item.kind === "secret" ? "Secret · never shown again" : "Setting · anyone who can use it can read it";
   return {
     key: itemKey(item),
     columns: [
-      { key: "value", content: "Not shown" },
+      { key: "value", content: hiddenValue },
       { key: "kind", content: item.status === "revoked" ? "Revoked" : item.kind === "secret" ? "Secret" : "Variable" },
       { key: "scope", content: audience(item, orgName) },
       {
@@ -171,6 +172,7 @@ function row(
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
     fact: audience(item, orgName),
+    foot: hiddenValue,
     detail: (
       <div className="space-y-4">
         <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />

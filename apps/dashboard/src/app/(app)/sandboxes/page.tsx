@@ -148,7 +148,9 @@ async function SandboxesContent({ searchParams }: Props) {
       <Link href={CLOUD_PROVIDERS_PATH}>Connect a provider</Link>
     </Button>
   ) : selected ? (
-    <SandboxLaunchAction key={selected.org.id} />
+    <div data-page-launch>
+      <SandboxLaunchAction key={selected.org.id} />
+    </div>
   ) : null;
 
   return (
@@ -248,7 +250,7 @@ async function SandboxesContent({ searchParams }: Props) {
             Try a different search or remove a filter to see more sandboxes.
           </Empty>
         ) : (
-          <Empty title="No sandboxes yet" action={launchAction} icon={<BoxesIcon />}>
+          <Empty title="No sandboxes yet" icon={<BoxesIcon />}>
             Choose a snapshot, then tell an agent what to do. You can follow its progress and send more messages here.
           </Empty>
         )

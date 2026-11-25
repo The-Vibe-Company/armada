@@ -42,6 +42,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button
+          aria-label="Launch a sandbox"
           onKeyDown={(event) => {
             if (shortcut && event.key.toLowerCase() === "l" && !event.metaKey && !event.ctrlKey && !event.altKey) {
               event.preventDefault();
@@ -49,7 +50,7 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
             }
           }}
         >
-          <RocketIcon /> Launch a sandbox
+          <RocketIcon /> <span>Launch a sandbox</span>
           {shortcut && <kbd className="ml-auto text-xs text-muted-foreground">L</kbd>}
         </Button>
       </DialogTrigger>
