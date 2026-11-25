@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createGoldenBuildJob } from "../golden-worker.ts";
 import { retentionMaintenanceJob } from "../retention-maintenance.ts";
 import { startServerWorkers } from "../server-workers.ts";
+import { createLaunchJob } from "./launch.ts";
 import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
 function fixture(kind = "stop", dispatchBudgetMs?: number) {
@@ -108,6 +109,16 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
 }
 
 const tick = new AbortController().signal;
+
+test("a Boat launch stays fenced when the claiming worker cannot serve Boat", async () => {
+  const f = fixture("launch");
+  const handler = createLaunchJob({ modal: { concurrency: 1, run: async () => ({ status: "done" }) } });
+  const runner = f.runner((job, context) => handler.run({ ...job, payload: { boat: {} } }, context));
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  await runner.drain();
+  expect(f.completed).toEqual([]);
+  expect(await runner.reconcileOne(tick)).toBe(false);
+});
 
 test("the jobs lane admits two due initial turns while a sibling lane and the first turn are in flight", async () => {
   const f = fixture("launch_initial_turn");

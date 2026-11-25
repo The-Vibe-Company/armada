@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { LaunchCredentialResolver, Sql } from "@armada/core";
 import { apiFailureCode } from "../src/api-failure.ts";
-import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
+import { createDockerLaunchPlacement } from "../src/docker-launch-placement.ts";
 
 test("a pre-dispatch dependency failure is definite and logs a safe reason", async () => {
   const messages: unknown[][] = [];
@@ -12,7 +12,7 @@ test("a pre-dispatch dependency failure is definite and logs a safe reason", asy
   let error: unknown;
   try {
     const sql: Sql = { query: async () => ({ rows: [] }) };
-    const launch = createDockerNormalLaunch(sql, "", {
+    const launch = createDockerLaunchPlacement(sql, "", {
       officialImage: `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`,
       credentials: {
         defaults: async () => {
@@ -20,7 +20,7 @@ test("a pre-dispatch dependency failure is definite and logs a safe reason", asy
         },
       } as unknown as LaunchCredentialResolver,
     });
-    await launch.launch(
+    await launch.admit(
       {
         userId: "11111111-1111-4111-8111-111111111111",
         via: "service",

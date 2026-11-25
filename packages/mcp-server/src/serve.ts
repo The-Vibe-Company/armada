@@ -59,7 +59,6 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // Cold image pulls and scoped child admission can exceed Bun's default ten-second idle window.
   // Normal Docker launches and scoped child mutations use their own operation deadlines.
   // Other routes retain their existing response timeout policy.
-  control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureAntigravityLoginRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureStopRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
