@@ -195,6 +195,67 @@ for await (const line of lines) {
         ])
           send({ method: "session/update", params: { sessionId, update } });
       }
+      if (text === "tool-title-budget") {
+        for (let i = 0; i < 33; i++) {
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: `active-${i}`,
+                title: `echo ${"x".repeat(32768)}`,
+              },
+            },
+          });
+        }
+      }
+      if (text === "tool-title-completed") {
+        const longTitle = `echo ${"x".repeat(32768)}`;
+        for (let i = 0; i < 66; i++) {
+          const toolCallId = `done-${i}`;
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: { sessionUpdate: "tool_call", toolCallId, title: longTitle },
+            },
+          });
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId,
+                rawInput: { index: i },
+                status: i % 2 === 0 ? "completed" : "failed",
+                rawOutput: "ok",
+              },
+            },
+          });
+        }
+        for (let i = 0; i < 34; i++) {
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: i === 0 ? "tool_call" : "tool_call_update",
+                toolCallId: "replaced",
+                title: `echo ${i} ${"y".repeat(32768)}`,
+              },
+            },
+          });
+        }
+        send({
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { sessionUpdate: "tool_call_update", toolCallId: "replaced", rawInput: { final: true } },
+          },
+        });
+      }
       const fragments = echo
         ? [text.slice(0, 10), text.slice(10)]
         : text === "DOCKER_OK"

@@ -169,6 +169,53 @@ test("ACP refuses another protocol before dispatching a prompt", async () => {
   }
 });
 
+test("ACP bounds active retained long tool titles and frees budget on terminal or replaced calls", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: {},
+  });
+  try {
+    const overBudget = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "tool-title-budget" },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {},
+    });
+    await expect(overBudget.done).rejects.toMatchObject({ code: "invalid_harness_protocol" });
+
+    const events: DriverEvent[] = [];
+    const completed = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "tool-title-completed" },
+      signal: new AbortController().signal,
+      emit: (event) => events.push(event),
+      session: () => {},
+    });
+    expect(await completed.done).toBe("finished");
+
+    const tools = events.flatMap((event) => (event.kind === "message" ? event.tools : []));
+    const longTitle = `echo ${"x".repeat(32768)}`;
+    expect(tools.find((tool) => tool.id === "done-0" && tool.result)).toMatchObject({
+      id: "done-0",
+      input: { title: longTitle, rawInput: { index: 0 } },
+      result: { output: "ok", isError: false },
+    });
+    expect(tools.find((tool) => tool.id === "done-1" && tool.result)).toMatchObject({
+      id: "done-1",
+      input: { title: longTitle, rawInput: { index: 1 } },
+      result: { output: "ok", isError: true },
+    });
+    expect(tools.findLast((tool) => tool.id === "replaced")).toMatchObject({
+      id: "replaced",
+      name: "tool_result",
+      input: { title: `echo 33 ${"y".repeat(32768)}`, rawInput: { final: true } },
+    });
+  } finally {
+    await driver.close();
+  }
+});
+
 // A failed native telemetry channel cannot silently leave the active prompt running without wait visibility.
 test("ACP observes native events before prompt and releases the observer when its stream fails", async () => {
   let rejectFailure!: (error: Error) => void;

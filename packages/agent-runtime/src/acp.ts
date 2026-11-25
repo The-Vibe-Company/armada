@@ -6,6 +6,8 @@ import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } f
 import { toolCallIdentifier, toolIdentifier } from "./journal.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
+const MAX_LONG_TOOL_TITLE_BYTES = 1024 * 1024;
+
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -87,7 +89,26 @@ export class AcpDriver implements Driver {
       stopped = false,
       interrupted = false,
       steering = false;
-    const longToolTitles = new Map<string, string>();
+    const longToolTitles = new Map<string, { title: string; bytes: number }>();
+    let longToolTitleBytes = 0;
+    const clearLongToolTitles = () => {
+      longToolTitles.clear();
+      longToolTitleBytes = 0;
+    };
+    const releaseLongToolTitle = (id: string) => {
+      const existing = longToolTitles.get(id);
+      if (!existing) return;
+      longToolTitles.delete(id);
+      longToolTitleBytes -= existing.bytes;
+    };
+    const retainLongToolTitle = (id: string, title: string) => {
+      const bytes = Buffer.byteLength(id) + Buffer.byteLength(title);
+      const previous = longToolTitles.get(id)?.bytes ?? 0;
+      const nextBytes = longToolTitleBytes - previous + bytes;
+      if (nextBytes > MAX_LONG_TOOL_TITLE_BYTES) throw new HarnessError("invalid_harness_protocol");
+      longToolTitles.set(id, { title, bytes });
+      longToolTitleBytes = nextBytes;
+    };
     const pending = new Map<
       number,
       {
@@ -99,6 +120,7 @@ export class AcpDriver implements Driver {
     >();
     const failure = (error = new HarnessError("harness_process_lost")) => {
       stopped = true;
+      clearLongToolTitles();
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
         entry.reject(error);
@@ -214,9 +236,12 @@ export class AcpDriver implements Driver {
               const label = redactIdentifier(title).trim();
               const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
               const id = toolCallIdentifier(redactIdentifier(u.toolCallId));
+              const terminal = u.status === "completed" || u.status === "failed";
               const longTitle = label.length > name.length ? redact(title) : undefined;
-              if (longTitle !== undefined) longToolTitles.set(id, longTitle);
-              const command = longTitle ?? (u.rawInput === undefined ? undefined : longToolTitles.get(id));
+              const retained = longToolTitles.get(id)?.title;
+              if (terminal) releaseLongToolTitle(id);
+              else if (longTitle !== undefined) retainLongToolTitle(id, longTitle);
+              const command = longTitle ?? (u.rawInput === undefined ? undefined : retained);
               let input = u.rawInput;
               if (command !== undefined) {
                 input =
@@ -233,7 +258,7 @@ export class AcpDriver implements Driver {
                     id,
                     name,
                     ...(input === undefined ? {} : { input }),
-                    ...(u.status === "completed" || u.status === "failed"
+                    ...(terminal
                       ? { result: { output: u.rawOutput ?? u.content ?? null, isError: u.status === "failed" } }
                       : {}),
                   },
@@ -244,6 +269,7 @@ export class AcpDriver implements Driver {
         } catch {
           failure(new HarnessError("invalid_harness_protocol"));
           child.kill("SIGKILL");
+          return;
         }
       }
     });
@@ -281,6 +307,7 @@ export class AcpDriver implements Driver {
     const begin = (text: string) => {
       assistantChunks = [];
       assistantBytes = 0;
+      clearLongToolTitles();
       const response = rpc("session/prompt", { sessionId, prompt: [{ type: "text", text }] }, false);
       assistantMessageId = `acp-${crypto.randomUUID()}-${sequence}-assistant`;
       return response;
