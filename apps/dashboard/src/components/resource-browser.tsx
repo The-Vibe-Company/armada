@@ -293,7 +293,7 @@ export function ResourceBrowser({
       {blockers.length > 0 && <ReadinessStrip blockers={blockers} />}
       {notices}
       <section ref={rootRef} aria-label={label} tabIndex={-1} className="grid items-start gap-4">
-        <div className="@container min-w-0 space-y-3">
+        <div className={cn("@container min-w-0 space-y-3", columns && "max-md:wrap-anywhere")}>
           {(tabs || searchPlaceholder || rows.length >= FILTER_FROM) && (
             <div className="flex flex-wrap items-center justify-between gap-3">
               {tabs && (
