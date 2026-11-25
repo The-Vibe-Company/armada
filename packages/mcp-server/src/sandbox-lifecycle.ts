@@ -2282,7 +2282,7 @@ export const PULL_REQUEST_SCAN_ELIGIBLE = `from public.sandboxes s
             and s.activity_lease_id is null and not s.application_secret_tainted
             and s.expires_at>now()`;
 
-export function clearPullRequestMergeProof(sql: Sql, id: string, generation: number) {
+export function clearPullRequestMergeProof(sql: Sql, id: string | null, generation: string | null) {
   return sql.query<PullRequestScanTarget>(
     `with target as (
           select s.id,c.connection_epoch,c.github_id,e.epoch as membership_epoch,
