@@ -3,8 +3,12 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration, type Sql } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
 import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
+import { dockerLaunchRequestHash } from "../src/docker-launch-identity.ts";
+import { enqueueLaunch } from "../src/jobs/launch.ts";
+import { createJobsStore, recordDockerLaunchEvidence } from "../src/jobs/store.ts";
 import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -103,6 +107,7 @@ async function fixture(
             (await service.route(
               url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
             )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
+          options.now,
         );
       },
     };
@@ -443,3 +448,235 @@ for (const provider of ["boat", "modal"] as const)
     },
     provider,
   );
+
+test.each(["modal", "boat"] as const)(
+  "%s runtime renews expired GitHub credentials across a long turn and stop-resume while keeping launch repositories",
+  async (provider) => {
+    let clock = Date.now() - 10 * 3_600_000;
+    let rotations = 0;
+    let activeToken = "";
+    const githubFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === "https://github.com/login/oauth/access_token") {
+        rotations++;
+        activeToken = `ghu_renewed_${rotations}_${"a".repeat(24)}`;
+        return Response.json({
+          access_token: activeToken,
+          refresh_token: `ghr_renewed_${rotations}_${"b".repeat(24)}`,
+          expires_in: 3600,
+        });
+      }
+      const auth = new Headers(init?.headers).get("authorization");
+      if (auth !== `Bearer ${activeToken}`) return Response.json({ message: "Bad credentials" }, { status: 401 });
+      return Response.json({ id: 123, login: "owner", name: "Owner" });
+    }) as typeof fetch;
+    const x = await fixture(provider, { now: () => clock, githubFetch });
+    const { f, service } = x;
+    activeToken = x.access;
+    try {
+      const launchWorkspace = {
+        repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+        init: [],
+      };
+      await createJobsStore(f.sql, ENCRYPTION_KEY).enqueue(
+        "launch_initial_turn",
+        f.row.id,
+        1,
+        f.row.id,
+        { launchJobId: crypto.randomUUID(), workspace: launchWorkspace, skills: [] },
+        { orgId: f.people.org, maxAttempts: 3 },
+      );
+      await f.db.query("update github_connections set access_expires_at=$2 where user_id=$1", [
+        f.people.owner,
+        new Date(clock + 90 * 60_000),
+      ]);
+
+      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
+      expect(x.config().repositories).toEqual(["example/web"]);
+      expect(await x.broker.acquire("example/web", "git")).toBe(x.access);
+
+      await f.db.query("update goldens set config=$2::jsonb where id=$1", [
+        f.row.goldenId,
+        JSON.stringify({
+          repos: [{ url: "https://github.com/example/replacement.git", branch: "main", dir: "replacement" }],
+          init: [],
+        }),
+      ]);
+
+      clock += 2 * 3_600_000;
+      const longTurnToken = await x.broker.acquire("example/web", "git");
+      expect(longTurnToken).toBe(activeToken);
+      expect(longTurnToken).not.toBe(x.access);
+      expect(await x.broker.acquire("example/web", "gh")).toBe(longTurnToken);
+      expect(rotations).toBe(1);
+      await expect(x.broker.acquire("example/replacement", "git")).rejects.toThrow("github_credentials_http_denied");
+
+      const cp = await createRuntimeCheckpoint(
+        f.sql,
+        ENCRYPTION_KEY,
+        f.bridge,
+      )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+      await f.db.query("update sandboxes set status='starting',lifecycle_generation=3 where id=$1", [f.row.id]);
+      x.reset();
+      await f.reboot({ epoch: "1", watermark: cp.checkpoint.watermark, conversationId: f.first.conversationId });
+      await f.db.query("update sandboxes set status='ready' where id=$1", [f.row.id]);
+
+      clock += 2 * 3_600_000;
+      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
+      expect(x.config().generation).toBe("2");
+      expect(x.config().repositories).toEqual(["example/web"]);
+      const resumedToken = await x.broker.acquire("example/web", "git");
+      expect(resumedToken).toBe(activeToken);
+      expect(resumedToken).not.toBe(longTurnToken);
+      expect(await x.broker.acquire("example/web", "gh")).toBe(resumedToken);
+      expect(rotations).toBe(2);
+      await expect(x.broker.acquire("example/replacement", "git")).rejects.toThrow("github_credentials_http_denied");
+    } finally {
+      await x.close();
+    }
+  },
+);
+
+test("Docker resume GitHub preparation skips plain images, rejects tampered manifests, and renews expired repo bindings", async () => {
+  const f = await sharedDatabase();
+  const sql: Sql = {
+    query: (q, v) => f.db.query(q, v),
+    transaction: (work) => f.db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+  };
+  const hostId = crypto.randomUUID();
+  const installationId = crypto.randomUUID();
+  await f.db.query(
+    `insert into docker_hosts(id,org_id,owner_id,registration_expires_at,installation_id,hash)
+     values($1,$2,$3,now()-interval '1 day',$4,$5)`,
+    [hostId, f.people.org, f.people.owner, installationId, "d".repeat(64)],
+  );
+  const initialAccess = `ghu_docker_init_${"a".repeat(20)}`;
+  let activeToken = initialAccess;
+  let rotations = 0;
+  let clock = Date.now() - 4 * 3_600_000;
+  await f.db.query(
+    "insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,123,'owner','Owner',$2,$3,$4)",
+    [
+      f.people.owner,
+      await encryptSecret("offline-refresh", ENCRYPTION_KEY),
+      await encryptSecret(initialAccess, ENCRYPTION_KEY),
+      new Date(clock + 30 * 60_000),
+    ],
+  );
+  const caller = {
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+    via: "service" as const,
+  };
+  let configured: GitHubRuntimeConfiguration | undefined;
+  let githubCalls = 0;
+  const service = createRuntimeGitHub({
+    sql,
+    key: ENCRYPTION_KEY,
+    origin: "https://armada.test",
+    commands: {
+      call: async (
+        _owner: string,
+        command: { op: string; requestId: string; configuration?: GitHubRuntimeConfiguration },
+      ) => {
+        if (command.op !== "configureGitHub" || !command.configuration) throw Error("Unexpected runtime command");
+        configured = command.configuration;
+        return {
+          epoch: command.configuration.generation,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+        };
+      },
+    } as unknown as Parameters<typeof createRuntimeGitHub>[0]["commands"],
+    github: {
+      store: createSqlVaultStore(sql),
+      encryptionKey: ENCRYPTION_KEY,
+      app: { clientId: "app", clientSecret: "offline-app-secret" },
+      now: () => new Date(clock),
+      fetch: (async (url: string | URL | Request) => {
+        githubCalls++;
+        if (String(url) === "https://github.com/login/oauth/access_token") {
+          rotations++;
+          activeToken = `ghu_docker_renewed_${rotations}_${"c".repeat(16)}`;
+          return Response.json({
+            access_token: activeToken,
+            refresh_token: `ghr_docker_renewed_${rotations}_${"d".repeat(16)}`,
+            expires_in: 3600,
+          });
+        }
+        return Response.json({ id: 123, login: "owner", name: "Owner" });
+      }) as typeof fetch,
+    },
+  });
+
+  const makeDockerSandbox = async (
+    request: { image: string; repos?: { url: string; branch: string; dir: string }[] },
+    tamperHash = false,
+  ) => {
+    const id = crypto.randomUUID();
+    const dockerGeneration = crypto.randomUUID();
+    await f.db.query(
+      `insert into sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,model,reasoning_effort,
+       lifecycle_generation,docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at)
+       values($1,$2,$3,'docker',$4,'codex','ready','gpt-5.4','high',3,$5,$6,$7,$8,now()+interval '1 hour')`,
+      [
+        id,
+        f.people.org,
+        f.people.owner,
+        `armada-${installationId}-${hostId}-${id}-${dockerGeneration}`,
+        hostId,
+        installationId,
+        dockerGeneration,
+        request.image,
+      ],
+    );
+    const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY, { allowDockerIssue: true });
+    const issued = await authority.issue({ sandboxId: id, ownerId: f.people.owner, configuration: {} });
+    await authority.enrol(issued.enrolmentToken);
+    const requestHash = tamperHash ? "0".repeat(64) : dockerLaunchRequestHash(request);
+    const { id: jobId } = await enqueueLaunch(
+      createJobsStore(sql, ENCRYPTION_KEY),
+      id,
+      1,
+      `docker-test-${id}`,
+      { request },
+      {
+        orgId: f.people.org,
+        deadline: new Date(Date.now() + 60_000),
+        maxAttempts: 1,
+        request: { ownerId: f.people.owner, digest: requestHash },
+      },
+    );
+    await recordDockerLaunchEvidence(sql, jobId, { docker_actor_epoch: "1" });
+    return id;
+  };
+
+  const dockerImage = `ghcr.io/example/plain@sha256:${"a".repeat(64)}`;
+  const plainId = await makeDockerSandbox({ image: dockerImage });
+  expect(await service.prepareLaunch(caller, plainId)).toMatchObject({ status: "not_connected" });
+  expect(githubCalls).toBe(0);
+  await expect(service.prepare(caller, plainId)).rejects.toThrow();
+
+  const tamperedId = await makeDockerSandbox({ image: dockerImage }, true);
+  await expect(service.prepareLaunch(caller, tamperedId)).rejects.toThrow();
+
+  const repoId = await makeDockerSandbox({
+    image: dockerImage,
+    repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
+  });
+  clock += 2 * 3_600_000;
+  expect(await service.prepareLaunch(caller, repoId)).toMatchObject({ status: "connected", login: "owner" });
+  expect(configured?.repositories).toEqual(["example/web"]);
+  expect(rotations).toBe(1);
+  const broker = new GitHubBroker(
+    () => {},
+    (async (url: Parameters<typeof fetch>[0], init?: RequestInit) =>
+      (await service.route(url instanceof Request ? new Request(url, init) : new Request(url.toString(), init))) ??
+      new Response(null, { status: 404 })) as unknown as typeof fetch,
+    () => clock,
+  );
+  broker.configure(configured!);
+  expect(await broker.acquire("example/web", "git")).toBe(activeToken);
+  expect(await broker.acquire("example/web", "gh")).toBe(activeToken);
+  await expect(broker.acquire("example/other", "git")).rejects.toThrow("github_credentials_http_denied");
+});

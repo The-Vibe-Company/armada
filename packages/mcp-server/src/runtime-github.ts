@@ -6,7 +6,6 @@ import {
   encryptSecret,
   type GitHubResolveDeps,
   gitIdentity,
-  modalLaunchSetupKeySql,
   resolveGitHubAccess,
   type SandboxProviderId,
   type Sql,
@@ -58,6 +57,7 @@ interface Binding {
 const boatHarnessesSql = HARNESSES.filter((id) => runtimeHarnessSupported("boat", id))
   .map((id) => `'${id}'`)
   .join(",");
+const launchSetupKeySql = `format('["internal","%s","launch_initial_turn","%s",1,"%s"]',s.org_id,s.id,s.id)`;
 const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_id,'orgId',s.org_id,
  'epoch',r.epoch::text,'providerSandboxId',s.provider_sandbox_id,'goldenId',s.golden_id,
  'membershipEpoch',e.epoch,'mcpGeneration',s.mcp_generation,'connectionEpoch',c.connection_epoch,
@@ -65,7 +65,9 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  modal_setup.id as modal_setup_id,modal_setup.payload_enc as modal_setup_enc
  from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
  left join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
- left join public.jobs modal_setup on s.provider='modal' and modal_setup.idem_key=${modalLaunchSetupKeySql()}
+ left join public.jobs modal_setup on s.provider<>'docker' and modal_setup.idem_key=${launchSetupKeySql}
+   and modal_setup.sandbox_id=s.id and modal_setup.org_id=s.org_id
+   and modal_setup.kind='launch_initial_turn' and modal_setup.generation=1
  join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
  join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
  join public.github_connections c on c.user_id=s.owner_id and c.revoked_at is null
@@ -137,6 +139,15 @@ export function createRuntimeGitHub(options: {
       return denied();
     return s;
   };
+  const readDockerLaunchManifest = async (tx: Sql, id: string) =>
+    (
+      await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string; actor_epoch: string }>(
+        `select d.request_enc,d.request_hash,d.actor_epoch::text from public.docker_launch_manifests d
+       join public.sandboxes s on s.id=d.sandbox_id join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
+       where s.id=$1 and s.provider='docker' and d.actor_epoch=e.epoch`,
+        [id],
+      )
+    ).rows[0];
   const current = async (tx: Sql, id: string) => {
     const {
       rows: [row = denied()],
@@ -152,14 +163,7 @@ export function createRuntimeGitHub(options: {
         JSON.parse(await decryptSecret(row.modal_setup_enc, key)),
       ).repos;
     }
-    const docker = (
-      await tx.query<{ request_enc: Uint8Array<ArrayBuffer>; request_hash: string; actor_epoch: string }>(
-        `select d.request_enc,d.request_hash,d.actor_epoch::text from public.docker_launch_manifests d
-       join public.sandboxes s on s.id=d.sandbox_id join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
-       where s.id=$1 and s.provider='docker' and d.actor_epoch=e.epoch`,
-        [id],
-      )
-    ).rows[0];
+    const docker = await readDockerLaunchManifest(tx, id);
     if (docker) {
       const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
       if (
@@ -517,6 +521,21 @@ export function createRuntimeGitHub(options: {
   };
   async function prepareLaunch(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
     const s = await owner(caller, id);
+    if (usesHostLaunch(s.provider)) {
+      const hasRepositories = await authority.withOwner(id, s.ownerId, async (tx) => {
+        await assertClaim?.(tx);
+        const docker = await readDockerLaunchManifest(tx, id);
+        if (!docker) return true;
+        const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
+        if (!matchesDockerLaunchRequestHash(manifest.request, docker.request_hash)) return denied();
+        return Array.isArray(manifest.request?.repos ?? manifest.snapshotConfig?.repos);
+      });
+      if (!hasRepositories)
+        return {
+          status: "not_connected" as const,
+          message: "This sandbox has no repository authorization.",
+        };
+    }
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
     if (access.status !== "connected")
       return {
