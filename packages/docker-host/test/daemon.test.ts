@@ -175,7 +175,7 @@ test.each(["create", "restore", "stop", "absent"] as const)(
       });
       await store.save(ledger);
     }
-    executor[kind] = async (_request, expectedId?: string) => {
+    executor[kind] = async (_request, expectedId?: unknown) => {
       if (operation === "absent") expect(expectedId).toBe(machineId);
       executions++;
       return proof;
