@@ -53,8 +53,14 @@ The separate `templates/launch` operation returns a durable template receipt.
 Boat, Modal, and Docker templates return `status: "starting"` before provider allocation.
 Use the same request key to read the completed receipt or follow the sandbox ID in status and logs.
 Routines use the same launch job and track the original first turn. A scoped child
-launch returns a succeeded admission receipt with the sandbox ID. Scoped read can
-return a starting sandbox with a null provider ID while allocation is pending.
+launch returns a succeeded admission receipt with the sandbox ID. On a starting
+child, scoped read returns the stored status and an empty event page. The
+provider ID is null until allocation. Scoped message waits within the server's
+admission deadline for the child to leave starting. If admission ends before
+dispatch, the receipt is failed. A new attempt needs a new idempotency key.
+Scoped stop can request cancellation of a starting Boat or Modal launch. If
+there is no applicable launch to cancel, stop fails before contacting the
+provider. The scoped operation catalog does not grant delete.
 
 For Boat and Modal snapshot launches and for Docker launches, use
 `credentialId` to select a model account. The account’s simultaneous-agent
