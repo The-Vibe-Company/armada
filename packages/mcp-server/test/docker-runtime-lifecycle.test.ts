@@ -655,9 +655,10 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
   ).toEqual([receipt.conversationId]);
 });
 
-test("new ready/prompt operations fail closed on current account, membership, issuer, host and lifecycle authority", async () => {
-  const db = database();
-  for (const change of ["admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "stop"] as const) {
+test.each(["admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "stop"] as const)(
+  "new ready/prompt operations fail closed after authority change: %s",
+  async (change) => {
+    const db = database();
     const f = await fixture();
     await ready(f);
     let actor = f.actor;
@@ -684,5 +685,5 @@ test("new ready/prompt operations fail closed on current account, membership, is
     if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     await denied(service.ready(actor, f.sandbox.id, randomUUID()));
     await denied(service.prompt(actor, f.sandbox.id, { requestId: randomUUID(), text: "Never admitted" }));
-  }
-});
+  },
+);

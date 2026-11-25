@@ -2879,9 +2879,10 @@ async function failureJournal(sandboxId: string) {
   ).rows;
 }
 
-test("failed startup ACK or rejected admission fails logical startup without claiming a physical stop", async () => {
-  const db = database();
-  for (const operation of ["create", "bootstrap"] as const) {
+test.each(["create", "bootstrap"] as const)(
+  "failed %s startup ACK or rejected admission fails logical startup without claiming a physical stop",
+  async (operation) => {
+    const db = database();
     for (const failure of ["ack", "historical-ack", "expiry", "removed-actor"] as const) {
       const a = await boundStartup(operation);
       const before = await lifecycle(a.sandboxId);
@@ -2934,8 +2935,8 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
       expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
     }
-  }
-});
+  },
+);
 
 test("a host that could not fetch the image fails the sandbox in plain words; a reason never rides on success", async () => {
   for (const operation of ["create", "bootstrap"] as const) {
