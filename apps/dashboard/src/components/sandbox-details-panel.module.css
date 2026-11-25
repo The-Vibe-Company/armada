@@ -1,0 +1,10 @@
+.rail[data-state="closed"],
+.rail[data-state="default"] {
+  display: none;
+}
+
+@media (min-width: 64rem) {
+  .rail[data-state="default"] {
+    display: flex;
+  }
+}

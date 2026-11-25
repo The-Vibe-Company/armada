@@ -8,7 +8,12 @@ import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
 
-export async function readSandboxConversation(id: string, cursor: string | null, source: "history" | "follow") {
+export async function readSandboxConversation(
+  id: string,
+  cursor: string | null,
+  source: "history" | "follow",
+  pending: string | null = null,
+) {
   if (!isUuid(id)) return { body: { error: "Not found." }, status: 404 };
 
   const viewer = await requireViewer();
@@ -39,9 +44,11 @@ export async function readSandboxConversation(id: string, cursor: string | null,
 
   const backward = conversationReadDirection(sandbox, source) === "backward";
   let observedStatus: unknown;
-  const statusRead = () => gateway.status(id).catch(() => ({}));
+  const queuedPrompt = isUuid(pending) ? pending : undefined;
+  const statusRead = () => gateway.status(id, queuedPrompt).catch(() => observedStatus ?? {});
+
   const metadata = async () => {
-    const detail = (observedStatus ?? (await statusRead())) as {
+    const detail = (queuedPrompt ? await statusRead() : (observedStatus ?? (await statusRead()))) as {
       status?: string;
       statusMessage?: string | null;
       prompt?: unknown;
