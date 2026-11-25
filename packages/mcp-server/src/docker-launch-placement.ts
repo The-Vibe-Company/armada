@@ -767,329 +767,338 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
     }
   }
   async function reconcile(caller: Caller, jobRequest: Request, worker: { job: Job; context: JobContext }) {
-    const actor = { userId: caller.userId, orgId: jobRequest.org };
-    const hash = dockerLaunchRequestHash(jobRequest);
-    const state = await transaction((tx) => load(tx, actor, jobRequest, hash));
-    if (!state.row || !state.manifest) throw failure("unavailable");
-    if (state.receipt) return envelope(state.row, state.receipt);
-    if (!options.bootstrap) throw failure("unavailable");
-    const { manifest } = state;
-    const { request } = manifest;
-    const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
-    let reason = "runtime_configuration";
+    let reason = "membership_and_launch_state";
     let readinessCause = "readiness_check_failed";
-    let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
-    let templateLockContended = false;
-    const assertTemplate = async (tx: Sql, references = false) => {
-      if (!manifest.template) return;
-      await templates
-        .revalidateDockerLaunch(tx, actor, request.requestId, manifest.template, references)
-        .catch((error) => {
-          templateLockContended ||= reservationDatabaseDiagnostic(error).sqlstate === "55P03";
-          throw error;
-        });
-    };
     try {
-      if (request.repos?.length || manifest.snapshotConfig?.repos.length) {
-        reason = "github_preparation";
-        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
-        const repositories = request.repos ?? manifest.snapshotConfig!.repos;
-        await options.credentials.authorizeRepositories?.({ ...actor, role: state.membership.role }, {}, repositories);
-        if (request.repos) {
-          if (!options.github) throw failure("unavailable");
-          await options.github.preflightRepositories(caller, request.org, repositories);
-        }
-      }
-      phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
-      reason = "machine_start";
-      const assertClaim = async (tx: Sql) => {
-        const { docker_actor_epoch: admittedEpoch } = worker.job.outcome as { docker_actor_epoch: string };
-        if ((await member(tx, actor)).epoch !== admittedEpoch || !(await worker.context.canDispatch(tx)))
-          throw failure("unavailable");
-        await assertTemplate(tx);
-      };
-      if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
-      const deadline = clock.now() + (options.timeoutMs ?? 600_000);
-      const live = async () => {
-        if (!(await worker.context.canDispatch())) throw failure("unavailable");
-        const current = await transaction((tx) => load(tx, actor, request, hash));
-        if (!current.row) throw failure("not_found");
-        if (!active(current.row)) {
-          if (reason === "runtime_readiness") {
-            const { status, status_reason: statusReason } = current.row;
-            readinessCause =
-              Object.entries(RUNTIME_STARTUP_FAILURES).find(([, message]) => message === statusReason)?.[0] ??
-              (status === "failed" ? "startup_failed" : "sandbox_inactive");
-          }
-          throw notReady(current.row);
-        }
-        return current;
-      };
-      async function wait() {
-        if (clock.now() >= deadline) {
-          if (reason === "runtime_readiness") readinessCause = "readiness_deadline";
-          throw failure("unavailable");
-        }
-        await clock.wait(Math.min(250, deadline - clock.now()));
-      }
-      await startMachine(actor, request, state.row, worker, assertClaim);
-      reason = "runtime_readiness";
-      let receipt: Receipt;
-      for (;;) {
-        await live();
-        const ready = await runtime
-          .ready(actor, request.requestId, manifest.healthId, worker.job.generation ?? undefined, assertClaim)
-          .catch(async (error) => {
-            await live().catch(() => {});
+      const actor = { userId: caller.userId, orgId: jobRequest.org };
+      const hash = dockerLaunchRequestHash(jobRequest);
+      const state = await transaction((tx) => load(tx, actor, jobRequest, hash));
+      if (!state.row || !state.manifest) throw failure("unavailable");
+      if (state.receipt) return envelope(state.row, state.receipt);
+      reason = "runtime_configuration";
+      if (!options.bootstrap) throw failure("unavailable");
+      const { manifest } = state;
+      const { request } = manifest;
+      const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
+      let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+      let templateLockContended = false;
+      const assertTemplate = async (tx: Sql, references = false) => {
+        if (!manifest.template) return;
+        await templates
+          .revalidateDockerLaunch(tx, actor, request.requestId, manifest.template, references)
+          .catch((error) => {
+            templateLockContended ||= reservationDatabaseDiagnostic(error).sqlstate === "55P03";
             throw error;
           });
-        if (ready.state === "ready") {
-          receipt = { epoch: ready.epoch };
-          break;
+      };
+      try {
+        if (request.repos?.length || manifest.snapshotConfig?.repos.length) {
+          reason = "github_preparation";
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
+          const repositories = request.repos ?? manifest.snapshotConfig!.repos;
+          await options.credentials.authorizeRepositories?.(
+            { ...actor, role: state.membership.role },
+            {},
+            repositories,
+          );
+          if (request.repos) {
+            if (!options.github) throw failure("unavailable");
+            await options.github.preflightRepositories(caller, request.org, repositories);
+          }
         }
-        await wait();
-      }
-      reason = "runtime_environment";
-      phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
-      await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId, assertClaim);
-      reason = "github_preparation";
-      phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
-      if (!manifest.request.repos && manifest.snapshotConfig?.repos.length) {
-        receipt.github = options.github
-          ? await options.github.prepareLaunch(caller, request.requestId, assertClaim)
-          : {
-              status: "not_connected",
-              message: "GitHub is not connected; public snapshot repositories refresh anonymously.",
-            };
-        reason = "repository_checkout";
-        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
-        const agent = createRuntimeAgent(
-          createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
-            now: clock.now,
-            wait: async () => {
-              await live();
-              await wait();
-            },
-          }),
-          {
-            provider: "docker",
-            harness: request.harness,
-            ownerId: actor.userId,
-            sandboxId: request.requestId,
-            providerSandboxId: request.requestId,
-            cwd: "/home/user",
-            defaults,
-          },
-        );
-        const warnings = await prepareLaunchWorkspace(
-          {
-            id: "docker",
-            exec: async () => {
-              throw Error("Snapshot refresh requires enrolled workspace execution.");
-            },
-          },
-          request.requestId,
-          request.requestId,
-          { config: { repos: manifest.snapshotConfig.repos, init: [] } },
-          [],
-          () => {},
-          async (ms) => {
-            await live();
-            await clock.wait(ms);
-          },
-          async (command, step) => {
-            await live();
-            return agent.workspaceExec(command, step, receipt.epoch, worker.context.signal, assertClaim);
-          },
-          receipt.github?.status === "connected",
-        );
-        if (warnings.length)
-          receipt.github = {
-            ...receipt.github,
-            message: [receipt.github.message, ...warnings].filter(Boolean).join(" "),
-          };
-        await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
-      }
-      if (manifest.request.repos) {
-        if (!options.github) throw failure("unavailable");
-        const github = await options.github.prepare(caller, request.requestId, undefined, assertClaim);
-        receipt.github = { status: "connected", login: github.login };
-        reason = "repository_checkout";
-        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
-        const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
-        const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
-        const id = `docker_checkout_${request.requestId}`;
-        await commands.enqueue(
-          actor.userId,
-          {
-            version: 1,
-            requestId: id,
-            sandboxId: request.requestId,
-            op: "exec",
-            input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
-          },
-          receipt.epoch,
-          assertClaim,
-        );
+        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+        reason = "machine_start";
+        const assertClaim = async (tx: Sql) => {
+          const { docker_actor_epoch: admittedEpoch } = worker.job.outcome as { docker_actor_epoch: string };
+          if ((await member(tx, actor)).epoch !== admittedEpoch || !(await worker.context.canDispatch(tx)))
+            throw failure("unavailable");
+          await assertTemplate(tx);
+        };
+        if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
+        const deadline = clock.now() + (options.timeoutMs ?? 600_000);
+        const live = async () => {
+          if (!(await worker.context.canDispatch())) throw failure("unavailable");
+          const current = await transaction((tx) => load(tx, actor, request, hash));
+          if (!current.row) throw failure("not_found");
+          if (!active(current.row)) {
+            if (reason === "runtime_readiness") {
+              const { status, status_reason: statusReason } = current.row;
+              readinessCause =
+                Object.entries(RUNTIME_STARTUP_FAILURES).find(([, message]) => message === statusReason)?.[0] ??
+                (status === "failed" ? "startup_failed" : "sandbox_inactive");
+            }
+            throw notReady(current.row);
+          }
+          return current;
+        };
+        async function wait() {
+          if (clock.now() >= deadline) {
+            if (reason === "runtime_readiness") readinessCause = "readiness_deadline";
+            throw failure("unavailable");
+          }
+          await clock.wait(Math.min(250, deadline - clock.now()));
+        }
+        await startMachine(actor, request, state.row, worker, assertClaim);
+        reason = "runtime_readiness";
+        let receipt: Receipt;
         for (;;) {
           await live();
-          const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
-          if (response.state === "finished") {
-            const result = response.reply.body.result as Record<string, unknown> | undefined;
-            if (
-              response.reply.status !== 200 ||
-              !result ||
-              result.detached !== false ||
-              result.exitCode !== 0 ||
-              result.timedOut !== false
-            )
-              throw failure("sandbox_not_ready");
+          const ready = await runtime
+            .ready(actor, request.requestId, manifest.healthId, worker.job.generation ?? undefined, assertClaim)
+            .catch(async (error) => {
+              await live().catch(() => {});
+              throw error;
+            });
+          if (ready.state === "ready") {
+            receipt = { epoch: ready.epoch };
             break;
           }
-          if (response.state !== "pending") throw failure("sandbox_not_ready");
           await wait();
         }
-        await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
-      }
-      reason = "skills";
-      phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;
-      const selections = manifest.preparation;
-      if (selections?.skills.length) {
-        const needsKey = selections.skills.some((reference) => !reference.includes("/"));
-        const skillKey = needsKey
-          ? ((await options.credentials.skillpackKey?.({ ...actor, role: state.membership.role })) ?? null)
-          : null;
-        if (needsKey && !skillKey) throw failure("unavailable");
-        const agent = createRuntimeAgent(
-          createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
-            now: clock.now,
-            wait: (ms) => clock.wait(ms),
-          }),
-          {
-            provider: "docker",
-            harness: request.harness,
-            ownerId: actor.userId,
-            sandboxId: request.requestId,
-            providerSandboxId: request.requestId,
-            cwd: "/home/user",
-            defaults,
-          },
-        );
-        const receipts = await agent.installSkills(
-          selections.skills,
-          skillKey,
-          receipt.epoch,
-          worker.context.signal,
-          undefined,
-          assertClaim,
-        );
-        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
-          if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          await assertClaim?.(tx);
-          await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(request.requestId, receipts);
-        });
-      }
-      reason = "mcp_preparation";
-      if (options.mcp) await options.mcp.prepare(caller, request.requestId, worker.context.signal, assertClaim);
-      else if (selections?.connections.length) throw failure("unavailable");
-      reason = "runtime_epoch_validation";
-      await live();
-      await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (_tx, scope) => {
-        if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-      });
-      reason = "first_prompt";
-      phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
-      if (manifest.request.prompt !== null) {
-        if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
-        const prior = (
-          await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
-            "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-            [request.requestId, `docker_prompt_${manifest.promptId}`],
-          )
-        ).rows[0];
-        const conversationId = prior
-          ? (JSON.parse(await decryptSecret(prior.request_enc, key)).input.conversationId as string | undefined)
-          : (manifest.conversationId ?? manifest.promptId);
-        for (;;) {
-          await live();
-          const result = await runtime.prompt(
-            actor,
-            request.requestId,
+        reason = "runtime_environment";
+        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
+        await createDockerLaunchEnvironment(sql, key, clock)(caller, request.requestId, assertClaim);
+        reason = "github_preparation";
+        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
+        if (!manifest.request.repos && manifest.snapshotConfig?.repos.length) {
+          receipt.github = options.github
+            ? await options.github.prepareLaunch(caller, request.requestId, assertClaim)
+            : {
+                status: "not_connected",
+                message: "GitHub is not connected; public snapshot repositories refresh anonymously.",
+              };
+          reason = "repository_checkout";
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: async () => {
+                await live();
+                await wait();
+              },
+            }),
             {
-              requestId: manifest.promptId,
-              text: manifest.request.prompt,
-              ...(conversationId === undefined ? {} : { conversationId }),
+              provider: "docker",
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults,
+            },
+          );
+          const warnings = await prepareLaunchWorkspace(
+            {
+              id: "docker",
+              exec: async () => {
+                throw Error("Snapshot refresh requires enrolled workspace execution.");
+              },
+            },
+            request.requestId,
+            request.requestId,
+            { config: { repos: manifest.snapshotConfig.repos, init: [] } },
+            [],
+            () => {},
+            async (ms) => {
+              await live();
+              await clock.wait(ms);
+            },
+            async (command, step) => {
+              await live();
+              return agent.workspaceExec(command, step, receipt.epoch, worker.context.signal, assertClaim);
+            },
+            receipt.github?.status === "connected",
+          );
+          if (warnings.length)
+            receipt.github = {
+              ...receipt.github,
+              message: [receipt.github.message, ...warnings].filter(Boolean).join(" "),
+            };
+          await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
+        }
+        if (manifest.request.repos) {
+          if (!options.github) throw failure("unavailable");
+          const github = await options.github.prepare(caller, request.requestId, undefined, assertClaim);
+          receipt.github = { status: "connected", login: github.login };
+          reason = "repository_checkout";
+          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.checkout;
+          const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
+          const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+          const id = `docker_checkout_${request.requestId}`;
+          await commands.enqueue(
+            actor.userId,
+            {
+              version: 1,
+              requestId: id,
+              sandboxId: request.requestId,
+              op: "exec",
+              input: { sandboxId: request.requestId, command, cwd: "/home/user", timeoutSeconds: 600 },
             },
             receipt.epoch,
             assertClaim,
           );
-          if (result.state === "admitted") {
-            if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-            receipt = {
-              ...receipt,
-              epoch: result.epoch,
-              promptId: result.receipt.promptId,
-              conversationId: result.receipt.conversationId,
-            };
-            break;
+          for (;;) {
+            await live();
+            const response = await commands.result(actor.userId, request.requestId, id, receipt.epoch);
+            if (response.state === "finished") {
+              const result = response.reply.body.result as Record<string, unknown> | undefined;
+              if (
+                response.reply.status !== 200 ||
+                !result ||
+                result.detached !== false ||
+                result.exitCode !== 0 ||
+                result.timedOut !== false
+              )
+                throw failure("sandbox_not_ready");
+              break;
+            }
+            if (response.state !== "pending") throw failure("sandbox_not_ready");
+            await wait();
           }
-          await wait();
+          await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
-      }
-      reason = "receipt_publication";
-      const encrypted = await encryptSecret(JSON.stringify(receipt), key);
-      return await transaction(async (tx) => {
-        const authority = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
-        // WARNING: Lock source actors before taking the host, sandbox or runtime locks.
-        await authority.lockSourceMembers(tx, request.requestId, actor.userId);
-        const current = await load(tx, actor, request, hash);
-        if (!current.row) throw failure("not_found");
-        if (current.receipt) return envelope(current.row, current.receipt);
-        if (!active(current.row)) throw failure("sandbox_not_ready");
-        await authority.withOwner(request.requestId, actor.userId, async (_tx, scope) => {
-          if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          await assertClaim(tx);
-          await recordDockerLaunchEvidence(tx, worker.job.id, {
-            docker_receipt: Buffer.from(encrypted).toString("hex"),
+        reason = "skills";
+        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.preparation;
+        const selections = manifest.preparation;
+        if (selections?.skills.length) {
+          const needsKey = selections.skills.some((reference) => !reference.includes("/"));
+          const skillKey = needsKey
+            ? ((await options.credentials.skillpackKey?.({ ...actor, role: state.membership.role })) ?? null)
+            : null;
+          if (needsKey && !skillKey) throw failure("unavailable");
+          const agent = createRuntimeAgent(
+            createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
+              now: clock.now,
+              wait: (ms) => clock.wait(ms),
+            }),
+            {
+              provider: "docker",
+              harness: request.harness,
+              ownerId: actor.userId,
+              sandboxId: request.requestId,
+              providerSandboxId: request.requestId,
+              cwd: "/home/user",
+              defaults,
+            },
+          );
+          const receipts = await agent.installSkills(
+            selections.skills,
+            skillKey,
+            receipt.epoch,
+            worker.context.signal,
+            undefined,
+            assertClaim,
+          );
+          await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
+            if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+            await assertClaim?.(tx);
+            await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(request.requestId, receipts);
           });
-          if (manifest.template)
-            await templates.completeDockerLaunch(tx, manifest.template.id, request.requestId, receipt);
+        }
+        reason = "mcp_preparation";
+        if (options.mcp) await options.mcp.prepare(caller, request.requestId, worker.context.signal, assertClaim);
+        else if (selections?.connections.length) throw failure("unavailable");
+        reason = "runtime_epoch_validation";
+        await live();
+        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (_tx, scope) => {
+          if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
         });
-        const saved = await load(tx, actor, request, hash);
-        if (!saved.row || !saved.receipt) throw failure("unavailable");
-        return envelope(saved.row, saved.receipt);
-      });
-    } catch (error) {
-      if (templateLockContended) throw new DockerMachinePending("pending");
-      if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
-      else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
-      else if (
-        error instanceof LaunchError &&
-        error.code === "no_credentials" &&
-        repositoryAccessMessage(error.message)
-      )
-        phase = error.message;
-      if (!(error instanceof DockerMachinePending) && !worker.context.signal.aborted) {
-        await withJobLease(sql, worker.job, async (tx) => {
-          if (!(await worker.context.canDispatch(tx))) return;
-          const prior = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
-            request.requestId,
-            `docker_prompt_${manifest.promptId}`,
-          ]);
-          if (!prior.rows.length)
-            await recordRuntimeStartupFailure(
-              tx,
+        reason = "first_prompt";
+        phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
+        if (manifest.request.prompt !== null) {
+          if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
+          const prior = (
+            await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
+              "select request_enc from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+              [request.requestId, `docker_prompt_${manifest.promptId}`],
+            )
+          ).rows[0];
+          const conversationId = prior
+            ? (JSON.parse(await decryptSecret(prior.request_enc, key)).input.conversationId as string | undefined)
+            : (manifest.conversationId ?? manifest.promptId);
+          for (;;) {
+            await live();
+            const result = await runtime.prompt(
+              actor,
               request.requestId,
-              String(state.row.lifecycle_generation),
-              "docker_launch_failed",
-              phase,
+              {
+                requestId: manifest.promptId,
+                text: manifest.request.prompt,
+                ...(conversationId === undefined ? {} : { conversationId }),
+              },
+              receipt.epoch,
+              assertClaim,
             );
+            if (result.state === "admitted") {
+              if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+              receipt = {
+                ...receipt,
+                epoch: result.epoch,
+                promptId: result.receipt.promptId,
+                conversationId: result.receipt.conversationId,
+              };
+              break;
+            }
+            await wait();
+          }
+        }
+        reason = "receipt_publication";
+        const encrypted = await encryptSecret(JSON.stringify(receipt), key);
+        return await transaction(async (tx) => {
+          const authority = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
+          // WARNING: Lock source actors before taking the host, sandbox or runtime locks.
+          await authority.lockSourceMembers(tx, request.requestId, actor.userId);
+          const current = await load(tx, actor, request, hash);
+          if (!current.row) throw failure("not_found");
+          if (current.receipt) return envelope(current.row, current.receipt);
+          if (!active(current.row)) throw failure("sandbox_not_ready");
+          await authority.withOwner(request.requestId, actor.userId, async (_tx, scope) => {
+            if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
+            await assertClaim(tx);
+            await recordDockerLaunchEvidence(tx, worker.job.id, {
+              docker_receipt: Buffer.from(encrypted).toString("hex"),
+            });
+            if (manifest.template)
+              await templates.completeDockerLaunch(tx, manifest.template.id, request.requestId, receipt);
+          });
+          const saved = await load(tx, actor, request, hash);
+          if (!saved.row || !saved.receipt) throw failure("unavailable");
+          return envelope(saved.row, saved.receipt);
         });
+      } catch (error) {
+        if (templateLockContended) throw new DockerMachinePending("pending");
+        if (error instanceof RuntimeGitHubConnectionError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubNotConnected;
+        else if (error instanceof RuntimeGitHubDeliveryError) phase = DOCKER_LAUNCH_FAILURE_MESSAGES.githubDelivery;
+        else if (
+          error instanceof LaunchError &&
+          error.code === "no_credentials" &&
+          repositoryAccessMessage(error.message)
+        )
+          phase = error.message;
+        if (!(error instanceof DockerMachinePending) && !worker.context.signal.aborted) {
+          await withJobLease(sql, worker.job, async (tx) => {
+            if (!(await worker.context.canDispatch(tx))) return;
+            const prior = await tx.query(
+              "select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+              [request.requestId, `docker_prompt_${manifest.promptId}`],
+            );
+            if (!prior.rows.length)
+              await recordRuntimeStartupFailure(
+                tx,
+                request.requestId,
+                String(state.row.lifecycle_generation),
+                "docker_launch_failed",
+                phase,
+              );
+          });
+        }
+        throw error;
       }
+    } catch (error) {
       if (!(error instanceof DockerMachinePending)) {
         warnLaunchFailure(error, reason, true);
         recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
-          sandboxId: request.requestId,
+          sandboxId: jobRequest.requestId,
           causeCode: reason === "runtime_readiness" ? readinessCause : undefined,
         });
       }
