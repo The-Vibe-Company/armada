@@ -595,7 +595,7 @@ function Notices({
  * The messages, oldest first. The view follows new messages only while it is at the bottom; scrolled up into the
  * history it stays put and offers a way back to the latest.
  */
-export function Transcript({
+function Transcript({
   items,
   running,
   loaded,

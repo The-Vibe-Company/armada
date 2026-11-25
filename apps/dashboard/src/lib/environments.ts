@@ -10,7 +10,7 @@ import type { ResourceState } from "./resource-list.ts";
  */
 type EnvironmentAction = "launch" | "snapshot" | "connect" | null;
 
-export type EnvironmentState = ResourceState & { action: EnvironmentAction; detail: string };
+type EnvironmentState = ResourceState & { action: EnvironmentAction; detail: string };
 
 export function environmentState({
   provider,

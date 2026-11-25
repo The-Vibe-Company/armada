@@ -1,4 +1,4 @@
-export type ContentMode = "metadata" | "full";
+type ContentMode = "metadata" | "full";
 export type LangfuseTest = "ok" | "rejected" | "unreachable";
 
 type Status = { enabled: boolean; contentMode: ContentMode };

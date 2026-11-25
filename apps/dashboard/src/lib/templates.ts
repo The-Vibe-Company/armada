@@ -2,6 +2,7 @@ import {
   type TemplateDefinition as CoreTemplateDefinition,
   type Harness,
   isHarness,
+  isSandboxPlacementProvider,
   isSandboxProvider,
   MODEL_CATALOG,
   PROVIDER_LIMITS,
@@ -86,10 +87,24 @@ export function parseTemplate(value: unknown): TemplateHeader | null {
 export function parseRevision(value: unknown): TemplateRevision | null {
   if (!isRecord(value) || !isId(value.id) || !isCount(value.revision) || !isRecord(value.definition)) return null;
   const d = value.definition;
+  const provider = d.provider;
+  if (!isSandboxPlacementProvider(provider)) return null;
+  let placement:
+    | Pick<Extract<TemplateDefinition, { provider: SandboxProviderId }>, "provider" | "goldenId">
+    | Pick<Extract<TemplateDefinition, { hostId: string }>, "provider" | "goldenId" | "hostId" | "snapshotId">;
+  if (isSandboxProvider(provider)) {
+    if (!isId(d.goldenId)) return null;
+    placement = { provider, goldenId: d.goldenId };
+  } else {
+    if (d.goldenId !== null || !isId(d.hostId) || (d.snapshotId !== undefined && !isId(d.snapshotId))) return null;
+    placement = {
+      provider,
+      goldenId: null,
+      hostId: d.hostId,
+      ...(d.snapshotId === undefined ? {} : { snapshotId: d.snapshotId }),
+    };
+  }
   if (
-    (d.provider === "docker"
-      ? d.goldenId !== null || !isId(d.hostId) || (d.snapshotId !== undefined && !isId(d.snapshotId))
-      : !isId(d.goldenId) || !isSandboxProvider(d.provider)) ||
     !isHarness(d.harness) ||
     typeof d.model !== "string" ||
     typeof d.reasoningEffort !== "string" ||
@@ -118,14 +133,7 @@ export function parseRevision(value: unknown): TemplateRevision | null {
     id: value.id,
     revision: value.revision,
     definition: {
-      ...(d.provider === "docker"
-        ? {
-            provider: "docker" as const,
-            goldenId: null,
-            hostId: d.hostId as string,
-            ...(d.snapshotId === undefined ? {} : { snapshotId: d.snapshotId as string }),
-          }
-        : { goldenId: d.goldenId as string, provider: d.provider as SandboxProviderId }),
+      ...placement,
       harness: d.harness,
       model: d.model,
       reasoningEffort: d.reasoningEffort,

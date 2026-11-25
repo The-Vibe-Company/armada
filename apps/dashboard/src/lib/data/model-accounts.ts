@@ -1,4 +1,4 @@
-import { isHarness } from "@armada/core";
+import { isHarness, isSandboxProvider } from "@armada/core";
 import { cache } from "react";
 import { type AccountControl, createAccountControl } from "@/lib/account-control";
 import { ControlError } from "@/lib/control";
@@ -145,6 +145,7 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
         account.count++;
         if (
           isHarness(row.harness) &&
+          isSandboxProvider(row.provider) &&
           matchesConnectionTestSandbox(row, {
             id: row.id,
             ownerId: viewer.id,
@@ -157,7 +158,7 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
             id: row.id,
             accountId,
             version: account.version,
-            provider: row.provider === "boat" ? "boat" : "modal",
+            provider: row.provider,
             harness: row.harness,
             createdAt: row.created_at,
           });
