@@ -425,7 +425,10 @@ test("own children support independent target receipts while unrelated children 
     const first = rows[0]?.sandbox_id,
       second = rows[1]?.sandbox_id;
     if (!first || !second) throw Error("owned child missing");
-    await db.query("update sandboxes set status='ready' where id in ($1,$2)", [first, second]);
+    await db.query("update sandboxes set status='ready',provider_sandbox_id='fixture-' || id where id in ($1,$2)", [
+      first,
+      second,
+    ]);
     const one = await children.message(token, "same-key", first, "first ticket");
     expect(one.state).toBe("succeeded");
     expect((await children.message(token, "same-key", second, "second ticket")).state).toBe("succeeded");
