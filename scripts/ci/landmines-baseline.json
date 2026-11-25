@@ -515,7 +515,7 @@
     "packages/core/src/sandbox-outputs.ts": 26,
     "packages/core/src/sandbox-provider.ts": 33,
     "packages/core/src/sandbox-usage.ts": 14,
-    "packages/core/src/sandbox.ts": 27,
+    "packages/core/src/sandbox.ts": 26,
     "packages/core/src/server-pricing.ts": 11,
     "packages/core/src/server.ts": 1,
     "packages/core/src/shared-artifact-cache.ts": 1,
