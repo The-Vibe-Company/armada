@@ -10,9 +10,3 @@ export const MODAL_IMAGE_LOCK = {
     python3: "3.11.2-1+b1",
   },
 } as const;
-
-export const MODAL_CONFORMANCE_APP = {
-  appName: "armada-provider-conformance",
-  appId: "ap-MQmau5HWSdX2t036SWIP7A",
-  environment: "main",
-} as const;

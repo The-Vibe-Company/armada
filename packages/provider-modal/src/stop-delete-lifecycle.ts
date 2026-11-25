@@ -2,13 +2,7 @@ import type { Provider } from "@armada/core";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import type { createImageCollection } from "./image-collection.ts";
-import {
-  deleteModalCompute,
-  deleteModalRecoveryImage,
-  lookupModalCompute,
-  stopModalCompute,
-  terminateModalCompute,
-} from "./machine.ts";
+import { deleteModalCompute, deleteModalRecoveryImage, lookupModalCompute, stopModalCompute } from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 
@@ -41,30 +35,6 @@ export function createStopDeleteLifecycle(deps: {
 
   async function stopLeased(row: Machine, save: (row: Machine) => Promise<void>) {
     if (row.phase === "stopped") return;
-    if (row.commonRuntime) {
-      assertMachineSource(row);
-      if (!row.physicalId && row.phase !== "reserved") {
-        const reconciled = await namedOwned(row);
-        row.physicalId = reconciled.sandboxId;
-        await save(row);
-      }
-      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-      delete row.recoveryImageId;
-      delete row.runtimeCheckpoint;
-      row.phase = "terminate";
-      row.info.state = "stopping";
-      await save(row);
-      if (row.physicalId) {
-        const sb = await physical(row);
-        await terminateModalCompute(sb);
-      }
-      row.phase = "stopped";
-      row.info.state = "stopped";
-      row.info.providerState = "stopped";
-      row.info.stoppedAt = new Date();
-      await save(row);
-      return;
-    }
     const sb = await physical(row);
     const needsSnapshot = row.phase !== "terminate";
     if (needsSnapshot && !["active", "checkpoint"].includes(row.phase))
@@ -133,10 +103,11 @@ export function createStopDeleteLifecycle(deps: {
         await store.lease(sandboxId, async (row, save) => {
           assertMachineSource(row);
           observed = row;
+          if (!row.golden || row.commonRuntime)
+            throw refusal("invalid_request", "Synchronous Modal stop requires a golden builder.");
           if (
             requireRetention &&
-            (row.commonRuntime ||
-              row.info.stopNote === "checkpoint_failed_disk_not_retained" ||
+            (row.info.stopNote === "checkpoint_failed_disk_not_retained" ||
               (row.phase === "terminate" && !row.recoveryImageId))
           )
             throw refusal(

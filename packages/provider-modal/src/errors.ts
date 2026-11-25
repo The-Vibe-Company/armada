@@ -100,10 +100,6 @@ export class ModalOperationError extends ProviderError {
     retainFailureDiagnostic(this, safe);
   }
 }
-export function modalFailureReceipt(error: unknown): import("./ports.ts").ModalResourceReceipt | undefined {
-  return error instanceof ModalOperationError ? error.receipt : undefined;
-}
-
 export async function lifecycleStep<T>(
   code:
     | "modal_checkpoint_scrub"
