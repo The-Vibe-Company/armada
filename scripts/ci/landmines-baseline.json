@@ -833,7 +833,7 @@
     "packages/mcp-server/test/runtime-docker-authority.test.ts": 7,
     "packages/mcp-server/test/runtime-enrolment-postgres.release.ts": 2,
     "packages/mcp-server/test/runtime-enrolment.test.ts": 2,
-    "packages/mcp-server/test/runtime-events.test.ts": 15,
+    "packages/mcp-server/test/runtime-events.test.ts": 13,
     "packages/mcp-server/test/runtime-followup.test.ts": 6,
     "packages/mcp-server/test/runtime-github-fencing.test.ts": 3,
     "packages/mcp-server/test/runtime-github-identity.test.ts": 1,
