@@ -62,7 +62,7 @@ export function SandboxToolbar({
     });
   }
   return (
-    <section aria-label="Filters" aria-busy={pending} className="@container space-y-3">
+    <section aria-label="Filters" aria-busy={pending} className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {children}
         <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
@@ -90,15 +90,17 @@ export function SandboxToolbar({
               Search
             </Button>
           </form>
-          <details className="group relative">
-            <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-sm font-medium hover:bg-muted focus-visible:outline-2">
-              <ListFilterIcon className="size-4" aria-hidden /> Filters
-              {FACETS.some((key) => current[key].length > 0) && (
-                <Badge variant="secondary">{FACETS.reduce((count, key) => count + current[key].length, 0)}</Badge>
-              )}
-            </summary>
-            <div className="absolute right-0 z-20 mt-2 w-[min(340px,85vw)] space-y-3 rounded-lg border bg-popover p-3 shadow-md">
-              <div className="flex min-w-0 items-center gap-3 @min-[36rem]:w-64">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-9">
+                <ListFilterIcon aria-hidden /> Filters
+                {FACETS.some((key) => current[key].length > 0) && (
+                  <Badge variant="secondary">{FACETS.reduce((count, key) => count + current[key].length, 0)}</Badge>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" aria-label="Sandbox filters" className="w-[340px] space-y-3 p-3">
+              <div className="flex min-w-0 items-center gap-3">
                 <span className="shrink-0 text-sm text-muted-foreground">Sort by</span>
                 <NativeSelect
                   aria-label="Sort sandboxes"
@@ -155,8 +157,8 @@ export function SandboxToolbar({
                   </Popover>
                 ))}
               </div>
-            </div>
-          </details>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 

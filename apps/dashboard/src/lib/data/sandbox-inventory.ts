@@ -1,3 +1,4 @@
+import { cache } from "react";
 import type { ControlClient } from "../control";
 import { parseSandboxListMetadata, type SandboxListMetadata } from "../sandbox-access";
 import { type RecordedTurn, sandboxActivityPage } from "../sandbox-activity";
@@ -22,21 +23,29 @@ export async function loadSandboxInventory(
     console.error("Recorded sandbox activity is unavailable.");
     return {};
   });
-  const includeDeleted = hasSandboxFilters(filters);
+  const viewingDeleted = requestedActivity === "deleted";
+  const includeDeleted = viewingDeleted || hasSandboxFilters(filters);
   const [{ inventory, skipped }, turns, deletedCount] = await Promise.all([
-    readInventory(supabase, orgId, includeDeleted),
+    listSandboxMetadata(supabase, orgId, includeDeleted),
     turnsRead ?? {},
     includeDeleted ? null : countDeletedSandboxes(supabase, orgId),
   ]);
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort);
   const now = new Date();
-  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page, turns, now);
+  const matchingDeleted =
+    deletedCount === null && (!filters.status.length || filters.status.includes("deleted"))
+      ? filterSandboxes(inventory, { ...filters, status: ["deleted"] }, viewerId)
+      : [];
+  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page, turns, now, {
+    rows: viewingDeleted ? sortSandboxes(matchingDeleted, filters.sort, now) : [],
+    count: deletedCount ?? matchingDeleted.length,
+  });
   const facets = sandboxFacetCounts(inventory, filters, viewerId);
-  if (deletedCount !== null) facets.status.set("deleted", deletedCount);
+  if (!includeDeleted) facets.status.set("deleted", deletedCount ?? matchingDeleted.length);
   return {
     ...activityPage,
     now,
-    total: rows.length,
+    total: viewingDeleted ? activityPage.counts.deleted : rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
     facets,
@@ -53,7 +62,7 @@ async function countDeletedSandboxes(supabase: Supabase, orgId: string) {
   return count;
 }
 
-async function readInventory(supabase: Supabase, orgId: string, includeDeleted: boolean) {
+const listSandboxMetadata = cache(async (supabase: Supabase, orgId: string, includeDeleted: boolean) => {
   const inventory: SandboxListMetadata[] = [];
   let skipped = 0;
   for (let from = 0; ; from += 500) {
@@ -68,4 +77,4 @@ async function readInventory(supabase: Supabase, orgId: string, includeDeleted: 
     if (parsed.rows.length + parsed.skipped.length < 500) break;
   }
   return { inventory, skipped };
-}
+});

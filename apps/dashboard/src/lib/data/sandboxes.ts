@@ -8,11 +8,9 @@ import {
   type SandboxCost,
   summarizeLaunch,
 } from "@armada/core";
-import { capabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
-import type { DockerHostList } from "@/lib/docker-hosts";
 import { parseSandboxListMetadata, type SandboxListMetadata, type SkippedSandboxRow } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import type { Supabase } from "@/lib/supabase/server";
@@ -111,77 +109,39 @@ export async function credentialMetadata(
   return accounts;
 }
 
-/**
- * The cost of the listed sandboxes the viewer may open, by id. The usage columns are interior: row level security
- * returns them to the owner and the org's admins only, as the server's list does, so another member's row has none.
- */
-export function listSandboxCosts(
+/** Interior facts for the current page. RLS still checks each requested row against the user's JWT. */
+export async function listSandboxEnrichment(
   supabase: Supabase,
+  orgId: string,
   rows: readonly Pick<SandboxListMetadata, "id" | "canOpen">[],
-): Promise<Map<string, SandboxCost>> {
-  return sandboxCosts(
-    supabase,
-    rows.filter((row) => row.canOpen).map((row) => row.id),
-  );
-}
-
-/** The cost of each sandbox among `ids` whose row row level security returns to the viewer (owner or org admin), by id. */
-async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise<Map<string, SandboxCost>> {
-  const costs = new Map<string, SandboxCost>();
-  // A malformed sandbox id is never queried.
-  const wanted = [...new Set(ids)].filter(isUuid);
-  if (wanted.length === 0) return costs;
-  const data = await boundedEnrichment("sandboxCosts", wanted, (ids) =>
+) {
+  const readableIds = rows.filter(({ id, canOpen }) => canOpen && isUuid(id)).map(({ id }) => id);
+  const data = await boundedEnrichment("listSandboxEnrichment", readableIds, (ids) =>
     supabase
       .from("sandboxes")
-      .select("id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since")
+      .select(
+        "id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since,docker_host_id,goldens!sandboxes_golden_id_fkey(name)",
+      )
+      .eq("org_id", orgId)
+      .eq("goldens.org_id", orgId)
       .in("id", ids),
   );
   const kinds = await credentialKinds(
     supabase,
-    (data ?? []).map((row) => row.credential_id),
+    data.map((row) => row.credential_id),
   );
-  for (const row of data ?? []) {
-    if (!isHarness(row.harness)) continue;
-    costs.set(row.id, costOfRow({ ...row, harness: row.harness }, kinds.get(row.credential_id ?? "") ?? null));
+  const enrichment = new Map<string, { cost?: SandboxCost; hostId: string | null; snapshot?: string }>();
+  for (const { goldens, docker_host_id, ...row } of data) {
+    const cost = isHarness(row.harness)
+      ? costOfRow({ ...row, harness: row.harness }, kinds.get(row.credential_id ?? "") ?? null)
+      : undefined;
+    enrichment.set(row.id, {
+      ...(cost && { cost }),
+      hostId: docker_host_id,
+      ...(goldens?.name && { snapshot: goldens.name }),
+    });
   }
-  return costs;
-}
-
-/** Host bindings are interior: enrich only readable Docker rows, never the organization metadata contract. */
-export async function listSandboxHostNames(
-  supabase: Supabase,
-  rows: readonly SandboxListMetadata[],
-  hosts: DockerHostList | null,
-): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
-  const wanted = rows
-    .filter((row) => capabilities(row.provider).launchSource === "host" && row.canOpen && isUuid(row.id))
-    .map((row) => row.id);
-  if (wanted.length === 0 || hosts === null) return names;
-  const selected = await selectedOrganization();
-  if (!selected) return names;
-  const data = await boundedEnrichment("listSandboxHostNames", wanted, (ids) =>
-    supabase
-      .from("sandboxes")
-      .select("id,docker_host_id")
-      .eq("org_id", selected.org.id)
-      .eq("provider", "docker")
-      .in("id", ids),
-  );
-  const byId = new Map(hosts.hosts.map((host) => [host.id, host]));
-  for (const row of data ?? []) {
-    const host = row.docker_host_id ? byId.get(row.docker_host_id) : undefined;
-    names.set(
-      row.id,
-      row.docker_host_id === null
-        ? "Machine not recorded"
-        : host
-          ? (host.name ?? "Unnamed machine")
-          : "Machine name unavailable",
-    );
-  }
-  return names;
+  return enrichment;
 }
 
 /**

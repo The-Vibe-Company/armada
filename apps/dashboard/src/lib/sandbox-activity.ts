@@ -18,6 +18,8 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
   ).attention;
 }
 
+export type SandboxActivity = "all" | "mine" | "working" | "need" | "stopped" | "failed" | "deleted";
+
 export type RecordedTurn = "queued" | "running" | "finished";
 
 function beforeDeadline(expiresAt: string | null, now: Date) {
@@ -39,7 +41,8 @@ export function sandboxActivityPage(
   requestedActivity: string | string[] | undefined,
   requestedPage: number,
   turns: Readonly<Record<string, RecordedTurn>>,
-  now = new Date(),
+  now: Date,
+  deleted: { rows: SandboxListMetadata[]; count: number },
 ) {
   const workingIds = new Set<string>();
   const waitingIds = new Set<string>();
@@ -64,20 +67,23 @@ export function sandboxActivityPage(
     need: (row: SandboxListMetadata) => waitingIds.has(row.id),
     stopped: (row: SandboxListMetadata) => row.status === "stopped" && !workingIds.has(row.id),
     failed: (row: SandboxListMetadata) => row.status === "failed",
-  };
-  const activity =
-    typeof requestedActivity === "string" && Object.hasOwn(predicates, requestedActivity)
-      ? (requestedActivity as keyof typeof predicates)
-      : "all";
+  } satisfies Record<Exclude<SandboxActivity, "deleted">, (row: SandboxListMetadata) => boolean>;
+  const activity: SandboxActivity =
+    requestedActivity === "deleted"
+      ? "deleted"
+      : typeof requestedActivity === "string" && Object.hasOwn(predicates, requestedActivity)
+        ? (requestedActivity as keyof typeof predicates)
+        : "all";
   const counts = Object.fromEntries(
     Object.entries(predicates).map(([key, matches]) => [key, rows.filter(matches).length]),
   ) as Record<keyof typeof predicates, number>;
-  const activeRows = rows.filter(predicates[activity]);
+
+  const activeRows = activity === "deleted" ? deleted.rows : rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
   return {
     rows: activeRows.slice((page - 1) * 50, page * 50),
     activity,
-    counts,
+    counts: { ...counts, deleted: deleted.count },
     page,
     workingIds,
     waitingIds,

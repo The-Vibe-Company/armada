@@ -1011,7 +1011,12 @@ async function rest(request: Request, url: URL): Promise<Response> {
         return pgError({ status: 401, code: "42501", message: "permission denied for table credentials" });
       }
     }
-    let rows = visibleRows(table, userId).filter((row) => matches(row, url.searchParams));
+    const goldenEmbed = "goldens!sandboxes_golden_id_fkey(name)";
+    const embedGolden = table === "sandboxes" && select?.split(",").includes(goldenEmbed);
+    const filters = new URLSearchParams(url.searchParams);
+    const goldenOrg = embedGolden ? filters.get("goldens.org_id") : null;
+    if (embedGolden) filters.delete("goldens.org_id");
+    let rows = visibleRows(table, userId).filter((row) => matches(row, filters));
     const order = url.searchParams.get("order");
     if (order) {
       const [column = "", direction = "asc"] = order.split(".");
@@ -1023,7 +1028,23 @@ async function rest(request: Request, url: URL): Promise<Response> {
     const offset = Number(url.searchParams.get("offset") ?? 0);
     const limit = url.searchParams.get("limit");
     rows = rows.slice(offset, limit ? offset + Number(limit) : undefined);
-    const projected = rows.map((row) => project(table, row, select));
+    const columns = embedGolden
+      ? (select
+          ?.split(",")
+          .filter((column) => column !== goldenEmbed)
+          .join(",") ?? null)
+      : select;
+    const goldens = new Map(
+      embedGolden
+        ? visibleRows("goldens", userId)
+            .filter((row) => goldenOrg === null || goldenOrg === `eq.${row.org_id}`)
+            .map((row) => [row.id, { name: row.name }])
+        : [],
+    );
+    const projected = rows.map((row) => {
+      const result = project(table, row, columns);
+      return embedGolden ? { ...result, goldens: goldens.get(row.golden_id) ?? null } : result;
+    });
     const failure = projected.find((row) => "status" in row && "code" in row && "message" in row) as Fail | undefined;
     if (failure) return pgError(failure);
     const range = rows.length ? `${offset}-${offset + rows.length - 1}/${total}` : `*/${total}`;

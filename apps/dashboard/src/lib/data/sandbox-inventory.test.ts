@@ -4,6 +4,7 @@ import { createControlClient } from "../control";
 import { parseSandboxFilters } from "../sandbox-filters";
 import type { Database } from "../supabase/types";
 import { loadSandboxInventory } from "./sandbox-inventory";
+import { listSandboxEnrichment } from "./sandboxes";
 
 function sandbox(index: number, status = "ready") {
   return {
@@ -71,11 +72,13 @@ test("the Sandboxes list reads activity once for the organization without per-sa
 });
 
 test.each([
-  { name: "default", params: {}, statusQuery: "neq.deleted", visibleId: "0", deleted: 505 },
-  { name: "explicit deleted", params: { status: "deleted" }, statusQuery: null, visibleId: "1", deleted: 505 },
+  { name: "default", params: {}, activity: undefined, statusQuery: "neq.deleted", visibleId: "0" },
+  { name: "explicit deleted", params: { status: "deleted" }, activity: undefined, statusQuery: null, visibleId: "1" },
+  { name: "deleted activity", params: {}, activity: "deleted", statusQuery: null, visibleId: "1" },
 ])(
   "$name inventory keeps exact status counts with the expected row scope",
-  async ({ params, statusQuery, visibleId, deleted }) => {
+  async ({ params, activity, statusQuery, visibleId }) => {
+    const deleted = 505;
     const active = sandbox(0);
     const history = Array.from({ length: deleted }, (_, index) => ({
       ...sandbox(index + 1, "deleted"),
@@ -107,7 +110,7 @@ test.each([
       },
     });
 
-    const result = await loadSandboxInventory(supabase, "org", parseSandboxFilters(params), "viewer", undefined, null);
+    const result = await loadSandboxInventory(supabase, "org", parseSandboxFilters(params), "viewer", activity, null);
 
     expect(rowReads).toEqual(
       statusQuery
@@ -118,9 +121,55 @@ test.each([
           ],
     );
     expect(countReads).toEqual(statusQuery ? ["eq.deleted"] : []);
+    expect(result.activity).toBe(activity ?? "all");
+    expect(result.counts.deleted).toBe(deleted);
     expect(result.total).toBe(statusQuery ? 1 : deleted);
     expect(result.rows[0]?.id).toBe(visibleId);
     expect(result.facets.status.get("deleted")).toBe(deleted);
     expect(result.facets.status.get("ready")).toBe(1);
   },
 );
+
+test("one JWT sandbox read enriches only readable rows with cost, host and snapshot", async () => {
+  const readable = "10000000-0000-4000-8000-000000000001";
+  const restricted = "10000000-0000-4000-8000-000000000002";
+  const host = "10000000-0000-4000-8000-000000000003";
+  const requests: URL[] = [];
+  const supabase = createClient<Database, "public">("https://metadata.test", "placeholder", {
+    global: {
+      fetch: Object.assign(
+        async (input: RequestInfo | URL) => {
+          requests.push(new URL(String(input)));
+          return Response.json([
+            {
+              id: readable,
+              harness: "codex",
+              credential_id: null,
+              usage_turns: [],
+              usage_runtime_seconds: 20,
+              usage_running_since: null,
+              docker_host_id: host,
+              goldens: { name: "Nightly" },
+            },
+          ]);
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    },
+  });
+
+  const result = await listSandboxEnrichment(supabase, "org", [
+    { id: readable, canOpen: true },
+    { id: restricted, canOpen: false },
+    { id: "malformed", canOpen: true },
+  ]);
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.pathname).toBe("/rest/v1/sandboxes");
+  expect(requests[0]?.searchParams.get("id")).toBe(`in.(${readable})`);
+  expect(requests[0]?.searchParams.get("org_id")).toBe("eq.org");
+  expect(requests[0]?.searchParams.get("goldens.org_id")).toBe("eq.org");
+  expect(requests[0]?.searchParams.get("select")).not.toContain("*");
+  expect([...result.keys()]).toEqual([readable]);
+  expect(result.get(readable)).toMatchObject({ cost: { computeSeconds: 20 }, hostId: host, snapshot: "Nightly" });
+});
