@@ -1,10 +1,10 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { type ChildProcess, type spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GoldenError, type Provider, shellQuote, sshStdinCheckout } from "../src/server.ts";
+import { type Provider, shellQuote, sshStdinCheckout } from "../src/server.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
@@ -224,7 +224,7 @@ test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout rep
                     ? "ING skillpack unknown\nARMADA_BUILD_FAILURE checkout 128 0\n"
                     : mode === "helper"
                       ? "ING skillpack unknown\nARMADA_BUILD_FAILURE helper 98\n"
-                      : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
+                      : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\nARMADA_GITHUB_FAILURE directories\n",
             );
           }
           c.emit("close", file === "ssh" && mode !== "warning" ? 98 : 0);
@@ -367,31 +367,23 @@ test.each([
   expect(JSON.stringify(failure)).not.toContain("opaque-secret");
 });
 
-function diagnosticTransport(stderr = "", code = 0) {
-  const deps: NonNullable<Parameters<typeof sshStdinCheckout>[2]> = {
+function cancellationTransport() {
+  return {
     mkdtemp: async () => "/tmp/armada-fixture",
     chmod: async () => {},
     writeFile: async () => {},
     rm: async () => {},
     readPublicKey: async () => "ssh-ed25519 PUBLIC",
-    spawn: ((file: string) => {
+    spawn: (() => {
       const child = new EventEmitter() as ChildProcess;
-      const errors = new EventEmitter();
       Object.assign(child, {
-        stderr: errors,
         stdin: {
-          end: () => {
-            queueMicrotask(() => {
-              if (file === "ssh") errors.emit("data", Buffer.from(stderr));
-              child.emit("close", file === "ssh" ? code : 0);
-            });
-          },
+          end: () => queueMicrotask(() => child.emit("close", 0)),
         },
       });
       return child;
     }) as typeof spawn,
-  };
-  return { deps };
+  } satisfies NonNullable<Parameters<typeof sshStdinCheckout>[2]>;
 }
 const diagnosticProvider = {
   id: "boat",
@@ -400,9 +392,9 @@ const diagnosticProvider = {
 
 test("lease cancellation after SSH key registration prevents guest dispatch", async () => {
   const lease = new AbortController();
-  const { deps } = diagnosticTransport();
+  const deps = cancellationTransport();
   const guestSshSpawns: string[] = [];
-  const spawnImpl = deps.spawn!;
+  const spawnImpl = deps.spawn;
   const provider = {
     ...diagnosticProvider,
     async sshKey() {
@@ -426,8 +418,8 @@ test("lease cancellation after SSH key registration prevents guest dispatch", as
 
 test("lease cancellation kills the active guest SSH process", async () => {
   const lease = new AbortController();
-  const { deps } = diagnosticTransport();
-  const spawnImpl = deps.spawn!;
+  const deps = cancellationTransport();
+  const spawnImpl = deps.spawn;
   const signals: string[] = [];
   const input = { sandboxId: "bx-test", token: "private", script: "true", signal: lease.signal };
   const result = sshStdinCheckout(diagnosticProvider, input, {
@@ -450,29 +442,4 @@ test("lease cancellation kills the active guest SSH process", async () => {
   });
   await expect(result).rejects.toBeInstanceOf(DOMException);
   expect(signals).toEqual(["SIGKILL"]);
-});
-
-// Shared SSH callers must retain their own error protocol even when guest output resembles repair output.
-test("normal SSH ignores GitHub repair markers and retains the golden failure phase and safe reason", async () => {
-  const log = spyOn(console, "error").mockImplementation(() => {});
-  const transport = diagnosticTransport("ARMADA_BUILD_FAILURE skillpack 98\nARMADA_GITHUB_FAILURE directories\n", 1);
-  try {
-    let failure: unknown;
-    try {
-      await sshStdinCheckout(
-        diagnosticProvider,
-        { sandboxId: "bx-build", token: "synthetic", script: "build" },
-        transport.deps,
-      );
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toBeInstanceOf(GoldenError);
-    expect(failure).toMatchObject({ code: "build_failed", safeReason: "skillpack_integrity_failed" });
-    expect(log.mock.calls).toEqual([
-      [JSON.stringify({ event: "golden_ssh_failed", phase: "skillpack", code: "exit_98" })],
-    ]);
-  } finally {
-    log.mockRestore();
-  }
 });
