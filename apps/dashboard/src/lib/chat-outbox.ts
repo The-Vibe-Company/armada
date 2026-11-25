@@ -5,6 +5,7 @@ export type PendingMessage = {
   promptId: string;
   text: string;
   at: number;
+  accepted?: boolean;
   failure?: string;
 };
 

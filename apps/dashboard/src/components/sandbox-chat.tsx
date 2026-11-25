@@ -183,7 +183,7 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
-  const pendingRuntimePrompts = useRef<string[]>([]);
+  const pendingRuntimePrompt = useRef<string | undefined>(undefined);
   const [outbox, setOutbox] = useState<PendingMessage[]>([]);
   const [history, setHistory] = useState(initialChatHistory);
   const currentHistory = useRef(initialChatHistory);
@@ -263,7 +263,7 @@ export function SandboxChat(props: Props) {
       const path = loaded ? "events" : "history";
       const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
-      const oldestPending = pendingRuntimePrompts.current[0];
+      const oldestPending = pendingRuntimePrompt.current;
       if (oldestPending) url.searchParams.set("pending", oldestPending);
       const controller = new AbortController();
       session.controller = controller;
@@ -381,12 +381,7 @@ export function SandboxChat(props: Props) {
           if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
           else if (session.pendingUpdate) {
             session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
-          } else if (
-            result.active ||
-            result.working ||
-            result.refreshNeeded ||
-            pendingRuntimePrompts.current.length > 0
-          ) {
+          } else if (result.active || result.working || result.refreshNeeded || pendingRuntimePrompt.current) {
             session.timer = setTimeout(() => void readUpdate(), result.working ? WORKING_POLL_MS : IDLE_POLL_MS);
           }
           return;
@@ -507,13 +502,18 @@ export function SandboxChat(props: Props) {
   const { currentConversation } = props;
   const chat = useMemo(() => projectChat(events, currentConversation), [events, currentConversation]);
   const unconfirmed = useMemo(() => unconfirmedMessages(outbox, chat.items), [outbox, chat.items]);
+  useLayoutEffect(() => {
+    const oldest = props.pinnedModel
+      ? unconfirmed.find((message) => message.accepted && !message.failure)?.requestId
+      : undefined;
+    const previous = pendingRuntimePrompt.current;
+    pendingRuntimePrompt.current = oldest;
+    if (oldest && oldest !== previous) void tick();
+  }, [props.pinnedModel, tick, unconfirmed]);
   useEffect(() => {
-    pendingRuntimePrompts.current = pendingRuntimePrompts.current.filter(
-      (id) =>
-        !outbox.some((message) => message.requestId === id) ||
-        unconfirmed.some((message) => message.requestId === id && !message.failure),
-    );
-    if (unconfirmed.length !== outbox.length) setOutbox((current) => (current === outbox ? unconfirmed : current));
+    if (unconfirmed.length === outbox.length) return;
+    const retained = outbox.filter((message) => !message.accepted || unconfirmed.includes(message));
+    if (retained.length !== outbox.length) setOutbox((current) => (current === outbox ? retained : current));
   }, [outbox, unconfirmed]);
 
   // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
@@ -606,11 +606,10 @@ export function SandboxChat(props: Props) {
               running={turnRunning}
               onSending={(message) => setOutbox((current) => [...current, message])}
               onSendSettled={(requestId, promptId) => {
-                if (props.pinnedModel && promptId) pendingRuntimePrompts.current.push(requestId);
                 setOutbox((current) =>
                   current.flatMap((message) => {
                     if (message.requestId !== requestId) return [message];
-                    return promptId ? [{ ...message, promptId }] : [];
+                    return promptId ? [{ ...message, promptId, accepted: true }] : [];
                   }),
                 );
               }}
