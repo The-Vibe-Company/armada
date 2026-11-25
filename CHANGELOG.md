@@ -1,5 +1,22 @@
 # Changelog
 
+## [14.5.0](https://github.com/The-Vibe-Company/armada/compare/v14.4.1...v14.5.0) (2026-11-25)
+
+
+### Features
+
+* **dashboard:** add T3-Code-grade streaming markdown, code copy, stable auto-scroll and composer shortcuts ([#4339](https://github.com/The-Vibe-Company/armada/issues/4339)) ([a8c6f97](https://github.com/The-Vibe-Company/armada/commit/a8c6f978607f95cd41f28033cb0d72fafe5086d5))
+* **dashboard:** consume inline SSE events, add 0ms optimistic send/steer and LRU thread cache ([#4337](https://github.com/The-Vibe-Company/armada/issues/4337)) ([4186252](https://github.com/The-Vibe-Company/armada/commit/41862529de42c9b5b2a277d3874d10f189bc615e))
+* **dashboard:** show executed model instead of raw default alias ([#4332](https://github.com/The-Vibe-Company/armada/issues/4332)) ([52c1e6b](https://github.com/The-Vibe-Company/armada/commit/52c1e6b0da8bb7beab2dfda909bdc647019b8c87))
+* **ios:** stream live inline SSE events and add 0ms optimistic working state ([#4335](https://github.com/The-Vibe-Company/armada/issues/4335)) ([8c50fa6](https://github.com/The-Vibe-Company/armada/commit/8c50fa610f0daaff3d3d2598d0b05e0b03388c9a))
+* **mcp-server:** rich fleet Langfuse OTLP v4 traces, PR/repo linking, and turn scores ([#4336](https://github.com/The-Vibe-Company/armada/issues/4336)) ([eb2d7b2](https://github.com/The-Vibe-Company/armada/commit/eb2d7b273e51d19b467829a2e33e8575582b8911))
+
+
+### Bug Fixes
+
+* **agent-runtime:** emit resolved ACP model on Antigravity turns and messages ([#4333](https://github.com/The-Vibe-Company/armada/issues/4333)) ([338fa6c](https://github.com/The-Vibe-Company/armada/commit/338fa6c02e65d42fcede5c85191565d7b1dc94d4))
+* **dashboard:** allow Bearer auth on GET /api/v1/events proxy so iOS and SDK SSE clients are not signed out ([#4340](https://github.com/The-Vibe-Company/armada/issues/4340)) ([7f29de7](https://github.com/The-Vibe-Company/armada/commit/7f29de7dc8691665851a60c7cf6250003cadd1b6))
+
 ## [14.4.1](https://github.com/The-Vibe-Company/armada/compare/v14.4.0...v14.4.1) (2026-11-25)
 
 
