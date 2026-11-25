@@ -7,7 +7,7 @@ import type { SandboxView } from "./data.ts";
 import { validateLogPagination } from "./event-pagination.ts";
 import { logicalExpiry } from "./mcp-read-tools.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
-import { ToolError } from "./tool-error.ts";
+import { ResumeTurnDeferred, ToolError } from "./tool-error.ts";
 import { errorResult } from "./tool-failure.ts";
 import type { ToolContext } from "./tools.ts";
 
@@ -166,6 +166,7 @@ export function createToolRegistration(
           content: [{ type: "text", text: JSON.stringify(result) }],
         };
       } catch (error) {
+        if (name === "send" && error instanceof ResumeTurnDeferred) throw error;
         context.onLocalToolError?.(error);
         return errorResult(error, name, context.logError ?? ((line) => console.error(line)));
       }

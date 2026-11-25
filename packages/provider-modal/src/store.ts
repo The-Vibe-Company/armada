@@ -149,7 +149,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
             and record->>'recoveryImageId'=$6
             and (record#>>'{runtimeCheckpoint,generation}')::bigint=$7
             and ((record->>'generation')::bigint=$7 and record->>'phase'='stopped'
-              or (record->>'generation')::bigint=$7+1 and record->>'runtimeResumeGeneration'=$8)
+              or (record->>'generation')::bigint=$7+1 and record->>'runtimeResumeGeneration'=$8::text)
             and coalesce(lease_until < clock_timestamp(), true) returning id`,
         [
           key,

@@ -20,6 +20,7 @@ import { providerRegistry } from "../src/http.ts";
 import { createResumeJob } from "../src/jobs/resume.ts";
 import { createJobsStore, JOBS_WAKE } from "../src/jobs/store.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { continueRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -2008,6 +2009,8 @@ describe("Modal resume job", () => {
       conversationId: f.first.conversationId!,
     };
     const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    const logs: string[] = [];
+    const log = (line: string) => logs.push(line);
     const service = createResumeJob({
       turns,
       sql: f.sql,
@@ -2086,6 +2089,7 @@ describe("Modal resume job", () => {
     const joined = input(f.row.id);
     const wake = Promise.withResolvers<void>();
     const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
+    const toolFailures = spyOn(console, "error");
     try {
       expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
       expect(await turns.reconcileOne(new AbortController().signal)).toBe(true);
@@ -2102,6 +2106,9 @@ describe("Modal resume job", () => {
         return;
       }
       await wake.promise;
+      await turns.drain();
+      expect(toolFailures).not.toHaveBeenCalledWith(expect.stringContaining('"phase":"tool.send"'));
+      toolFailures.mockRestore();
       const receipt = explicit(f.caller, request).then(
         (value) => ({ value }),
         (error: unknown) => ({ error }),
@@ -2122,7 +2129,17 @@ describe("Modal resume job", () => {
         expect(await jobs.complete(job, owner, result)).toBeTrue();
         return result.status;
       };
-      expect(await take()).toBe("retry");
+      expect(await continueRequest(crypto.randomUUID(), take, log)).toBe("retry");
+      expect(logs.map((line) => JSON.parse(line))).toMatchObject([
+        {
+          event: "operator_failure",
+          phase: "jobs.resume.run",
+          sandboxId: f.row.id,
+          operationId: expect.any(String),
+          code: "retry",
+          message: "Exception message withheld",
+        },
+      ]);
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       if (expired) {
         await f.sql.query("update public.jobs set deadline_at=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
@@ -2172,6 +2189,7 @@ describe("Modal resume job", () => {
       expect(await explicit(f.caller, request)).toEqual(accepted.value);
     } finally {
       unsubscribe();
+      toolFailures.mockRestore();
     }
   });
 });

@@ -17,7 +17,7 @@ import { continueRequest, recordOperatorDiagnostic } from "./request-observabili
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { ToolApiError } from "./tool-api.ts";
-import { ToolError } from "./tool-error.ts";
+import { ResumeTurnDeferred, ToolError } from "./tool-error.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "./wake-bus.ts";
 
 function deferredDockerLaunch(sandbox: string, pending = false) {
@@ -466,8 +466,6 @@ export function publishAccountTurnReceipt(tx: Sql, sandboxId: string, requestId:
     [sandboxId, requestId, result],
   );
 }
-
-export class ResumeTurnDeferred extends Error {}
 
 export async function resetResumeTurn(tx: Sql, id: string, requestId: string, generation: string) {
   const { rows } = await tx.query(
