@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.2.1](https://github.com/The-Vibe-Company/armada/compare/v14.2.0...v14.2.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **antigravity:** accept Go oauth2 token fields and write auth_method consumer for antigravity 1.5.13 ([#4288](https://github.com/The-Vibe-Company/armada/issues/4288)) ([47d95a8](https://github.com/The-Vibe-Company/armada/commit/47d95a8e2a4a1fc71579b02b2fa0f9d452c918e1))
+
 ## [14.2.0](https://github.com/The-Vibe-Company/armada/compare/v14.1.0...v14.2.0) (2026-11-25)
 
 
