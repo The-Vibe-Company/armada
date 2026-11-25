@@ -165,6 +165,9 @@ export async function connectGolden(
         "conflict",
         "This Modal adapter requires the authorized golden restore port. No worker fork was created.",
       );
+    const fork = provider.fork;
+    if (!sharedSource && !fork)
+      throw new GoldenError("conflict", "This adapter does not support fresh-fork golden restore.");
     const restoreSnapshot = golden.providerSnapshotId;
     uncertain = true;
     const restored = await (async () => {
@@ -174,7 +177,7 @@ export async function connectGolden(
               snapshotId: restoreSnapshot,
               ...(golden.providerSandboxId ? { sandboxId: golden.providerSandboxId } : {}),
             })
-          : await provider.fork({ from: restoreSnapshot, noEnv: true });
+          : await fork.call(provider, { from: restoreSnapshot, noEnv: true });
       } catch (error) {
         if (isNonMutatingProviderRefusal(error)) uncertain = false;
         throw error;

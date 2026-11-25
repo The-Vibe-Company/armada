@@ -51,13 +51,13 @@ export type ModalPromptPhase =
   | "modal_sandbox_create"
   | `modal_boot_${"binding" | "baseline" | "fresh" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
-  deploymentId?: string;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
   storedReads?: boolean;
   admissionSleep?(milliseconds: number): Promise<void>;
   cleanupSleep?(milliseconds: number): Promise<void>;
   detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
+  deploymentId?: string;
   managementAuthority?: ModalManagementProvenance;
   appName: string;
   store: ModalStore;
@@ -309,11 +309,13 @@ export function createModalProvider(options: ModalProviderOptions) {
     capabilities: distribution.capabilities,
     ...createLaunchLifecycle({
       store,
-      source,
+      assertGoldenScope: () => {
+        if (source.scope.visibility !== options.scope.visibility)
+          throw refusal("forbidden", "Golden creation requires the source-scoped provider connection.");
+      },
       scope: options.scope,
       managementAuthority,
       bound,
-      assertAuthority,
       assertMachineSource,
       create,
       sandboxInfo,

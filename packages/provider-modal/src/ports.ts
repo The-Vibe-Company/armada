@@ -95,7 +95,7 @@ export interface SavedImage {
   collectUntil?: number;
 }
 export interface ModalStore {
-  reserve(key: string, machine: Machine, sourceId?: string): Promise<Machine>;
+  reserve(key: string, machine: Machine): Promise<Machine>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
