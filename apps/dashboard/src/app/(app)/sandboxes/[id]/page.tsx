@@ -226,7 +226,7 @@ export default async function SandboxPage({ params }: Props) {
       }
       usage={
         <>
-          <SandboxCostCard cost={cost} totalClassName="min-[375px]:hidden" />
+          <SandboxCostCard cost={cost} totalClassName="sm:hidden" />
           <section aria-label="Skills" className="space-y-2">
             <h2 className="text-xs font-medium text-muted-foreground">Skills</h2>
             <InstalledSkills receipts={sandbox.skills} />
@@ -349,7 +349,7 @@ function DockerSandbox({
       }
       usage={
         <>
-          <SandboxCostCard cost={cost} totalClassName="min-[375px]:hidden" />
+          <SandboxCostCard cost={cost} totalClassName="sm:hidden" />
           {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -485,11 +485,11 @@ function ThreadHeader({
           </LinkPendingIcon>
         </Link>
       </Button>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-10 flex-1">
         <h1 className="truncate text-sm font-semibold leading-tight" title={name}>
           {name}
         </h1>
-        <span className="block font-mono text-[10px] leading-tight text-muted-foreground">
+        <span className="block truncate font-mono text-[10px] leading-tight text-muted-foreground">
           {sandbox.id.slice(0, 8)}
         </span>
       </div>
@@ -514,7 +514,7 @@ function ThreadHeader({
       )}
       <RowCost
         cost={cost}
-        className="hidden shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 font-mono text-[10px] tabular-nums min-[375px]:inline-flex sm:px-2 sm:text-xs"
+        className="hidden min-w-0 max-w-20 truncate rounded-full border px-1.5 py-0.5 font-mono text-[10px] tabular-nums min-[375px]:block sm:max-w-none sm:shrink-0 sm:px-2 sm:text-xs"
       />
       {children}
     </>

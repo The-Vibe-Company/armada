@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { PlayIcon, RotateCcwIcon } from "lucide-react";
+import { ClockPlusIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { extendSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
@@ -141,8 +141,16 @@ export function AddSandboxTime({
   return (
     <form action={action} className={compact ? "relative shrink-0" : "space-y-2"}>
       <input type="hidden" name="sandbox" value={sandboxId} />
-      <Button size="sm" variant="outline" disabled={pending} aria-busy={pending}>
-        {pending && !compact ? "Adding time…" : label}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        aria-busy={pending}
+        title={compact ? label : undefined}
+        className={compact ? "max-sm:px-2.5" : undefined}
+      >
+        {compact && <ClockPlusIcon className="sm:hidden" aria-hidden />}
+        <span className={compact ? "max-sm:sr-only" : undefined}>{pending && !compact ? "Adding time…" : label}</span>
       </Button>
       {state && (
         <p
