@@ -2868,7 +2868,7 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
 });
 
 test.each(["dispatch deadline", "lease takeover"] as const)(
-  "Modal retained stop fences a pending snapshot receipt by %s",
+  "Modal retained stop handles a pending snapshot receipt across %s",
   async (boundary) => {
     const f = await fixture();
     const recordId = "retained-placement";
