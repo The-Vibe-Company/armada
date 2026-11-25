@@ -13,7 +13,7 @@ import type { ChildOperation } from "./sandbox-access-children.ts";
 /** Definitive refusal before a launch job was committed. */
 export class ChildLaunchNotAllocated extends Error {
   constructor(
-    readonly reason: "preallocation_rejected" | "provider_refused",
+    readonly reason: "preallocation_rejected" | "provider_refused" | "admission_lock_contended",
     readonly guard = "admission",
     cause?: unknown,
   ) {

@@ -66,7 +66,11 @@ import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
-import { completeChildLaunchAdmission, lockChildLaunchAdmission } from "../sandbox-access-child-launch.ts";
+import {
+  ChildLaunchNotAllocated,
+  completeChildLaunchAdmission,
+  lockChildLaunchAdmission,
+} from "../sandbox-access-child-launch.ts";
 import type { ChildOperation } from "../sandbox-access-children.ts";
 import {
   type RestoreScopedRuntimeAccess,
@@ -238,10 +242,12 @@ export async function admitModalLaunch(
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
 
+  let admitted = false;
+  let childAdmissionPhase = "parent_authority_lock";
   try {
-    let admitted = false;
     const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
       const childDigest = child && (await lockChildLaunchAdmission(tx, child));
+      childAdmissionPhase = "launch_admission";
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
         : undefined;
@@ -471,6 +477,11 @@ export async function admitModalLaunch(
     if (admitted) recordModalLaunchAdmission(receipt.sandbox.id);
     return receipt;
   } catch (error) {
+    // A statement lock failure aborts admission before the callback can reach COMMIT.
+    // Errors after the callback completes can still be a lost commit acknowledgement.
+    const databaseError = error as { errno?: string; code?: string } | null;
+    if (child && !admitted && (databaseError?.errno ?? databaseError?.code) === "55P03")
+      throw new ChildLaunchNotAllocated("admission_lock_contended", childAdmissionPhase, error);
     if (error instanceof ConflictingJobRequest)
       throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
     throw error;

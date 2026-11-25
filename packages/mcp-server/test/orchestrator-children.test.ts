@@ -197,7 +197,7 @@ const boatAdmissionProvider = (boat: ReturnType<typeof fakeBoat>) => ({
   managementIdentity: async () => ({ scope: "org" as const, ownerId: "fixture" }),
 });
 
-test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as const)(
+test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat", "contended Boat admission"] as const)(
   "delegated admission is durable and fenced after %s",
   async (scenario) => {
     const provider = scenario === "lost Modal acknowledgement" ? "modal" : "boat";
@@ -210,7 +210,18 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as 
         ...sql,
         transaction: async (work) => {
           const result = await sql.transaction!(async (tx) => {
-            const value = await work(tx);
+            const value = await work({
+              ...tx,
+              async query<T>(statement: string, params?: unknown[]) {
+                if (
+                  armed &&
+                  scenario === "contended Boat admission" &&
+                  statement.includes("for no key update of c nowait")
+                )
+                  throw Object.assign(new Error("could not obtain lock"), { name: "PostgresError", errno: "55P03" });
+                return tx.query<T>(statement, params);
+              },
+            });
             if (armed && scenario === "rolled back Boat") throw Error("worker admission rollback");
             return value;
           });
@@ -243,6 +254,16 @@ test.each(["revoked Boat", "lost Modal acknowledgement", "rolled back Boat"] as 
       const chosen = { ...selection, model: "claude-sonnet-4-6", size: "small" as const };
       const receipt = await childWorker.launch(token, "same-key", chosen);
       const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+      if (scenario === "contended Boat admission") {
+        expect(receipt.state).toBe("failed");
+        expect(
+          (await db.query("select state,error_code from orchestrator_child_operations where id=$1", [receipt.id])).rows,
+        ).toEqual([{ state: "failed", error_code: "child_admission_lock_contended" }]);
+        expect(await childWorker.launch(token, "same-key", chosen)).toEqual(receipt);
+        expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeUndefined();
+        expect((await db.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
+        return;
+      }
       if (scenario === "rolled back Boat") {
         expect(receipt.state).toBe("uncertain");
         expect(await jobs.claim("launch", crypto.randomUUID(), 30, 1)).toBeUndefined();
