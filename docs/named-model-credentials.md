@@ -79,12 +79,6 @@ OAuth refresh. Native auth may maintain separate encrypted state keyed by the
 pinned account ID/version and rotate that state with its own auth revision;
 routine refresh must not advance the account binding version.
 
-Modal bootstrap precedes the public sandbox INSERT. Core launch therefore passes
-safe account ID/version labels; the private `modal_server_harnesses` policy pins
-them for every physical generation. Restore validates that same account/revision,
-not a current default. Legacy Modal machines without a known binding require explicit owner recovery
-rather than selecting a different billing account on restore.
-
 ## Recover a legacy unbound Modal workspace
 
 `POST /api/v1/sandbox/bind-credential` takes `{id, credentialId, org?}`.

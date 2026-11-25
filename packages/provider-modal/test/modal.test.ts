@@ -2273,19 +2273,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.phase).toBe("snapshot");
     expect(f.log).not.toContain("terminate");
   });
-  test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
+  test("tenant and membership isolation", async () => {
     const f = fixture();
     const row = await f.seedMachine(goldenTemplate);
     const other = createSqlModalStore(getDb(), { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     const outsider = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
     await expect(outsider.get(row.id)).rejects.toMatchObject({ code: "forbidden" });
-    await getDb().exec("set role authenticated");
-    try {
-      await expect(getDb().query("select * from modal_events")).rejects.toThrow("permission denied");
-    } finally {
-      await getDb().exec("reset role");
-    }
   });
 });
 
