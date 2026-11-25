@@ -54,6 +54,8 @@ export class ConflictingJobRequest extends Error {
   }
 }
 
+type AuthorizeJournalCreate = (write: (tx: Sql) => Promise<boolean>) => Promise<boolean | undefined>;
+
 type JobRow = Omit<Job, "payload"> & { payload_enc: string | null };
 
 const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lease_until > clock_timestamp()";
@@ -510,7 +512,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       next: Parameters<ModalMachineJournal["compareAndSet"]>[2],
     ) => ((tx: Sql) => Promise<boolean>) | undefined,
     checkpointPath = "{modal_machine}",
-    createIfAuthorized?: (write: (tx: Sql) => Promise<boolean>) => Promise<boolean | undefined>,
+    createIfAuthorized?: AuthorizeJournalCreate,
   ) {
     return {
       async read(key) {
@@ -635,10 +637,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
-    modalLaunchJournal(
-      job: Job,
-      createIfAuthorized?: (write: (tx: Sql) => Promise<boolean>) => Promise<boolean | undefined>,
-    ) {
+    modalLaunchJournal(job: Job, createIfAuthorized?: AuthorizeJournalCreate) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
       }
@@ -849,7 +848,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     settleTurnDispatchMirrors: () => Promise<void>;
     enqueue: (...args: Parameters<typeof enqueueWithDisposition>) => Promise<string>;
     enqueueWithDisposition: typeof enqueueWithDisposition;
-    modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
+    modalLaunchJournal: (job: Job, createIfAuthorized?: AuthorizeJournalCreate) => ModalMachineJournal;
     modalFailedLaunchJournal: (
       job: Job,
       launchJobId: string,

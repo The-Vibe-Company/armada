@@ -1410,7 +1410,7 @@ async function dispatchModalLaunch(
     if (row && !row.owner_member) row = await readTarget();
     if (row?.dispatchable && !signal.aborted && (await launchAuthorized(tx))) return row;
   };
-  const withDispatchTarget = <T>(work: (tx: Sql, row: Target | undefined) => T) => {
+  const withDispatchTarget = <T>(work: (tx: Sql, row: Target | undefined) => T | Promise<T>) => {
     if (boat) return withJobLease(sql, job, async (tx) => work(tx, await boatTarget(tx)));
     if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
     return sql.transaction(async (tx) => work(tx, await modalTarget(tx)));
