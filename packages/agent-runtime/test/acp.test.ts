@@ -110,6 +110,8 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         expect(finals[0]).toMatchObject({
           textMode: "snapshot",
           messageId: lastChunk?.kind === "message" ? lastChunk.messageId : undefined,
+          model: "test/model",
+          responseKind: "assistant",
         });
       }
       const usage = events.filter((e) => e.kind === "other" && e.type === "armada/turnUsage");
@@ -344,12 +346,100 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
 
 const antigravityTest = test.skipIf(process.platform !== "linux");
 
+test.each([
+  {
+    name: 'resolves "default" from configOptions currentValue on session/new',
+    env: { ACP_INITIAL_MODEL: "gemini-2.5-pro" },
+    model: "default",
+    text: "hello",
+    expectedModel: "gemini-2.5-pro",
+  },
+  {
+    name: 'resolves "default" from models.currentModelId when configOptions currentValue is "default"',
+    env: { ACP_INITIAL_MODEL: "default", ACP_MODELS_CURRENT_ID: "models/fallback" },
+    model: "default",
+    text: "hello",
+    expectedModel: "models/fallback",
+  },
+  {
+    name: "tracks explicit model selection across session/load and session/set_config_option",
+    env: { ACP_INITIAL_MODEL: "base" },
+    sessionId: "session-1",
+    model: "fixture/model",
+    text: "explicit",
+    expectedModel: "fixture/model",
+  },
+  {
+    name: "falls back to explicit requested model when session/set_config_option omits configOptions",
+    env: { ACP_INITIAL_MODEL: "base", ACP_OMIT_SET_CONFIG_OPTIONS: "1" },
+    model: "fixture/model",
+    text: "explicit",
+    expectedModel: "fixture/model",
+  },
+  {
+    name: "updates active model on config_option_update while ignoring unrelated sessions and literal default",
+    env: { ACP_INITIAL_MODEL: "base" },
+    model: "default",
+    text: "model-update",
+    expectedModel: "updated/model",
+  },
+  {
+    name: 'falls back to null and never emits literal "default" when configOptions and models are missing',
+    env: {},
+    model: "default",
+    text: "hello",
+    expectedModel: null,
+  },
+  {
+    name: 'never emits literal "default" on session/set_model without configOptions',
+    env: {},
+    model: "default",
+    text: "hello",
+    expectedModel: null,
+    useSetModel: true,
+  },
+])("ACP model resolution $name", async ({ env, sessionId, model, text, expectedModel, useSetModel }) => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env,
+    ...(useSetModel ? {} : { modelSelection: "config-option" as const }),
+  });
+  const events: DriverEvent[] = [];
+  try {
+    const turn = driver.start({
+      request: { sandboxId: "s", harness: "opencode", text, model },
+      ...(sessionId ? { sessionId } : {}),
+      signal: new AbortController().signal,
+      emit: (event) => events.push(event),
+      session: () => {},
+    });
+    expect(await turn.done).toBe("finished");
+    const snapshot = events.find((event) => event.kind === "message" && !event.partial && !event.tools.length);
+    expect(snapshot).toBeDefined();
+    if (snapshot?.kind === "message") {
+      expect(snapshot.responseKind).toBe("assistant");
+      if (expectedModel === null) expect("model" in snapshot).toBe(false);
+      else expect(snapshot.model).toBe(expectedModel);
+    }
+    const usage = events.find((event) => event.kind === "other" && event.type === "armada/turnUsage");
+    expect(usage?.kind === "other" ? usage.data : undefined).toMatchObject({ model: expectedModel });
+  } finally {
+    await driver.close();
+  }
+});
+
 antigravityTest("Antigravity authenticates and selects a loaded ACP v1 model", async () => {
   const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
   try {
     await expect(
       f.driver().start({ ...f.context("explicit", "fixture/model"), sessionId: "session-1" }).done,
     ).resolves.toBe("finished");
+    const snapshot = f.events.find((event) => event.kind === "message" && !event.partial && !event.tools.length);
+    expect(snapshot).toMatchObject({ model: "fixture/model", responseKind: "assistant" });
+    const usage = f.events.find((event) => event.kind === "other" && event.type === "armada/turnUsage");
+    expect(usage?.kind === "other" ? usage.data : undefined).toMatchObject({ model: "fixture/model" });
   } finally {
     f.clean();
   }
@@ -420,6 +510,10 @@ antigravityTest(
         expect(JSON.stringify(f.events)).not.toContain(value);
         expect(streamed).not.toContain(value);
       }
+      const snapshot = f.events.find((event) => event.kind === "message" && !event.partial && !event.tools.length);
+      expect(snapshot).toMatchObject({ model: "base", responseKind: "assistant" });
+      const usage = f.events.find((event) => event.kind === "other" && event.type === "armada/turnUsage");
+      expect(usage?.kind === "other" ? usage.data : undefined).toMatchObject({ model: "base" });
     } finally {
       f.clean();
     }
