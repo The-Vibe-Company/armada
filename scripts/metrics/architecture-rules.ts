@@ -1,4 +1,4 @@
-// Shared definitions for the measurement and the architecture ratchets (#2855, #2859).
+// Shared definitions for the measurement and the architecture ratchets (#2855, #2859, #2861).
 const sourceRoots = /^(?:packages|apps|scripts)\//;
 const sourceExtensions = /\.(?:[cm]?[jt]sx?|swift|py|sh|css)$/;
 export const testPaths =
@@ -30,6 +30,20 @@ export function* scanNativePaths(path: string, content: string) {
   }
 }
 
-export const providerAdapterExclusions = /^(?:packages\/(?:provider-[^/]+|docker-host)|scripts\/metrics)\//;
+const providerAdapterExclusions = /^(?:packages\/(?:provider-[^/]+|docker-host)|scripts\/metrics)\//;
+export const machineAdapterPaths = new Set([
+  "packages/core/src/docker-machine.ts",
+  "packages/mcp-server/src/docker-machine-adapter.ts",
+  "packages/mcp-server/src/docker-machine-bindings.ts",
+  "packages/mcp-server/src/docker-machine-inventory.ts",
+]);
+export function isProviderBranchSource(path: string) {
+  return (
+    /\.tsx?$/.test(path) &&
+    isNonTestSource(path) &&
+    !providerAdapterExclusions.test(path) &&
+    !machineAdapterPaths.has(path)
+  );
+}
 export const providerBranchPattern =
   /(?:[!=]==|\bcase\b)\s*(?:"(?:boat|modal|docker)"|'(?:boat|modal|docker)')|\bswitch\s*\(\s*provider\b/g;

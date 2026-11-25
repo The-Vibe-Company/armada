@@ -91,9 +91,9 @@ hardcoded: an unknown harness or model is offered with its raw id.
 `sandbox/launch` (`sizePolicyVersion: 1`, the route `armada new` and
 the dashboard use); omitted optionals keep the server defaults.
 
-`launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and
-never retried. Use `SandboxLaunchReceipt.sandboxID` with either receipt. An
-`.admitted` Modal receipt carries the sandbox ID and status. Read sandbox metadata
+`launchSandbox(_:)` carries an `idempotencyKey`, is sent once with a ten-minute timeout and
+is never retried automatically. Use `SandboxLaunchReceipt.sandboxID` with either receipt. An
+`.admitted` Boat, Modal or Docker receipt carries the sandbox ID and status. Read sandbox metadata
 and follow the first turn separately. An `.allocated` receipt carries the full
 launch envelope, including any prompt and conversation IDs.
 `SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the

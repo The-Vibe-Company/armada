@@ -260,3 +260,28 @@ private actor RefreshTransport: ArmadaTransport {
         #expect(await transport.requests.count == 2)
     }
 }
+
+@Test func accountStatusReadsUserIdentityAndClearsOnSessionEnd() async throws {
+    let statusBody = #"{"userId":"user-123","orgs":[{"orgId":"org-a","role":"admin"}],"authentication":"supabase","version":"14.2.2"}"#
+    let transport = ScriptedTransport([
+        .init(status: 200, body: login),
+        .init(status: 200, body: statusBody),
+        .init(status: 200, body: #"{"ok":true}"#),
+    ])
+    let client = try ArmadaClient(transport: transport, storage: MemoryStorage())
+    try await client.verifyEmail(email: "person@example.test", code: "123456")
+    #expect(await client.currentUserID == nil)
+    let status = try await client.accountStatus()
+    #expect(status == AccountStatus(
+        userId: "user-123",
+        orgs: [.init(orgId: "org-a", role: "admin")],
+        authentication: "supabase",
+        version: "14.2.2"
+    ))
+    #expect(await client.currentUserID == "user-123")
+    let requests = await transport.requests
+    #expect(requests[1].url?.path == "/api/v1/account/status")
+    #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
+    try await client.signOut()
+    #expect(await client.currentUserID == nil)
+}

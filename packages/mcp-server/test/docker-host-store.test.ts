@@ -2404,9 +2404,16 @@ test.each(["launch", "account", "runtime", "revoked runtime", "revoked issuer"] 
     const sealed = await encryptSecret("queued turn", key);
     if (queue === "launch") {
       await db.query(
-        `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc)
-         values($1,1,$2,$3)`,
-        [a.sandboxId, "a".repeat(64), sealed],
+        `insert into public.jobs(kind,sandbox_id,org_id,generation,idem_key,request_owner_id,request_digest,state,deadline_at,max_attempts,payload_enc,outcome)
+         values('launch',$1,$2,1,$3,$4,$5,'queued',now()+interval '1 hour',1,$6,'{"docker_actor_epoch":"1"}'::jsonb)`,
+        [
+          a.sandboxId,
+          a.owner.orgId,
+          JSON.stringify(["request", a.owner.orgId, "launch", a.owner.userId, JSON.stringify(["docker", a.sandboxId])]),
+          a.owner.userId,
+          "a".repeat(64),
+          sealed,
+        ],
       );
     } else if (queue === "account") {
       const credential = randomUUID();

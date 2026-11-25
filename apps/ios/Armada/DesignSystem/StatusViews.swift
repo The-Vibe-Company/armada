@@ -87,6 +87,9 @@ struct ProviderBadge: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 18, height: 11)
+        case .docker:
+            Image(systemName: "shippingbox.fill")
+                .font(.caption)
         case .other:
             Image(systemName: "shippingbox")
                 .font(.caption)

@@ -37,9 +37,9 @@ match between files in scope does not consume a per-file allowance. An increase
 reports the base and head totals and the locations of new matches.
 
 - `provider-branch` counts strict comparisons and case labels for Boat, Modal,
-  and Docker, plus `switch (provider...)` on the provider identifier in non-test
-  TypeScript. Provider packages, Docker host, and server adapter files listed in
-  the script are excluded.
+  and Docker, plus `switch (provider...)` on the provider identifier in the
+  architecture metric’s scope. Provider packages, Docker host, and the machine
+  adapter files listed in `scripts/metrics/architecture-rules.ts` are excluded.
 - `versioned-route` counts route-name literals with a `-vN` segment suffix in
   `control*.ts` under the server source directory.
 - `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test

@@ -4,7 +4,7 @@ import Foundation
 public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let promptId: String
     public let conversationId: String?
-    /// `running`, `finished`, `interrupted` or `failed`. Unknown values are kept as sent.
+    /// `queued`, `running`, `finished`, `interrupted` or `failed`. Unknown values are kept as sent.
     public let state: String
     /// Safe, server-written reason of a failed or interrupted turn.
     public let reason: String?
@@ -14,6 +14,9 @@ public struct SandboxTurn: Decodable, Sendable, Equatable {
     public let modelSelectionMessage: String?
     /// Structured provider wait evidence; absent on older servers or turns without throttling.
     public let rateLimit: ModelRateLimit?
+
+    /// Whether this turn is still active (`queued` or `running`).
+    public var isActive: Bool { state == "queued" || state == "running" }
 
     /// Closed interruption reasons are safe to offer as a manual resend, never an automatic replay.
     public var resendHint: String? {
@@ -63,7 +66,7 @@ public struct SandboxDetail: Decodable, Sendable, Equatable {
                 ?? (try? Date.ISO8601FormatStyle().parse(expiresAt)), expiry <= now,
            ["ready", "running", "stopped"].contains(status) { return .expired }
         if status == "stopped" && (preservationNote == "checkpoint_failed_disk_not_retained"
-            || !(["boat", "modal"].contains(provider ?? "") || statusReason == "idle_paused")) {
+            || !(["boat", "modal", "docker"].contains(provider ?? "") || statusReason == "idle_paused")) {
             return .cannotResume
         }
         return switch status {
@@ -73,7 +76,7 @@ public struct SandboxDetail: Decodable, Sendable, Equatable {
         case "stopping": .stopping
         case "ready", "running", "stopped":
             // A stopped sandbox resumes on its next prompt; a working agent is steered, not sent to.
-            settled && prompt?.state != "running" ? .open : .turnRunning
+            settled && prompt?.isActive != true ? .open : .turnRunning
         default: .unknownStatus
         }
     }
@@ -82,7 +85,7 @@ public struct SandboxDetail: Decodable, Sendable, Equatable {
     public var canStop: Bool { ["starting", "ready", "running"].contains(status) }
 
     /// The agent is working on a turn.
-    public var isWorking: Bool { !settled || prompt?.state == "running" }
+    public var isWorking: Bool { !settled || prompt?.isActive == true }
 }
 
 public enum SandboxPromptAdmission: Sendable, Equatable {

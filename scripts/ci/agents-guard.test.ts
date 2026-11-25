@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkAgentsFiles } from "./agents-guard";
+import { checkAgentsFiles, createTrackedPathMatcher } from "./agents-guard";
 
 const missing = () => false;
 
@@ -74,4 +74,12 @@ test("exempts only the dashboard's generated Next.js rules", () => {
     "AGENTS.md: history: #2610",
     "AGENTS.md: missing repository path: node_modules/next/README.md",
   ]);
+});
+
+test("matches tracked directory globs as well as tracked file globs", () => {
+  const tracked = new Set(["packages/provider-boat/src/machine.ts", "packages/provider-modal/src/machine.ts"]);
+  const directories = new Set(["packages", "packages/provider-boat", "packages/provider-modal"]);
+  const exists = createTrackedPathMatcher(tracked, directories, () => true);
+  const files = new Map([["AGENTS.md", "`packages/provider-*` `packages/missing-*`"]]);
+  expect(checkAgentsFiles(files, exists)).toEqual(["AGENTS.md: missing repository path: packages/missing-*"]);
 });

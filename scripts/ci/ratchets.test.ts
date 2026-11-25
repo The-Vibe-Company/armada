@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { countArchitecture } from "../metrics/architecture-counters";
+import { machineAdapterPaths } from "../metrics/architecture-rules";
 import { compare } from "./ratchets";
 
 const server = "packages/mcp-server/src/";
@@ -36,16 +40,33 @@ test.each([
   expect(compare(base, head)[0]).toMatchObject({ before: 1, after: 1, added: [] });
 });
 
-test("counts provider comparisons and switch forms while excluding adapters and tests", () => {
+test("counts provider comparisons and switch forms across ts and tsx while excluding machine adapters, tests and generated files", () => {
   const source = "switch (provider.id) { case 'boat': break; }\nif (choice !==\n  'docker') skip();";
   const head = new Map([
     [finish, source],
-    [server + "modal-integration.ts", source],
-    [server + "sandbox-finish.test.ts", source],
-    ["packages/provider-modal/src/provider.ts", source],
+    ["apps/dashboard/src/page.tsx", 'if (provider === "modal") render();'],
+    [server + "modal-integration.ts", 'if (target.provider !== "modal") fail();'],
+    [server + "docker-machine-adapter.ts", source],
+    [server + "docker-machine-bindings.ts", source],
+    [server + "docker-machine-inventory.ts", source],
+    ["packages/core/src/docker-machine.ts", source],
+    ["packages/provider-boat/src/machine.ts", source],
+    ["packages/provider-modal/src/machine.ts", source],
     ["packages/docker-host/src/host.ts", source],
+    ["scripts/metrics/example.ts", source],
+    [server + "sandbox-finish.test.ts", source],
+    ["packages/core/src/database.types.ts", source],
   ]);
-  expect(compare(undefined, head)[0]).toMatchObject({ before: undefined, after: 3 });
+  expect(compare(undefined, head)[0]).toMatchObject({ before: undefined, after: 5 });
+  expect(countArchitecture(head).providerIdBranchesOutsideAdapters).toBe(5);
+});
+
+test("keeps only existing machine adapter files in the provider-branch allowlist", () => {
+  const root = resolve(import.meta.dir, "../..");
+  expect(machineAdapterPaths.size).toBeGreaterThan(0);
+  for (const path of machineAdapterPaths) {
+    expect(existsSync(resolve(root, path))).toBe(true);
+  }
 });
 
 test("counts versioned route names only in the route tables", () => {
