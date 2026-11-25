@@ -589,6 +589,7 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
     await provider.stop({ sandboxId: connected.sandbox.id });
     const { fork: _fork, ...withoutFork } = provider;
     await expect(connectGolden(withoutFork, store, actor, "web")).rejects.toMatchObject({ code: "conflict" });
+    expect((await db.query("select id from golden_operation_fences where golden_id=$1", [after.id])).rows).toEqual([]);
     expect((await store.findByName(actor.orgId, "web"))[0]?.providerSandboxId).toBe(connected.sandbox.id);
     const restored = await connectGolden(provider, store, actor, "web");
     expect(restored.sandbox.id).not.toBe(connected.sandbox.id);
