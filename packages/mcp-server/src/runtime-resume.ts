@@ -16,6 +16,7 @@ import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enro
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
@@ -252,6 +253,8 @@ export function createRuntimeResume(
           "conflict",
           "No current synchronized checkpoint; a fresh conversation will not be substituted.",
         );
+      // Resume admission advances once, and failure handling can advance again.
+      requireGenerationHeadroom(current.lifecycleGeneration, 2);
       const op: Operation = {
         source_epoch: epoch.epoch,
         target_epoch: String(BigInt(epoch.epoch) + 1n),

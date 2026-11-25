@@ -58,6 +58,7 @@ import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutput
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { currentDockerRuntimeIssuer, unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import {
   attachDockerRestorePlacement,
   confirmRefusedDockerResumeRetention,
@@ -1808,12 +1809,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const retryAfter =
           previous?.outcome === "failed" && !previous.cancelled_at && previous.retain ? previous.request_id : undefined;
         const deadline = new Date(Date.now() + 120_000);
+        const exitPending = ["failed", "stopping"].includes(row.status);
         const payload: DockerStopIntent = {
           actor,
           actorEpoch,
           ...(bound && machineId ? { machineId, daemonGeneration: row.docker_generation } : {}),
-          generation: Number(row.lifecycle_generation),
-          ...(["failed", "stopping"].includes(row.status) ? { exitPending: true } : {}),
+          generation: requireGenerationHeadroom(row.lifecycle_generation, exitPending ? 0 : 1),
+          ...(exitPending ? { exitPending: true } : {}),
           ...(retryAfter ? { retryAfter } : {}),
           hostId: host.id,
           installationId: row.docker_installation_id,
@@ -2286,6 +2288,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           );
         }
         if (host.draining && selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
+          requireGenerationHeadroom(row.lifecycle_generation, 1);
           const result = await transitionSandbox(tx, {
             sandboxId,
             expectedGeneration: row.lifecycle_generation,

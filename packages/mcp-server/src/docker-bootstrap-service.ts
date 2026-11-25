@@ -245,12 +245,14 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
             `insert into public.docker_resume_claims(request_id,sandbox_id,host_id,installation_id,generation,actor_id,lifecycle_generation)
              select $1,id,docker_host_id,docker_installation_id,docker_generation,$3,lifecycle_generation from public.sandboxes
              where id=$2 and owner_id=$3 and status='stopped' and deleted_at is null and expires_at>now()
+               and lifecycle_generation between 1 and $4::bigint
              on conflict(request_id) do update set request_id=excluded.request_id
              where docker_resume_claims.sandbox_id=excluded.sandbox_id and docker_resume_claims.actor_id=excluded.actor_id and docker_resume_claims.host_id=excluded.host_id
              and docker_resume_claims.installation_id=excluded.installation_id and docker_resume_claims.generation=excluded.generation
              and docker_resume_claims.lifecycle_generation=excluded.lifecycle_generation
              returning accepted,lifecycle_generation::text`,
-            [requestId, sandboxId, actor.userId],
+            // Reserve the resume admission and its failure fence before asking the daemon to claim.
+            [requestId, sandboxId, actor.userId, Number.MAX_SAFE_INTEGER - 2],
           );
           if (!claim.rows.length) deny();
           if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();

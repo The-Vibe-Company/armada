@@ -3,12 +3,14 @@ import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 // This contract must never silently skip in release validation.
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { encryptSecret } from "@armada/core/server";
-import { createBoatProvider } from "@armada/provider-boat";
 import { SQL } from "bun";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
+import { createStopJob } from "../src/jobs/stop.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { RuntimeCheckpointRejected } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -22,6 +24,7 @@ const url = process.env.ARMADA_TEST_POSTGRES_URL;
 const key = Buffer.alloc(32, 7).toString("base64");
 test("real Bun.SQL bigint reads complete runtime send and shared stop", async () => {
   const client = new SQL(url!, { max: 1 });
+  const fetchStub = spyOn(globalThis, "fetch");
   try {
     await client.begin(async (tx) => {
       const sql = sqlOver({
@@ -34,7 +37,10 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
         golden = crypto.randomUUID(),
         id = crypto.randomUUID();
       await sql.query("insert into auth.users(id) values($1)", [owner]);
-      await sql.query("insert into orgs(id,name) values($1,'lifecycle-driver')", [org]);
+      await sql.query("insert into orgs(id,name,boat_api_key_enc) values($1,'lifecycle-driver',$2)", [
+        org,
+        await encryptSecret("fixture", key),
+      ]);
       await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
       await sql.query(
         `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,config)
@@ -98,30 +104,50 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
           });
         },
       });
+      const labels = { armada: "sandbox", sandbox: id, org, owner };
       let stopped = false;
       const requests: string[] = [];
-      const provider = createBoatProvider({
-        apiKey: "test-only-key",
-        fetch: (async (input: Request | string | URL, init?: RequestInit) => {
-          const request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
-          const path = new URL(request.url).pathname;
-          requests.push(`${request.method} ${path}`);
-          if (path.endsWith("/stop")) {
-            stopped = true;
-            return Response.json({ ok: true });
-          }
-          if (request.method === "GET")
-            return Response.json({ ok: true, sandbox: stopped ? retainedSandbox() : sandbox({ state: "idle" }) });
-          throw Error(`Unexpected fixture request: ${request.method} ${path}`);
-        }) as typeof fetch,
+      const unexpectedRequests: string[] = [];
+      fetchStub.mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        const path = new URL(request.url).pathname;
+        const operation = `${request.method} ${path}`;
+        requests.push(operation);
+        if (request.method === "GET" && path.endsWith("/me"))
+          return Response.json({ ok: true, user: { id: "fixture" } });
+        if (request.method === "POST" && path.endsWith("/sandboxes/bx_23456789/stop")) {
+          stopped = true;
+          return Response.json({ ok: true });
+        }
+        if (request.method === "GET" && path.endsWith("/sandboxes/bx_23456789"))
+          return Response.json({
+            ok: true,
+            sandbox: stopped ? retainedSandbox({ labels }) : sandbox({ state: "idle", labels }),
+          });
+        if (request.method === "POST" && path.endsWith("/sandboxes/bx_23456789/commands"))
+          return Response.json({
+            ok: true,
+            type: "command.finished",
+            success: true,
+            exitCode: 0,
+            stdout: "[]",
+            stderr: "",
+            timedOut: false,
+          });
+        unexpectedRequests.push(operation);
+        throw Error(`Unexpected fixture request: ${operation}`);
       });
+      let checkpoints = 0;
       const context = {
         caller,
         data,
-        provider: async () => provider,
+        async provider() {
+          throw Error("Shared admission must not resolve a provider");
+        },
         runtimeSend: createRuntimeFollowup(sql, key, commands),
         // Guest checkpointing is outside this contract. Exercise compute stop after checkpoint refusal.
         runtimeStopCheckpoint: async () => {
+          checkpoints++;
           throw new RuntimeCheckpointRejected();
         },
         launchCredentials: {
@@ -152,33 +178,69 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
       expect(prompts).toBe(1);
       expect(requests).toEqual([]);
 
-      // Stop needs room for both admission and settlement. Reject before taking the lease or calling Boat.
-      const exhaustedGeneration = String(Number.MAX_SAFE_INTEGER - 1);
-      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [id, exhaustedGeneration]);
+      // Admission advances the fence once. Shared settlement preserves that generation.
+      const maxGeneration = String(Number.MAX_SAFE_INTEGER);
+      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [id, maxGeneration]);
       await expect(callSharedTool(context, "stop", { id })).rejects.toMatchObject({
         code: "internal",
         cause: { message: "Sandbox lifecycle generation cannot be advanced safely." },
       });
       expect(
-        (await tx.unsafe("select lifecycle_generation,activity_lease_id from sandboxes where id=$1", [id]))[0],
-      ).toMatchObject({ lifecycle_generation: exhaustedGeneration, activity_lease_id: null });
+        (
+          await tx.unsafe(
+            "select status,lifecycle_generation,activity_lease_id,stop_requested_at from sandboxes where id=$1",
+            [id],
+          )
+        )[0],
+      ).toMatchObject({
+        status: "ready",
+        lifecycle_generation: maxGeneration,
+        activity_lease_id: null,
+        stop_requested_at: null,
+      });
+      expect((await sql.query("select id from jobs where sandbox_id=$1 and kind='stop'", [id])).rows).toEqual([]);
+      expect(checkpoints).toBe(0);
       expect(requests).toEqual([]);
 
-      await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
-      expect(await callSharedTool(context, "stop", { id })).toMatchObject({ id, status: "stopped" });
-      const ended = await data.sandboxes.get(id);
-      expect(ended).toMatchObject({ status: "stopped", lifecycleGeneration: 4 });
-      expect(ended?.stoppedAt).not.toBeNull();
-      const lease = (await tx.unsafe("select activity_lease_id,activity_until from sandboxes where id=$1", [id]))[0];
-      expect(lease.activity_lease_id).toBeNull();
-      expect(lease.activity_until).toBeNull();
-      expect(requests.filter((r) => r.endsWith("/stop"))).toHaveLength(1);
+      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [
+        id,
+        String(Number.MAX_SAFE_INTEGER - 1),
+      ]);
+      expect(await callSharedTool(context, "stop", { id })).toMatchObject({ id, status: "stopping" });
+      expect(
+        (await tx.unsafe("select state,generation from jobs where sandbox_id=$1 and kind='stop'", [id]))[0],
+      ).toMatchObject({ state: "queued", generation: maxGeneration });
+      expect(requests).toEqual([]);
+
+      const runner = createJobsRunner(createJobsStore(sql, key), { stop: createStopJob(sql, key) });
+      expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+      await runner.drain();
+
+      const ended = (
+        await tx.unsafe(
+          "select status,lifecycle_generation,stopped_at,activity_lease_id,activity_until from sandboxes where id=$1",
+          [id],
+        )
+      )[0];
+      expect(ended).toMatchObject({
+        status: "stopped",
+        lifecycle_generation: maxGeneration,
+        activity_lease_id: null,
+        activity_until: null,
+      });
+      expect(ended.stopped_at).toBeInstanceOf(Date);
+      expect(
+        (await tx.unsafe("select state,generation from jobs where sandbox_id=$1 and kind='stop'", [id]))[0],
+      ).toMatchObject({ state: "done", generation: maxGeneration });
+      expect(requests.filter((request) => request.endsWith("/stop"))).toHaveLength(1);
+      expect(unexpectedRequests).toEqual([]);
       // Roll back fixtures, including the org's last admin (whose normal deletion is guarded).
       throw rollback;
     });
   } catch (error) {
     if (error !== rollback) throw error;
   } finally {
+    fetchStub.mockRestore();
     await client.close();
   }
 });

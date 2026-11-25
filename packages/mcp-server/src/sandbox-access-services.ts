@@ -29,6 +29,7 @@ import {
   type StopRecoveryAdmission,
 } from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
 import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
@@ -135,6 +136,12 @@ export function createSandboxAccessServices(input: {
       }
       if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
     }
+    const modalStop = saved.modalTransport === "dialout";
+    const sharedStop = modalStop || usesDiskStopJob(saved.provider);
+    if (sharedStop) {
+      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+      requireGenerationHeadroom(saved.lifecycleGeneration, 1);
+    }
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -184,9 +191,7 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    const modalStop = saved.modalTransport === "dialout";
-    if (modalStop || usesDiskStopJob(saved.provider)) {
-      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+    if (sharedStop) {
       await stopStore.update(saved.id, {
         ...stopAdmission,
         ...(modalStop ? { queueModalStop: operation.id } : {}),
