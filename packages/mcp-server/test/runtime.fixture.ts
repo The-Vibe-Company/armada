@@ -69,7 +69,7 @@ export async function runtimeFixture(
   harness: Harness = "codex",
   idle = false,
   commandGrantExpiresAt?: number,
-  placement?: { goldenId: string; providerSandboxId: string },
+  placement?: { goldenId: string; providerSandboxId: string; lifecycleGeneration?: number },
 ) {
   await using setup = new AsyncDisposableStack();
   const { db, people } = fixture ?? (await database());
@@ -111,7 +111,7 @@ export async function runtimeFixture(
   ).rows[0]!;
   const goldenId = placement?.goldenId ?? (await runtimeFixtureGolden(db, people, provider));
   const providerSandboxId = placement?.providerSandboxId ?? "physical";
-  const row = await insertSandboxFixture(sql, {
+  const inserted = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider,
     providerSandboxId,
@@ -126,6 +126,10 @@ export async function runtimeFixture(
     credentialId: account.id,
     credentialVersion: account.version,
   });
+  const lifecycleGeneration = placement?.lifecycleGeneration;
+  if (lifecycleGeneration !== undefined)
+    await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [inserted.id, lifecycleGeneration]);
+  const row = lifecycleGeneration === undefined ? inserted : { ...inserted, lifecycleGeneration };
   const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   let active = await authority.enrol(
     (

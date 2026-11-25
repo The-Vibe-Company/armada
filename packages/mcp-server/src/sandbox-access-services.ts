@@ -29,6 +29,7 @@ import {
   type StopRecoveryAdmission,
 } from "./sandbox-access-children.ts";
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
 import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
@@ -135,6 +136,12 @@ export function createSandboxAccessServices(input: {
       }
       if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
     }
+    const modalStop = saved.modalTransport === "dialout";
+    let stopGeneration: number | undefined;
+    if (modalStop || usesDiskStopJob(saved.provider)) {
+      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+      stopGeneration = requireGenerationHeadroom(saved.lifecycleGeneration, 1);
+    }
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -184,9 +191,7 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    const modalStop = saved.modalTransport === "dialout";
-    if (modalStop || usesDiskStopJob(saved.provider)) {
-      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+    if (stopGeneration !== undefined) {
       await stopStore.update(saved.id, {
         ...stopAdmission,
         ...(modalStop ? { queueModalStop: operation.id } : {}),
@@ -195,7 +200,7 @@ export function createSandboxAccessServices(input: {
         statusReason,
         advanceGeneration: true,
         activityToken: crypto.randomUUID(),
-        expectedGeneration: saved.lifecycleGeneration,
+        expectedGeneration: stopGeneration,
       });
       return;
     }
