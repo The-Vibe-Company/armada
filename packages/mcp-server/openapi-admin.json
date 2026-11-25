@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Armada administrative control API",
-    "version": "14.1.0",
+    "version": "14.2.0",
     "description": "Generated dashboard administration REST contracts. Each operation enforces its own caller, role and resource access requirements."
   },
   "paths": {

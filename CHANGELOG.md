@@ -1,5 +1,21 @@
 # Changelog
 
+## [14.2.0](https://github.com/The-Vibe-Company/armada/compare/v14.1.0...v14.2.0) (2026-11-25)
+
+
+### Features
+
+* **dashboard:** add native CatalogGrid/DataTable to ResourceBrowser, delete CSS hacks, lazy-mount drawers, and stream TemplateUsage ([#4284](https://github.com/The-Vibe-Company/armada/issues/4284)) ([708b0e9](https://github.com/The-Vibe-Company/armada/commit/708b0e98dd091b6e5c0b0aa4cbd45d88738fa35f))
+* **dashboard:** overhaul /sandboxes with merged enrichment query, Radix filter popover, and clean dense rows ([#4285](https://github.com/The-Vibe-Company/armada/issues/4285)) ([6044ee6](https://github.com/The-Vibe-Company/armada/commit/6044ee658e70df250f9077aeb6357380c4e0472e))
+* **dashboard:** polish Models, Machines, Org/Langfuse, and Settings cards, lazy drawers, and SPA links ([#4278](https://github.com/The-Vibe-Company/armada/issues/4278)) ([c7be6a5](https://github.com/The-Vibe-Company/armada/commit/c7be6a552c0be028c2c741643e181b121753d6c7))
+* **dashboard:** redesign App Shell IA, OrgSwitcher, compact 48px mobile bar, and portal-free PageHeader ([#4286](https://github.com/The-Vibe-Company/armada/issues/4286)) ([4848b57](https://github.com/The-Vibe-Company/armada/commit/4848b57a9ca0101818800ef0ee10fd522625d316))
+* **dashboard:** redesign sandbox workspace with optimistic chat, adaptive polling, and zero-CLS inspector ([#4282](https://github.com/The-Vibe-Company/armada/issues/4282)) ([a293a0d](https://github.com/The-Vibe-Company/armada/commit/a293a0dc56308f77fde55e5e95183336bb352a2f))
+
+
+### Performance Improvements
+
+* **dashboard:** overhaul shell speed, design tokens, radii, motion craft, and lazy launch modal ([#4279](https://github.com/The-Vibe-Company/armada/issues/4279)) ([bd05167](https://github.com/The-Vibe-Company/armada/commit/bd0516770de1c066a33aee6ee018661922034efc))
+
 ## [14.1.0](https://github.com/The-Vibe-Company/armada/compare/v14.0.0...v14.1.0) (2026-11-25)
 
 
