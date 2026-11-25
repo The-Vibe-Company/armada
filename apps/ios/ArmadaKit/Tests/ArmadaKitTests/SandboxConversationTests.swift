@@ -406,25 +406,35 @@ private struct Entry: Identifiable, Equatable { let id: String; let body: String
 }
 
 @Test func sandboxRefusalCodesClassifyAsRefusedAndRetirePendingPrompt() async throws {
-    let addedCodes = [
-        "credential_binding_required",
-        "sandbox_busy",
-        "sandbox_retention_ended",
-        "docker_host_upgrade_required",
-        "provider_not_configured",
-        "provider_routing_unavailable",
-        "conflict",
-        "not_found",
-        "forbidden",
+    // Current 14.2.2 HTTP statuses for each server refusal code, plus legacy HTTP 400 fallback.
+    let cases: [(Int, String, SandboxMutationFailure)] = [
+        (409, "credential_binding_required", .refused),
+        (400, "sandbox_busy", .refused),
+        (409, "sandbox_retention_ended", .refused),
+        (409, "docker_host_upgrade_required", .refused),
+        (503, "provider_not_configured", .refused),
+        (503, "provider_routing_unavailable", .refused),
+        (409, "conflict", .refused),
+        (404, "not_found", .noAccess),
+        (403, "forbidden", .noAccess),
+        (400, "credential_binding_required", .refused),
+        (400, "sandbox_retention_ended", .refused),
+        (400, "docker_host_upgrade_required", .refused),
+        (400, "provider_not_configured", .refused),
+        (400, "provider_routing_unavailable", .refused),
+        (400, "conflict", .refused),
+        (400, "not_found", .refused),
+        (400, "forbidden", .refused),
+        (503, "outcome_unknown", .unconfirmed),
     ]
-    for code in addedCodes {
-        let body = #"{"error":{"code":"\#(code)","message":"Refused before dispatch."}}"#
-        let (client, _) = try await signedIn([.init(status: 400, body: body)])
-        do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Test refusal"); Issue.record("Expected refusal for \(code)") }
+    for (status, code, expected) in cases {
+        let body = #"{"error":{"code":"\#(code)","message":"Server refusal."}}"#
+        let (client, _) = try await signedIn([.init(status: status, body: body)])
+        do { _ = try await client.sendSandboxPrompt(id: sandboxID, text: "Test refusal"); Issue.record("Expected failure for \(status) \(code)") }
         catch {
-            #expect(SandboxMutationFailure.classify(error) == .refused, "\(code)")
+            #expect(SandboxMutationFailure.classify(error) == expected, "\(status) \(code)")
         }
-        #expect(try await client.unconfirmedSandboxPrompt(id: sandboxID) == nil, "\(code)")
+        #expect((try await client.unconfirmedSandboxPrompt(id: sandboxID) != nil) == (expected == .unconfirmed), "\(status) \(code)")
     }
 }
 

@@ -199,6 +199,10 @@ public actor ArmadaClient {
         "sandbox_retention_ended", "docker_host_upgrade_required", "provider_not_configured",
         "provider_routing_unavailable", "conflict", "not_found", "forbidden",
     ]
+    /// 503 sandbox route codes that refuse before anything reaches the agent.
+    static let sandboxNonDeliveringServerCodes: Set<String> = [
+        "provider_not_configured", "provider_routing_unavailable",
+    ]
     private func request<Response: Decodable & Sendable>(
         _ route: String, method: String, query: [URLQueryItem] = [], body: Data?, token: String?, key: String? = nil
     ) async throws -> Response {
@@ -247,7 +251,13 @@ public actor ArmadaClient {
                 let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
                 if code == "no_running_turn" { throw ArmadaError.noRunningTurn }
                 throw ArmadaError.conflict
-            case 500...599: throw ArmadaError.unavailable
+            case 500...599:
+                let code = (try? JSONDecoder().decode(ArmadaFailureEnvelope.self, from: data))?.error.code
+                if route.hasPrefix("sandbox/"), response.statusCode == 503, let code,
+                   Self.sandboxNonDeliveringServerCodes.contains(code) {
+                    throw ArmadaError.invalidRequest
+                }
+                throw ArmadaError.unavailable
             default: throw ArmadaError.http(response.statusCode)
             }
         } catch let cause as ArmadaError {
