@@ -271,9 +271,65 @@ test("structured facet filters count deleted sandboxes via HEAD without download
   expect(second.facets.status.get("deleted")).toBe(17);
 });
 
-test("text search keeps shared inventory active-only and counts matching deleted rows via narrow projection", async () => {
+test("non-fallback text search counts deleted sandboxes via HEAD without downloading deleted rows", async () => {
+  const headParams: URLSearchParams[] = [];
+  const rowStatuses: Array<string | null> = [];
+  const supabase = createClient<Database, "public">("https://metadata.test", "placeholder", {
+    global: {
+      fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(String(input));
+          expect(url.pathname).toBe("/rest/v1/rpc/sandbox_list_metadata");
+          if (init?.method === "HEAD") {
+            headParams.push(url.searchParams);
+            return new Response(null, { headers: { "content-range": "*/4" } });
+          }
+          rowStatuses.push(url.searchParams.get("status"));
+          return Response.json([sandbox(0)]);
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    },
+  });
+
+  const result = await loadSandboxInventory(
+    supabase,
+    "org",
+    parseSandboxFilters({ q: "bx_worker-42", provider: "modal" }),
+    "viewer",
+    undefined,
+    null,
+    readSandboxMetadata(supabase, "org", false),
+  );
+
+  expect(rowStatuses).toEqual(["neq.deleted"]);
+  expect(headParams).toHaveLength(1);
+  expect(headParams[0]?.get("status")).toBe("eq.deleted");
+  expect(headParams[0]?.get("provider")).toBe("in.(modal)");
+  expect(headParams[0]?.getAll("or")).toEqual([
+    "(displayLabel.ilike.*bx\\_worker-42*,providerSandboxId.ilike.*bx\\_worker-42*)",
+  ]);
+  expect(result.facets.status.get("deleted")).toBe(4);
+  expect(result.counts.deleted).toBe(4);
+});
+
+test("fallback-matching text search keeps shared inventory active-only and pages narrow deleted rows cleanly", async () => {
   const rowRequests: URLSearchParams[] = [];
-  const deletedSearchRequests: URLSearchParams[] = [];
+  const deletedSearchRequests: Array<{ offset: number; select: string | null; provider: string | null }> = [];
+  const pageOne = Array.from({ length: 500 }, (_, index) => ({
+    id: `row-${index}`,
+    providerSandboxId: index === 0 ? "x".repeat(40) : "named-claude",
+    displayLabel: `Sandbox row-${index}`,
+    harness: index === 0 ? "codex" : "claude",
+    createdAt: "2026-11-24T00:00:00Z",
+  }));
+  pageOne[1] = {
+    id: "malformed",
+    providerSandboxId: "",
+    displayLabel: "Sandbox malformed",
+    harness: "codex",
+    createdAt: "2026-11-24T00:00:00Z",
+  };
   const supabase = createClient<Database, "public">("https://metadata.test", "placeholder", {
     global: {
       fetch: Object.assign(
@@ -282,23 +338,19 @@ test("text search keeps shared inventory active-only and counts matching deleted
           expect(url.pathname).toBe("/rest/v1/rpc/sandbox_list_metadata");
           expect(init?.method).not.toBe("HEAD");
           if (url.searchParams.get("status") === "eq.deleted") {
-            deletedSearchRequests.push(url.searchParams);
-            return Response.json([
-              {
-                id: "1",
-                providerSandboxId: "x".repeat(40),
-                displayLabel: "Sandbox 1",
-                harness: "codex",
-                createdAt: "2026-11-24T00:00:00Z",
-              },
-              {
-                id: "2",
-                providerSandboxId: "named-claude",
-                displayLabel: "Sandbox 2",
-                harness: "claude",
-                createdAt: "2026-11-24T00:00:00Z",
-              },
-            ]);
+            const offset = Number(url.searchParams.get("offset"));
+            deletedSearchRequests.push({
+              offset,
+              select: url.searchParams.get("select"),
+              provider: url.searchParams.get("provider"),
+            });
+            if (offset >= 500) {
+              return Response.json(
+                { code: "PGRST103", message: "Requested range not satisfiable", details: null, hint: null },
+                { status: 416 },
+              );
+            }
+            return Response.json(pageOne);
           }
           rowRequests.push(url.searchParams);
           return Response.json([sandbox(0)]);
@@ -320,9 +372,10 @@ test("text search keeps shared inventory active-only and counts matching deleted
 
   expect(rowRequests).toHaveLength(1);
   expect(rowRequests[0]?.get("status")).toBe("neq.deleted");
-  expect(deletedSearchRequests).toHaveLength(1);
-  expect(deletedSearchRequests[0]?.get("select")).toBe("id,providerSandboxId,displayLabel,harness,createdAt");
-  expect(deletedSearchRequests[0]?.get("provider")).toBe("in.(modal)");
+  expect(deletedSearchRequests).toEqual([
+    { offset: 0, select: "id,providerSandboxId,displayLabel,harness,createdAt", provider: "in.(modal)" },
+    { offset: 500, select: "id,providerSandboxId,displayLabel,harness,createdAt", provider: "in.(modal)" },
+  ]);
   expect(result.facets.status.get("deleted")).toBe(1);
   expect(result.counts.deleted).toBe(0);
 });

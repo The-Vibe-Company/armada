@@ -991,7 +991,24 @@ function splitOrTerms(inner: string) {
   return terms;
 }
 
-/** `or=(a.gte.x,b.not.is.null,c.is.null,c.in.(...))`: the dashboard's `or` terms. */
+function matchesIlike(value: string, pattern: string) {
+  let regex = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]!;
+    if (char === "\\" && i + 1 < pattern.length) {
+      regex += pattern[++i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (char === "*" || char === "%") {
+      regex += ".*";
+    } else if (char === "_") {
+      regex += ".";
+    } else {
+      regex += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${regex}$`, "is").test(value);
+}
+
+/** `or=(a.gte.x,b.not.is.null,c.is.null,c.in.(...),d.ilike.*x*)`: the dashboard's `or` terms. */
 function orAny(row: Row, expression: string): boolean {
   return splitOrTerms(expression.slice(1, -1)).some((term) => {
     const firstDot = term.indexOf(".");
@@ -1005,6 +1022,8 @@ function orAny(row: Row, expression: string): boolean {
     if (op === "eq") return row[column] !== null && row[column] !== undefined && String(row[column]) === rest;
     if (op === "in")
       return row[column] !== null && row[column] !== undefined && inValues(rest).includes(String(row[column]));
+    if (op === "ilike")
+      return row[column] !== null && row[column] !== undefined && matchesIlike(String(row[column]), rest);
     return op === "gte" && atLeast(row[column], rest);
   });
 }

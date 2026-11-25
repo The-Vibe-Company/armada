@@ -5,6 +5,7 @@ import type { ControlClient } from "../control";
 import { parseSandboxListMetadata, type SandboxListMetadata } from "../sandbox-access";
 import { type RecordedTurn, sandboxActivityPage } from "../sandbox-activity";
 import {
+  canPushDownDeletedSearch,
   filterSandboxes,
   matchesSandboxSearch,
   type parseSandboxFilters,
@@ -112,20 +113,30 @@ function isSearchableDeletedRow(value: unknown): value is SandboxSearchRow {
     row.displayLabel.length > 0 &&
     typeof row.createdAt === "string" &&
     !Number.isNaN(Date.parse(row.createdAt)) &&
-    (row.providerSandboxId === null || typeof row.providerSandboxId === "string") &&
+    (row.providerSandboxId === null ||
+      (typeof row.providerSandboxId === "string" && row.providerSandboxId.length > 0)) &&
     typeof row.harness === "string" &&
     (HARNESSES as readonly string[]).includes(row.harness)
   );
 }
 
+function escapePostgrestIlike(value: string) {
+  return value.replaceAll("_", "\\_");
+}
+
 async function countDeletedSandboxes(supabase: Supabase, orgId: string, filters: SandboxFilters, viewerId: string) {
-  if (!filters.q) {
-    const { count, error } = await applyDeletedFacetFilters(
+  if (!filters.q || canPushDownDeletedSearch(filters.q)) {
+    let query = applyDeletedFacetFilters(
       supabase.rpc("sandbox_list_metadata", {}, { head: true, count: "exact" }),
       orgId,
       filters,
       viewerId,
     );
+    if (filters.q) {
+      const pattern = `*${escapePostgrestIlike(filters.q)}*`;
+      query = query.or(`displayLabel.ilike.${pattern},providerSandboxId.ilike.${pattern}`);
+    }
+    const { count, error } = await query;
     if (error) throw new Error(error.message);
     if (count === null) throw new Error("The deleted sandbox count was unavailable.");
     return count;

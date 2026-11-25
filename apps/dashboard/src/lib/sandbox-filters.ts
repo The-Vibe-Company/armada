@@ -1,4 +1,5 @@
 import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS } from "@armada/core";
+import { HARNESS_LABELS } from "./labels.ts";
 import type { SandboxListMetadata } from "./sandbox-access.ts";
 
 import { sandboxListAttention } from "./sandbox-activity.ts";
@@ -60,6 +61,25 @@ export type SandboxSearchRow = Pick<
   SandboxListMetadata,
   "id" | "displayLabel" | "providerSandboxId" | "harness" | "createdAt"
 >;
+
+const FALLBACK_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"] as const;
+const FALLBACK_SOURCES = [...Object.values(HARNESS_LABELS), "agent", "sandbox", "utc", ...FALLBACK_MONTHS].map(
+  (value) => value.toLocaleLowerCase(),
+);
+const FALLBACK_WORDS = FALLBACK_SOURCES.flatMap((value) => value.split(/[^a-z]+/).filter(Boolean));
+const FALLBACK_CHARS = new Set([...FALLBACK_SOURCES.join(""), ..." ·0123456789,:"]);
+const PUSHABLE_SEARCH = /^[A-Za-z0-9 _./@+-]+$/;
+
+export function canPushDownDeletedSearch(query: string) {
+  if (!query || !PUSHABLE_SEARCH.test(query)) return false;
+  const lowered = query.toLocaleLowerCase();
+  for (const char of lowered) {
+    if (!FALLBACK_CHARS.has(char)) return true;
+  }
+  const words = lowered.match(/[a-z]+/g);
+  if (!words) return false;
+  return words.some((word) => !FALLBACK_WORDS.some((candidate) => candidate.includes(word)));
+}
 
 export function matchesSandboxSearch(row: SandboxSearchRow, query: string) {
   const q = query.toLocaleLowerCase();
