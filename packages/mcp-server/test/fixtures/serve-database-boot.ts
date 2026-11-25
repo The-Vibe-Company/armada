@@ -62,6 +62,9 @@ Bun.SQL = class {
       schemaChecked = true;
     return text.includes("supabase_migrations.schema_migrations") ? [{ version: schemaVersion }] : [];
   }
+  async listen() {
+    return { unlisten: async () => {} };
+  }
   async close() {
     assert.equal(this.pool.leased, 0, "Every boot/readiness query releases its client");
     this.pool.closed++;
@@ -250,6 +253,7 @@ try {
     [
       [5, 1],
       [1, 1],
+      [1, 1],
     ],
   );
   assert.equal(
@@ -271,7 +275,7 @@ try {
   assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
   assert.equal(repaired, false, "Outdated schema must fail before model repair");
   assert.deepEqual(
-    pools.slice(2).map((p) => p.closed),
+    pools.slice(3).map((p) => p.closed),
     [1, 1],
   );
   schemaVersion = REQUIRED_MIGRATION;
@@ -287,7 +291,7 @@ try {
   assert.equal(attempts > 1, true);
   assert.equal(intervals.mock.calls.length, 0);
   assert.deepEqual(
-    pools.slice(4).map((p) => p.closed),
+    pools.slice(5).map((p) => p.closed),
     [1, 1],
   );
   console.log("BOOT_RETRY_SERVE_AND_EXHAUSTION_VERIFIED");
