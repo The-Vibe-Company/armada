@@ -59,17 +59,17 @@ test("scrub failure leaves checkpoint preparing without a receipt", async () => 
 });
 
 test("emits server-valid tool metadata after literal and short application redaction", async () => {
-  const { RuntimeEnrolmentDenied } = await import("../../mcp-server/src/runtime-enrolment.ts");
+  const { createRuntimeEnrolments, RuntimeEnrolmentDenied } = await import("../../mcp-server/src/runtime-enrolment.ts");
   const { createRuntimeEvents } = await import("../../mcp-server/src/runtime-events.ts");
-  // The handler validates the batch before it calls the session authority.
-  const check = createRuntimeEvents(
+  const authority = createRuntimeEnrolments(
     {
-      withSession: async () => {
-        throw new RuntimeEnrolmentDenied();
+      query: async () => {
+        throw Error("unexpected database query");
       },
-    } as Parameters<typeof createRuntimeEvents>[0],
+    },
     "test",
   );
+  const check = createRuntimeEvents(authority, "test");
   for (const shortMask of [false, true]) {
     const journal = new Journal(":memory:", (text) => text);
     try {

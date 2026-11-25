@@ -5,7 +5,6 @@ import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
-import { boundedPreview, toolIdentifier } from "./tool-preview.ts";
 
 const MAX_EVENT_BYTES = 262144;
 const MAX_COLLISION_ALIASES = MAX_EVENT_BYTES / 4;
@@ -56,6 +55,17 @@ function truncatedEvent(
     type: "event_truncated",
     data: { originalKind: event.kind, bytes, ...(terminal ? { terminal: true } : {}) },
   });
+}
+
+/** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
+function boundedPreview(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
+  return text.slice(0, end);
+}
+
+export function toolIdentifier(value: string, fallback = "tool") {
+  return boundedPreview(value.replaceAll("\0", ""), 256) || fallback;
 }
 
 function maskText(original: string, scrubbed: string, mask: (text: string) => string) {

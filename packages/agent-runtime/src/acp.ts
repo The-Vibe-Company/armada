@@ -3,8 +3,8 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
+import { toolIdentifier } from "./journal.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
-import { toolIdentifier } from "./tool-preview.ts";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
