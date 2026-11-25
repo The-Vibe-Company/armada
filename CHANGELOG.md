@@ -1,5 +1,17 @@
 # Changelog
 
+## [14.4.0](https://github.com/The-Vibe-Company/armada/compare/v14.3.0...v14.4.0) (2026-11-25)
+
+
+### Features
+
+* **ios:** open Discussion first on sandbox tap, add Details sheet, live Working badges, and steer/interrupt ([#4308](https://github.com/The-Vibe-Company/armada/issues/4308)) ([d87e88b](https://github.com/The-Vibe-Company/armada/commit/d87e88ba2466bf21e212b16b719ff7592ca734f7))
+
+
+### Performance Improvements
+
+* **ios:** fast discussion load via coalesced tail reads, background link detection, off-actor decode, and state caching ([#4310](https://github.com/The-Vibe-Company/armada/issues/4310)) ([33c9e3c](https://github.com/The-Vibe-Company/armada/commit/33c9e3cc63372aac34336cca6fbcf16832ff86f1))
+
 ## [14.3.0](https://github.com/The-Vibe-Company/armada/compare/v14.2.2...v14.3.0) (2026-11-25)
 
 
