@@ -187,6 +187,7 @@ type LiveThreadState = {
   status: SandboxStatus;
   idlePaused: boolean;
   statusMessage: string | null;
+  hasLiveStatus: boolean;
   turnRunning: boolean;
 };
 
@@ -204,7 +205,7 @@ export function SandboxThreadStateProvider({ children }: { children: ReactNode }
 export function ThreadSandboxState(props: Parameters<typeof SandboxState>[0]) {
   const live = useContext(ThreadStateContext)?.live ?? null;
   const status = live ? live.status : props.status;
-  const statusMessage = live?.statusMessage ?? (live && live.status !== props.status ? null : props.statusMessage);
+  const statusMessage = live?.hasLiveStatus ? live.statusMessage : props.statusMessage;
   return (
     <span
       title={statusMessage ?? undefined}
@@ -236,6 +237,7 @@ export function SandboxChat(props: Props) {
   const { events, loaded, olderCursor } = history;
   const [status, setStatus] = useState(initialStatus);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [hasLiveStatus, setHasLiveStatus] = useState(false);
   const [idlePaused, setIdlePaused] = useState(props.initialIdlePaused === true);
   const [poll, setPoll] = useState<Poll>({
     error: null,
@@ -278,6 +280,7 @@ export function SandboxChat(props: Props) {
         setOutbox((current) => failPendingMessage(current, id, reason));
       }
       setStatusMessage(typeof body.statusMessage === "string" ? body.statusMessage : null);
+      setHasLiveStatus(true);
       setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
       const statusChanged = next !== known.current;
@@ -562,11 +565,10 @@ export function SandboxChat(props: Props) {
     if (retained.length !== outbox.length) setOutbox((current) => (current === outbox ? retained : current));
   }, [outbox, unconfirmed]);
 
-  // A stopped or failed machine runs no turn unless a queued turn is waking it.
-  const turnRunning =
-    (LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running)) ||
-    (status === "stopped" && turnModel?.state === "queued");
-  const previousTurnRunning = useRef<boolean | null>(null);
+  // A stopped or failed machine runs no live steer/interrupt turn; queued wake only marks Working display state.
+  const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
+  const working = turnRunning || (status === "stopped" && turnModel?.state === "queued");
+  const previousWorking = useRef<boolean | null>(null);
   useEffect(() => {
     if (setThreadState) {
       setThreadState((current) =>
@@ -574,20 +576,17 @@ export function SandboxChat(props: Props) {
         current.status === status &&
         current.idlePaused === idlePaused &&
         current.statusMessage === statusMessage &&
-        current.turnRunning === turnRunning
+        current.hasLiveStatus === hasLiveStatus &&
+        current.turnRunning === working
           ? current
-          : { status, idlePaused, statusMessage, turnRunning },
+          : { status, idlePaused, statusMessage, hasLiveStatus, turnRunning: working },
       );
     }
-    if (
-      previousTurnRunning.current !== null &&
-      previousTurnRunning.current !== turnRunning &&
-      typeof window !== "undefined"
-    ) {
+    if (previousWorking.current !== null && previousWorking.current !== working && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent(LIVE_FLEET_REFRESH_EVENT));
     }
-    if (loaded || turnRunning) previousTurnRunning.current = turnRunning;
-  }, [loaded, setThreadState, status, idlePaused, statusMessage, turnRunning]);
+    if (loaded || working) previousWorking.current = working;
+  }, [hasLiveStatus, loaded, setThreadState, status, idlePaused, statusMessage, working]);
   useEffect(() => () => setThreadState?.(null), [setThreadState]);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
@@ -656,7 +655,7 @@ export function SandboxChat(props: Props) {
                 : []),
             ]),
           ]}
-          running={turnRunning}
+          running={working}
           loaded={loaded}
           poll={poll}
           hasMore={olderCursor !== null}

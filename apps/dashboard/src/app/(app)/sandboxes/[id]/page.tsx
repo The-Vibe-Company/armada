@@ -601,6 +601,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <SandboxState
             viewerOwns={false}
             status={sandbox.status}
+            activityLabel={sandbox.status === "running" ? "Running" : undefined}
             idlePaused={sandbox.idlePaused === true}
             readyLabel="Waiting for you"
             expiresAt={sandbox.expiresAt}

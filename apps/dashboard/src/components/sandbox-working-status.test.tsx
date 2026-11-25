@@ -35,7 +35,7 @@ afterEach(() => {
   /* oxlint-enable landmines-testing/no-test-doubles */
 });
 
-function installDom(responder: (input: RequestInfo | URL) => Promise<Response>) {
+function installDom(responder: (input: RequestInfo | URL) => Promise<Response>, innerWidth = 1280) {
   const windowEvents = new EventTarget();
   const documentEvents = new EventTarget();
   const fakeDocument = Object.assign(documentEvents, {
@@ -46,9 +46,9 @@ function installDom(responder: (input: RequestInfo | URL) => Promise<Response>) 
   });
   /* oxlint-disable landmines-testing/no-test-doubles -- Supply browser globals and HTTP responses in the DOM-free renderer without sockets or timers. */
   globalThis.window = Object.assign(windowEvents, {
-    innerWidth: 1280,
+    innerWidth,
     location: { origin: "https://dashboard.test" },
-    matchMedia: () => ({ matches: false, addEventListener: noop, removeEventListener: noop }),
+    matchMedia: () => ({ matches: innerWidth < 768, addEventListener: noop, removeEventListener: noop }),
     setInterval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
     setTimeout: globalThis.setTimeout.bind(globalThis),
@@ -147,6 +147,27 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
   expect(urls).toHaveLength(2);
   expect(renderer.root.findByProps({ href: "/sandboxes/s1" }).props.title).toBe("modal-working · Waiting for you");
   await act(async () => renderer.unmount());
+
+  const mobileUrls: string[] = [];
+  installDom(async (input) => {
+    mobileUrls.push(String(input));
+    return Response.json([], { headers: { "X-Live-Count": "0" } });
+  }, 390);
+  await act(async () => {
+    renderer = create(
+      <TooltipProvider>
+        <AppRouterContext.Provider value={router}>
+          <PathnameContext.Provider value="/sandboxes">
+            <SidebarProvider>
+              <NavLinks organizationId="org-1" initialLive={{ total: 0, rows: [] }} />
+            </SidebarProvider>
+          </PathnameContext.Provider>
+        </AppRouterContext.Provider>
+      </TooltipProvider>,
+    );
+  });
+  expect(mobileUrls).toEqual([]);
+  await act(async () => renderer.unmount());
 });
 
 test("ThreadSandboxState live-updates between Working and Ready as turns start and finish on a ready sandbox", async () => {
@@ -157,13 +178,15 @@ test("ThreadSandboxState live-updates between Working and Ready as turns start a
     cursor,
     hasMore: false,
     backward,
+    statusMessage: null,
     prompt: { state, conversationId: "conv-1" },
     events: [],
   });
   const pages = [
-    mkPage("ready", "running", "1", true),
+    mkPage("running", "running", "1", true),
     mkPage("ready", "finished", "2"),
-    mkPage("stopped", "queued", "3"),
+    mkPage("ready", "running", "3"),
+    mkPage("stopped", "queued", "4"),
   ];
   let i = 0;
   let refreshes = 0;
@@ -179,24 +202,35 @@ test("ThreadSandboxState live-updates between Working and Ready as turns start a
       <AppRouterContext.Provider value={router}>
         <SandboxThreadStateProvider>
           <header>
-            <ThreadSandboxState viewerOwns status="ready" readyLabel="Ready" />
+            <ThreadSandboxState
+              viewerOwns
+              status="running"
+              statusMessage="Waiting for a free agent slot"
+              readyLabel="Ready"
+            />
           </header>
           <SandboxChat
             sandboxId="11111111-1111-4111-8111-111111111111"
             currentConversation="conv-1"
-            initialStatus="ready"
+            initialStatus="running"
             initialUsageRevision="rev-1"
             live
             harness="codex"
             catalog={MODEL_CATALOG}
             launchedModel={null}
-            configured={false}
+            configured
+            pinnedModel
           />
         </SandboxThreadStateProvider>
       </AppRouterContext.Provider>,
     );
   });
-  const headerJson = () => JSON.stringify(renderer.toJSON());
+  const headerText = () =>
+    renderer.root
+      .findByType("header")
+      .findAll((node) => node.children.some((c) => typeof c === "string"))
+      .flatMap((node) => node.children.filter((c): c is string => typeof c === "string"))
+      .join("");
   const pulses = () => renderer.root.findByType("header").findAllByProps({ "data-pulse": true }).length;
   const pollNext = () =>
     act(async () => {
@@ -206,16 +240,23 @@ test("ThreadSandboxState live-updates between Working and Ready as turns start a
       documentEvents.dispatchEvent(new Event("visibilitychange"));
     });
 
-  expect(headerJson()).toContain('"Working"');
+  expect(headerText()).toBe("Working");
   expect(pulses()).toBe(1);
+  expect(renderer.root.findByType("header").findAllByType("span")[0]?.props.title).toBeUndefined();
   expect(refreshes).toBe(0);
   await pollNext();
-  expect(headerJson()).toContain('"Ready"');
+  expect(headerText()).toBe("Ready");
   expect(pulses()).toBe(0);
   expect(refreshes).toBe(1);
   await pollNext();
-  expect(headerJson()).toContain('"Working"');
+  expect(headerText()).toBe("Working");
   expect(pulses()).toBe(1);
   expect(refreshes).toBe(2);
+  expect(JSON.stringify(renderer.toJSON())).toContain('"Interrupt"');
+  await pollNext();
+  expect(headerText()).toBe("Working");
+  expect(pulses()).toBe(1);
+  expect(JSON.stringify(renderer.toJSON())).not.toContain('"Interrupt"');
+  expect(JSON.stringify(renderer.toJSON())).not.toContain("Steer the running turn");
   await act(async () => renderer.unmount());
 });

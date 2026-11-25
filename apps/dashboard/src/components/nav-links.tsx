@@ -67,11 +67,17 @@ function useLiveSandboxes(
     const scope = organizationId;
     const url = `/api/fleet/live?organizationId=${encodeURIComponent(organizationId)}`;
     let pending: AbortController | undefined;
+    let queuedRefresh = false;
     const active = () => document.visibilityState === "visible" && document.hasFocus();
     async function poll() {
-      if (!active() || pending) return;
+      if (!active()) return;
+      if (pending) {
+        queuedRefresh = true;
+        return;
+      }
       const request = new AbortController();
       pending = request;
+      queuedRefresh = false;
       try {
         const response = await fetch(url, { signal: request.signal });
         if (!response.ok) return;
@@ -85,7 +91,10 @@ function useLiveSandboxes(
       } catch {
         return;
       } finally {
-        if (pending === request) pending = undefined;
+        if (pending === request) {
+          pending = undefined;
+          if (queuedRefresh && active() && !request.signal.aborted) void poll();
+        }
       }
     }
 
@@ -158,7 +167,7 @@ export function NavLinks({
 }) {
   const pathname = usePathname();
   const { isMobile, openMobile, setOpenMobile } = useSidebar();
-  const live = useLiveSandboxes(organizationId, initialLive, !isMobile || openMobile);
+  const live = useLiveSandboxes(organizationId, initialLive, isMobile === false || openMobile);
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
