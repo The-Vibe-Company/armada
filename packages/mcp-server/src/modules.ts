@@ -14,6 +14,7 @@ import { launchRoutes } from "./launch-control.ts";
 import { mcpRoutes } from "./mcp-control.ts";
 import { orgRoutes } from "./org-control.ts";
 import { publicAuthRoutes } from "./public-auth-control.ts";
+import { relayRoutes } from "./relay-control.ts";
 import { routineRoutes } from "./routine-control.ts";
 import { sandboxRoutes } from "./sandbox-control.ts";
 import { sandboxRestRoutes } from "./sandbox-rest-controls.ts";
@@ -61,6 +62,7 @@ const controlModules = [
   logRoutes,
   applicationVaultRoutes,
   viewerRoutes,
+  relayRoutes,
   eventStreamRoutes,
 ];
 

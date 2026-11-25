@@ -21,6 +21,7 @@ export function createRuntimeIdle(
   options: {
     delayMs?: number;
     now?: () => number;
+    hasActiveRelay?: (sandboxId: string) => boolean;
     dockerStop?: (actor: { userId: string; orgId: string }, id: string, checkpointRequest: string) => Promise<unknown>;
   } = {},
 ) {
@@ -81,6 +82,7 @@ export function createRuntimeIdle(
     ).rows[0];
     if (!evidence?.eligible || evidence.last_activity <= 0 || (!mergeStop && now() - evidence.last_activity < delay))
       throw Error("Runtime is not idle.");
+    if (!mergeStop && options.hasActiveRelay?.(id)) throw Error("Runtime relay is active.");
     return mergeStop;
   }
   return {

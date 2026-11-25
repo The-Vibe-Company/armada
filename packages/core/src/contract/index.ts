@@ -13,6 +13,7 @@ import { sandboxCheckOperations } from "./sandbox-checks.ts";
 import { streamSandboxEvents } from "./sandbox-events.ts";
 import { sandboxOutputOperations } from "./sandbox-outputs.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
+import { sandboxRelayOperations } from "./sandbox-relay.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 import { scopedRestOperations } from "./scoped.ts";
@@ -188,6 +189,7 @@ export const operations = {
   launchOptions: launchOptionsOperation,
   readLogs: readLogsOperation,
   createSandboxViewerToken: sandboxViewerOperations.mint,
+  mintSandboxRelayTicket: sandboxRelayOperations.mintTicket,
   readViewerLogs: sandboxViewerOperations.logs,
   readViewerStatus: sandboxViewerOperations.status,
   sendViewerPrompt: sandboxViewerOperations.send,
