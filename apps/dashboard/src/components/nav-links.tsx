@@ -4,7 +4,6 @@ import {
   BoxesIcon,
   CalendarClockIcon,
   CameraIcon,
-  ChevronDownIcon,
   CloudIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
@@ -29,7 +28,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { INLINE_LIVE_LIMIT, LIVE_SANDBOXES_HREF, type LiveSandboxes } from "@/lib/live-sandbox-view";
@@ -52,27 +50,6 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   models: KeyRoundIcon,
   settings: SettingsIcon,
 };
-
-export function NavMobileTrigger() {
-  const pathname = usePathname();
-  const { openMobile, triggerRef } = useSidebar();
-  const current = NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href));
-  return (
-    <SidebarTrigger
-      ref={triggerRef}
-      variant="ghost"
-      size="default"
-      className="mb-1 h-9 w-full justify-between md:hidden"
-      aria-expanded={openMobile}
-      aria-controls="main-navigation-links"
-    >
-      <span>
-        Navigation <span className="text-muted-foreground">/ {current?.label ?? "Dashboard"}</span>
-      </span>
-      <ChevronDownIcon className={cn("size-4", openMobile && "rotate-180")} />
-    </SidebarTrigger>
-  );
-}
 
 function useLiveSandboxes(
   organizationId: string | null,

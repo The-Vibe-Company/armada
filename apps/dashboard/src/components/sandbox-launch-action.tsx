@@ -8,6 +8,7 @@ import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 function loadLaunchStart() {
   return import("@/components/launch-dialog").then((module) => module.DiscoveredLaunchStart);
@@ -62,6 +63,8 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
       <DialogTrigger asChild>
         <Button
           aria-label="Launch a sandbox"
+          variant={shortcut ? "ghost" : "default"}
+          className={cn(shortcut && "w-full justify-start group-data-[state=collapsed]:justify-center")}
           onMouseEnter={prefetchLaunch}
           onFocus={prefetchLaunch}
           onKeyDown={(event) => {
@@ -71,8 +74,11 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
             }
           }}
         >
-          <RocketIcon /> <span>Launch a sandbox</span>
-          {shortcut && <kbd className="ml-auto text-xs text-muted-foreground">L</kbd>}
+          <RocketIcon />
+          <span className={cn(shortcut && "group-data-[state=collapsed]:sr-only")}>Launch a sandbox</span>
+          {shortcut && (
+            <kbd className="ml-auto text-xs text-muted-foreground group-data-[state=collapsed]:hidden">L</kbd>
+          )}
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>

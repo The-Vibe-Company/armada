@@ -19,7 +19,6 @@ import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
-import { ShellPageActions } from "@/components/shell-page-actions";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -602,15 +601,13 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <h1 className="min-w-0 font-mono text-xl font-semibold tracking-tight break-all">
             {HARNESS_LABELS[sandbox.harness] ?? "Agent"} sandbox
           </h1>
-          <ShellPageActions>
-            <SandboxState
-              viewerOwns={false}
-              status={sandbox.status}
-              idlePaused={sandbox.idlePaused === true}
-              readyLabel="Waiting for you"
-              expiresAt={sandbox.expiresAt}
-            />
-          </ShellPageActions>
+          <SandboxState
+            viewerOwns={false}
+            status={sandbox.status}
+            idlePaused={sandbox.idlePaused === true}
+            readyLabel="Waiting for you"
+            expiresAt={sandbox.expiresAt}
+          />
         </div>
       </div>
       <Alert data-restricted role="status">

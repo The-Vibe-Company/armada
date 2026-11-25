@@ -1,24 +1,22 @@
 "use client";
 
 import type { MemberRole } from "@armada/core";
-import { Loader2Icon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ChangeEvent, type KeyboardEvent, startTransition, useEffect, useId, useRef, useState } from "react";
+import { startTransition, useEffect, useRef } from "react";
 import { switchOrganization } from "@/app/actions/selected-org";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useMutationState } from "@/components/use-mutation-state";
 import type { Membership } from "@/lib/data/viewer";
 
-/**
- * The organization every page is scoped to, and the viewer's role in it. Choosing another one switches to it at
- * once (the server checks the membership and picks the destination); while that runs the choice is locked, and a
- * refusal puts the selector back on the organization the page is actually showing. Stepping through the closed
- * selector with the keyboard only previews an org: Enter switches to it, Escape or leaving the selector does not.
- */
 export function OrgSwitcher({
   memberships,
   selected,
@@ -28,10 +26,23 @@ export function OrgSwitcher({
   selected: string | null;
   role: MemberRole | null;
 }) {
-  const pathname = usePathname();
+  const section = usePathname();
+  const [result, switchTo, pending] = useMutationState(switchOrganization);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const element = trigger.current;
+    if (!element?.getClientRects().length) return;
+    const restoreFocus = refocusOn === selected;
+    refocusOn = null;
+    if (restoreFocus) element.focus();
+  }, [selected]);
+  useEffect(() => {
+    if (result && !result.ok) refocusOn = null;
+  }, [result]);
+
   if (!selected) {
     return (
-      <div className="mx-3 mb-3 rounded-md border border-dashed bg-background p-3 text-sm md:mb-4">
+      <div className="rounded-md border border-dashed bg-background p-3 text-sm">
         <p className="font-medium">No organization yet</p>
         <p className="mt-1 text-muted-foreground">Snapshots, sandboxes and keys belong to an organization.</p>
         <Button asChild size="sm" className="mt-3">
@@ -40,143 +51,85 @@ export function OrgSwitcher({
       </div>
     );
   }
-  return <SelectedOrg memberships={memberships} selected={selected} role={role} section={pathname} />;
-}
 
-// A switch revalidates the layout and redirects, which mounts the shell anew: the selector that had focus is gone,
-// so its visible replacement takes the focus back (a keyboard user keeps their place). A visible mount clears it
-// even on a different org: a switch that never landed cannot steal focus later.
-let refocusOn: string | null = null;
-
-// Keys that step a closed select through its options in place (Windows and Linux), firing a change at each step.
-const STEP = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
-
-function SelectedOrg({
-  memberships,
-  selected,
-  role,
-  section,
-}: {
-  memberships: Membership[];
-  selected: string;
-  role: MemberRole | null;
-  section: string;
-}) {
-  const [result, switchTo, pending] = useMutationState(switchOrganization);
-  const select = useRef<HTMLSelectElement>(null);
-  const selectId = useId();
-  useEffect(() => {
-    const element = select.current;
-    if (!element?.getClientRects().length) return;
-    const focus = refocusOn === selected;
-    refocusOn = null;
-    if (focus) element.focus();
-  }, [selected]);
-  // The organization asked for, until its switch settles: shown meanwhile, and no second switch starts.
-  const [target, setTarget] = useState<string | null>(null);
-  // An org reached by stepping with the keyboard: shown, switched to only on Enter.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Settle on what the server answered (adjusting state during render, not in an effect): a refusal returns a
-  // result; a switch redirects and re-renders the shell, so its transition ends with `selected` already updated.
-  const [seen, setSeen] = useState({ result, pending, selected });
-  if (seen.result !== result || seen.pending !== pending || seen.selected !== selected) {
-    setSeen({ result, pending, selected });
-    if (seen.result !== result && result && !result.ok) setError(result.error);
-    if (seen.selected !== selected) setError(null);
-    if ((seen.pending && !pending) || seen.result !== result || seen.selected !== selected) setTarget(null);
-  }
-  const busy = pending || target !== null;
-  // Set while a stepping key is down: its change is the keyboard browsing, not a choice.
-  const stepping = useRef(false);
-
-  function commit(org: string, element: HTMLSelectElement) {
-    setDraft(null);
-    // Left unset, the controlled select snaps back: a change during a switch is ignored, not queued.
-    if (busy || org === selected) return;
-    setTarget(org);
-    setError(null);
-    refocusOn = document.activeElement === element ? org : null;
+  const name = memberships.find(({ org }) => org.id === selected)?.org.name ?? "Organization";
+  const error = result && !result.ok && !pending ? result.error : null;
+  function choose(org: string) {
+    if (pending || org === selected) return;
+    refocusOn = org;
     const data = new FormData();
     data.set("org", org);
     data.set("section", section);
     startTransition(() => switchTo(data));
   }
 
-  function choose(event: ChangeEvent<HTMLSelectElement>) {
-    if (stepping.current && !busy) setDraft(event.target.value === selected ? null : event.target.value);
-    else commit(event.target.value, event.target);
-  }
-
-  function key(event: KeyboardEvent<HTMLSelectElement>) {
-    // Typing a letter also jumps to a matching option in place.
-    if (STEP.has(event.key) || (event.key.length === 1 && event.key !== " ")) {
-      stepping.current = true;
-      // The change a key causes fires before this task ends; a later one (from the open list) is a choice.
-      setTimeout(() => {
-        stepping.current = false;
-      });
-    } else if (event.key === "Enter" && draft) {
-      event.preventDefault();
-      commit(draft, event.currentTarget);
-    } else if (event.key === "Escape" && draft) setDraft(null);
-  }
-
-  const described = [draft && `${selectId}-hint`, error && `${selectId}-error`].filter(Boolean).join(" ");
   return (
-    <div className="relative space-y-1.5 rounded-lg px-1.5 py-1 hover:bg-[var(--raised)]">
-      <div className="flex items-center gap-2.5">
-        <BrandMark />
-        <div className="min-w-0 flex-1">
-          <Label htmlFor={selectId} className="sr-only">
-            Active organization
-          </Label>
-          <NativeSelect
-            ref={select}
-            id={selectId}
-            name="org"
-            value={target ?? draft ?? selected}
-            onChange={choose}
-            onKeyDown={key}
-            onBlur={() => setDraft(null)}
-            aria-busy={busy}
-            aria-disabled={busy}
-            aria-describedby={described || undefined}
-            className="h-7 border-0 bg-transparent px-0 text-[13px] font-semibold shadow-none aria-disabled:cursor-progress dark:bg-transparent"
+    <div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            ref={trigger}
+            id="active-org"
+            type="button"
+            variant="ghost"
+            aria-label={`Active organization: ${name}`}
+            aria-busy={pending}
+            aria-disabled={pending}
+            aria-describedby={error ? "active-org-error" : undefined}
+            onPointerDown={(event) => {
+              if (pending) event.preventDefault();
+            }}
+            onKeyDown={(event) => {
+              if (pending && ["Enter", " ", "ArrowDown"].includes(event.key)) event.preventDefault();
+            }}
+            className="h-11 w-full justify-start gap-2 rounded-xl px-1.5 has-[>svg]:px-1.5 aria-busy:cursor-progress data-[state=open]:bg-accent"
           >
-            {memberships.map(({ org }) => (
-              <option key={org.id} value={org.id}>
-                {org.name}
-              </option>
-            ))}
-          </NativeSelect>
-          {busy ? (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground" aria-hidden>
-              <Loader2Icon className="size-3 animate-spin" />
-              Switching
-            </span>
-          ) : (
-            role && (
-              <span className="text-xs text-muted-foreground" data-org-role={role}>
+            <BrandMark />
+            <span className="min-w-0 flex-1 truncate text-left font-semibold">{name}</span>
+            {role && (
+              <span
+                data-org-role={role}
+                className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+              >
                 {role === "admin" ? "Admin" : "Member"}
               </span>
-            )
-          )}
-        </div>
-      </div>
-      {draft && (
-        <p id={`${selectId}-hint`} className="px-0 text-xs text-muted-foreground md:px-2">
-          Press Enter to switch.
-        </p>
-      )}
+            )}
+            {pending ? (
+              <Loader2Icon aria-hidden className="size-3.5 motion-safe:animate-spin" />
+            ) : (
+              <ChevronDownIcon aria-hidden className="size-3.5 text-muted-foreground" />
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          className="w-(--radix-dropdown-menu-trigger-width) min-w-44 rounded-xl animate-none!"
+        >
+          {memberships.map(({ org }) => (
+            <DropdownMenuItem
+              key={org.id}
+              role="menuitemradio"
+              aria-checked={org.id === selected}
+              textValue={org.name}
+              onSelect={() => choose(org.id)}
+            >
+              <span className="min-w-0 flex-1 truncate">{org.name}</span>
+              {org.id === selected && <CheckIcon aria-hidden />}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <p role="status" className="sr-only">
-        {busy ? "Switching organization…" : ""}
+        {pending ? "Switching organization…" : ""}
       </p>
       {error && (
-        <p id={`${selectId}-error`} role="alert" className="text-sm text-destructive">
+        <p id="active-org-error" role="alert" className="mt-1 text-sm text-destructive">
           {error}
         </p>
       )}
     </div>
   );
 }
+
+// A redirect can remount the desktop shell. Give focus back to the visible replacement.
+let refocusOn: string | null = null;

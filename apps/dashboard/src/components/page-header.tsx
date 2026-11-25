@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ShellPageActions } from "@/components/shell-page-actions";
+import { cn } from "@/lib/utils";
 
 /** The title of a page, one line saying what it holds, and its primary action on the right. */
 export function PageHeader({
@@ -17,21 +17,18 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-      <div className="max-w-2xl space-y-1.5">
-        <div className="flex items-baseline gap-2.5">
-          <h1 className="text-[22px] font-semibold tracking-tight">{title}</h1>
+    <header
+      className={cn("flex flex-wrap justify-between gap-x-4 gap-y-2", inlineActions ? "items-center" : "items-start")}
+    >
+      <div className="min-w-0 max-w-2xl flex-[1_1_9rem] space-y-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-2.5">
+          <h1 className="min-w-0 text-xl! font-semibold tracking-[-0.02em]! wrap-anywhere">{title}</h1>
           {meta !== undefined && <span className="text-sm text-muted-foreground tabular-nums">{meta}</span>}
         </div>
         {description && <p className="text-sm text-pretty text-muted-foreground">{description}</p>}
       </div>
-      {children &&
-        (inlineActions ? (
-          <div className="flex shrink-0 items-center gap-2">{children}</div>
-        ) : (
-          <ShellPageActions>{children}</ShellPageActions>
-        ))}
-    </div>
+      {children && <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>}
+    </header>
   );
 }
 
