@@ -922,7 +922,8 @@ function matches(row: Row, params: URLSearchParams): boolean {
     const actual = String(row[key]);
     if (op === "eq" && actual !== operand) return false;
     if (op === "neq" && actual === operand) return false;
-    if (op === "in" && !inValues(operand).includes(actual)) return false;
+    if (op === "in" && (row[key] === null || row[key] === undefined || !inValues(operand).includes(actual)))
+      return false;
     if (op === "is" && operand === "null" && row[key] !== null && row[key] !== undefined) return false;
     if (op === "not" && operand === "is.null" && (row[key] === null || row[key] === undefined)) return false;
     if (op === "gte" && !atLeast(row[key], operand)) return false;
@@ -957,17 +958,74 @@ function atLeast(value: unknown, operand: string): boolean {
   return typeof value === "string" && Date.parse(value) >= Date.parse(operand);
 }
 
-/** `or=(a.gte.x,b.not.is.null)`: the dashboard's `or` terms, a timestamp at or after its bound or a column set. */
+function splitOrTerms(inner: string) {
+  const terms: string[] = [];
+  let term = "";
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (const char of inner) {
+    if (escaped) {
+      term += char;
+      escaped = false;
+    } else if (char === "\\" && quoted) {
+      term += char;
+      escaped = true;
+    } else if (char === '"') {
+      quoted = !quoted;
+      term += char;
+    } else if (!quoted && char === "(") {
+      depth++;
+      term += char;
+    } else if (!quoted && char === ")") {
+      depth = Math.max(0, depth - 1);
+      term += char;
+    } else if (!quoted && depth === 0 && char === ",") {
+      terms.push(term);
+      term = "";
+    } else {
+      term += char;
+    }
+  }
+  if (term) terms.push(term);
+  return terms;
+}
+
+function matchesIlike(value: string, pattern: string) {
+  let regex = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]!;
+    if (char === "\\" && i + 1 < pattern.length) {
+      regex += pattern[++i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else if (char === "*" || char === "%") {
+      regex += ".*";
+    } else if (char === "_") {
+      regex += ".";
+    } else {
+      regex += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${regex}$`, "is").test(value);
+}
+
+/** `or=(a.gte.x,b.not.is.null,c.is.null,c.in.(...),d.ilike.*x*)`: the dashboard's `or` terms. */
 function orAny(row: Row, expression: string): boolean {
-  return expression
-    .slice(1, -1)
-    .split(",")
-    .some((term) => {
-      const [column = "", op, ...rest] = term.split(".");
-      if (op === "not" && rest.join(".") === "is.null") return row[column] !== null && row[column] !== undefined;
-      if (op === "eq") return String(row[column]) === rest.join(".");
-      return op === "gte" && atLeast(row[column], rest.join("."));
-    });
+  return splitOrTerms(expression.slice(1, -1)).some((term) => {
+    const firstDot = term.indexOf(".");
+    const column = firstDot === -1 ? term : term.slice(0, firstDot);
+    const tail = firstDot === -1 ? "" : term.slice(firstDot + 1);
+    const secondDot = tail.indexOf(".");
+    const op = secondDot === -1 ? tail : tail.slice(0, secondDot);
+    const rest = secondDot === -1 ? "" : tail.slice(secondDot + 1);
+    if (op === "is" && rest === "null") return row[column] === null || row[column] === undefined;
+    if (op === "not" && rest === "is.null") return row[column] !== null && row[column] !== undefined;
+    if (op === "eq") return row[column] !== null && row[column] !== undefined && String(row[column]) === rest;
+    if (op === "in")
+      return row[column] !== null && row[column] !== undefined && inValues(rest).includes(String(row[column]));
+    if (op === "ilike")
+      return row[column] !== null && row[column] !== undefined && matchesIlike(String(row[column]), rest);
+    return op === "gte" && atLeast(row[column], rest);
+  });
 }
 
 function project(table: string, row: Row, select: string | null): Row | Fail {
