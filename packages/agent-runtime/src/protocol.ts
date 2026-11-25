@@ -104,7 +104,6 @@ export interface DriverContext {
   request: RuntimePromptRequest;
   sessionId?: string;
   signal: AbortSignal;
-  redactToolText?(text: string): string;
   emit(event: DriverEvent): void;
   session(id: string, previousId?: string): void;
   mcp?: McpConfiguration;

@@ -38,6 +38,7 @@ export class AcpDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       args?: string[];
+      redactToolText?(text: string): string;
       observation?: AcpObservation;
       authMethodId?: string;
       authenticationRequiredLine?: string;
@@ -205,7 +206,7 @@ export class AcpDriver implements Driver {
               typeof u.toolCallId === "string"
             ) {
               const title = typeof u.title === "string" ? u.title : "";
-              const redact = (text: string) => c.redactToolText?.(text) ?? text;
+              const redact = (text: string) => this.options.redactToolText?.(text) ?? text;
               const redactIdentifier = (text: string) => {
                 const scrubbed = redact(text);
                 return scrubbed.includes("\0") ? redact(scrubbed.replaceAll("\0", "")) : scrubbed;

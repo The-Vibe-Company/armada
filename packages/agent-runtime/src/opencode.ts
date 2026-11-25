@@ -27,6 +27,7 @@ export class OpenCodeDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       redact(text: string): string;
+      redactToolText?(text: string): string;
       createRetryObserver?: typeof createOpenCodeRetryObserver;
     },
   ) {
