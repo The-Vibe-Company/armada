@@ -25,8 +25,8 @@ import {
 } from "../src/runtime-reconciliation-conflict.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
-import { readStatus } from "../src/turns.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { modalAdmissionFixture } from "./modal-admission.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runClaimedStop } from "./stop-job.fixture.ts";
@@ -1399,155 +1399,36 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
   }
 });
 
-// Real delegated stop and SQL fences: a completed stop must remain live-readable.
-test("managed child stop clears its epoch only after physical confirmation", async () => {
-  let scenario:
-    | "confirmed"
-    | "pending"
-    | "stale"
-    | "failed exit"
-    | "admission abort"
-    | "settlement abort"
-    | "runtime admitted";
-  const { close, db, sql, p, id, token, golden } = await fixture(
-    "running",
-    "anthropic",
-    "boat",
-    (code) =>
-      (scenario === "admission abort" && code === "owner_stop_admitted") ||
-      (scenario === "settlement abort" && code === "owner_stop_settled"),
-  );
+test("managed child stop stays pending until the shared job confirms exit", async () => {
+  const { close, db, sql, p, id, token, golden } = await fixture("running", "anthropic", "boat");
   try {
     const fake = fakeBoat();
-    let childId: string;
-    const provider = {
-      ...fake.provider,
-      async get(id: string) {
-        const info = await fake.provider.get(id);
-        return scenario === "failed exit" && info.state === "stopped"
-          ? { ...info, retainedSnapshot: "pending" as const }
-          : info;
-      },
-      stop: async (request: { sandboxId: string }) => {
-        if (scenario !== "pending") await fake.provider.stop(request);
-      },
-    };
+    const physical = await fake.provider.fork({ from: "test" });
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: physical.id,
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      status: "ready",
+      model: "m",
+      reasoningEffort: "high",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     const services = createSandboxAccessServices({
       sql,
-      providers: {
-        async resolve() {
-          if (scenario === "runtime admitted") throw Error("The existing reconciler owns the admitted runtime stop.");
-          if (scenario === "stale")
-            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [childId]);
-          return provider;
-        },
-      },
+      providers: { resolve: async () => fake.provider },
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    for (scenario of [
-      "confirmed",
-      "pending",
-      "stale",
-      "failed exit",
-      "admission abort",
-      "settlement abort",
-      "runtime admitted",
-    ] as const) {
-      const physical = await fake.provider.fork({
-        from: "test",
-        name: "child",
-        ttlSeconds: 3600,
-        env: {},
-        noEnv: true,
-      });
-      const child = await createSqlSandboxStore(sql).insert({
-        id: crypto.randomUUID(),
-        provider: "boat",
-        providerSandboxId: physical.id,
-        goldenId: golden.id,
-        orgId: p.org,
-        ownerId: p.owner,
-        harness: "codex",
-        status: scenario === "failed exit" ? "failed" : "ready",
-        ...(scenario === "runtime admitted" ? { boatRuntime: true } : {}),
-        model: "m",
-        reasoningEffort: "high",
-      });
-      await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-      if (scenario === "runtime admitted")
-        await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [child.id]);
-      childId = child.id;
-      const calls = fake.stops.length;
-      const receipt = await services.childWorker.stop(token, crypto.randomUUID(), child.id);
-      const store = createSqlData(sql)({
-        via: "service",
-        userId: p.owner,
-        orgs: [{ orgId: p.org, role: "member" }],
-      }).sandboxes;
-      const saved = await store.get(child.id);
-      const journal = await db.query(
-        "select actor,code,to_status,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
-        [child.id],
-      );
-      const [{ activity_lease_id: lease } = {}] = (
-        await db.query<{ activity_lease_id: string | null }>("select activity_lease_id from sandboxes where id=$1", [
-          child.id,
-        ])
-      ).rows;
-      if (scenario === "runtime admitted") {
-        expect(receipt.state).toBe("succeeded");
-        expect(fake.stops).toHaveLength(calls);
-        expect(saved).toMatchObject({ status: "stopping", lifecycleGeneration: 1 });
-        expect(lease).toBeNull();
-        expect(journal.rows).toEqual([]);
-        continue;
-      }
-      if (scenario === "stale" || scenario === "admission abort") {
-        expect(receipt.state).toBe("uncertain");
-        expect(fake.stops).toHaveLength(calls);
-        expect(saved).toMatchObject({
-          status: "ready",
-          lifecycleGeneration: scenario === "stale" ? 2 : 1,
-          stopRequestedAt: null,
-        });
-        expect(lease).toBeNull();
-        expect(journal.rows).toEqual([]);
-        continue;
-      }
-      if (scenario === "failed exit") {
-        expect(receipt.state).toBe("succeeded");
-        const stoppedAt = saved?.stoppedAt;
-        expect(stoppedAt).toEqual(expect.any(String));
-        expect(saved).toMatchObject({ status: "failed", stopRequestedAt: null });
-        expect(journal.rows).toEqual([]);
-        await services.childWorker.stop(token, crypto.randomUUID(), child.id);
-        expect(fake.stops).toHaveLength(calls + 1);
-        expect((await store.get(child.id))?.stoppedAt).toBe(stoppedAt);
-        continue;
-      }
-      const pending = scenario !== "confirmed";
-      if (scenario === "settlement abort") {
-        expect(receipt.state).toBe("uncertain");
-        expect(fake.stops).toHaveLength(calls + 1);
-        expect(saved?.lifecycleGeneration).toBe(2);
-        expect(lease).toEqual(expect.any(String));
-      }
-      expect(journal.rows).toEqual([
-        { actor: "owner", code: "owner_stop_admitted", to_status: "stopping", generation: 2 },
-        ...(pending
-          ? []
-          : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped", generation: 3 }]),
-      ]);
-      expect(saved?.status).toBe(pending ? "stopping" : "stopped");
-      expect(Boolean(saved?.stopRequestedAt)).toBe(pending);
-      expect(saved?.stoppedAt !== null).toBe(!pending);
-      if (scenario !== "settlement abort") {
-        const report = await readStatus(provider, store, saved!, { now: new Date() });
-        expect(report.providerState).toBe(pending ? null : "archived");
-      }
-    }
+    expect((await services.childWorker.stop(token, crypto.randomUUID(), child.id)).state).toBe("succeeded");
+    expect(fake.stops).toHaveLength(0);
+    expect(await services.childWorker.read(token, child.id)).toMatchObject({ status: "stopping" });
+    expect(await runBoatStop(sql, archivedBoat())).toBe("done");
+    expect(await services.childWorker.read(token, child.id)).toMatchObject({ status: "stopped" });
   } finally {
     await close();
   }

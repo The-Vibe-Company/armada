@@ -643,38 +643,6 @@ test("resource collection uses bounded fixed file reads, boot fencing and no com
   expect(stopped.requests).toHaveLength(1);
 });
 
-// Boat returns acceptance before archival; neither acceptance nor a different
-// operation may be presented as successful managed stop.
-test.each(["completed", "superseded", "wrong-operation"])(
-  "managed Boat archival waits for its exact stop (%s)",
-  async (outcome) => {
-    const stop = { id: "stop-owned", status: "pending" };
-    const boat = fakeBoat(
-      { status: 202, body: { ok: true, id: ID, stop } },
-      { body: { ok: true, id: ID, stop } },
-      {
-        body: {
-          ok: true,
-          id: ID,
-          stop: {
-            ...stop,
-            status: outcome === "wrong-operation" ? "completed" : outcome,
-            ...(outcome === "wrong-operation" ? { id: "stop-other" } : {}),
-          },
-        },
-      },
-    );
-    if (outcome === "completed") await boat.provider.stopBestEffort(ID);
-    else await expect(boat.provider.stopBestEffort(ID)).rejects.toBeInstanceOf(ProviderError);
-    expect(boat.sleeps).toEqual([1000]);
-    expect(boat.requests.map(({ method, path }) => [method, path])).toEqual([
-      ["POST", `/api/v1/sandboxes/${ID}/stop`],
-      ["GET", `/api/v1/sandboxes/${ID}/stops/stop-owned`],
-      ["GET", `/api/v1/sandboxes/${ID}/stops/stop-owned`],
-    ]);
-  },
-);
-
 test("starting compute waits for readiness before a command", async () => {
   const boat = fakeBoat(
     { body: { ok: true, sandbox: sandbox({ state: "provisioning" }) } },
@@ -686,43 +654,6 @@ test("starting compute waits for readiness before a command", async () => {
   await boat.provider.exec({ sandboxId: ID, command: "capture", onlyIfRunning: true });
   expect(boat.sleeps).toEqual([1000]);
   expect(boat.requests.map((r) => r.method)).toEqual(["GET", "GET", "POST"]);
-});
-
-test("idle capture observations show command admission without a wake", async () => {
-  const log = spyOn(console, "info");
-  try {
-    const boat = fakeBoat(
-      { body: { ok: true, sandbox: sandbox({ state: "idle" }) } },
-      {
-        body: {
-          ok: true,
-          type: "command.finished",
-          success: true,
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-        },
-      },
-    );
-    await boat.provider.exec({
-      sandboxId: ID,
-      command: "PRIVATE_COMMAND",
-      onlyIfRunning: true,
-      preservationStage: "collect_exec",
-    });
-    const observations = log.mock.calls.map(([line]) => JSON.parse(String(line)));
-    expect(observations.find((e) => e.source === "state_guard")).toMatchObject({
-      providerState: "idle",
-      normalizedState: "ready",
-      stateMappingKnown: true,
-      decision: "command",
-      stage: "collect_exec",
-    });
-    expect(observations.some((e) => e.operation === "resume")).toBe(false);
-  } finally {
-    log.mockRestore();
-  }
 });
 
 test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat execution safely", async (outcome) => {
@@ -742,66 +673,6 @@ test.each(["exhausted", "stopped", "ambiguous"])("capture retry refuses %s Boat 
   expect(boat.requests.filter((r) => r.path.endsWith("/commands"))).toHaveLength(outcome === "exhausted" ? 5 : 1);
   expect(boat.sleeps).toHaveLength(outcome === "exhausted" ? 4 : outcome === "stopped" ? 1 : 0);
   expect(boat.requests.some((r) => r.path.endsWith("/resume") || r.path.endsWith("/stop"))).toBe(false);
-});
-
-test.each(["live", "starting", "refused", "invalid", "truncated", "unsuccessful"] as const)(
-  "capture boot observation uses a single guarded command: %s",
-  async (scenario) => {
-    const boot = "e76cc889-0359-4544-9320-dd938debba67";
-    const boat = fakeBoat(
-      { body: { ok: true, sandbox: sandbox({ state: scenario === "starting" ? "starting" : "ready" }) } },
-      scenario === "refused"
-        ? errorBody(409, "sandbox_not_ready", "Not ready")
-        : {
-            body: {
-              ok: true,
-              type: "command.finished",
-              success: scenario !== "unsuccessful",
-              exitCode: 0,
-              stdout: scenario === "invalid" ? "-".repeat(36) : boot + "\n",
-              stderr: "",
-              timedOut: false,
-              stdoutTruncated: scenario === "truncated",
-            },
-          },
-    );
-    const signal = new AbortController().signal;
-    const observed = boat.provider.observeCaptureBoot(ID, signal);
-    if (scenario === "refused") await expect(observed).rejects.toMatchObject({ status: 409 });
-    else expect(await observed).toBe(scenario === "live" ? boot : null);
-    expect(boat.requests).toMatchObject([
-      { method: "GET", path: `/api/v1/sandboxes/${ID}` },
-      ...(scenario === "starting"
-        ? []
-        : [
-            {
-              method: "POST",
-              path: `/api/v1/sandboxes/${ID}/commands`,
-              body: {
-                command: "cat /proc/sys/kernel/random/boot_id",
-                timeoutSeconds: 5,
-              },
-            },
-          ]),
-    ]);
-    expect(boat.sleeps).toHaveLength(0);
-  },
-);
-
-test("capture boot cancellation after the live read prevents command dispatch", async () => {
-  const controller = new AbortController();
-  const requests: string[] = [];
-  const provider = createBoatProvider({
-    apiKey: KEY,
-    fetch: (async (_input, init) => {
-      requests.push(init?.method ?? "");
-      controller.abort();
-      expect(init?.signal?.aborted).toBe(true);
-      return Response.json({ ok: true, sandbox: sandbox({ state: "ready" }) });
-    }) as typeof fetch,
-  });
-  await expect(provider.observeCaptureBoot(ID, controller.signal)).rejects.toBeDefined();
-  expect(requests).toEqual(["GET"]);
 });
 
 test("capture cancellation during a readiness wait cannot admit a later command", async () => {
@@ -826,47 +697,6 @@ test("capture cancellation during a readiness wait cannot admit a later command"
   expect(paths).toEqual([`/api/v1/sandboxes/${ID}`, `/api/v1/sandboxes/${ID}/commands`]);
 });
 
-// Preserve enough evidence to distinguish Armada admission from Boat rejection,
-// without exposing error bodies, labels, output, or new free-form state values.
-test.each(["provisioning", "archived", "suspended", "PRIVATE_STATE"])(
-  "capture observations identify %s without waking or stopping compute",
-  async (state) => {
-    const log = spyOn(console, "info");
-    try {
-      const reads = state === "archived" ? 1 : 5;
-      const boat = fakeBoat(
-        ...Array.from({ length: reads }, () => ({
-          body: { ok: true, sandbox: sandbox({ state, error: "PRIVATE_ERROR", labels: { secret: "PRIVATE_LABEL" } }) },
-        })),
-      );
-      await expect(
-        boat.provider.exec({
-          sandboxId: ID,
-          command: "PRIVATE_COMMAND",
-          onlyIfRunning: true,
-          preservationStage: "collect_exec",
-        }),
-      ).rejects.toMatchObject({ code: "sandbox_not_ready", status: undefined });
-      const observations = log.mock.calls
-        .map(([line]) => JSON.parse(String(line)))
-        .filter((e) => e.source === "state_guard");
-      expect(observations).toHaveLength(reads);
-      expect(observations.map((e) => e.attempt)).toEqual(Array.from({ length: reads }, (_, i) => i + 1));
-      expect(observations.at(-1)).toMatchObject({
-        stage: "collect_exec",
-        providerState: state === "PRIVATE_STATE" || state === "suspended" ? "unrecognized" : state,
-        stateMappingKnown: state === "provisioning" || state === "archived",
-        normalizedState: state === "archived" ? "stopped" : "starting",
-        decision: state === "archived" ? "refuse_terminal" : "startup_budget_exhausted",
-      });
-      expect(boat.requests.every((r) => r.method === "GET")).toBe(true);
-      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
-    } finally {
-      log.mockRestore();
-    }
-  },
-);
-
 test("runtime activation resumes compute with explicit lifetime and no account environment or native inference", async () => {
   const boat = fakeBoat({ body: { ok: true } }, { body: { ok: true, sandbox: sandbox({ state: "running" }) } });
   await boat.provider.resumeRuntime(ID, 1200);
@@ -877,31 +707,6 @@ test("runtime activation resumes compute with explicit lifetime and no account e
   expect(boat.requests[0]?.body).toEqual({ noEnv: true, env: {}, ttlSeconds: 1200 });
   await expect(boat.provider.resumeRuntime(ID, 1.5)).rejects.toBeDefined();
   expect(boat.requests).toHaveLength(2);
-});
-
-test("terminal capture refusal identifies its stop caller without forwarding context to Boat", async () => {
-  const log = spyOn(console, "info");
-  try {
-    const boat = fakeBoat({ body: { sandbox: sandbox({ state: "archived" }) } });
-    await expect(
-      boat.provider.exec({
-        sandboxId: ID,
-        command: "unused",
-        onlyIfRunning: true,
-        preservationContext: { source: "lifecycle_stop", captureId: "capture_fixture" },
-      }),
-    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-    const lines = log.mock.calls
-      .map(([line]) => JSON.parse(String(line)))
-      .filter((line) => line.event === "boat_preservation_exec");
-    expect(lines).toHaveLength(2);
-    for (const line of lines) expect(line).toMatchObject({ caller: "lifecycle_stop", captureId: "capture_fixture" });
-    expect(lines[1]).toMatchObject({ decision: "refuse_terminal", normalizedState: "stopped" });
-    expect(boat.requests).toHaveLength(1);
-    expect(JSON.stringify(boat.requests)).not.toContain("capture_fixture");
-  } finally {
-    log.mockRestore();
-  }
 });
 
 test("declared outputs are read from live compute by the fixed collector and never resume a stopped sandbox", async () => {
@@ -932,133 +737,4 @@ test("the capability probe treats a Bun that exits 0 without the probe answer as
   await expect(reply("Bun CLI help\n").provider.probeOutputs?.({ sandboxId: ID })).rejects.toMatchObject({
     reason: "collector_unsupported",
   });
-});
-test.each([true, false])(
-  "Boat accepts only complete retained output directory archives (complete: %s)",
-  async (complete) => {
-    const report = "a document written after sampling";
-    const archive = await new Bun.Archive(
-      complete ? { "late.pdf": report, "nested/private.txt": "skip" } : { "late.pdf": report },
-    ).bytes();
-    const completedAt = "2026-11-18T10:00:00Z";
-    const boat = fakeBoat(
-      {
-        body: {
-          sandbox: sandbox({
-            state: "archived",
-            snapshotAvailable: true,
-            snapshotCompletedAt: completedAt,
-            stoppedAt: "2026-11-18T10:01:00Z",
-            snapshotVerifiedAt: "2026-11-18T10:01:01Z",
-          }),
-        },
-      },
-      { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
-      new Response(archive, {
-        headers: {
-          "x-snapshot-entry-kind": "dir",
-          "x-snapshot-skipped-base-image-files": "0",
-          "x-snapshot-file-count": "2",
-          "x-snapshot-total-size-bytes": String(report.length + 4),
-        },
-      }),
-    );
-    const read = boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
-    if (complete) {
-      const snapshot = await read;
-      if (!snapshot || typeof snapshot === "string") throw Error("missing retained outputs");
-      expect(snapshot.entries.map(({ name, size }) => ({ name, size }))).toEqual([
-        { name: "late.pdf", size: report.length },
-      ]);
-      expect(Buffer.from(snapshot.readChunk({ entry: snapshot.entries[0]!, offset: 0 })!).toString()).toBe(report);
-    } else {
-      await expect(read).rejects.toThrow("output_unavailable");
-    }
-    expect(boat.requests.map(({ path }) => path)).toEqual([
-      `/api/v1/sandboxes/${ID}`,
-      `/api/v1/sandboxes/${ID}/snapshots/latest`,
-      "/api/v1/snapshots/retained/files",
-    ]);
-    expect(boat.requests[2]?.query.get("path")).toBe("home/user/outputs");
-  },
-);
-
-test("Boat rejects a retained archive ending in zero-filled file bytes without tar end records", async () => {
-  const payload = new Uint8Array(1024);
-  const archive = await new Bun.Archive({ "zero.bin": payload }).bytes();
-  const completedAt = "2026-11-18T10:00:00Z";
-  const boat = fakeBoat(
-    {
-      body: {
-        sandbox: sandbox({
-          state: "archived",
-          snapshotAvailable: true,
-          snapshotCompletedAt: completedAt,
-          stoppedAt: completedAt,
-        }),
-      },
-    },
-    { body: { snapshot: { id: "retained", sandboxId: ID, status: "completed", completedAt } } },
-    new Response(archive.slice(0, 512 + payload.length), {
-      headers: {
-        "x-snapshot-entry-kind": "dir",
-        "x-snapshot-skipped-base-image-files": "0",
-        "x-snapshot-file-count": "1",
-        "x-snapshot-total-size-bytes": String(payload.length),
-      },
-    }),
-  );
-  await expect(
-    boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal }),
-  ).rejects.toThrow("output_unavailable");
-});
-
-test("Boat does not publish an older snapshot without verification for the current stop", async () => {
-  const boat = fakeBoat({
-    body: {
-      sandbox: sandbox({
-        state: "archived",
-        stoppedAt: "2026-11-18T10:01:00Z",
-        stop: {
-          id: "stop-1",
-          status: StopOperationStatusEnum.Completed,
-          endedAt: "2026-11-18T10:01:00Z",
-        },
-        snapshotAvailable: true,
-        snapshotCompletedAt: "2026-11-18T10:00:00Z",
-        lastSnapshotStatus: "completed",
-      }),
-    },
-  });
-  const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
-  expect(snapshot).toBe("gone");
-  expect(boat.requests).toHaveLength(1);
-});
-
-test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {
-  const completedAt = "2026-11-18T10:00:00Z";
-  const boat = fakeBoat(
-    {
-      body: {
-        sandbox: sandbox({
-          state: "archived",
-          snapshotAvailable: true,
-          snapshotCompletedAt: completedAt,
-          stoppedAt: completedAt,
-        }),
-      },
-    },
-    errorBody(404, "not_found", "Sandbox not found"),
-  );
-  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
-    "gone",
-  );
-  expect(boat.requests).toHaveLength(2);
-});
-
-test("Boat reports a missing sandbox as a definitive retained-output result", async () => {
-  const boat = fakeBoat(errorBody(404, "not_found", "Sandbox not found"));
-  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
-    "gone",
-  );
 });

@@ -20,7 +20,6 @@ import {
   HARNESS_CATALOG,
   HARNESSES,
   MACHINE_SIZE_CATALOG,
-  OUTPUT_MAX_BYTES,
   ProviderError,
   parseMachineSize,
   providerRateLimitDetails,
@@ -45,9 +44,7 @@ import {
   type Sandbox,
   SandboxLastSnapshotStatusEnum,
   type SandboxListResponse,
-  SandboxStateEnum,
   type SavedSnapshot,
-  type StopOperationResponse,
   StopOperationResponseFromJSON,
   StopOperationStatusEnum,
 } from "@boatdev/sdk";
@@ -57,7 +54,6 @@ import {
   VM_RESOURCE_PATHS,
 } from "../../core/src/vm-resource-reading.ts";
 import { invalidRequest, PROVIDER_ID, toProviderError, unexpectedAnswer } from "./errors.ts";
-import { RETAINED_OUTPUT_PATH, readRetainedOutputArchive } from "./retained-outputs.ts";
 
 const DEFAULT_BASE_URL = "https://boat.dev/api/v1";
 /** boat's own default, sent explicitly so a launch never depends on it. */
@@ -79,8 +75,6 @@ const BOAT_STATES: Record<SandboxState, readonly string[]> = {
   failed: ["error", "cancelled"],
 };
 
-const LOG_STATES = new Set<string>(Object.values(SandboxStateEnum));
-const MAPPED_STATES = new Set(Object.values(BOAT_STATES).flat());
 const STOP_STATUSES = new Set<string>(Object.values(StopOperationStatusEnum));
 const SNAPSHOT_STATUSES = new Set<string>(Object.values(SandboxLastSnapshotStatusEnum));
 function trace(fields: Record<string, unknown>): void {
@@ -200,7 +194,6 @@ function page<T>(items: T[], pageInfo: { nextCursor: string | null; hasMore: boo
 
 /** Compute-only runtime ports; intentionally not required by legacy managed adapters. */
 interface BoatRuntimeHost {
-  observeCaptureBoot(sandboxId: string, signal: AbortSignal): Promise<string | null>;
   resumeRuntime(
     sandboxId: string,
     ttlSeconds: number,
@@ -217,8 +210,6 @@ export interface BoatProvider extends Provider {
     cursor?: string;
     signal?: AbortSignal;
   }): Promise<Page<{ sandboxId: string; deploymentId: string; createdAt: Date }>>;
-  /** One ordinary stop dispatch followed by bounded reads of its exact archival operation. */
-  stopBestEffort(sandboxId: string): Promise<void>;
 }
 
 const DEPLOYMENT_LABEL = "armada.deployment";
@@ -388,34 +379,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     return "usable";
   }
 
-  async function archive(sandboxId: string): Promise<void> {
-    const signal = AbortSignal.timeout(150_000);
-    // The generated SandboxActionResponse omits the documented top-level stop.
-    // Read the raw acceptance so the exact operation fence is not discarded.
-    const response = await call(async () => {
-      lifecycleTrace(sandboxId, "stop", "api_dispatch", "archive");
-      const accepted = await api.stopRaw({ sandboxId }, { signal });
-      lifecycleTrace(sandboxId, "stop", "api_accepted", "archive");
-      return (await accepted.raw.json()) as {
-        id?: string;
-        stop?: { id?: string };
-        sandbox?: { stop?: { id?: string } };
-      };
-    });
-    if (response.id !== sandboxId) throw unexpectedAnswer("stop operation");
-    const stopId = response.stop?.id ?? response.sandbox?.stop?.id;
-    if (!stopId) throw unexpectedAnswer("stop operation");
-    for (let attempt = 0; attempt < 120; attempt++) {
-      signal.throwIfAborted();
-      const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
-      if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
-      if (observed.stop.status === StopOperationStatusEnum.Completed) return;
-      if (!stopInFlight(observed.stop.status)) throw invalidRequest("Sandbox archival was superseded.");
-      await sleep(1000);
-    }
-    throw invalidRequest("Sandbox archival remains unconfirmed.");
-  }
-
   async function collectOutputs<T>(
     { sandboxId, signal }: Parameters<NonNullable<Provider["readOutputs"]>>[0],
     command: string,
@@ -523,60 +486,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
 
     // Match the bounded concurrency of Boat work preservation's chunk reads.
     outputReadConcurrency: 8,
-    async openRetainedOutputs({ sandboxId, signal }) {
-      function missingRetainedResource(error: unknown): null {
-        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
-        throw error;
-      }
-      const observed = await call(() => api.get({ sandboxId }, { signal })).catch(missingRetainedResource);
-      if (!observed) return "gone";
-      const current = observed.sandbox;
-      if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
-      if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
-      if (current.state !== "archived") return "pending";
-      const verification = archivedSnapshotVerification(current);
-      if (verification.reason !== undefined) return verification.retention === "pending" ? "pending" : "gone";
-      if (verification.verifiedAt < verification.stoppedAt) return "gone";
-      const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
-        missingRetainedResource,
-      );
-      if (!latest) return "gone";
-      const { snapshot } = latest;
-      // The latest endpoint can race the stop observation. Bind it to the completed
-      // snapshot reported by the archived sandbox, including no-change archives.
-      if (
-        snapshot?.sandboxId !== sandboxId ||
-        snapshot.status !== "completed" ||
-        !snapshot.completedAt ||
-        !current.snapshotCompletedAt ||
-        snapshot.completedAt.getTime() !== current.snapshotCompletedAt.getTime()
-      )
-        return null;
-      const response = await call(() =>
-        api.getSnapshotFileRaw({ snapshotId: snapshot.id, path: RETAINED_OUTPUT_PATH }, { signal }),
-      ).catch((error: unknown) => {
-        if (
-          error instanceof ProviderError &&
-          [
-            "legacy_snapshot",
-            "snapshot_not_indexed",
-            "snapshot_data_expired",
-            "base_image_file",
-            "is_symlink",
-          ].includes(error.providerCode ?? "")
-        )
-          return null;
-        return missingRetainedResource(error);
-      });
-      if (!response) return "gone";
-      const { entries, files } = await readRetainedOutputArchive(response.raw, signal);
-      return {
-        entries,
-        readChunk({ entry, offset, length }) {
-          return files.get(entry.name)?.subarray(offset, offset + (length ?? OUTPUT_MAX_BYTES)) ?? null;
-        },
-      };
-    },
     listOutputEntries(request) {
       return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);
     },
@@ -642,37 +551,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return info;
     },
 
-    async observeCaptureBoot(sandboxId, signal) {
-      signal.throwIfAborted();
-      const current = await provider.get(sandboxId, { signal });
-      signal.throwIfAborted();
-      if (!["ready", "running"].includes(current.state) || current.physicalExitConfirmed) return null;
-
-      const result = await call(() =>
-        api.command(
-          {
-            sandboxId,
-            commandRequest: { command: "cat /proc/sys/kernel/random/boot_id", timeoutSeconds: 5 },
-          },
-          { signal },
-        ),
-      );
-      signal.throwIfAborted();
-      if (
-        !("exitCode" in result) ||
-        result.type !== "command.finished" ||
-        result.ok !== true ||
-        result.success !== true ||
-        result.exitCode !== 0 ||
-        result.timedOut !== false ||
-        result.stdoutTruncated === true ||
-        typeof result.stdout !== "string"
-      )
-        return null;
-      const boot = result.stdout.trim();
-      return boot && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(boot) ? boot.toLowerCase() : null;
-    },
-
     async resumeRuntime(sandboxId, ttlSeconds, caller, onResumeStage) {
       const timeout = AbortSignal.timeout(150_000);
       const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
@@ -694,9 +572,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         info = await provider.get(sandboxId, { signal });
       }
       if (!["ready", "running"].includes(info.state)) throw invalidRequest("Sandbox activation failed.");
-    },
-    async stopBestEffort(sandboxId: string): Promise<void> {
-      await archive(sandboxId);
     },
     async listSandboxInventory({ cursor, signal } = {}) {
       if (!deploymentId || !deploymentLabel) return { items: [], cursor: null };
@@ -729,28 +604,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     },
 
     async exec(request: ExecRequest): Promise<ExecResult> {
-      const started = performance.now();
-      const execId = request.onlyIfRunning ? crypto.randomUUID() : undefined;
-      const stage =
-        request.preservationStage === "collect_exec" || request.preservationStage === "chunk_exec"
-          ? request.preservationStage
-          : "exec";
-      const observation = (attempt: number, fields: Record<string, unknown>) => {
-        if (request.onlyIfRunning && !request.outputCollection)
-          trace({
-            event: "boat_preservation_exec",
-            providerSandboxId: request.sandboxId,
-            stage,
-            purpose: "work_preservation",
-            execId,
-            caller: request.preservationContext?.source ?? "unspecified",
-            captureId: request.preservationContext?.captureId ?? null,
-            attempt,
-            maxAttempts: RESTORE_RETRIES,
-            elapsedMs: Math.round(performance.now() - started),
-            ...fields,
-          });
-      };
       const commandRequest = {
         command: request.command,
         ...(request.cwd ? { cwd: request.cwd } : {}),
@@ -764,36 +617,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           // startup may settle, but stopping/terminal compute cannot accept capture.
           // The extra GET for every chunk is deliberate: refuse compute that
           // stopped mid-download rather than implicitly resuming it.
-          observation(attempt, { source: "get_api", decision: "dispatch" });
           const current = await provider.get(
             request.sandboxId,
             request.signal ? { signal: request.signal } : undefined,
           );
           request.signal?.throwIfAborted();
           const refused = current.physicalExitConfirmed === true || !["ready", "running"].includes(current.state);
-          const wait = refused && current.state === "starting" && attempt < RESTORE_RETRIES;
-          observation(attempt, {
-            source: "state_guard",
-            providerState: LOG_STATES.has(current.providerState) ? current.providerState : "unrecognized",
-            stateMappingKnown: MAPPED_STATES.has(current.providerState),
-            normalizedState: current.state,
-            physicalExitConfirmed: current.physicalExitConfirmed === true,
-            autoStopAt:
-              current.expiresAt instanceof Date && Number.isFinite(current.expiresAt.getTime())
-                ? current.expiresAt.toISOString()
-                : null,
-            stoppedAt:
-              current.stoppedAt instanceof Date && Number.isFinite(current.stoppedAt.getTime())
-                ? current.stoppedAt.toISOString()
-                : null,
-            decision: !refused
-              ? "command"
-              : wait
-                ? "wait_starting"
-                : current.state === "starting"
-                  ? "startup_budget_exhausted"
-                  : "refuse_terminal",
-          });
           if (refused) {
             if (current.state === "starting" && attempt < RESTORE_RETRIES) {
               await sleep(NOT_READY_WAIT_MS);
@@ -809,14 +638,12 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           }
         }
         try {
-          observation(attempt, { source: "command_api", decision: "dispatch" });
           const response = await call(() =>
             api.command(
               { sandboxId: request.sandboxId, commandRequest },
               request.signal ? { signal: request.signal } : undefined,
             ),
           );
-          observation(attempt, { source: "command_api", decision: "response_received" });
           if ("processId" in response) return { detached: true, processId: response.processId };
           if (!("exitCode" in response)) throw unexpectedAnswer("command result");
           return {
@@ -834,19 +661,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             error instanceof ProviderError &&
             error.code === "sandbox_not_ready" &&
             error.status === 409;
-          observation(attempt, {
-            source: "command_api",
-            decision: notReady ? "refused_not_ready" : restoring ? "refused_restoring" : "failed",
-            providerStatus:
-              error instanceof ProviderError &&
-              typeof error.status === "number" &&
-              Number.isInteger(error.status) &&
-              error.status >= 100 &&
-              error.status <= 599
-                ? error.status
-                : null,
-            retryScheduled: (restoring || notReady) && attempt < RESTORE_RETRIES,
-          });
           if ((!restoring && !notReady) || attempt >= RESTORE_RETRIES) throw error;
           // A 409 refusal did not execute the command. Never replay ambiguous errors.
           await sleep(notReady ? NOT_READY_WAIT_MS : RESTORE_WAIT_MS);

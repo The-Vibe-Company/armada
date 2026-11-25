@@ -3,10 +3,12 @@ import type { ModalProvider } from "@armada/provider-modal";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
+import { usesDiskStopJob } from "../provider-runtime-admission.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { holdModalStop, recordDockerCleanupReceipt, settleModalStop, transitionSandbox } from "../sandbox-lifecycle.ts";
 import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
 import { preserveBeforeStop } from "../work-preservation.ts";
+import { createBoatStop } from "./boat-stop.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import { createJobsStore, mergeStopOutcome, withJobLease } from "./store.ts";
 export interface DockerStopIntent {
@@ -32,7 +34,9 @@ export function createStopJob(
   readOutputs = createDockerOutputReader(sql, key),
   now = Date.now,
   resolveModal?: (sandboxId: string) => Promise<Provider>,
+  deploymentId = "",
 ) {
+  const boatStop = createBoatStop(sql, key, deploymentId, now);
   const hosts = createDockerHostStore(sql, key);
   const jobs = createJobsStore(sql, key);
   async function capture(
@@ -199,8 +203,18 @@ export function createStopJob(
   return {
     concurrency: 8,
     async run(job, context) {
-      if (job.sandbox_id && job.generation && job.payload === null)
-        return runModal(job, context, job.sandbox_id, job.generation);
+      if (job.sandbox_id && job.generation && job.payload === null) {
+        const {
+          rows: [target],
+        } = await sql.query<{ provider: string }>(
+          "select provider::text from public.sandboxes where id=$1 and lifecycle_generation=$2",
+          [job.sandbox_id, job.generation],
+        );
+        if (!target) return { status: "fail", reason: "stop_target_changed" };
+        return usesDiskStopJob(target.provider)
+          ? boatStop(job, context)
+          : runModal(job, context, job.sandbox_id, job.generation);
+      }
       const intent = job.payload as DockerStopIntent | DockerExpiry | null;
       if (!job.sandbox_id || !job.generation || !intent) return { status: "fail", reason: "stop_intent_missing" };
       const sandboxId = job.sandbox_id;

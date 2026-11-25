@@ -46,9 +46,6 @@ export function recordOutputPublication(tx: Sql, id: string, scan: string, retai
   );
 }
 
-export const BOAT_RETAINED_OUTPUT_STOP = `provider='boat' and status in ('stopped','failed') and stopped_at is not null
-          and stop_requested_at is null and ${RETAINED_INCOMPLETE}`;
-
 export const DOCKER_RETAINED_OUTPUT_STOP = `provider='docker' and status in ('stopped','failed') and stopped_at is not null
           and stop_requested_at is not null and ${RETAINED_INCOMPLETE}
           and exists(select 1 from public.docker_hosts h join public.members m on m.org_id=h.org_id and m.user_id=h.owner_id
@@ -56,7 +53,6 @@ export const DOCKER_RETAINED_OUTPUT_STOP = `provider='docker' and status in ('st
 
 const WRITE_ELIGIBILITY = {
   live: CAN_WRITE_LIVE,
-  "boat-retained": BOAT_RETAINED_OUTPUT_STOP,
   "docker-retained": `${DOCKER_RETAINED_OUTPUT_STOP} and exists(select 1 from public.sandbox_output_state
     where sandbox_id=sandboxes.id and upload_scan=$2::timestamptz)`,
 };

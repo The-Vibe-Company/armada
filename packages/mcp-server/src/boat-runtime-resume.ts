@@ -72,7 +72,6 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
         if (!saved.rows.length) throw Error("boat_runtime_resume_coverage_changed");
       };
     },
-    stop: (host, sandbox) => host.stopBestEffort(sandbox.providerSandboxId),
   });
 }
 

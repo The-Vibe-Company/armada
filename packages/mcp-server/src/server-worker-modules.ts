@@ -53,6 +53,7 @@ const jobsLane: LaneFactory = ({
   launchCleanupJob,
   dockerLaunch,
   accountTurns,
+  deploymentId,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -112,6 +113,7 @@ const jobsLane: LaneFactory = ({
               undefined,
               undefined,
               createMcpSandboxProviderResolver(sql, providers),
+              deploymentId,
             ),
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
               sql,
