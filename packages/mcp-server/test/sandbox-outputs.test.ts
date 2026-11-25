@@ -451,10 +451,10 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   ]);
 });
 
-// Wait for the released fixture to reach the capture's cancellation fence.
 function observeLateAbort(signal: AbortSignal) {
   const observed = Promise.withResolvers<void>();
   const check = signal.throwIfAborted.bind(signal);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Observe the released capture reaching the fence and invoke the original abort check.
   const spy = spyOn(signal, "throwIfAborted").mockImplementation(() => {
     if (signal.aborted) {
       spy.mockRestore();
