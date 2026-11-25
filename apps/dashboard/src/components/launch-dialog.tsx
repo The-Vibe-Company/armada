@@ -11,7 +11,14 @@ import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm } from "@/components/action-form";
 import { DockerLaunchForm } from "@/components/docker-launch";
-import { ComposerLocation, ComposerStop, DockerLimits, LaunchChip, LaunchComposer } from "@/components/launch-composer";
+import {
+  ComposerLocation,
+  ComposerStop,
+  DockerLimitList,
+  DockerLimits,
+  LaunchChip,
+  LaunchComposer,
+} from "@/components/launch-composer";
 import { LaunchRepositoryContext, RepositoryPicker, WithoutRepository } from "@/components/launch-repositories";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import { LaunchSnapshotBuild } from "@/components/launch-snapshot-build";
@@ -139,7 +146,7 @@ export function DiscoveredLaunchStart({
     initialTargetId: target.id,
     orgId: options.orgId,
     accounts: options.accounts,
-    dockerLimits,
+    dockerLimits: dockerLimits ?? <DockerLimitList unavailable={options.dockerLimits} />,
     initialTask,
     initialTemplate,
     launchBlockedReason: target.reason,

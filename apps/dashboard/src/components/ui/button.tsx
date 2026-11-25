@@ -4,20 +4,20 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-[13px] font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,scale,opacity] duration-150 outline-none motion-safe:active:not-disabled:scale-[0.97] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-[13px] font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,scale,opacity] duration-120 ease-(--ease-out) motion-reduce:transition-none outline-none motion-safe:active:not-disabled:scale-[0.96] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-[var(--accent-hover)]",
+        default: "bg-primary text-primary-foreground fine-hover:bg-[var(--accent-hover)]",
         destructive:
-          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
+          "bg-destructive text-white fine-hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:text-background dark:focus-visible:ring-destructive/40",
         "destructive-outline":
-          "border border-destructive/30 bg-background text-destructive shadow-xs hover:border-destructive/50 hover:bg-destructive/10 focus-visible:ring-destructive/20 dark:bg-input/30 dark:hover:bg-destructive/15",
+          "border border-destructive/30 bg-background text-destructive shadow-xs fine-hover:border-destructive/50 fine-hover:bg-destructive/10 focus-visible:ring-destructive/20 dark:bg-input/30 dark:fine-hover:bg-destructive/15",
         outline:
-          "border bg-card shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
-        secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
-        link: "text-[var(--accent-text)] underline-offset-4 hover:underline",
+          "border bg-card shadow-xs fine-hover:bg-accent fine-hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:fine-hover:bg-input/50",
+        secondary: "bg-secondary text-secondary-foreground fine-hover:bg-secondary/80",
+        ghost: "fine-hover:bg-accent fine-hover:text-accent-foreground dark:fine-hover:bg-accent/50",
+        link: "text-[var(--accent-text)] underline-offset-4 fine-hover:underline",
       },
       size: {
         default: "h-8 px-3 py-1.5 has-[>svg]:px-2.5",

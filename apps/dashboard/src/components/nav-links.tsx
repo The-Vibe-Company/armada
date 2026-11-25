@@ -1,6 +1,5 @@
 "use client";
 
-import type { SandboxStatus } from "@armada/core";
 import {
   BoxesIcon,
   CalendarClockIcon,
@@ -18,7 +17,8 @@ import {
   WebhookIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { type ComponentProps, useEffect, useRef, useState } from "react";
 import { LinkPendingIcon } from "@/components/link-pending";
 import { StatusDot } from "@/components/status-badge";
 import {
@@ -32,6 +32,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { INLINE_LIVE_LIMIT, LIVE_SANDBOXES_HREF, type LiveSandboxes } from "@/lib/live-sandboxes";
 import { isActiveLink, NAV_GROUPS, type NavIcon } from "@/lib/navigation";
 import { statusLook } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
@@ -73,22 +74,100 @@ export function NavMobileTrigger() {
   );
 }
 
-/** Read dynamic destinations on demand instead of eagerly rendering every sidebar page.
- * The shared loading boundary keeps navigation responsive; visited routes still use the router cache.
- */
+function useLiveSandboxes(organizationId: string | null, initialLive: LiveSandboxes | null | undefined) {
+  const [update, setUpdate] = useState<{ initial: typeof initialLive; organizationId: string; live: LiveSandboxes }>();
+  useEffect(() => {
+    if (!organizationId || initialLive === undefined) return;
+    const scope = organizationId;
+    const url = `/api/fleet/live?organizationId=${encodeURIComponent(organizationId)}`;
+    let pending: AbortController | undefined;
+    const active = () => document.visibilityState === "visible" && document.hasFocus();
+    async function poll() {
+      if (!active() || pending) return;
+      const request = new AbortController();
+      pending = request;
+      try {
+        const response = await fetch(url, { signal: request.signal });
+        if (!response.ok) return;
+        const rows: LiveSandboxes["rows"] = await response.json();
+        const total = Number(response.headers.get("X-Live-Count"));
+        if (active() && !request.signal.aborted) {
+          setUpdate({ initial: initialLive, organizationId: scope, live: { rows, total } });
+        }
+      } catch {
+        return;
+      } finally {
+        if (pending === request) pending = undefined;
+      }
+    }
+
+    function onActivity() {
+      if (active()) void poll();
+      else {
+        pending?.abort();
+        pending = undefined;
+      }
+    }
+
+    const interval = window.setInterval(poll, 30_000);
+    window.addEventListener("focus", onActivity);
+    window.addEventListener("blur", onActivity);
+    document.addEventListener("visibilitychange", onActivity);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onActivity);
+      window.removeEventListener("blur", onActivity);
+      document.removeEventListener("visibilitychange", onActivity);
+      pending?.abort();
+    };
+  }, [organizationId, initialLive]);
+  return update && update.initial === initialLive && update.organizationId === organizationId
+    ? update.live
+    : initialLive;
+}
+
+function IntentLink({ href, ...props }: Omit<ComponentProps<typeof Link>, "href"> & { href: string }) {
+  const router = useRouter();
+  const timer = useRef<number | undefined>(undefined);
+  function cancel() {
+    window.clearTimeout(timer.current);
+  }
+  function prefetch() {
+    cancel();
+    timer.current = window.setTimeout(() => router.prefetch(href), 60);
+  }
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return (
+    <Link
+      {...props}
+      href={href}
+      prefetch={false}
+      onMouseEnter={prefetch}
+      onMouseLeave={(event) => {
+        if (document.activeElement !== event.currentTarget) cancel();
+      }}
+      onFocus={prefetch}
+      onBlur={(event) => {
+        if (!event.currentTarget.matches(":hover")) cancel();
+      }}
+    />
+  );
+}
+
 export function NavLinks({
   className,
-  sandboxes = [],
+  initialLive,
   organizationId = null,
   organizationAdmin = false,
 }: {
   organizationId?: string | null;
   organizationAdmin?: boolean;
   className?: string;
-  sandboxes?: { id: string; label: string; status: SandboxStatus }[];
+  initialLive?: LiveSandboxes | null;
 }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
+  const live = useLiveSandboxes(organizationId, initialLive);
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
@@ -120,11 +199,10 @@ export function NavLinks({
                             : "text-muted-foreground",
                         )}
                       >
-                        <Link
+                        <IntentLink
                           href={
                             href === "/orgs" && organizationId ? `/orgs/${encodeURIComponent(organizationId)}` : href
                           }
-                          prefetch={false}
                           onClick={() => setOpenMobile(false)}
                           aria-current={active ? "page" : undefined}
                         >
@@ -132,17 +210,16 @@ export function NavLinks({
                             <Icon />
                           </LinkPendingIcon>
                           <span className="truncate">{label}</span>
-                        </Link>
+                        </IntentLink>
                       </SidebarMenuButton>
-                      {href === "/sandboxes" && sandboxes.length > 0 && (
+                      {href === "/sandboxes" && live && live.total > 0 && (
                         <ul className="my-1 ml-[15px] space-y-px border-l pl-2 group-data-[collapsible=icon]:hidden">
-                          {sandboxes.map((sandbox) => {
+                          {live.rows.map((sandbox) => {
                             const look = statusLook(sandbox.status);
                             return (
                               <li key={sandbox.id}>
-                                <Link
+                                <IntentLink
                                   href={`/sandboxes/${sandbox.id}`}
-                                  prefetch={false}
                                   onClick={() => setOpenMobile(false)}
                                   title={`${sandbox.label} · ${look.label}`}
                                   aria-current={pathname === `/sandboxes/${sandbox.id}` ? "page" : undefined}
@@ -154,10 +231,21 @@ export function NavLinks({
                                   <StatusDot tone={look.tone} pulse={look.pulse} />
                                   <span className="truncate">{sandbox.label}</span>
                                   <span className="sr-only">{look.label}</span>
-                                </Link>
+                                </IntentLink>
                               </li>
                             );
                           })}
+                          {live.total > INLINE_LIVE_LIMIT && (
+                            <li>
+                              <IntentLink
+                                href={LIVE_SANDBOXES_HREF}
+                                onClick={() => setOpenMobile(false)}
+                                className="flex h-7 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-[var(--raised)] hover:text-foreground"
+                              >
+                                View all {live.total} live →
+                              </IntentLink>
+                            </li>
+                          )}
                         </ul>
                       )}
                     </SidebarMenuItem>

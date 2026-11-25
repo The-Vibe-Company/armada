@@ -42,6 +42,7 @@ export function CommandMenu({ organizationAdmin }: { organizationAdmin: boolean 
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
+        animated={false}
         className="top-[18%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-md"
         aria-describedby={undefined}
         onCloseAutoFocus={(event) => {

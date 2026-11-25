@@ -45,7 +45,7 @@ export function LaunchDialogContent({ children }: { children: ReactNode }) {
   return (
     <DialogContent
       ref={dialog}
-      className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-y-auto overscroll-contain rounded-2xl p-0 sm:max-w-[760px] max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none [&_[data-slot=dialog-close]]:pointer-coarse:grid [&_[data-slot=dialog-close]]:pointer-coarse:size-11 [&_[data-slot=dialog-close]]:pointer-coarse:place-items-center"
+      className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-y-auto overscroll-contain rounded-xl p-0 sm:max-w-[760px] max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none [&_[data-slot=dialog-close]]:pointer-coarse:grid [&_[data-slot=dialog-close]]:pointer-coarse:size-11 [&_[data-slot=dialog-close]]:pointer-coarse:place-items-center"
       onKeyDownCapture={(event) => {
         if (!isSubmitShortcut(event.nativeEvent)) return;
         const send = event.currentTarget.querySelector<HTMLButtonElement>("[data-launch-send]");
