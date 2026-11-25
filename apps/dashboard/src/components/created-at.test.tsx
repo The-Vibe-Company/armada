@@ -16,6 +16,7 @@ test("creation ages share one interval until the last timestamp unmounts", () =>
       {second && <CreatedAt iso={iso} now={now} />}
     </TooltipProvider>
   );
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Supply Radix cleanup globals for the real tooltip tree in the DOM-free renderer.
   Object.assign(globalThis, { window: { clearTimeout }, document: new EventTarget() });
   let renderer: ReactTestRenderer | undefined;
   try {
@@ -37,8 +38,10 @@ test("creation ages share one interval until the last timestamp unmounts", () =>
       act(() => renderer?.unmount());
       expect(jest.getTimerCount()).toBe(0);
     } finally {
+      /* oxlint-disable landmines-testing/no-test-doubles -- Restore the DOM-free test environment. */
       Reflect.deleteProperty(globalThis, "window");
       Reflect.deleteProperty(globalThis, "document");
+      /* oxlint-enable landmines-testing/no-test-doubles */
       jest.useRealTimers();
     }
   }

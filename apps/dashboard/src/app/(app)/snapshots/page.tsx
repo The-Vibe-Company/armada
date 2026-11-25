@@ -20,8 +20,13 @@ import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } fro
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
-import { type LaunchConnections, type LaunchProps, LaunchStart } from "@/components/launch-dialog";
-import { LaunchDialogContent, LaunchDialogHeader } from "@/components/launch-surface";
+import {
+  type HostLaunchStart,
+  type LaunchConnections,
+  type LaunchProps,
+  LaunchStart,
+} from "@/components/launch-dialog";
+import { LaunchDialogContent } from "@/components/launch-surface";
 import { Empty } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
@@ -131,6 +136,8 @@ export default async function GoldensPage({ searchParams }: Props) {
   const hosts = hostRead.state === "ready" ? hostRead.list.hosts.filter((host) => host.state !== "revoked") : [];
   const snapshots = snapshotRead.state === "ready" ? snapshotRead.snapshots : [];
   const hasDocker = hasDockerHost(hosts) || snapshots.length > 0;
+  const dockerPlacement = hostRead.state === "ready" && hostRead.list.placement;
+  const canBuildDocker = dockerPlacement && Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens);
   const setupPending = selected !== null && setup?.state === "pending";
   const connected = setup && setup.state !== "unavailable" ? connectedProviders(setup.status) : null;
   const canStart = (connected?.length ?? 0) > 0 || hasDocker;
@@ -194,11 +201,7 @@ export default async function GoldensPage({ searchParams }: Props) {
           orgId={org.id}
           isAdmin={role === "admin"}
           hosts={hosts}
-          canBuild={
-            hostRead.state === "ready" &&
-            hostRead.list.placement &&
-            Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens)
-          }
+          canBuild={canBuildDocker}
           cloudForms={Object.fromEntries(
             providers.map((provider) => [
               provider,
@@ -295,6 +298,35 @@ export default async function GoldensPage({ searchParams }: Props) {
     </>
   );
 
+  async function SnapshotCapacitySummary() {
+    if (!capacity) return null;
+    const { entries } = await capacity;
+    const parts = capacityParts(entries);
+    return (
+      <p className="text-xs text-muted-foreground" data-capacity-summary>
+        {parts.map((part, index) => (
+          <Fragment key={part.provider}>
+            {index > 0 && <span aria-hidden> · </span>}
+            <span
+              data-capacity={part.kind}
+              data-capacity-provider={part.provider}
+              data-capacity-removed={entries[index]?.removed}
+              className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
+            >
+              <span data-capacity-line>{part.text}</span>
+              {part.reason && (
+                <>
+                  {" "}
+                  (<span data-capacity-reason>{part.reason}</span>)
+                </>
+              )}
+            </span>
+          </Fragment>
+        ))}
+      </p>
+    );
+  }
+
   const empty =
     selected && inventoryIncomplete ? (
       <Empty title="Snapshots are not fully loaded" action={reload} icon={<LayersIcon />}>
@@ -329,12 +361,12 @@ export default async function GoldensPage({ searchParams }: Props) {
     const saved = snapshots.filter((item) => item.hostId === hostId);
     const name = host?.name ?? saved[0]?.hostName ?? DOCKER_HOST_LABEL;
     const blocker = host
-      ? dockerLaunchBlocker(dockerOption, hostRead.state === "ready" && hostRead.list.placement, host)
+      ? dockerLaunchBlocker(dockerOption, dockerPlacement, host)
       : "This Docker host is no longer connected. Register it again from Docker hosts.";
     const agents = dockerHarnesses(dockerOption);
     const action =
       selected && host && !blocker ? (
-        <EnvironmentLaunchDialog>
+        <DeferredLaunch>
           <EmptyHostLaunchStart
             orgId={selected.org.id}
             hostId={host.id}
@@ -343,7 +375,7 @@ export default async function GoldensPage({ searchParams }: Props) {
             harnesses={agents.offered}
             initialHarness={agents.initial ?? "codex"}
           />
-        </EnvironmentLaunchDialog>
+        </DeferredLaunch>
       ) : null;
     rows.push(
       {
@@ -367,11 +399,9 @@ export default async function GoldensPage({ searchParams }: Props) {
         dockerSnapshotRow(
           snapshot,
           context,
-          snapshotLaunchEnabled(dockerOption, hostRead.state === "ready" && hostRead.list.placement),
+          snapshotLaunchEnabled(dockerOption, dockerPlacement),
           snapshotRead.state === "ready" ? snapshotRead.currentVersion : null,
-          hostRead.state === "ready" &&
-            hostRead.list.placement &&
-            Boolean(dockerOption?.enabled && dockerOption.capabilities.goldens),
+          canBuildDocker,
         ),
       ),
     );
@@ -390,7 +420,7 @@ export default async function GoldensPage({ searchParams }: Props) {
       footer={
         capacity && (
           <Suspense fallback={null}>
-            <SnapshotCapacitySummary capacity={capacity} />
+            <SnapshotCapacitySummary />
           </Suspense>
         )
       }
@@ -420,8 +450,13 @@ async function SnapshotEnvironmentTemplates(props: Omit<ComponentProps<typeof En
   return <EnvironmentTemplates {...props} list={await readSnapshotTemplates()} />;
 }
 
-async function EmptyHostLaunchStart(props: Omit<ComponentProps<typeof LaunchStart>, "accounts">) {
-  return <LaunchStart {...props} accounts={await readSnapshotAccounts()} />;
+async function EmptyHostLaunchStart(props: Omit<HostLaunchStart, "accounts">) {
+  const accounts = await readSnapshotAccounts();
+  return (
+    <EnvironmentLaunchDialog>
+      <LaunchStart {...props} accounts={accounts} />
+    </EnvironmentLaunchDialog>
+  );
 }
 
 async function readSnapshotCapacity(
@@ -435,14 +470,17 @@ async function readSnapshotCapacity(
     listGoldenHistory(supabase),
     allCapabilities(serverUrl, token, orgId, providers),
   ]);
-  // Usage comes only from caller-visible server bindings, never historical row counts.
-  const capacities = Object.fromEntries(
-    Object.entries(capabilities).map(([provider, read]) => [
-      provider,
-      providerCapacity(history, read, provider as SandboxProviderId),
-    ]),
-  );
-  return { history, capabilities, capacities, providers };
+  const entries = capabilities.map(([provider, read]) => {
+    const bound = new Set(
+      read.ok ? read.bindings?.filter((b) => b.relation === "current_backend").map((b) => b.goldenId) : [],
+    );
+    const removed = history.filter(
+      (golden) => golden.provider === provider && golden.removed_at && bound.has(golden.id),
+    ).length;
+    return { provider, state: providerCapacity(history, read, provider), removed };
+  });
+  const capacities = Object.fromEntries(entries.map(({ provider, state }) => [provider, state]));
+  return { history, capabilities: Object.fromEntries(capabilities), capacities, entries };
 }
 
 type CapacityRead = ReturnType<typeof readSnapshotCapacity>;
@@ -460,48 +498,6 @@ async function SnapshotCapacityNotices({ capacity }: { capacity: CapacityRead })
     );
     return reconcile.length > 0 ? <LegacyConflict key={provider} provider={provider} goldens={reconcile} /> : null;
   });
-}
-
-async function SnapshotCapacitySummary({ capacity }: { capacity: CapacityRead }) {
-  const { capabilities, capacities, history, providers } = await capacity;
-  const counts = Object.fromEntries(
-    providers.map((provider) => {
-      const read = capabilities[provider];
-      const bound = new Set(
-        read?.ok ? read.bindings?.filter((b) => b.relation === "current_backend").map((b) => b.goldenId) : [],
-      );
-      return [
-        provider,
-        history.filter((golden) => golden.provider === provider && golden.removed_at && bound.has(golden.id)).length,
-      ];
-    }),
-  );
-  const parts = capacityParts(
-    providers.map((provider) => ({ provider, state: capacities[provider], removed: counts[provider] })),
-  );
-  return parts.length > 0 ? (
-    <p className="text-xs text-muted-foreground" data-capacity-summary>
-      {parts.map((part, index) => (
-        <Fragment key={part.provider}>
-          {index > 0 && <span aria-hidden> · </span>}
-          <span
-            data-capacity={part.kind}
-            data-capacity-provider={part.provider}
-            data-capacity-removed={counts[part.provider]}
-            className={cn(part.kind === "full" || part.kind === "legacy" ? "text-warning" : undefined)}
-          >
-            <span data-capacity-line>{part.text}</span>
-            {part.reason && (
-              <>
-                {" "}
-                (<span data-capacity-reason>{part.reason}</span>)
-              </>
-            )}
-          </span>
-        </Fragment>
-      ))}
-    </p>
-  ) : null;
 }
 
 /**
@@ -523,9 +519,7 @@ async function allCapabilities(
           org,
           provider,
         );
-  return Object.fromEntries(
-    await Promise.all(providers.map(async (provider) => [provider, await read(provider)] as const)),
-  );
+  return Promise.all(providers.map(async (provider) => [provider, await read(provider)] as const));
 }
 
 /** Visible goldens with a verified current-backend reservation. */
@@ -1058,9 +1052,9 @@ type SnapshotLaunchProps = Omit<LaunchProps, "accounts" | "connections" | "templ
 
 function SnapshotLaunchDialog(props: SnapshotLaunchProps) {
   return (
-    <EnvironmentLaunchDialog>
+    <DeferredLaunch>
       <SnapshotLaunchStart {...props} />
-    </EnvironmentLaunchDialog>
+    </DeferredLaunch>
   );
 }
 async function SnapshotLaunchStart({ templateSource, ...props }: SnapshotLaunchProps) {
@@ -1071,16 +1065,32 @@ async function SnapshotLaunchStart({ templateSource, ...props }: SnapshotLaunchP
     props.provider === "boat" ? readLaunchOptions() : null,
   ]);
   return (
-    <LaunchStart
-      {...props}
-      connections={connections}
-      accounts={accounts}
-      templates={
-        templateSource ? templates.filter((template) => template.definition.goldenId === templateSource.goldenId) : []
+    <EnvironmentLaunchDialog>
+      <LaunchStart
+        {...props}
+        connections={connections}
+        accounts={accounts}
+        templates={
+          templateSource ? templates.filter((template) => template.definition.goldenId === templateSource.goldenId) : []
+        }
+        boatOpenCodeAvailable={boatOptions !== null && boatOpenCodeAvailable(boatOptions)}
+        dockerLimits={<DockerLaunchLimitList />}
+      />
+    </EnvironmentLaunchDialog>
+  );
+}
+
+function DeferredLaunch({ children }: { children: import("react").ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <Button variant="outline" size="sm" disabled>
+          Loading launch options…
+        </Button>
       }
-      boatOpenCodeAvailable={boatOptions !== null && boatOpenCodeAvailable(boatOptions)}
-      dockerLimits={<DockerLaunchLimitList />}
-    />
+    >
+      {children}
+    </Suspense>
   );
 }
 
@@ -1092,11 +1102,7 @@ function EnvironmentLaunchDialog({ children }: { children: import("react").React
           Launch
         </Button>
       </DialogTrigger>
-      <LaunchDialogContent>
-        <Suspense fallback={<LaunchDialogHeader title="Launch a sandbox" description="Loading launch options…" />}>
-          {children}
-        </Suspense>
-      </LaunchDialogContent>
+      <LaunchDialogContent>{children}</LaunchDialogContent>
     </Dialog>
   );
 }

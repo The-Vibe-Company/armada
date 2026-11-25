@@ -37,10 +37,12 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     modal_environment: null,
     modal_app_id: null,
     size_policy: null,
+    removed_at: null,
     build_warnings: [],
     helper_receipt: null,
     baseline_version: null,
   };
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated inventory reads and gate deferred reads without a Next request, provider, or database. */
   spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user", email: "user@example.com", token: "test" });
   spyOn(viewer, "listMemberships").mockResolvedValue([membership]);
   spyOn(viewer, "memberDirectory").mockResolvedValue(new Map());
@@ -96,10 +98,11 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     });
   }
 
+  /* oxlint-enable landmines-testing/no-test-doubles */
   try {
     const page = GoldensPage({ searchParams: Promise.resolve({}) });
-    // A task turn drains settled fixture reads while the explicit deferred gate stays closed.
-    const element = await Promise.race([page, new Promise<null>((resolve) => setImmediate(() => resolve(null)))]);
+    const settledReadsDrained = new Promise<null>((resolve) => setImmediate(() => resolve(null)));
+    const element = await Promise.race([page, settledReadsDrained]);
     expect(element).not.toBeNull();
     const stream = await renderToReadableStream(
       <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
@@ -114,6 +117,7 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     }
     expect(html).toContain("Cloud snapshot");
     expect(html).toContain("Docker snapshot");
+    expect(html).toContain("Loading launch options…");
     expect(html).not.toContain("Modal has no snapshot limit.");
     deferred.resolve();
     for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
