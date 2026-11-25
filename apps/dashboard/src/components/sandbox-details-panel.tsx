@@ -15,6 +15,7 @@ function subscribeDesktop(onChange: () => void) {
   return () => query.removeEventListener("change", onChange);
 }
 
+// The transcript owns the event read and supplies the Events tab from the same history.
 const EventsTarget = createContext<HTMLDivElement | null>(null);
 
 export function SandboxInspectorEvents({ children }: { children: ReactNode }) {

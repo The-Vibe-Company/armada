@@ -804,7 +804,7 @@ function isAtBottom(element: HTMLElement): boolean {
 type Group = { kind: "item"; item: ChatItem } | { kind: "tools"; key: string; tools: ToolActivity[] };
 
 /** Tool calls that follow each other read as one block of activity. */
-function groupTools(items: ChatItem[]): Group[] {
+function groupTools(items: ChatItem[]) {
   const groups: Group[] = [];
   for (const item of items) {
     const previous = groups.at(-1);
