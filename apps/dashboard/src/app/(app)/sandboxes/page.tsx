@@ -103,24 +103,14 @@ async function SandboxesContent({ searchParams }: Props) {
   const snapshotsRead = inventory.then(async ({ rows }) => {
     // Interior fields are read only for rows the server authorizes this viewer to open.
     const readableIds = rows.filter((row) => row.canOpen).map((row) => row.id);
-    const snapshots = new Map<string, string>();
-    if (readableIds.length) {
-      const data = await boundedEnrichment("sandboxSnapshotBindings", readableIds, (ids) =>
-        supabase.from("sandboxes").select("id,golden_id").in("id", ids),
-      );
-      const goldenIds = [...new Set((data ?? []).flatMap((row) => (row.golden_id ? [row.golden_id] : [])))];
-      const labels = new Map<string, string>();
-      if (goldenIds.length) {
-        const goldens = await boundedEnrichment("sandboxSnapshotLabels", goldenIds, (ids) =>
-          supabase.from("goldens").select("id,name").eq("org_id", selected.org.id).in("id", ids),
-        );
-        for (const golden of goldens ?? []) labels.set(golden.id, golden.name);
-      }
-      for (const row of data ?? [])
-        if (row.golden_id && labels.get(row.golden_id)) snapshots.set(row.id, labels.get(row.golden_id) as string);
-    }
-
-    return snapshots;
+    const bindings = await boundedEnrichment("sandboxSnapshotBindings", readableIds, (ids) =>
+      supabase
+        .from("sandboxes")
+        .select("id,goldens!sandboxes_golden_id_fkey(name)")
+        .in("id", ids)
+        .eq("goldens.org_id", selected.org.id),
+    );
+    return new Map(bindings.flatMap(({ id, goldens }) => (goldens?.name ? [[id, goldens.name]] : [])));
   });
   const [
     { rows, total, inventoryTotal, skipped, facets, activity, counts, page, workingIds, waitingIds, now },

@@ -1,6 +1,7 @@
 import { CircleAlertIcon, InfoIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { AddAccountDialog, ModelsOverview } from "@/components/model-accounts";
 import { Empty, PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -12,7 +13,6 @@ import {
   readConnectionTestChoices,
 } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { requireViewer } from "@/lib/data/viewer";
 
 import { HARNESS_PATH } from "@/lib/model-accounts";
 
@@ -25,9 +25,7 @@ export const maxDuration = 320;
  * provider keys (Boat, Modal) are in Settings, next to the organization's sandbox providers.
  */
 export default async function HarnessPage() {
-  await requireViewer();
-  const selected = await selectedOrganization();
-  const accounts = await listSelectedAccounts();
+  const [selected, accounts] = await Promise.all([selectedOrganization(), listSelectedAccounts()]);
   const now = Date.now();
 
   return (
@@ -38,7 +36,9 @@ export default async function HarnessPage() {
         )}
       </PageHeader>
 
-      <HarnessSections list={accounts} selected={selected} now={now} />
+      <Suspense fallback={null}>
+        <HarnessSections list={accounts} selected={selected} now={now} />
+      </Suspense>
     </>
   );
 }
