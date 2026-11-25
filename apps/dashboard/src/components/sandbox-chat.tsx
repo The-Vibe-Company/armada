@@ -51,7 +51,7 @@ import {
   toolText,
 } from "@/lib/chat";
 import { chatEventStream } from "@/lib/chat-event-stream";
-import { type PendingMessage, unconfirmedMessages } from "@/lib/chat-outbox";
+import { failPendingMessage, type PendingMessage, unconfirmedMessages } from "@/lib/chat-outbox";
 import {
   composerAdmission,
   INCOMPLETE_MODEL,
@@ -223,7 +223,13 @@ export function SandboxChat(props: Props) {
   const applyMetadata = useCallback(
     (session: PollSession, body: Record<string, unknown>) => {
       if (!isCurrent(session)) return null;
-      if (body.prompt !== undefined) setTurnModel(isRecord(body.prompt) ? body.prompt : null);
+      const prompt = isRecord(body.prompt) ? body.prompt : null;
+      if (body.prompt !== undefined) setTurnModel(prompt);
+      if (prompt?.state === "failed" && typeof prompt.promptId === "string") {
+        const id = prompt.promptId;
+        const reason = typeof prompt.reason === "string" ? prompt.reason : "The turn failed.";
+        setOutbox((current) => failPendingMessage(current, id, reason));
+      }
       setStatusMessage(typeof body.statusMessage === "string" ? body.statusMessage : null);
       setIdlePaused(body.statusMessage === "Paused — wakes on your next message");
       const next = isSandboxStatus(body.status) ? body.status : known.current;
@@ -260,7 +266,7 @@ export function SandboxChat(props: Props) {
       session.controller = controller;
       try {
         const response = await fetch(url, { cache: "no-store", signal: controller.signal });
-        if (!isCurrent(session)) return { kind: "aborted" };
+        if (!isCurrent(session) || controller.signal.aborted || document.hidden) return { kind: "aborted" };
 
         let body: unknown;
         try {
@@ -272,7 +278,7 @@ export function SandboxChat(props: Props) {
           }
           return { kind: "retryable", message: "The server returned an unreadable conversation response." };
         }
-        if (!isCurrent(session)) return { kind: "aborted" };
+        if (!isCurrent(session) || controller.signal.aborted || document.hidden) return { kind: "aborted" };
 
         if (!response.ok) {
           // The log lane can fail after the independent status read succeeded. Keep
@@ -361,15 +367,18 @@ export function SandboxChat(props: Props) {
       try {
         const result = await read(session);
         if (!isCurrent(session) || document.hidden) return;
-        if (result.kind === "aborted") return;
+        if (result.kind === "aborted") {
+          if (session.pendingUpdate) session.timer = setTimeout(() => void readUpdate(), 0);
+          return;
+        }
         if (result.kind === "success") {
           session.retries = 0;
-          if (!result.active) session.stream.close();
+          if (!result.active && !result.working) session.stream.close();
           else if (props.configured) session.stream.connect();
           if (result.more) session.timer = setTimeout(() => void readUpdate(), 0);
           else if (session.pendingUpdate) {
             session.timer = setTimeout(() => void readUpdate(), STREAM_READ_DELAY_MS);
-          } else if (result.active || result.refreshNeeded) {
+          } else if (result.active || result.working || result.refreshNeeded) {
             session.timer = setTimeout(() => void readUpdate(), result.working ? WORKING_POLL_MS : IDLE_POLL_MS);
           }
           return;
@@ -468,6 +477,7 @@ export function SandboxChat(props: Props) {
     function visibilityChanged() {
       if (document.hidden) {
         clearTimeout(session.timer);
+        session.controller?.abort();
         session.stream.close();
       } else {
         void tick();
@@ -541,16 +551,26 @@ export function SandboxChat(props: Props) {
         <Transcript
           items={[
             ...chat.items,
-            ...unconfirmed.map(
-              (message) =>
-                ({
-                  kind: "user",
-                  key: `prompt:${message.promptId}`,
-                  at: message.at,
-                  text: message.text,
-                  status: "queued",
-                }) satisfies ChatItem,
-            ),
+            ...unconfirmed.flatMap((message) => [
+              {
+                kind: "user",
+                key: `prompt:${message.promptId}`,
+                at: message.at,
+                text: message.text,
+                status: message.failure ? "failed" : "queued",
+              } satisfies ChatItem,
+              ...(message.failure
+                ? [
+                    {
+                      kind: "outcome",
+                      key: `outcome:prompt:${message.promptId}`,
+                      at: message.at,
+                      status: "failed",
+                      reason: message.failure,
+                    } satisfies ChatItem,
+                  ]
+                : []),
+            ]),
           ]}
           running={turnRunning}
           loaded={loaded}
