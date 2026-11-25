@@ -1355,8 +1355,6 @@ async function dispatchModalLaunch(
          where s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
            and s.status='starting'`;
     const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
-    // Boat checks a separate account row after the lease is locked. Keep that
-    // check on the fresh snapshot, as well as the launch-journal create guard.
     const {
       rows: [row],
     } = lockLease

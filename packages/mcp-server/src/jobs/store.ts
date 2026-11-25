@@ -102,9 +102,6 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
 ))`;
 
-// The scalar subquery makes the sandbox lock a prerequisite for the job lock.
-// Extra parameters start at $6. Keep dependent reads with their own snapshot
-// when they need to observe changes committed while these locks were acquired.
 export function queryWithJobLease<T>(sql: Sql, job: Job, statement: string, params: unknown[] = []) {
   return sql.query<T>(
     `with locked_sandbox as materialized (
