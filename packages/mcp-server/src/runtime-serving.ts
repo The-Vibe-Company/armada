@@ -11,7 +11,7 @@ import {
 import type { ModalProvider, ModalRuntimeCapture } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
-import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { runtimeBridgeProfiles, runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
@@ -176,7 +176,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
       },
       sandbox.boatRuntime || sandbox.modalTransport === "dialout"
         ? {
-            ...(sandbox.provider === "boat" && sandbox.boatRuntime
+            ...(runtimeBridgeProfiles[sandbox.provider].modelCheck === "runtime-command" && sandbox.boatRuntime
               ? {
                   testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
                     authorize();

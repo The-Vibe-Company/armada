@@ -9,7 +9,7 @@ import {
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { runtimeBridgeProfile, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 import { pendingModalStopOutput } from "./sandbox-lifecycle.ts";
 
@@ -89,7 +89,7 @@ export function createSandboxAccountChange(
       });
     if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
-    if (row.provider === "modal" && row.runtime_transport !== "dialout")
+    if (runtimeBridgeProfile(row.provider)?.placement === "dialout" && row.runtime_transport !== "dialout")
       throw new VaultError("credential_binding_unsupported", "Modal account changes require Armada runtime enrolment.");
     return row;
   }

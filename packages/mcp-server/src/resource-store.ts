@@ -9,6 +9,13 @@ import {
 } from "@armada/core";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
+import { supportsResourceSampling } from "./provider-runtime-admission.ts";
+
+const resourceProvenance = {
+  boat: "boat-dedicated-vm",
+  modal: "modal-explicit-vm-v1",
+  docker: null,
+} satisfies Record<SandboxRow["provider"], ProviderResourceObservation["runtimeProvenance"] | null>;
 
 export interface ResourceHistory {
   target: SandboxRecord;
@@ -72,7 +79,6 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
         [...scope, id, token, at],
       );
       if (admitted.rows[0]) return admitted.rows[0].token;
-      // Hidden and nonexistent resources remain indistinguishable, unlike cooldown/busy/unknown.
       await target(sql, id);
       return null;
     },
@@ -112,9 +118,8 @@ export function createResourceStore(sql: Sql, caller: Caller): ResourceStore {
           throw conflict();
         if (
           observation.providerSandboxId !== row.provider_sandbox_id ||
-          (row.provider === "boat"
-            ? observation.runtimeProvenance !== "boat-dedicated-vm"
-            : row.provider !== "modal" || observation.runtimeProvenance !== "modal-explicit-vm-v1")
+          !supportsResourceSampling(row.provider) ||
+          observation.runtimeProvenance !== resourceProvenance[row.provider]
         )
           throw conflict();
         if (!row.resource_project || !row.machine_size?.capacity || !["ready", "running"].includes(row.status))

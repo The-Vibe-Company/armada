@@ -242,6 +242,12 @@ function configureDockerLaunch(options: ControlOptions, request: Request | undef
   if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
 }
 
+function isHostLaunch(
+  launch: import("@armada/core/contract").LaunchInput,
+): launch is import("@armada/core/contract").DockerLaunchInput {
+  return usesHostLaunch(launch.provider) && (launch.hostId !== undefined || launch.snapshotId !== undefined);
+}
+
 async function handleSandboxLaunch({ caller, body, options, request }: ControlRouteContext) {
   if (usesHostLaunch(body.provider)) configureDockerLaunch(options, request);
   const { store, encryptionKey } = options;
@@ -255,7 +261,7 @@ async function handleSandboxLaunch({ caller, body, options, request }: ControlRo
         : "Invalid launch request. See the sandbox/launch request schema.",
     );
   const launch = parsed.data;
-  if (launch.provider === "docker") {
+  if (isHostLaunch(launch)) {
     const org = scopedOrg(caller, launch.org);
     const dockerLaunch = options.dockerLaunch;
     if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");

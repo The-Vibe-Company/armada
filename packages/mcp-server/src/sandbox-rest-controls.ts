@@ -8,6 +8,7 @@ import type { ControlOptions } from "./control.ts";
 import { selectedCaller } from "./control-caller.ts";
 import { optional } from "./control-input.ts";
 import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
+import { runtimeBridgeProfile, supportsResourceSampling } from "./provider-runtime-admission.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -127,7 +128,10 @@ async function dispatchSandboxRestControl(
           throw new ToolApiError("dependency_unavailable", "Resource observation persistence is unavailable.");
         const now = options.now ?? (() => new Date());
         const admission =
-          found.resourceProject && found.machineSize?.capacity && ["ready", "running"].includes(found.status)
+          supportsResourceSampling(found.provider) &&
+          found.resourceProject &&
+          found.machineSize?.capacity &&
+          ["ready", "running"].includes(found.status)
             ? await store.claim(found.id, now())
             : null;
         if (admission) {
@@ -171,7 +175,8 @@ export async function deleteSandboxWithActivity(
   const provider =
     found.providerSandboxId && !exitConfirmed ? await providers.resolve(found, { userId: found.ownerId }) : null;
   const failurePatch = (error: unknown) => {
-    if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
+    if (runtimeBridgeProfile(found.provider)?.preserveStateOnDeleteError || isNonMutatingProviderRefusal(error))
+      return {};
     throw error;
   };
   const admission: ServerSandboxPatch = { deleteRequested: true };
