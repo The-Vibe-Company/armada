@@ -7,6 +7,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { SQL } from "bun";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
+import { RuntimeCheckpointRejected } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -118,7 +119,9 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
         provider: async () => provider,
         runtimeSend: createRuntimeFollowup(sql, key, commands),
         // Guest checkpointing is outside this contract. Exercise compute stop after checkpoint refusal.
-        runtimeStopCheckpoint: async () => null,
+        runtimeStopCheckpoint: async () => {
+          throw new RuntimeCheckpointRejected();
+        },
         launchCredentials: {
           resolve: async () => {
             throw Error("not a launch");
