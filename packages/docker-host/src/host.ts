@@ -333,7 +333,10 @@ export function httpApi(
             stopAbsenceSupported = response.headers.get("x-armada-docker-stop-absence") === "1";
             retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
           },
-          options?.preferStartup ? { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" } : undefined,
+          {
+            ...(options?.preferStartup ? { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" } : {}),
+            ...(options?.updateResult ? { "x-armada-docker-host-update-result": options.updateResult } : {}),
+          },
         )) as DockerHostPollResponse;
         if (
           inventory &&
