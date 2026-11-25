@@ -281,11 +281,11 @@ export function SandboxChat(props: Props) {
     (session: PollSession, frame: ChatStreamFrame) => {
       if (!isCurrent(session)) return;
       if (frame.kind === "runtime_event") {
-        if (!frame.event) return;
         const next = applyInlineEvent(currentHistory.current, sandboxId, frame.event, frame.sequence);
         if (next === currentHistory.current) return;
         currentHistory.current = next;
         setHistory(next);
+        if (!frame.event) return;
         if (frame.event.kind === "prompt") {
           const promptEvent = frame.event;
           const ended =

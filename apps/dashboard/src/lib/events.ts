@@ -72,15 +72,23 @@ function runtimeCursorSequence(cursor: string | null, sandboxId: string) {
   return DECIMAL_SEQUENCE.test(suffix) ? BigInt(suffix) : null;
 }
 
-export function applyInlineEvent(history: ChatHistory, sandboxId: string, event: ChatEvent, sequence: string | null) {
+export function applyInlineEvent(
+  history: ChatHistory,
+  sandboxId: string,
+  event: ChatEvent | undefined,
+  sequence: string | null,
+) {
   const seq = sequence !== null && DECIMAL_SEQUENCE.test(sequence) ? BigInt(sequence) : null;
   const historySeq = runtimeCursorSequence(history.cursor, sandboxId);
   if (historySeq !== null && seq !== null && seq <= historySeq) {
     return history;
   }
-  const events = mergeEvents(history.events, [event]);
   const cursor =
     historySeq !== null && seq !== null && seq === historySeq + 1n ? `ar1_${sandboxId}_${sequence}` : history.cursor;
+  if (!event) {
+    return cursor === history.cursor ? history : ({ ...history, cursor } satisfies ChatHistory);
+  }
+  const events = mergeEvents(history.events, [event]);
   return { ...history, events, cursor } satisfies ChatHistory;
 }
 

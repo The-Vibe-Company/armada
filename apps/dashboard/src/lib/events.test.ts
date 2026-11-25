@@ -118,6 +118,12 @@ describe("events", () => {
     expect(next.cursor).toBe(`ar1_${sandboxId}_3`);
     expect(next.events.map((event) => event.id)).toEqual(["m-2", "m-3"]);
 
+    const afterPrivate = applyInlineEvent(next, sandboxId, undefined, "4");
+    expect(afterPrivate.cursor).toBe(`ar1_${sandboxId}_4`);
+    expect(afterPrivate.events).toBe(next.events);
+    const afterPrivateVisible = applyInlineEvent(afterPrivate, sandboxId, message("m-5", "after-private"), "5");
+    expect(afterPrivateVisible.cursor).toBe(`ar1_${sandboxId}_5`);
+
     const gapped = applyInlineEvent(next, sandboxId, message("m-5", "after-gap"), "5");
     expect(gapped.cursor).toBe(`ar1_${sandboxId}_3`);
     expect(gapped.events.map((event) => event.id)).toEqual(["m-2", "m-3", "m-5"]);
