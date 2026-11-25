@@ -291,8 +291,10 @@ test("a protocol-compatible host shows the server's outdated daemon warning", ()
   const list = parseDockerHostList({
     placement: true,
     targetVersion: "12.0.0",
+    minimumVersion: "4.0.0",
     hosts: [host({ version: "11.0.0", protocol: 1, upgradeRequired: false, versionStatus: "outdated" })],
   });
+  expect(list?.minimumVersion).toBe("4.0.0");
   expect(hostVersionWarning(list!.hosts[0]!)).toBe("Outdated daemon");
   expect(hostVersionWarning(host({ versionStatus: "unknown" }))).toBe("Unrecognized daemon version");
   expect(hostVersionWarning(host({ version: null, versionStatus: "unknown" }))).toBeNull();

@@ -217,6 +217,7 @@ async function OwnServers({
         launch,
         snapshots.state === "ready" ? snapshots.snapshots : null,
         hosts.list.targetVersion ?? hosts.list.serverVersion,
+        hosts.list.minimumVersion,
       ),
     ),
   );
@@ -316,6 +317,7 @@ function row(
   launch: Launch,
   snapshots: DockerSnapshotRecord[] | null,
   targetVersion?: string,
+  minimumVersion?: string,
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
@@ -443,6 +445,12 @@ function row(
                 <>
                   <dt className="text-muted-foreground">Target version</dt>
                   <dd>{targetVersion}</dd>
+                </>
+              )}
+              {minimumVersion && (
+                <>
+                  <dt className="text-muted-foreground">Minimum supported version</dt>
+                  <dd>{minimumVersion}</dd>
                 </>
               )}
             </dl>

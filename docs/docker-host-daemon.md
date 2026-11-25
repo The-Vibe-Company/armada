@@ -773,7 +773,11 @@ from its last accepted poll and whether an upgrade is required. The list also
 compares the reported daemon release against `targetVersion`, the release pinned
 by `install.json`. The `versionStatus` field is `current`, `outdated`, `ahead`, or
 `unknown` for an absent or unrecognized release. The CLI and dashboard show a
-release mismatch even while the host protocol is supported.
+release mismatch even while the host protocol is supported. The poll response
+and host list both advertise `targetVersion` and `minimumVersion`. The minimum
+identifies the first release in the supported protocol window. Release strings
+are informational. The protocol header still determines whether a daemon can
+take work, including building snapshots.
 
 Before deploying the first server release with this requirement, finish active
 host builds and install the daemon from that release candidate on each managed

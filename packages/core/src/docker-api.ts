@@ -56,6 +56,8 @@ export interface DockerHostSummary {
 /** Version metadata shared by the machine poll and the owner host list. Older servers omit it. */
 export interface DockerHostVersionOffer {
   targetVersion?: string;
+  /** First release in the server-supported daemon protocol window. */
+  minimumVersion?: string;
 }
 export interface DockerHostListResponse extends DockerHostVersionOffer {
   serverVersion?: string;

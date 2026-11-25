@@ -127,7 +127,7 @@ test("poll accepts the previous daemon protocol and refuses unsupported or missi
   for (const protocol of [DOCKER_HOST_PROTOCOL - 1, DOCKER_HOST_PROTOCOL]) {
     const response = await send(body, "poll", { [DOCKER_HOST_PROTOCOL_HEADER]: String(protocol) });
     expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({ job: null });
+    expect(await response?.json()).toMatchObject({ job: null, targetVersion: VERSION, minimumVersion: "4.0.0" });
   }
   for (const protocol of [DOCKER_HOST_PROTOCOL - 2, DOCKER_HOST_PROTOCOL + 1, "1.0", null]) {
     const response = await send(
@@ -524,7 +524,7 @@ test("host lists admit current members and expose only scoped safe heartbeat sum
     return (await response.json()) as DockerHostListResponse;
   };
   const result = await list();
-  expect(result.targetVersion).toBe(VERSION);
+  expect(result).toMatchObject({ targetVersion: VERSION, minimumVersion: "4.0.0" });
 
   expect(result.placement).toBe(false);
   expect(result.hosts).toHaveLength(6);
