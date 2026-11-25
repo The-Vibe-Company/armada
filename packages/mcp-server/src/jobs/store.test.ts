@@ -46,12 +46,13 @@ import { runtimeConfigurationWithVariables } from "../runtime-readable-variables
 import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
 import { extendSandbox } from "../sandbox-extend.ts";
-import { createSandboxLifecycle, requestBoatLaunchFailure } from "../sandbox-lifecycle.ts";
+import { createSandboxLifecycle, enqueueBoatStop, requestBoatLaunchFailure } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { callSharedTool } from "../tool-api.ts";
 import { runtimeWakes } from "../wake-bus.ts";
+import { createBoatStop } from "./boat-stop.ts";
 import {
   admitModalLaunch as admitModalLaunchWithMcp,
   createModalInitialTurnJob,
@@ -5746,4 +5747,91 @@ test("a failed recurring completion rolls back its schedule and the next lease r
   await successor.drain();
   expect(purges).toBe(2);
   expect(await schedule()).toEqual([{ state: "queued", attempts: 0, run_after: new Date(time.getTime() + 600_000) }]);
+});
+
+test("Boat stop takes over a staged capture and settles the resumed VM generation", async () => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const key = btoa("\0".repeat(32));
+  await f.db.query(
+    "update sandboxes set provider='boat',status='stopping',stop_requested_at=now(),lifecycle_generation=4 where id=$1",
+    [id],
+  );
+  const launch = await f.store.enqueue("launch", id, 1, "fixture", null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    deadline: new Date(Date.now() + 60_000),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  await f.db.query(`update public.jobs set state='done',outcome=$2::jsonb where id=$1`, [
+    launch,
+    JSON.stringify({ boat_authority: {}, modal_machine: { entry: { machineId: id } } }),
+  ]);
+  await f.sql.transaction!((tx) => enqueueBoatStop(tx, id, 4));
+  let captures = 0;
+  let stops = 0;
+  let crash = new AbortController();
+  const now = Date.now();
+  const handler = createBoatStop(
+    f.sql,
+    key,
+    "fixture",
+    () => now,
+    async (target, authorize) => {
+      expect(target).toMatchObject({ sandboxId: id, machineId: id, generation: 4, launchGeneration: 1 });
+      return {
+        machine: {
+          observe: async () => ({ kind: "present", machine: target, phase: "running" }),
+          async stop(request) {
+            await authorize();
+            expect(request).toMatchObject({ sandboxId: id, machineId: id, generation: 4, retain: true });
+            expect(captures).toBe(1);
+            if (++stops === 1) {
+              crash.abort();
+              throw new Error("Interrupted before remote dispatch");
+            }
+            return { sandboxId: id, generation: 4, kind: "disk", ref: id };
+          },
+        },
+        outputs: {
+          async readOutputs() {
+            captures++;
+            return [{ name: "late.txt", bytes: new TextEncoder().encode("late output") }];
+          },
+        },
+      };
+    },
+  );
+  const run = (job: Job, owner: string) =>
+    handler(job, {
+      signal: crash.signal,
+      async canDispatch(tx) {
+        return (await f.store.inspect(job, owner, tx)) === "dispatch";
+      },
+      async handoffGeneration() {
+        throw new Error("Unexpected handoff");
+      },
+    });
+
+  const firstOwner = crypto.randomUUID();
+  const first = (await f.store.claim("stop", firstOwner, 30, 1))!;
+  expect(first).toMatchObject({ sandbox_id: id, generation: "4", outcome: null });
+  await expect(run(first, firstOwner)).rejects.toThrow();
+  expect((await f.db.query("select outcome ? 'output' as staged from jobs where id=$1", [first.id])).rows).toEqual([
+    { staged: true },
+  ]);
+  await f.db.query("update jobs set lease_until=now()-interval '1 second' where id=$1", [first.id]);
+  crash = new AbortController();
+  const nextOwner = crypto.randomUUID();
+  const replay = (await f.store.claim("stop", nextOwner, 30, 1))!;
+  const result = await run(replay, nextOwner);
+  expect(result.status).toBe("done");
+  expect(await f.store.complete(replay, nextOwner, result)).toBe(true);
+  expect(
+    (await f.db.query("select status::text,stopped_at is not null as exited from sandboxes where id=$1", [id])).rows,
+  ).toEqual([{ status: "stopped", exited: true }]);
+  expect((await f.db.query("select kind from jobs where sandbox_id=$1 and kind='outputs_capture'", [id])).rows).toEqual(
+    [{ kind: "outputs_capture" }],
+  );
+  expect(stops).toBe(2);
 });

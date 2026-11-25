@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
+import { ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
@@ -10,6 +10,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { sandboxActivity } from "../src/sandbox-activity.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -319,7 +320,7 @@ for (const outcome of [
       effectiveTtlSeconds: 60,
     });
     if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-    if (!externalStop && outcome !== "manual-stop")
+    if (!externalStop && outcome !== "manual-stop" && outcome !== "stale")
       await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
     const requests: string[] = [];
     let stopped = false;
@@ -432,15 +433,22 @@ for (const outcome of [
               return result;
             }),
         };
-        await createSandboxLifecycle(faultingSql, async () => provider).reconcileOne();
+        await expect(createSandboxLifecycle(faultingSql, async () => provider).reconcileOne()).rejects.toThrow(
+          "injected stop",
+        );
         expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
         expect(injected).toBe(true);
         expect(await readStopIntent()).toEqual(before);
         expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
-        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+        await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
       }
     }
     await worker.reconcileOne();
+
+    if (["expired", "expired-external-stop", "manual-stop"].includes(outcome))
+      expect(await runBoatStop(sql, archivedBoat())).toBe("done");
+    if (outcome === "unconfirmed" || outcome === "stop-error")
+      expect(await runBoatStop(sql, archivedBoat(false))).toBe("retry");
     const row = (
       await db.query<{
         status: string;
@@ -527,11 +535,8 @@ for (const outcome of [
       expect(row.usage_runtime_seconds).not.toBeNull();
       expect(row.usage_runtime_seconds!).toBeGreaterThanOrEqual(0);
     }
-    if (outcome === "unconfirmed" || outcome === "stop-error") expect(row.lifecycle_error).toContain("Retrying");
     expect(requests.some((r) => r.startsWith("DELETE"))).toBe(false);
-    expect(requests.filter((r) => r.startsWith("POST") && r.endsWith("/stop")).length).toBe(
-      externalStop || outcome === "expired-external-stop" || outcome === "stale" ? 0 : 1,
-    );
+    expect(requests.some((r) => r.startsWith("POST"))).toBe(false);
   });
 }
 
@@ -716,22 +721,13 @@ for (const evidence of [
       await successor.drain();
       expect(await readSandbox()).toMatchObject({ lifecycle_error: null });
     }
-    if (evidence === "lost-stop-response") {
-      expect(await readSandbox()).toMatchObject({
-        status: "stopping",
-        stop_requested_at: expect.any(Date),
-        expires_at: binding.expires_at,
-      });
-      expect(await readObservation()).toMatchObject([{ pending_job_id: pendingJobId }]);
-      await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
-      const successor = createSandboxLifecycle(bunLikeSql(db), async () => provider);
-      expect(await successor.reconcileOne()).toBe(true);
-      await successor.drain();
-    }
-
-    const row = await readSandbox();
     const shouldStop = ["short", "scoped-short", "terminal-short", "lost-stop-response"].includes(evidence);
-    expect(stops).toBe(evidence === "lost-stop-response" ? 2 : Number(shouldStop));
+    if (shouldStop) {
+      expect(await readSandbox()).toMatchObject({ status: "stopping", stop_requested_at: expect.any(Date) });
+      expect(await runBoatStop(sql, archivedBoat())).toBe("done");
+    }
+    const row = await readSandbox();
+    expect(stops).toBe(0);
     expect(row).toMatchObject(
       shouldStop
         ? { status: "stopped", status_reason: "expired", expires_at: binding.expires_at }
@@ -1042,34 +1038,11 @@ test("runtime lifecycle stops compute without claiming a checkpoint invalidated 
     events: [{ sequence: 1, event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} } }],
   });
   await db.query("update sandboxes set stop_requested_at=now(),reconcile_after=now() where id=$1", [row.id]);
-  let stopped = false;
-  const calls: string[] = [];
-  const provider = {
-    id: "boat",
-    async get() {
-      return {
-        id: "runtime-compute",
-        name: "x",
-        labels: {},
-        state: stopped ? "stopped" : "ready",
-        providerState: "x",
-        ...(stopped ? { stoppedAt: new Date(), retainedSnapshot: "usable" } : {}),
-      };
-    },
-    async stop() {
-      calls.push("stop");
-      stopped = true;
-    },
-    async quiesce() {
-      throw Error("must not claim native quiescence");
-    },
-    async exec() {
-      throw Error("must not capture native work");
-    },
-  };
-  const lifecycle = createSandboxLifecycle(sql, async () => provider as unknown as import("@armada/core").Provider);
+  const lifecycle = createSandboxLifecycle(sql, async () => {
+    throw Error("Stop job owns provider I/O.");
+  });
   expect(await lifecycle.reconcileOne()).toBe(true);
-  expect(calls).toEqual(["stop"]);
+  expect(await runBoatStop(sql, archivedBoat())).toBe("done");
   const final = await store.get(row.id);
   expect(final?.status).toBe("stopped");
   expect(final?.preservationNote).toContain("no acknowledged runtime checkpoint");
@@ -1156,22 +1129,26 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
     );
     if (loss === "membership")
       await db.query("delete from members where org_id=$1 and user_id=$2", [people.org, people.owner]);
-    let resolutions = 0;
-    const worker = createSandboxLifecycle(bunLikeSql(db), async () => {
-      resolutions++;
-      if (loss === "credential_stale_generation")
-        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
-      if (loss === "revoked")
-        return {
-          id: "boat",
-          get: async () => {
-            throw new ProviderError({ provider: "boat", code: "unauthorized", retryable: false, message: "revoked" });
-          },
-        } as unknown as Provider;
-      if (loss === "transient") throw Error("transient service failure");
-      throw new VaultError("missing_credential", "original authority unavailable");
+    const sql = bunLikeSql(db);
+    const worker = createSandboxLifecycle(sql, async () => {
+      throw Error("Stop job owns provider I/O.");
     });
     expect(await worker.reconcileOne()).toBe(true);
+    if (loss !== "membership") {
+      const run = runBoatStop(sql, {
+        ...archivedBoat(),
+        async observe() {
+          if (loss === "credential_stale_generation")
+            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+          if (loss === "revoked")
+            throw new ProviderError({ provider: "boat", code: "unauthorized", message: "Revoked", retryable: false });
+          if (loss === "transient") throw Error("transient service failure");
+          throw new VaultError("missing_credential", "original authority unavailable");
+        },
+      });
+      if (loss === "credential_stale_generation") await expect(run).rejects.toThrow("completion lost");
+      else expect(await run).toBe(loss === "transient" ? "retry" : "fail");
+    }
     const row = (
       await db.query<{
         status: string;
@@ -1190,26 +1167,25 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
         [id],
       )
     ).rows[0]!;
-    expect(resolutions).toBe(loss === "membership" ? 0 : 1);
     expect(row.status).toBe("stopping");
     expect(row.stopped_at).toBeNull();
     expect(row.last_observed_at).toBeNull();
     expect(row.stop_requested_at).not.toBeNull();
     expect(row.provider_sandbox_id).toBe("bx_23456789");
     if (loss === "credential_stale_generation") {
-      expect(row.reconcile_lease).not.toBeNull();
+      expect(row.reconcile_lease).toBeNull();
       expect(row.lifecycle_error).toBeNull();
       expect(row.held).toBe(false);
     } else if (loss === "transient") {
       expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_error).toContain("Retrying");
+      expect(row.lifecycle_error).toBeNull();
       expect(row.held).toBe(false);
     } else {
       expect(row.reconcile_lease).toBeNull();
       expect(row.lifecycle_error).toContain("Operator cleanup required:");
       expect(row.held).toBe(true);
     }
-    expect(await worker.reconcileOne()).toBe(false);
+    if (loss !== "credential_stale_generation") expect(await worker.reconcileOne()).toBe(false);
   });
 }
 

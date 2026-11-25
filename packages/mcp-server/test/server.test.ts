@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
-import { createSqlVaultStore, ProviderError, VaultError } from "@armada/core/server";
+import { createSqlVaultStore, VaultError } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { reuseCollectorKeyPair } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { seedPersistedBoat } from "./persisted-boat.fixture.ts";
@@ -301,7 +302,8 @@ describe("on the database client production uses", () => {
     expect(logs.data.events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "prompt" })]));
     const stopped = await call(mcp, "stop", { id: sandboxId });
     expect(stopped.isError).toBe(false);
-    expect(stopped.data).toMatchObject({ status: "stopped" });
+    expect(stopped.data).toMatchObject({ status: "stopping" });
+    expect(await runBoatStop(bunLikeSql(db), archivedBoat())).toBe("done");
   });
 
   test("an internal tool error answers generically and logs its real cause, redacted", async () => {
@@ -559,30 +561,6 @@ describe("tools", () => {
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
   });
 
-  test("a stop without a retained recovery disk remains terminal on later sends", async () => {
-    const { token, client, people, boat, db } = await start();
-    const mcp = await client(await token(people.member));
-    const sandboxId = await seedPersistedBoat({ db, boat, people }, { harness: "codex" });
-    const get = boat.provider.get.bind(boat.provider);
-    boat.provider.get = async (id) => {
-      const info = await get(id);
-      return info.state === "stopped" ? { ...info, stopNote: "checkpoint_failed_disk_not_retained" } : info;
-    };
-    const stopped = await call(mcp, "stop", { id: sandboxId });
-    expect(stopped.data).toMatchObject({ status: "failed" });
-    const journal = await db.query(
-      "select actor, code from sandbox_transitions where sandbox_id=$1 and from_status='stopping' and to_status='failed'",
-      [sandboxId],
-    );
-    expect(journal.rows).toEqual([{ actor: "lifecycle_runner", code: "owner_stop_settled" }]);
-    const sent = await call(mcp, "send", {
-      id: sandboxId,
-      prompt: "must not resume",
-    });
-    expect(sent.text).toContain("sandbox_terminal");
-    expect(boat.prompts).toHaveLength(0);
-  });
-
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
@@ -620,18 +598,7 @@ describe("tools", () => {
     });
     const mcp = await client(await token(people.member));
     const id = await seedPersistedBoat({ db, boat, people }, { prompt: "work" });
-    boat.setExecOutput({ stdout: '{"status":"clean"}' });
-    boat.provider.stop = async () => {
-      throw new ProviderError({
-        provider: "boat",
-        code: "unavailable",
-        retryable: true,
-        message: "Stop did not dispatch",
-      });
-    };
-    expect((await call(mcp, "stop", { id })).isError).toBe(true);
-    // Expire the retained unknown-outcome lease without a wall-clock wait.
-    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [id]);
+    expect((await call(mcp, "stop", { id })).data).toMatchObject({ status: "stopping" });
     const prepared = preparations;
     const commands = boat.execs.length;
     expect((await call(mcp, "exec", { id, command: "touch after-capture" })).isError).toBe(true);
@@ -648,6 +615,7 @@ describe("tools", () => {
     machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
     expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
     expect(boat.stops).toHaveLength(0);
+    expect(await runBoatStop(bunLikeSql(server.db), archivedBoat(false))).toBe("retry");
   });
 
   test("stop without a provider timestamp retains observed compute time", async () => {
@@ -659,9 +627,9 @@ describe("tools", () => {
       clock.now.toISOString(),
     ]);
     expect((await call(mcp, "stop", { id: sandboxId })).data).toMatchObject({
-      status: "stopped",
+      status: "stopping",
     });
-    expect(boat.stops).toEqual(["bx_1"]);
+    expect(await runBoatStop(bunLikeSql(db), archivedBoat(), () => clock.now.getTime())).toBe("done");
     const row = await db.query<{ status: string; stopped_at: Date | null; seconds: number | null }>(
       "select status::text as status, stopped_at, usage_runtime_seconds as seconds from sandboxes where id = $1",
       [sandboxId],

@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { capabilities } from "@armada/core/server";
 import { testMachineConformance } from "../../core/test-support/machine-conformance.ts";
 import { createBoatMachine, createBoatProvider } from "../src/index.ts";
-import { fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
+import { retainedSandbox, sandbox } from "./support.ts";
 
 type Fixture = ReturnType<Parameters<typeof testMachineConformance>[1]["fixture"]>;
 type Sandbox = { id: string; state: string; labels: Record<string, string>; createdAt: string };
-function fixture() {
+function fixture(stopBinding?: NonNullable<Parameters<typeof createBoatMachine>[0]["stopBinding"]>) {
   const rows = new Map<string, { account: string; sandbox: Sandbox; workspace: string; bindings: Set<string> }>();
   const replays = new Map<string, string>();
   return {
@@ -46,7 +45,7 @@ function fixture() {
         fault?.(`${op}:after`);
         return Response.json({ sandbox: rows.get(machineId)?.sandbox });
       }) as typeof fetch;
-      const options = { apiKey: "fixture", deploymentId, fetch: fetchBoat };
+      const options = { apiKey: "fixture", deploymentId, fetch: fetchBoat, ...(stopBinding && { stopBinding }) };
       return createBoatMachine(
         options,
         createBoatProvider(options),
@@ -98,66 +97,24 @@ testMachineConformance("Boat Machine", {
   },
 });
 
-const resumed = { sandboxId: "sandbox-a", generation: 3, machineId: "bx_23456789" };
-const deploymentId = "deployment-a";
-const digest = (input: string) => createHash("sha256").update(input).digest("hex");
-const launchLabels = {
-  armada: "sandbox",
-  "armada.deployment": digest(deploymentId),
-  "armada.machine": digest(JSON.stringify([deploymentId, resumed.sandboxId, 1])),
-  "armada.deployment_id": deploymentId,
-  sandbox: resumed.sandboxId,
-  generation: "1",
-};
-
-function stopMachine(boat: ReturnType<typeof fakeBoat>, launchGeneration = 1) {
-  const options = {
-    apiKey: KEY,
-    deploymentId,
-    fetch: boat.fetch,
-    stopBinding: { ...resumed, launchGeneration },
-  };
-  return createBoatMachine(
-    options,
-    boat.provider,
-    async () => null,
-    async () => {},
-  );
-}
-
-test("Boat retained stop verifies the original VM and receipts the resumed generation", async () => {
-  const stop = {
-    id: "stop-a",
-    status: "completed",
-    requestedAt: "2026-11-09T09:59:59Z",
-    endedAt: "2026-11-09T10:00:01Z",
-  };
-  const archived = { body: { sandbox: retainedSandbox({ labels: launchLabels, stop }) } };
-  const boat = fakeBoat(
-    { body: { sandbox: sandbox({ state: "running", labels: launchLabels }) } },
-    { status: 202 },
-    archived,
-    archived,
-    archived,
-    archived,
-  );
-  const machine = stopMachine(boat);
-  const receipt = { sandboxId: resumed.sandboxId, generation: 3, kind: "disk", ref: resumed.machineId } as const;
-  expect(await machine.stop({ ...resumed, retain: true })).toEqual(receipt);
-  expect(await machine.stop({ ...resumed, retain: true })).toEqual(receipt);
-  expect(boat.requests.filter(({ method }) => method === "POST").map(({ path }) => path)).toEqual([
-    "/api/v1/sandboxes/bx_23456789/stop",
-  ]);
-});
-
-test.each([
-  ["unbound logical generation", { ...resumed, generation: 4 }, 1, launchLabels],
-  ["future launch generation", resumed, 4, launchLabels],
-  ["wrong physical labels", resumed, 1, { ...launchLabels, sandbox: "other-sandbox" }],
-] as const)("Boat stop refuses %s before mutation", async (_scenario, target, launchGeneration, labels) => {
-  const boat = fakeBoat({ body: { sandbox: sandbox({ state: "running", labels }) } });
-  await expect(stopMachine(boat, launchGeneration).stop({ ...target, retain: true })).rejects.toThrow(
-    "Boat machine incarnation changed.",
-  );
-  expect(boat.requests.every(({ method }) => method === "GET")).toBe(true);
+test("a resumed Boat stop receipts the logical generation and replays without another archive", async () => {
+  const target = { sandboxId: "sandbox-a", generation: 3, machineId: "machine-1" };
+  const binding = { deploymentId: "deployment-a", bindingId: "account" };
+  let archives = 0;
+  const machine = fixture({ ...target, launchGeneration: 1 }).adapter(binding, (step) => {
+    if (step === "archive:before") archives++;
+  });
+  const original = await machine.create({
+    sandboxId: target.sandboxId,
+    generation: 1,
+    source: { kind: "snapshot", ref: "golden" },
+    size: null,
+    computeTtlSeconds: 60,
+  });
+  expect(original.machineId).toBe(target.machineId);
+  await expect(machine.stop({ ...target, generation: 4, retain: true })).rejects.toThrow("incarnation changed");
+  const receipt = { sandboxId: target.sandboxId, generation: 3, kind: "disk", ref: target.machineId } as const;
+  expect(await machine.stop({ ...target, retain: true })).toEqual(receipt);
+  expect(await machine.stop({ ...target, retain: true })).toEqual(receipt);
+  expect(archives).toBe(1);
 });

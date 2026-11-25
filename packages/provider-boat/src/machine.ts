@@ -8,7 +8,8 @@ import { startBoatRuntime } from "./runtime-bootstrap.ts";
 
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
 type Ticket = Omit<Parameters<typeof startBoatRuntime>[1], "sandboxId">;
-type StopBinding = MachineIdentity & { readonly launchGeneration: number };
+type StopBinding = MachineIdentity &
+  ({ readonly launchGeneration: number } | { readonly orgId: string; readonly ownerId: string });
 
 export function createBoatMachine(
   options: BoatProviderOptions & { deploymentId: string; stopBinding?: StopBinding },
@@ -35,8 +36,10 @@ export function createBoatMachine(
     sandbox: id.sandboxId,
     generation: String(id.generation),
   });
-  const matches = (sandbox: Sandbox, tags: Record<string, string>) =>
-    Object.entries(tags).every(([name, value]) => sandbox.labels?.[name] === value);
+  const matches = (
+    sandbox: Pick<Sandbox, "labels"> | { labels: Readonly<Record<string, string>> },
+    tags: Record<string, string | undefined>,
+  ) => Object.entries(tags).every(([name, value]) => sandbox.labels?.[name] === value);
   function identity(id: MachineIncarnation, machineId: string) {
     return { sandboxId: id.sandboxId, generation: id.generation, machineId };
   }
@@ -64,15 +67,43 @@ export function createBoatMachine(
       cursor = next ?? undefined;
     } while (cursor);
   }
-  async function exact(request: MachineIdentity, signal?: AbortSignal) {
+  function stopLabels(request: MachineIdentity) {
+    if (!stopBinding) return labels(request);
+    if (
+      stopBinding.sandboxId !== request.sandboxId ||
+      stopBinding.generation !== request.generation ||
+      stopBinding.machineId !== request.machineId
+    )
+      throw invalidRequest("Boat machine incarnation changed.");
+    if ("launchGeneration" in stopBinding) {
+      const { launchGeneration } = stopBinding;
+      if (!Number.isSafeInteger(launchGeneration) || launchGeneration < 1 || launchGeneration > request.generation)
+        throw invalidRequest("Boat machine incarnation changed.");
+      return labels({ ...request, generation: launchGeneration });
+    }
+    return {
+      armada: "sandbox",
+      sandbox: request.sandboxId,
+      org: stopBinding.orgId,
+      owner: stopBinding.ownerId,
+      "armada.machine": undefined,
+      generation: undefined,
+    };
+  }
+  async function exact(
+    request: MachineIdentity,
+    signal?: AbortSignal,
+    tags: Record<string, string | undefined> = labels(request),
+  ) {
     const { sandbox } = await call(() => api.get({ sandboxId: request.machineId }, { signal: signal ?? null }));
-    if (sandbox?.id !== request.machineId || !matches(sandbox, labels(request)))
+    if (sandbox?.id !== request.machineId || !matches(sandbox, tags))
       throw invalidRequest("Boat machine incarnation changed.");
     return sandbox;
   }
   const missing = (error: unknown) =>
     error instanceof ProviderError && error.status === 404 && error.code === "not_found";
-  const stopped = (sandbox: Sandbox) => sandbox.state === "archived" && sandbox.stop?.status === "completed";
+  const stopped = (sandbox: Sandbox) =>
+    sandbox.state === "archived" && (!sandbox.stop || sandbox.stop.status === "completed");
   async function mutate<T>(signal: AbortSignal | undefined, fn: () => Promise<T>) {
     await authorize();
     signal?.throwIfAborted();
@@ -96,14 +127,17 @@ export function createBoatMachine(
       throw unexpectedAnswer("allocation identity");
     return identity(request, sandbox.id);
   }
-  async function stopCompute(request: MachineIdentity & { signal?: AbortSignal }) {
-    const sandbox = await exact(request, request.signal);
+  async function stopCompute(
+    request: MachineIdentity & { signal?: AbortSignal },
+    tags: Record<string, string | undefined> = labels(request),
+  ) {
+    const sandbox = await exact(request, request.signal, tags);
     if (!stopped(sandbox)) {
       if (!sandbox.stop || sandbox.stop.status === "superseded")
         await mutate(request.signal, () =>
           api.stop({ sandboxId: request.machineId }, { signal: request.signal ?? null }),
         );
-      if (!stopped(await exact(request, request.signal))) throw invalidRequest("Boat stop is not confirmed.");
+      if (!stopped(await exact(request, request.signal, tags))) throw invalidRequest("Boat stop is not confirmed.");
     }
   }
   return {
@@ -121,21 +155,12 @@ export function createBoatMachine(
       await bootstrapRuntime({ ...host, sshKey }, { ...ticket, sandboxId: request.machineId });
     },
     async stop(request) {
-      if (
-        stopBinding &&
-        (stopBinding.sandboxId !== request.sandboxId ||
-          stopBinding.generation !== request.generation ||
-          stopBinding.machineId !== request.machineId ||
-          !Number.isSafeInteger(stopBinding.launchGeneration) ||
-          stopBinding.launchGeneration < 1 ||
-          stopBinding.launchGeneration > request.generation)
-      )
-        throw invalidRequest("Boat machine incarnation changed.");
-      const physical = { ...request, generation: stopBinding?.launchGeneration ?? request.generation };
-      await stopCompute(physical);
+      const tags = stopLabels(request);
+      await stopCompute(request, tags);
       if (!request.retain) return null;
       const info = await host.get(request.machineId, request.signal ? { signal: request.signal } : undefined);
-      if (info.retainedSnapshot !== "usable") throw invalidRequest("Boat disk retention is unconfirmed.");
+      if (info.id !== request.machineId || !matches(info, tags) || info.retainedSnapshot !== "usable")
+        throw invalidRequest("Boat disk retention is unconfirmed.");
       return { sandboxId: request.sandboxId, generation: request.generation, kind: "disk", ref: request.machineId };
     },
     async resume(request) {
@@ -167,8 +192,9 @@ export function createBoatMachine(
     },
     async observe(request) {
       try {
-        const candidates = request.machineId
-          ? [await exact({ ...request, machineId: request.machineId }, request.signal)]
+        const target = request.machineId ? { ...request, machineId: request.machineId } : undefined;
+        const candidates = target
+          ? [await exact(target, request.signal, stopLabels(target))]
           : await Array.fromAsync(inventory(labels(request), request.signal));
         const [sandbox] = candidates;
         if (!sandbox) return { kind: "absent" };

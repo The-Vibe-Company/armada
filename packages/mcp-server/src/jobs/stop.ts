@@ -4,9 +4,10 @@ import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { recordDockerCleanupReceipt, transitionSandbox } from "../sandbox-lifecycle.ts";
-import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
+import { enqueueStopOutput, stageStopOutputs } from "../sandbox-outputs.ts";
+import { createBoatStop } from "./boat-stop.ts";
 import type { JobKind, JobResult } from "./runner.ts";
-import { createJobsStore, recordStopCapture } from "./store.ts";
+import { createJobsStore } from "./store.ts";
 export interface DockerStopIntent {
   actor: { userId: string; orgId: string };
   actorEpoch: string;
@@ -20,12 +21,20 @@ export interface DockerStopIntent {
   installationId: string;
   captureUntil: number;
 }
-export function createStopJob(sql: Sql, key: string, readOutputs = createDockerOutputReader(sql, key), now = Date.now) {
+export function createStopJob(
+  sql: Sql,
+  key: string,
+  readOutputs = createDockerOutputReader(sql, key),
+  now = Date.now,
+  deploymentId = "",
+) {
+  const boatStop = createBoatStop(sql, key, deploymentId, now);
   const hosts = createDockerHostStore(sql, key);
   const jobs = createJobsStore(sql, key);
   return {
     concurrency: 8,
     async run(job, context) {
+      if (job.payload === null && job.sandbox_id && job.generation) return boatStop(job, context);
       const intent = job.payload as DockerStopIntent | null;
       if (!job.sandbox_id || !job.generation || !intent) return { status: "fail", reason: "stop_intent_missing" };
       const sandboxId = job.sandbox_id;
@@ -48,22 +57,15 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
         return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
-      if (!job.outcome) {
-        const stage = async (tx: Sql, output: StagedOutput) => {
-          signal.throwIfAborted();
-          if (!(await context.canDispatch(tx))) throw new Error("Stop capture claim changed.");
-          await recordStopCapture(tx, job.id, output);
-        };
-        const remaining = intent.captureUntil - now();
-        if (remaining > 0) {
-          await captureFinalOutputs(sql, readOutputs(sandboxId, intent.runtimeEpoch), sandboxId, {
-            key,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
-            generation: job.generation,
-            stage,
-          }).catch(() => {});
-        }
-      }
+      if (!job.outcome && intent.captureUntil > now())
+        await stageStopOutputs(
+          sql,
+          key,
+          job,
+          context,
+          readOutputs(sandboxId, intent.runtimeEpoch),
+          intent.captureUntil - now(),
+        );
       signal.throwIfAborted();
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
       try {

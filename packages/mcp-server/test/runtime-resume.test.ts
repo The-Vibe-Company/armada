@@ -28,6 +28,7 @@ import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runti
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
@@ -901,7 +902,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       const expected = settled
         ? provider === "modal"
           ? { status: "stopping", phase: "abandoned", stops: 0 }
-          : { status: "failed", phase: "failed", stops: 1 }
+          : { status: "failed", phase: "failed", stops: 0 }
         : { status: "starting", phase: "dispatched", stops: 0 };
       expect(await read()).toMatchObject({ status: expected.status, intent: true });
       const { rows } = await f.db.query<{ phase: string; activity_until: string | null }>(
@@ -1139,7 +1140,7 @@ test("activation uncertainty never dispatches again under another key or on retr
     await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
     await expect(resume(f.caller, input(f.row.id))).rejects.toThrow();
     expect(starts).toBe(1);
-    expect(stops).toBe(1);
+    expect(stops).toBe(0);
     expect(f.starts).toHaveLength(1);
   } finally {
     await f.close();
@@ -1149,14 +1150,6 @@ test("activation uncertainty never dispatches again under another key or on retr
 test("an unenrolled Boat resume returns to a confirmed retained stop before another request can resume", async () => {
   const f = await stopped();
   try {
-    let retainedStops = 0;
-    const host = {
-      id: "boat",
-      get: async () => ({ id: "physical", state: "running" }),
-      async stop() {
-        retainedStops++;
-      },
-    } as unknown as Provider;
     const callerStore = createSqlData(f.sql)(f.caller).sandboxes;
     let starts = 0;
     let refusedTicket = "";
@@ -1197,31 +1190,15 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
 
     const legacyDue = await f.db.query("select id from sandboxes where id=$1 and reconcile_after<=now()", [f.row.id]);
     expect(legacyDue.rows).toHaveLength(0);
-    const worker = createSandboxLifecycle(f.sql, async () => host);
+    const worker = createSandboxLifecycle(f.sql, async () => {
+      throw Error("Stop job owns provider I/O.");
+    });
     expect(await worker.reconcileOne()).toBe(true);
-    expect(retainedStops).toBe(1);
-    expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
-
-    const archivedWorker = createSandboxLifecycle(
-      f.sql,
-      async () => fakeBoat({ body: { sandbox: sdkSandbox(archive) } }).provider,
-    );
-    const archivedAt = "2026-11-19T00:00:00Z";
-    let archive = {
-      id: f.row.providerSandboxId,
-      state: "archived",
-      snapshotAvailable: false,
-      stoppedAt: archivedAt,
-      snapshotVerifiedAt: archivedAt,
-    };
-    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
-    expect(await archivedWorker.reconcileOne()).toBe(true);
+    expect(await runBoatStop(f.sql, archivedBoat(false))).toBe("retry");
     expect((await callerStore.get(f.row.id))?.status).toBe("stopping");
     await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
-
-    archive = { ...archive, snapshotAvailable: true };
-    await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [f.row.id]);
-    expect(await archivedWorker.reconcileOne()).toBe(true);
+    await f.db.query("update jobs set run_after=now() where sandbox_id=$1 and kind='stop'", [f.row.id]);
+    expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
     expect((await callerStore.get(f.row.id))?.status).toBe("stopped");
     await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
     expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
@@ -1328,6 +1305,7 @@ test.each(interruptedResumeProofs)(
       if (proof === "observed running") expect(requests.map(({ method }) => method)).toEqual(["GET"]);
       if (ticket) await expect(f.authority.enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
       expect(await worker.reconcileOne()).toBe(true);
+      expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
       expect((await store.get(f.row.id))?.status).toBe("stopped");
       await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
       expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
@@ -1416,8 +1394,9 @@ test.each(["transition", "abandonment", "pre-commit"])(
       });
 
       expect(await worker.reconcileOne()).toBe(true);
+      expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
       expect((await store.get(f.row.id))?.status).toBe("stopped");
-      expect(requests.map(({ method }) => method)).toEqual(["GET", "GET", "GET"]);
+      expect(requests.map(({ method }) => method)).toEqual(["GET", "GET"]);
     } finally {
       await f.close();
     }
@@ -2003,6 +1982,7 @@ test.each(boatResumeRecoveryCases)(
         expect(await worker.reconcileOne()).toBe(true);
         expect((await store.get(f.row.id))?.status).toBe("stopping");
         expect(await worker.reconcileOne()).toBe(true);
+        expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
         expect((await store.get(f.row.id))?.status).toBe("stopped");
         await expect(
           createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
@@ -2023,6 +2003,7 @@ test.each(boatResumeRecoveryCases)(
         });
         const worker = createSandboxLifecycle(f.sql, async () => provider);
         expect(await worker.reconcileOne()).toBe(true);
+        expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
         expect((await store.get(f.row.id))?.status).toBe("stopped");
         await expect(
           createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({

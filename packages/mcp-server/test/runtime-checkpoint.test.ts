@@ -22,6 +22,7 @@ import {
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
@@ -778,6 +779,7 @@ test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint 
         )
       ).rows,
     ).toEqual([{ actor: "api", code: "runtime_retained_stop" }]);
+    if (provider === "boat") expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
     const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
     else {
@@ -792,7 +794,7 @@ test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint 
         ).rows,
       ).toEqual([{ captured: true }]);
     }
-    expect(stop.calls()).toBe(1);
+    expect(stop.calls()).toBe(provider === "boat" ? 0 : 1);
     expect(f.starts).toHaveLength(1);
   } finally {
     await f.close();

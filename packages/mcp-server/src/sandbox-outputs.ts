@@ -4,7 +4,6 @@ import {
   OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
   OUTPUT_MAX_ORG_BYTES,
-  OUTPUT_MAX_READ_BYTES,
   OUTPUT_MAX_SANDBOX_BYTES,
   type SandboxPlacementProviderId,
 } from "@armada/core";
@@ -21,10 +20,9 @@ import {
   type Sql,
 } from "@armada/core/server";
 import type { Caller, CallerResult } from "./caller.ts";
-import type { Job, JobResult } from "./jobs/runner.ts";
-import { clearStopCapture, type createJobsStore } from "./jobs/store.ts";
+import type { Job, JobContext, JobResult } from "./jobs/runner.ts";
+import { clearStopCapture, type createJobsStore, recordStopCapture } from "./jobs/store.ts";
 import {
-  BOAT_RETAINED_OUTPUT_STOP,
   CAN_WRITE_LIVE,
   collectOutputTransfers,
   LIVE_OUTPUT_CANDIDATE,
@@ -44,28 +42,18 @@ import { claimOutputFailure, markOutputCollectorSupported } from "./sandbox-life
 // Docker sandboxes have no provider exec; their reader is the runtime's fixed read-only operation.
 // Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
 /** The only provider surface output collection uses. */
-type OutputReader = Pick<
+export type OutputReader = Pick<
   Provider,
-  | "readOutputs"
-  | "probeOutputs"
-  | "listOutputEntries"
-  | "readOutputChunk"
-  | "outputReadBytes"
-  | "outputReadConcurrency"
-  | "openRetainedOutputs"
+  "readOutputs" | "probeOutputs" | "listOutputEntries" | "readOutputChunk" | "outputReadBytes" | "outputReadConcurrency"
 >;
 
 /** SDKs may ignore cancellation once a request reached the provider. Callers wait at most until
  * their signal aborts; the outstanding read stays tracked, bounded and fenced from persisting. */
 const OUTSTANDING_MAX = 4;
-const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
-  and not exists (select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
-    and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
-
 const CAPTURE_CANDIDATE = `not application_secret_tainted and provider_sandbox_id is not null
   and not exists(select 1 from public.jobs stop where stop.sandbox_id=sandboxes.id
     and stop.generation=sandboxes.lifecycle_generation and stop.kind='stop' and stop.state in ('queued','leased'))
-  and ((${LIVE_OUTPUT_CANDIDATE}) or (${BOAT_RETAINED_CANDIDATE}))`;
+  and (${LIVE_OUTPUT_CANDIDATE})`;
 export const OUTPUTS_CAPTURE = "outputs_capture";
 
 type OutputTarget = {
@@ -128,7 +116,6 @@ type OutputPhase =
   | "list_entries"
   | "read_chunk"
   | "read_snapshot"
-  | "open_retained_snapshot"
   | "store_transfers"
   | "publish_snapshot"
   | "record_failure";
@@ -158,7 +145,7 @@ const diagnosticAt = new Map<string, number>();
 function reportCaptureFailure(
   sql: Sql,
   id: string,
-  path: "live" | "retained" | "final",
+  path: "live" | "final",
   provider: SandboxPlacementProviderId | undefined,
   error: unknown,
   signal?: AbortSignal,
@@ -442,6 +429,28 @@ export async function drainFinalOutputs(): Promise<void> {
   await Promise.allSettled(finalLate.keys());
 }
 
+export async function stageStopOutputs(
+  sql: Sql,
+  key: string,
+  job: Job,
+  context: JobContext,
+  reader: OutputReader,
+  remaining: number,
+) {
+  if (!job.sandbox_id || !job.generation || job.outcome || remaining <= 0) return;
+  const signal = AbortSignal.any([context.signal, AbortSignal.timeout(remaining)]);
+  await captureFinalOutputs(sql, reader, job.sandbox_id, {
+    key,
+    generation: job.generation,
+    signal,
+    async stage(tx, output) {
+      signal.throwIfAborted();
+      if (!(await context.canDispatch(tx))) throw Error("Stop capture claim changed.");
+      await recordStopCapture(tx, job.id, output);
+    },
+  }).catch(() => {});
+}
+
 /** Final capture on Armada's stop path: after quiesce, before provider stop revokes compute.
  * Stopped workspaces are never read, so this is the last snapshot a stopped sandbox exposes.
  * Once it commits, its newer scan prevents an older in-flight sample from replacing it; if it
@@ -524,95 +533,13 @@ export async function captureFinalOutputs(
   }
 }
 
-async function collectRetained(
-  sql: Sql,
-  provider: OutputReader,
-  row: OutputTarget & { id: string; provider_sandbox_id: string; scan: string },
-  job: Job,
-  key: string,
-  signal: AbortSignal,
-  writes: Set<Promise<unknown>>,
-  canDispatch: () => Promise<boolean>,
-) {
-  const fence = `id=$1 and lifecycle_generation=$2::bigint
-    and provider_sandbox_id=$3 and not application_secret_tainted and ${BOAT_RETAINED_OUTPUT_STOP}`;
-  const args = [row.id, job.generation, row.provider_sandbox_id];
-  const admitRead = async () => {
-    if (!(await canDispatch())) return false;
-    const admitted = await outputPhase("admit_read", () =>
-      sql.query(`select 1 from public.sandboxes where ${fence}`, args),
-    );
-    signal.throwIfAborted();
-    return admitted.rows.length > 0;
-  };
-  if (!(await admitRead())) return false;
-  const snapshot = await outputPhase("open_retained_snapshot", async () =>
-    provider.openRetainedOutputs?.({ sandboxId: row.provider_sandbox_id, signal }),
-  );
-  signal.throwIfAborted();
-  if (snapshot === "pending") return false;
-  if (snapshot === "gone") {
-    if (!(await canDispatch())) return false;
-    signal.throwIfAborted();
-    if (!sql.transaction) throw Error("output_transaction_unavailable");
-    const write = sql.transaction(async (tx) => {
-      await lockOutputSandbox(tx, row.id);
-      signal.throwIfAborted();
-      const saved = await tx.query(
-        `insert into public.sandbox_output_state(sandbox_id,retained_generation)
-         select id,lifecycle_generation from public.sandboxes where ${fence}
-         on conflict(sandbox_id) do update set retained_generation=excluded.retained_generation returning sandbox_id`,
-        args,
-      );
-      signal.throwIfAborted();
-      return saved;
-    });
-    writes.add(write);
-    try {
-      if ((await write).rows.length) {
-        console.info(
-          JSON.stringify({
-            event: "sandbox_output_collection_empty",
-            sandboxId: row.id,
-            reason: "retained_outputs_absent",
-            provider: row.provider,
-            status: row.status,
-            attemptCount: job.attempts,
-          }),
-        );
-      }
-    } finally {
-      writes.delete(write);
-    }
-    return true;
-  }
-  if (!snapshot) throw new OutputCollectionError("output_unavailable");
-  await collectOutputTransfers(
-    sql,
-    {
-      outputReadBytes: OUTPUT_MAX_READ_BYTES,
-      listOutputEntries: async () => snapshot.entries,
-      readOutputChunk: async ({ chunk }) => {
-        if (!(await admitRead())) return null;
-        return outputPhase("read_chunk", async () => snapshot.readChunk(chunk));
-      },
-    },
-    row.id,
-    { sandboxId: row.provider_sandbox_id, signal },
-    row.scan,
-    key,
-    { generation: job.generation!, mode: "boat-retained", writes },
-  );
-  return true;
-}
-
 export function createSandboxOutputs(
   sql: Sql,
   key: string | undefined,
   providerFor: (id: string) => Promise<OutputReader>,
   docker?: (id: string) => OutputReader,
 ) {
-  const pending = new Map<Promise<boolean>, { provider: SandboxPlacementProviderId; retained: boolean }>();
+  const pending = new Map<Promise<void>, SandboxPlacementProviderId>();
   const writes = new Set<Promise<unknown>>();
   async function readSnapshot(
     caller: Caller,
@@ -782,14 +709,13 @@ export function createSandboxOutputs(
         if (!job.generation) return { status: "done" };
         const startedAt = Date.now();
         const row = (
-          await sql.query<OutputTarget & { id: string; provider_sandbox_id: string; scan: string; retained: boolean }>(
+          await sql.query<OutputTarget & { id: string; provider_sandbox_id: string; scan: string }>(
             `select id,provider::text,status,provider_sandbox_id,
-               clock_timestamp()::text as scan, (${BOAT_RETAINED_OUTPUT_STOP}) as retained
+               clock_timestamp()::text as scan
              from public.sandboxes where id=$1 and lifecycle_generation=$2::bigint and ${CAPTURE_CANDIDATE}`,
             [id, job.generation],
           )
         ).rows[0];
-        // A Boat sandbox can become eligible for retained capture after the current stop completes.
         const retry = (ms: number): JobResult => ({ status: "retry", after: new Date(startedAt + ms) });
         if (!row) {
           const waiting = await sql.query(
@@ -803,52 +729,34 @@ export function createSandboxOutputs(
           return waiting.rows.length ? retry(30_000) : { status: "done" };
         }
         const outstanding = [...pending.values()];
-        if (row.retained && outstanding.some(({ retained }) => retained)) return retry(120_000);
-        if (outstanding.filter(({ provider }) => provider === row.provider).length >= OUTSTANDING_MAX)
-          return retry(30_000);
+        if (outstanding.filter((provider) => provider === row.provider).length >= OUTSTANDING_MAX) return retry(30_000);
         const deadline = AbortSignal.any([context.signal, AbortSignal.timeout(SAMPLE_DEADLINE_MS)]);
         const work = (async () => {
           const provider = await outputPhase("resolve_reader", async () =>
             usesHostLaunch(row.provider) ? (docker?.(id) ?? {}) : providerFor(id),
           );
-          if (row.retained) {
-            return outputPhase("store_transfers", () =>
-              collectRetained(sql, provider, row, job, key, deadline, writes, context.canDispatch),
-            );
-          } else {
-            await outputPhase("publish_snapshot", () =>
-              collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
-                signal: deadline,
-                writes,
-                generation: job.generation!,
-                periodic: true,
-                canDispatch: context.canDispatch,
-              }),
-            );
-          }
-          return false;
+          await outputPhase("publish_snapshot", () =>
+            collect(sql, provider, id, row.provider_sandbox_id, row.scan, key, {
+              signal: deadline,
+              writes,
+              generation: job.generation!,
+              periodic: true,
+              canDispatch: context.canDispatch,
+            }),
+          );
         })();
-        pending.set(work, { provider: row.provider, retained: row.retained });
+        pending.set(work, row.provider);
         void work.then(
           () => pending.delete(work),
           () => pending.delete(work),
         );
         try {
-          if (await untilAborted(work, deadline)) return { status: "done" };
+          await untilAborted(work, deadline);
         } catch (error) {
           if (!context.signal.aborted)
-            await reportCaptureFailure(
-              sql,
-              id,
-              row.retained ? "retained" : "live",
-              row.provider,
-              error,
-              deadline,
-              job.generation,
-              job.attempts,
-            );
+            await reportCaptureFailure(sql, id, "live", row.provider, error, deadline, job.generation, job.attempts);
         }
-        return retry(row.retained ? 120_000 : 30_000);
+        return retry(30_000);
       },
     },
     async drain() {

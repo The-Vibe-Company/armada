@@ -8,7 +8,6 @@ type RuntimeTtlPort = {
 
 type RuntimeWorkPort = {
   captureRuntimeWork?: ModalRuntimeCapture;
-  observeCaptureBoot?(sandboxId: string, signal: AbortSignal): Promise<string | null>;
 };
 export type RuntimeWorkProvider = Provider & RuntimeTtlPort & RuntimeWorkPort;
 
@@ -27,7 +26,6 @@ export function createRuntimeProvider(
   const { hostPorts } = runtimeBridgeProfiles[host.id];
   const setRuntimeTtl = hostPorts ? host.setRuntimeTtl : undefined;
   const captureRuntimeWork = hostPorts ? host.captureRuntimeWork?.bind(host) : modalCapture;
-  const observeCaptureBoot = hostPorts ? host.observeCaptureBoot?.bind(host) : undefined;
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
@@ -46,7 +44,7 @@ export function createRuntimeProvider(
       });
   };
   const outputPort = <Request extends { sandboxId: string }, Result>(
-    name: "openRetainedOutputs" | "probeOutputs" | "readOutputs" | "readOutputChunk" | "listOutputEntries",
+    name: "probeOutputs" | "readOutputs" | "readOutputChunk" | "listOutputEntries",
     method: ((request: Request) => Promise<Result>) | undefined,
   ) =>
     method && {
@@ -107,22 +105,12 @@ export function createRuntimeProvider(
       : {}),
     // Declared outputs are a fixed host read (Boat command API, Modal container),
     // never a runner operation, so enrolled runtimes publish outputs like native sandboxes.
-    ...outputPort("openRetainedOutputs", host.openRetainedOutputs),
     ...outputPort("probeOutputs", host.probeOutputs),
     ...outputPort("readOutputs", host.readOutputs),
     ...outputPort("readOutputChunk", host.readOutputChunk),
     ...outputPort("listOutputEntries", host.listOutputEntries),
     ...(host.outputReadConcurrency !== undefined ? { outputReadConcurrency: host.outputReadConcurrency } : {}),
     ...(host.outputReadBytes !== undefined ? { outputReadBytes: host.outputReadBytes } : {}),
-    ...(observeCaptureBoot
-      ? {
-          observeCaptureBoot(id: string, signal: AbortSignal) {
-            target(id);
-            signal.throwIfAborted();
-            return observeCaptureBoot(id, signal);
-          },
-        }
-      : {}),
     ...(captureRuntimeWork
       ? {
           captureRuntimeWork(request: Parameters<typeof captureRuntimeWork>[0]) {

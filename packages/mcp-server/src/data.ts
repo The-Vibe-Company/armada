@@ -53,6 +53,7 @@ import {
 } from "./runtime-reconciliation-conflict.ts";
 import {
   completeSandboxDeletion,
+  enqueueBoatStop,
   expireAfterExtension,
   finishLaunchFailure,
   finishLaunchSuccess,
@@ -919,6 +920,10 @@ export function createSqlData(
         if (sets.length === 0) return;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         let fence = patch.renewActivity ? " and s.id=renewal_target.id" : "";
+        if (patch.activityToken && (patch.advanceGeneration || patch.turnActivity === "claim"))
+          fence += ` and not (s.provider='boat' and exists(select 1 from public.jobs j
+            where j.sandbox_id=s.id and j.generation=s.lifecycle_generation and j.kind='stop'
+              and j.state in ('queued','leased')))`;
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -971,6 +976,7 @@ export function createSqlData(
           fence += ` and s.status in ('stopped','failed')
             and not (s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
+            and not (s.provider='boat' and s.stopped_at is null and s.stop_requested_at is not null)
             and not ${SANDBOX_DELETION_MANAGED}`;
         }
         // A read-only reconciler may overlap list readiness. Admission can supersede
@@ -1099,6 +1105,7 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
+              if (patch.finishActivity && patch.stopRequested) await enqueueBoatStop(tx, id, row.generation);
             }
             return updated;
           });

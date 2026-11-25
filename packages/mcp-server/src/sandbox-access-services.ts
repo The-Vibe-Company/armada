@@ -109,7 +109,7 @@ export function createSandboxAccessServices(input: {
     };
     const scoped = createSqlData(sql)(caller).sandboxes;
     if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
-    const provider = await resolveProvider();
+    const provider = saved.provider === "boat" ? undefined : await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -164,6 +164,8 @@ export function createSandboxAccessServices(input: {
       saved,
       { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason },
       async (signal, token) => {
+        if (!provider)
+          return { result: undefined, patch: { ownerStop: true, status: stoppingStatus, stopRequested: true } };
         if (
           (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
             kind: "activity",

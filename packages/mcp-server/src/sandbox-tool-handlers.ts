@@ -240,7 +240,9 @@ export function configureTools(
       }
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      const { provider } = await live(found.id, true, found);
+      if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
+      const boat = found.provider === "boat";
+      const provider = boat ? undefined : (await live(found.id, true, found)).provider;
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -266,7 +268,7 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      return sandboxActivity(
+      return sandboxActivity<{ id: string; status: SandboxStatus; preservationNote?: string }>(
         data.sandboxes,
         found,
         {
@@ -280,6 +282,13 @@ export function configureTools(
         async (signal, token) => {
           signal.throwIfAborted();
 
+          if (!provider) {
+            const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
+            return {
+              result: { id: found.id, status },
+              patch: { ownerStop: true, status, stopRequested: true },
+            } as const;
+          }
           const preservation = await data.sandboxes
             .preserveWork?.(found.id, provider, found.providerSandboxId, {
               kind: "activity",

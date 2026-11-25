@@ -294,11 +294,10 @@ async function captureAndStore(
         stop_token: string | null;
         complete: boolean;
         application_secret_tainted: boolean;
-        boat_runtime: boolean;
         modal_runtime: boolean;
         work_stop_owned: boolean | null;
       }>(
-        `select boat_runtime,application_secret_tainted,
+        `select application_secret_tainted,
         (provider='modal' and runtime_transport='dialout') as modal_runtime,
         (${WORK_STOP_OWNER}) as work_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
         (${COMPLETE_PRESERVATION}) as complete
@@ -309,8 +308,7 @@ async function captureAndStore(
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
-    const boatCapture = stop.boat_runtime && !!provider.captureRuntimeWork;
-    const runtimeCapture = stop.modal_runtime || boatCapture;
+    const runtimeCapture = stop.modal_runtime;
     if (runtimeCapture) {
       if (!stop.work_stop_owned || !authority) return "pending";
       progress.deferOnFailure = runtimeCapture;
@@ -327,10 +325,6 @@ async function captureAndStore(
       );
       return;
     }
-    if (stop.boat_runtime && !boatCapture) {
-      await writePreservationNote(sql, id, await runtimePreservationNote(sql, id), stop.stop_token, progress.fence);
-      return;
-    }
     if (stop.complete) {
       observed("capture_reused");
       return;
@@ -339,9 +333,7 @@ async function captureAndStore(
     const current = await provider.get(providerId, { signal });
     if (expired()) return;
     observed("observed", current.state);
-    if (boatCapture && current.id !== providerId) return "pending";
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    if (boatCapture && !["ready", "running"].includes(current.state)) return "pending";
     if (stop.modal_runtime) {
       if (
         HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
@@ -370,10 +362,7 @@ async function captureAndStore(
     };
     let result: WorkPreservation;
     if (runtimeCapture) {
-      const captureGeneration = boatCapture
-        ? await provider.observeCaptureBoot?.(providerId, signal)
-        : current.physicalGeneration;
-      if (boatCapture && (!captureGeneration || !(await ownsCapture()))) return "pending";
+      const captureGeneration = current.physicalGeneration;
       if (!provider.captureRuntimeWork || !captureGeneration || current.id !== providerId)
         throw new ProviderError({
           provider: provider.id,

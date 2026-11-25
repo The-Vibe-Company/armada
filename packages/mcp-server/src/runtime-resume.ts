@@ -577,7 +577,8 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && placement && !preActivationArchive) await placement.stop().catch(() => {});
+      if (cleanup === "failed" && found.provider !== "boat" && placement && !preActivationArchive)
+        await placement.stop().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(
           "conflict",

@@ -53,6 +53,7 @@ const jobsLane: LaneFactory = ({
   launchCleanupJob,
   dockerLaunch,
   accountTurns,
+  deploymentId,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -106,7 +107,7 @@ const jobsLane: LaneFactory = ({
         : {}),
       ...(config.encryptionKey
         ? {
-            stop: createStopJob(sql, config.encryptionKey),
+            stop: createStopJob(sql, config.encryptionKey, undefined, undefined, deploymentId),
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
               sql,
               config.encryptionKey,
