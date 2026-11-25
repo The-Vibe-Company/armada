@@ -708,8 +708,8 @@ test("a final capture whose deadline passes while its target query waits never h
   });
   const gated: Sql = {
     ...sql,
-    query: async (q, p) => {
-      const rows = await sql.query(q, p);
+    async query<T>(q: string, p?: unknown[]) {
+      const rows = await sql.query<T>(q, p);
       if (q.includes("as generation,clock_timestamp()::text as scan")) {
         claiming();
         await held;
