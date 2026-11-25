@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
  * What a sandbox's reported tokens would cost at list prices: the total, its tokens, turns and compute time, and the
  * per-turn breakdown on demand. Never what was paid: a subscription's figure is API-equivalent, an API key's estimated.
  */
-export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
+export function SandboxCostCard({ cost, totalClassName }: { cost: SandboxCost; totalClassName?: string }) {
   const figure = costFigure(cost);
   const facts: [string, string][] = [
     ["Input", formatTokens(cost.tokens.input)],
@@ -36,11 +36,12 @@ export function SandboxCostCard({ cost }: { cost: SandboxCost }) {
             <div>
               <p className="text-xs text-muted-foreground">{cost.label}</p>
               <p
-                className={
+                className={cn(
                   figure.kind === "priced"
                     ? "text-2xl font-semibold tracking-tight tabular-nums"
-                    : "text-base font-medium text-muted-foreground"
-                }
+                    : "text-base font-medium text-muted-foreground",
+                  totalClassName,
+                )}
                 title={costTitle(cost)}
               >
                 {figure.text}

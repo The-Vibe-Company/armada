@@ -160,7 +160,8 @@ export function sandboxGateway(gateway: Gateway, control: ReturnType<typeof crea
       since?: string | null,
       read: { all?: true; limit?: number; direction?: "forward" | "backward" } = {},
     ) => gateway.call("logs", { id: sandboxId, ...(since ? { since_cursor: since } : {}), ...read }),
-    status: (sandboxId: string) => gateway.call("status", { id: sandboxId }),
+    status: (sandboxId: string, promptId?: string) =>
+      gateway.call("status", { id: sandboxId, ...(promptId ? { prompt_id: promptId } : {}) }),
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     async delete(sandboxId: string) {
