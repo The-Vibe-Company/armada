@@ -1,5 +1,24 @@
 # Changelog
 
+## [14.3.0](https://github.com/The-Vibe-Company/armada/compare/v14.2.2...v14.3.0) (2026-11-25)
+
+
+### Features
+
+* **catalog:** add Antigravity 1.5.13 Gemini 4 Neon/Hydrogen/Argon/Carbon models to model-overlay.json ([#4295](https://github.com/The-Vibe-Company/armada/issues/4295)) ([349eb17](https://github.com/The-Vibe-Company/armada/commit/349eb17d16b3822d0f7a2e818f7d23708d6e1fc7))
+
+
+### Bug Fixes
+
+* **dashboard:** show pulsing Working status accurately across list rows, sidebar fleet, and thread header ([#4307](https://github.com/The-Vibe-Company/armada/issues/4307)) ([36c59c7](https://github.com/The-Vibe-Company/armada/commit/36c59c7c9461db3a828a6420d9cf720708ac0259))
+* **ios:** align ArmadaKit contracts, resume admission, launch receipts, provider filtering, and account identity ([#4306](https://github.com/The-Vibe-Company/armada/issues/4306)) ([8daf51b](https://github.com/The-Vibe-Company/armada/commit/8daf51bf58ba3866bab632fa4750115c87f070d3))
+* **server:** return provider in sandbox/status, proxy sandbox/list-turns, and coalesce delta log chunks for fast mobile discussion load ([#4305](https://github.com/The-Vibe-Company/armada/issues/4305)) ([f9c1ae1](https://github.com/The-Vibe-Company/armada/commit/f9c1ae1629797ed3c36340c4c1dbeb7698dc8475))
+
+
+### Performance Improvements
+
+* **dashboard:** stop downloading all historical deleted sandboxes on every /sandboxes load ([#4304](https://github.com/The-Vibe-Company/armada/issues/4304)) ([a7a6b8d](https://github.com/The-Vibe-Company/armada/commit/a7a6b8d1537394763be47c3d7da2114b12f6dc7d))
+
 ## [14.2.2](https://github.com/The-Vibe-Company/armada/compare/v14.2.1...v14.2.2) (2026-11-25)
 
 
