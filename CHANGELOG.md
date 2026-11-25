@@ -1,5 +1,23 @@
 # Changelog
 
+## [14.1.0](https://github.com/The-Vibe-Company/armada/compare/v14.0.0...v14.1.0) (2026-11-25)
+
+
+### Features
+
+* **docker-host:** the host daemon updates itself to the server's release ([#4252](https://github.com/The-Vibe-Company/armada/issues/4252)) ([8dc21b0](https://github.com/The-Vibe-Company/armada/commit/8dc21b011d2803b808b47fb3018ea1712e91c179))
+* **docker-host:** the host daemon updates itself to the server's release ([#4263](https://github.com/The-Vibe-Company/armada/issues/4263)) ([1fd3b44](https://github.com/The-Vibe-Company/armada/commit/1fd3b44e032080672f3b64c9556e687d813bdbc3))
+
+
+### Bug Fixes
+
+* **dashboard:** remove duplicate Launch a sandbox button on mobile and align phone /variables E2E ([#4261](https://github.com/The-Vibe-Company/armada/issues/4261)) ([4fe9d87](https://github.com/The-Vibe-Company/armada/commit/4fe9d87cde6e7f2c04648d3ed18f2bee6f21e1e9))
+
+
+### Performance Improvements
+
+* **launch:** cut sequential SQL in launch admission ([#4251](https://github.com/The-Vibe-Company/armada/issues/4251)) ([5d548e7](https://github.com/The-Vibe-Company/armada/commit/5d548e7f2fb67897c02a814f5b3e6606813e72f2))
+
 ## [14.0.0](https://github.com/The-Vibe-Company/armada/compare/v13.0.0...v14.0.0) (2026-11-25)
 
 
