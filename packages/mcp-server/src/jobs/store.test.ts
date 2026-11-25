@@ -1475,7 +1475,13 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   let modalClient: ModalMachineOptions["client"] | undefined;
   let cleanupPreparations = 0;
   let closedClients = 0;
-  let modalCredentialCurrent = true;
+  const modalCredential = (
+    await f.db.query<{ id: string; version: number }>(
+      `insert into public.credentials(scope,owner_id,kind,value_enc)
+     values('user',$1,'modal',decode('00','hex')) returning id,version`,
+      [f.people.owner],
+    )
+  ).rows[0]!;
   let tags: Record<string, string> = {};
   const bootstrapped: string[] = [];
   const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
@@ -1643,9 +1649,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             });
             return {
               ...machine,
-              canUseModalCredential: async () => {
+              modalCredential: async () => {
                 await atStep?.("dispatch credential");
-                return modalCredentialCurrent;
+                return modalCredential;
               },
               close() {
                 closedClients++;
@@ -1691,7 +1697,10 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
                 managementAuthority: { credentialScope: "user", credentialOwnerId: f.people.owner },
               },
               machine,
-              canUseModalCredential: async () => modalCredentialCurrent,
+              modalCredential: async () => {
+                await atStep?.("dispatch credential");
+                return modalCredential;
+              },
               prepareRuntimeTicket,
             }));
           },
@@ -1762,9 +1771,8 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       });
     },
     closedClients: () => closedClients,
-    revokeModalCredential: () => {
-      modalCredentialCurrent = false;
-    },
+    revokeModalCredential: () =>
+      f.db.query("update public.credentials set status='revoked' where id=$1", [modalCredential.id]),
     activeRuntime: () => activeRuntime!,
     enrolPending: (authority = enrolments) => authority.enrol(enrolmentToken),
   };
@@ -1852,7 +1860,7 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 64 SQL statements", async () => {
+test("Modal admission and deferred enrolment use at most 56 SQL statements", async () => {
   const statements: string[] = [];
   const admission = await modalAdmissionFixture("private", statements);
   const log = spyOn(console, "info");
@@ -1875,7 +1883,7 @@ test("Modal admission and deferred enrolment use at most 64 SQL statements", asy
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(64);
+    expect(statements.length).toBeLessThanOrEqual(56);
   } finally {
     log.mockRestore();
   }
@@ -4398,7 +4406,7 @@ test.each([
     const { f, jobId, makeRunner, effects, retentionEffects, revokeModalCredential } = await modalLaunchFixture();
     const runner = makeRunner(async (step) => {
       if (step !== interruptedAt) return;
-      if (change === "Modal credential is revoked") revokeModalCredential();
+      if (change === "Modal credential is revoked") await revokeModalCredential();
       else await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
     });
     expect(await runner.reconcileOne(signal)).toBe(true);

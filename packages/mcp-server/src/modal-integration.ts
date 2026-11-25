@@ -352,14 +352,8 @@ export function createModalIntegration(options: {
       appName,
       binding,
       deploymentId,
-      async canUseModalCredential(tx: Sql) {
-        const { rows } = await tx.query(
-          `select 1 from public.credentials where id=$1 and version=$2 and status='active'
-            and kind='modal' and scope=$3 and owner_id=$4 and (expires_at is null or expires_at>clock_timestamp())
-            for share`,
-          [id, version, authority.credentialScope, authority.credentialOwnerId],
-        );
-        return rows.length > 0;
+      async modalCredential() {
+        return { id, version };
       },
       close: () => client.close(),
       resolveRuntimeTicket: async () => null,
