@@ -16,6 +16,7 @@ import {
   createInboundTrigger,
   isAntigravityLoginPath,
   type LaunchEnvelope,
+  type ModalLaunchReceipt,
   streamSandboxEvents,
 } from "@armada/core/contract";
 import { type ModelCredentialKind, runtimeHarnessSupported } from "@armada/core/harnesses";
@@ -532,8 +533,7 @@ function seedLarge(target: State): void {
       });
     }
   }
-  // Keep numbered accounts stable across harness catalog changes. Launch and template journeys use 006 for Claude.
-  const accountKinds: readonly ModelCredentialKind[] = [
+  const numberedAccountKinds: readonly ModelCredentialKind[] = [
     "claude_oauth",
     "anthropic",
     "morph",
@@ -546,7 +546,7 @@ function seedLarge(target: State): void {
       id: id(12000 + i),
       scope: "org",
       owner_id: LARGE,
-      kind: accountKinds[i % accountKinds.length],
+      kind: numberedAccountKinds[i % numberedAccountKinds.length],
       name: name("model-account", i),
       value_enc: "\\x0102",
       created_at: now,
@@ -1459,13 +1459,15 @@ function launchRoute(body: Row, userId: string | null): Response {
     );
     if (account?.status !== "active" || MODEL_KINDS[String(account.kind)] !== body.harness)
       return controlFail(400, "invalid", "That account cannot run this agent.");
+    const id = crypto.randomUUID();
+    const status = body.prompt ? "running" : "ready";
     const row = sandbox(
-      crypto.randomUUID(),
+      id,
       `docker_launched_${++sequence}`,
       "",
       userId,
       String(body.harness),
-      body.prompt ? "running" : "ready",
+      status,
       new Date().toISOString(),
     );
     Object.assign(row, {
@@ -1483,7 +1485,7 @@ function launchRoute(body: Row, userId: string | null): Response {
       visibility: "private",
     });
     state.sandboxes.unshift(row);
-    return fixtureLaunchResponse(body, row, null);
+    return json({ sandbox: { id, status } } satisfies ModalLaunchReceipt);
   }
   const source = liveGoldens(userId).find(
     (row) => row.name === body.golden && row.provider === body.provider && row.org_id === body.org,
