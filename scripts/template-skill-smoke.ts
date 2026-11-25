@@ -3,6 +3,7 @@ import type { Harness } from "../packages/core/src/contract.ts";
 import { PRIVATE_SKILL_FAILURES } from "../packages/core/src/private-skill-error.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { modalSmokeSetupFailed, modalSmokeSetupReason, observeSmokeLaunch } from "./smoke-launch.ts";
+import { reconcilesTemplateByExternalRef } from "./staging-smoke-policy.ts";
 
 /** API-only deployed template/skill checks. Readable canaries are never printed. */
 export interface TemplateSkillCase {
@@ -223,7 +224,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             id: record.resource!.id,
             revision: record.resource!.currentRevision,
             requestKey: record.requestKey,
-            ...(item.provider === "modal" ? { externalRef: record.requestKey } : {}),
+            ...(reconcilesTemplateByExternalRef(item.provider) ? { externalRef: record.requestKey } : {}),
             ttlSeconds: 900,
             // Explicit template pins are isolated from the separate defaults probe.
             skipSkillDefaults: true,
@@ -232,7 +233,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           const timeout = io.launchTimeout(`${label}_launch`);
           const admissionDeadline = Math.min(io.deadline, io.now() + timeout);
           async function observeLaunch(requirePrompt: boolean, until = Math.min(io.deadline, io.now() + timeout)) {
-            if (item.provider !== "modal") return;
+            if (!reconcilesTemplateByExternalRef(item.provider)) return;
             let claimed = admitted;
             return observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io

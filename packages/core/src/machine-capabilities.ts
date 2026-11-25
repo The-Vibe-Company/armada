@@ -1,4 +1,4 @@
-import { PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
+import { isSandboxPlacementProvider, PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
 
 export const MACHINE_SIZES = ["small", "medium", "large", "xlarge"] as const;
 export type MachineSize = (typeof MACHINE_SIZES)[number];
@@ -59,6 +59,26 @@ const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCa
     sizes: Object.freeze([]),
   }),
 };
+
+const runtimePolicies = {
+  boat: { openCodeRequiresDiscovery: true, connectionTest: "runtime-enrollment" },
+  modal: { openCodeRequiresDiscovery: false, connectionTest: "supported" },
+  docker: { openCodeRequiresDiscovery: false, connectionTest: "unsupported" },
+} as const satisfies Record<
+  SandboxPlacementProviderId,
+  {
+    openCodeRequiresDiscovery: boolean;
+    connectionTest: "runtime-enrollment" | "supported" | "unsupported";
+  }
+>;
+
+export function openCodeRequiresRuntimeDiscovery(provider: unknown) {
+  return isSandboxPlacementProvider(provider) && runtimePolicies[provider].openCodeRequiresDiscovery;
+}
+
+export function modelConnectionTestSupport(provider: unknown) {
+  return isSandboxPlacementProvider(provider) ? runtimePolicies[provider].connectionTest : "unsupported";
+}
 
 export function capabilities(providerId: SandboxPlacementProviderId) {
   return machineCapabilities[providerId];

@@ -1,3 +1,4 @@
+import { openCodeRequiresRuntimeDiscovery } from "@armada/core/machine-capabilities";
 /** Ordinary Boat OpenCode requires installed shared-runtime admission, not an explicit opt-in route. */
 export function boatOpenCodeAvailable(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
@@ -13,7 +14,7 @@ export function boatOpenCodeAvailable(value: unknown): boolean {
     return false;
   return options.providers.some(
     (provider) =>
-      provider?.id === "boat" &&
+      openCodeRequiresRuntimeDiscovery(provider?.id) &&
       provider.enabled === true &&
       provider.capabilities?.launch === true &&
       Array.isArray(provider.harnesses) &&

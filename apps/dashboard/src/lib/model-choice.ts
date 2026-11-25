@@ -9,6 +9,7 @@ import {
   resolveModelChoice,
   type SandboxProviderId,
 } from "@armada/core";
+import { openCodeRequiresRuntimeDiscovery } from "@armada/core/machine-capabilities";
 import { boatOpenCodeAvailable } from "./launch-options";
 import { decodeModelValue } from "./model-picker";
 
@@ -79,7 +80,7 @@ export function launchArgs(
     return { ok: false, error: "Armada access is available for Codex only." };
   const provider = fields.provider;
   if (
-    provider === "boat" &&
+    openCodeRequiresRuntimeDiscovery(provider) &&
     HARNESS_CATALOG[harness].boatProvider === null &&
     !boatOpenCodeAvailable(trustedLaunchOptions)
   )
