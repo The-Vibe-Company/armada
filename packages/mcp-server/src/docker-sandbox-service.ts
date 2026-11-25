@@ -5,7 +5,6 @@ import {
   type Harness,
   isDockerImageReference,
   resolveModelChoice,
-  type SandboxRecord,
   type Sql,
   VaultError,
 } from "@armada/core";
@@ -21,6 +20,7 @@ import {
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { type DockerSandboxRow, insertStartingDockerSandbox } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 type Reservation = {
@@ -35,34 +35,6 @@ type Reservation = {
   ttlSeconds?: number;
   stopWhenWorkMerged?: boolean;
   externalRef?: string;
-};
-type Row = {
-  id: string;
-  org_id: string;
-  owner_id: string;
-  provider: string;
-  lifecycle_generation: string | number;
-  conversation_ids: string[];
-  task_prompt_id: string | null;
-  provider_sandbox_id: string;
-  docker_host_id: string;
-  docker_installation_id: string;
-  docker_generation: string;
-  docker_image: string;
-  docker_snapshot_id?: string | null;
-  harness: Harness;
-  visibility: string;
-  status: SandboxRecord["status"];
-  status_reason: string | null;
-  deleted_at: Date | string | null;
-  stop_requested_at: Date | string | null;
-  expires_at: Date | string;
-  created_at: Date | string;
-  effective_ttl_seconds: number;
-  model: string;
-  reasoning_effort: string;
-  credential_id: string;
-  credential_version: number;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 class DockerSandboxDenied extends Error {
@@ -124,7 +96,7 @@ function normalize(input: Reservation) {
   if (!isLaunchTtlSeconds("docker", ttlSeconds)) deny();
   return { ...input, ...resolveModelChoice(harness, input), harness, ttlSeconds };
 }
-function record(row: Row) {
+function record(row: DockerSandboxRow) {
   return {
     id: row.id,
     provider: "docker" as const,
@@ -178,7 +150,7 @@ export function createDockerSandboxService(sql: Sql) {
     actorInput(actor);
     id(sandboxId);
     const row = (
-      await tx.query<Row>(
+      await tx.query<DockerSandboxRow>(
         `select s.* from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
        where s.id=$1 and s.org_id=$3 and s.provider='docker' and (s.owner_id=$2 or m.role='admin')`,
         [sandboxId, actor.userId, actor.orgId],
@@ -256,35 +228,16 @@ export function createDockerSandboxService(sql: Sql) {
         }).bind({ sandboxId: request.requestId, generation: 1 });
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;
         const row =
-          (
-            await tx.query<Row>(
-              `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
-           docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
-           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id,stop_when_work_merged,external_ref)
-           values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-           now()+$13::integer*interval '1 second',$14,$16,$17,$18) returning *`,
-              [
-                request.requestId,
-                actor.orgId,
-                actor.userId,
-                physical,
-                request.hostId,
-                host.installation_id,
-                generation,
-                request.image,
-                request.model,
-                request.reasoningEffort,
-                request.credentialId,
-                request.credentialVersion,
-                request.ttlSeconds,
-                input.ttlSeconds ?? null,
-                request.harness,
-                snapshotId ?? null,
-                request.stopWhenWorkMerged ?? true,
-                request.externalRef ?? null,
-              ],
-            )
-          ).rows[0] ?? deny();
+          (await insertStartingDockerSandbox(tx, {
+            ...request,
+            orgId: actor.orgId,
+            ownerId: actor.userId,
+            physical,
+            installationId: host.installation_id,
+            generation,
+            requestedTtlSeconds: input.ttlSeconds,
+            snapshotId,
+          })) ?? deny();
         return record(row);
       });
     },

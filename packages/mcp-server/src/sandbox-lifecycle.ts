@@ -29,6 +29,143 @@ import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } 
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { purgeWorkRecovery } from "./work-preservation.ts";
 
+export type DockerSandboxRow = {
+  id: string;
+  org_id: string;
+  owner_id: string;
+  provider: string;
+  lifecycle_generation: string | number;
+  conversation_ids: string[];
+  task_prompt_id: string | null;
+  provider_sandbox_id: string;
+  docker_host_id: string;
+  docker_installation_id: string;
+  docker_generation: string;
+  docker_image: string;
+  docker_snapshot_id?: string | null;
+  harness: Harness;
+  visibility: string;
+  status: SandboxRecord["status"];
+  status_reason: string | null;
+  deleted_at: Date | string | null;
+  stop_requested_at: Date | string | null;
+  expires_at: Date | string;
+  created_at: Date | string;
+  effective_ttl_seconds: number;
+  model: string;
+  reasoning_effort: string;
+  credential_id: string;
+  credential_version: number;
+};
+
+export async function insertStartingDockerSandbox(
+  tx: Sql,
+  sandbox: {
+    requestId: string;
+    orgId: string;
+    ownerId: string;
+    physical: string;
+    hostId: string;
+    installationId: string;
+    generation: string;
+    image: string;
+    model: string;
+    reasoningEffort: string;
+    credentialId: string;
+    credentialVersion: number;
+    ttlSeconds: number;
+    requestedTtlSeconds?: number;
+    harness: Harness;
+    snapshotId?: string;
+    stopWhenWorkMerged?: boolean;
+    externalRef?: string;
+  },
+) {
+  const result = await tx.query<DockerSandboxRow>(
+    `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
+           docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
+           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id,stop_when_work_merged,external_ref)
+           values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+           now()+$13::integer*interval '1 second',$14,$16,$17,$18) returning *`,
+    [
+      sandbox.requestId,
+      sandbox.orgId,
+      sandbox.ownerId,
+      sandbox.physical,
+      sandbox.hostId,
+      sandbox.installationId,
+      sandbox.generation,
+      sandbox.image,
+      sandbox.model,
+      sandbox.reasoningEffort,
+      sandbox.credentialId,
+      sandbox.credentialVersion,
+      sandbox.ttlSeconds,
+      sandbox.requestedTtlSeconds ?? null,
+      sandbox.harness,
+      sandbox.snapshotId ?? null,
+      sandbox.stopWhenWorkMerged ?? true,
+      sandbox.externalRef ?? null,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function recordDockerPromptProjection(
+  tx: Sql,
+  sandboxId: string,
+  promptId: string,
+  requestId: string,
+  epoch: string,
+  conversationId?: string,
+) {
+  await tx.query(
+    `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
+   select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
+   and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
+     and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
+    [sandboxId, promptId, requestId, epoch],
+  );
+  if (conversationId !== undefined) {
+    await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
+      sandboxId,
+      conversationId,
+    ]);
+  }
+}
+
+export async function clearDockerTaskOutcome(tx: Sql, sandboxId: string) {
+  await tx.query("update public.sandboxes set task_outcome=null,task_prompt_id=null where id=$1", [sandboxId]);
+}
+
+export async function clearMissingDockerRetentionDeadlines(
+  tx: Sql,
+  hostId: string,
+  deadlines: readonly { sandboxId: string; generation: string }[],
+) {
+  await tx.query(
+    `update public.sandboxes set docker_retention_deadline=null
+               where docker_host_id=$1 and docker_retention_deadline is not null
+                 and not exists (
+                   select 1 from unnest($2::uuid[],$3::uuid[]) as held(sandbox_id,generation)
+                   where held.sandbox_id=sandboxes.id and held.generation=sandboxes.docker_generation
+                 )`,
+    [hostId, deadlines.map((entry) => entry.sandboxId), deadlines.map((entry) => entry.generation)],
+  );
+}
+
+export async function recordDockerRetentionDeadline(
+  tx: Sql,
+  hostId: string,
+  entry: { sandboxId: string; generation: string; deadline: string },
+) {
+  await tx.query(
+    `update public.sandboxes set docker_retention_deadline=$3::timestamptz
+               where id=$1 and docker_host_id=$2 and docker_generation=$4 and provider='docker'`,
+    [entry.sandboxId, hostId, entry.deadline, entry.generation],
+  );
+}
+
 export type ModalLaunchSandbox = {
   goldenId: string;
   harness: Harness;
