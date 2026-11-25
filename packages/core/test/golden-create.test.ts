@@ -587,6 +587,9 @@ test("rebuild retains last-good artifacts/config through verification, scan, sna
     expect(machines.get(connected.sandbox.id)?.stopped).toBe(false);
     // Stopped masters restore from the new revision, not the cleaned-up builder.
     await provider.stop({ sandboxId: connected.sandbox.id });
+    const { fork: _fork, ...withoutFork } = provider;
+    await expect(connectGolden(withoutFork, store, actor, "web")).rejects.toMatchObject({ code: "conflict" });
+    expect((await store.findByName(actor.orgId, "web"))[0]?.providerSandboxId).toBe(connected.sandbox.id);
     const restored = await connectGolden(provider, store, actor, "web");
     expect(restored.sandbox.id).not.toBe(connected.sandbox.id);
     expect(machines.get(restored.sandbox.id)?.content).toBe(artifacts.get(updated.snapshot)?.content);
