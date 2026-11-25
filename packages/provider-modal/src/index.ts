@@ -5,10 +5,10 @@ export {
   type RuntimeModalOptions,
 } from "./composed.ts";
 export { type DistributionOptions, modalImage } from "./distribution.ts";
-export { ModalOperationError, modalFailureReceipt } from "./errors.ts";
+export { ModalOperationError } from "./errors.ts";
 export { executeGoldenCommand } from "./golden-exec.ts";
 export { settleDetachedModalCollections } from "./image-collection.ts";
-export { MODAL_CONFORMANCE_APP, MODAL_IMAGE_LOCK } from "./image-lock.ts";
+export { MODAL_IMAGE_LOCK } from "./image-lock.ts";
 export { createModalMachineInventory, modalDeploymentId } from "./inventory.ts";
 export { createModalMachine, type ModalMachineJournal, type ModalMachineOptions } from "./machine.ts";
 export type * from "./ports.ts";

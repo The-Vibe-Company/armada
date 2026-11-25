@@ -69,6 +69,7 @@ import { runtimeWorkspace } from "../runtime-workspace.ts";
 import { SCOPED_REFERENCE_STEP, sandboxAccessReferenceCommand } from "../sandbox-access-bootstrap.ts";
 import {
   ChildLaunchNotAllocated,
+  childLaunchLockBudget,
   completeChildLaunchAdmission,
   lockChildLaunchAdmission,
 } from "../sandbox-access-child-launch.ts";
@@ -244,11 +245,17 @@ export async function admitModalLaunch(
   const store = createJobsStore(sql, encryptionKey);
 
   let admissionCallbackCompleted = false;
-  let childAdmissionPhase = "parent_authority_lock";
+  let childAdmissionPhase = "launch_admission";
   try {
     const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
-      const childDigest = child && (await lockChildLaunchAdmission(tx, child));
-      childAdmissionPhase = "launch_admission";
+      if (child) {
+        await tx.query(childLaunchLockBudget);
+        const { rows } = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+          orgId,
+          ownerId,
+        ]);
+        if (!rows.length) throw new ChildLaunchNotAllocated("preallocation_rejected", "parent_authority");
+      }
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
         : undefined;
@@ -260,7 +267,6 @@ export async function admitModalLaunch(
           : request
             ? ordinaryModalKey(request.key)
             : JSON.stringify(["unkeyed", sandboxId]);
-      const digest = childDigest ?? reservation?.digest ?? fingerprint ?? sandboxId;
       if (reservation) {
         const {
           rows: [existing],
@@ -276,7 +282,7 @@ export async function admitModalLaunch(
           [jobRequestKey(orgId, "launch", ownerId, key), orgId, ownerId],
         );
         if (existing) {
-          if (existing.sandbox_id !== sandboxId || existing.request_digest !== digest)
+          if (existing.sandbox_id !== sandboxId || existing.request_digest !== reservation.digest)
             throw new GoldenError("conflict", "Modal template launch reservation conflicts with an existing job.");
           return { sandbox: { id: sandboxId, status: existing.status ?? "deleted" } };
         }
@@ -331,6 +337,19 @@ export async function admitModalLaunch(
               [scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal }), snapshot],
             )
           ).rows[0];
+      const { credentialId: plannedAccount, credentialVersion: plannedVersion } = plannedSandbox;
+      // WARNING: Parent turn workers lock the account before the parent sandbox.
+      if (child && plannedAccount != null && plannedVersion != null)
+        await lockAndCheckStartingLaunchAccount(
+          tx,
+          { credentialId: plannedAccount, credentialVersion: plannedVersion },
+          sandboxId,
+          plannedSandbox.model,
+        );
+      childAdmissionPhase = "parent_authority_lock";
+      const childDigest = child && (await lockChildLaunchAdmission(tx, child));
+      childAdmissionPhase = "launch_admission";
+      const digest = childDigest ?? reservation?.digest ?? fingerprint ?? sandboxId;
       const jobId = await store.enqueue(
         "launch",
         sandboxId,
@@ -397,7 +416,7 @@ export async function admitModalLaunch(
       }
       const actor = { userId: ownerId, orgId };
       const { credentialId, credentialVersion } = sandbox;
-      if (!input.accountPool && credentialId != null && credentialVersion != null)
+      if (!child && !input.accountPool && credentialId != null && credentialVersion != null)
         await lockAndCheckStartingLaunchAccount(tx, { credentialId, credentialVersion }, sandboxId, sandbox.model);
       await input.revalidateTemplate?.(tx);
       await insertStartingModalSandbox(

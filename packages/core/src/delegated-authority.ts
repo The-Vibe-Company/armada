@@ -53,8 +53,7 @@ export interface DelegatedAuthorityTransport {
 
 type AuthorityParent = { id: string; sandbox_id: string; owner_id: string; org_id: string };
 
-async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
-  // WARNING: Keep membership before sandbox and sandbox before access parent to match runtime and lifecycle writers.
+async function lockAuthorityMember(tx: Sql, parent: AuthorityParent) {
   if (
     !(
       await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
@@ -64,6 +63,10 @@ async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
     ).rows.length
   )
     return deny();
+}
+
+async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
+  // WARNING: The lifecycle fence acquires the parent sandbox before the access parent.
   if (
     !(await tx.query("select 1 from public.sandboxes where id=$1 for no key update", [parent.sandbox_id])).rows.length
   )
@@ -104,16 +107,18 @@ export class DelegatedAuthority {
         kind: string;
       }
     >(
-      `select o.id,o.sandbox_id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind
+      `with grant_row as materialized (
+        select o.id,o.sandbox_id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind,d.expires_at
         from public.orchestrator_delegations d
         join public.armada_access_parents o on o.id=d.orchestrator_id
         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
         join public.sandboxes s on s.id=o.sandbox_id
         where d.hash=$1 and d.revoked_at is null and d.acknowledged_at is not null
-        and d.expires_at>now() and d.epoch=o.authority_epoch and o.state='ready'
+        and d.expires_at>clock_timestamp() and d.epoch=o.authority_epoch and o.state='ready'
         and d.native_generation=s.orchestrator_native_generation and s.status not in ('stopped','deleted','failed')
         and s.stop_requested_at is null and ($2::text is null or $2=any(d.scopes))
-        ${lockDelegation ? "for no key update of d" : ""}`,
+        ${lockDelegation ? "for no key update of d" : ""}
+      ) select * from grant_row where expires_at>clock_timestamp()`,
       [digest(token), scope],
     );
     return result.rows[0] ?? deny();
@@ -131,15 +136,14 @@ export class DelegatedAuthority {
     if (!this.sql.transaction) return deny();
     return this.sql.transaction(async (tx) => {
       const candidate = await this.activeGrant(tx, token, scope);
-      await lockAuthorityParent(tx, candidate);
-      const row = await this.activeGrant(tx, token, scope, true);
-      if (row.id !== candidate.id || row.sandbox_id !== candidate.sandbox_id) return deny();
+      await lockAuthorityMember(tx, candidate);
+      let launchAccount: Parameters<AuthorizeDelegatedAccount>[1] | undefined;
       if (request.method === "launch") {
         if (
           !request.goldenId ||
-          !row.golden_ids.includes(request.goldenId) ||
+          !candidate.golden_ids.includes(request.goldenId) ||
           !request.credentialId ||
-          !row.account_ids.includes(request.credentialId) ||
+          !candidate.account_ids.includes(request.credentialId) ||
           !isHarness(request.harness) ||
           !Number.isSafeInteger(request.credentialVersion) ||
           (request.credentialVersion ?? 0) < 1
@@ -148,16 +152,41 @@ export class DelegatedAuthority {
         const golden = await tx.query(
           `select id from public.goldens where id=$1 and org_id=$2
           and removed_at is null and (visibility='org' or owner_id=$3) for update`,
-          [request.goldenId, row.org_id, row.owner_id],
+          [request.goldenId, candidate.org_id, candidate.owner_id],
         );
         if (!golden.rows.length) return deny();
-        await this.authorizeAccount(tx, {
-          userId: row.owner_id,
-          orgId: row.org_id,
+        await tx.query(
+          `select id from public.credentials where id=$1
+           and ((scope='user' and owner_id=$2) or (scope='org' and owner_id=$3)) for update`,
+          [request.credentialId, candidate.owner_id, candidate.org_id],
+        );
+        launchAccount = {
+          userId: candidate.owner_id,
+          orgId: candidate.org_id,
           harness: request.harness,
           credentialId: request.credentialId,
           credentialVersion: request.credentialVersion as number,
-        });
+        };
+      } else if (request.method !== "finish") {
+        // WARNING: Launch/setup workers lock the child before revalidating parent authority.
+        const child = await tx.query(
+          `select c.sandbox_id from public.orchestrator_children c
+          join public.sandboxes s on s.id=c.sandbox_id
+          where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
+          and s.org_id=c.org_id and s.owner_id=c.owner_id
+          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id)
+          ${request.method === "stop" ? "for update of s" : "for no key update of s"}`,
+          [candidate.id, request.childId ?? null, candidate.org_id, candidate.owner_id],
+        );
+        if (!child.rows.length) return deny();
+      }
+      await lockAuthorityParent(tx, candidate);
+      const row = await this.activeGrant(tx, token, scope, true);
+      if (row.id !== candidate.id || row.sandbox_id !== candidate.sandbox_id) return deny();
+      if (launchAccount) {
+        if (!row.golden_ids.includes(request.goldenId ?? "") || !row.account_ids.includes(launchAccount.credentialId))
+          return deny();
+        await this.authorizeAccount(tx, launchAccount);
       } else if (request.method === "finish") {
         // Self completion has no caller-selected target and never grants child/owner authority.
         const self = await tx.query(
@@ -166,16 +195,6 @@ export class DelegatedAuthority {
         );
         if (!self.rows.length || request.childId !== undefined) return deny();
       } else {
-        const child = await tx.query(
-          `select c.sandbox_id from public.orchestrator_children c
-          join public.sandboxes s on s.id=c.sandbox_id
-          where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
-          and s.org_id=c.org_id and s.owner_id=c.owner_id
-          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id)
-          for no key update of s`,
-          [row.id, request.childId ?? null, row.org_id, row.owner_id],
-        );
-        if (!child.rows.length) return deny();
         const relation = await tx.query(
           "select 1 from public.orchestrator_children where sandbox_id=$1 and orchestrator_id=$2 for update",
           [request.childId, row.id],
@@ -210,6 +229,7 @@ export class DelegatedAuthority {
         )
       ).rows[0];
       if (!parent) return deny();
+      await lockAuthorityMember(tx, parent);
       await lockAuthorityParent(tx, parent);
       const binding = await tx.query(
         `update public.sandboxes s set orchestrator_native_generation=$2

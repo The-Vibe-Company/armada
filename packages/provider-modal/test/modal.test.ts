@@ -22,7 +22,7 @@ import {
   type Machine,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
-  modalFailureReceipt,
+  ModalOperationError,
   type RunnerDistribution,
   type RuntimeModalOptions,
   type Scope,
@@ -90,11 +90,13 @@ function createFixtureSql(getDatabase: typeof getDb) {
         params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
       )
         return db.query<T>(statement, params);
-      let entry = prepared.get(statement);
+      const unnamedBindTypes = params.map((value) => (typeof value === "number" ? "bigint" : "unknown"));
+      const signature = JSON.stringify([statement, unnamedBindTypes]);
+      let entry = prepared.get(signature);
       if (!entry) {
         const name = `modal_fixture_${prepared.size}`;
-        entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
-        prepared.set(statement, entry);
+        entry = db.exec(`prepare ${name}(${unnamedBindTypes.join(",")}) as ${statement}`).then(() => name);
+        prepared.set(signature, entry);
       }
       const name = await entry;
       const args = params
@@ -1114,11 +1116,10 @@ test("enrolled Modal bootstrap rejects a different physical machine before consu
   expect((await f.store.get(row.id)).runtimeStartAttempted).toBeUndefined();
 });
 
-test("enrolled Modal forks bootstrap once and stop without a recovery claim", async () => {
+test("enrolled Modal forks bootstrap once", async () => {
   const f = fixture(scope, fixtureSql);
   const row = await runningFork(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
-  const afterFork = f.log.length;
   await f.provider.startRuntime({
     sandboxId: row.id,
     serverUrl: "https://armada.example",
@@ -1144,10 +1145,6 @@ test("enrolled Modal forks bootstrap once and stop without a recovery claim", as
       artifact: { sha256: "b".repeat(64), bytes: 1 },
     }),
   ).rejects.toMatchObject({ code: "conflict" });
-  await f.provider.stop({ sandboxId: row.id });
-  expect(f.log.slice(afterFork)).toEqual(["terminate"]);
-  expect(await f.provider.get(row.id)).toMatchObject({ state: "stopped" });
-  expect((await f.store.get(row.id)).recoveryImageId).toBeUndefined();
   expect(f.creates).toBe(1);
 });
 
@@ -1291,13 +1288,6 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
     machineId: restored.physicalId!,
     bindingRef: "current-job",
   });
-  f.onTerminate(async () => {
-    const stopping = await f.store.get(worker.id);
-    expect(stopping.runtimeCheckpoint).toBeUndefined();
-    expect(stopping.recoveryImageId).toBeUndefined();
-  });
-  await f.provider.stop({ sandboxId: worker.id });
-  await expect(resumeRuntime(f.provider, request)).rejects.toMatchObject({ code: "conflict" });
 });
 
 test("owner stop adopts a lost Modal replacement across the stop generation bump", async () => {
@@ -1343,7 +1333,7 @@ test("owner stop adopts a lost Modal replacement across the stop generation bump
   expect(await resumeRuntime(f.provider, { ...resume, generation: 4 })).toMatchObject({ state: "ready" });
 });
 
-test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {
+test("uncertain enrolled Modal snapshot refuses retry or resume", async () => {
   const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
@@ -1360,10 +1350,6 @@ test("uncertain enrolled Modal snapshot refuses retry or resume and compute fall
       checkpoint: { epoch: "1", watermark: 2 },
     }),
   ).rejects.toMatchObject({ code: "conflict" });
-  await f.provider.stop({ sandboxId: worker.id });
-  expect((await f.store.get(worker.id)).runtimeCheckpoint).toBeUndefined();
-  expect((await f.store.get(worker.id)).recoveryImageId).toBeUndefined();
-  expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
 });
 
 function deferred() {
@@ -1592,7 +1578,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
     await seedHistoricalSnapshotTombstone(name);
-    await f.provider.stop({ sandboxId: fork.id });
+    await stopRuntime(f.provider, {
+      sandboxId: fork.id,
+      physicalGeneration: fork.physicalGeneration!,
+      epoch: "1",
+      watermark: 0,
+    });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
     const imageDeletes = () => f.log.filter((x) => x === "delete-image").length;
@@ -2289,12 +2280,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { name } = await savedGolden(f);
     const sourceImage = (await f.store.image(name)).imageId;
     f.failBoot(true);
-    let receipt: ReturnType<typeof modalFailureReceipt>;
+    let receipt: ModalOperationError["receipt"] | undefined;
     try {
       await f.provider.fork({ from: name });
       throw Error("boot unexpectedly succeeded");
     } catch (error) {
-      receipt = modalFailureReceipt(error);
+      if (!(error instanceof ModalOperationError)) throw error;
+      receipt = error.receipt;
     }
     if (!receipt) throw Error("missing failed reservation receipt");
     expect(receipt.phase).toBe("booting");
@@ -2329,12 +2321,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const builder = await f.seedMachine(goldenTemplate);
     const name = crypto.randomUUID();
     fail = true;
-    let receipt: ReturnType<typeof modalFailureReceipt>;
+    let receipt: ModalOperationError["receipt"] | undefined;
     try {
       await f.provider.snapshot({ sandboxId: builder.id, name });
       throw Error("snapshot unexpectedly succeeded");
     } catch (error) {
-      receipt = modalFailureReceipt(error);
+      if (!(error instanceof ModalOperationError)) throw error;
+      receipt = error.receipt;
     }
     if (!receipt) throw Error("missing image provenance receipt");
     expect(receipt.snapshotImages).toHaveLength(1);
@@ -2365,7 +2358,12 @@ test("declared outputs are read on live compute only, never by resuming a stoppe
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);
-  await f.provider.stop({ sandboxId: fork.id });
+  await stopRuntime(f.provider, {
+    sandboxId: fork.id,
+    physicalGeneration: String((await f.store.get(fork.id)).generation),
+    epoch: "1",
+    watermark: 0,
+  });
   const creates = f.creates;
   expect(await f.provider.readOutputs?.({ sandboxId: fork.id })).toBeNull();
   expect(f.creates).toBe(creates);

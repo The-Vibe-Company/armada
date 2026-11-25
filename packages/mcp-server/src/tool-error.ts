@@ -6,3 +6,5 @@ export class ToolError extends Error {
     this.code = code;
   }
 }
+
+export class ResumeTurnDeferred extends Error {}

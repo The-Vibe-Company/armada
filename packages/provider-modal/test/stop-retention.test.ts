@@ -286,14 +286,20 @@ test("a missing Modal image receipt preserves the enrolled source", async () => 
   expect(f.state()).toMatchObject({ phase: "snapshot", recoveryImageId: "prior-recovery" });
 });
 
-test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)(
+test("synchronous golden stop refuses an enrolled worker before checkpointing or terminating", async () => {
+  const f = fixture("snapshot");
+  f.state().golden = false;
+  f.state().commonRuntime = true;
+  await expect(f.provider.stop({ sandboxId: "logical" })).rejects.toMatchObject({ code: "invalid_request" });
+  expect(f.state()).toMatchObject({ phase: "active", recoveryImageId: "prior-recovery" });
+  expect(f.terminated()).toBe(0);
+  expect(f.snapshots()).toBe(0);
+});
+
+test.each(["lost-workspace", "unretained-terminate"] as const)(
   "retention policy refuses compute-only state (%s)",
   async (mode) => {
     const f = fixture("snapshot");
-    if (mode === "common-runtime") {
-      f.state().golden = false;
-      f.state().commonRuntime = true;
-    }
     if (mode === "lost-workspace") f.state().info.stopNote = "checkpoint_failed_disk_not_retained";
     if (mode === "unretained-terminate") {
       f.state().phase = "terminate";

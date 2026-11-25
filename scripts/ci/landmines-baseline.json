@@ -1532,7 +1532,7 @@
     "packages/provider-boat/src/runtime-bootstrap.ts": 2,
     "packages/provider-modal/src/authority.ts": 2,
     "packages/provider-modal/src/client.ts": 1,
-    "packages/provider-modal/src/errors.ts": 5,
+    "packages/provider-modal/src/errors.ts": 4,
     "packages/provider-modal/src/golden-exec.ts": 1,
     "packages/provider-modal/src/process-scope.ts": 4,
     "packages/provider-modal/src/provider.ts": 4,
