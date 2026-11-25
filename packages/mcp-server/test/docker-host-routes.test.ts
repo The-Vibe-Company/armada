@@ -716,8 +716,8 @@ test("only the owner changes a drained capable host; policy reaches admission an
   expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(200);
 });
 
-test("heartbeat availability is validated and drives the public busy-capacity summary", async () => {
-  const { userId, orgId, store, post } = await fixture();
+test("heartbeat availability is validated and drives the public capacity summary and reservation admission", async () => {
+  const { db, sql, userId, orgId, store, post } = await fixture();
   const ticket = await store.issueRegistration({ userId, orgId });
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
@@ -743,6 +743,32 @@ test("heartbeat availability is validated and drives the public busy-capacity su
     { cpus: 16, memoryBytes: 38 * 1024 ** 3, availableCpus: 8 },
   ])
     expect((await poll(invalid)).status).toBe(400);
+
+  const credentialId = randomUUID();
+  await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+    credentialId,
+    userId,
+    new Uint8Array([1]),
+  ]);
+  const reserve = () =>
+    queueMailboxCreate(
+      sql,
+      Buffer.alloc(32, 8).toString("base64"),
+      { userId, orgId },
+      {
+        requestId: randomUUID(),
+        hostId: host.hostId,
+        image: `worker@sha256:${"a".repeat(64)}`,
+        credentialId,
+        credentialVersion: 1,
+      },
+    );
+  await reserve();
+  expect((await poll({ ...resources, availableCpus: 0, availableMemoryBytes: 0 })).status).toBe(200);
+  expect((await store.list({ userId, orgId }))[0]).toMatchObject({ running: 1, resources: { capacity: 1 } });
+  await expect(reserve()).rejects.toMatchObject({ code: "host_full" });
+  expect((await poll(resources)).status).toBe(200);
+  expect((await reserve()).status).toBe("starting");
 });
 
 test("a host reporting many retained deadlines still fits the poll body limit", async () => {
