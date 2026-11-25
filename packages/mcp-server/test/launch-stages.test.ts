@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { LAUNCH_STAGES, launchReadyPercentiles } from "@armada/core";
-import { createSqlSandboxStore, type Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
@@ -19,7 +20,7 @@ test("launch stages persist per activation and status reads only the latest, vis
   const golden = (
     await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
   ).rows[0]!;
-  const sandbox = await createSqlSandboxStore(sql).insert({
+  const sandbox = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "boat",
     providerSandboxId: "physical",
@@ -123,7 +124,7 @@ test("the first resume of a sandbox launched before measurement stays a resume",
   const golden = (
     await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
   ).rows[0]!;
-  const sandbox = await createSqlSandboxStore(sql).insert({
+  const sandbox = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "boat",
     providerSandboxId: "physical-retained",

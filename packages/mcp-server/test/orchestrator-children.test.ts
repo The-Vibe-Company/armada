@@ -1,11 +1,6 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import {
-  createSqlSandboxStore,
-  createSqlVaultStore,
-  DelegatedAuthority,
-  encryptSecret,
-  type Sql,
-} from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority, encryptSecret, type Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData, DataError } from "../src/data.ts";
@@ -66,7 +61,7 @@ async function fixture(
         ).rows[0]
       : (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
   if (!golden) throw Error("missing golden");
-  const parent = await createSqlSandboxStore(sql).insert({
+  const parent = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider,
     providerSandboxId: "parent-child-admission",
@@ -467,7 +462,7 @@ test("own children support independent target receipts while unrelated children 
     expect(rows).toHaveLength(4); // No synthetic three-child default from the provisional DTO.
     const readyChildren = [];
     for (const providerSandboxId of ["receipt-isolation-first", "receipt-isolation-second"]) {
-      const child = await createSqlSandboxStore(sql).insert({
+      const child = await insertSandboxFixture(sql, {
         id: crypto.randomUUID(),
         provider: parent.provider,
         providerSandboxId,
@@ -507,7 +502,7 @@ test.each(["launch", "message"] as const)(
     try {
       let childId: string | undefined;
       if (action === "message") {
-        const child = await createSqlSandboxStore(sql).insert({
+        const child = await insertSandboxFixture(sql, {
           id: crypto.randomUUID(),
           provider: parent.provider,
           providerSandboxId: "child-dispatch-admission",
@@ -804,7 +799,7 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
 test("an uncertain scoped message records a correlated operator diagnostic", async () => {
   const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "child-message-outcome",
@@ -927,7 +922,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
 test("scoped enrolled Boat extension fails before recording dispatch", async () => {
   const { close, db, sql, id, p, golden, authority, token } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "enrolled-child",
@@ -982,7 +977,7 @@ test.each([
     "modal",
   );
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "reconciling-child",
@@ -1108,7 +1103,7 @@ test.each([
 test("read-only delegated scope cannot override the launch method through untrusted selection fields", async () => {
   const { close, db, sql, p, parent, id, authority, selection, golden } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "read-only-child",
@@ -1218,7 +1213,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       true,
     );
     expect((await client.callTool({ name: "read", arguments: { sandboxId: parent.id } })).isError).toBe(true);
-    const unrelated = await createSqlSandboxStore(sql).insert({
+    const unrelated = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "same-owner-unrelated-worker",
@@ -1384,7 +1379,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     };
     const resolved = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, noEnv: true, env: {} });
     const physicalId = resolved.id;
-    const saved = await createSqlSandboxStore(sql).insert({
+    const saved = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "modal",
       providerSandboxId: physicalId,
@@ -1557,7 +1552,7 @@ test("managed child stop stays pending until the shared job confirms exit", asyn
   try {
     const fake = fakeBoat();
     const physical = await fake.provider.fork({ from: "test" });
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: physical.id,
@@ -1593,7 +1588,7 @@ test("managed child stop stays pending until the shared job confirms exit", asyn
 test("the event feed grants a scoped bearer access only to its authorized child", async () => {
   const f = await fixture();
   try {
-    const child = await createSqlSandboxStore(f.sql).insert({
+    const child = await insertSandboxFixture(f.sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "event-feed-child",

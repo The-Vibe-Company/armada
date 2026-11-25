@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
@@ -16,7 +17,7 @@ async function fixture() {
   if (!golden) throw Error("missing golden");
   const id = crypto.randomUUID();
   const insert = () =>
-    scoped.sandboxes.insert({
+    insertSandboxFixture(sql, {
       id,
       provider: "boat",
       providerSandboxId: "bx_23456789",
