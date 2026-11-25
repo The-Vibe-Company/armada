@@ -28,7 +28,9 @@ const columns = `e.id::text, e.sandbox_id as "sandboxId", e.sequence::text, e.ki
   to_char(e.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
   re.event_enc, t.to_status::text as status,
   case when e.kind <> 'transition' or t.to_status is null then null
-    when s.status = t.to_status then s.status_reason
+    when s.status = t.to_status
+      and not exists(select 1 from public.sandbox_transitions t2 where t2.sandbox_id=s.id and t2.id>t.id)
+      then s.status_reason
     when t.to_status in ('stopped', 'failed', 'stopping', 'deleted') then t.code else null end as "statusReason"`;
 const joins = `left join public.runtime_events re
     on e.kind='runtime_event' and re.sandbox_id=e.sandbox_id and re.sequence=e.sequence

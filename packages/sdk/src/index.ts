@@ -1,4 +1,4 @@
-import { type AgentEvent, API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
+import { API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
 import type {
   DockerLaunchInput,
   ExecInput,
@@ -51,7 +51,7 @@ interface EventReference {
 export type SandboxEvent = EventReference &
   (
     | { kind: "transition"; sequence: null; status?: SandboxStatus["status"]; statusReason?: string | null }
-    | { kind: "runtime_event"; sequence: string; event?: AgentEvent }
+    | { kind: "runtime_event"; sequence: string; event?: LogsResult["events"][number] }
   );
 
 export interface EventStreamInput {

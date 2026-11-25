@@ -268,7 +268,7 @@ export function registerLogsTool(
       const provider = await resolveProvider(found);
       const durableSettled =
         "followSettled" in provider && typeof provider.followSettled === "function"
-          ? await provider.followSettled()
+          ? await (provider.followSettled as (fenceEvents?: boolean) => Promise<boolean | undefined>)(false)
           : undefined;
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
@@ -297,11 +297,27 @@ export function buildLogsThreadStatus(
 ) {
   const latest = latestPromptEvent(events);
   const terminal = sandbox.status === "stopped" || sandbox.status === "failed" || sandbox.status === "deleted";
-  const terminalState = sandbox.status === "failed" ? ("failed" as const) : ("interrupted" as const);
+  const terminalState =
+    sandbox.status === "failed"
+      ? ("failed" as const)
+      : sandbox.status === "stopped" && (sandbox.statusReason === "idle_paused" || durableSettled === true)
+        ? ("finished" as const)
+        : ("interrupted" as const);
   let prompt: PromptReport | null = null;
-  if (latest?.kind === "prompt" && latest.promptId) {
+  if (
+    latest?.kind === "prompt" &&
+    latest.promptId &&
+    (!sandbox.taskPromptId || latest.promptId === sandbox.taskPromptId)
+  ) {
     const outcome = observedPromptOutcome(latest.status, latest.promptId, events);
-    const state = outcome.state === "running" && terminal ? terminalState : outcome.state;
+    const state =
+      outcome.state === "running"
+        ? terminal
+          ? terminalState
+          : durableSettled === true
+            ? ("finished" as const)
+            : outcome.state
+        : outcome.state;
     const reason = outcome.state === "failed" || outcome.state === "interrupted" ? (outcome.reason ?? null) : null;
     prompt = {
       promptId: latest.promptId,

@@ -116,9 +116,44 @@ test("Boat and Modal logs return threadStatus and settled matching Docker's shap
     threadStatus: {
       status: "stopped",
       statusMessage: "Paused — wakes on your next message",
-      prompt: { promptId: "pr_1", state: "interrupted", reason: null },
+      prompt: { promptId: "pr_1", state: "finished", reason: null },
       usage,
     },
+  });
+  expect(
+    await readLogs(
+      {
+        now: () => now,
+        logs: async () => ({
+          providerSandboxId: "mx",
+          sandbox: { ...base, taskPromptId: "pr_2" } as never,
+          provider: {
+            events: async () => ({
+              events: [
+                {
+                  id: "e1",
+                  at: 1,
+                  kind: "prompt",
+                  promptId: "pr_1",
+                  conversationId: "conv_1",
+                  text: "old",
+                  status: "finished",
+                },
+              ],
+              cursor: "c1",
+              hasMore: false,
+            }),
+            followSettled: async () => false,
+          } as never,
+        }),
+      },
+      mcpFixture.caller,
+      "sandbox",
+      {},
+    ),
+  ).toMatchObject({
+    settled: false,
+    threadStatus: { prompt: { promptId: "pr_2", state: "running", reason: null } },
   });
 });
 

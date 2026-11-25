@@ -1,4 +1,3 @@
-import type { AgentEvent } from "@armada/core";
 import { streamSandboxEvents } from "@armada/core/contract/sandbox-events";
 import type { EventStreamInput, SandboxEvent } from "./index.ts";
 
@@ -86,7 +85,7 @@ function parseFrame(frame: string, sandbox: string) {
       ...base,
       kind: event.kind,
       sequence: event.sequence,
-      ...(event.event !== undefined ? { event: event.event as unknown as AgentEvent } : {}),
+      ...(event.event !== undefined ? { event: event.event } : {}),
     } satisfies SandboxEvent;
   throw new TypeError("Event stream returned an inconsistent event sequence.");
 }

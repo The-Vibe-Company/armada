@@ -178,6 +178,18 @@ test("cursor=tail starts at frontier, caches auth for AUTH_REVALIDATE_MS, and wi
   expect(
     (await handleControlRequest(f.request("&cursor=tail", undefined, crypto.randomUUID()), f.options))?.status,
   ).toBe(403);
+  const noTail = { ...f.options, eventFeed: { owner: f.options.eventFeed!.owner, child: f.options.eventFeed!.child } };
+  expect((await handleControlRequest(f.request("&cursor=tail"), noTail))?.status).toBe(403);
+  expect(
+    (
+      await handleControlRequest(
+        new Request(`https://armada.test/api/v1/events?sandbox=${f.sandbox}&cursor=tail`, {
+          headers: { authorization: "Bearer armada_epoch_forged" },
+        }),
+        noTail,
+      )
+    )?.status,
+  ).toBe(403);
   let now = 0;
   let lookups = 0;
   const use = f.authStore.useServiceToken.bind(f.authStore);
@@ -233,12 +245,18 @@ test("cursor=tail starts at frontier, caches auth for AUTH_REVALIDATE_MS, and wi
   expect([unlistened, closed]).toEqual([1, 1]);
   off();
   const errors: string[] = [];
+  let failClosed = 0;
   const failing = startEventNotifyListener(
-    { listen: async () => Promise.reject(new Error("unsupported")) },
+    {
+      listen: async () => Promise.reject(new Error("unsupported")),
+      close: async () => void failClosed++,
+    },
     bus,
     (line) => errors.push(line),
   );
   await failing.ready;
   expect(errors).toHaveLength(1);
-  await failing.close();
+  expect(failClosed).toBe(1);
+  await Promise.all([failing.close(), failing.close()]);
+  expect(failClosed).toBe(1);
 });

@@ -20,18 +20,18 @@ function eventReader(request: Request, options: ControlOptions, feed: EventFeed,
   if (token?.startsWith("armada_epoch_")) {
     return {
       read: feed.child(token, sandboxId),
-      tail: () => (feed.childTail ? feed.childTail(token, sandboxId) : Promise.resolve("0")),
+      tail: () => (feed.childTail ? feed.childTail(token, sandboxId) : Promise.resolve(null)),
       revalidate: async () => true,
     };
   }
-  let cached: { caller: Caller; checkedAt: number; grantExpiresAt?: number } | undefined;
+  let cached: { caller: Caller; checkedAt: number; expiresAtMs?: number } | undefined;
   async function resolveCaller() {
     const tick = now();
     const wallMs = (options.now?.() ?? new Date()).getTime();
     if (
       cached &&
       tick - cached.checkedAt < AUTH_REVALIDATE_MS &&
-      (cached.grantExpiresAt === undefined || cached.grantExpiresAt > wallMs)
+      (cached.expiresAtMs === undefined || cached.expiresAtMs > wallMs)
     ) {
       return cached.caller;
     }
@@ -48,7 +48,11 @@ function eventReader(request: Request, options: ControlOptions, feed: EventFeed,
       cached = undefined;
       return null;
     }
-    cached = { caller, checkedAt: tick, ...(grant ? { grantExpiresAt: grant.expires } : {}) };
+    const keyExp = caller.key?.expiresAt ? Date.parse(caller.key.expiresAt) : Number.NaN;
+    const bounds = [grant?.expires, Number.isFinite(keyExp) ? keyExp : undefined].filter(
+      (v): v is number => v !== undefined,
+    );
+    cached = { caller, checkedAt: tick, ...(bounds.length ? { expiresAtMs: Math.min(...bounds) } : {}) };
     return caller;
   }
   return {
@@ -58,7 +62,7 @@ function eventReader(request: Request, options: ControlOptions, feed: EventFeed,
     },
     tail: async () => {
       const caller = await resolveCaller();
-      return caller ? (feed.ownerTail ? feed.ownerTail(caller, sandboxId) : "0") : null;
+      return caller ? (feed.ownerTail ? feed.ownerTail(caller, sandboxId) : null) : null;
     },
     revalidate: async () => (await resolveCaller()) !== null,
   };

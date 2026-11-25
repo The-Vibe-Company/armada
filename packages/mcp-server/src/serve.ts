@@ -73,16 +73,13 @@ export async function startServer(env: Record<string, string | undefined>, optio
     runtimeWakes,
     options.logError,
   );
-  let eventNotifyClosed: Promise<void> | undefined;
   installServerShutdown(server, {
     ...assembly.shutdown,
-    closePools: () =>
-      Promise.allSettled([eventNotifyClosed ?? eventNotify.close()]).then(() => assembly.shutdown.closePools()),
+    closePools: () => Promise.allSettled([eventNotify.close()]).then(() => assembly.shutdown.closePools()),
     closeAntigravityLogin: () => control.antigravityLogin?.shutdown(),
     beginDrain: () => {
       requestDrain.beginDrain();
       eventStreamShutdown.abort();
-      eventNotifyClosed ??= eventNotify.close();
       workers.stop();
     },
     workersDone: workers.done,

@@ -246,10 +246,13 @@ export function createRuntimeFollowup(
                  select 1 from public.mcp_bootstraps b
                  where b.sandbox_id=s.id and b.configured and b.physical_generation='runtime:' || $2::text
                ) and not exists(
-                 select 1 from public.mcp_invalidations mi where mi.org_id=s.org_id and mi.created_at>=s.created_at
+                 select 1 from public.mcp_invalidations mi
+                 where mi.org_id=s.org_id and mi.created_at>=s.created_at
+                   and (mi.sandbox_id=s.id or (mi.sandbox_id is null and mi.reason='definition'))
                ) and not exists(
                  select 1 from public.mcp_leases l
-                 where l.sandbox_id=s.id and l.runtime_epoch=$2::bigint and l.revoked_at is not null
+                 where l.sandbox_id=s.id and l.runtime_epoch=$2::bigint
+                   and (l.revoked_at is not null or l.sandbox_generation<>s.mcp_generation)
                ) and not exists(
                  select 1 from public.mcp_bindings mb
                  join public.mcp_connections c on c.id=mb.connection_id

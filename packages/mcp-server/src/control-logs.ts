@@ -77,9 +77,7 @@ export async function readLogs(
   const backward = page.direction === "backward";
   const sampledSettlement =
     target.provider.followSettled && (page.follow || target.sandbox)
-      ? page.follow
-        ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!())
-        : await target.provider.followSettled()
+      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!(page.follow))
       : undefined;
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor } = await readEventPages(
     (cursor) =>

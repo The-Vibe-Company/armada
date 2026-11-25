@@ -85,7 +85,14 @@ export function startEventNotifyListener(
   logError: (line: string) => void = console.error,
 ) {
   let closed = false;
+  let clientClosed = false;
+  let closing: Promise<void> | undefined;
   let unsubscribe: (() => Promise<void>) | undefined;
+  const closeClient = async () => {
+    if (clientClosed) return;
+    clientClosed = true;
+    await client.close?.().catch(() => {});
+  };
   const ready = Promise.resolve()
     .then(async () => {
       if (closed) return;
@@ -96,17 +103,21 @@ export function startEventNotifyListener(
       if (closed) await unlisten().catch(() => {});
       else unsubscribe = unlisten;
     })
-    .catch(() => {
+    .catch(async () => {
       if (!closed) logError("armada: postgres event notify listener unavailable; using recheck timer.");
+      await closeClient();
     });
   return {
     ready,
-    async close() {
-      if (closed) return;
+    close() {
+      if (closing) return closing;
       closed = true;
-      await ready;
-      await unsubscribe?.().catch(() => {});
-      await client.close?.().catch(() => {});
+      closing = (async () => {
+        await ready;
+        await unsubscribe?.().catch(() => {});
+        await closeClient();
+      })();
+      return closing;
     },
   };
 }
