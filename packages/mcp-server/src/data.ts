@@ -43,6 +43,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
@@ -53,6 +54,7 @@ import {
 } from "./runtime-reconciliation-conflict.ts";
 import {
   completeSandboxDeletion,
+  enqueueBoatStop,
   enqueueModalStop,
   expireAfterExtension,
   finishLaunchFailure,
@@ -922,6 +924,10 @@ export function createSqlData(
         if (sets.length === 0) return;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         let fence = patch.renewActivity ? " and s.id=renewal_target.id" : "";
+        if (patch.activityToken && (patch.advanceGeneration || patch.turnActivity === "claim"))
+          fence += ` and not (s.provider='boat' and exists(select 1 from public.jobs j
+            where j.sandbox_id=s.id and j.generation=s.lifecycle_generation and j.kind='stop'
+              and j.state in ('queued','leased')))`;
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -974,6 +980,7 @@ export function createSqlData(
           fence += ` and s.status in ('stopped','failed')
             and not (s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
+            and not (s.provider='boat' and s.stopped_at is null and s.stop_requested_at is not null)
             and not ${unresolvedModalStop("s")}
             and not ${SANDBOX_DELETION_MANAGED}`;
         }
@@ -1076,8 +1083,8 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
-            const locked = await tx.query<{ observation_blocked: boolean }>(
-              `select not (${observationFence}) as observation_blocked
+            const locked = await tx.query<{ observation_blocked: boolean; provider: string }>(
+              `select not (${observationFence}) as observation_blocked,s.provider::text
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
             );
@@ -1107,6 +1114,8 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
+              if (usesDiskStopJob(locked.rows[0]?.provider) && admission && patch.stopRequested)
+                await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
               if (
                 patch.queueModalStop &&
                 (!patch.activityToken ||

@@ -233,23 +233,10 @@ const runtimeCaptureScenarios = [
   "lost_receipt_response",
 ] as const;
 
-test.each([
-  ...runtimeCaptureScenarios.map((scenario) => ["modal", scenario] as const),
-  ...[
-    "dirty",
-    "clean",
-    "takeover_before_capture",
-    "takeover_during_capture",
-    "lost_receipt_response",
-    "physical_generation_missing",
-    "takeover_during_boot_probe",
-    "physical_generation_changed",
-    "wrong_binding",
-    "archiving",
-  ].map((scenario) => ["boat", scenario] as const),
-])("%s runtime stop preserves work independently of journal retention: %s", async (hostId, scenario) => {
-  await withPreservationRow(
-    async ({ db, id, physical, sql, provider, activity, generation }) => {
+test.each([...runtimeCaptureScenarios])(
+  "Modal runtime stop preserves work independently of the event journal and fences lost leases: %s",
+  async (scenario) => {
+    await withPreservationRow(async ({ db, id, physical, sql, provider, activity, generation }) => {
       if (!activity) throw new Error("Missing runtime activity lease fixture");
       const { people } = sharedDatabase();
       const recoveryScope: [string[], string] = [[people.org], people.owner];
@@ -263,39 +250,24 @@ test.each([
         );
       let observed = 0;
       let captures = 0;
-      const initialGeneration = hostId === "boat" ? "e76cc889-0359-4544-9320-dd938debba67" : "7";
-      const replacementBoot = "32bfc56e-248e-4c0a-9ec1-feee745598bd";
-      let physicalGeneration = initialGeneration;
-      let bootProbes = 0;
       const host: RuntimeWorkProvider = {
         ...provider,
-        id: hostId,
+        id: "modal",
         async get() {
           observed++;
           if (observed === 1 && scenario === "takeover_before_capture") await takeOver();
           return {
-            id: observed === 1 && scenario === "wrong_binding" ? "other-machine" : physical,
+            id: physical,
             name: physical,
-            state: observed === 1 && scenario === "archiving" ? "stopping" : "ready",
-            providerState: observed === 1 && scenario === "archiving" ? "archiving" : "active",
+            state: "ready",
+            providerState: "active",
             labels: {},
-            physicalGeneration: hostId === "boat" ? "stale-get-identity" : physicalGeneration,
+            physicalGeneration: "7",
           };
-        },
-        async observeCaptureBoot(sandboxId, signal) {
-          expect(sandboxId).toBe(physical);
-          expect(signal.aborted).toBe(false);
-          if (++bootProbes === 1) {
-            if (scenario === "takeover_during_boot_probe") await takeOver();
-            if (scenario === "physical_generation_missing") return null;
-          }
-          return physicalGeneration;
         },
         async captureRuntimeWork(request) {
           expect(request.sandboxId).toBe(physical);
-          expect(request.physicalGeneration).toBe(
-            captures === 1 && scenario === "physical_generation_changed" ? replacementBoot : initialGeneration,
-          );
+          expect(request.physicalGeneration).toBe("7");
           expect(request.signal.aborted).toBe(false);
           captures++;
           if (captures === 1) {
@@ -304,20 +276,11 @@ test.each([
               if (scenario === "takeover_on_failure") return { status: "failed", reason: "collector_failed" };
             }
             if (scenario === "quiescence_rejected") throw Error("unverified process quiescence");
-            if (scenario === "physical_generation_changed") physicalGeneration = replacementBoot;
           }
-          if (request.physicalGeneration !== physicalGeneration)
-            throw Error("collector refused the replaced incarnation");
           return scenario === "clean" ? { status: "clean" } : { status: "preserved", archive };
         },
       };
-      const runtime = createRuntimeProvider(
-        host,
-        physical,
-        host,
-        undefined,
-        hostId === "modal" ? host.captureRuntimeWork : undefined,
-      );
+      const runtime = createRuntimeProvider(host, physical, host, undefined, host.captureRuntimeWork);
       const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
       process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
       try {
@@ -343,29 +306,13 @@ test.each([
           generation,
         });
         const takeover = scenario.startsWith("takeover_");
-        const collectorRefused = ["quiescence_rejected", "physical_generation_changed"].includes(scenario);
-        const noFirstDispatch = [
-          "takeover_before_capture",
-          "physical_generation_missing",
-          "takeover_during_boot_probe",
-          "wrong_binding",
-          "archiving",
-        ].includes(scenario);
+        const collectorRefused = scenario === "quiescence_rejected";
+        const noFirstDispatch = scenario === "takeover_before_capture";
         const pending = takeover || collectorRefused || scenario === "lost_receipt_response" || noFirstDispatch;
         expect(outcome).toBe(pending ? "pending" : undefined);
         expect(captures).toBe(noFirstDispatch ? 0 : 1);
-        if (["wrong_binding", "archiving", "takeover_before_capture"].includes(scenario)) expect(bootProbes).toBe(0);
-        if (scenario === "physical_generation_missing" || scenario === "takeover_during_boot_probe") {
-          expect(bootProbes).toBe(1);
-          const { rows } = await db.query<{ unpublished: boolean }>(
-            "select preservation_stop_generation is null as unpublished from sandboxes where id=$1",
-            [id],
-          );
-          expect(rows[0]?.unpublished).toBe(true);
-        }
         if (takeover || collectorRefused || noFirstDispatch)
           expect(await readWorkRecovery(sql, recoveryScope, id)).toBeNull();
-        if (scenario === "archiving") return;
         if (!takeover) await takeOver();
         const nextOwner = { kind: "reconcile", token: reconcile, generation } as const;
         expect(await preserveBeforeStop(sql, runtime, id, physical, "lifecycle_stop", nextOwner)).toBeUndefined();
@@ -387,7 +334,6 @@ test.each([
         if (oldKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
         else process.env.ARMADA_ENCRYPTION_KEY = oldKey;
       }
-    },
-    hostId === "boat" ? "boat-runtime" : "modal",
-  );
-});
+    }, "modal");
+  },
+);

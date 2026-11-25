@@ -1,3 +1,4 @@
+import { expect, test } from "bun:test";
 import { capabilities } from "@armada/core/server";
 import { testMachineConformance } from "../../core/test-support/machine-conformance.ts";
 import { createBoatMachine, createBoatProvider } from "../src/index.ts";
@@ -5,7 +6,7 @@ import { retainedSandbox, sandbox } from "./support.ts";
 
 type Fixture = ReturnType<Parameters<typeof testMachineConformance>[1]["fixture"]>;
 type Sandbox = { id: string; state: string; labels: Record<string, string>; createdAt: string };
-function fixture() {
+function fixture(stopOptions: Pick<Parameters<typeof createBoatMachine>[0], "stopBinding" | "onStopped"> = {}) {
   const rows = new Map<string, { account: string; sandbox: Sandbox; workspace: string; bindings: Set<string> }>();
   const replays = new Map<string, string>();
   return {
@@ -44,7 +45,7 @@ function fixture() {
         fault?.(`${op}:after`);
         return Response.json({ sandbox: rows.get(machineId)?.sandbox });
       }) as typeof fetch;
-      const options = { apiKey: "fixture", deploymentId, fetch: fetchBoat };
+      const options = { apiKey: "fixture", deploymentId, fetch: fetchBoat, ...stopOptions };
       return createBoatMachine(
         options,
         createBoatProvider(options),
@@ -94,4 +95,31 @@ testMachineConformance("Boat Machine", {
     resume: ["resume:before", "resume:after"],
     delete: ["archive:before", "archive:after"],
   },
+});
+
+test("a resumed Boat stop receipts the logical generation and replays without another archive", async () => {
+  const target = { sandboxId: "sandbox-a", generation: 3, machineId: "machine-1" };
+  const binding = { deploymentId: "deployment-a", bindingId: "account" };
+  let archives = 0;
+  const exits: (Date | undefined)[] = [];
+  const machine = fixture({
+    stopBinding: { ...target, launchGeneration: 1 },
+    onStopped: (at) => exits.push(at),
+  }).adapter(binding, (step) => {
+    if (step === "archive:before") archives++;
+  });
+  const original = await machine.create({
+    sandboxId: target.sandboxId,
+    generation: 1,
+    source: { kind: "snapshot", ref: "golden" },
+    size: null,
+    computeTtlSeconds: 60,
+  });
+  expect(original.machineId).toBe(target.machineId);
+  await expect(machine.stop({ ...target, generation: 4, retain: true })).rejects.toThrow("incarnation changed");
+  const receipt = { sandboxId: target.sandboxId, generation: 3, kind: "disk", ref: target.machineId } as const;
+  expect(await machine.stop({ ...target, retain: true })).toEqual(receipt);
+  expect(await machine.stop({ ...target, retain: true })).toEqual(receipt);
+  expect(archives).toBe(1);
+  expect(exits.map((at) => at?.toISOString())).toEqual(["2026-11-09T10:00:00.000Z", "2026-11-09T10:00:00.000Z"]);
 });

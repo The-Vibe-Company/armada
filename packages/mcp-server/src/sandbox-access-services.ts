@@ -15,7 +15,7 @@ import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import type { AdmitModalLaunch } from "./modal-launch-admission.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -184,11 +184,12 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    if (saved.modalTransport === "dialout") {
+    const modalStop = saved.modalTransport === "dialout";
+    if (modalStop || usesDiskStopJob(saved.provider)) {
       if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
       await stopStore.update(saved.id, {
         ...stopAdmission,
-        queueModalStop: operation.id,
+        ...(modalStop ? { queueModalStop: operation.id } : {}),
         status: stoppingStatus,
         stopRequested: true,
         statusReason,

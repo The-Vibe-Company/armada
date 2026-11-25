@@ -13,15 +13,20 @@ export const runtimeBridgeProfiles = {
     placement: "boat-runtime",
     launchDefault: "boatRuntimeDefault",
     hostPorts: true,
+    stopDispatch: "disk-job",
     repeatPinnedSettings: true,
   },
   modal: {
     placement: "dialout",
     launchDefault: "modalRuntimeDefault",
     hostPorts: false,
+    stopDispatch: "image-job",
     repeatPinnedSettings: false,
   },
 } as const satisfies Record<SandboxProviderId, object>;
+
+export const usesDiskStopJob = (provider: unknown) =>
+  isSandboxProvider(provider) && runtimeBridgeProfiles[provider].stopDispatch === "disk-job";
 
 export function goldenRuntimePlacement(options: LaunchOptions, provider: SandboxProviderId) {
   return options[runtimeBridgeProfiles[provider].launchDefault];

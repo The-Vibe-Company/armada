@@ -624,6 +624,7 @@ export async function createServerServices(env: Record<string, string | undefine
     control,
     outputs,
     webhooks,
+    deploymentId,
     dockerEnabled,
     dockerBootstrap,
     dockerLaunchEnabled,

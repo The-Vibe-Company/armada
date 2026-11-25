@@ -34,32 +34,24 @@ or permission bypass. Do not execute it as part of a PR or an audit.
    snapshots are enabled. If any of this evidence is unknown, leave the hold.
 4. In a transaction lock the original row and compare the recorded lifecycle
    generation, stop generation, provider binding, exact machine ID and pending stop
-   request. Require status still stopping and no live activity/reconciliation lease.
+   request. Require status still stopping or failed with a pending stop and no live operation lease.
    If anything changed, abort and investigate; never publish an old observation over
    a resumed generation. Only with confirmed evidence set status stopped
    (for Boat, definitive absence never authorizes this transition),
    stopped_at to the evidence time, stop_requested_at null, lifecycle_error null,
-   and clear reconciliation leases. On a failed Modal sandbox with live compute,
+   and clear reconciliation leases. On a failed sandbox with live compute,
    preserve its failure status and record the confirmed exit instead. If a Modal
    stop job is parked at that generation, set its `run_after` to now in the same
    transaction so it can publish staged outputs and retire. Do not delete retained
    identity or data.
 
-If original normal authority is legitimately available again, the operator may
+For Modal, if original normal authority is legitimately available again, the operator may
 instead requeue the same fenced row by setting reconcile_after to now and clearing
 the hold diagnostic under the same transaction/preconditions. For a Modal runtime with a queued shared stop job, also set that exact job's
 `run_after` to now in the same transaction. Keep its generation, deadline, and
 checkpoint evidence. Normal reconciliation must still observe the provider; requeueing alone never proves physical exit.
 
-A Boat recovery stop is identified by a `runtime_resume_unenrolled` transition
-into `stopping` for the current lifecycle generation. Definitive absence is
-insufficient to publish a resumable stop for this transition. When requeuing
-one of these stops, leave `reconcile_after` at infinity and clear the hold
-diagnostic under the same transaction and preconditions. The current worker
-recognizes the journal entry. The infinite schedule excludes workers that
-predate the journal-based handoff. Workers that understand the handoff but
-predate the snapshot check can still claim it. Require all such workers to
-drain before relying on automatic enforcement of verified retention.
+Boat stops run as one generation-bound job. The absolute deadline for that job does not restart when provider authority changes. For a held Boat job, follow the exact-identity procedure above. Check the shared job lease as well as activity and reconciliation leases before using operator authority.
 
 Docker-host reservations use their separate authenticated host mailbox/TTL cleanup
 path and are never claimed by this Boat/Modal worker. This change neither grants

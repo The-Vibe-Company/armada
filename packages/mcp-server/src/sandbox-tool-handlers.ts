@@ -11,6 +11,7 @@ import {
   requiresMissingMachineObservation,
   retainsDiskOnStop,
   runtimeBridgeTarget,
+  usesDiskStopJob,
 } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
@@ -241,6 +242,7 @@ export function configureTools(
       }
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
+      if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -266,14 +268,15 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      if (modalDialoutPlacement(found)) {
+      const modalStop = modalDialoutPlacement(found);
+      if (modalStop || usesDiskStopJob(found.provider)) {
         if (found.lifecycleGeneration === undefined)
-          throw new VaultError("conflict", "Modal generation is unavailable.");
+          throw new VaultError("conflict", "Sandbox generation is unavailable.");
         const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
         await data.sandboxes.update(found.id, {
           ...stopAdmission,
           ...retainedGuard,
-          queueModalStop: true,
+          ...(modalStop ? { queueModalStop: true } : {}),
           status,
           stoppedAt: null,
           stopRequested: true,
@@ -285,7 +288,7 @@ export function configureTools(
         return {
           id: found.id,
           status,
-          ...(checkpoint === null
+          ...(modalStop && checkpoint === null
             ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }
             : {}),
         };

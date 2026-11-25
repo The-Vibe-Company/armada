@@ -103,7 +103,6 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   let probes = 0;
   const service = outputJobFixture(sql, KEY, async () => ({
     readOutputs: provider.readOutputs!,
-    openRetainedOutputs: async () => "gone",
     async probeOutputs() {
       probes++;
       return true;
@@ -119,8 +118,8 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   ).toHaveLength(1);
   await db.query(`update sandboxes set status='stopped',stopped_at=now()-interval '15 days' where id=$1`, [id]);
   await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
-  // Boat confirmed the old archive is absent; its live capture stays downloadable.
   expect(await sample(service)).toBe(true);
+  expect(await sample(service)).toBe(false);
   expect(state.reads).toBe(2);
   const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
   const route = routeFor(service, people.owner, people.org);
@@ -204,32 +203,6 @@ test.each([
   expect(resolutions).toBe(0);
 });
 
-test("definitive retained absence is recorded once without a failure", async () => {
-  const { db, id, sql } = await fixture();
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
-  const logs: unknown[] = [];
-  const info = console.info;
-  console.info = (line: string) => logs.push(JSON.parse(line));
-  try {
-    const service = outputJobFixture(sql, KEY, async () => ({ openRetainedOutputs: async () => "gone" }));
-    expect(await sample(service)).toBe(true);
-    await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
-    expect(await sample(service)).toBe(false);
-    expect(logs).toEqual([
-      {
-        event: "sandbox_output_collection_empty",
-        sandboxId: id,
-        reason: "retained_outputs_absent",
-        provider: "boat",
-        status: "stopped",
-        attemptCount: 1,
-      },
-    ]);
-  } finally {
-    console.info = info;
-  }
-});
-
 test("a missing live output directory is reported once and later files remain collectible", async () => {
   const { db, id, sql } = await fixture();
   let files: OutputFile[] | undefined;
@@ -264,115 +237,6 @@ test("a missing live output directory is reported once and later files remain co
   expect(await sample(service)).toBe(true);
   expect((await db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
     { name: "later.txt" },
-  ]);
-});
-
-test("a transient retained read backs off, then publishes a file from the stopped workspace once", async () => {
-  const { db, people, id, sql } = await fixture();
-  await db.query(`update sandboxes set status='stopped',stopped_at=now()-interval '15 days' where id=$1`, [id]);
-  const bytes = Buffer.from("written after the final live sample");
-  let attempts = 0;
-  const service = outputJobFixture(sql, KEY, async () => ({
-    async openRetainedOutputs() {
-      if (++attempts === 1) return null;
-      return {
-        entries: [{ name: "late.txt", size: bytes.length, revision: "1:2:3:4" }],
-        readChunk: () => bytes,
-      };
-    },
-  }));
-  expect(await sample(service)).toBe(true);
-  expect(await sample(service)).toBe(false);
-  await db.query(`update jobs set run_after=now() where sandbox_id=$1`, [id]);
-  expect(await sample(service)).toBe(true);
-  const route = routeFor(service, people.owner, people.org);
-  const response = await route(new Request(`https://armada.example/api/v1/sandboxes/${id}/outputs/late.txt`));
-  expect(await response?.text()).toBe(bytes.toString());
-  await db.query(`update jobs set run_after=now() where sandbox_id=$1`, [id]);
-  expect(await sample(service)).toBe(false);
-  expect(attempts).toBe(2);
-});
-
-test("a stop settling during a capture job preserves the retained archive read", async () => {
-  const { db, id, sql } = await fixture();
-  let stopSettled = false;
-  const racing: Sql = {
-    ...sql,
-    async query<T>(query: string, params?: unknown[]) {
-      const result = await sql.query<T>(query, params);
-      if (query.includes("as retained") && result.rows.length === 0) {
-        await sql.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
-        stopSettled = true;
-      }
-      return result;
-    },
-  };
-  let retainedReads = 0;
-  const service = outputJobFixture(racing, KEY, async () => ({
-    readOutputs: async () => [],
-    async openRetainedOutputs() {
-      retainedReads++;
-      return "gone";
-    },
-  }));
-
-  expect(await sample(service)).toBe(true);
-  await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
-  expect(await sample(service)).toBe(true);
-  expect(stopSettled).toBe(true);
-  await db.query("update jobs set run_after=now() where sandbox_id=$1", [id]);
-  expect(await sample(service)).toBe(true);
-  expect(retainedReads).toBe(1);
-});
-
-test("a stalled retained read leaves capacity to collect live outputs", async () => {
-  const { db, id, sql } = await fixture();
-  await db.query(
-    `insert into sandboxes(golden_id,org_id,owner_id,boat_id,harness,status,stopped_at,created_at)
-     select golden_id,org_id,owner_id,'archive_' || n,harness,'stopped',now(),now()+(n*2-3)*interval '1 minute'
-     from sandboxes cross join generate_series(1,2) n where id=$1`,
-    [id],
-  );
-  const hold = Promise.withResolvers<null>();
-  const entered = Promise.withResolvers<void>();
-  const {
-    rows: [second],
-  } = await db.query<{ id: string }>("select id from sandboxes where boat_id='archive_2'");
-  let retainedReads = 0;
-  const service = outputJobFixture(sql, KEY, async () => ({
-    openRetainedOutputs() {
-      retainedReads++;
-      entered.resolve();
-      return retainedReads === 1 ? hold.promise : Promise.resolve("gone" as const);
-    },
-    readOutputs: async () => [file("live.txt", "still running")],
-  }));
-  try {
-    expect(await service.reconcileOne(signal())).toBe(true);
-    await entered.promise;
-    expect(await service.reconcileOne(signal())).toBe(true);
-    const archiveJob = {
-      id: crypto.randomUUID(),
-      kind: "outputs_capture",
-      sandbox_id: second!.id,
-      generation: "1",
-      lease_epoch: "1",
-      attempts: 1,
-      max_attempts: 3,
-      payload: null,
-      outcome: null,
-    };
-    expect((await service.captureJob.run(archiveJob, { signal: signal(), canDispatch: async () => true })).status).toBe(
-      "retry",
-    );
-  } finally {
-    hold.resolve(null);
-    await service.drain();
-  }
-  expect(retainedReads).toBe(1);
-  expect((await db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
-    { name: "live.txt" },
   ]);
 });
 
@@ -1134,7 +998,7 @@ test.each([
       query: async <T>(query: string, params?: readonly unknown[]) => {
         // Simulate a previously claimed reason by recording the attempt and returning no row.
         if (query.includes("set outputs_failure_reasons=array_append")) reasons.push(params?.[1]);
-        const rows = query.includes("as retained")
+        const rows = query.includes("clock_timestamp()::text as scan")
           ? [{ id: claimedId, provider: "modal", provider_sandbox_id: "modal_fixture", retained_generation: null }]
           : query.startsWith("select outputs_collector_supported")
             ? [{ outputs_collector_supported: true }]

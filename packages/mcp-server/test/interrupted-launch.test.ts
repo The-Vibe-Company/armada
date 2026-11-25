@@ -3,6 +3,7 @@ import { createSqlSandboxStore } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
+import { runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, fakeBoat } from "./support.ts";
 
@@ -52,15 +53,33 @@ for (const outcome of ["allocated", "missing", "unavailable"] as const) {
     const recovered = (await data.sandboxes.get(found.id))!;
     expect(recovered.status).toBe("failed");
     expect(recovered.statusReason).toContain("Launch interrupted");
-    expect(recovered.stoppedAt === null).toBe(outcome === "unavailable");
+    expect(recovered.stoppedAt === null).toBe(outcome !== "missing");
     expect((await readStatus(boat.provider, data.sandboxes, recovered, { now: new Date() })).status).toBe("failed");
-    expect(boat.stops).toEqual(outcome === "allocated" ? [found.providerSandboxId] : []);
+    expect(boat.stops).toEqual([]);
     if (outcome === "unavailable") {
+      expect(recovered.lifecycleError).toContain("observation unavailable");
+      expect((await db.query("select id from jobs where sandbox_id=$1 and kind='stop'", [found.id])).rows).toEqual([]);
       boat.provider.get = get;
       await db.query("update sandboxes set reconcile_after=now() where id=$1", [found.id]);
-      await lifecycle.reconcileOne();
+      expect(await lifecycle.reconcileOne()).toBe(true);
+    }
+    if (outcome !== "missing") {
+      expect(
+        await runBoatStop(sql, {
+          async observe(machine) {
+            const info = await boat.provider.get(machine.machineId!);
+            return { kind: "present", phase: "running", machine: { ...machine, machineId: info.id } };
+          },
+          async stop({ machineId }) {
+            await boat.provider.stop({ sandboxId: machineId });
+            return null;
+          },
+        }),
+      ).toBe("done");
       expect((await data.sandboxes.get(found.id))?.stoppedAt).not.toBeNull();
       expect(boat.stops).toEqual([found.providerSandboxId]);
+    } else {
+      expect((await db.query("select id from jobs where sandbox_id=$1 and kind='stop'", [found.id])).rows).toEqual([]);
     }
     expect(
       (
