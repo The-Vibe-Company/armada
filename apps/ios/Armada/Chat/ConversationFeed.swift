@@ -31,10 +31,12 @@ final class ConversationFeed {
     /// One read: forward after `cursor`, or backward (the latest page when `cursor` is nil, else
     /// the page before that older cursor).
     typealias Fetch = @Sendable (_ cursor: String?, _ backward: Bool) async throws(ServiceFailure) -> ConversationEventPage
+    typealias Stream = @Sendable (_ lastEventID: String?) -> AsyncThrowingStream<ConversationStreamEvent, Error>
 
     private(set) var conversation = Conversation(items: [], activeTurns: [:], technicalCount: 0)
     private(set) var documents: [String: MarkdownDocument] = [:]
     private(set) var connection: Connection = .connecting
+    private(set) var isSSEConnected = false
     /// Something is shown: this session's earlier read of the conversation, or the latest page.
     private(set) var hasLoaded = false
     /// Older history exists above what is shown.
@@ -56,6 +58,7 @@ final class ConversationFeed {
     @ObservationIgnored private var cache: [String: CachedMarkdownDocument] = [:]
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var sseTask: Task<Void, Never>?
 
     init(key: String, memory: ConversationMemory?) {
         self.key = key
@@ -78,20 +81,28 @@ final class ConversationFeed {
         try await loader.catchUp(Self.read(fetch), show: show)
     }
 
-    /// Shows what is known, reads the latest page, then follows forward until the calling task is
-    /// cancelled (the screen disappears) or the stream stops. Transient 400/409 rejections while
-    /// the sandbox is starting back off instead of permanently stopping live follow.
+    /// Wakes fallback polling immediately (for example after send, steer, or interrupt).
+    func wake() { loader.wake() }
+
+    /// Shows what is known, reads the latest page, then follows via live SSE when available with
+    /// automatic fallback to polling on error or disconnect.
     func follow(
-        _ fetch: @escaping Fetch,
+        _ fetch: @escaping Fetch, stream: Stream? = nil,
         isStarting: @MainActor @escaping () -> Bool = { false },
-        onSignedOut: @MainActor () -> Void
+        onTransition: @MainActor @escaping (_ status: SandboxStatus?, _ statusReason: String?) -> Void = { _, _ in },
+        onSignedOut: @MainActor @escaping () -> Void
     ) async {
+        defer { sseTask?.cancel(); sseTask = nil; setSSEConnected(false) }
         await loader.run(
             clock: ContinuousClock(),
             fetch: Self.read(fetch),
             show: show,
             pollDelay: { self.conversation.running ? .seconds(2) : .seconds(6) },
-            onRead: { self.connection = .live },
+            onRead: {
+                self.connection = .live
+                guard self.sseTask == nil, let stream else { return }
+                self.sseTask = Task { @MainActor [weak self] in await self?.runSSE(stream: stream, fetch: fetch, onTransition: onTransition, onSignedOut: onSignedOut) }
+            },
             onFailure: { (error: ServiceFailure, failures: Int) -> Duration? in
                 switch error.category {
                 case .signedOut:
@@ -130,7 +141,46 @@ final class ConversationFeed {
 
     /// Forgets what this session kept of the conversation, after its access was refused.
     func forget() {
+        sseTask?.cancel(); sseTask = nil; setSSEConnected(false)
         loader.forget()
+    }
+
+    private func setSSEConnected(_ connected: Bool) {
+        if isSSEConnected != connected { isSSEConnected = connected }; loader.setLiveConnected(connected)
+    }
+
+    private func runSSE(
+        stream: @escaping Stream, fetch: @escaping Fetch,
+        onTransition: @MainActor @escaping (_ status: SandboxStatus?, _ statusReason: String?) -> Void,
+        onSignedOut: @MainActor @escaping () -> Void
+    ) async {
+        var lastEventID: String? = nil; var failures = 0
+        while !Task.isCancelled {
+            var opened = false
+            do {
+                for try await item in stream(lastEventID) {
+                    guard !Task.isCancelled else { return }
+                    let needsGap = lastEventID == nil && !opened; opened = true; failures = 0
+                    switch item {
+                    case .connected: setSSEConnected(true); connection = .live; if needsGap { try? await loader.catchUp(Self.read(fetch), show: show) }
+                    case .event(let id, let event): lastEventID = id; await loader.applyLiveEvent(event, show: show)
+                    case .transition(let id, let status, let reason): lastEventID = id; onTransition(status, reason)
+                    case .advance(let id): lastEventID = id
+                    }
+                }
+            } catch is CancellationError { setSSEConnected(false); return }
+            catch {
+                setSSEConnected(false); guard !Task.isCancelled else { return }
+                if let f = error as? ServiceFailure {
+                    if f.category == .signedOut { onSignedOut(); return }
+                    if [.noAccess, .unavailable, .rejected].contains(f.category) { return }
+                }
+                failures += 1; try? await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5)))); continue
+            }
+            setSSEConnected(false); guard !Task.isCancelled else { return }
+            if !opened { failures += 1 }
+            try? await Task.sleep(for: opened ? .seconds(1) : .seconds(min(30, 1 << min(failures, 5))))
+        }
     }
 
     private static func read(

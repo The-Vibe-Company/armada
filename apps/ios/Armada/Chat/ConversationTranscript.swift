@@ -129,9 +129,11 @@ struct ConversationTranscript: View {
                 olderAnchor = nil
                 proxy.scrollTo(anchor, anchor: .top)
             }
-            .onChange(of: items.last) { _, _ in
+            .onChange(of: items.last) { previous, current in
                 guard scrollPosition.isNearBottom else { return }
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                if SandboxConversationPolicy.shouldAnimateTailScroll(previous: previous, current: current, reduceMotion: reduceMotion) {
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                } else {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }

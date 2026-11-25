@@ -74,3 +74,11 @@ struct ConversationEventPage: Sendable {
     /// Live thread status and settlement when `logs/read` returns them alongside events.
     var threadState: ConversationThreadState? = nil
 }
+
+/// Live SSE items emitted by `GET /api/v1/events`.
+enum ConversationStreamEvent: Equatable, Sendable {
+    case connected
+    case event(id: String, AgentEvent)
+    case transition(id: String, status: SandboxStatus?, statusReason: String?)
+    case advance(id: String)
+}

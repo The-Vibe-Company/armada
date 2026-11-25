@@ -126,4 +126,19 @@ struct URLSessionTransportTests {
         let later = try await transport.send(request("later"))
         #expect(later.1.statusCode == 200)
     }
+
+    @Test func streamDeliversChunkedSSEBytesOverURLSessionBytes() async throws {
+        defer { TransportProtocol.handle(nil) }
+        TransportProtocol.handle { f in
+            f.client?.urlProtocol(f, didReceive: HTTPURLResponse(url: f.request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
+            f.client?.urlProtocol(f, didLoad: Data(": connected\n\n".utf8))
+            f.client?.urlProtocol(f, didLoad: Data("id: 1\ndata: {}\n\n".utf8))
+            f.client?.urlProtocolDidFinishLoading(f)
+        }
+        var status = 0; var received = Data()
+        for try await event in transport().stream(request("events", bearer: "fixture_sse")) {
+            if case .response(let http) = event { status = http.statusCode } else if case .data(let chunk) = event { received.append(chunk) }
+        }
+        #expect(status == 200 && String(decoding: received, as: UTF8.self) == ": connected\n\nid: 1\ndata: {}\n\n")
+    }
 }

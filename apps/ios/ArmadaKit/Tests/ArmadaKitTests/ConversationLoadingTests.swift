@@ -331,3 +331,42 @@ private final class SuspendedPresentation {
     #expect(ConversationFollowBackoff.startingRejection(consecutiveFailures: ConversationFollowBackoff.maxStartingRejectionRetries + 1, isStarting: true) == nil)
     #expect(ConversationFollowBackoff.startingRejection(consecutiveFailures: 1, isStarting: false) == nil)
 }
+
+private final class ManualClock: Clock, @unchecked Sendable {
+    typealias Instant = RecordingClock.Instant
+    private let lock = NSLock(); private var waiter: CheckedContinuation<Void, Never>?; private var sleeps = 0
+    var now: Instant { Instant(offset: .zero) }; var minimumResolution: Duration { .zero }
+    func waitForSleep() async {
+        await withCheckedContinuation { c in if lock.withLock({ if sleeps > 0 { return true }; waiter = c; return false }) { c.resume() } }
+    }
+    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+        let (hold, pending) = lock.withLock { () -> (Bool, CheckedContinuation<Void, Never>?) in sleeps += 1; let w = waiter; waiter = nil; return (sleeps == 1, w) }
+        pending?.resume(); guard hold else { return }
+        let box = CancelBox()
+        try await withTaskCancellationHandler { try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in box.store(c) } } onCancel: { box.cancel() }
+    }
+    private final class CancelBox: @unchecked Sendable {
+        private let lock = NSLock(); private var cont: CheckedContinuation<Void, Error>?; private var cancelled = false
+        func store(_ c: CheckedContinuation<Void, Error>) { if lock.withLock({ if cancelled { return true }; cont = c; return false }) { c.resume(throwing: CancellationError()) } }
+        func cancel() { lock.withLock { cancelled = true; let c = cont; cont = nil; return c }?.resume(throwing: CancellationError()) }
+    }
+}
+
+@MainActor
+@Test func wakeInterruptsFallbackPollAndLiveSSEReconcilesCoalescedFallbackWithoutDuplication() async {
+    let clock = ManualClock(), log = Log(), loader = ConversationLoader<Entry>(key: "sse-wake", cache: nil)
+    let script = Script([.success(ConversationPage(events: [Entry(id: "e1", body: "start")], cursor: "c1", hasMore: false)),
+                         .success(ConversationPage(events: [Entry(id: "e3", body: "Hello")], cursor: "c3", hasMore: false))], log: log)
+    let task = Task { await loader.run(clock: clock, fetch: { (r) throws(Stop) in try script.fetch(r) }, show: { log.append("show " + $0.map { "\($0.id)=\($0.body)" }.joined(separator: ",")) }, pollDelay: { .seconds(60) }, onFailure: { _, _ in nil }) }
+    await clock.waitForSleep(); loader.setLiveConnected(true)
+    await loader.applyLiveEvent(Entry(id: "e2", body: "Hel"), show: { log.append("live " + $0.map { "\($0.id)=\($0.body)" }.joined(separator: ",")) })
+    await loader.applyLiveEvent(Entry(id: "e3", body: "lo"), show: { log.append("live " + $0.map { "\($0.id)=\($0.body)" }.joined(separator: ",")) })
+    loader.setLiveConnected(false); await task.value
+    #expect(loader.snapshot.events == [Entry(id: "e1", body: "start"), Entry(id: "e3", body: "Hello")] && loader.snapshot.cursor == "c3")
+    #expect(log.all == ["read latest", "show e1=start", "live e1=start,e2=Hel", "live e1=start,e2=Hel,e3=lo", "read newer c1", "show e1=start,e3=Hello", "read newer c3"])
+    let wakeClock = ManualClock(), wakeLog = Log(), wakeLoader = ConversationLoader<Entry>(key: "wake", cache: nil)
+    let wakeScript = Script([page(["e1"], cursor: "c1", hasMore: false), page(["e2"], cursor: "c2", hasMore: false)], log: wakeLog)
+    let wakeTask = Task { await wakeLoader.run(clock: wakeClock, fetch: { (r) throws(Stop) in try wakeScript.fetch(r) }, show: { wakeLog.append("show \($0.map(\.id).joined(separator: ","))") }, pollDelay: { .seconds(60) }, onFailure: { _, _ in nil }) }
+    await wakeClock.waitForSleep(); wakeLoader.wake(); await wakeTask.value
+    #expect(wakeLog.all == ["read latest", "show e1", "read newer c1", "show e1,e2", "read newer c2"])
+}

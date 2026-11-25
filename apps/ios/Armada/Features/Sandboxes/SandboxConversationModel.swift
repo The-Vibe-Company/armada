@@ -1,3 +1,4 @@
+import enum ArmadaKit.SandboxPresentation
 import Foundation
 import Observation
 
@@ -83,12 +84,15 @@ final class SandboxConversationModel {
 
     /// Why the composer cannot send now, or nil when it can.
     var composerUnavailableReason: String? {
-        guard !recoveringPrompt, let state else { return "Loading…" }
         if pending.contains(where: { $0.status == .sending }) { return "Sending…" }
         if interrupting { return "Interrupting…" }
         if pending.contains(where: { $0.status == .unconfirmed }) {
             return "Check whether your last prompt arrived, then dismiss it to write again."
         }
+        guard let state else {
+            return SandboxConversationPolicy.coldOpenUnavailableReason(listedStatus: listedStatus)
+        }
+        guard !recoveringPrompt else { return "Loading…" }
         if let expiry = state.expiresAt, expiry <= .now {
             return "This sandbox expired. Launch a new sandbox on the same branch to continue."
         }
@@ -113,9 +117,11 @@ final class SandboxConversationModel {
     }
 
     var isWorking: Bool {
-        if let state { return state.isWorking || feed.conversation.running }
-        if feed.hasLoaded { return feed.conversation.running }
-        return listedWorking || listedStatus == .running
+        SandboxConversationPolicy.isWorking(
+            state: state, feedHasLoaded: feed.hasLoaded, feedRunning: feed.conversation.running,
+            listedStatus: listedStatus, listedWorking: listedWorking,
+            hasActivePending: pending.contains { $0.status == .sending || $0.status == .accepted }
+        )
     }
 
     /// A deleted sandbox has no machine left to read events from. The list row decides until the
@@ -132,10 +138,8 @@ final class SandboxConversationModel {
     /// cached state and revalidate here in the background.
     func open() async {
         if case .failed = phase { phase = .loading }
-        if !recoveringPrompt {
-            do throws(ServiceFailure) { try await recoverUnconfirmedPromptIfNeeded() }
-            catch { handleReadFailure(error); return }
-        }
+        do throws(ServiceFailure) { try await recoverUnconfirmedPromptIfNeeded() }
+        catch { handleReadFailure(error); return }
         _ = await loadState()
     }
 
@@ -158,7 +162,9 @@ final class SandboxConversationModel {
     /// disappears or the server stops it.
     func follow() async {
         guard !isDeleted else { return }
-        await feed.follow(fetch, isStarting: { self.shownStatus == .starting }, onSignedOut: onSignedOut)
+        await feed.follow(fetch, stream: stream, isStarting: { self.shownStatus == .starting },
+                          onTransition: { [weak self] status, reason in self?.applyLiveTransition(status: status, statusReason: reason) },
+                          onSignedOut: onSignedOut)
         guard !Task.isCancelled, case .stopped(let failure) = feed.connection else { return }
         // The history may be refused because the sandbox was deleted meanwhile: its state says so.
         guard await loadState(), !isDeleted else { return }
@@ -212,13 +218,27 @@ final class SandboxConversationModel {
         }
     }
 
+    private var stream: ConversationFeed.Stream {
+        { [service, sandboxID, orgID] lastEventID in service.streamSandboxEvents(id: sandboxID, orgID: orgID, lastEventID: lastEventID) }
+    }
+
     private func shouldSkipStatusPoll(now: ContinuousClock.Instant = ContinuousClock.now) -> Bool {
-        guard let state, !stopping, state.status != .starting, state.status != .stopping,
-              feed.connection == .live,
-              let liveAt = lastLiveThreadStateAt, liveAt.duration(to: now) < .seconds(15),
-              let fullAt = lastFullStateAt, fullAt.duration(to: now) < .seconds(60)
-        else { return false }
-        return true
+        SandboxConversationPolicy.shouldSkipStatusPoll(
+            state: state, stopping: stopping, feedIsLive: feed.connection == .live, sseConnected: feed.isSSEConnected,
+            liveAge: lastLiveThreadStateAt?.duration(to: now), fullAge: lastFullStateAt?.duration(to: now)
+        )
+    }
+
+    private func applyLiveTransition(status: SandboxStatus?, statusReason: String?) {
+        guard !Task.isCancelled, phase == .loaded || phase == .loading, let status else { return }
+        lastLiveThreadStateAt = ContinuousClock.now
+        guard let current = state else { Task { _ = await self.loadState() }; return }
+        let result = SandboxConversationPolicy.applyTransition(
+            status: status, statusReason: statusReason, to: current,
+            failureExplanation: SandboxPresentation.sandboxFailure(statusReason)
+        )
+        state = result.state; memory?.storeState(result.state, for: cacheKey)
+        if result.needsFullReload { Task { _ = await self.loadState() } }
     }
 
     private func applyLiveThreadState(_ thread: ConversationThreadState) {
@@ -321,6 +341,7 @@ final class SandboxConversationModel {
                     notice = (error.message, true)
                 }
             }
+            feed.wake()
             _ = await loadState()
         }
     }
@@ -334,6 +355,7 @@ final class SandboxConversationModel {
             defer { interrupting = false }
             do throws(ServiceFailure) { _ = try await service.interruptSandbox(id: sandboxID, orgID: orgID) }
             catch { handleControlError(error, uncertainNote: "Check whether the turn stopped before trying again.") }
+            feed.wake()
             _ = await loadState()
         }
     }
