@@ -2832,6 +2832,205 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
   expect(rows).toEqual([{ image: "im-retained" }]);
 });
 
+test.each(["dispatch deadline", "lease takeover"] as const)(
+  "Modal retained stop fences a pending snapshot receipt by %s",
+  async (boundary) => {
+    const f = await fixture();
+    const recordId = "retained-placement";
+    const physicalId = "retained-machine";
+    const recoveryImageId = "recovery-image";
+    const checkpoint = { epoch: "1", watermark: 0 };
+    const id = await unboundModalSandbox(f, recordId);
+    const scope = {
+      orgId: f.people.org,
+      userId: f.people.owner,
+      visibility: "private" as const,
+      binding: { workspace: "workspace", environment: "main", appId: "ap-test" },
+    };
+    const journal = createSqlModalStore(f.sql, scope);
+    await f.db.query(`update sandboxes set status='stopping',stop_requested_at=now() where id=$1`, [id]);
+    await f.db.query("insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch) values($1,2,1)", [id]);
+    await f.db.query(
+      `insert into runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+       values ($1,1,$2,0,now())`,
+      [id, crypto.randomUUID()],
+    );
+    await f.db.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+       values($1,$2,$3,'private',$4,$4,$5)`,
+      [
+        scopeKey(scope),
+        f.people.org,
+        f.people.owner,
+        recordId,
+        {
+          info: { id: recordId, state: "ready" },
+          generation: 2,
+          commonRuntime: true,
+          phase: "active",
+          physicalId,
+          imageId: "initial-image",
+        },
+      ],
+    );
+    const deadline = new Date("2099-01-01T00:00:00Z");
+    const now = () => deadline.getTime() - 60_000;
+    const jobId = await f.store.enqueue("stop", id, 2, id, null, {
+      orgId: f.people.org,
+      deadline,
+      maxAttempts: 3,
+    });
+    // Output capture has already completed. The race begins at the provider snapshot.
+    await f.db.query("update jobs set outcome=$2 where id=$1", [jobId, { modal_capture_complete: true }]);
+
+    const releaseSuccessor = Promise.withResolvers<void>();
+    let snapshots = 0;
+    let terminations = 0;
+    let exited = false;
+    let observationUnavailable = false;
+    const resumeImages: string[] = [];
+    const stopCompute = {
+      sandboxId: physicalId,
+      async poll() {
+        if (observationUnavailable) throw new Error("Modal exit observation was interrupted");
+        return exited ? 0 : null;
+      },
+      async terminate() {
+        terminations++;
+        exited = true;
+      },
+      async snapshotFilesystem() {
+        snapshots++;
+        const image = { imageId: recoveryImageId };
+        if (snapshots === 1) {
+          if (boundary === "dispatch deadline") {
+            await f.db.query("update jobs set deadline_at='2000-01-01' where id=$1", [jobId]);
+            observationUnavailable = true;
+          } else {
+            await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+            await successor.reconcileOne(signal);
+          }
+        }
+        return image;
+      },
+    };
+    const replacement = { sandboxId: "replacement", poll: async () => null };
+    const { provider } = createModalProvider({
+      appName: "test",
+      client: {
+        apps: { fromName: async () => ({ appId: "ap-test" }) },
+        images: { fromId: async (imageId: string) => ({ imageId }) },
+        volumes: { fromName: async () => ({ withMountOptions: () => ({}) }) },
+        sandboxes: {
+          fromId: async (machineId: string) => (machineId === physicalId ? stopCompute : replacement),
+          create: async (_app: unknown, image: { imageId: string }) => {
+            resumeImages.push(image.imageId);
+            return replacement;
+          },
+        },
+      } as unknown as NonNullable<Parameters<typeof createModalProvider>[0]["client"]>,
+      scope,
+      store: journal,
+      distribution: {
+        capabilities: {},
+        async image() {
+          throw new Error("Resume must use the retained image");
+        },
+        prepareSnapshot: async () => {},
+      },
+    });
+    const runner = (resolve = async () => provider) =>
+      createJobsRunner(
+        f.store,
+        { stop: createStopJob(f.sql, launchEncryptionKey, undefined, now, resolve) },
+        () => {},
+        () => () => {},
+      );
+    const first = runner();
+    const successor = runner(async () => {
+      if (boundary === "lease takeover") await releaseSuccessor.promise;
+      return provider;
+    });
+    const readJob = async () =>
+      (
+        await f.db.query<{ state: string; lease_epoch: string; outcome: { modal_checkpoint: typeof checkpoint } }>(
+          "select state,lease_epoch::text,outcome from jobs where id=$1",
+          [jobId],
+        )
+      ).rows[0]!;
+    const readSandbox = async () =>
+      (await f.db.query("select status,stopped_at from sandboxes where id=$1", [id])).rows;
+
+    try {
+      expect(await first.reconcileOne(signal)).toBe(true);
+      await first.drain();
+      expect(snapshots).toBe(1);
+      expect(await readSandbox()).toEqual([{ status: "stopping", stopped_at: null }]);
+
+      if (boundary === "lease takeover") {
+        expect(await readJob()).toMatchObject({ state: "leased", lease_epoch: "2" });
+        const ambiguous = await journal.get(recordId);
+        expect(ambiguous.phase).toBe("snapshot");
+        expect(ambiguous.recoveryImageId).toBeUndefined();
+        releaseSuccessor.resolve();
+        await successor.drain();
+        expect(await journal.get(recordId)).toEqual(ambiguous);
+        expect(await readSandbox()).toEqual([{ status: "stopping", stopped_at: null }]);
+        expect(await readJob()).toMatchObject({ state: "queued", lease_epoch: "2" });
+      } else {
+        expect(await readJob()).toMatchObject({ state: "queued", lease_epoch: "1" });
+        expect(await journal.get(recordId)).toMatchObject({
+          phase: "terminate",
+          recoveryImageId,
+          runtimeCheckpoint: { ...checkpoint, generation: 2, physicalId },
+        });
+        observationUnavailable = false;
+        const reconcile = async () => {
+          await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+          expect(await successor.reconcileOne(signal)).toBe(true);
+          await successor.drain();
+        };
+        await reconcile();
+        expect(terminations).toBe(0);
+        expect(await readJob()).toMatchObject({ state: "queued" });
+        exited = true;
+        await reconcile();
+        const stopped = await readJob();
+        expect(stopped).toMatchObject({ state: "done", outcome: { modal_checkpoint: checkpoint } });
+        expect(await readSandbox()).toMatchObject([{ status: "stopped", stopped_at: expect.any(Date) }]);
+        const resume = await provider.runtimeResumeMachine({
+          recordId,
+          sandboxId: id,
+          generation: 3,
+          checkpoint: stopped.outcome.modal_checkpoint,
+          deadlineAt: deadline.getTime(),
+          write: (work) => f.sql.transaction!(work),
+          authorize: async () => {},
+          ticket: async () => undefined,
+        });
+        expect(
+          await resume.resume({
+            sandboxId: id,
+            generation: 3,
+            predecessor: resume.predecessor,
+            computeTtlSeconds: 60,
+            signal,
+          }),
+        ).toMatchObject({ machineId: replacement.sandboxId });
+        expect(resumeImages).toEqual([recoveryImageId]);
+        expect(await journal.get(recordId)).toMatchObject({
+          runtimeCheckpoint: { ...checkpoint, generation: 2, physicalId },
+        });
+      }
+      expect(snapshots).toBe(1);
+      expect(terminations).toBe(0);
+    } finally {
+      releaseSuccessor.resolve();
+      await successor.drain();
+    }
+  },
+);
+
 test.each(["lost allocation", "enrolled replacement"] as const)(
   "owner stop settles the exact previous Modal resume generation after %s",
   async (state) => {
