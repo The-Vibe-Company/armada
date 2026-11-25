@@ -10,6 +10,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/toast";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
 import { parseSandboxListMetadata } from "@/lib/sandbox-access";
@@ -36,7 +37,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     </div>
   );
   const liveSandboxes = selected ? loadLiveSandboxes(selected.org.id) : Promise.resolve([]);
-  return (
+  const shell = (
     <SidebarProvider
       data-shell
       style={{ "--sidebar-width": "244px" } as CSSProperties}
@@ -93,6 +94,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </main>
     </SidebarProvider>
   );
+  return <TooltipProvider>{shell}</TooltipProvider>;
 }
 
 function SignOut({ compact = false }: { compact?: boolean }) {
