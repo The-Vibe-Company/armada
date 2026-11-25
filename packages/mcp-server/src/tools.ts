@@ -65,13 +65,6 @@ export function createArmadaServer(
   return server;
 }
 
-/** In-memory REST dispatch and schema discovery. Never exposed on the MCP transport. */
-export function createRestToolServer(context: ToolContext, version: string, onlyTool?: "list") {
-  const server = createToolServer(version);
-  configureTools(context, "rest", server, onlyTool);
-  return server;
-}
-
 function createToolServer(version: string) {
   const server = new McpServer(
     { ...serverInfo, version },
@@ -87,7 +80,7 @@ function createToolServer(version: string) {
 }
 
 export function bindRestTool(context: ToolContext, name: string, bind: ToolBinding) {
-  configureTools(context, "rest", undefined, name === "list" ? "list" : undefined, (candidate, config, invoke) => {
+  configureTools(context, "rest", name === "list" ? "list" : undefined, (candidate, config, invoke) => {
     if (candidate === name) bind(candidate, config, invoke);
   });
 }

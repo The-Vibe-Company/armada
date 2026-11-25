@@ -462,13 +462,13 @@ function validatePinnedStdio(command: string, args: string[]) {
   }
 }
 
-export interface McpGrantSnapshot {
+interface McpGrantSnapshot {
   id: string;
   value_enc: Uint8Array<ArrayBuffer> | null;
   generation: number;
   version: number;
 }
-export interface McpLeaseClaims {
+interface McpLeaseClaims {
   id: string;
   connection_id: string;
   sandbox_id: string;
@@ -608,9 +608,6 @@ export function createSqlMcpLeasePort(sql: Sql) {
         ).rows[0] ?? null
       );
     },
-    async invalidateSandbox(sandboxId: string) {
-      await sql.query("update public.sandboxes set mcp_generation=mcp_generation+1 where id=$1::uuid", [sandboxId]);
-    },
   };
 }
 export function createSqlMcpLaunchPort(sql: Sql, registry: McpRegistry) {
@@ -643,7 +640,7 @@ export function createSqlMcpLaunchPort(sql: Sql, registry: McpRegistry) {
   };
 }
 
-export interface McpPendingOAuthFlow {
+interface McpPendingOAuthFlow {
   actorId: string;
   orgId: string;
   connectionId: string;
@@ -709,7 +706,7 @@ export function createSqlMcpPendingOAuthPort(sql: Sql, encryptionKey: string | u
     },
   };
 }
-export interface McpInvalidation {
+interface McpInvalidation {
   id: string;
   connectionId: string | null;
   sandboxId: string | null;

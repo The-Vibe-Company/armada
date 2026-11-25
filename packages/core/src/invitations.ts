@@ -49,15 +49,6 @@ export type InvitationErrorReason =
   | "personal_login_required"
   | "rate_limited"
   | "pending_exists";
-/** Existing control error envelope, with additive machine-readable invitation fields. */
-export interface InvitationApiError {
-  error: {
-    code: "invalid" | "forbidden" | "not_found" | "conflict";
-    message: string;
-    reason: InvitationErrorReason;
-    retryAfterSeconds?: number;
-  };
-}
 export interface InvitationRequests {
   "org/invitations/preview": { token: string };
 }

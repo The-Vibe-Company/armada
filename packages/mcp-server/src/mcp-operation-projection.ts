@@ -22,7 +22,7 @@ export function registerAgentTools(server: McpServer, context: ToolContext, laun
       );
     });
   };
-  configureTools(context, "mcp", undefined, undefined, bind);
+  configureTools(context, "mcp", undefined, bind);
   bind(
     launchOptionsOperation.toolName,
     {

@@ -6,7 +6,7 @@ import {
   readCollectorEntries,
   type Sql,
 } from "@armada/core/server";
-import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
+import { captureFinalOutputs, createSandboxOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { outputJobFixture } from "./output-job.fixture.ts";
 import { publishedGetResponse } from "./published-response.ts";
@@ -451,6 +451,20 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   ]);
 });
 
+// Wait for the released fixture to reach the capture's cancellation fence.
+function observeLateAbort(signal: AbortSignal) {
+  const observed = Promise.withResolvers<void>();
+  const check = signal.throwIfAborted.bind(signal);
+  const spy = spyOn(signal, "throwIfAborted").mockImplementation(() => {
+    if (signal.aborted) {
+      spy.mockRestore();
+      observed.resolve();
+    }
+    check();
+  });
+  return observed.promise;
+}
+
 test("a hanging provider read yields at the caller deadline, stays tracked and never persists late", async () => {
   const { db, id, sql } = await fixture({ boatId: "hanging_fixture" });
   const { state, provider } = disks();
@@ -485,8 +499,9 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   await reading;
   stop.abort();
   await expect(capture).rejects.toBeDefined();
+  const lateAbort = observeLateAbort(stop.signal);
   release();
-  await drainFinalOutputs();
+  await lateAbort;
   expect(await rows()).toHaveLength(0);
   expect(state.reads).toBe(2);
 });
@@ -554,6 +569,7 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
   modal.state.live = [file("late.txt", "expired")];
   const hold = Promise.withResolvers<void>();
   modal.state.hold = hold.promise;
+  const lateAborts: Promise<void>[] = [];
   try {
     for (const sandboxId of stalled.slice(0, 4)) {
       const reading = Promise.withResolvers<void>();
@@ -563,6 +579,7 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
       await reading.promise;
       deadline.abort();
       await expect(capture).rejects.toBe(deadline.signal.reason);
+      lateAborts.push(observeLateAbort(deadline.signal));
     }
     await expect(captureFinalOutputs(sql, provider, stalled[4]!, { key: KEY })).rejects.toMatchObject({
       reason: "output_busy",
@@ -571,7 +588,7 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
     expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
   } finally {
     hold.resolve();
-    await drainFinalOutputs();
+    await Promise.all(lateAborts);
   }
   expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
 });
@@ -587,7 +604,7 @@ test("a collection whose deadline passes while it waits for the row lock never c
   // The provider has answered; the row-lock query is then held (a concurrent stop) past the deadline.
   let release = () => {};
   let locking = () => {};
-  const gated = (): Sql => {
+  const gated = (settled?: () => void): Sql => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -604,7 +621,7 @@ test("a collection whose deadline passes while it waits for the row lock never c
               return tx.query(q, p);
             },
           }),
-        ),
+        ).finally(settled),
     };
   };
   const waitForLock = () =>
@@ -634,12 +651,13 @@ test("a collection whose deadline passes while it waits for the row lock never c
   // Final pre-stop capture: the same fence holds at its write boundary.
   const stop = new AbortController();
   waiting = waitForLock();
-  const capture = captureFinalOutputs(gated(), provider, id, { key: KEY, signal: stop.signal });
+  const settled = Promise.withResolvers<void>();
+  const capture = captureFinalOutputs(gated(settled.resolve), provider, id, { key: KEY, signal: stop.signal });
   await waiting;
   stop.abort();
   await expect(capture).rejects.toBeDefined();
   release();
-  await drainFinalOutputs();
+  await settled.promise;
   expect(await committed()).toEqual({ files: 0, events: 0 });
   // Without a deadline, the same path publishes.
   await captureFinalOutputs(sql, provider, id, { key: KEY });
@@ -717,8 +735,9 @@ test("a final capture whose deadline passes while its target query waits never h
     ]);
   } finally {
     diagnostics.mockRestore();
+    const lateAbort = observeLateAbort(stop.signal);
     release();
-    await drainFinalOutputs();
+    await lateAbort;
   }
   expect(state.reads).toBe(0);
   expect((await sql.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);

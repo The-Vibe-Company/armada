@@ -225,8 +225,8 @@ reconnect after abandoned claims. This is a concrete SQL adapter review requirem
 not something the package can fix with a local mutex. No migrations are included.
 
 Registry lease `issue`/`validate(tokenHash,operation)` implements gateway
-`authenticate`/`assertActive`; map `invalidateSandbox` to `invalidateLease` for
-all affected lease IDs. Integration must broadcast revocations to live replicas.
+`authenticate`/`assertActive`. Integration must broadcast revocations to live replicas
+and call `invalidateLease` for affected lease IDs.
 The package exposes no sandbox-facing upstream credential API. The registry's
 DTO should add `auto` and default to it, but persist connected only after real
 public protocol success or completed OAuth, never while discovery is pending.
