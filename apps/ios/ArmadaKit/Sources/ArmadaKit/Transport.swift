@@ -64,11 +64,10 @@ public final class URLSessionTransport: ArmadaTransport, Sendable {
     }
 
     public func stream(_ request: URLRequest) -> AsyncThrowingStream<ArmadaStreamEvent, Error> {
-        let session = self.session
-        return AsyncThrowingStream { c in
+        AsyncThrowingStream { c in
             let task = Task {
                 do {
-                    let (bytes, response) = try await session.bytes(for: request)
+                    let (bytes, response) = try await self.session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { c.finish(throwing: ArmadaError.invalidResponse); return }
                     c.yield(.response(http))
                     guard (200..<300).contains(http.statusCode) else { c.finish(); return }
