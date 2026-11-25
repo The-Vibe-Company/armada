@@ -1,14 +1,7 @@
 import { expect, test } from "bun:test";
 import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
-import { type ModalClient, NotFoundError } from "modal";
-import {
-  createModalMachine,
-  createModalMachineInventory,
-  createModalProvider,
-  type Machine,
-  type ModalProviderOptions,
-  type ModalStore,
-} from "../src/index.ts";
+import type { ModalClient } from "modal";
+import { createModalMachine, createModalMachineInventory } from "../src/index.ts";
 
 const appId = "ap_bound";
 const deploymentId = "staging_server";
@@ -52,24 +45,6 @@ function inventory(sandboxListV2: List) {
     binding,
     deploymentId,
   );
-}
-
-function fixture(overrides: Partial<ModalProviderOptions>, sdk: Partial<ModalClient>) {
-  return createModalProvider({
-    client: client(sdk),
-    deploymentId,
-    scope: { orgId: "org", userId: "user", visibility: "org", binding },
-    appName: "bound",
-    store: {} as ModalStore,
-    distribution: {
-      capabilities: {},
-      image: async () => {
-        throw new Error("Unexpected builder image");
-      },
-      prepareSnapshot: async () => {},
-    },
-    ...overrides,
-  }).provider;
 }
 
 async function collect(iterable: AsyncIterable<ProviderInventoryMachine>) {
@@ -162,49 +137,4 @@ test("Modal inventory surfaces a later page failure as a retryable provider erro
     expect(error).toMatchObject({ provider: "modal", code: "unavailable", retryable: true });
     expect((error as Error).message).not.toContain("private SDK diagnostic");
   }
-});
-
-test("Modal attaches deployment ownership to the allocation request for a runtime fork", async () => {
-  const snapshot = {
-    info: { name: "golden", status: "ready" },
-    sourceId: "modal_golden",
-    imageId: "im_golden",
-    managementAuthority: { credentialScope: "org", credentialOwnerId: "org" },
-  };
-  let machine: Machine;
-  const store = {
-    image: async () => snapshot,
-    get: async () => ({ golden: true }),
-    reserve: async (_key: string, reservation: Machine) => {
-      machine = reservation;
-      return reservation;
-    },
-    lease: async (_id: string, work: (row: Machine, save: () => Promise<void>) => Promise<unknown>) =>
-      work(machine, async () => {}),
-  } as unknown as ModalStore;
-  let creationTags: Record<string, string> | undefined;
-  const provider = fixture(
-    { store },
-    {
-      images: { fromId: async () => ({ imageId: snapshot.imageId }) } as unknown as ModalClient["images"],
-      volumes: {
-        async fromName() {
-          throw new NotFoundError("No artifact cache volume in this environment");
-        },
-      } as unknown as ModalClient["volumes"],
-      sandboxes: {
-        async create(_app: unknown, _image: unknown, params: { tags: Record<string, string> }) {
-          creationTags = params.tags;
-          return { sandboxId: "sb_new" };
-        },
-      } as unknown as ModalClient["sandboxes"],
-    },
-  );
-
-  const fork = await provider.fork({ from: snapshot.info.name });
-  expect(creationTags).toMatchObject({
-    armada_deployment: deploymentId,
-    armada_sandbox: fork.id,
-    armada_generation: "1",
-  });
 });

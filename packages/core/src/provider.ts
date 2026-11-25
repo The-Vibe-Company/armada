@@ -112,7 +112,7 @@ export interface Provider {
    * snapshot retirement worker retries "pending" so collection never depends on a user request. */
   collectRetiredSnapshot?(name: string): Promise<"collected" | "pending">;
   /** Starts a sandbox from a snapshot. */
-  fork(request: ForkRequest): Promise<SandboxInfo>;
+  fork?(request: ForkRequest): Promise<SandboxInfo>;
 
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
 
