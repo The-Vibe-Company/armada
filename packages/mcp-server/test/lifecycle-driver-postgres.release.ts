@@ -151,17 +151,15 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
       expect(requests).toEqual([]);
 
       // Stop needs room for both admission and settlement. Reject before taking the lease or calling Boat.
-      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [
-        id,
-        String(Number.MAX_SAFE_INTEGER),
-      ]);
+      const exhaustedGeneration = String(Number.MAX_SAFE_INTEGER - 1);
+      await sql.query("update sandboxes set lifecycle_generation=$2 where id=$1", [id, exhaustedGeneration]);
       await expect(callSharedTool(context, "stop", { id })).rejects.toMatchObject({
         code: "internal",
         cause: { message: "Sandbox lifecycle generation cannot be advanced safely." },
       });
       expect(
         (await tx.unsafe("select lifecycle_generation,activity_lease_id from sandboxes where id=$1", [id]))[0],
-      ).toMatchObject({ lifecycle_generation: String(Number.MAX_SAFE_INTEGER), activity_lease_id: null });
+      ).toMatchObject({ lifecycle_generation: exhaustedGeneration, activity_lease_id: null });
       expect(requests).toEqual([]);
 
       await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
