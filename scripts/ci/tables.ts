@@ -24,7 +24,7 @@ const owners = [
   ["sandbox_*_pricing sandbox_turn_models", [`${core}/sandbox.ts`, `${server}/turn-pricing.ts`]],
   ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
   [
-    "provider_launch_requests ordinary_launch_receipts native_*",
+    "ordinary_launch_receipts native_*",
     [`${server}/ordinary-launch-receipts.ts`, `${server}/provider-*.ts`],
   ],
   ["goldens golden_*", [`${core}/golden-*.ts`, `${server}/golden-*.ts`]],
