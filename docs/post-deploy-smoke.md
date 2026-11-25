@@ -1729,22 +1729,22 @@ coordinator-owned. Boat never enters the release gate.
 
 `--parity --feature client-send`, optionally `--only modal|docker`, launches one
 normal private smoke sandbox, primes one conversation, and sends one follow-up
-through each **production client path**: dashboard `createGateway` +
-`sandboxGateway.send` over MCP JSON-RPC, then CLI `operation("send", ...)` over the
-control API. It does not reconstruct either request body in the runner.
+through each **production client path**: dashboard `sandboxGateway.send` over
+the control API, then CLI `operation("send", ...)` over the control API. It
+does not reconstruct either request body in the runner.
 
 Both no-override sends select the single recorded conversation and carry fresh
 stable request UUIDs as those clients serialize them. Each must return its own
 prompt identity and produce an exact finished final parent acknowledgement;
 tool echoes, prior prompt replies and later-page supersession cannot pass.
 Multiple/missing recorded conversations are explicit not-run, not an arbitrary
-thread choice. The caller's `ARMADA_TOKEN` must be authorized for both transports.
+thread choice. The caller's `ARMADA_TOKEN` must be authorized for the control API.
 
 Dashboard/CLI rows are separate, including partial success if the second client
 fails. Failures retain the client, safe server code and available HTTP status,
-never raw CLI output/MCP error text. Authentication uses only the explicitly
+never raw CLI output or API error text. Authentication uses only the explicitly
 provided environment token: no saved-session read/write, login or file input.
-The adapter limits clients to the configured origin's MCP/send/log-read endpoints,
+The adapter limits clients to the configured origin's control send/log-read endpoints,
 adds the shared deadline and rejects redirects; actual paths, payloads and
 client response decoders remain those of the production clients.
 
@@ -1795,7 +1795,7 @@ keeping an unrelated deferred receipt and a functional launch failure.
 
 `--parity --feature client-stop`, optionally `--only modal|docker`, primes one
 private sandbox and exercises the production dashboard `sandboxGateway.stop`
-over MCP, then CLI `operation("stop", ...)` over the control API. Neither request
+over the control API, then CLI `operation("stop", ...)` over the control API. Neither request
 body is copied or augmented by the runner. Before each client stop, the same
 sandbox must be ready/running; acceptance alone never passes—an ID-matched
 `stopped` observation is required. Between clients the normal server lifecycle

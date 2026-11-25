@@ -63,46 +63,7 @@ for (const mode of [
           const body = parityRequest(url, init).body,
             headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
-          if (new URL(url).pathname === "/mcp") {
-            if (body.method === "initialize")
-              return Response.json(
-                {
-                  jsonrpc: "2.0",
-                  id: body.id,
-                  result: {
-                    protocolVersion: body.params.protocolVersion,
-                    capabilities: {},
-                    serverInfo: { name: "fixture", version: "1" },
-                  },
-                },
-                { headers: { "mcp-session-id": `session_${active}` } },
-              );
-            expect(headers.get("mcp-session-id")).toBe(`session_${active}`);
-            if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
-            expect(body.method).toBe("tools/call");
-            expect(body.params.name).toBe("stop");
-            expect(body.params.arguments).toEqual({ id: id[active] });
-            if (mode === "dashboard_refused") {
-              wire.push({ provider: active, client: "dashboard" });
-              return Response.json({
-                jsonrpc: "2.0",
-                id: body.id,
-                result: {
-                  isError: true,
-                  content: [
-                    { type: "text", text: "private_error_placeholder" },
-                    { type: "text", text: "error code: forbidden" },
-                  ],
-                },
-              });
-            }
-            return Response.json({
-              jsonrpc: "2.0",
-              id: body.id,
-              result: { content: [{ type: "text", text: JSON.stringify(stop(active, "dashboard")) }] },
-            });
-          }
-          const provider = body.org === org.modal ? "modal" : "docker";
+          const provider = body.org ? (body.org === org.modal ? "modal" : "docker") : active;
           const { path: route } = parityRequest(url, init);
           switch (route) {
             case "launch/options":
@@ -175,6 +136,17 @@ for (const mode of [
                 cleanupStops.set(provider, (cleanupStops.get(provider) ?? 0) + 1);
                 states.set(provider, "stopped");
                 return Response.json({ id: body.id, status: "stopped" });
+              }
+              if (!body.org) {
+                expect(body).toEqual({ id: id[provider] });
+                if (mode === "dashboard_refused") {
+                  wire.push({ provider, client: "dashboard" });
+                  return Response.json(
+                    { error: { code: "forbidden", message: "private_error_placeholder" } },
+                    { status: 403 },
+                  );
+                }
+                return Response.json(stop(provider, "dashboard"));
               }
               expect(body).toEqual({ org: org[provider], id: id[provider] });
               if (mode === "cli_unauthorized") {

@@ -1,9 +1,12 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
 import SandboxPage from "@/app/(app)/sandboxes/[id]/page";
+import { execSandbox, interruptSandbox, sendToSandbox, steerSandbox, stopSandbox } from "@/app/actions/sandboxes";
+import { SEND_KEY_FIELD } from "@/lib/composer";
 import { type ModelAccount, parseAccount } from "@/lib/model-accounts";
 import type { Database } from "@/lib/supabase/types";
 import { listSelectedAccounts, readConnectionTestChoices } from "./model-accounts";
+import { readSandboxConversation } from "./sandbox-conversation";
 
 const viewer = { id: "owner", email: "owner@example.test", token: "viewer" };
 const selected = { org: { id: "org", name: "Org" }, role: "admin" };
@@ -11,6 +14,7 @@ const origin = "https://dashboard.test";
 const timestamp = "2026-11-01T00:00:00Z";
 const firstId = "00000000-0000-4000-8000-000000000001";
 const secondId = "00000000-0000-4000-8000-000000000002";
+const requestId = "00000000-0000-4000-8000-000000000003";
 const account = {
   id: firstId,
   name: "API account",
@@ -21,7 +25,13 @@ const account = {
   expiresAt: null,
   updatedAt: timestamp,
 };
+const revalidatedPaths: string[] = [];
 
+mock.module("next/cache", () => ({
+  revalidatePath: (path: string) => {
+    revalidatedPaths.push(path);
+  },
+}));
 mock.module("./viewer", () => ({
   requireViewer: async () => viewer,
   listMemberships: async () => [selected],
@@ -38,15 +48,39 @@ mock.module("@/lib/supabase/server", () => ({
     }),
 }));
 
-function recordFetch(reply: (url: URL) => Response | Promise<Response>) {
-  const fetchResponse = async (input: Parameters<typeof fetch>[0]) =>
-    reply(new URL(input instanceof Request ? input.url : String(input)));
+function recordFetch(reply: (url: URL, init?: RequestInit) => Response | Promise<Response>) {
+  const fetchResponse = async (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    reply(new URL(input instanceof Request ? input.url : String(input)), init);
   const fetchFixture = Object.assign(fetchResponse, { preconnect: fetch.preconnect });
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed both real clients HTTP responses and hold the credential response without sockets or timers.
   return spyOn(globalThis, "fetch").mockImplementation(fetchFixture);
 }
 
-afterEach(() => mock.restore());
+function sandboxRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: firstId,
+    owner_id: viewer.id,
+    org_id: selected.org.id,
+    provider: "modal",
+    boat_runtime: false,
+    runtime_transport: null,
+    golden_id: secondId,
+    credential_id: null,
+    conversation_ids: [],
+    harness: "codex",
+    status: "ready",
+    status_reason: null,
+    expires_at: null,
+    usage_turns: null,
+    created_at: timestamp,
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  revalidatedPaths.length = 0;
+  mock.restore();
+});
 
 test("connection checks batch eligible accounts and keep each account's recent current-version sandboxes", async () => {
   const first = parseAccount(account)!;
@@ -146,41 +180,223 @@ test("account listing starts the model read while the credential response is pen
   expect(requestsBeforeListResponse).toEqual(["/api/v1/creds/list", "/api/v1/creds/accounts/models"]);
 });
 
+function findElementsByTypeName(root: unknown, name: string) {
+  const matches: Array<{ type: (props: unknown) => unknown; props: unknown }> = [];
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    if (Array.isArray(node)) {
+      stack.push(...node);
+      continue;
+    }
+    const record = node as { type?: unknown; props?: Record<string, unknown> };
+    if (typeof record.type === "function" && record.type.name === name) {
+      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props });
+    }
+    if (record.props && typeof record.props === "object") stack.push(...Object.values(record.props));
+  }
+  return matches;
+}
+
 test.each(["starting", "running", "stopping"] as const)(
-  "sandbox detail skips account choices while %s",
+  "sandbox detail omits account choices and does not block on inspector reads while %s",
   async (status) => {
     const requests = recordFetch((url) => {
       switch (url.pathname) {
         case "/rest/v1/sandboxes":
-          return Response.json([
-            {
-              id: firstId,
-              owner_id: viewer.id,
-              org_id: selected.org.id,
-              provider: "modal",
-              golden_id: secondId,
-              credential_id: null,
-              conversation_ids: [],
-              harness: "codex",
-              status,
-              created_at: timestamp,
-            },
-          ]);
+          return Response.json([sandboxRow({ status })]);
         case "/rest/v1/rpc/sandbox_detail_status":
           return Response.json(status);
-        case "/rest/v1/goldens":
-        case "/rest/v1/sandbox_launch_stages":
-          return Response.json([]);
-        case "/api/v1/mcp/sandbox-connections":
-          return Response.json({ connections: [] });
-        case "/api/v1/creds/list":
-          return Response.json({ user: [] });
         default:
-          throw new Error(`Unexpected request ${url.pathname}`);
+          throw new Error(`Unexpected blocking request ${url.pathname}`);
       }
     });
 
-    expect(await SandboxPage({ params: Promise.resolve({ id: firstId }) })).toBeTruthy();
-    expect(requests.mock.calls.map(([input]) => String(input))).not.toContain(`${origin}/api/v1/creds/list`);
+    const tree = await SandboxPage({ params: Promise.resolve({ id: firstId }) });
+    expect(tree).toBeTruthy();
+    expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+      "/rest/v1/sandboxes",
+      "/rest/v1/rpc/sandbox_detail_status",
+    ]);
+    expect(findElementsByTypeName(tree, "SandboxAccountChoiceSection")).toHaveLength(0);
   },
 );
+
+test("sandbox detail mounts account choices inside Suspense when ready without blocking SSR", async () => {
+  const requests = recordFetch((url) => {
+    switch (url.pathname) {
+      case "/rest/v1/sandboxes":
+        return Response.json([sandboxRow({ status: "ready" })]);
+      case "/rest/v1/rpc/sandbox_detail_status":
+        return Response.json("ready");
+      case "/api/v1/creds/list":
+        return Response.json({ user: [] });
+      case "/api/v1/creds/accounts/models":
+        return Response.json({ connections: [] });
+      default:
+        throw new Error(`Unexpected request ${url.pathname}`);
+    }
+  });
+
+  const tree = await SandboxPage({ params: Promise.resolve({ id: firstId }) });
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+    "/rest/v1/sandboxes",
+    "/rest/v1/rpc/sandbox_detail_status",
+  ]);
+  const sections = findElementsByTypeName(tree, "SandboxAccountChoiceSection");
+  expect(sections).toHaveLength(1);
+  await sections[0]!.type(sections[0]!.props);
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toContain("/api/v1/creds/list");
+});
+
+test("conversation reads request limit 200 with coalesce and skip sandbox/status when threadStatus is returned", async () => {
+  const apiBodies: { path: string; body: Record<string, unknown> }[] = [];
+  recordFetch((url, init) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ provider: "docker" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("ready");
+    if (url.pathname === "/api/v1/logs/read") {
+      apiBodies.push({ path: url.pathname, body: JSON.parse(String(init?.body)) });
+      return Response.json({
+        events: [],
+        cursor: "12",
+        hasMore: false,
+        threadStatus: { status: "running", statusMessage: "Working", prompt: null, usage: null },
+      });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+
+  const response = await readSandboxConversation(firstId, "10", "history");
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({ status: "running", statusMessage: "Working", cursor: "12", backward: true });
+  expect(apiBodies).toEqual([
+    {
+      path: "/api/v1/logs/read",
+      body: { id: firstId, cursor: "10", limit: 200, coalesce: true, direction: "backward" },
+    },
+  ]);
+});
+
+test("conversation reads parallelize sandbox/status with logs/read when threadStatus is not provided", async () => {
+  const logsReply = Promise.withResolvers<Response>();
+  const logsStarted = Promise.withResolvers<void>();
+  const statusStarted = Promise.withResolvers<void>();
+  const apiPaths: string[] = [];
+  recordFetch((url) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ provider: "modal" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("ready");
+    apiPaths.push(url.pathname);
+    if (url.pathname === "/api/v1/logs/read") {
+      logsStarted.resolve();
+      return logsReply.promise;
+    }
+    if (url.pathname === "/api/v1/sandbox/status") {
+      statusStarted.resolve();
+      return Response.json({ status: "running", statusMessage: null, prompt: null });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+
+  const read = readSandboxConversation(firstId, null, "follow");
+  await Promise.all([logsStarted.promise, statusStarted.promise]);
+  const pathsBeforeLogsFinished = [...apiPaths];
+  logsReply.resolve(Response.json({ events: [], cursor: "5", hasMore: false }));
+
+  const response = await read;
+  expect(pathsBeforeLogsFinished).toEqual(["/api/v1/sandbox/status", "/api/v1/logs/read"]);
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({ status: "running", cursor: "5" });
+});
+
+test("conversation reads parallelize queued prompt status on host sandboxes and fall back when threadStatus is absent", async () => {
+  const logsReply = Promise.withResolvers<Response>();
+  const statusStarted = Promise.withResolvers<void>();
+  const statusBodies: Record<string, unknown>[] = [];
+  recordFetch((url, init) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ provider: "docker" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("ready");
+    if (url.pathname === "/api/v1/logs/read") return logsReply.promise;
+    if (url.pathname === "/api/v1/sandbox/status") {
+      statusBodies.push(JSON.parse(String(init?.body)));
+      statusStarted.resolve();
+      return Response.json({ status: "running", statusMessage: "Queued", prompt: { promptId: requestId } });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+
+  const pendingRead = readSandboxConversation(firstId, null, "follow", requestId);
+  await statusStarted.promise;
+  logsReply.resolve(Response.json({ events: [], cursor: "1", hasMore: false }));
+  expect((await pendingRead).body).toMatchObject({ status: "running", prompt: { promptId: requestId } });
+  expect(statusBodies).toEqual([{ id: firstId, prompt_id: requestId }]);
+
+  statusBodies.length = 0;
+  recordFetch((url, init) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ provider: "docker" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("ready");
+    if (url.pathname === "/api/v1/logs/read") return Response.json({ events: [], cursor: "2", hasMore: false });
+    if (url.pathname === "/api/v1/sandbox/status") {
+      statusBodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ status: "running", statusMessage: "Fallback", prompt: null });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+  const fallbackRead = await readSandboxConversation(firstId, null, "follow");
+  expect(fallbackRead.status).toBe(200);
+  expect(fallbackRead.body).toMatchObject({ status: "running", statusMessage: "Fallback", cursor: "2" });
+  expect(statusBodies).toEqual([{ id: firstId }]);
+});
+
+test("send, steer and interrupt use 1-RTT REST without revalidating while stop still revalidates", async () => {
+  const apiCalls: { path: string; body: Record<string, unknown> }[] = [];
+  recordFetch((url, init) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ status: "running" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("running");
+    if (url.pathname.startsWith("/api/v1/")) {
+      apiCalls.push({ path: url.pathname, body: JSON.parse(String(init?.body)) });
+      if (url.pathname === "/api/v1/sandbox/send") return Response.json({ id: firstId, promptId: "p-1" });
+      if (url.pathname === "/api/v1/sandbox/steer") return Response.json({ id: firstId, delivery: "in-place" });
+      if (url.pathname === "/api/v1/sandbox/interrupt") return Response.json({ id: firstId, interrupted: true });
+      if (url.pathname === "/api/v1/sandbox/exec")
+        return Response.json({ id: firstId, stdout: "ok", stderr: "", exitCode: 0, timedOut: false, truncated: false });
+      if (url.pathname === "/api/v1/sandbox/stop") return Response.json({ id: firstId, status: "stopping" });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+
+  const sendForm = new FormData();
+  sendForm.set("sandbox", firstId);
+  sendForm.set("prompt", "hello");
+  sendForm.set(SEND_KEY_FIELD, requestId);
+  expect(await sendToSandbox(null, sendForm)).toEqual({ ok: true, message: "Sent.", promptId: "p-1" });
+
+  const steerForm = new FormData();
+  steerForm.set("sandbox", firstId);
+  steerForm.set("prompt", "change direction");
+  expect(await steerSandbox(null, steerForm)).toEqual({ ok: true, message: "Steered." });
+
+  const interruptForm = new FormData();
+  interruptForm.set("sandbox", firstId);
+  expect(await interruptSandbox(null, interruptForm)).toEqual({ ok: true, message: "Interrupt requested." });
+
+  const execForm = new FormData();
+  execForm.set("sandbox", firstId);
+  execForm.set("command", "echo ok");
+  expect(await execSandbox(null, execForm)).toEqual({ ok: true, message: "ok\n\nExit 0" });
+
+  expect(revalidatedPaths).toEqual([]);
+
+  const stopForm = new FormData();
+  stopForm.set("sandbox", firstId);
+  expect(await stopSandbox(null, stopForm)).toMatchObject({ ok: true });
+  expect(revalidatedPaths).toEqual([`/sandboxes/${firstId}`, "/sandboxes"]);
+
+  expect(apiCalls).toEqual([
+    { path: "/api/v1/sandbox/send", body: { id: firstId, prompt: "hello", request_id: requestId } },
+    { path: "/api/v1/sandbox/steer", body: { id: firstId, text: "change direction" } },
+    { path: "/api/v1/sandbox/interrupt", body: { id: firstId } },
+    { path: "/api/v1/sandbox/exec", body: { id: firstId, command: "echo ok", timeout_seconds: 30 } },
+    { path: "/api/v1/sandbox/stop", body: { id: firstId } },
+  ]);
+});

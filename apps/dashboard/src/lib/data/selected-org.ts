@@ -10,10 +10,9 @@ export const SELECTED_ORG_COOKIE = "armada-org";
  * Launch integrations can use selected.org.id, but must still apply RLS/launch authorization.
  */
 export const selectedOrganization = cache(async () => {
-  const viewer = await requireViewer();
-  const supabase = await createClient();
+  const [viewer, supabase, cookieStore] = await Promise.all([requireViewer(), createClient(), cookies()]);
   const memberships = await listMemberships(supabase, viewer.id);
-  const preference = (await cookies()).get(SELECTED_ORG_COOKIE)?.value;
+  const preference = cookieStore.get(SELECTED_ORG_COOKIE)?.value;
   return memberships.find((item) => item.org.id === preference) ?? memberships[0] ?? null;
 });
 

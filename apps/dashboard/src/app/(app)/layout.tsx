@@ -21,9 +21,8 @@ import { createClient } from "@/lib/supabase/server";
  * the right, toasts over both. The public pages do not use this layout, and it adds no global styles.
  */
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const viewer = await requireViewer();
-  const memberships = await listMemberships(await createClient(), viewer.id);
-  const selected = await selectedOrganization();
+  const [viewer, supabase, selected] = await Promise.all([requireViewer(), createClient(), selectedOrganization()]);
+  const memberships = await listMemberships(supabase, viewer.id);
   const header = (
     <div className="space-y-2 px-3 pt-3 pb-2">
       <div className="flex items-center gap-1">
@@ -35,9 +34,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <ShellSearch />
     </div>
   );
-  const liveSandboxes = selected
-    ? createClient().then((supabase) => readLiveSandboxes(supabase, selected.org.id))
-    : Promise.resolve(null);
+  const liveSandboxes = selected ? readLiveSandboxes(supabase, selected.org.id) : Promise.resolve(null);
   const shell = (
     <SidebarProvider
       data-shell
