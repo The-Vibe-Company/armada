@@ -1303,9 +1303,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
             daemonAt: report.at,
           } satisfies DockerHostUpdateResult & { daemonAt: string | null };
           await tx.query(
-            `update public.docker_hosts set last_update_result=$2::jsonb where id=$1
-             and ($3::timestamptz is null or last_update_result->>'daemonAt' is null
-               or (last_update_result->>'daemonAt')::timestamptz <= $3::timestamptz)
+            `update public.docker_hosts set last_update_result=jsonb_set(
+               $2::jsonb,'{daemonAt}',coalesce(to_jsonb($3::text),last_update_result->'daemonAt','null'::jsonb))
+             where id=$1
+             and (last_update_result->>'daemonAt' is null
+               or (last_update_result->>'daemonAt')::timestamptz <= $3::timestamptz
+               or ($3::timestamptz is null and
+                 string_to_array($2::jsonb->>'version','.')::integer[] >
+                 string_to_array(last_update_result->>'version','.')::integer[]))
              and (last_update_result - array['at','daemonAt'] is distinct from $2::jsonb - array['at','daemonAt']
                or ($3::timestamptz is not null and last_update_result->>'daemonAt' is distinct from $2::jsonb->>'daemonAt'))`,
             [host.id, JSON.stringify(result), report.at],

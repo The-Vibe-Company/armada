@@ -218,20 +218,21 @@ function validUpdate(value: NonNullable<ManagedInstallation["update"]>, pending?
 export interface UpgradeServiceIo extends ServiceIo {
   fetch(input: string, init: RequestInit): Promise<Response>;
 }
-async function fetchUpgradeFile(io: UpgradeServiceIo, url: string) {
+class UpdateReleaseUnavailable extends Error {}
+
+async function fetchUpgradeFile(io: UpgradeServiceIo, url: string, offeredArtifact = false) {
   const response = await io.fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  if (offeredArtifact && response.status === 404) throw new UpdateReleaseUnavailable();
   if (!response.ok) throw new Error(`Upgrade download returned HTTP ${response.status}.`);
   return response;
 }
-
-class InstallerVersionMismatch extends Error {}
 
 async function pinnedUpgrade(
   io: UpgradeServiceIo,
   origin: string,
   installed: ManagedInstallation,
   retry: string,
-  offer?: { version: string; beforeDownload(): Promise<void> },
+  offer?: { version: string; beforeVerify(): Promise<void> },
 ) {
   try {
     const arch = process.arch;
@@ -241,19 +242,19 @@ async function pinnedUpgrade(
     > | null;
     if (offer && manifest?.version !== offer.version) {
       if (typeof manifest?.version === "string" && releasePattern.test(manifest.version))
-        throw new InstallerVersionMismatch();
+        throw new UpdateReleaseUnavailable();
       throw new Error("Invalid installer manifest release.");
     }
     const digest = manifest?.[arch];
     if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
     if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
-    await offer?.beforeDownload();
-    const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`);
+    const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`, !!offer);
+    await offer?.beforeVerify();
     const bytes = new Uint8Array(await artifact.arrayBuffer());
     if (sha256(bytes) !== digest) throw new Error("Host artifact SHA-256 mismatch.");
     return { digest, bytes };
   } catch (error) {
-    if (error instanceof InstallerVersionMismatch) throw error;
+    if (error instanceof UpdateReleaseUnavailable) throw error;
     const reason =
       error instanceof Error && error.constructor === Error
         ? error.message
@@ -401,12 +402,12 @@ export function createManagedUpdater(
       const marker = { ...loaded, update };
       const artifact = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", {
         version: target,
-        async beforeDownload() {
+        async beforeVerify() {
           await save(marker);
           lastAttempt = update;
         },
       }).catch(async (error: unknown) => {
-        if (error instanceof InstallerVersionMismatch) return undefined;
+        if (error instanceof UpdateReleaseUnavailable) return undefined;
         const failed = { ...update, detail: "download_failed" as const };
         await save({ ...marker, update: failed });
         lastAttempt = failed;

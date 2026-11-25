@@ -741,8 +741,8 @@ and journal, checks Docker, and completes an authenticated poll. If it exits or
 misses the two-minute readiness deadline, the hook restores the previous
 executable on the next start. The daemon reports the result on its normal poll.
 Each version gets one attempt, with an hour before trying a different target.
-During a rolling server deploy, a manifest for another release defers the
-attempt before the daemon downloads bytes. In manual mode, request the offer
+During a rolling server deploy, a manifest for another release or a missing
+artifact defers the attempt until a subsequent offer. In manual mode, request the offer
 again after the server finishes rolling out.
 Unmanaged hosts and unsupported service managers skip updates. Daemons installed
 before self-update support need one manual upgrade. The updater runs official

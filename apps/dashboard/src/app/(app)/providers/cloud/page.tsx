@@ -394,12 +394,7 @@ function row(
           )}
         </PanelSection>
         <PanelSection title="Daemon updates">
-          <HostUpdateSettings
-            key={host.id}
-            orgId={orgId}
-            host={host}
-            isAdmin={isAdmin}
-          />
+          <HostUpdateSettings key={host.id} orgId={orgId} host={host} isAdmin={isAdmin} />
         </PanelSection>
         <PanelSection title="Cleanup retention">
           <HostRetention orgId={orgId} host={host} />

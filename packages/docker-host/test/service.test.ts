@@ -376,7 +376,15 @@ function selfUpdateFixture() {
   ]);
   const requests: string[] = [];
   const target = "2.0.0";
-  const config = { now: 0, version: target, bytes: candidate, interruptedSwap: false, managed: true, systemd: 252 };
+  const config = {
+    now: 0,
+    version: target,
+    bytes: candidate,
+    artifactStatus: 200,
+    interruptedSwap: false,
+    managed: true,
+    systemd: 252,
+  };
   const ownedFile = async (path: string) => {
     const bytes = files.get(path);
     if (!bytes) throw new Error("File missing");
@@ -402,7 +410,7 @@ function selfUpdateFixture() {
       requests.push(url);
       return url.endsWith("/install.json")
         ? Response.json({ version: config.version, [process.arch]: hash(candidate) })
-        : new Response(config.bytes);
+        : new Response(config.bytes, { status: config.artifactStatus });
     },
     files: {
       ownedFile,
@@ -483,7 +491,9 @@ test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
   },
 );
 
-test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged", "older systemd"])(
+test
+  .skipIf(process.platform !== "linux")
+  .each(["version", "unavailable artifact", "digest", "unmanaged", "older systemd"])(
   "self-update leaves the active binary alone on %s refusal",
   async (refusal) => {
     const f = selfUpdateFixture();
@@ -492,6 +502,10 @@ test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"
       f.config.version = "3.0.0";
       expect(await daemon.stage(f.state, f.target)).toBe(false);
       expect(f.requests).toHaveLength(1);
+    } else if (refusal === "unavailable artifact") {
+      f.config.artifactStatus = 404;
+      expect(await daemon.stage(f.state, f.target)).toBe(false);
+      expect(f.requests).toHaveLength(2);
     } else if (refusal === "digest") {
       f.config.bytes = Buffer.from("wrong artifact");
       await expect(daemon.stage(f.state, f.target)).rejects.toThrow("SHA-256 mismatch");
@@ -504,9 +518,10 @@ test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"
     expect(await daemon.swap()).toBe(false);
     expect(f.files.get(f.binary)).toEqual(f.old);
     expect(f.files.has(f.previous)).toBe(false);
-    if (refusal === "version") {
+    if (refusal === "version" || refusal === "unavailable artifact") {
       expect(daemon.result()).toBeUndefined();
       f.config.version = f.target;
+      f.config.artifactStatus = 200;
       expect(await f.daemon().stage(f.state, f.target)).toBe(true);
     }
   },

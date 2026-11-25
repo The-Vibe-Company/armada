@@ -1153,10 +1153,12 @@ test("an admin controls the host offer and authenticated polls retain the last u
   });
   await poll(`${VERSION};failed;124;untrusted-detail`);
   await poll(`${VERSION};updated;122`);
+  await poll(`${VERSION};updated`);
   expect((await readHost()).lastUpdateResult?.at).toBe("1970-01-01T00:00:00.123Z");
-  await poll(`${VERSION};updated`);
+  await poll("999.0.0;updated");
   const { lastUpdateResult } = await readHost();
-  expect(lastUpdateResult).toMatchObject({ version: VERSION, status: "updated", detail: null });
-  await poll(`${VERSION};updated`);
+  expect(lastUpdateResult).toMatchObject({ version: "999.0.0", status: "updated", detail: null });
+  await poll("999.0.0;updated");
+  await poll(`${VERSION};failed`);
   expect((await readHost()).lastUpdateResult).toEqual(lastUpdateResult);
 });
