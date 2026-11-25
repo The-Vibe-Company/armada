@@ -27,7 +27,7 @@ export default async function SkillsContent() {
 
   if (!selected || list.state === "no-org")
     return (
-      <>
+      <div className="mx-auto w-full max-w-[920px] space-y-4">
         {header}
         <Empty
           title="No organization yet"
@@ -39,11 +39,11 @@ export default async function SkillsContent() {
         >
           Create or join an organization before connecting a private-skill key.
         </Empty>
-      </>
+      </div>
     );
   if (list.state === "not-configured")
     return (
-      <>
+      <div className="mx-auto w-full max-w-[920px] space-y-4">
         {header}
         <Alert role="status">
           <InfoIcon />
@@ -55,11 +55,11 @@ export default async function SkillsContent() {
             </Button>
           </AlertDescription>
         </Alert>
-      </>
+      </div>
     );
   if (list.state === "error")
     return (
-      <>
+      <div className="mx-auto w-full max-w-[920px] space-y-4">
         {header}
         <Alert variant="destructive">
           <CircleAlertIcon />
@@ -74,14 +74,14 @@ export default async function SkillsContent() {
             </Button>
           </AlertDescription>
         </Alert>
-      </>
+      </div>
     );
 
   const [templateResult] = await templatesRead;
   if (templateResult.status === "rejected") throw templateResult.reason;
   const templates = templateResult.value;
   return (
-    <>
+    <div className="mx-auto w-full max-w-[920px] space-y-7">
       <SkillpackKeyView
         title={TITLE}
         description={DESCRIPTION}
@@ -97,6 +97,6 @@ export default async function SkillsContent() {
         empty="No visible templates include skills."
         note="You pick skills in a template or at launch, not here."
       />
-    </>
+    </div>
   );
 }
