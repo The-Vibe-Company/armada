@@ -161,7 +161,6 @@ export type LaunchDiscoveryOptions = Pick<
   | "docker"
   | "dockerControls"
   | "dockerLaunch"
-  | "launch"
   | "admitModalLaunch"
   | "modalRuntimeLaunch"
   | "runtimeCheckpoint"
@@ -174,7 +173,7 @@ export type LaunchDiscoveryOptions = Pick<
 
 export function readLaunchOptions(options: LaunchDiscoveryOptions) {
   const explicitBoatRuntime = options.boatLaunchEnabled === true;
-  const boatLaunch = Boolean(explicitBoatRuntime || options.launch?.runtime || options.launch?.boatRuntime);
+  const boatLaunch = explicitBoatRuntime && Boolean(options.admitModalLaunch);
   return {
     ...launchOptions,
     providers: launchProviderOptions(options.docker, boatLaunch),
@@ -218,14 +217,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
       workspaceVersion: options.boatLaunchEnabled ? 1 : 0,
       controlsVersion: options.boatLaunchEnabled ? 1 : 0,
       opencodeVersion: options.boatLaunchEnabled ? 1 : 0,
-      opencodeMcpProofVersion:
-        options.templates &&
-        options.launch?.boatRuntimeDefault &&
-        options.boatLaunchEnabled &&
-        options.runtimeMcp &&
-        options.runtimeSend
-          ? 1
-          : 0,
+      opencodeMcpProofVersion: options.templates && boatLaunch && options.runtimeMcp && options.runtimeSend ? 1 : 0,
       enabled: explicitBoatRuntime,
     },
   } satisfies LaunchOptionsResponse;
