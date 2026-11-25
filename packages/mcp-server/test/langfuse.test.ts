@@ -3,7 +3,8 @@ import type { AgentEvent, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
-import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
+import { createLangfuse } from "../src/langfuse.ts";
+import { langfuseSpans, langfuseTurnScores, resolveLangfuseContext } from "../src/langfuse-spans.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
@@ -436,14 +437,289 @@ test.each(["full", "settled", "delivered", "tainted", "template"])("runtime OTLP
   expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
   expect(requests[0]?.url).toBe("https://langfuse.test/api/public/otel/v1/traces");
   expect(requests[0]?.headers.get("x-langfuse-ingestion-version")).toBe("4");
-  const body = (await requests[0]!.json()) as {
-    resourceSpans: { scopeSpans: { spans: { attributes: { key: string; value: { stringValue: string } }[] }[] }[] }[];
-  };
-  const attributes = body.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes;
-  expect(attributes.find((a) => a.key === "langfuse.observation.output")?.value.stringValue).toBe(
-    mode === "full" ? "Hello" : undefined,
+  const body = (await requests[0]!.json()) as { resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[] };
+  const exportedSpans = body.resourceSpans[0]!.scopeSpans[0]!.spans;
+  const root = exportedSpans.find((s) => attr(s, "langfuse.observation.type") === "agent")!;
+  const gen = exportedSpans.find((s) => attr(s, "langfuse.observation.type") === "generation")!;
+  expect([
+    gen.parentSpanId,
+    attr(root, "langfuse.observation.output"),
+    attr(gen, "langfuse.observation.usage_details"),
+  ]).toEqual([root.spanId, mode === "full" ? "Hello" : undefined, '{"output":0}']);
+  expect(attr(gen, "langfuse.observation.model.name")).toBe(
+    mode === "tainted" || mode === "template" ? undefined : "model_placeholder",
   );
+  if (mode === "tainted" || mode === "template") expect(attr(root, "langfuse.trace.name")).toBe("Armada sandbox");
+});
+
+type OtlpSpan = {
+  spanId: string;
+  parentSpanId?: string;
+  name?: string;
+  attributes: { key: string; value: { stringValue?: string; arrayValue?: { values: { stringValue: string }[] } } }[];
+};
+const attrVal = (span: OtlpSpan, name: string) => span.attributes.find((a) => a.key === name)?.value;
+const attr = (span: OtlpSpan, name: string) => attrVal(span, name)?.stringValue;
+const prFix = (repository: string, number: number, state: "open" | "merged" | "closed", headBranch: string) => ({
+  repository,
+  number,
+  url: `https://github.com/${repository}/pull/${number}?secret=nope`,
+  headBranch,
+  state,
+  checkedAt: "2026-11-25T10:00:00.000Z",
+});
+
+test("multi-model generations emit separate spans, filter default, include 5D tokens and TTFT", () => {
+  const turnEvents: AgentEvent[] = [
+    { id: "s", at: 1000, promptId: "p1", kind: "prompt", status: "running", text: "fix bug" },
+    { id: "m1", at: 1250, promptId: "p1", kind: "message", partial: true, text: "work", model: "default", tools: [] },
+    { id: "m2", at: 1400, promptId: "p1", kind: "message", partial: false, text: "done", tools: [] },
+    { id: "e", at: 2000, promptId: "p1", kind: "prompt", status: "finished", text: "fix bug" },
+  ];
+  const pricing = {
+    schemaVersion: 1 as const,
+    basis: "estimated" as const,
+    credentialId: null,
+    credentialVersion: null,
+    capturedAt: "2026-11-25T00:00:00.000Z",
+    snapshot: null,
+    inputs: null,
+    usd: "0.0125",
+    unknown: null,
+  };
+  const spans = langfuseSpans(
+    "sb-1",
+    turnEvents,
+    [
+      {
+        promptId: "p1",
+        model: "claude-sonnet-4-6",
+        inputTokens: 100,
+        outputTokens: 40,
+        cachedTokens: 20,
+        cacheWriteTokens: 15,
+        reasoningTokens: 10,
+        pricing,
+      },
+      { promptId: "p1", model: "claude-haiku-4-5", inputTokens: 50, outputTokens: 10, cachedTokens: null },
+      { promptId: "p1", model: "default", inputTokens: 5, outputTokens: 2, cachedTokens: null },
+    ],
+    false,
+    {},
+    {
+      orgId: "org-1",
+      ownerId: "user-1",
+      provider: "modal",
+      harness: "antigravity",
+      requestedModel: "default",
+      goldenName: "web-golden",
+      templateName: "pr-fixer",
+      externalRef: "GH-4331",
+      pullRequests: [prFix("The-Vibe-Company/armada", 123, "open", "feat/lf")],
+    },
+  );
+  const root = spans.find((s) => attr(s, "langfuse.observation.type") === "agent")!;
+  const gens = spans.filter((s) => attr(s, "langfuse.observation.type") === "generation");
+  expect(gens).toHaveLength(3);
+  for (const s of spans) {
+    expect([
+      attr(s, "langfuse.trace.name"),
+      attr(s, "langfuse.user.id"),
+      attr(s, "langfuse.trace.metadata.pr_url"),
+      attr(s, "langfuse.trace.metadata.ttft_ms"),
+      attr(s, "langfuse.trace.metadata.requested_model"),
+      attr(s, "langfuse.trace.metadata.executed_models"),
+    ]).toEqual([
+      "antigravity · The-Vibe-Company/armada #123",
+      "user-1",
+      "https://github.com/The-Vibe-Company/armada/pull/123",
+      "250",
+      undefined,
+      '["claude-sonnet-4-6","claude-haiku-4-5"]',
+    ]);
+    expect(attr(s, "langfuse.release")).toBeTruthy();
+    const tags = attrVal(s, "langfuse.trace.tags")?.arrayValue?.values.map((v) => v.stringValue) ?? [];
+    expect(tags).toEqual(expect.arrayContaining(["harness:antigravity", "pr_linked", "template:pr-fixer"]));
+    expect(tags).not.toContain("model:default");
+  }
+  const sonnet = gens.find((g) => g.name === "claude-sonnet-4-6")!;
+  expect([
+    sonnet.parentSpanId,
+    attr(sonnet, "langfuse.observation.usage_details"),
+    attr(sonnet, "langfuse.observation.cost_details"),
+    attr(sonnet, "langfuse.observation.completion_start_time"),
+    attr(gens.find((g) => g.name === "generation")!, "langfuse.observation.model.name"),
+  ]).toEqual([
+    root.spanId,
+    '{"input":100,"output":40,"cache_read_input_tokens":20,"cache_creation_input_tokens":15,"reasoning":10}',
+    '{"total":0.0125}',
+    "1970-01-01T00:00:01.250Z",
+    undefined,
+  ]);
+});
+
+test("resolveLangfuseContext enforces PR precedence and contentWithheld isolation", () => {
+  const ev: AgentEvent[] = [
+    {
+      id: "m",
+      at: 1100,
+      promptId: "t1",
+      kind: "message",
+      partial: false,
+      text: "Opened https://github.com/org/ev-repo/pull/99?token=raw_secret#top",
+      tools: [],
+    },
+  ];
   expect(
-    attributes.find((a: { key: string }) => a.key === "langfuse.observation.usage_details")!.value.stringValue,
-  ).toBe('{"output":0}');
+    resolveLangfuseContext(
+      {
+        pullRequests: [prFix("org/confirmed", 11, "merged", "fix/a")],
+        taskOutcome: { state: "ready", prUrl: "https://github.com/org/outcome/pull/22", headSha: "abcdef1" },
+      },
+      ev,
+      { promptId: "t1" },
+    ),
+  ).toMatchObject({
+    prRepo: "org/confirmed",
+    prNumber: 11,
+    prUrl: "https://github.com/org/confirmed/pull/11",
+    prState: "merged",
+    branch: "fix/a",
+    headSha: "abcdef1",
+  });
+  expect(
+    resolveLangfuseContext(
+      {
+        pullRequestSource: {
+          repositories: [{ url: "https://github.com/org/src-repo.git", dir: "app", branch: "main" }],
+        },
+        pullRequestReports: { "1:t1": { state: "ready", prNumber: 42, headSha: "1234567" } },
+      },
+      ev,
+      { promptId: "t1" },
+    ),
+  ).toMatchObject({
+    prRepo: "org/src-repo",
+    prNumber: 42,
+    prUrl: "https://github.com/org/src-repo/pull/42",
+    branch: "main",
+    headSha: "1234567",
+  });
+  expect(resolveLangfuseContext({}, ev, { promptId: "t1" })).toMatchObject({
+    prRepo: "org/ev-repo",
+    prNumber: 99,
+    prUrl: "https://github.com/org/ev-repo/pull/99",
+  });
+  expect(
+    resolveLangfuseContext(
+      {
+        taskOutcome: { state: "ready", prUrl: "https://github.com/org/leak/pull/88?s=1", headSha: "deadbeef" },
+        pullRequestScan: { pushes: { "org/leak": [["secret-branch", ["deadbeef"]]] } },
+        requestedModel: "secret-model",
+      },
+      ev,
+      { promptId: "t1", contentWithheld: true },
+    ),
+  ).toEqual({});
+});
+
+test("tool spans emit mcp_server, duration_ms, ERROR level, and 32 KiB scrubbed truncation", () => {
+  const big = "x".repeat(40_000);
+  const bearer = `Bearer ${"tok".repeat(6)}`;
+  const toolEvents: AgentEvent[] = [
+    { id: "s", at: 1000, promptId: "t", kind: "prompt", status: "running", text: "y".repeat(70_000) },
+    {
+      id: "c",
+      at: 1100,
+      promptId: "t",
+      kind: "message",
+      partial: false,
+      text: "call",
+      tools: [{ id: "tc1", name: "read_issue", server: "github", input: `${bearer} ${big}` }],
+    },
+    {
+      id: "r",
+      at: 1350,
+      promptId: "t",
+      kind: "message",
+      responseKind: "tool_result",
+      partial: false,
+      text: "",
+      tools: [{ id: "tc1", name: "tool_result", result: { isError: true, output: `${big} ${bearer}` } }],
+    },
+    { id: "e", at: 1500, promptId: "t", kind: "prompt", status: "finished", text: "" },
+  ];
+  const spans = langfuseSpans("sb", toolEvents, [], true);
+  const root = spans.find((s) => attr(s, "langfuse.observation.type") === "agent")!;
+  const tool = spans.find((s) => attr(s, "langfuse.observation.type") === "tool")!;
+  expect([
+    attr(root, "langfuse.observation.level"),
+    attr(root, "langfuse.observation.metadata.input_truncated"),
+  ]).toEqual(["WARNING", "true"]);
+  expect(Buffer.byteLength(attr(root, "langfuse.observation.input")!)).toBeLessThanOrEqual(64 * 1024);
+  expect([
+    attr(tool, "langfuse.observation.level"),
+    attr(tool, "langfuse.observation.metadata.mcp_server"),
+    attr(tool, "langfuse.observation.metadata.duration_ms"),
+    attr(tool, "langfuse.observation.metadata.input_truncated"),
+    attr(tool, "langfuse.observation.metadata.output_truncated"),
+  ]).toEqual(["ERROR", "github", "250", "true", "true"]);
+  expect(Buffer.byteLength(attr(tool, "langfuse.observation.input")!)).toBeLessThanOrEqual(32 * 1024);
+  expect(Buffer.byteLength(attr(tool, "langfuse.observation.output")!)).toBeLessThanOrEqual(32 * 1024);
+  expect(JSON.stringify(spans)).not.toContain("toktok");
+  const withheldTool = langfuseSpans("sb", toolEvents, [], false, {
+    contentWithheld: "application_secret_bindings",
+  }).find((s) => attr(s, "langfuse.observation.type") === "tool")!;
+  expect([withheldTool.name, attr(withheldTool, "langfuse.observation.metadata.mcp_server")]).toEqual([
+    "tool",
+    undefined,
+  ]);
+});
+
+test("langfuseTurnScores are deterministic and score delivery failures never fail export", async () => {
+  const turnEvents: AgentEvent[] = [
+    { id: "s", at: 1000, promptId: "turn", kind: "prompt", status: "running", text: "go" },
+    {
+      id: "m",
+      at: 1120,
+      promptId: "turn",
+      kind: "message",
+      partial: false,
+      text: "done https://github.com/org/repo/pull/5",
+      tools: [
+        { id: "t1", name: "a", result: { isError: false, output: "ok" } },
+        { id: "t2", name: "b", result: { isError: true, output: "err" } },
+      ],
+    },
+    { id: "e", at: 1500, promptId: "turn", kind: "prompt", status: "finished", text: "go" },
+  ];
+  const scores = langfuseTurnScores("sb-score", turnEvents);
+  expect(scores).toEqual(langfuseTurnScores("sb-score", turnEvents));
+  expect(scores.map(({ name, value, dataType }) => ({ name, value, dataType }))).toEqual([
+    { name: "turn_success", value: 1, dataType: "BOOLEAN" },
+    { name: "tool_error_rate", value: 0.5, dataType: "NUMERIC" },
+    { name: "ttft_ms", value: 120, dataType: "NUMERIC" },
+    { name: "pr_linked", value: 1, dataType: "BOOLEAN" },
+  ]);
+  expect(scores.every((s) => /^[0-9a-f]{32}$/.test(s.id)) && new Set(scores.map((s) => s.id)).size === 4).toBe(true);
+
+  const { db, counters } = await settledBoatTurn("turn");
+  await db.query(`update sandboxes set external_ref='GH-4331', pull_requests=$1::jsonb where task_prompt_id='turn'`, [
+    JSON.stringify([prFix("org/app", 7, "open", "feat/x")]),
+  ]);
+  const sent: { url: string; body: string }[] = [];
+  const exporter = createLangfuse(db, key, (async (url, init) => {
+    const href = String(url);
+    sent.push({ url: href, body: String(init?.body ?? "") });
+    return new Response(null, { status: href.endsWith("/scores") ? 500 : 200 });
+  }) as typeof fetch);
+  expect(await runExport(db, exporter, new AbortController().signal)).toBe(true);
+  expect(sent[0]?.url).toBe("https://langfuse.test/api/public/otel/v1/traces");
+  expect(sent[0]?.body).toContain("codex · org/app #7");
+  expect(sent[0]?.body).toContain("GH-4331");
+  expect(sent.slice(1).map((r) => [r.url, JSON.parse(r.body)])).toMatchObject([
+    ["https://langfuse.test/api/public/scores", { name: "turn_success", value: 0, dataType: "BOOLEAN" }],
+    ["https://langfuse.test/api/public/scores", { name: "pr_linked", value: 1, dataType: "BOOLEAN" }],
+  ]);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
 });

@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
 import { type AgentEvent, isFinalPromptStatus, reportedTurnUsage, type Sql, type TurnTokenUsage } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import { readBody } from "./control-body.ts";
 import type { Route } from "./http.ts";
 import type { createJobsRunner } from "./jobs/runner.ts";
-import { redactCredentials } from "./log.ts";
+import { type LangfuseSandboxContext, langfuseSpans, langfuseTurnScores } from "./langfuse-spans.ts";
 
 interface Config {
   host: string;
@@ -49,135 +48,6 @@ function resolveConfig(input: Record<string, unknown>, stored: Config | null): C
 
 function authorization(config: Config): string {
   return `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64")}`;
-}
-
-const hash = (text: string, length: number) => createHash("sha256").update(text).digest("hex").slice(0, length);
-/** Native histories are not redacted at storage; mask credentials in every exported string, keys included. */
-const scrub = (value: unknown): unknown =>
-  typeof value === "string"
-    ? redactCredentials(value)
-    : Array.isArray(value)
-      ? value.map(scrub)
-      : value && typeof value === "object"
-        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [redactCredentials(key), scrub(item)]))
-        : value;
-const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
-
-/**
- * Complete OTLP observations; content is opt-in and unknown event payloads never leave the server.
- * `contentWithheld` marks a sandbox holding raw application secrets: then no provider-controlled
- * string (tool names, model names, run IDs) is exported either, only fixed names and numbers.
- */
-export function langfuseSpans(
-  sandboxId: string,
-  events: AgentEvent[],
-  turns: TurnTokenUsage[],
-  full: boolean,
-  marks: { historyUnavailable?: boolean; contentWithheld?: string } = {},
-) {
-  const spans = [];
-  for (const end of events) {
-    if (end.kind !== "prompt" || !isFinalPromptStatus(end.status) || !end.promptId) continue;
-    const history = events.filter((e) => e.promptId === end.promptId);
-    const start = history.find((e): e is PromptEvent => e.kind === "prompt" && e.status === "running");
-    const startAt = start?.at || end.at;
-    const turnKey = `${sandboxId}/${end.promptId}`;
-    const traceId = hash(turnKey, 32);
-    const spanId = hash(turnKey, 16);
-    const attributes = (values: Record<string, unknown>) =>
-      Object.entries({
-        "langfuse.trace.name": "Armada sandbox",
-        "langfuse.session.id": sandboxId,
-        ...values,
-      })
-        .filter(([, v]) => v !== undefined)
-        .map(([key, raw]) => {
-          const value = scrub(raw);
-          return { key, value: { stringValue: typeof value === "string" ? value : JSON.stringify(value) } };
-        });
-    const messages = new Map<string, string>();
-    for (const e of history)
-      if (e.kind === "message" && !e.retracted && e.responseKind !== "tool_result") {
-        const id = e.messageId ?? e.id;
-        messages.set(id, e.textMode === "delta" ? (messages.get(id) ?? "") + e.text : e.text);
-      }
-    const usage = turns.filter((t) => t.promptId === end.promptId);
-    const trusted = !marks.contentWithheld;
-    const cost = usage.map((t) => t.pricing?.usd);
-    spans.push({
-      traceId,
-      spanId,
-      name: "Armada turn",
-      kind: 1,
-      startTimeUnixNano: nano(startAt),
-      endTimeUnixNano: nano(Math.max(startAt, end.at)),
-      status: { code: end.status === "finished" ? 1 : 2 },
-      attributes: attributes({
-        "langfuse.observation.type": "generation",
-        "langfuse.observation.model.name": !trusted
-          ? undefined
-          : usage
-              .map((t) => t.model)
-              .filter(Boolean)
-              .join(",") || history.flatMap((e) => (e.kind === "message" && e.model ? [e.model] : []))[0],
-        "langfuse.observation.usage_details": usage.length
-          ? Object.fromEntries(
-              (["inputTokens", "outputTokens"] as const).flatMap((dimension, index) =>
-                usage.every((t) => t[dimension] !== null)
-                  ? [[index === 0 ? "input" : "output", usage.reduce((sum, t) => sum + (t[dimension] ?? 0), 0)]]
-                  : [],
-              ),
-            )
-          : undefined,
-        "langfuse.observation.cost_details":
-          cost.length && cost.every((c) => c != null) ? { total: cost.reduce((n, c) => n + Number(c), 0) } : undefined,
-        "langfuse.observation.metadata.status": end.status,
-        "langfuse.observation.metadata.timing_incomplete": start?.at && end.at > startAt ? undefined : true,
-        "langfuse.observation.metadata.history_unavailable": marks.historyUnavailable || undefined,
-        "langfuse.observation.metadata.content_withheld": marks.contentWithheld,
-        "langfuse.observation.metadata.failure_reason": full
-          ? end.reason
-          : end.status === "failed"
-            ? "turn_failed"
-            : undefined,
-        "langfuse.observation.metadata.usage": trusted ? usage : undefined,
-        "langfuse.observation.input": full ? start?.text || end.text || undefined : undefined,
-        "langfuse.observation.output": full && messages.size ? [...messages.values()].join("\n") : undefined,
-      }),
-    });
-    const tools = new Map<string, { first: number; last: number; tool: import("@armada/core").ToolCall }>();
-    for (const e of history)
-      if (e.kind === "message")
-        for (const tool of e.tools) {
-          const previous = tools.get(tool.id);
-          tools.set(tool.id, {
-            first: previous?.first ?? e.at,
-            last: e.at,
-            tool: {
-              ...previous?.tool,
-              ...tool,
-              name: e.responseKind === "tool_result" && previous ? previous.tool.name : tool.name,
-            },
-          });
-        }
-    for (const [id, t] of tools)
-      spans.push({
-        traceId,
-        spanId: hash(`${turnKey}/${id}`, 16),
-        parentSpanId: spanId,
-        name: trusted ? redactCredentials(t.tool.name) : "tool",
-        kind: 1,
-        startTimeUnixNano: nano(t.first),
-        endTimeUnixNano: nano(Math.max(t.first, t.last)),
-        status: { code: t.tool.result?.isError ? 2 : 1 },
-        attributes: attributes({
-          "langfuse.observation.type": "tool",
-          "langfuse.observation.input": full ? t.tool.input : undefined,
-          "langfuse.observation.output": full ? t.tool.result?.output : undefined,
-        }),
-      });
-  }
-  return spans;
 }
 
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
@@ -261,9 +131,22 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       at: terminal?.at || job.observed_ms,
       status: job.terminal_status,
     });
-    const snapshot = await sql.query<{ turns: TurnTokenUsage[] | null }>(
-      "select usage_turns->'turns' as turns from public.sandboxes where id=$1 and org_id=$2",
-      [job.sandbox_id, job.org_id],
+    const snapshot = await sql.query<LangfuseSandboxContext & { turns: TurnTokenUsage[] | null }>(
+      `select s.usage_turns->'turns' as turns, s.org_id as "orgId", s.owner_id as "ownerId",
+        s.provider::text, s.harness::text, s.reasoning_effort as "reasoningEffort",
+        s.repository_dir as "repositoryDir", s.external_ref as "externalRef",
+        s.resource_project as "resourceProject", s.pull_requests as "pullRequests",
+        s.task_outcome as "taskOutcome", s.pull_request_reports as "pullRequestReports",
+        s.pull_request_source as "pullRequestSource", s.pull_request_scan as "pullRequestScan",
+        g.name as "goldenName",
+        coalesce((select tm.requested_model from public.sandbox_turn_models tm
+          where tm.sandbox_id=s.id and tm.prompt_id=$3), s.model) as "requestedModel",
+        (select lt.name from public.template_launch_requests tlr
+          join public.launch_templates lt on lt.id=tlr.template_id
+          where tlr.sandbox_id=s.id order by tlr.created_at desc limit 1) as "templateName"
+      from public.sandboxes s left join public.goldens g on g.id=s.golden_id
+      where s.id=$1 and s.org_id=$2`,
+      [job.sandbox_id, job.org_id, job.prompt_id],
     );
     const sandbox = snapshot.rows[0];
     if (!sandbox) return "dropped";
@@ -279,10 +162,18 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     // The same raw values can surface in provider-controlled metadata (a tool
     // or model name), so the check applies in metadata mode too.
     const withheld = await bindsApplicationSecrets(job);
-    const spans = langfuseSpans(job.sandbox_id, turnEvents, usage, job.content_mode === "full" && !withheld, {
+    const marks = {
       historyUnavailable: job.runtime_ack === null,
       ...(withheld ? { contentWithheld: "application_secret_bindings" } : {}),
-    });
+    };
+    const spans = langfuseSpans(
+      job.sandbox_id,
+      turnEvents,
+      usage,
+      job.content_mode === "full" && !withheld,
+      marks,
+      sandbox,
+    );
     const body = JSON.stringify({
       resourceSpans: [
         {
@@ -307,7 +198,21 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       body,
     });
     await response.body?.cancel().catch(() => {});
-    return response.ok ? "exported" : "failed";
+    if (!response.ok) return "failed";
+    const scores = langfuseTurnScores(job.sandbox_id, turnEvents, sandbox, marks);
+    await Promise.allSettled(
+      scores.map(async (score) => {
+        const res = await send(`${config.host}/api/public/scores`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+          headers: { "content-type": "application/json", authorization: authorization(config) },
+          body: JSON.stringify(score),
+        });
+        await res.body?.cancel().catch(() => {});
+      }),
+    );
+    return "exported";
   }
 
   const exportJob: ExportHandler = {
