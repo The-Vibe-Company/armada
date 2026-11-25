@@ -660,13 +660,13 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
     const { close, db, sql, id, p, authority, token, selection } = await fixture("running", "anthropic", "modal");
     let waiting = Promise.withResolvers<void>();
     const abort = new AbortController();
-    const runtimeSend = mock(
-      createRuntimeFollowup(
-        sql,
-        ENCRYPTION_KEY,
-        createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
-      ),
+    const directSend = createRuntimeFollowup(
+      sql,
+      ENCRYPTION_KEY,
+      createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
     );
+    let dispatches = 0;
+    let initialPromptAdmitted = false;
     const provider = { ...boatAdmissionProvider(fakeBoat()), id: "modal" as const };
     const admitLaunch = await modalAdmissionFixture(
       sql,
@@ -700,7 +700,11 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
       admitLaunch,
-      runtimeSend,
+      async runtimeSend(...args) {
+        dispatches++;
+        // Run the real readiness guard if the handler sends before launch admission is open.
+        return initialPromptAdmitted ? {} : directSend(...args);
+      },
     });
     try {
       const launch = await services.childWorker.launch(token, "launch", {
@@ -731,17 +735,14 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
         "insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash) values($1,1,1,repeat('a',64))",
         [sandboxId],
       );
-      const deadline = new AbortController();
-      const timeout =
-        outcome === "deadline expired" ? spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal) : undefined;
       const send = services.childWorker.message(token, "message", sandboxId, "follow up", abort.signal);
       async function expectWaiting() {
         expect(await Promise.race([waiting.promise.then(() => "waiting"), send.then((receipt) => receipt.state)])).toBe(
           "waiting",
         );
-        expect(runtimeSend).not.toHaveBeenCalled();
+        expect(dispatches).toBe(0);
       }
-      await expectWaiting().finally(() => timeout?.mockRestore());
+      await expectWaiting();
       if (outcome === "succeeds") {
         await db.query("update jobs set state='done' where id=$1", [setup.id]);
         const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
@@ -757,18 +758,18 @@ test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
         waiting = Promise.withResolvers<void>();
         runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
         await expectWaiting();
-        runtimeSend.mockResolvedValueOnce({});
+        initialPromptAdmitted = true;
         await db.query("update account_turn_queue set state='admitted' where request_id=$1", [setup.id]);
       } else if (outcome === "revoked") {
         await authority.revoke(id);
       } else if (outcome === "deadline expired") {
-        deadline.abort(new DOMException("Admission timed out", "TimeoutError"));
+        abort.abort(new DOMException("Admission timed out", "TimeoutError"));
       } else {
         await db.query("update jobs set state='failed' where id=$1", [setup.id]);
       }
       runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
       expect(await send).toMatchObject({ state: outcome === "succeeds" ? "succeeded" : "failed", sandboxId });
-      expect(runtimeSend).toHaveBeenCalledTimes(outcome === "succeeds" ? 1 : 0);
+      expect(dispatches).toBe(outcome === "succeeds" ? 1 : 0);
       if (outcome !== "succeeds") {
         expect(
           (
