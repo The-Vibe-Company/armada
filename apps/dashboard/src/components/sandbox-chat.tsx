@@ -1335,6 +1335,7 @@ function Composer({
             )}
             <Button
               aria-label={running ? "Send as new turn" : undefined}
+              title={primary === "send" ? "Send · Ctrl / ⌘ + Enter" : undefined}
               type="button"
               size="sm"
               className="max-sm:px-2.5"

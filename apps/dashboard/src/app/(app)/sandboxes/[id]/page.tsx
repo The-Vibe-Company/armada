@@ -226,7 +226,7 @@ export default async function SandboxPage({ params }: Props) {
       }
       usage={
         <>
-          <SandboxCostCard cost={cost} showTotal={false} />
+          <SandboxCostCard cost={cost} totalClassName="min-[375px]:hidden" />
           <section aria-label="Skills" className="space-y-2">
             <h2 className="text-xs font-medium text-muted-foreground">Skills</h2>
             <InstalledSkills receipts={sandbox.skills} />
@@ -349,7 +349,7 @@ function DockerSandbox({
       }
       usage={
         <>
-          <SandboxCostCard cost={cost} showTotal={false} />
+          <SandboxCostCard cost={cost} totalClassName="min-[375px]:hidden" />
           {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -472,7 +472,7 @@ function ThreadHeader({
 }) {
   const name = sandboxListName({
     providerSandboxId: sandbox.provider_sandbox_id,
-    displayLabel: "Sandbox",
+    displayLabel: `${HARNESS_LABELS[sandbox.harness]} sandbox`,
     harness: sandbox.harness,
     createdAt: sandbox.created_at,
   });
@@ -514,7 +514,7 @@ function ThreadHeader({
       )}
       <RowCost
         cost={cost}
-        className="rounded-full border px-1.5 py-0.5 font-mono text-[10px] tabular-nums sm:px-2 sm:text-xs"
+        className="hidden shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 font-mono text-[10px] tabular-nums min-[375px]:inline-flex sm:px-2 sm:text-xs"
       />
       {children}
     </>
