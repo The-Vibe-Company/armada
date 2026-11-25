@@ -59,6 +59,26 @@ export function checkAgentsFiles(files: ReadonlyMap<string, string>, exists: (pa
   return errors;
 }
 
+export function createTrackedPathMatcher(
+  tracked: ReadonlySet<string>,
+  directories: ReadonlySet<string>,
+  existsOnDisk: (path: string) => boolean,
+) {
+  return (path: string) => {
+    if (!/[*{]/.test(path)) {
+      return (tracked.has(path) || directories.has(path)) && existsOnDisk(path);
+    }
+    const glob = new Bun.Glob(path);
+    for (const file of tracked) {
+      if (glob.match(file) && existsOnDisk(file)) return true;
+    }
+    for (const directory of directories) {
+      if (glob.match(directory) && existsOnDisk(directory)) return true;
+    }
+    return false;
+  };
+}
+
 if (import.meta.main) {
   const root = join(import.meta.dir, "../..");
   const tracked = new Set(
@@ -76,16 +96,10 @@ if (import.meta.main) {
     }
   }
 
-  const errors = checkAgentsFiles(files, (path) => {
-    if (!/[*{]/.test(path)) {
-      return (tracked.has(path) || directories.has(path)) && existsSync(join(root, path));
-    }
-    const glob = new Bun.Glob(path);
-    for (const file of tracked) {
-      if (glob.match(file) && existsSync(join(root, file))) return true;
-    }
-    return false;
-  });
+  const errors = checkAgentsFiles(
+    files,
+    createTrackedPathMatcher(tracked, directories, (path) => existsSync(join(root, path))),
+  );
   if (errors.length) {
     console.error(errors.join("\n"));
     process.exitCode = 1;
