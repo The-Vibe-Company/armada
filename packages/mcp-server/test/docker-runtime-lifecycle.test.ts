@@ -18,6 +18,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
+import { queueMailboxStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
 const database = useMigratedDatabase();
@@ -331,7 +332,7 @@ test("Docker health independently validates the reply from the enrolled epoch", 
   expect(await authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
     session.epoch,
   );
-  await reservations.stop(f.actor, f.sandbox.id, randomUUID());
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
   await denied(service.ready(f.actor, f.sandbox.id, healthId));
 });
 
@@ -381,7 +382,7 @@ test("health replies from before stop or an epoch replacement are refused", asyn
       requestId = randomUUID();
     await service.ready(f.actor, f.sandbox.id, requestId);
     await complete(session, { ready: true, generation: session.epoch });
-    if (change === "stop") await reservations.stop(f.actor, f.sandbox.id, randomUUID());
+    if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     else {
       const next = await createRuntimeEnrolments(sql, key, { allowDockerIssue: true }).issue({
         sandboxId: f.sandbox.id,
@@ -675,7 +676,7 @@ test("new ready/prompt operations fail closed on current account, membership, is
         await db.query(`insert into public.members(org_id,user_id,role) values($1,$2,'member')`, [actor.orgId, user]);
     }
     if (change === "host") await hosts.revoke(f.admin, f.hostId);
-    if (change === "stop") await reservations.stop(f.actor, f.sandbox.id, randomUUID());
+    if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     await denied(current.ready(actor, f.sandbox.id, randomUUID()));
     await denied(current.prompt(actor, f.sandbox.id, { requestId: randomUUID(), text: "Never admitted" }));
   }
@@ -722,9 +723,9 @@ test("journal reads acknowledged encrypted events plus saved usage after stop/de
   const disabled = createDockerRuntimeLifecycle(sql, key);
   const stopId = randomUUID(),
     deleteId = randomUUID();
-  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await reservations.delete(f.actor, f.sandbox.id, deleteId);
+  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "delete", requestId: deleteId });
   await hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
   await hosts.revoke(f.admin, f.hostId);
   const first = await disabled.journal(f.actor, f.sandbox.id, { limit: 1 });
@@ -751,7 +752,7 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
   const f = await fixture();
   await ready(f);
   const stopId = randomUUID();
-  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   const stop = await hosts.poll(f.hostToken, f.installationId);
   if (stop?.operation !== "stop") throw Error("missing retained stop");
   await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
@@ -851,7 +852,7 @@ test("a queued Docker send resumes the exact host job and fences health enqueue 
   const f = await fixture();
   await ready(f);
   const stopId = randomUUID();
-  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await sql.query("update public.sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
   await sql.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, DOCKER_HOST_PROTOCOL]);
