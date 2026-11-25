@@ -208,7 +208,7 @@ function eligibleMachineLaunch(capability: number) {
       and (not $${capability}::boolean or launch.deadline_at<=clock_timestamp()
         or launch.attempts>launch.max_attempts
         or (launch.state in ('failed','done') and not (
-          j.bound_operation='create' and ${dockerStopPending("launch.sandbox_id", "launch.generation")}
+          j.bound_operation='create' and ${dockerStopPending("launch.sandbox_id", "launch.generation", true)}
         ))))`;
 }
 function eligibleJob(physical: number, restore: number, bootstrap: number) {

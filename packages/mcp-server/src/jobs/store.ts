@@ -23,10 +23,15 @@ import type { Job, JobStore } from "./runner.ts";
 
 export const JOBS_WAKE = "jobs";
 
-export function dockerStopPending(sandboxId: string, generation: string) {
+export function dockerStopPending(sandboxId: string, generation: string, requireDispatchBudget = false) {
+  const budget = requireDispatchBudget
+    ? `and stop.deadline_at > clock_timestamp()
+       and (stop.attempts < stop.max_attempts or
+         (stop.state='leased' and stop.lease_until > clock_timestamp() and stop.attempts = stop.max_attempts))`
+    : "";
   return `exists(select 1 from public.jobs stop
     where stop.sandbox_id=${sandboxId} and stop.generation=${generation}
-      and stop.kind='stop' and stop.state in ('queued','leased'))`;
+      and stop.kind='stop' and stop.state in ('queued','leased') ${budget})`;
 }
 
 export function jobRequestKey(orgId: string, kind: string, ownerId: string, key: string) {
