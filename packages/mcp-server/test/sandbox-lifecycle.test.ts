@@ -370,8 +370,8 @@ for (const outcome of [
     const before = waitingForRetention ? await readStopIntent() : undefined;
     const worker = createSandboxLifecycle(sql, async () => provider);
     if (outcome === "snapshot-pending") {
-      const fault = new Error("injected pending-retention settlement failure");
-      for (const boundary of ["transition", "retry update", "commit"]) {
+      const fault = new Error("injected pending-retention admission failure");
+      for (const boundary of ["transition", "enqueue", "commit"]) {
         const faultingSql: Sql = {
           query: sql.query,
           transaction: (work) =>
@@ -380,7 +380,7 @@ for (const outcome of [
                 query: (statement, args) => {
                   if (
                     (boundary === "transition" && statement.includes("public.sandbox_transition(")) ||
-                    (boundary === "retry update" && statement.includes("last_observed_at=case"))
+                    (boundary === "enqueue" && statement.includes("insert into public.jobs"))
                   )
                     throw fault;
                   return tx.query(statement, args);
@@ -488,19 +488,9 @@ for (const outcome of [
         stop_generation: 1,
       });
       expect(await worker.reconcileOne()).toBe(false);
-      if (outcome === "snapshot-pending") {
-        expect(
-          (
-            await db.query(
-              "select isfinite(reconcile_after) and reconcile_after>now() as scheduled from sandboxes where id=$1",
-              [id],
-            )
-          ).rows,
-        ).toEqual([{ scheduled: true }]);
-        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
-        expect(await worker.reconcileOne()).toBe(true);
-        expect(await readStopIntent()).toEqual(intent);
-      }
+      expect((await db.query("select kind,state from jobs where sandbox_id=$1", [id])).rows).toEqual([
+        { kind: "stop", state: "queued" },
+      ]);
       expect(
         (
           await db.query(
@@ -517,9 +507,6 @@ for (const outcome of [
           to_status: "stopping",
         },
       ]);
-      expect(row.lifecycle_error).toContain(
-        outcome === "snapshot-pending" ? "snapshot is pending" : "no verified retained snapshot",
-      );
     }
     if (outcome === "external-stop" || ["expired", "expired-external-stop", "manual-stop"].includes(outcome)) {
       expect(row.stop_time_finite).toBe(true);
@@ -957,7 +944,7 @@ for (const blocked of ["boat", "modal"] as const) {
           entered.push(Promise.withResolvers<void>());
           await db.query(
             `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,runtime_transport)
-             values($1::uuid,$2,$1::uuid::text,$3,$4,$5,'codex','running',null)`,
+             values($1::uuid,$2,$1::uuid::text,$3,$4,$5,'codex','running',case when $2::public.sandbox_provider='modal' then 'dialout' end)`,
             [id, authority, golden.id, people.org, people.owner],
           );
           // Leave the fifth candidate eligible to prove saturation does not

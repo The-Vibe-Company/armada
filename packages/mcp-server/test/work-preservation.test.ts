@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { encryptSecret } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
 import { closeableFixture } from "./closeable.fixture.ts";
@@ -164,7 +165,13 @@ test("an unavailable receipt lookup defers stop without provider work", async ()
       throw new Error("Must defer before observing the machine");
     },
   };
-  expect(await preserveBeforeStop(sql, provider, crypto.randomUUID(), "bx_policy")).toBe("pending");
+  expect(
+    await preserveBeforeStop(sql, provider, crypto.randomUUID(), "modal-policy", {
+      token: `${crypto.randomUUID()}:1`,
+      generation: 1,
+      signal: new AbortController().signal,
+    }),
+  ).toBe("pending");
   expect(reads).toBe(0);
 });
 
@@ -197,30 +204,13 @@ test("application-secret taint permanently disables collection and recovery, pur
     await db.query<{ preservation_note: string }>("select preservation_note from sandboxes where id=$1", [id])
   ).rows[0]!.preservation_note;
   expect(taintNote).toContain("resume and recovery are unavailable");
-  // Permit the collector's note write, rather than only exercising a completed
-  // receipt whose fence suppresses it. Both writers must give identical guidance.
-  await db.query("update sandboxes set stop_requested_at=null,preservation_stop_generation=null where id=$1", [id]);
-  const boat = fakeBoat();
-  let providerReads = 0;
-  const provider = {
-    ...boat.provider,
-    async get() {
-      providerReads++;
-      throw Error("must not touch tainted compute");
-    },
-  };
-  for (const source of ["user_stop", "lifecycle_stop", "managed_child_stop"] as const) {
-    await preserveBeforeStop(bunLikeSql(db), provider, id, "bx_tainted", source);
-    const data = createSqlData(bunLikeSql(db))({
-      via: "service",
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-    });
-    expect(await data.sandboxes.readWorkRecovery?.(id)).toBeNull();
-    expect((await data.sandboxes.get(id))?.preservationNote).toBe(taintNote);
-  }
-  expect(providerReads).toBe(0);
-  expect(boat.execs).toHaveLength(0);
+  const data = createSqlData(bunLikeSql(db))({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+  });
+  expect(await data.sandboxes.readWorkRecovery?.(id)).toBeNull();
+  expect((await data.sandboxes.get(id))?.preservationNote).toBe(taintNote);
 });
 
 const runtimeCaptureScenarios = [
@@ -236,18 +226,30 @@ const runtimeCaptureScenarios = [
 test.each([...runtimeCaptureScenarios])(
   "Modal runtime stop preserves work independently of the event journal and fences lost leases: %s",
   async (scenario) => {
-    await withPreservationRow(async ({ db, id, physical, sql, provider, activity, generation }) => {
-      if (!activity) throw new Error("Missing runtime activity lease fixture");
+    await withPreservationRow(async ({ db, id, physical, sql, provider, generation }) => {
       const { people } = sharedDatabase();
       const recoveryScope: [string[], string] = [[people.org], people.owner];
-      const reconcile = crypto.randomUUID();
+      const owner = crypto.randomUUID();
+      const jobs = createJobsStore(sql, ENCRYPTION_KEY);
+      await db.query("update sandboxes set activity_lease_id=null,activity_until=null where id=$1", [id]);
+      const jobId = await jobs.enqueue("stop", id, generation, id, null, {
+        orgId: people.org,
+        deadline: new Date("2099-01-01"),
+        maxAttempts: 3,
+      });
+      const first = await jobs.claim("stop", owner, 30, 1);
+      if (!first || first.id !== jobId) throw Error("Missing stop job lease");
       const archive = Buffer.from("dirty runtime workspace fixture").toString("base64");
-      const takeOver = () =>
-        db.query(
-          `update sandboxes set activity_lease_id=null,activity_until=null,reconcile_lease=$2,
-           reconcile_lease_until=now()+interval '2 minutes' where id=$1`,
-          [id, reconcile],
-        );
+      let successor: Awaited<ReturnType<typeof jobs.claim>>;
+      const takeOver = async () => {
+        await db.query("update jobs set lease_until=now()-interval '1 second' where id=$1", [jobId]);
+        successor = await jobs.claim("stop", crypto.randomUUID(), 30, 1);
+      };
+      const lease = (epoch: string) => ({
+        token: `${jobId}:${epoch}`,
+        generation,
+        signal: new AbortController().signal,
+      });
       let observed = 0;
       let captures = 0;
       const host: RuntimeWorkProvider = {
@@ -300,11 +302,7 @@ test.each([...runtimeCaptureScenarios])(
             return result;
           },
         };
-        const outcome = await preserveBeforeStop(stopSql, runtime, id, physical, "user_stop", {
-          kind: "activity",
-          token: activity,
-          generation,
-        });
+        const outcome = await preserveBeforeStop(stopSql, runtime, id, physical, lease(first.lease_epoch));
         const takeover = scenario.startsWith("takeover_");
         const collectorRefused = scenario === "quiescence_rejected";
         const noFirstDispatch = scenario === "takeover_before_capture";
@@ -314,8 +312,9 @@ test.each([...runtimeCaptureScenarios])(
         if (takeover || collectorRefused || noFirstDispatch)
           expect(await readWorkRecovery(sql, recoveryScope, id)).toBeNull();
         if (!takeover) await takeOver();
-        const nextOwner = { kind: "reconcile", token: reconcile, generation } as const;
-        expect(await preserveBeforeStop(sql, runtime, id, physical, "lifecycle_stop", nextOwner)).toBeUndefined();
+        if (!successor || successor.id !== jobId) throw Error("Missing successor lease");
+        expect(await preserveBeforeStop(sql, runtime, id, physical, lease(successor.lease_epoch))).toBeUndefined();
+        await db.query("delete from jobs where id=$1", [jobId]);
         expect(await readWorkRecovery(sql, recoveryScope, id)).toBe(scenario === "clean" ? null : archive);
         expect(captures).toBe((takeover && !noFirstDispatch) || collectorRefused ? 2 : 1);
         const receipt = (

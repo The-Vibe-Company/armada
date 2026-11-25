@@ -9,13 +9,12 @@ import {
   resolveCredentials,
   type SandboxRow,
   type Sql,
-  sandboxActivity,
 } from "@armada/core/server";
 import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import type { AdmitModalLaunch } from "./modal-launch-admission.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import { retainsDiskOnStop, usesDiskStopJob } from "./provider-runtime-admission.ts";
+import { modalDialoutPlacement, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -31,7 +30,6 @@ import {
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
-import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
   constructor(readonly code: string) {
@@ -97,7 +95,9 @@ export function createSandboxAccessServices(input: {
     };
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
-    const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    const { saved } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    const modalStop = modalDialoutPlacement(saved);
+    if (!modalStop && !usesDiskStopJob(saved.provider)) throw new ChildStopNotAdmitted("sandbox_not_ready");
     if (
       admitRecovery &&
       saved.modalTransport === "dialout" &&
@@ -184,63 +184,17 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    const modalStop = saved.modalTransport === "dialout";
-    if (modalStop || usesDiskStopJob(saved.provider)) {
-      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
-      await stopStore.update(saved.id, {
-        ...stopAdmission,
-        ...(modalStop ? { queueModalStop: operation.id } : {}),
-        status: stoppingStatus,
-        stopRequested: true,
-        statusReason,
-        advanceGeneration: true,
-        activityToken: crypto.randomUUID(),
-        expectedGeneration: saved.lifecycleGeneration,
-      });
-      return;
-    }
-    const provider = await resolveProvider();
-    await sandboxActivity(
-      stopStore,
-      saved,
-      { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason },
-      async (signal, token) => {
-        if (
-          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
-            kind: "activity",
-            token,
-            generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
-            signal,
-          }).catch(() => "pending" as const)) === "pending"
-        )
-          return {
-            result: undefined,
-            patch: { ownerStop: true, status: stoppingStatus, stopRequested: true, statusReason },
-          };
-        signal.throwIfAborted();
-        const observed = await stopAndObserve(
-          provider,
-          saved.id,
-          saved.providerSandboxId,
-          "managed_child_stop",
-          signal,
-          retained,
-        );
-        const terminal =
-          observed.state === "stopped" &&
-          (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
-        return {
-          result: undefined,
-          patch: {
-            ownerStop: true,
-            status: stoppingStatus === "failed" ? "failed" : terminal ? "stopped" : "stopping",
-            statusReason,
-            stopRequested: !terminal,
-            stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
-          },
-        };
-      },
-    );
+    if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+    await stopStore.update(saved.id, {
+      ...stopAdmission,
+      ...(modalStop ? { queueModalStop: operation.id } : {}),
+      status: stoppingStatus,
+      stopRequested: true,
+      statusReason,
+      advanceGeneration: true,
+      activityToken: crypto.randomUUID(),
+      expectedGeneration: saved.lifecycleGeneration,
+    });
   }
   const executor: SandboxChildExecutor = {
     async launch(operation, chosen) {
