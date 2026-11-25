@@ -99,9 +99,8 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
   }
   /* oxlint-enable landmines-testing/no-test-doubles */
   try {
-    const page = GoldensPage({ searchParams: Promise.resolve({}) });
     const settledReadsDrained = new Promise<null>((resolve) => setImmediate(() => resolve(null)));
-    const rendering = page.then((element) =>
+    const rendering = GoldensPage({ searchParams: Promise.resolve({}) }).then((element) =>
       renderToReadableStream(
         <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
       ),
