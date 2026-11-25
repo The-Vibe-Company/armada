@@ -71,7 +71,7 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
           ],
           detail: (
             <div className="space-y-3 p-4">
-              <dl className="grid grid-cols-2 gap-2 text-sm">
+              <dl className="grid grid-cols-1 gap-x-2 gap-y-1 break-words text-sm max-sm:[&_dd:not(:last-child)]:mb-2 sm:grid-cols-2">
                 <dt>Organization</dt>
                 <dd>{key.orgName}</dd>
                 <dt>Status</dt>
