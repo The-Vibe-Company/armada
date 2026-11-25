@@ -5,7 +5,14 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { controlRouteKey, type Operation, operations, sandboxOutputOperations } from "@armada/core/contract";
+import {
+  controlRouteKey,
+  launch,
+  modalLaunchReceipt,
+  type Operation,
+  operations,
+  sandboxOutputOperations,
+} from "@armada/core/contract";
 import { z } from "zod";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
@@ -163,6 +170,7 @@ export function generateOpenApi({
     if ((operation.audience === "admin") !== admin) continue;
     const method = operation.route.method.toLowerCase();
     const route = controlRouteKey(operation.route);
+    const sandboxLaunch = operation.route.path === launch.route.path && operation.route.method === launch.route.method;
     paths[operation.route.path] ??= {};
     const path = paths[operation.route.path]!;
     if (Object.hasOwn(path, method)) throw new Error(`Duplicate REST operation: ${method} ${operation.route.path}`);
@@ -270,7 +278,9 @@ export function generateOpenApi({
       }),
       responses: {
         [operation.successStatus ?? 200]: {
-          description: "Success",
+          description: sandboxLaunch
+            ? "Success, including replay of an ordinary Boat launch with its current sandbox state."
+            : "Success",
           ...(operation.successHeaders && {
             headers: Object.fromEntries(
               Object.entries(operation.successHeaders).map(([name, schema]) => [
@@ -285,6 +295,20 @@ export function generateOpenApi({
             },
           }),
         },
+        ...(sandboxLaunch && {
+          "202": {
+            description: "A new ordinary Boat launch was durably admitted.",
+            content: {
+              "application/json": {
+                schema: responseJsonSchema(
+                  modalLaunchReceipt.extend({
+                    sandbox: modalLaunchReceipt.shape.sandbox.extend({ status: z.literal("starting") }),
+                  }),
+                ),
+              },
+            },
+          },
+        }),
         ...(request && !viewerControl && oversizedStatus === 400
           ? {
               "400": {

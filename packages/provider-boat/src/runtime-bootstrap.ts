@@ -6,6 +6,7 @@ export async function startBoatRuntime(
   provider: Provider,
   input: {
     sandboxId: string;
+    signal?: AbortSignal | undefined;
     serverUrl: string;
     enrolmentToken: string;
     cacheDir: string;
@@ -33,6 +34,7 @@ export async function startBoatRuntime(
       token: JSON.stringify({ serverUrl: server.origin, enrolmentToken: input.enrolmentToken }),
       script: boatRuntimeBootstrapScript(server.origin, input.artifact, input.cacheDir),
       timeoutMs: 150_000,
+      signal: input.signal,
     });
   } catch {
     // Guest/transport failures must never surface private stdin or credentials.
