@@ -1,10 +1,10 @@
-import type { MachineIdentity, Provider, Sql } from "@armada/core/server";
+import { type MachineIdentity, type Provider, ProviderError, type Sql, VaultError } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
-import { recordDockerCleanupReceipt, settleModalStop, transitionSandbox } from "../sandbox-lifecycle.ts";
+import { holdModalStop, recordDockerCleanupReceipt, settleModalStop, transitionSandbox } from "../sandbox-lifecycle.ts";
 import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
 import { preserveBeforeStop } from "../work-preservation.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
@@ -61,6 +61,7 @@ export function createStopJob(
       rows: [target],
     } = await sql.query<{
       org_id: string;
+      owner_is_member: boolean;
       provider_sandbox_id: string;
       status: "failed" | "stopping";
       retention_required: boolean;
@@ -68,6 +69,7 @@ export function createStopJob(
       deadline_at: Date;
     }>(
       `select s.org_id,s.provider_sandbox_id,s.status,
+       exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member,
        (coalesce(s.status_reason in ('idle_paused','work_merged'),false) or exists(
          select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=$2
            and t.code='runtime_retained_stop'
@@ -107,6 +109,14 @@ export function createStopJob(
     };
     const { signal } = context;
     const retry = { status: "retry", after: new Date(now() + (reconcileOnly ? 30_000 : 1_000)) } satisfies JobResult;
+    const hold = {
+      status: "retry",
+      after: new Date("9999-01-01T00:00:00Z"),
+      async commit(tx) {
+        await holdModalStop(tx, sandboxId, generation);
+      },
+    } satisfies JobResult;
+    if (!target.owner_is_member) return hold;
     let retentionLost = false;
     try {
       const provider = (await resolveModal(sandboxId)) as ModalProvider;
@@ -118,6 +128,7 @@ export function createStopJob(
         checkpoint,
         write,
         reconcileOnly,
+        deadlineAt: reconcileOnly ? undefined : deadline,
       });
       if (!reconcileOnly && !prior?.modal_physical)
         await write((tx) => mergeStopOutcome(tx, job.id, { modal_checkpoint: checkpoint, modal_physical: physical }));
@@ -152,8 +163,14 @@ export function createStopJob(
         (retained.kind !== "image" || retained.generation !== Number(generation) || retained.sandboxId !== sandboxId)
       )
         return retry;
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
+      if (
+        (error instanceof VaultError &&
+          ["missing_credential", "credential_refused", "forbidden"].includes(error.code)) ||
+        (error instanceof ProviderError && ["unauthorized", "forbidden"].includes(error.code))
+      )
+        return hold;
       return retry;
     }
     return {

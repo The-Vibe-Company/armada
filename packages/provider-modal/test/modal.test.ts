@@ -116,7 +116,7 @@ async function stopRuntime(
   proof: { sandboxId: string; physicalGeneration: string; epoch: string; watermark: number },
   options?: Pick<
     Parameters<ReturnType<typeof createModalProvider>["provider"]["runtimeStopMachine"]>[0],
-    "write" | "reconcileOnly"
+    "write" | "reconcileOnly" | "deadlineAt"
   >,
 ) {
   const { sandboxId, physicalGeneration, epoch, watermark } = proof;
@@ -136,7 +136,13 @@ async function stopRuntime(
     write: (work) => work(fixtureSql),
     ...options,
   });
-  return binding.machine.stop({ machineId: physical.machineId, sandboxId, generation: 8, retain: true });
+  return binding.machine.stop({
+    machineId: physical.machineId,
+    sandboxId,
+    generation: 8,
+    retain: true,
+    signal: new AbortController().signal,
+  });
 }
 function fixture(
   accessScope: Scope = scope,
@@ -149,6 +155,7 @@ function fixture(
   let artifactVolume: Volume | undefined;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
+  let snapshotBudget: number | undefined;
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let manifestResult: { exitCode: number | null; stdout: string } | undefined;
   let failSnapshot = false;
@@ -265,8 +272,9 @@ function fixture(
               wait: async () => 0,
             };
           },
-          snapshotFilesystem: async (p: object) => {
-            expect(p).toEqual({ ttlMs: null });
+          snapshotFilesystem: async (p: { ttlMs: null; timeoutMs?: number }) => {
+            expect(p.ttlMs).toBeNull();
+            snapshotBudget = p.timeoutMs;
             log.push("snapshot");
             expect(provisioned).toBe(false);
             if (failSnapshot) throw new Error("synthetic private SDK data");
@@ -398,6 +406,9 @@ function fixture(
       artifactVolume = volume;
     },
     sdkCommands,
+    get snapshotBudget() {
+      return snapshotBudget;
+    },
     setManifestResult(exitCode: number | null, stdout = "private collector detail") {
       manifestResult = { exitCode, stdout };
     },
@@ -1196,6 +1207,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 };
   await expect(
     stopRuntime(f.provider, proof, {
+      deadlineAt: Date.now() + 10_000,
       write: (work) =>
         work({
           async query(statement, params) {
@@ -1210,6 +1222,8 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
     }),
   ).rejects.toThrow();
   expect((await f.store.get(worker.id)).phase).toBe("terminate");
+  expect(f.snapshotBudget).toBeGreaterThan(0);
+  expect(f.snapshotBudget).toBeLessThanOrEqual(10_000);
   await stopRuntime(f.provider, proof, { reconcileOnly: true, write: (work) => work(fixtureSql) });
   await stopRuntime(f.provider, proof);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);

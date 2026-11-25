@@ -43,8 +43,9 @@ or permission bypass. Do not execute it as part of a PR or an audit.
 
 If original normal authority is legitimately available again, the operator may
 instead requeue the same fenced row by setting reconcile_after to now and clearing
-the hold diagnostic under the same transaction/preconditions. Normal reconciliation
-must still observe the provider; requeueing alone never proves physical exit.
+the hold diagnostic under the same transaction/preconditions. For a Modal runtime with a queued shared stop job, also set that exact job's
+`run_after` to now in the same transaction. Keep its generation, deadline, and
+checkpoint evidence. Normal reconciliation must still observe the provider; requeueing alone never proves physical exit.
 
 A Boat recovery stop is identified by a `runtime_resume_unenrolled` transition
 into `stopping` for the current lifecycle generation. Definitive absence is

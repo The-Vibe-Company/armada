@@ -7,9 +7,21 @@ export interface ModalConnection {
   tokenId?: string;
   tokenSecret?: string;
 }
-const stopSignals = new AsyncLocalStorage<AbortSignal>();
-export function withModalStopSignal<T>(signal: AbortSignal | undefined, work: () => Promise<T>) {
-  return signal ? stopSignals.run(signal, work) : work();
+const stopBudget = new AsyncLocalStorage<{ signal: AbortSignal; deadlineAt: number | undefined }>();
+export function withModalStopSignal<T>(
+  signal: AbortSignal | undefined,
+  deadlineAt: number | undefined,
+  work: () => Promise<T>,
+) {
+  return signal ? stopBudget.run({ signal, deadlineAt }, work) : work();
+}
+
+export function modalStopTimeout(maximum: number) {
+  const budget = stopBudget.getStore();
+  budget?.signal.throwIfAborted();
+  const remaining = budget?.deadlineAt === undefined ? maximum : budget.deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error("Modal stop dispatch deadline elapsed.");
+  return Math.min(maximum, remaining);
 }
 export function modalConnection(options: ModalConnection): ModalClient {
   const supplied = options.tokenId !== undefined || options.tokenSecret !== undefined;
@@ -26,11 +38,12 @@ export function modalConnection(options: ModalConnection): ModalClient {
     tokenSecret,
     grpcMiddleware: [
       async function* (call, rpc) {
-        const stop = stopSignals.getStore();
+        const stop = stopBudget.getStore()?.signal;
         if (!stop) return yield* call.next(call.request, rpc);
         stop.throwIfAborted();
         const signal = rpc.signal ? AbortSignal.any([stop, rpc.signal]) : stop;
-        return yield* call.next(call.request, { ...rpc, signal, retries: 0 });
+        const bounded = { ...rpc, signal, retries: 0 };
+        return yield* call.next(call.request, bounded);
       },
     ],
   });

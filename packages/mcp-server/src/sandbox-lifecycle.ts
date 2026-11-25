@@ -580,6 +580,18 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
+export function holdModalStop(tx: Sql, sandboxId: string, generation: string) {
+  return tx.query(
+    `update public.sandboxes set lifecycle_error=$3,reconcile_after='infinity'
+     where id=$1 and lifecycle_generation=$2 and stop_requested_at is not null`,
+    [
+      sandboxId,
+      generation,
+      `${OPERATOR_CLEANUP_PREFIX} Original Modal authority unavailable. Follow docs/stopping-authority-loss.md.`,
+    ],
+  );
+}
+
 export function unresolvedModalStop(sandbox: string) {
   return `(${sandbox}.provider='modal' and exists(select 1 from public.jobs j where j.sandbox_id=${sandbox}.id
     and j.generation=${sandbox}.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased')))`;

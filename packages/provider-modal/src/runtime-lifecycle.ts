@@ -19,6 +19,7 @@ export type ModalRuntimeStop = (binding: {
   checkpoint: { epoch: string; watermark: number } | null;
   write(work: (tx: Sql) => Promise<void>): Promise<void>;
   reconcileOnly?: boolean;
+  deadlineAt?: number | undefined;
 }) => Promise<{
   physical: PhysicalTarget;
   machine: Pick<MachineContract, "stop">;
@@ -89,6 +90,7 @@ export function createRuntimeLifecycle({
       checkpoint,
       write,
       reconcileOnly,
+      deadlineAt,
     }: Parameters<ModalRuntimeStop>[0]) {
       const pinned = await store.get(recordId);
       if (!pinned.physicalId) throw refusal("conflict", "No current Modal physical incarnation.");
@@ -98,7 +100,7 @@ export function createRuntimeLifecycle({
         physical: target,
         machine: {
           stop: (request) =>
-            withModalStopSignal(request.signal, async () => {
+            withModalStopSignal(request.signal, deadlineAt, async () => {
               const { machineId, sandboxId, retain, signal } = request;
               if (sandboxId !== logicalId || request.generation !== generation || machineId !== target.machineId)
                 throw refusal("conflict", "The stop job incarnation changed.");

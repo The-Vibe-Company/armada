@@ -1,5 +1,6 @@
 import { createPublicKey } from "node:crypto";
 import type { Sandbox } from "modal";
+import { modalStopTimeout } from "./client.ts";
 import { refusal } from "./errors.ts";
 import type { Machine, SshPreparation } from "./ports.ts";
 import { quiesceSandboxProcesses } from "./process-scope.ts";
@@ -20,7 +21,7 @@ for file in /home/user/.armada-runtime/codex/auth.json /home/user/.armada-runtim
 done
 `,
     ],
-    { timeoutMs: 30_000, env: {}, secrets: [] },
+    { timeoutMs: modalStopTimeout(30_000), env: {}, secrets: [] },
   );
   if ((await process.wait()) !== 0)
     throw refusal("conflict", "SSH could not be quiesced before snapshot.", "ssh_cleanup_failed");

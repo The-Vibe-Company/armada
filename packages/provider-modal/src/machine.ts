@@ -8,7 +8,7 @@ import {
   type RetainedMachine,
 } from "@armada/core/server";
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
-import { boundModalApp } from "./client.ts";
+import { boundModalApp, modalStopTimeout } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
 import { createModalMachineInventory } from "./inventory.ts";
 import { bootstrapModalRuntime, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
@@ -132,7 +132,8 @@ export function verifyModalComputeOwnership(
 
 async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const image = await sandbox.snapshotFilesystem({ ttlMs: null });
+  const timeoutMs = modalStopTimeout(55_000);
+  const image = await sandbox.snapshotFilesystem({ ttlMs: null, ...(timeoutMs < 55_000 && { timeoutMs }) });
   if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
   return image.imageId;
 }

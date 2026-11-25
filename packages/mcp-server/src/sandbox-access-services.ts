@@ -96,6 +96,23 @@ export function createSandboxAccessServices(input: {
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    if (
+      admitRecovery &&
+      saved.modalTransport === "dialout" &&
+      (saved.status === "stopping" || saved.status === "stopped")
+    ) {
+      await admitRecovery(async (tx) => {
+        const proof = await tx.query(
+          `select 1 from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+           join public.runtime_checkpoints p on p.sandbox_id=s.id
+           where s.id=$1 and s.lifecycle_generation=$2 and j.kind='stop' and j.state in ('queued','leased','done')
+             and p.request_id=$3 and p.completed_at is not null and s.status in ('stopping','stopped') for update of s`,
+          [saved.id, saved.lifecycleGeneration, operation.id],
+        );
+        if (!proof.rows.length) throw new DelegatedAccessError("conflict");
+      });
+      return;
+    }
     if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
     const retained =
       saved.modalTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));

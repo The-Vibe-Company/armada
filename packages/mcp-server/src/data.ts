@@ -1068,7 +1068,11 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>> & { observationBlocked?: boolean };
-        if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (
+          stopStatus !== undefined ||
+          patch.modalRuntimeExtensionTarget !== undefined ||
+          (patch.deleteRequested && admission)
+        ) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
