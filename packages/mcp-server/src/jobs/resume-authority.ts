@@ -1,6 +1,6 @@
-export function resumeDispatchAuthority(job: string, sandbox: string) {
+export function resumeDispatchAuthority(job: string, sandbox: string, pendingTicket = false) {
   return `(${job}.attempts<=${job}.max_attempts and ${job}.deadline_at>clock_timestamp()
-    and ${job}.state='leased' and ${job}.lease_until>clock_timestamp()
+    ${pendingTicket ? `and ${job}.state in ('queued','leased')` : `and ${job}.state='leased' and ${job}.lease_until>clock_timestamp()`}
     and ${sandbox}.status='starting' and ${sandbox}.stop_requested_at is null and ${sandbox}.deleted_at is null
     and not ${sandbox}.application_secret_tainted and ${sandbox}.expires_at>clock_timestamp()
     and date_trunc('milliseconds',${sandbox}.expires_at)=(${job}.outcome->>'expiresAt')::timestamptz
@@ -18,8 +18,8 @@ export function resumeDispatchAuthority(job: string, sandbox: string) {
         (q.state<>'dispatching' or q.actor_epoch::text is distinct from ${job}.outcome->>'actorEpoch')))`;
 }
 
-export function resumeDispatchBlocked(sandboxId: string) {
+export function resumeDispatchBlocked(sandboxId: string, pendingTicket = false) {
   return `exists(select 1 from public.jobs j join public.sandboxes s
     on s.id=j.sandbox_id and s.lifecycle_generation=j.generation
-    where s.id=${sandboxId} and j.kind='resume' and not coalesce(${resumeDispatchAuthority("j", "s")},false))`;
+    where s.id=${sandboxId} and j.kind='resume' and not coalesce(${resumeDispatchAuthority("j", "s", pendingTicket)},false))`;
 }

@@ -1919,6 +1919,7 @@ describe("Modal resume job", () => {
     let allocated = false;
     let allocations = 0;
     let bootstraps = 0;
+    let ticketToken: string | undefined;
     const restore = {
       epoch: f.cp.runtime.epoch,
       watermark: f.cp.checkpoint.watermark,
@@ -1948,7 +1949,7 @@ describe("Modal resume job", () => {
               async bootstrap(request) {
                 const descriptor = await ticket(request);
                 expect(descriptor?.artifact).toEqual({ sha256: "b".repeat(64), bytes: 5 });
-                await f.reboot(restore, true, descriptor?.enrolmentToken);
+                ticketToken = descriptor?.enrolmentToken;
                 bootstraps++;
               },
             };
@@ -2020,6 +2021,10 @@ describe("Modal resume job", () => {
         expect(f.starts).toEqual([undefined]);
         return;
       }
+      expect(await take()).toBe("retry");
+      expect(ticketToken).toBeDefined();
+      await f.reboot(restore, true, ticketToken);
+      await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       expect(await take()).toBe("done");
       const accepted = await receipt;
       if (!("value" in accepted)) throw accepted.error;
