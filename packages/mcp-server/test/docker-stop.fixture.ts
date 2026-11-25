@@ -5,7 +5,13 @@ import { createStopJob } from "../src/jobs/stop.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { scopedRuntimeSql } from "../src/runtime-enrolment.ts";
 
-export async function runDockerStop(sql: Sql, key: string, sandboxId: string, completionSql = sql) {
+export async function runDockerStop(
+  sql: Sql,
+  key: string,
+  sandboxId: string,
+  completionSql = sql,
+  reader: Parameters<typeof createStopJob>[2] = () => ({}),
+) {
   await sql.query(
     "update jobs set run_after='-infinity' where sandbox_id=$1 and kind='stop' and state in ('queued','leased')",
     [sandboxId],
@@ -14,7 +20,7 @@ export async function runDockerStop(sql: Sql, key: string, sandboxId: string, co
   const owner = randomUUID();
   const job = await jobs.claim("stop", owner, 30, 8);
   if (job?.sandbox_id !== sandboxId) throw new Error("No Docker stop job to run for this sandbox.");
-  const handler = createStopJob(sql, key, () => ({}));
+  const handler = createStopJob(sql, key, reader);
   const result = await handler.run(job, {
     signal: new AbortController().signal,
     canDispatch: async (tx) => (await jobs.inspect(job, owner, tx)) === "dispatch",

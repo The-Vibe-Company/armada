@@ -90,6 +90,7 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
         target = await hosts.lockStop(tx, sandboxId, intent);
       };
       const dispatch = async (tx: Sql) => {
+        if (!target) throw new Error("Docker stop dispatch requires a Machine binding.");
         const machine = createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(intent.actor, intent);
         await machine.stop({ sandboxId, ...target, retain: true, signal }).catch((error) => {
           if (!(error instanceof DockerMachinePending)) throw error;
@@ -116,7 +117,9 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
                 effects: [],
               });
               if (result.kind === "conflict") throw new Error("Docker stop target changed.");
-              await dispatch(tx);
+              if (target) return dispatch(tx);
+              const settled = await recordDockerCleanupReceipt(tx, sandboxId, result.generation, "stop");
+              if (settled.kind === "conflict") throw new Error("Docker stop settlement changed generation.");
             },
           });
         }

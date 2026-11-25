@@ -50,6 +50,7 @@ import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { dockerLaunchRequestId } from "../src/docker-launch-identity.ts";
 import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
+import { createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -65,6 +66,7 @@ import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { createServerRoutineScheduler } from "../src/server-routines.ts";
+import { runDockerStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
 
@@ -201,7 +203,12 @@ async function fixture(
     now: () => now,
     async wait(ms: number) {
       now += ms;
-      if (drive) await step();
+      if (!drive) return;
+      const pending = await db.query("select 1 from jobs where sandbox_id=$1 and kind='stop' and state='queued'", [
+        body.requestId,
+      ]);
+      if (pending.rows.length) await runDockerStop(sql, key, body.requestId, sql, readStopOutputs);
+      await step();
     },
   };
   const commands = createRuntimeCommands(authority, key, clock);
@@ -212,6 +219,7 @@ async function fixture(
       if (drive) await stepRuntime();
     },
   };
+  const readStopOutputs = createDockerOutputReader(sql, key, runtimeClock);
   async function step(machineBootstrap = true, deferEnrolment = false) {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
     if (
@@ -257,7 +265,7 @@ async function fixture(
       await hosts.complete(host.hostToken, installationId, {
         requestId: job.requestId,
         outcome: failed ? "failed" : "completed",
-        ...(!failed && job.operation === "create" ? { machineId: "a".repeat(64) } : {}),
+        ...(!failed && (job.operation === "create" || job.operation === "stop") ? { machineId: "a".repeat(64) } : {}),
         ...(failed && failCreate !== "plain"
           ? { reason: failCreate === "image" ? ("image_unavailable" as const) : ("disk_full" as const) }
           : {}),
@@ -909,7 +917,6 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect(f.resolutions()).toBe(1);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
-  await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
   expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
@@ -1715,8 +1722,8 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
     id: f.body.requestId,
     status: "stopped",
   });
-  expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["stop"]);
   await server.drain();
+  expect(f.jobs).toEqual([]);
 
   expect(await accountTurns.status(f.caller, f.body.requestId, queuedId)).toMatchObject({ failed: true });
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();

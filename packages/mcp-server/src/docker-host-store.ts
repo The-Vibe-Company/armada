@@ -1847,7 +1847,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (intent.idleSequence !== undefined) await assertIdleStop(tx, row, host.id, intent.idleSequence);
       const machineGeneration = Number(await currentMachineCleanup(tx, row));
       const machineId = await allocationReceipt(tx, row);
-      if (!machineId || !Number.isSafeInteger(machineGeneration)) throw new DockerMachinePending("unknown");
+      if (!machineId || !Number.isSafeInteger(machineGeneration)) {
+        if (
+          row.status === "starting" &&
+          !(
+            await tx.query(
+              "select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation in ('create','restore','resume') limit 1",
+              [sandboxId],
+            )
+          ).rows.length
+        )
+          return null;
+        throw new DockerMachinePending("unknown");
+      }
       if (intent.machineId && intent.machineId !== machineId) deny();
       return { machineId, generation: machineGeneration };
     },
