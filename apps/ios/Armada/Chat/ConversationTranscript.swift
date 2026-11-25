@@ -55,7 +55,7 @@ struct ConversationTranscript: View {
     }
 
     private var olderAutoLoadKey: String? {
-        guard hasOlder, onLoadOlder != nil, !isLoadingOlder, isOlderRowVisible, scrollPosition.canScroll, scrollPosition.isNearTop else { return nil }
+        guard hasOlder, onLoadOlder != nil, isOlderRowVisible, scrollPosition.canScroll, scrollPosition.isNearTop else { return nil }
         return "\(olderPagesRead):\(items.first?.id ?? "")"
     }
 
@@ -115,9 +115,9 @@ struct ConversationTranscript: View {
                 scrollPosition = position
             }
             .task(id: olderAutoLoadKey) {
-                guard olderAutoLoadKey != nil, let onLoadOlder else { return }
+                guard let key = olderAutoLoadKey, !isLoadingOlder, let onLoadOlder else { return }
                 try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled, olderAutoLoadKey != nil else { return }
+                guard !Task.isCancelled, !isLoadingOlder, olderAutoLoadKey == key else { return }
                 olderAnchor = items.first?.id
                 onLoadOlder()
             }

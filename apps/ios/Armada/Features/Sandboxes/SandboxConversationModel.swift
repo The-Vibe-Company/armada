@@ -233,7 +233,8 @@ final class SandboxConversationModel {
                     promptID: promptID, status: status, reason: thread.promptReason,
                     requestedModel: existing.requestedModel, observedModel: existing.observedModel,
                     modelSelectionReason: existing.modelSelectionReason,
-                    modelSelectionMessage: existing.modelSelectionMessage, rateLimit: existing.rateLimit
+                    modelSelectionMessage: existing.modelSelectionMessage,
+                    rateLimit: status.isActive ? existing.rateLimit : nil
                 )
             } else {
                 turn = SandboxTurnState(promptID: promptID, status: status, reason: thread.promptReason)
