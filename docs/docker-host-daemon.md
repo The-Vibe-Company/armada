@@ -1185,7 +1185,7 @@ still runs. No production mutation or deployment was performed by this change.
 ### Diagnosing an immediate normal-launch refusal (#2239)
 
 Normal CLI launch goes through `sandbox/launch` in `launch-control.ts`, then
-`docker-normal-launch.ts`: retained receipt lookup, official image, personal
+`docker-launch-placement.ts`: retained receipt lookup, official image, personal
 account defaults, membership/actor epoch, credential resolution, skill/MCP
 defaults, and finally the transaction that reserves the sandbox and queues
 the shared launch job. The job dispatches host work after admission commits.

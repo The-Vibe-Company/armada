@@ -90,6 +90,7 @@ import {
 } from "../sandbox-lifecycle.ts";
 import { publicSandboxStatusSql } from "../sandbox-readiness.ts";
 import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
+import { enqueueLaunch } from "./launch.ts";
 import { modalLaunchSetupTimer, parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import {
@@ -360,8 +361,8 @@ export async function admitModalLaunch(
       const childDigest = child && (await lockChildLaunchAdmission(tx, child));
       childAdmissionPhase = "launch_admission";
       const digest = childDigest ?? reservation?.digest ?? fingerprint ?? sandboxId;
-      const { id: jobId, inserted } = await store.enqueueWithDisposition(
-        "launch",
+      const { id: jobId, inserted } = await enqueueLaunch(
+        store,
         sandboxId,
         generation,
         key,

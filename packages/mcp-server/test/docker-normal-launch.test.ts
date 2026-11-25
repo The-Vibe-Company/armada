@@ -48,12 +48,13 @@ import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { dockerLaunchRequestId } from "../src/docker-launch-identity.ts";
-import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
+import { createDockerLaunchPlacement } from "../src/docker-launch-placement.ts";
 import { createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
+import { createLaunchJob } from "../src/jobs/launch.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -462,7 +463,7 @@ async function fixture(
     deferLaunch = false,
     bootstrapService = bootstrap,
   ) {
-    const launch = createDockerNormalLaunch(target, key, {
+    const launch = createDockerLaunchPlacement(target, key, {
       get officialImage() {
         return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
       },
@@ -473,12 +474,13 @@ async function fixture(
       github,
       mcp: mcp(target),
     });
+    const handler = createLaunchJob({ docker: launch.run });
     const jobs = createJobsStore(sql, key);
     const workerId = randomUUID();
     async function runClaim(canDispatch = async (_tx?: Sql) => true) {
       const job = await jobs.claim("launch", workerId, 30, 1);
       if (!job) return false;
-      const result = await launch.run(job, {
+      const result = await handler.run(job, {
         signal: new AbortController().signal,
         canDispatch: async (tx) => (await canDispatch(tx)) && (await jobs.inspect(job, workerId, tx)) === "dispatch",
         handoffGeneration: async () => {
@@ -500,11 +502,11 @@ async function fixture(
       ...launch,
       runClaim,
       drain,
-      async launch(...args: Parameters<typeof launch.launch>) {
-        const result = await launch.launch(...args);
+      async launch(...args: Parameters<typeof launch.admit>) {
+        const result = await launch.admit(...args);
         if (deferLaunch || args[2] || result.sandbox.status !== "starting" || !drive) return result;
         await drain();
-        return launch.launch(...args);
+        return launch.admit(...args);
       },
     };
   }
@@ -1006,7 +1008,8 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   expect(result.promptId).toBeUndefined();
   expect(result.conversationId).toBeUndefined();
   const { post } = restControl(f, {
-    dockerLaunch: f.service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`),
+    admitHostLaunch: f.service(sql, true, 10_000, `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"b".repeat(64)}`)
+      .launch,
   });
   const replay = await post("sandbox/launch", { ...base, idempotencyKey, ttlSeconds: 3600 });
   publishedResponse("sandbox/launch").parse(replay);
@@ -1035,7 +1038,7 @@ function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<
         throw Error("Docker normal launch must not fall back to a golden provider");
       },
     },
-    dockerLaunch: f.service(),
+    admitHostLaunch: f.service().launch,
     dockerControls: createDockerSandboxControls(sql, key, { clock: f.clock }),
     docker: { hosts: true, placement: true, normalApi: true, normalLaunch: true },
     supabase: {
@@ -1266,7 +1269,9 @@ test.each([false, true])(
     const f = await fixture();
     const { org, requestId: _requestId, ...fields } = f.body;
     const body = { ...fields, idempotencyKey: "customer_launch_1", externalRef: "customer:42" };
-    const { options, post } = restControl(f, { dockerLaunch: f.service(sql, true, 10000, officialImage, true) });
+    const { options, post } = restControl(f, {
+      admitHostLaunch: f.service(sql, true, 10000, officialImage, true).launch,
+    });
 
     const originalId = dockerLaunchRequestId(key, f.actor.userId, org, body.idempotencyKey);
     if (historical) {
@@ -1342,7 +1347,7 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     expect(await malformed?.json()).toMatchObject({ error: { code: "invalid" } });
     // An acknowledged timeout must preserve the dashboard's stable request key.
     f.setDrive(false);
-    options.dockerLaunch = f.service(sql, true, 10000);
+    options.admitHostLaunch = f.service(sql, true, 10000).launch;
     const pending = await handleControlRequest(
       new Request("https://armada.example/api/v1/sandbox/launch", {
         method: "POST",
@@ -1354,7 +1359,7 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     expect(pending?.status).toBe(200);
     expect(await pending?.json()).toEqual({ sandbox: { id: f.body.requestId, status: "starting" } });
     f.setDrive(true);
-    options.dockerLaunch = f.service();
+    options.admitHostLaunch = f.service().launch;
     // The published contract describes the dashboard's Docker request and its receipt.
     publishedRequest("sandbox/launch").parse(body);
     const launched = modalLaunchReceipt.parse(await post("sandbox/launch", body));
@@ -2649,7 +2654,7 @@ test("a Docker routine settles the scheduled occurrence from its shared launch r
     routine.id,
   ]);
   const launch = f.service(sql, true, 10000, officialImage, true);
-  const { options: control } = restControl(f, { dockerLaunch: launch });
+  const { options: control } = restControl(f, { admitHostLaunch: launch.launch });
   const scheduler = createServerRoutineScheduler({
     sql,
     control,

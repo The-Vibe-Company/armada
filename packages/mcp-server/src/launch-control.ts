@@ -49,7 +49,7 @@ type LaunchControlOptions = Pick<
   | "github"
   | "modelAuth"
   | "launch"
-  | "dockerLaunch"
+  | "admitHostLaunch"
   | "admitModalLaunch"
 >;
 
@@ -181,12 +181,12 @@ export function templateRuntime(options: LaunchControlOptions, caller: Caller) {
             options.admitModalLaunch!(actor, golden, stores, request, { pin }),
         }
       : {}),
-    ...(options.dockerLaunch
+    ...(options.admitHostLaunch
       ? {
           launchDocker: (
             body: Record<string, unknown>,
             admission: Parameters<NonNullable<TemplateRuntime["launchDocker"]>>[1],
-          ) => options.dockerLaunch!.launch(caller, body, admission),
+          ) => options.admitHostLaunch!(caller, body, admission),
         }
       : {}),
     options: launch,
@@ -240,7 +240,7 @@ function pinnedModalFailure(receipt: Record<string, unknown>) {
 }
 
 function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
-  if (options.dockerLaunch && request) options.configureDockerLaunchRequest?.(request);
+  if (options.admitHostLaunch && request) options.configureDockerLaunchRequest?.(request);
 }
 
 async function handleSandboxLaunch({ caller, body, options, request }: ControlRouteContext) {
@@ -259,14 +259,14 @@ async function handleSandboxLaunch({ caller, body, options, request }: ControlRo
   if ("hostId" in launch || "snapshotId" in launch) {
     if (!usesHostLaunch(launch.provider)) throw new VaultError("invalid", "Provider does not support host launches.");
     const org = scopedOrg(caller, launch.org);
-    const dockerLaunch = options.dockerLaunch;
-    if (!dockerLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
+    const { admitHostLaunch } = options;
+    if (!admitHostLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
     const organization = await resolveOrg(store, userId, org);
     const selected = { ...caller, orgs: caller.orgs.filter((item) => item.orgId === organization.id) };
     if (!encryptionKey) throw new VaultError("unavailable", "Docker launch replay keys are unavailable.");
     const { idempotencyKey, ...request } = launch;
     const requestId = dockerLaunchRequestId(encryptionKey, userId, organization.id, idempotencyKey);
-    const { sandbox } = await dockerLaunch.launch(selected, { ...request, org: organization.id, requestId });
+    const { sandbox } = await admitHostLaunch(selected, { ...request, org: organization.id, requestId });
     return { sandbox: { id: sandbox.id, status: sandbox.status } };
   }
   if ("id" in launch) {

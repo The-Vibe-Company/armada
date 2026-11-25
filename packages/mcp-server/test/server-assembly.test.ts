@@ -140,7 +140,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       },
       runtimeMcp: { prepare: neverCalled },
       modal: modalCleanup,
-      modalLaunchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
+      launchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
         async enqueue() {},
