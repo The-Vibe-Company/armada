@@ -43,6 +43,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
@@ -1105,7 +1106,7 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
-              if (locked.rows[0]?.provider === "boat" && admission && patch.stopRequested)
+              if (usesRuntimeStopJob(locked.rows[0]?.provider) && admission && patch.stopRequested)
                 await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
             }
             return updated;

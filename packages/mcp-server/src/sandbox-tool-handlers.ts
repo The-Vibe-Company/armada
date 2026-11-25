@@ -10,6 +10,7 @@ import {
   requiresMissingMachineObservation,
   retainsDiskOnStop,
   runtimeBridgeTarget,
+  usesRuntimeStopJob,
 } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
@@ -241,7 +242,7 @@ export function configureTools(
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
-      const provider = found.provider === "boat" ? undefined : (await live(found.id, true, found)).provider;
+      const provider = usesRuntimeStopJob(found.provider) ? undefined : (await live(found.id, true, found)).provider;
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&

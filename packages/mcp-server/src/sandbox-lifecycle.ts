@@ -19,7 +19,11 @@ import type { Job } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
-import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
+import {
+  requiresMissingMachineObservation,
+  retainsDiskOnStop,
+  usesRuntimeStopJob,
+} from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -1511,6 +1515,7 @@ export function createSandboxLifecycle(
       let stopDispatched = false;
       let handingOffObservedResume = false;
       let waitingForRetention = false;
+      const jobOwnsStop = usesRuntimeStopJob(providerId);
       const requireMissingObservation = requiresMissingMachineObservation(providerId);
       let stoppedAt: Date | undefined;
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
@@ -1586,10 +1591,10 @@ export function createSandboxLifecycle(
         return true;
       };
       if (
-        providerId === "boat" &&
+        jobOwnsStop &&
         row.provider_sandbox_id &&
-        !canDeferInterruptedResume &&
-        (expired || row.stop_requested_at !== null || row.status === "stopping" || row.status === "starting")
+        row.status !== "starting" &&
+        (expired || row.stop_requested_at !== null || row.status === "stopping")
       )
         return handoffBoatStop(expired);
       const settle = async () => {
@@ -1824,9 +1829,13 @@ export function createSandboxLifecycle(
         }
         const shortBoatDeadline =
           observedBoatDeadline && physicalDeadline < logicalDeadline + SANDBOX_STOP_MARGIN_SECONDS * 1000;
-        if (providerId === "boat" && shortBoatDeadline) return handoffBoatStop(true);
+        if (jobOwnsStop && shortBoatDeadline) return handoffBoatStop(true);
+        if (jobOwnsStop && row.status === "starting" && !physicalExit && !["stopped", "deleted"].includes(info.state)) {
+          if (info.id !== row.provider_sandbox_id) throw Error("Interrupted launch identity changed.");
+          return handoffBoatStop(expired);
+        }
         if (
-          providerId !== "boat" &&
+          !jobOwnsStop &&
           !physicalExit &&
           !["stopped", "deleted"].includes(info.state) &&
           !(host?.waitForPendingStop && info.state === "stopping") &&

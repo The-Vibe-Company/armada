@@ -15,7 +15,7 @@ import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import type { AdmitModalLaunch } from "./modal-launch-admission.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
-import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
+import { retainsDiskOnStop, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
@@ -119,7 +119,7 @@ export function createSandboxAccessServices(input: {
       }
       if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
     }
-    const provider = saved.provider === "boat" ? undefined : await resolveProvider();
+    const provider = usesRuntimeStopJob(saved.provider) ? undefined : await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");

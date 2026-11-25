@@ -8,7 +8,7 @@ import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { runtimeBridgeTarget, usesRuntimeStopJob } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -577,7 +577,7 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && found.provider !== "boat" && placement && !preActivationArchive)
+      if (cleanup === "failed" && !usesRuntimeStopJob(found.provider) && placement && !preActivationArchive)
         await placement.stop().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(
