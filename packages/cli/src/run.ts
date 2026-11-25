@@ -24,6 +24,7 @@ import {
   parseArgs,
   providerFlag,
   single,
+  usesHostLaunch,
   uuid,
   values,
   withJsonFlag,
@@ -286,7 +287,7 @@ export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io
   const auth = authOf(io, deps);
   const operation = verb as Verb;
   const args = parseArgs(rest, ["--host", "--request-id", "--build"], ["--replace", "--wait"]);
-  if (single(args, "--provider") === "docker") {
+  if (usesHostLaunch(single(args, "--provider"))) {
     return dockerSnapshotCommand(
       operation,
       args,

@@ -19,6 +19,7 @@ export const runtimeBridgeProfiles = {
     usageNeedsActiveCompute: true,
     reliableCompletionTime: "runtime-only",
     preserveStateOnDeleteError: false,
+    extensionInvalidRequest: "state",
   },
   modal: {
     placement: "dialout",
@@ -30,6 +31,7 @@ export const runtimeBridgeProfiles = {
     usageNeedsActiveCompute: false,
     reliableCompletionTime: "always",
     preserveStateOnDeleteError: true,
+    extensionInvalidRequest: "physical-deadline",
   },
 } as const satisfies Record<SandboxProviderId, object>;
 

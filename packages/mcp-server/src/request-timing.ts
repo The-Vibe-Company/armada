@@ -80,7 +80,6 @@ type GoldenLaunchPhase =
 
 export type GoldenLaunchTiming = {
   checkpoint(phase: GoldenLaunchPhase): void;
-  launched(sandbox: { id: string; provider: string }): void;
 };
 
 const launchSql = new AsyncLocalStorage<{
@@ -113,13 +112,7 @@ export async function observeGoldenLaunch<T>(
         sandboxId = id;
       },
     }),
-    () =>
-      work({
-        checkpoint,
-        launched: (sandbox) => {
-          if (sandbox.provider === "modal") sandboxId = sandbox.id;
-        },
-      }),
+    () => work({ checkpoint }),
   );
   if (sandboxId) {
     checkpoint(finalPhase);
