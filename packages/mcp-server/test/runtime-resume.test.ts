@@ -13,7 +13,8 @@ import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/run
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
-import { runtimeWakes } from "../src/wake-bus.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
+import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { runClaimedStop } from "./stop-job.fixture.ts";
@@ -208,13 +209,19 @@ describe("Modal retained stop", () => {
 
 describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
   const fixture = scopedRuntimeFixture(() => stopped("codex", placement), { perTest: true });
-  test.each([false, true])("reconciles a lost allocation response (deadline ended=%s)", async (expired) => {
+  const scenarios =
+    placement === "boat"
+      ? (["recovered", "expired", "owner stop", "credential retry"] as const)
+      : (["recovered", "expired"] as const);
+  test.each([...scenarios])("reconciles resume across %s", async (scenario) => {
+    const expired = scenario === "expired";
     const f = await fixture();
     const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
     const firstGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
     let allocated = false;
     let allocations = 0;
     let bootstraps = 0;
+    let credentialFailure = scenario === "credential retry";
     let ticketToken: string | undefined;
     const restore = {
       epoch: f.cp.runtime.epoch,
@@ -222,8 +229,16 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
       conversationId: f.first.conversationId!,
     };
     const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    const explicitAdmission = Promise.withResolvers<void>();
     const service = createResumeJob({
-      turns,
+      turns: {
+        ...turns,
+        async accept(...args) {
+          const result = await turns.accept(...args);
+          explicitAdmission.resolve();
+          return result;
+        },
+      },
       sql: f.sql,
       key: ENCRYPTION_KEY,
       commands: f.bridge,
@@ -279,7 +294,13 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
               throw Error("Activation reply lost");
             },
           } as unknown as ReturnType<typeof import("../src/observed-boat.ts").createObservedBoatProvider>,
-          async authorize() {},
+          providerAuthority: "fixture",
+          async authorize() {
+            if (credentialFailure) {
+              credentialFailure = false;
+              throw Error("Credential lookup was interrupted");
+            }
+          },
           async bootstrap(_host, descriptor) {
             expect(descriptor.sandboxId).toBe(f.row.providerSandboxId);
             expect(descriptor.artifact).toEqual({ sha256: "b".repeat(64), bytes: 5 });
@@ -324,11 +345,11 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
     });
     const request = input(f.row.id);
     const joined = input(f.row.id);
-    const runTurn = async () => {
+    const runTurn = async (requestId = request.request_id) => {
       await f.sql.query(
         `update public.jobs set run_after=case when idem_key::jsonb->>5=$2 then '-infinity'::timestamptz
            else 'infinity'::timestamptz end where sandbox_id=$1 and kind='turn_dispatch' and state='queued'`,
-        [f.row.id, request.request_id],
+        [f.row.id, requestId],
       );
       expect(await turnRunner.reconcileOne(new AbortController().signal)).toBe(true);
       await turnRunner.drain();
@@ -336,14 +357,23 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
     const wake = Promise.withResolvers<void>();
     const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
     try {
-      expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
+      const readReceipt = () =>
+        explicit(f.caller, request).then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+      const explicitFirst = placement === "boat" && scenario === "recovered";
+      const waiting = explicitFirst ? readReceipt() : undefined;
+      if (waiting) {
+        const admitted = await Promise.race([explicitAdmission.promise, waiting]);
+        if (admitted) throw Error("The explicit request resolved before durable admission.");
+      } else {
+        expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
+      }
       await runTurn();
       await wake.promise;
-      const receipt = explicit(f.caller, request).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      if (!expired)
+      const receipt = waiting ?? readReceipt();
+      if (scenario === "recovered" || scenario === "credential retry")
         expect(await turns.accept(f.caller, joined, { resumeOnly: true })).toMatchObject({ status: "queued" });
       const owner = crypto.randomUUID();
       const take = async () => {
@@ -359,6 +389,11 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
         expect(await jobs.complete(job, owner, result)).toBeTrue();
         return result.status;
       };
+      if (scenario === "credential retry") {
+        expect(await take()).toBe("retry");
+        expect(allocations).toBe(0);
+        await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+      }
       expect(await take()).toBe("retry");
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       if (expired) {
@@ -373,6 +408,35 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
       expect(await take()).toBe("retry");
       expect(ticketToken).toBeDefined();
       await f.reboot(restore, true, ticketToken);
+      if (scenario === "owner stop") {
+        const sandboxes = createSqlData(f.sql)(f.caller).sandboxes;
+        await sandboxes.update(f.row.id, {
+          ownerStop: true,
+          status: "stopping",
+          stoppedAt: null,
+          stopRequested: true,
+          expectedGeneration: firstGeneration + 1,
+          advanceGeneration: true,
+          activityToken: crypto.randomUUID(),
+        });
+        runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        expect(await receipt).toMatchObject({ error: { code: "conflict" } });
+        await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+        expect(await runBoatStop(f.sql, archivedBoat())).toBe("done");
+        expect(await sandboxes.get(f.row.id)).toMatchObject({
+          status: "stopped",
+          lifecycleGeneration: firstGeneration + 2,
+        });
+        const next = input(f.row.id);
+        expect(await turns.accept(f.caller, next)).toMatchObject({ status: "queued" });
+        await runTurn(next.request_id);
+        expect(await sandboxes.get(f.row.id)).toMatchObject({
+          status: "starting",
+          lifecycleGeneration: firstGeneration + 3,
+        });
+        expect(f.starts).toEqual([undefined]);
+        return;
+      }
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       expect(await take()).toBe("done");
       expect(f.starts).toEqual([undefined]);

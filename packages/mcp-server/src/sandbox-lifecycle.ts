@@ -578,7 +578,7 @@ export async function settleBoatStop(tx: Sql, id: string, generation: number, no
     });
     if (settled.kind !== "applied") throw new Error("Boat stop settlement changed.");
   }
-  await detachBoatExtensionAfterStop(tx, id, generation);
+  await detachBoatExtension(tx, id, generation);
   await releaseAccountCapacity(tx, id);
 }
 
@@ -653,6 +653,7 @@ export async function prepareResumeGeneration(tx: Sql, id: string, generation: n
     "update public.sandboxes set task_prompt_id=null,task_outcome=null where id=$1 and lifecycle_generation=$2 and status='starting'",
     [id, generation],
   );
+  await detachBoatExtension(tx, id, generation, true);
 }
 
 export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generation: number, boat: boolean) {
@@ -869,15 +870,16 @@ export async function clearStartingModalStop(tx: Sql, sandboxId: string, generat
   );
 }
 
-async function detachBoatExtensionAfterStop(tx: Sql, sandboxId: string, generation: number | string) {
+async function detachBoatExtension(tx: Sql, sandboxId: string, generation: number | string, resuming = false) {
   await tx.query(
     `update public.boat_runtime_extension_state e set pending_job_id=null
      from public.sandboxes s, public.jobs j
      where s.id=$1 and s.lifecycle_generation=$2 and s.provider='boat' and s.boat_runtime
-       and s.status in ('stopped','failed') and s.stopped_at is not null
+       and (case when $3::boolean then s.status='starting' and j.generation<s.lifecycle_generation
+         else s.status in ('stopped','failed') and s.stopped_at is not null end)
        and e.sandbox_id=s.id and j.id=e.pending_job_id and j.sandbox_id=s.id
        and j.kind='boat_runtime_extend' and j.generation<=s.lifecycle_generation`,
-    [sandboxId, generation],
+    [sandboxId, generation, resuming],
   );
 }
 
@@ -916,7 +918,7 @@ export async function publishOwnerStop(
     generation = result.generation;
   }
   if (stop.code === "owner_stop_settled" && stop.confirmedStop)
-    await detachBoatExtensionAfterStop(tx, stop.sandboxId, generation);
+    await detachBoatExtension(tx, stop.sandboxId, generation);
 }
 
 export async function completeSandboxDeletion(
@@ -1051,8 +1053,7 @@ export async function recordObservedProviderState(
           [sandboxId, reason, stoppedAt],
         );
       if (stoppedAt !== null) {
-        if (toState === "stopped" || toState === "failed")
-          await detachBoatExtensionAfterStop(tx, sandboxId, result.generation);
+        if (toState === "stopped" || toState === "failed") await detachBoatExtension(tx, sandboxId, result.generation);
         await releaseAccountCapacity(tx, sandboxId);
       }
     }
@@ -1549,7 +1550,7 @@ export function createSandboxLifecycle(
               [row.id, terminal, error, signal?.aborted ?? false, token, row.lifecycle_generation],
             );
             if (!saved.rows.length) throw lostLease;
-            if (terminal) await detachBoatExtensionAfterStop(tx, row.id, row.lifecycle_generation);
+            if (terminal) await detachBoatExtension(tx, row.id, row.lifecycle_generation);
             return true;
           })
           .catch((failure: unknown) => {

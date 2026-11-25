@@ -416,7 +416,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       undefined,
       resumeOnly,
       Boolean(input.request_id),
-    );
+    ).catch((error: unknown) => {
+      const lock = error as { errno?: string; code?: string } | null;
+      if ((lock?.errno ?? lock?.code) === "55P03")
+        throw new VaultError("conflict", "Sandbox admission is busy. Retry with the same request ID.");
+      throw error;
+    });
     if (!entry) return null;
     if ("historical" in entry) return entry.historical;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));

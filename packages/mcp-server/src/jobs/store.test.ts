@@ -5922,6 +5922,7 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
   await f.sql.transaction!((tx) => enqueueBoatStop(tx, id, 4));
   let captures = 0;
   let stops = 0;
+  let active = false;
   let crash = new AbortController();
   const now = Date.now();
   const handler = createBoatStop(
@@ -5933,7 +5934,7 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
       expect(target).toMatchObject({ sandboxId: id, machineId: id, generation: 4, launchGeneration: 1 });
       return {
         machine: {
-          observe: async () => ({ kind: "present", machine: target, phase: "running" }),
+          observe: async () => (active ? { kind: "present", machine: target, phase: "running" } : { kind: "absent" }),
           async stop(request) {
             await authorize();
             expect(request).toMatchObject({ sandboxId: id, machineId: id, generation: 4, retain: true });
@@ -5967,6 +5968,18 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
         throw new Error("Unexpected handoff");
       },
     });
+
+  const archiveOwner = crypto.randomUUID();
+  const archive = (await f.store.claim("stop", archiveOwner, 30, 1))!;
+  const unresolved = await run(archive, archiveOwner);
+  expect(unresolved.status).toBe("retry");
+  expect(await f.store.complete(archive, archiveOwner, unresolved)).toBe(true);
+  expect(stops).toBe(0);
+  expect((await f.db.query("select status::text, stopped_at from sandboxes where id=$1", [id])).rows).toEqual([
+    { status: "stopping", stopped_at: null },
+  ]);
+  await f.db.query("update jobs set run_after=now() where id=$1", [archive.id]);
+  active = true;
 
   const firstOwner = crypto.randomUUID();
   const first = (await f.store.claim("stop", firstOwner, 30, 1))!;

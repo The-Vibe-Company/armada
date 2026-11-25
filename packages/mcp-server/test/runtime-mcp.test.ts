@@ -315,6 +315,7 @@ async function resumeWithJob(
             active = true;
           },
         } as unknown as ReturnType<typeof import("../src/observed-boat.ts").createObservedBoatProvider>,
+        providerAuthority: "fixture",
         async authorize() {},
         async bootstrap(_host, { enrolmentToken }) {
           const scope = await f.authority.withBootstrap(enrolmentToken, async () => true);

@@ -74,6 +74,8 @@ export function createResumeJob(options: {
   ): Promise<{
     host: ReturnType<typeof createObservedBoatProvider>;
     bootstrap: typeof startBoatRuntime;
+    providerAuthority: string;
+    legacyLabels?: Readonly<Record<string, string>>;
     authorize(): Promise<void>;
   }>;
   prepare(
@@ -96,6 +98,7 @@ export function createResumeJob(options: {
     await environment.validate(provider, { userId: caller.userId, orgId: found.orgId }, id);
     const lockAccount = async (tx: Sql) => {
       await tx.query("set local lock_timeout = '750ms'");
+      await tx.query("lock table public.account_turn_queue in row exclusive mode");
       await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is unavailable.");
     };
     const admit = async (tx: Sql) => {
@@ -108,8 +111,8 @@ export function createResumeJob(options: {
            and credential_id=$4 and credential_version=$5
            and status='stopped' and stopped_at is not null and stop_requested_at is null and deleted_at is null
            and not application_secret_tainted and activity_lease_id is null and activity_until is null
-           and not exists(select 1 from public.jobs stop where stop.sandbox_id=sandboxes.id
-             and stop.kind='stop' and stop.generation=sandboxes.lifecycle_generation and stop.state in ('queued','leased'))
+           and (not boat_runtime or not exists(select 1 from public.jobs stop where stop.sandbox_id=sandboxes.id
+             and stop.kind='stop' and stop.generation=sandboxes.lifecycle_generation and stop.state in ('queued','leased')))
            and coalesce(reconcile_lease_until<=clock_timestamp(),true) and expires_at>clock_timestamp() for update`,
         [
           id,
@@ -133,18 +136,22 @@ export function createResumeJob(options: {
           where e.sandbox_id=$1 and c.completed_at is not null and e.runtime_hash is null
             and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)
             and (c.epoch=e.epoch or exists(select 1 from public.jobs wake
-              where wake.sandbox_id=e.sandbox_id and wake.kind='resume' and wake.generation=$3 and wake.state='failed'
-              and wake.outcome#>>'{evidence,checkpoint,epoch}'=c.epoch::text
-              and wake.outcome#>>'{evidence,checkpoint,watermark}'=c.watermark::text
-              and wake.outcome#>>'{evidence,checkpoint,target}'=e.epoch::text
-              and exists(select 1 from public.sandboxes s where s.id=e.sandbox_id and s.boat_runtime))
+              where wake.sandbox_id=e.sandbox_id and wake.kind='resume'
+              and wake.generation between $3::bigint-1 and $3
+              and (wake.state='failed' or (wake.generation<$3 and wake.state in ('queued','leased')))
+              and coalesce(wake.outcome->'evidence',wake.outcome)->>'boatMachineId'=$4
+              and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,epoch}'=c.epoch::text
+              and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,watermark}'=c.watermark::text
+              and coalesce(wake.outcome->'evidence',wake.outcome)#>>'{checkpoint,target}'=e.epoch::text)
             or exists(select 1 from public.jobs stop where stop.sandbox_id=e.sandbox_id
               and stop.kind='stop' and stop.state='done' and stop.generation=$3
               and stop.outcome#>>'{modal_checkpoint,epoch}'=c.epoch::text
               and stop.outcome#>>'{modal_checkpoint,watermark}'=c.watermark::text))
-            and exists(select 1 from public.account_turn_queue q where q.sandbox_id=e.sandbox_id
-              and q.request_id=$2 and q.state='dispatching' and q.dispatch_generation=$3 for update) order by c.epoch desc limit 1`,
-        [id, requestId, row.generation],
+            and exists(select 1 from public.account_turn_queue q
+              join public.mcp_actor_epochs a on a.org_id=q.org_id and a.user_id=q.owner_id and a.epoch=q.actor_epoch
+              where q.sandbox_id=e.sandbox_id and q.request_id=$2 and q.state='dispatching'
+                and q.dispatch_generation=$3 for update of q) order by c.epoch desc limit 1`,
+        [id, requestId, row.generation, found.boatRuntime ? found.providerSandboxId : null],
       );
       const conversationId = found.conversationIds.at(-1) ?? null;
       if (!checkpoint || (!conversationId && found.taskPromptId) || !found.model || !found.reasoningEffort)
@@ -178,7 +185,17 @@ export function createResumeJob(options: {
         ],
       });
       if (moved.kind !== "applied") throw conflict("Resume admission lost its stopped generation.");
-      if (!(await recordResumeAuthority(tx, id, moved.generation, requestId, expiresAt, resumeProof(intent))))
+      if (
+        !(await recordResumeAuthority(
+          tx,
+          id,
+          moved.generation,
+          requestId,
+          expiresAt,
+          resumeProof(intent),
+          intent.boatMachineId,
+        ))
+      )
         throw conflict("Resume owner authority changed.");
       await prepareResumeGeneration(tx, id, moved.generation);
     };
@@ -275,6 +292,7 @@ export function createResumeJob(options: {
             ttl: number;
             cancelled: boolean;
             boat_restore_dispatched: boolean;
+            boat_restore_authority: string | null;
             boat_restore_observed: boolean;
           }>(
             `select j.deadline_at, (j.outcome->>'expiresAt')::timestamptz as expires_at,
@@ -283,6 +301,7 @@ export function createResumeJob(options: {
                else least(86400,greatest(1,ceil(extract(epoch from ((j.outcome->>'expiresAt')::timestamptz-j.created_at)))::integer+120))
                end as ttl,
                j.outcome ? 'boat_restore_dispatched' as boat_restore_dispatched,
+               j.outcome->>'boat_restore_authority' as boat_restore_authority,
                j.outcome ? 'boat_restore_observed' as boat_restore_observed,
                not coalesce(${resumeDispatchAuthority("j", "s")},false) as cancelled
              from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
@@ -299,6 +318,7 @@ export function createResumeJob(options: {
           outcome: {
             requestId: input.requestId,
             checkpoint: resumeProof(input),
+            ...(input.boatMachineId ? { boatMachineId: input.boatMachineId } : {}),
             ...(current.boat_restore_dispatched ? { boat_restore_dispatched: true } : {}),
             ...(current.boat_restore_observed ? { boat_restore_observed: true } : {}),
           },
@@ -341,6 +361,12 @@ export function createResumeJob(options: {
           );
       try {
         const boat = isBoat ? await options.boat?.(caller, sandbox) : undefined;
+        if (
+          boat &&
+          current.boat_restore_authority !== null &&
+          boat.providerAuthority !== current.boat_restore_authority
+        )
+          throw conflict("Boat resume authority changed.");
         const modalProvider = isBoat ? undefined : await options.provider(caller, sandbox);
         const provider = boat?.host ?? modalProvider;
         if (!provider) throw conflict("Runtime resume provider is unavailable.");
@@ -433,7 +459,17 @@ export function createResumeJob(options: {
           },
         };
         const machine = boat
-          ? createBoatResumeMachine(boat.host, binding, job.id, sql, boat.bootstrap)
+          ? createBoatResumeMachine(
+              boat.host,
+              {
+                ...binding,
+                providerAuthority: boat.providerAuthority,
+                ...(boat.legacyLabels ? { legacyLabels: boat.legacyLabels } : {}),
+              },
+              job.id,
+              sql,
+              boat.bootstrap,
+            )
           : await modalProvider?.runtimeResumeMachine(binding);
         if (!machine) throw conflict();
         if (!(await enrolled())) {

@@ -10,6 +10,8 @@ export function createBoatResumeMachine(
     recordId: string;
     sandboxId: string;
     generation: number;
+    providerAuthority: string;
+    legacyLabels?: Readonly<Record<string, string>>;
     authorize(): Promise<void>;
     write(work: (tx: Sql) => Promise<unknown>): Promise<void>;
     ticket(
@@ -36,7 +38,12 @@ export function createBoatResumeMachine(
       )
         throw Error("Boat resume identity changed.");
       const observed = await host.get(machineId, request.signal ? { signal: request.signal } : undefined);
-      if (observed.id !== machineId) throw Error("Boat resume identity changed.");
+      if (
+        observed.id !== machineId ||
+        (binding.legacyLabels &&
+          !Object.entries(binding.legacyLabels).every(([name, value]) => observed.labels[name] === value))
+      )
+        throw Error("Boat resume identity changed.");
       const {
         rows: [intent],
       } = await sql.query<{ dispatched: boolean }>(
@@ -56,10 +63,11 @@ export function createBoatResumeMachine(
         observed.retainedSnapshot !== "usable"
       )
         throw Error("Boat retention or resume is unconfirmed.");
-      await binding.write(async (tx) => {
-        if (!(await recordBoatRestoreDispatch(tx, jobId))) throw Error("Boat resume was already dispatched.");
-      });
       await binding.authorize();
+      await binding.write(async (tx) => {
+        if (!(await recordBoatRestoreDispatch(tx, jobId, binding.providerAuthority)))
+          throw Error("Boat resume was already dispatched.");
+      });
       request.signal?.throwIfAborted();
       await host.resumeRuntime(
         machineId,

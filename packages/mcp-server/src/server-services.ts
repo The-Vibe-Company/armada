@@ -41,7 +41,7 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
-import { boatLaunchJobs } from "./jobs/boat-launch.ts";
+import { boatLaunchBinding, boatLaunchJobs } from "./jobs/boat-launch.ts";
 import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createResumeJob } from "./jobs/resume.ts";
 import type { JobKind } from "./jobs/runner.ts";
@@ -409,9 +409,25 @@ export async function createServerServices(env: Record<string, string | undefine
           visibility: sandbox.sourceGoldenVisibility ?? sandbox.visibility ?? "private",
         });
       const authority = await credential();
+      const host = createObservedBoatProvider({ apiKey: authority.key }, sandbox.id);
+      const {
+        rows: [launch],
+      } = await sql.query<{ scope: string | null; backend: string | null }>(
+        `select launch.authority->>'scope' as scope,launch.authority->>'backendId' as backend
+         from public.sandboxes s join lateral (${boatLaunchBinding}) launch on true
+         where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3`,
+        [sandbox.id, sandbox.lifecycleGeneration, sandbox.providerSandboxId],
+      );
+      const backend = await host.backendIdentity?.();
+      if (!backend || (launch && (launch.backend !== backend.id || launch.scope !== authority.scope)))
+        throw new VaultError("forbidden", "Boat resume authority changed.");
       return {
-        host: createObservedBoatProvider({ apiKey: authority.key }, sandbox.id),
+        host,
         bootstrap: startBoatRuntime,
+        providerAuthority: JSON.stringify([authority.scope, backend.id]),
+        ...(!launch
+          ? { legacyLabels: { armada: "sandbox", sandbox: sandbox.id, org: sandbox.orgId, owner: sandbox.ownerId } }
+          : {}),
         async authorize() {
           const current = await credential();
           if (current.key !== authority.key || current.scope !== authority.scope)

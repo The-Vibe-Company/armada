@@ -12,6 +12,7 @@ import { createObservedBoatProvider } from "../observed-boat.ts";
 import { holdUnconfirmedBoatStop, settleBoatStop } from "../sandbox-lifecycle.ts";
 import { enqueueStopOutput, type OutputReader, stageStopOutputs } from "../sandbox-outputs.ts";
 import { runtimePreservationNote } from "../work-preservation.ts";
+import { boatLaunchBinding } from "./boat-launch.ts";
 import type { Job, JobContext, JobResult } from "./runner.ts";
 import { createJobsStore, mergeStopOutcome, withJobLease } from "./store.ts";
 
@@ -109,12 +110,7 @@ export function createBoatStop(
          launch.generation::text as "launchGeneration", launch.authority->>'scope' as scope,
          launch.authority->>'backendId' as "backendId"
        from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-       left join lateral (
-         select l.generation,l.outcome->'boat_authority' as authority from public.jobs l
-         where l.sandbox_id=s.id and l.org_id=s.org_id and l.kind='launch'
-           and l.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
-         order by l.generation limit 1
-       ) launch on true
+       left join lateral (${boatLaunchBinding}) launch on true
        where j.id=$1 and j.generation=$2 and j.org_id=s.org_id and s.provider='boat'
          and s.provider_sandbox_id is not null and s.status in ('stopping','failed')
          and s.stop_requested_at is not null and s.stopped_at is null and s.deleted_at is null`,
