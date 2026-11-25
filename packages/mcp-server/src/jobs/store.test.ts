@@ -247,7 +247,7 @@ test.each([false, true])(
       {
         ...f.store,
         async inspect(job, owner, tx) {
-          const state = await store.inspect(job, owner, tx);
+          const state = await f.store.inspect(job, owner, tx);
           if (takeover && state === "reconcile") {
             await f.db.query("update public.jobs set lease_until='-infinity' where id=$1", [jobId]);
             await f.store.claim(kind, successor, 30, 1);
@@ -1990,7 +1990,7 @@ test.each([
     expect(
       await admitClaimedAccountTurn(f.sql, {
         job,
-        canDispatch: async (tx) => (await f.store.inspect(job, owner, tx)) === "dispatch",
+        canDispatch: async (tx) => (await store.inspect(job, owner, tx)) === "dispatch",
       }),
     ).not.toBeNull();
   }

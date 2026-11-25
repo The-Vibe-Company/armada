@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -351,16 +352,22 @@ async function resumeWithJob(
   });
   const resume = createRuntimeResume(f.sql, resumeJob.resume);
   const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, service.prepare, undefined, resumeJob.wake);
-  turns.setDispatch((caller, input, claim) => send(caller, input, claim, { fromQueue: true }));
   const signal = new AbortController().signal;
-  const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), { resume: resumeJob.handler });
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const runner = createJobsRunner(jobs, { resume: resumeJob.handler });
+  const dispatch = createJobsRunner(jobs, {
+    turn_dispatch: createTurnDispatchJob(f.sql, ENCRYPTION_KEY, (caller, input, claim) =>
+      send(caller, input, claim, { fromQueue: true }),
+    ),
+  });
   expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
-  expect(await turns.reconcileOne(signal)).toBe(true);
-  await turns.drain();
+  expect(await dispatch.reconcileOne(signal)).toBe(true);
+  await dispatch.drain();
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
-  expect(await turns.reconcileOne(signal)).toBe(true);
-  await turns.drain();
+  await f.sql.query("update jobs set run_after='-infinity' where sandbox_id=$1 and kind='turn_dispatch'", [request.id]);
+  expect(await dispatch.reconcileOne(signal)).toBe(true);
+  await dispatch.drain();
   return resume(f.caller, request);
 }
 
