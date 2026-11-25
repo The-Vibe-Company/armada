@@ -100,6 +100,8 @@ struct ConversationTranscript: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 .padding(.bottom, 16)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)

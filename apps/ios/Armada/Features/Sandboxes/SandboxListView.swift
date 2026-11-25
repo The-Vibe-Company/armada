@@ -120,16 +120,19 @@ final class SandboxListModel {
 struct SandboxListView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var model: SandboxListModel?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var selection = SandboxSelection<SandboxSummary>()
     @State private var showingAccount = false
     @State private var newSandbox: NewSandboxModel?
     @State private var showingNewSandbox = false
-    @State private var launched: SandboxSummary?
     @State private var disclosure = StatusSectionDisclosure()
+    @State private var isWorkspaceVisible = false
     @State private var isListVisible = false
 
     var body: some View {
-        NavigationStack {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ArmadaBackdrop {
                 content
             }
@@ -146,44 +149,51 @@ struct SandboxListView: View {
                         .accessibilityIdentifier("sandboxes.new")
                 }
             }
-            .navigationDestination(for: SandboxSummary.self) { sandbox in
-                if sandbox.canOpen {
-                    SandboxConversationView(sandbox: sandbox, app: app, initiallyWorking: model?.isWorking(sandbox) ?? false)
-                } else {
-                    SandboxDetailView(sandbox: sandbox)
-                }
-            }
-            // With sandbox metadata, open its conversation and follow the first turn.
-            .navigationDestination(item: $launched) { sandbox in
-                SandboxConversationView(sandbox: sandbox, app: app)
-            }
-            .sheet(isPresented: $showingAccount) {
-                AccountView()
-            }
-            .sheet(isPresented: $showingNewSandbox, onDismiss: {
-                // After a launch the next form starts fresh; otherwise it keeps its fields.
-                if newSandbox?.didLaunch == true { newSandbox = nil }
-            }) {
-                if let newSandbox {
-                    NewSandboxView(
-                        model: newSandbox,
-                        onLaunched: { destination in
-                            showingNewSandbox = false
-                            if case .conversation(let sandbox) = destination { launched = sandbox }
-                            Task { await model?.load() }
-                        },
-                        onShowList: {
-                            newSandbox.acknowledgeOutcome()
-                            showingNewSandbox = false
-                            Task { await model?.load() }
+        } detail: {
+            detailContent
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear { isWorkspaceVisible = true }
+        .onDisappear { isWorkspaceVisible = false }
+        .sheet(isPresented: $showingAccount) {
+            AccountView()
+        }
+        .sheet(isPresented: $showingNewSandbox, onDismiss: {
+            // After a launch the next form starts fresh; otherwise it keeps its fields.
+            if newSandbox?.didLaunch == true { newSandbox = nil }
+        }) {
+            if let newSandbox {
+                NewSandboxView(
+                    model: newSandbox,
+                    onLaunched: { destination in
+                        showingNewSandbox = false
+                        if case .conversation(let sandbox) = destination {
+                            selection.select(sandbox, id: \.id, orgID: \.orgID)
                         }
-                    )
-                }
+                        Task { await model?.load() }
+                    },
+                    onShowList: {
+                        newSandbox.acknowledgeOutcome()
+                        showingNewSandbox = false
+                        Task { await model?.load() }
+                    }
+                )
             }
         }
+        .onChange(of: app.organization?.id) { _, newOrgID in
+            selection.updateOrganization(newOrgID)
+        }
+        .onChange(of: selection.selectedID) { _, _ in
+            selection.sync(items: model?.items ?? [], id: \.id, orgID: \.orgID)
+        }
+        .onChange(of: model?.items) { _, items in
+            selection.sync(items: items ?? [], id: \.id, orgID: \.orgID)
+        }
         .task(id: app.organization?.id) {
-            guard let orgID = app.organization?.id else { return }
-            // Rebuilt only when the organization changes; a reappearing tab just refreshes.
+            let orgID = app.organization?.id
+            selection.updateOrganization(orgID)
+            guard let orgID else { return }
+            // Rebuilt only when the organization changes; fold/unfold/rotation keeps model and selection.
             if model?.orgID != orgID {
                 model = SandboxListModel(service: app.sandboxes, orgID: orgID) { app.sessionEnded() }
                 disclosure = StatusSectionDisclosure()
@@ -191,7 +201,7 @@ struct SandboxListView: View {
             await model?.load()
         }
         .task(id: pollTaskID) {
-            guard isListVisible, scenePhase == .active, let model else { return }
+            guard shouldPollList, let model else { return }
             if model.phase == .loaded {
                 await model.load(silent: true)
             }
@@ -199,8 +209,49 @@ struct SandboxListView: View {
         }
     }
 
+    private var shouldPollList: Bool {
+        guard scenePhase == .active else { return false }
+        if horizontalSizeClass == .regular {
+            return isWorkspaceVisible && columnVisibility != .detailOnly
+        }
+        return isListVisible
+    }
+
     private var pollTaskID: String {
-        "\(model?.orgID ?? ""):\(isListVisible):\(scenePhase == .active)"
+        "\(model?.orgID ?? ""):\(shouldPollList)"
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        switch selection.destination(
+            from: model?.items ?? [],
+            id: \.id,
+            orgID: \.orgID,
+            canOpen: \.canOpen
+        ) {
+        case .conversation(let sandbox):
+            SandboxConversationView(
+                sandbox: sandbox,
+                app: app,
+                initiallyWorking: model?.isWorking(sandbox) ?? false
+            )
+            .id(sandbox.id)
+        case .metadataOnly(let sandbox):
+            SandboxDetailView(sandbox: sandbox)
+                .id(sandbox.id)
+        case .empty:
+            ArmadaBackdrop {
+                SurfaceStateView(
+                    state: .empty(
+                        title: "Select a sandbox",
+                        message: "Choose a sandbox from the list to follow its conversation, or launch a new one.",
+                        symbol: "bubble.left.and.text.bubble.right"
+                    ),
+                    action: app.organization == nil ? nil : (title: "New Sandbox", run: { startNewSandbox() })
+                )
+                .accessibilityIdentifier("sandboxes.detail-empty")
+            }
+        }
     }
 
     /// Reuses the open form of this organization so a dismissed or refused launch keeps its fields.
@@ -231,7 +282,7 @@ struct SandboxListView: View {
     }
 
     private func list(_ model: SandboxListModel) -> some View {
-        List {
+        List(selection: $selection.selectedID) {
             if let refreshError = model.refreshError {
                 InlineBanner(text: refreshError, style: .warning)
                     .listRowInsets(EdgeInsets())
@@ -254,7 +305,7 @@ struct SandboxListView: View {
                     Section {
                         if !collapsed {
                             ForEach(section.items) { sandbox in
-                                NavigationLink(value: sandbox) {
+                                NavigationLink(value: sandbox.id) {
                                     SandboxRow(sandbox: sandbox, currentUserID: app.currentUserID, isWorking: model.isWorking(sandbox))
                                 }
                                 .accessibilityIdentifier("sandboxes.row.\(sandbox.id)")
