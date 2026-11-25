@@ -23,7 +23,7 @@ import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
-import { reportDockerExpiry } from "./docker-stop.fixture.ts";
+import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -1090,7 +1090,7 @@ test("the current runner attaches only a completed Docker restore and can recove
   });
 
   const stopId = randomUUID();
-  await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, a.owner, a.sandboxId, stopId);
   await expect(a.poll()).resolves.toEqual({
     operation: "stop",
     requestId: stopId,
@@ -1229,7 +1229,7 @@ test.each([false, true])(
     await store.attachMachineRestore(a.owner, claim);
 
     if (stopAdmitted) {
-      await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: randomUUID() });
+      await queueMailboxStop(sql, key, a.owner, a.sandboxId, randomUUID());
     }
     const before = stopAdmitted
       ? { status: "stopping", lifecycle_generation: "3" }
@@ -1885,7 +1885,7 @@ test("poll retires stale actor grants without starving authorized cleanup; ACK r
         ]);
     }
     const stop = { requestId: randomUUID(), operation: "stop" as const };
-    await store.enqueueSandbox(a.actor, a.sandboxId, stop);
+    await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
     // Both STOPs are logically valid. Only the stale actor grant retires the head.
     expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
     expect(
@@ -2032,7 +2032,7 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
       await store.enqueueStop(a.owner, a.sandboxId, stop.requestId, { onlyIfIdle: true });
       return;
     }
-    await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+    await queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId);
   },
 );
 
@@ -2048,15 +2048,15 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   const ticket = await authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
   const runtime = await authority.enrol(ticket.enrolmentToken);
   const stop = { requestId: randomUUID(), operation: "stop" as const };
-  const { faultingStore, failure } = failDockerJobCommit(stop.requestId, null);
+  const { faultingSql, failure } = failDockerJobCommit(stop.requestId, null);
   const before = await lifecycle(a.sandboxId);
-  await expect(faultingStore.enqueueSandbox(a.actor, a.sandboxId, stop)).rejects.toMatchObject({ cause: failure });
+  await expect(queueMailboxStop(faultingSql, key, a.actor, a.sandboxId, stop.requestId)).rejects.toThrow(failure);
   expect(await lifecycle(a.sandboxId)).toEqual(before);
   expect(await dockerJournal(a.sandboxId, "docker_stop_admitted")).toEqual([]);
-  await store.enqueueSandbox(a.actor, a.sandboxId, stop);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, stop));
-  await store.enqueueSandbox(a.actor, a.sandboxId, stop);
-  await store.enqueueSandbox(a.actor, a.sandboxId, { ...stop, requestId: randomUUID() });
+  await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
+  await denied(queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId));
+  await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
+  await queueMailboxStop(sql, key, a.actor, a.sandboxId, randomUUID());
   await expect(authority.withSession(runtime.runtimeToken, runtime.epoch, async () => true)).rejects.toThrow(
     "runtime_enrolment_denied",
   );
@@ -2177,40 +2177,6 @@ async function dockerJournal(sandboxId: string, code: string) {
     )
   ).rows;
 }
-
-test("Docker stop admission rolls back when the lifecycle CAS rejects its generation", async () => {
-  const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await db.query("update public.sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
-  const before = await lifecycle(a.sandboxId);
-  const stop = { requestId: randomUUID(), operation: "stop" as const };
-  const staleStore = createDockerHostStore(
-    {
-      query: sql.query,
-      transaction: (work) =>
-        db.transaction((tx) =>
-          work({
-            query: (query, params) => {
-              if (query.includes("from public.sandbox_transition(") && params?.[0] === a.sandboxId) {
-                const staleParams = [...params];
-                staleParams[1] = "1";
-                return tx.query(query, staleParams);
-              }
-              return tx.query(query, params);
-            },
-          }),
-        ),
-    },
-    key,
-  );
-  await denied(staleStore.enqueueSandbox(a.actor, a.sandboxId, stop));
-  expect(await lifecycle(a.sandboxId)).toEqual(before);
-  expect(await dockerJournal(a.sandboxId, "docker_stop_admitted")).toEqual([]);
-  expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
-    [],
-  );
-});
 
 test("host-confirmed frozen expiry fences runtime once, survives owner removal and admits cleanup", async () => {
   const db = database();
@@ -2415,7 +2381,7 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   await store.enqueue(a.actor, a.hostId, legacy);
   await denied(store.expired(a.hostToken, a.installationId, { requestId: legacy.requestId }));
   const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await store.enqueueSandbox(a.actor, a.sandboxId, stop);
+  await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
   await denied(store.expired(a.hostToken, a.installationId, { requestId: stop.requestId }));
   // Keep this identity/expiry test independent of cleanup priority; a failed stop is not a physical ACK.
   await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "failed" });
@@ -2510,7 +2476,7 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       ]);
       // Only a subsequent physical fact may populate stopped_at; failed is retained.
       const stop = { requestId: randomUUID(), operation: "stop" as const };
-      await store.enqueueSandbox(a.actor, a.sandboxId, stop);
+      await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
       expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(stop.requestId);
       await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
       const physicallyStopped = await lifecycle(a.sandboxId);
@@ -2570,7 +2536,7 @@ test("a disk-floor refusal rolls back with its journal and preserves its actiona
 
 test("a failed startup receipt cannot replace durable stop intent", async () => {
   const a = await boundStartup("create");
-  await store.enqueueSandbox(a.actor, a.sandboxId, { requestId: randomUUID(), operation: "stop" });
+  await queueMailboxStop(sql, key, a.actor, a.sandboxId, randomUUID());
   const stopping = await lifecycle(a.sandboxId);
   expect(stopping?.status).toBe("stopping");
   await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
@@ -3298,7 +3264,7 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
 test("failed bootstrap history cannot fence a newer Docker resume", async () => {
   const a = await boundStartup("bootstrap");
   const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId);
   await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
@@ -3352,7 +3318,7 @@ test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume",
   expect((await lifecycle(a.sandboxId))?.status).toBe("starting");
   await store.complete(a.hostToken, a.installationId, { requestId: resume.requestId, outcome: "completed" });
   const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await queueMailboxStop(sql, key, a.owner, a.sandboxId, stop.requestId);
   await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
   expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.create.requestId });
@@ -3383,7 +3349,7 @@ test("poll reports every generation with pending start intent, and per-generatio
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
   await store.complete(a.hostToken, a.installationId, { requestId: second.create.requestId, outcome: "completed" });
   const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await store.enqueueSandbox(a.owner, second.sandboxId, stop);
+  await queueMailboxStop(sql, key, a.owner, second.sandboxId, stop.requestId);
   // Resume admission sets the sandbox starting, then issues a fresh ticket and enqueues.
   await db.query("update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null where id=$1", [
     second.sandboxId,

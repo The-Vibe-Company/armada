@@ -14,7 +14,7 @@ import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { collectTransactionWakes } from "../src/wake-bus.ts";
-import { reportDockerExpiry } from "./docker-stop.fixture.ts";
+import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
 const connection = rowOnlyConnection();
@@ -1010,7 +1010,7 @@ test("a host poll skips work the daemon reports running and hands out another sa
   // completion is recorded, then is handed out on the next recheck, not after the hold.
   let time = 0;
   const steps = [
-    () => store.enqueueSandbox(actor, first.id, { operation: "stop", requestId: randomUUID() }),
+    () => queueMailboxStop(sql, Buffer.alloc(32, 8).toString("base64"), actor, first.id, randomUUID()),
     () => store.complete(host.hostToken, installationId, { requestId: head!.requestId, outcome: "completed" }),
   ];
   const held = createDockerHostRoutes(store, fixtureAuth, {

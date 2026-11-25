@@ -27,6 +27,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
 import {
   bindDockerStopFixture,
+  queueMailboxStop,
   reportDockerExpiry,
   runDockerStop,
   stopFixtureMachineId,
@@ -376,8 +377,7 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
     let resolver = credentials;
     if (change === "pin")
       await db.query(`update public.credentials set status='revoked' where id=$1`, [f.credentialId]);
-    if (change === "stop")
-      await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: randomUUID() });
+    if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     if (change === "host") await hosts.revoke(f.admin, f.hostId);
     if (change === "rejoin") {
       await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
@@ -424,7 +424,7 @@ test("revoking a host retires a queued resume and releases the slot its complete
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   await db.query(`update public.sandboxes set status='ready' where id=$1`, [f.sandbox.id]);
   const stopId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   expect((await hosts.list(f.admin))[0]?.running).toBe(0);
   const resumeId = randomUUID();
@@ -472,7 +472,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       }),
     ).toEqual({ state: "pending" });
     const stopId = randomUUID();
-    await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+    await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
     await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
     // Resuming a retained allocation never pulls an image or creates another home volume.
     await db.query("update public.docker_hosts set disk_free_bytes=$2 where id=$1", [
@@ -1136,7 +1136,7 @@ test.each(refusalOrders)(
        values($1,$2,$3,0,now())`,
       [id, source.epoch, randomUUID()],
     );
-    const previousStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+    const previousStop = await queueMailboxStop(sql, key, f.actor, id, randomUUID());
     const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
       hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
     await ack(previousStop.requestId);
@@ -1242,7 +1242,7 @@ test.each(refusalOrders)(
         }),
       );
     if (order === "owner stop before refused resume ACK") {
-      const ownerStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+      const ownerStop = await queueMailboxStop(sql, key, f.actor, id, randomUUID());
       await ack(job.requestId);
       await ack(ownerStop.requestId, "failed");
       expect((await reportRetained(ownerStop.requestId))?.status).toBe(200);
@@ -1398,7 +1398,7 @@ test.each(refusalOrders)(
       if (!failedAckFirst) {
         await ack(stop.requestId, "failed");
         expect((await reservations.get(f.actor, id)).status).toBe("stopping");
-        const unrelated = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+        const unrelated = await queueMailboxStop(sql, key, f.actor, id, randomUUID());
         await ack(unrelated.requestId, "failed");
         expect((await reportRetained(unrelated.requestId))?.status).toBe(200);
         expect((await reservations.get(f.actor, id)).status).toBe("stopping");

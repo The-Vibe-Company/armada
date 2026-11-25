@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Sql } from "@armada/core";
-import type { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createStopJob } from "../src/jobs/stop.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
+import { scopedRuntimeSql } from "../src/runtime-enrolment.ts";
 
 export async function runDockerStop(sql: Sql, key: string, sandboxId: string, completionSql = sql) {
   await sql.query(
@@ -21,8 +22,6 @@ export async function runDockerStop(sql: Sql, key: string, sandboxId: string, co
   });
   if (!(await createJobsStore(completionSql, key).complete(job, owner, result)))
     throw new Error("Docker stop lost its claim.");
-  if (result.status === "retry")
-    await sql.query("update public.jobs set run_after=clock_timestamp() where id=$1", [job.id]);
   return result;
 }
 
@@ -52,13 +51,32 @@ export const stopFixtureMachineId = "d".repeat(64);
 
 export async function bindDockerStopFixture(sql: Sql, sandboxId: string) {
   await sql.query(
-    `insert into docker_machine_bindings(sandbox_id,machine_generation,host_id,installation_id,daemon_generation)
-     select id,lifecycle_generation,docker_host_id,docker_installation_id,docker_generation from sandboxes where id=$1`,
-    [sandboxId],
-  );
-  await sql.query(
-    `update docker_host_jobs j set result_machine_id=$2, request_id=s.docker_generation
-     from sandboxes s where s.id=$1 and j.bound_sandbox_id=s.id and j.bound_operation='create'`,
+    `with placement as (
+       insert into docker_machine_bindings(sandbox_id,machine_generation,host_id,installation_id,daemon_generation)
+       select id,lifecycle_generation,docker_host_id,docker_installation_id,docker_generation from sandboxes where id=$1
+       returning sandbox_id, daemon_generation)
+     update docker_host_jobs j set result_machine_id=$2, request_id=p.daemon_generation
+     from placement p where j.bound_sandbox_id=p.sandbox_id and j.bound_operation='create'`,
     [sandboxId, stopFixtureMachineId],
   );
+}
+
+export async function queueMailboxStop(
+  sql: Sql,
+  key: string,
+  actor: { userId: string; orgId: string },
+  sandboxId: string,
+  requestId: string,
+) {
+  return sql.transaction!(async (tx) => {
+    await tx.query(
+      `select public.sandbox_transition(id,lifecycle_generation,array['starting','ready','running']::public.sandbox_status[],
+        'stopping','owner','docker_stop_admitted','[]'::jsonb) from (select id,lifecycle_generation from sandboxes where id=$1 for update) s`,
+      [sandboxId],
+    );
+    return createDockerHostStore(scopedRuntimeSql(tx), key).enqueueSandbox(actor, sandboxId, {
+      operation: "stop",
+      requestId,
+    });
+  });
 }

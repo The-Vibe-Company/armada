@@ -350,11 +350,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     runnerJobId?: string,
     machineRetain?: boolean,
     machinePhysicalDelete?: true,
+    retryAfter?: string,
   ) {
     const canonical = input(job);
+    if (retryAfter && (job.operation !== "stop" || !machineRetain || !lifecycleGeneration)) deny();
     if (
       isCleanupOperation(job.operation) &&
-      (job.requestId === dockerMachineJobId(job.request.generation, job.operation)) !==
+      (job.requestId === dockerMachineJobId(retryAfter ?? job.request.generation, job.operation)) !==
         (lifecycleGeneration !== undefined)
     )
       deny();
@@ -368,6 +370,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           runnerJobId,
           machineRetain,
           machinePhysicalDelete,
+          retryAfter,
         })
       : canonical;
     const metadata: Bound = {
@@ -422,6 +425,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     let lifecycleGeneration: string | undefined;
     let machineRetain: boolean | undefined;
     let machinePhysicalDelete = false;
+    let retryAfter: string | undefined;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -434,23 +438,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
       throw error;
     }
     if (row.bound_sandbox_id !== null || row.snapshot_id) {
+      if (!stored || typeof stored !== "object" || Array.isArray(stored)) deny();
       const fenced =
         generationFenced(row.bound_operation) ||
-        (isCleanupOperation(row.bound_operation) &&
-          typeof stored === "object" &&
-          stored !== null &&
-          "lifecycleGeneration" in stored);
+        (isCleanupOperation(row.bound_operation) && "lifecycleGeneration" in stored);
       const machineStop = fenced && row.bound_operation === "stop";
-      machinePhysicalDelete =
-        row.bound_operation === "deletePhysical" &&
-        typeof stored === "object" &&
-        stored !== null &&
-        "machinePhysicalDelete" in stored;
+      machinePhysicalDelete = row.bound_operation === "deletePhysical" && "machinePhysicalDelete" in stored;
       exact(stored, [
         "bound",
         "job",
         ...(fenced ? ["lifecycleGeneration"] : []),
         ...(machineStop ? ["machineRetain"] : []),
+        ...(machineStop && "retryAfter" in stored ? ["retryAfter"] : []),
         ...(machinePhysicalDelete ? ["machinePhysicalDelete"] : []),
         ...(row.bound_operation === "restore" ? ["runnerJobId"] : []),
       ]);
@@ -462,6 +461,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (machineStop) {
         if (typeof stored.machineRetain !== "boolean") deny();
         machineRetain = stored.machineRetain;
+        if ("retryAfter" in stored) {
+          id(stored.retryAfter);
+          if (!machineRetain) deny();
+          retryAfter = stored.retryAfter;
+        }
       }
       if (fenced) {
         if (
@@ -499,7 +503,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (
       isCleanupOperation(job.operation) &&
       machineCleanup &&
-      job.requestId !== dockerMachineJobId(job.request.generation, job.operation)
+      job.requestId !== dockerMachineJobId(retryAfter ?? job.request.generation, job.operation)
     )
       deny();
     return { job, runnerJobId, lifecycleGeneration, machineCleanup, machineRetain, machinePhysicalDelete };
@@ -887,19 +891,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
     ).rows[0]?.result_machine_id;
   }
   async function machineCleanupReceipt(tx: Sql, row: Sandbox, operation: MachineCleanupOperation) {
-    const receipt = (
-      await tx.query<StoredJob>(
-        `select * from public.docker_host_jobs
-         where request_id=$1 and host_id=$2 and bound_sandbox_id=$3 and bound_operation=$4`,
-        [dockerMachineJobId(row.docker_generation, operation), row.docker_host_id, row.id, operation],
-      )
-    ).rows[0];
-    if (!receipt || (await supersededLifecycle(tx, receipt))) return undefined;
-    const delivered = await readStoredJob(receipt);
-    if (!delivered.machineCleanup || delivered.lifecycleGeneration !== (await currentMachineCleanup(tx, row)))
-      return undefined;
-    await requireCurrentMachine(tx, row, delivered.job);
-    return { ...receipt, retain: delivered.machineRetain };
+    let requestId = dockerMachineJobId(row.docker_generation, operation);
+    let latest: (StoredJob & { retain: boolean | undefined }) | undefined;
+    const generation = await currentMachineCleanup(tx, row);
+    if (!generation) return undefined;
+    for (;;) {
+      const receipt = await machineJob(tx, row, requestId, operation);
+      if (!receipt || (await supersededLifecycle(tx, receipt))) return latest;
+      const delivered = await readStoredJob(receipt);
+      if (!delivered.machineCleanup || delivered.lifecycleGeneration !== generation) return latest;
+      await requireCurrentMachine(tx, row, delivered.job);
+      latest = { ...receipt, retain: delivered.machineRetain };
+      if (operation !== "stop" || receipt.outcome !== "failed" || receipt.cancelled_at || !latest.retain) return latest;
+      requestId = dockerMachineJobId(requestId, "stop");
+    }
   }
   async function physicalRemovalReceipt(tx: Sql, row: Sandbox, machineId: string, machineOnly = false) {
     const { rows } = await tx.query<StoredJob>(
@@ -1756,50 +1761,48 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (row.deleted_at !== null || row.status === "stopped" || row.stopped_at != null) return null;
         const request =
           requestId && !options.checkpoint
-            ? {
-                ownerId: actor.userId,
-                digest: createHash("sha256")
-                  .update(JSON.stringify([sandboxId, options.onlyIfIdle === true]))
-                  .digest("hex"),
-              }
+            ? { ownerId: actor.userId, digest: `${sandboxId}:${options.onlyIfIdle === true}` }
             : undefined;
-        if (request && requestId) {
-          const {
-            rows: [saved],
-          } = await tx.query<{ id: string; generation: string; request_digest: string }>(
-            `select id,generation::text,request_digest from public.jobs where idem_key=$1`,
-            [jobRequestKey(actor.orgId, "stop", actor.userId, requestId)],
-          );
-          if (saved) {
-            if (saved.request_digest !== request.digest || saved.generation !== String(row.lifecycle_generation))
-              deny();
-            return saved.id;
-          }
-        }
         const {
           rows: [prior],
-        } = await tx.query<{ id: string; state: string }>(
-          `select id,state from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
-           and state in ('queued','leased','failed') order by created_at desc,id desc limit 1`,
+        } = await tx.query<{ id: string; state: string; idem_key: string; request_digest: string | null }>(
+          `select id,state,idem_key,request_digest from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
+           and state in ('queued','leased','failed') order by (state='failed'),created_at desc,id desc limit 1`,
           [row.id, row.lifecycle_generation],
         );
         if (prior && prior.state !== "failed") {
-          if (request) deny();
+          if (
+            request &&
+            requestId &&
+            row.status !== "stopping" &&
+            (prior.idem_key !== jobRequestKey(actor.orgId, "stop", actor.userId, requestId) ||
+              prior.request_digest !== request.digest)
+          )
+            deny();
           return prior.id;
         }
+        const inFlight = await tx.query(
+          `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2
+           and bound_operation='stop' and outcome is null limit 1`,
+          [row.id, host.id],
+        );
+        if (inFlight.rows.length) deny();
         const proof = options.checkpoint ? await checkpointedStop(tx, row, options.checkpoint) : undefined;
         if (options.onlyIfIdle) await assertIdleStop(tx, row, host.id);
-        const machineGeneration = Number(await currentMachineCleanup(tx, row));
         const machineId = await allocationReceipt(tx, row);
-        if (!machineId || !Number.isSafeInteger(machineGeneration)) deny();
+        const bound = machineId && (await currentMachineCleanup(tx, row));
+        if (!bound && row.status !== "starting") deny();
+        const previous = bound ? await machineCleanupReceipt(tx, row, "stop") : undefined;
+        const retryAfter =
+          previous?.outcome === "failed" && !previous.cancelled_at && previous.retain ? previous.request_id : undefined;
         const deadline = new Date(Date.now() + 120_000);
         const payload: DockerStopIntent = {
           actor,
           actorEpoch,
-          machineId,
+          ...(bound && machineId ? { machineId, daemonGeneration: row.docker_generation } : {}),
           generation: Number(row.lifecycle_generation),
           ...(["failed", "stopping"].includes(row.status) ? { exitPending: true } : {}),
-          daemonGeneration: row.docker_generation,
+          ...(retryAfter ? { retryAfter } : {}),
           hostId: host.id,
           installationId: row.docker_installation_id,
           captureUntil: deadline.getTime() - 98_000,
@@ -1815,12 +1818,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "stop",
           sandboxId,
           payload.generation,
-          requestId,
+          options.checkpoint && prior ? `${options.checkpoint}:${prior.id}` : (requestId ?? randomUUID()),
           payload,
           {
             orgId: actor.orgId,
             maxAttempts: 8,
             deadline,
+            ...(request ? { request } : {}),
           },
           tx,
         );
@@ -1831,7 +1835,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       await permission(tx, intent.actor, row, "stop", intent.actorEpoch);
       if (
         String(row.lifecycle_generation) !== String(intent.generation) ||
-        row.docker_generation !== intent.daemonGeneration
+        (intent.daemonGeneration !== undefined && row.docker_generation !== intent.daemonGeneration)
       )
         deny();
       if (intent.checkpoint) {
@@ -1840,31 +1844,36 @@ export function createDockerHostStore(sql: Sql, key: string) {
       }
       if (intent.onlyIfIdle) await assertIdleStop(tx, row, host.id);
       const machineGeneration = Number(await currentMachineCleanup(tx, row));
-      if (!Number.isSafeInteger(machineGeneration)) deny();
-      return machineGeneration;
+      const machineId = await allocationReceipt(tx, row);
+      if (!machineId || !Number.isSafeInteger(machineGeneration)) throw new DockerMachinePending("unknown");
+      if (intent.machineId && intent.machineId !== machineId) deny();
+      return { machineId, generation: machineGeneration };
     },
     stopOutcome(sandboxId: string, generation: string, intent: DockerStopIntent) {
       return transaction(async (tx) => {
         const row = (
           await tx.query<Sandbox>(
             `select * from public.sandboxes where id=$1 and provider='docker' and lifecycle_generation=$2
-            and status in ('stopping','failed') and docker_host_id=$3 and docker_installation_id=$4 and docker_generation=$5 for update`,
-            [sandboxId, generation, intent.hostId, intent.installationId, intent.daemonGeneration],
+            and status in ('stopping','stopped','failed') and docker_host_id=$3 and docker_installation_id=$4 and docker_generation=coalesce($5,docker_generation) for update`,
+            [sandboxId, generation, intent.hostId, intent.installationId, intent.daemonGeneration ?? null],
           )
         ).rows[0];
-        if (!row || (await allocationReceipt(tx, row)) !== intent.machineId) return "unknown";
+        if (!row) return "unknown";
+        if (row.stopped_at != null) return "stopped";
+        const machineId = await allocationReceipt(tx, row);
+        if (!machineId || (intent.machineId && machineId !== intent.machineId)) return "unknown";
         const receipt = await machineCleanupReceipt(tx, row, "stop");
-        if (!receipt) return "unknown";
+        if (!receipt || receipt.request_id === intent.retryAfter) return "unknown";
         if (receipt.outcome === "failed" || receipt.cancelled_at) return "refused";
         if (receipt.outcome !== "completed") return "unknown";
         return receipt.retain &&
-          receipt.result_machine_id === intent.machineId &&
-          !(await physicalRemovalReceipt(tx, row, intent.machineId))
+          receipt.result_machine_id === machineId &&
+          !(await physicalRemovalReceipt(tx, row, machineId))
           ? "stopped"
           : "refused";
       });
     },
-    machineCleanup(actor: Actor, scope?: MachineHost) {
+    machineCleanup(actor: Actor, scope?: MachineHost & { retryAfter?: string }) {
       const unknown = { kind: "unknown" } as const;
       return {
         async observe(request) {
@@ -1954,14 +1963,25 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 return undefined;
               return { sandboxId, generation, kind: "container" as const, ref: machineId };
             }
-            if (stopped && (stopped.outcome !== "completed" || stopped.cancelled_at)) return undefined;
-            const operation = stopped ? "delete" : "stop";
+            const retryAfter =
+              stopped?.outcome === "failed" &&
+              !stopped.cancelled_at &&
+              stopped.retain &&
+              scope?.retryAfter === stopped.request_id
+                ? stopped.request_id
+                : undefined;
+            if (stopped && !retryAfter && (stopped.outcome !== "completed" || stopped.cancelled_at)) return undefined;
+            const operation = stopped && !retryAfter ? "delete" : "stop";
             const allocation = await machine(tx, row, operation);
             request.signal?.throwIfAborted();
             await insert(
               tx,
               host.id,
-              { requestId: dockerMachineJobId(row.docker_generation, operation), operation, request: allocation },
+              {
+                requestId: dockerMachineJobId(retryAfter ?? row.docker_generation, operation),
+                operation,
+                request: allocation,
+              },
               {
                 bound_sandbox_id: sandboxId,
                 bound_actor_id: actor.userId,
@@ -1970,7 +1990,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               },
               String(generation),
               undefined,
-              stopped ? undefined : retain,
+              operation === "stop" ? retain : undefined,
+              undefined,
+              retryAfter,
             );
             return undefined;
           });
@@ -2220,18 +2242,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               return enqueue();
             },
           );
-        }
-        if (selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
-          const result = await transitionSandbox(tx, {
-            sandboxId,
-            expectedGeneration: row.lifecycle_generation,
-            fromStates: ["starting", "ready", "running"],
-            toState: "stopping",
-            actor: "owner",
-            code: "docker_stop_admitted",
-            effects: [],
-          });
-          if (result.kind === "conflict") deny();
         }
         return enqueue();
       });
@@ -2765,10 +2775,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (
           logical.stopped_at != null &&
-          ["expired", "agent_finished", "work_merged"].includes(logical.status_reason ?? "")
+          (["expired", "agent_finished", "work_merged"].includes(logical.status_reason ?? "") ||
+            (logical.status === "failed" && logical.stop_requested_at != null))
         )
           return true;
-        if (logical.stopped_at != null && logical.status === "failed" && logical.stop_requested_at != null) return true;
         // A report is physical evidence. ACK only after the worker commits, so the daemon
         // keeps its expiry report and retained-output upload pending across server crashes.
         const jobs = createJobsStore(sql, key);

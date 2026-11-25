@@ -591,8 +591,6 @@ export function createDockerSandboxControls(
     const hosts = createDockerHostStore(sql, key);
     const stop = operation === "stop";
     if (!stop) await assertDelete(caller, row.id);
-    if (stop && onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
-      throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>
       current.status === "deleted" ||
       (stop && ["stopped", "failed"].includes(current.status) && current.stopped_at !== null);
@@ -635,7 +633,7 @@ export function createDockerSandboxControls(
       );
       const current = await visible(caller, row.id);
       if (done(current) && (stop || job?.state === "completed")) return result(current);
-      if (job?.state === "failed")
+      if (job?.state === "failed" || job?.state === "done")
         throw failure("conflict", "Docker sandbox cleanup failed. Use a new request ID to retry.");
       if (clock.now() >= deadline)
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");

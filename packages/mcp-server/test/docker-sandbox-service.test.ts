@@ -5,7 +5,7 @@ import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import type { dockerRuntimeConfiguration } from "../src/docker-runtime-configuration.ts";
 import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
-import { reportDockerExpiry } from "./docker-stop.fixture.ts";
+import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
 const database = useMigratedDatabase();
@@ -266,7 +266,7 @@ test("host capacity reserves pending starts, preserves retries, and releases onl
   );
   await hosts.complete(f.hostToken, f.installationId, { requestId: first.id, outcome: "completed" });
   const stop = randomUUID();
-  await hosts.enqueueSandbox(f.actor, first.id, { operation: "stop", requestId: stop });
+  await queueMailboxStop(sql, key, f.actor, first.id, stop);
   await expect(service.reserve(f.actor, next)).rejects.toThrow("is full");
   await hosts.complete(f.hostToken, f.installationId, { requestId: stop, outcome: "completed" });
   const second = await service.reserve(f.actor, next);

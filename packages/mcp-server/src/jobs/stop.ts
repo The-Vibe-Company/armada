@@ -12,12 +12,13 @@ export interface DockerStopIntent {
   actorEpoch: string;
   checkpoint?: string;
   workMerged?: boolean;
-  machineId: string;
+  machineId?: string;
   generation: number;
   runtimeEpoch?: string;
   onlyIfIdle?: boolean;
   exitPending?: true;
-  daemonGeneration: string;
+  retryAfter?: string;
+  daemonGeneration?: string;
   hostId: string;
   installationId: string;
   captureUntil: number;
@@ -33,42 +34,44 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
       if (!job.sandbox_id || !job.generation || !intent) return { status: "fail", reason: "stop_intent_missing" };
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
-      if ("expired" in intent)
-        return {
-          status: "done",
-          async commit(tx) {
-            const result = await transitionSandbox(tx, {
-              sandboxId,
-              expectedGeneration: generation,
-              fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
-              toState: "stopped",
-              actor: "docker_host",
-              code: "docker_expiry_observed",
-              effects: [],
-            });
-            if (result.kind !== "applied") throw new Error("Docker expiry settlement changed generation.");
-            await enqueueStopOutput(tx, jobs, sandboxId, intent.orgId, generation);
-          },
-        };
+      const expired = "expired" in intent;
+      const finish = {
+        status: "done",
+        async commit(tx) {
+          const settled = expired
+            ? await transitionSandbox(tx, {
+                sandboxId,
+                expectedGeneration: generation,
+                fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
+                toState: "stopped",
+                actor: "docker_host",
+                code: "docker_expiry_observed",
+                effects: [],
+              })
+            : await recordDockerCleanupReceipt(tx, sandboxId, Number(generation), "stop");
+          if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
+          await enqueueStopOutput(
+            tx,
+            jobs,
+            sandboxId,
+            expired ? intent.orgId : intent.actor.orgId,
+            expired ? generation : settled.generation,
+          );
+        },
+      } satisfies JobResult;
+      if (expired) return finish;
       const { signal } = context;
       const retry = (delay = 2_000) => ({ status: "retry", after: new Date(now() + delay) }) satisfies JobResult;
       const advanced = generation !== String(intent.generation);
       if (advanced || intent.exitPending) {
         const outcome = await hosts.stopOutcome(sandboxId, generation, intent);
         signal.throwIfAborted();
-        if (outcome === "stopped")
-          return {
-            status: "done",
-            async commit(tx) {
-              const settled = await recordDockerCleanupReceipt(tx, sandboxId, Number(generation), "stop");
-              if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-              await enqueueStopOutput(tx, jobs, sandboxId, intent.actor.orgId, settled.generation);
-            },
-          };
+        if (outcome === "stopped") return finish;
         if (outcome === "refused") return { status: "fail", reason: "stop_receipt_refused" };
-        if (advanced || !(await context.canDispatch())) return retry((await context.canDispatch()) ? 2_000 : 30_000);
       }
-      if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
+      const mayDispatch = await context.canDispatch();
+      if (advanced || (intent.exitPending && !mayDispatch)) return retry(mayDispatch ? 2_000 : 30_000);
+      if (!mayDispatch) return { status: "fail", reason: "stop_dispatch_deadline" };
       if (!job.outcome && !intent.exitPending) {
         const stage = async (tx: Sql, output: StagedOutput) => {
           signal.throwIfAborted();
@@ -87,37 +90,37 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
       }
       signal.throwIfAborted();
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };
-      const dispatch = async (tx: Sql, machineGeneration: number) => {
+      let target: Awaited<ReturnType<typeof hosts.lockStop>>;
+      const lockPrerequisites = async (tx: Sql) => {
+        target = await hosts.lockStop(tx, sandboxId, intent);
+      };
+      const dispatch = async (tx: Sql) => {
         try {
-          await createDockerHostStore(scopedRuntimeSql(tx), key).machineCleanup(intent.actor, intent).stop({
-            sandboxId,
-            generation: machineGeneration,
-            machineId: intent.machineId,
-            retain: true,
-            signal,
-          });
+          await createDockerHostStore(scopedRuntimeSql(tx), key)
+            .machineCleanup(intent.actor, intent)
+            .stop({
+              sandboxId,
+              ...target,
+              retain: true,
+              signal,
+            });
         } catch (error) {
           if (!(error instanceof DockerMachinePending)) throw error;
         }
       };
       try {
         if (intent.exitPending) {
-          let machineGeneration = 0;
           await withJobLease(
             sql,
             job,
             async (tx) => {
-              if (await context.canDispatch(tx)) await dispatch(tx, machineGeneration);
+              if (await context.canDispatch(tx)) await dispatch(tx);
             },
-            async (tx) => {
-              machineGeneration = await hosts.lockStop(tx, sandboxId, intent);
-            },
+            lockPrerequisites,
           );
         } else {
           await context.handoffGeneration({
-            lockPrerequisites: async (tx) => {
-              await hosts.lockStop(tx, sandboxId, intent);
-            },
+            lockPrerequisites,
             async advance(tx) {
               const result = await transitionSandbox(tx, {
                 sandboxId,
@@ -133,12 +136,13 @@ export function createStopJob(sql: Sql, key: string, readOutputs = createDockerO
                 effects: [],
               });
               if (result.kind === "conflict") throw new Error("Docker stop target changed.");
-              await dispatch(tx, intent.generation);
+              await dispatch(tx);
             },
           });
         }
       } catch (error) {
         signal.throwIfAborted();
+        if (error instanceof DockerMachinePending) return retry();
         if (error instanceof DockerHostDenied) return { status: "fail", reason: "stop_authority_changed" };
         throw error;
       }

@@ -37,7 +37,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { bindDockerStopFixture, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
+import { bindDockerStopFixture, queueMailboxStop, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -290,7 +290,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
   await rejected(invoke({ ...who, orgs: [] }, "status", { id: f.sandbox.id }), "not_found");
   const stopId = randomUUID(),
     deleteId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "delete", requestId: deleteId });
   await hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
@@ -440,16 +440,18 @@ test("normal logs preserve raw cursors through private diagnostics and historica
 
 test("owner stop waits for the shared job and concurrent requests reuse its intent", async () => {
   const f = await fixture();
-  await ready(f);
-  await bindDockerStopFixture(sql, f.sandbox.id);
   const who = caller(f.actor);
+  const request = { id: f.sandbox.id, request_id: randomUUID() };
   const pending = createDockerSandboxControls(sql, key, { timeoutMs: 0 });
-  await rejected(invoke(who, "stop", { id: f.sandbox.id }, pending), "conflict");
+  await rejected(invoke(who, "stop", request, pending), "conflict");
+  await rejected(invoke(who, "stop", request, pending), "conflict");
   await rejected(invoke(caller(f.admin, "admin"), "stop", { id: f.sandbox.id }, pending), "conflict");
   expect(
     (await sql.query("select id from jobs where sandbox_id=$1 and kind='stop'", [f.sandbox.id])).rows,
   ).toHaveLength(1);
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  await ready(f);
+  await bindDockerStopFixture(sql, f.sandbox.id);
   expect((await runDockerStop(sql, key, f.sandbox.id)).status).toBe("retry");
   const stop = await hosts.poll(f.hostToken, f.installationId);
   expect(stop?.operation).toBe("stop");
@@ -483,6 +485,8 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
   });
   await bindDockerStopFixture(sql, f.sandbox.id);
   let now = 0;
+  let refused = true;
+  let refusedMailboxId: string | undefined;
   const controller = createDockerSandboxControls(sql, key, {
     clock: {
       now: () => now,
@@ -496,13 +500,21 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
         if (!job) throw Error("missing cleanup");
         await hosts.complete(f.hostToken, f.installationId, {
           requestId: job.requestId,
-          outcome: "completed",
-          ...(stopping ? { machineId: stopFixtureMachineId } : {}),
+          outcome: refused ? "failed" : "completed",
+          ...(stopping && !refused ? { machineId: stopFixtureMachineId } : {}),
         });
-        if (stopping) await runDockerStop(sql, key, f.sandbox.id);
+        if (stopping) {
+          if (refused) refusedMailboxId = job.requestId;
+          else expect(job.requestId).not.toBe(refusedMailboxId);
+          await runDockerStop(sql, key, f.sandbox.id);
+        }
       },
     },
   });
+  const failedRequest = { id: f.sandbox.id, request_id: randomUUID() };
+  await rejected(invoke(who, "stop", failedRequest, controller), "conflict");
+  refused = false;
+  await rejected(invoke(who, "stop", failedRequest, controller), "conflict");
   expect(await invoke(who, "stop", { id: f.sandbox.id }, controller)).toEqual({
     id: f.sandbox.id,
     status: "failed",
@@ -724,7 +736,7 @@ test("Docker child deletion requires permanent delegated parent deletion before 
   await hosts.complete(f.hostToken, f.installationId, { requestId: parent.id, outcome: "completed" });
   for (const id of [parent.id, f.sandbox.id]) {
     const requestId = randomUUID();
-    await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: requestId });
+    await queueMailboxStop(sql, key, f.actor, id, requestId);
     await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
   }
   await db.query(
@@ -813,7 +825,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stop = async () => {
     const requestId = randomUUID();
-    await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: requestId });
+    await queueMailboxStop(sql, key, f.actor, f.sandbox.id, requestId);
     await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
   };
   await stop();
@@ -887,7 +899,7 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
   await ready(f);
   await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
   const controller = createDockerSandboxControls(sql, key, { resume: bootstrap });
@@ -1062,7 +1074,7 @@ test("cancelled account dispatch cannot admit a Docker prompt or resume", async 
   await expect(service.prompt(f.actor, f.sandbox.id, { requestId, text: "old work" })).rejects.toThrow();
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
   const stopId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   await expect(bootstrap.resume(f.actor, f.sandbox.id, requestId)).rejects.toThrow("Docker bootstrap denied");
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
@@ -1089,7 +1101,7 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
   await ready(f);
   await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const requestId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: requestId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
   const resumeId = randomUUID();
   await bootstrap.resume(f.actor, f.sandbox.id, resumeId);
@@ -1149,7 +1161,7 @@ test("a resume refused by the host disk floor returns the actionable disk cause"
   await ready(f);
   await database().query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
+  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   let now = 0;
   const controller = createDockerSandboxControls(sql, key, {
