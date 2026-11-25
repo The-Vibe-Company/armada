@@ -160,7 +160,7 @@ export type LaunchDiscoveryOptions = Pick<
   | "boatLaunchEnabled"
   | "docker"
   | "dockerControls"
-  | "dockerLaunch"
+  | "admitHostLaunch"
   | "admitModalLaunch"
   | "modalRuntimeLaunch"
   | "runtimeCheckpoint"
@@ -200,7 +200,7 @@ export function readLaunchOptions(options: LaunchDiscoveryOptions) {
         options.docker.normalApi &&
         options.docker.normalLaunch &&
         options.docker.normalSend &&
-        options.dockerLaunch &&
+        options.admitHostLaunch &&
         options.dockerControls &&
         options.runtimeMcp
           ? 1

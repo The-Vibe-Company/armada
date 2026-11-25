@@ -62,6 +62,7 @@ import { reservationDatabaseDiagnostic, reservationSql } from "./docker-reservat
 import { createDockerRuntimeLifecycle, projectDockerPromptReceipt } from "./docker-runtime-lifecycle.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import { enqueueLaunch } from "./jobs/launch.ts";
 import type { Job, JobContext } from "./jobs/runner.ts";
 import { createJobsStore, recordDockerLaunchEvidence, withJobLease } from "./jobs/store.ts";
 import { admitAccount, preparePoolCandidates } from "./launch-account-pool.ts";
@@ -112,14 +113,12 @@ type Manifest = {
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
   accountModelDefaulted?: true;
-  /** Resolved pin stays separate from the caller identity used by retries. */
   credentialId?: string;
   credentialVersion: number;
   healthId: string;
   promptId: string;
   conversationId?: string;
   preparation?: { skills: string[]; connections: string[] };
-  /** Server-generated ID of the admitting HTTP request; a deferred worker reports its outcome under it. */
   correlationId?: string;
 };
 type Receipt = {
@@ -165,7 +164,6 @@ type Row = {
 };
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
-  /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
   credentials: Pick<LaunchCredentialResolver, "resolve" | "skillpackKey" | "authorizeRepositories" | "defaults"> &
@@ -191,11 +189,25 @@ function failure(
     code,
     message: message ?? messages[code],
     retryable: code === "unavailable",
-    // Retain the dashboard replay key for unknown outcomes, including lost commits.
     ...(code === "unavailable" ? { details: { resourceReceipt: true } } : {}),
   });
 }
-function identifier(value: unknown): string {
+function warnLaunchFailure(error: unknown, reason: string, dispatchPossible: boolean) {
+  const requestId = currentRequestId();
+  console.warn("docker_launch_failed", {
+    ...(requestId ? { requestId } : {}),
+    reason,
+    ...(reason === "reservation"
+      ? { statement: "reservation_transaction", ...reservationDatabaseDiagnostic(error) }
+      : {}),
+    dispatchPossible,
+    code:
+      error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError
+        ? error.code
+        : "dependency_unavailable",
+  });
+}
+function identifier(value: unknown) {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
@@ -206,7 +218,7 @@ const dockerAdmissionInput = z.union([
 ]);
 type DockerAdmissionInput = z.infer<typeof dockerAdmissionInput>;
 
-function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string): Request {
+function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string) {
   const ttlSeconds = body.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS;
   if (body.skills !== undefined) {
     try {
@@ -283,9 +295,8 @@ function normalize(body: DockerAdmissionInput, org: string, hostId: string, imag
     ...(body.connections === undefined
       ? {}
       : { connections: [...new Set(body.connections.map((id) => id.toLowerCase()))].sort() }),
-  };
+  } satisfies Request;
 }
-/** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
 const repositoryAccessMessage = (message: string | null | undefined): message is string =>
   typeof message === "string" &&
   (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada account login github, grant your account and the Armada GitHub App access, then launch again\.$/.test(
@@ -313,15 +324,14 @@ const active = (row: Row) =>
   row.deleted_at === null &&
   !row.expired;
 
-/** Durable normal launch composition. No SQL transaction spans resolution, waiting or runtime work. */
-export function createDockerNormalLaunch(sql: Sql, key: string, options: Options) {
+export function createDockerLaunchPlacement(sql: Sql, key: string, options: Options) {
   const clock = options.clock ?? {
     now: Date.now,
     wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
   const runtime = createDockerRuntimeLifecycle(sql, key);
   const templates = createTemplateService(sql, key);
-  async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
+  async function transaction<T>(work: (tx: Sql) => Promise<T>) {
     if (!sql.transaction) throw failure("unavailable");
     return sql.transaction(work);
   }
@@ -406,7 +416,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       throw failure("conflict");
     return { membership, row, manifest, receipt };
   }
-  function envelope(row: Row, receipt?: Receipt): DockerLaunchResult {
+  function envelope(row: Row, receipt?: Receipt) {
     const sandbox: DockerSandboxRecord = {
       id: row.id,
       provider: "docker",
@@ -455,9 +465,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       expiresAt: iso(row.expires_at),
       ...(receipt?.promptId ? { promptId: receipt.promptId } : {}),
       ...(receipt?.conversationId ? { conversationId: receipt.conversationId } : {}),
-    };
+    } satisfies DockerLaunchResult;
   }
-  async function launch(
+  async function reserve(
     caller: Caller,
     body: Record<string, unknown>,
     admission?: {
@@ -465,12 +475,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       id: string;
       scheduled: boolean;
     },
-    worker?: { job: Job; context: JobContext },
-  ): Promise<DockerLaunchResult> {
+  ) {
     let dispatchPossible = false;
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
-    let readinessCause = "readiness_check_failed";
     const validate = () => {
       const parsed = dockerAdmissionInput.safeParse(body);
       if (!parsed.success)
@@ -489,7 +497,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     };
     const resolve = async ({ request: input, snapshotId, org, role }: ReturnType<typeof validate>) => {
       reason = "launch_receipt_lookup";
-      // Until the read succeeds, a retry may refer to an already dispatched launch.
       dispatchPossible = true;
       const retained = (
         await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -525,8 +532,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             "Armada's sandbox image configuration is invalid. Ask the server operator to deploy a matching release image pin. No sandbox was created.",
         });
       }
-      // Resolve personal choices before normalization supplies catalog defaults. Explicit
-      // account/model selections and replayed frozen manifests retain their authority.
       reason = "account_defaults";
       const accountActor = { userId: caller.userId, orgId: org, role };
       const accountDefault =
@@ -547,17 +552,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      const explicitModel = worker === undefined && input.model !== undefined;
+      const explicitModel = input.model !== undefined;
       const state = await transaction((tx) => load(tx, actor, request, hash, explicitModel));
       dispatchPossible ||= Boolean(state.row);
       const plan = { request, actor, hash, state, explicitModel };
-      if (state.row && state.receipt)
-        return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
+      if (state.receipt) return { ...plan, fresh: null };
       reason = "runtime_configuration";
       if (!options.bootstrap) throw failure("unavailable");
-      if (state.manifest) return { ...plan, kind: "active" as const, fresh: null };
+      if (state.manifest) return { ...plan, fresh: null };
       const snapshotRepositories = source?.config.repos;
-      // Prepare credentials before reservation so the transaction only evaluates frozen candidate revisions.
       reason = "credential_resolution";
       const launchActor = { ...actor, role: state.membership.role };
       const pool =
@@ -624,7 +627,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       };
       return {
         ...plan,
-        kind: "active" as const,
         fresh: { resolved, binding, manifest, modelChoice, pool, accounts },
       };
     };
@@ -632,19 +634,18 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
         const { actor, request, hash, state, explicitModel } = plan;
-        if (plan.kind === "retained" || !plan.fresh) return state;
+        if (!plan.fresh) return state;
         let { resolved } = plan.fresh;
         const { binding, manifest, modelChoice, pool, accounts } = plan.fresh;
         const choice = modelChoice ?? request;
-        // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
         return transaction(async (connection) => {
           const tx = reservationSql(connection);
+          // WARNING: Changing this lock key breaks reservation serialization during a rolling deploy.
           await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [
             `docker-normal-launch:${request.requestId}`,
           ]);
-          // This existence read intentionally takes no member SHARE lock:
-          // reserve owns the sorted member UPDATE/credential/host lock order.
+          // WARNING: A member SHARE lock here would invert the reserve lock order.
           const exists =
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
           if (exists) {
@@ -702,8 +703,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           await port.bind(request.requestId, connections);
           const current = await member(tx, actor);
           const receiptKey = dockerJobKey(request.requestId);
-          const id = await createJobsStore(sql, key).enqueue(
-            "launch",
+          const { id } = await enqueueLaunch(
+            createJobsStore(sql, key),
             request.requestId,
             1,
             receiptKey,
@@ -719,7 +720,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           await recordDockerLaunchEvidence(tx, id, { docker_actor_epoch: current.epoch });
           noteAdmission();
           const reserved = await load(tx, actor, request, hash);
-          // Only a fully completed callback can reach COMMIT. Earlier failures roll back host work.
           dispatchPossible = true;
           return reserved;
         });
@@ -728,20 +728,58 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
 
     try {
       const launchPlan = await prepareLaunchPlan(validate, resolve, () => dockerPlacement);
-      const { actor, request, hash } = launchPlan.resolved;
-      if (launchPlan.resolved.kind === "retained") {
-        const { row, receipt } = launchPlan.resolved;
-        return envelope(row, receipt);
-      }
       const state = await launchPlan.admit(admission);
-      if (state.row && state.receipt) return envelope(state.row, state.receipt);
-      const manifest = state.manifest;
       diagnosticSandboxId = state.row?.id;
-      if (!manifest || !state.row) throw failure("unavailable");
+      if (!state.row || !state.manifest) throw failure("unavailable");
+      return envelope(state.row, state.receipt);
+    } catch (error) {
+      recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
+        sandboxId: diagnosticSandboxId,
+      });
+      warnLaunchFailure(error, reason, dispatchPossible);
+      if (!dispatchPossible) {
+        if (admission) {
+          const publicError = error instanceof ProviderError || error instanceof VaultError;
+          throw new DockerTemplateAdmissionRefused(
+            publicError ? error.code : "launch_unavailable",
+            publicError ? error.message : "Docker template launch failed before dispatch.",
+            { cause: error },
+          );
+        }
+        if (error instanceof ProviderError) {
+          const { resourceReceipt: _receipt, keepSource: _source, ...details } = error.details ?? {};
+          throw new ProviderError({
+            provider: "docker",
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            details,
+          });
+        }
+        if (error instanceof VaultError || error instanceof LaunchError) throw error;
+        throw new VaultError(
+          "unavailable",
+          `Docker launch failed before dispatch (${reason}). Ask the server operator to check this prerequisite; no host work was queued by this attempt.`,
+        );
+      }
+      if (error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError) throw error;
+      throw failure("unavailable");
+    }
+  }
+  async function reconcile(caller: Caller, jobRequest: Request, worker: { job: Job; context: JobContext }) {
+    let reason = "membership_and_launch_state";
+    let readinessCause = "readiness_check_failed";
+    try {
+      const actor = { userId: caller.userId, orgId: jobRequest.org };
+      const hash = dockerLaunchRequestHash(jobRequest);
+      const state = await transaction((tx) => load(tx, actor, jobRequest, hash));
+      if (!state.row || !state.manifest) throw failure("unavailable");
+      if (state.receipt) return envelope(state.row, state.receipt);
+      reason = "runtime_configuration";
+      if (!options.bootstrap) throw failure("unavailable");
+      const { manifest } = state;
+      const { request } = manifest;
       const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
-      if (!worker) return envelope(state.row);
-      // From here this call drives the host itself, even when it resumes a retried launch.
-      noteAdmission();
       let phase: string = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
       let templateLockContended = false;
       const assertTemplate = async (tx: Sql, references = false) => {
@@ -858,7 +896,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             },
             request.requestId,
             request.requestId,
-            // Snapshot init/dependencies were baked during build; refresh must not rerun them.
             { config: { repos: manifest.snapshotConfig.repos, init: [] } },
             [],
             () => {},
@@ -877,7 +914,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               ...receipt.github,
               message: [receipt.github.message, ...warnings].filter(Boolean).join(" "),
             };
-          // #2560: the snapshot repositories were refreshed (a failed refresh threw above).
           await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
         if (manifest.request.repos) {
@@ -919,7 +955,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             if (response.state !== "pending") throw failure("sandbox_not_ready");
             await wait();
           }
-          // #2560: the requested repositories were cloned successfully.
           await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
         reason = "skills";
@@ -1011,8 +1046,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         const encrypted = await encryptSecret(JSON.stringify(receipt), key);
         return await transaction(async (tx) => {
           const authority = createRuntimeEnrolments(scopedRuntimeSql(tx), key);
-          // All source actors precede host/sandbox/runtime locks. The transport
-          // epoch and logical lifecycle generation are independent counters.
+          // WARNING: Lock source actors before taking the host, sandbox or runtime locks.
           await authority.lockSourceMembers(tx, request.requestId, actor.userId);
           const current = await load(tx, actor, request, hash);
           if (!current.row) throw failure("not_found");
@@ -1061,55 +1095,17 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         throw error;
       }
     } catch (error) {
-      if (error instanceof DockerMachinePending) throw error;
-      recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
-        sandboxId: diagnosticSandboxId,
-        causeCode: reason === "runtime_readiness" ? readinessCause : undefined,
-      });
-      // Never log raw exception messages: account/provider errors can contain secrets.
-      const requestId = currentRequestId();
-      console.warn("docker_launch_failed", {
-        ...(requestId ? { requestId } : {}),
-        reason,
-        ...(reason === "reservation"
-          ? { statement: "reservation_transaction", ...reservationDatabaseDiagnostic(error) }
-          : {}),
-        dispatchPossible,
-        code:
-          error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError
-            ? error.code
-            : "dependency_unavailable",
-      });
-      if (!dispatchPossible) {
-        if (admission) {
-          const publicError = error instanceof ProviderError || error instanceof VaultError;
-          throw new DockerTemplateAdmissionRefused(
-            publicError ? error.code : "launch_unavailable",
-            publicError ? error.message : "Docker template launch failed before dispatch.",
-            { cause: error },
-          );
-        }
-        if (error instanceof ProviderError) {
-          const { resourceReceipt: _receipt, keepSource: _source, ...details } = error.details ?? {};
-          throw new ProviderError({
-            provider: "docker",
-            code: error.code,
-            message: error.message,
-            retryable: error.retryable,
-            details,
-          });
-        }
-        if (error instanceof VaultError || error instanceof LaunchError) throw error;
-        throw new VaultError(
-          "unavailable",
-          `Docker launch failed before dispatch (${reason}). Ask the server operator to check this prerequisite; no host work was queued by this attempt.`,
-        );
+      if (!(error instanceof DockerMachinePending)) {
+        warnLaunchFailure(error, reason, true);
+        recordOperatorDiagnostic(`docker.launch.${reason}`, failureDiagnostic(error), {
+          sandboxId: jobRequest.requestId,
+          causeCode: reason === "runtime_readiness" ? readinessCause : undefined,
+        });
       }
-      if (error instanceof ProviderError || error instanceof VaultError || error instanceof LaunchError) throw error;
-      throw failure("unavailable");
+      throw error;
     }
   }
-  /** A replay can report a durable failure without throwing; that is not a successful launch. */
+
   const launched = (result: DockerLaunchResult) => result.sandbox.status !== "failed";
 
   async function startMachine(
@@ -1256,22 +1252,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       return { status: "fail" as const, reason: "docker_launch_inactive" };
     };
     if (!role || !(await context.canDispatch())) return settleInactive();
-    const { image: _image, credentialId, credentialVersion, prompt, ...body } = request;
     try {
       const result = await continueRequest(manifest.correlationId, () =>
         observeProviderCall(
           "docker",
           "launch",
           () =>
-            launch(
+            reconcile(
               { userId: membership.rows[0]!.user_id, orgs: [{ orgId: request.org, role }], via: "service" },
-              {
-                ...body,
-                ...(credentialId === null ? {} : { credentialId }),
-                ...(credentialVersion === null ? {} : { credentialVersion }),
-                ...(prompt === null ? {} : { prompt }),
-              },
-              undefined,
+              request,
               { job, context },
             ).catch((error: unknown) => {
               if (error instanceof DockerMachinePending) return null;
@@ -1296,16 +1285,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     }
   }
   return {
-    launch: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof launch>[2]) => {
-      // A deferred launch returns at admission: record that as `launch.admit`, never as a launch outcome.
-      // A retry answered from a durable receipt or a pending admission reaches no host: no record, so
-      // the worker's outcome stays joined to the one admitting request.
+    admit: (caller: Caller, body: Record<string, unknown>, admission?: Parameters<typeof reserve>[2]) => {
       let operation = "launch";
       return observeProviderCall(
         "docker",
         () => operation,
         async () => {
-          const result = await launch(caller, body, admission);
+          const result = await reserve(caller, body, admission);
           if (result.sandbox.status === "starting") operation = "launch.admit";
           return result;
         },
@@ -1317,4 +1303,4 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
   };
 }
 
-export type DockerNormalLaunch = ReturnType<typeof createDockerNormalLaunch>;
+export type AdmitHostLaunch = ReturnType<typeof createDockerLaunchPlacement>["admit"];

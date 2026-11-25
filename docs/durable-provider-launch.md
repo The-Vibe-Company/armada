@@ -14,7 +14,7 @@ receipt and leave paid compute and a golden operation fence behind. Modal also
 held the source lifecycle lease through the child's entire boot, so concurrent
 forks could fail on source contention.
 
-Use the [normal Docker launch queue](../packages/mcp-server/src/docker-normal-launch.ts)
+Use the [normal Docker launch queue](../packages/mcp-server/src/docker-launch-placement.ts)
 as the precedent for acknowledgements, progress and worker claims. REST and
 MCP ordinary launches share the new admission service. Template launches,
 including scheduled callers, keep their existing request receipt and frozen

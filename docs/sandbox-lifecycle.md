@@ -81,7 +81,7 @@ Audit baseline `4d8581ae0f5f187e73cacd071f401d9340c6b856`. Includes direct SQL, 
 | `packages/core/src/launch.ts` | Insert starting; mark ready, running or failed across runtime/native launch paths. | #2747 removes native admission branches, #2765 removes remaining synchronous path, #2789 owns job admission. |
 | `data.ts` | Visible sandbox insert and dynamically generated status patches for lifecycle/turn callers. | #2789 for launch admission, #2792 removes direct generic status mutation. |
 | `docker-sandbox-service.ts` | Insert Docker sandbox with starting state. | #2761 cuts admission to jobs, #2765 removes obsolete admission, #2789 owns the job's starting write. |
-| `docker-normal-launch.ts` | Starting → ready from legacy launch completion or failed on launch error. | #2765 deletes worker, #2789 owns launch job failure and #2791 owns enrolment. |
+| `docker-launch-placement.ts` | Shared launch job reconciles the Docker placement and records failure or completion. Runtime enrolment owns readiness. | #2789 owns launch job failure and #2791 owns enrolment. |
 | `sandbox-access-child-launch.ts` | Child launch delegates to legacy core launch/store and wraps its insert. | #2765 removes legacy path, #2789 owns surviving launch admission. |
 | `tools.ts` | Native send/status refresh and legacy stop/resume select status via activity/store patches. | #2744/#2747/#2748 remove native dispatch; #2763/#2764 move stop/resume, #2765 deletes obsolete controls; #2790 and #2791 own surviving lifecycle and turn behavior respectively. |
 | `sandbox-lifecycle.ts` | Reconciliation publishes stop or failure and closes interrupted startup/resume. | #2790. Launch-job-specific failure goes to #2789. |

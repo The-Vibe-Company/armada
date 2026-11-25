@@ -33,7 +33,7 @@ import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
 import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
+import { createDockerLaunchPlacement } from "./docker-launch-placement.ts";
 import { createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
 import { createEventFeed } from "./event-feed.ts";
@@ -42,6 +42,7 @@ import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
 import { boatLaunchBinding, boatLaunchJobs } from "./jobs/boat-launch.ts";
+import { createLaunchJob } from "./jobs/launch.ts";
 import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createResumeJob } from "./jobs/resume.ts";
 import type { JobKind } from "./jobs/runner.ts";
@@ -323,7 +324,6 @@ export async function createServerServices(env: Record<string, string | undefine
       return boatRun(job, context);
     },
   });
-  const modalLaunchJob = combineGoldenJobs(modalJob, boatJobs?.launch);
   const launchCleanupJob = combineGoldenJobs(modal.launchCleanupJob, boatJobs?.cleanup);
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,
@@ -459,9 +459,9 @@ export async function createServerServices(env: Record<string, string | undefine
         })
       : undefined;
   const dockerLaunchEnabled = dockerEnabled;
-  const dockerLaunch =
+  const dockerPlacement =
     env.ARMADA_DOCKER_HOSTS === "1"
-      ? createDockerNormalLaunch(sql, config.encryptionKey, {
+      ? createDockerLaunchPlacement(sql, config.encryptionKey, {
           mcp: runtimeMcp,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
@@ -488,7 +488,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(deviceLogin ? { deviceLogin } : {}),
     admitModalLaunch: admitModal,
     ...(dockerControls ? { dockerControls } : {}),
-    ...(dockerLaunch ? { dockerLaunch } : {}),
+    ...(dockerPlacement ? { admitHostLaunch: dockerPlacement.admit } : {}),
     docker: {
       hosts: env.ARMADA_DOCKER_HOSTS === "1",
       placement: dockerEnabled,
@@ -652,7 +652,6 @@ export async function createServerServices(env: Record<string, string | undefine
     dockerEnabled,
     dockerBootstrap,
     dockerLaunchEnabled,
-    dockerLaunch,
     dockerArtifactSet,
     runtimeEnrolments,
     runtimeCommands,
@@ -664,7 +663,11 @@ export async function createServerServices(env: Record<string, string | undefine
     delegatedAccess,
     modelAuth,
     modal,
-    modalLaunchJob,
+    launchJob: createLaunchJob({
+      modal: modalJob,
+      ...(boatJobs ? { boat: boatJobs.launch } : {}),
+      ...(dockerPlacement ? { docker: dockerPlacement.run } : {}),
+    }),
     resumeJob: resume.handler,
     launchCleanupJob,
     modalArtifactCache: warmModalArtifacts,
