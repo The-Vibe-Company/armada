@@ -59,6 +59,7 @@ public struct ConversationSnapshot<Event: Identifiable & Equatable & Sendable>: 
 @MainActor
 public final class ConversationCache<Event: Identifiable & Equatable & Sendable> {
     private var entries: [String: ConversationSnapshot<Event>] = [:]
+    private var states: [String: any Sendable] = [:]
     private var order: [String] = []
     private var presentations: [String: any Sendable] = [:]
     private var versions: [String: UUID] = [:]
@@ -86,8 +87,22 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
         }
     }
 
+    /// Reads or stores an auxiliary state value sharing the snapshot's LRU and invalidation lifetime.
+    public func state<State: Sendable>(for key: String, as _: State.Type = State.self) -> State? {
+        guard let value = states[key] as? State else { return nil }
+        touch(key)
+        return value
+    }
+
+    public func storeState<State: Sendable>(_ state: State, for key: String) {
+        states[key] = state
+        touch(key)
+        while order.count > capacity { remove(order[0]) }
+    }
+
     public func remove(_ key: String) {
         entries[key] = nil
+        states[key] = nil
         presentations[key] = nil
         versions[key] = nil
         order.removeAll { $0 == key }
@@ -95,9 +110,17 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
 
     public func removeAll() {
         entries = [:]
+        states = [:]
         presentations = [:]
         versions = [:]
         order = []
+    }
+
+    /// Synchronous lookup for an already-built presentation matching the exact cached event window.
+    public func cachedPresentation<Content: Sendable>(for key: String, events: [Event]) -> Content? {
+        guard entries[key]?.events == events, let existing = presentations[key] as? Content else { return nil }
+        touch(key)
+        return existing
     }
 
     /// Reuses a derived presentation only for the exact event window still held by this cache.
@@ -108,8 +131,7 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
         events: [Event],
         build: @MainActor ([Event]) async -> Content
     ) async -> Content {
-        if entries[key]?.events == events, let existing = presentations[key] as? Content {
-            touch(key)
+        if let existing: Content = cachedPresentation(for: key, events: events) {
             return existing
         }
         let version = versions[key]
@@ -125,6 +147,16 @@ public final class ConversationCache<Event: Identifiable & Equatable & Sendable>
     private func touch(_ key: String) {
         order.removeAll { $0 == key }
         order.append(key)
+    }
+}
+
+/// Bounded retry backoff for transient `logs/read` 400/409 rejections while a sandbox is starting.
+public enum ConversationFollowBackoff {
+    public static let maxStartingRejectionRetries = 20
+
+    public static func startingRejection(consecutiveFailures: Int, isStarting: Bool) -> Duration? {
+        guard isStarting, (1...maxStartingRejectionRetries).contains(consecutiveFailures) else { return nil }
+        return .seconds(min(15, 1 << min(consecutiveFailures, 4)))
     }
 }
 

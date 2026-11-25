@@ -46,10 +46,14 @@ final class SandboxConversationModel {
     @ObservationIgnored private let service: any SandboxService
     @ObservationIgnored let sandboxID: String
     @ObservationIgnored private let orgID: String
+    @ObservationIgnored private let memory: ConversationMemory?
+    @ObservationIgnored private let cacheKey: String
     /// The list row's status and working state, shown until the interior state or stream is read.
     @ObservationIgnored private let listedStatus: SandboxStatus?
     @ObservationIgnored private let listedWorking: Bool
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
+    @ObservationIgnored private var lastLiveThreadStateAt: ContinuousClock.Instant?
+    @ObservationIgnored private var lastFullStateAt: ContinuousClock.Instant?
 
     init(
         service: any SandboxService,
@@ -65,8 +69,16 @@ final class SandboxConversationModel {
         self.orgID = orgID
         self.listedStatus = listedStatus
         self.listedWorking = listedWorking
+        self.memory = memory
         self.onSignedOut = onSignedOut
-        feed = ConversationFeed(key: "sandbox:\(orgID):\(sandboxID.lowercased())", memory: memory)
+        let key = "sandbox:\(orgID):\(sandboxID.lowercased())"
+        cacheKey = key
+        feed = ConversationFeed(key: key, memory: memory)
+        if let cachedState: SandboxState = memory?.state(for: key) {
+            state = cachedState
+            phase = .loaded
+            recoveringPrompt = false
+        }
     }
 
     /// Why the composer cannot send now, or nil when it can.
@@ -116,9 +128,14 @@ final class SandboxConversationModel {
     // MARK: Reading
 
     /// Reads the interior state. The conversation is read beside it by `follow`, which the screen
-    /// starts at once; a refusal of either replaces the interior.
+    /// starts at once; a refusal of either replaces the interior. Warm reopens already render
+    /// cached state and revalidate here in the background.
     func open() async {
         if case .failed = phase { phase = .loading }
+        if !recoveringPrompt {
+            do throws(ServiceFailure) { try await recoverUnconfirmedPromptIfNeeded() }
+            catch { handleReadFailure(error); return }
+        }
         _ = await loadState()
     }
 
@@ -141,7 +158,7 @@ final class SandboxConversationModel {
     /// disappears or the server stops it.
     func follow() async {
         guard !isDeleted else { return }
-        await feed.follow(fetch, onSignedOut: onSignedOut)
+        await feed.follow(fetch, isStarting: { self.shownStatus == .starting }, onSignedOut: onSignedOut)
         guard !Task.isCancelled, case .stopped(let failure) = feed.connection else { return }
         // The history may be refused because the sandbox was deleted meanwhile: its state says so.
         guard await loadState(), !isDeleted else { return }
@@ -158,12 +175,14 @@ final class SandboxConversationModel {
     }
 
     /// Keeps the turn's state current while the screen is shown: often while the agent works or a
-    /// stop settles, rarely otherwise. A refusal (access revoked) replaces the interior.
+    /// stop settles, rarely otherwise. Skips redundant `sandbox/status` polls when `logs/read` is
+    /// already reporting fresh `threadStatus`/`settled`.
     func watchState() async {
         while !Task.isCancelled, phase == .loaded || phase == .loading {
             let busy = isWorking || stopping || state?.status == .starting || state?.status == .stopping
             try? await Task.sleep(for: busy ? .seconds(3) : .seconds(15))
             guard !Task.isCancelled else { return }
+            if shouldSkipStatusPoll() { continue }
             _ = await loadState()
         }
     }
@@ -182,28 +201,79 @@ final class SandboxConversationModel {
     }
 
     private var fetch: ConversationFeed.Fetch {
-        { [service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage in
-            try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, backward: backward)
+        { [weak self, service, sandboxID, orgID] (cursor: String?, backward: Bool) async throws(ServiceFailure) -> ConversationEventPage in
+            let page = try await service.sandboxEvents(id: sandboxID, orgID: orgID, cursor: cursor, backward: backward)
+            if let threadState = page.threadState {
+                await MainActor.run { [weak self] in
+                    self?.applyLiveThreadState(threadState)
+                }
+            }
+            return page
         }
+    }
+
+    private func shouldSkipStatusPoll(now: ContinuousClock.Instant = ContinuousClock.now) -> Bool {
+        guard let state, !stopping, state.status != .starting, state.status != .stopping,
+              feed.connection == .live,
+              let liveAt = lastLiveThreadStateAt, liveAt.duration(to: now) < .seconds(15),
+              let fullAt = lastFullStateAt, fullAt.duration(to: now) < .seconds(60)
+        else { return false }
+        return true
+    }
+
+    private func applyLiveThreadState(_ thread: ConversationThreadState) {
+        guard !Task.isCancelled, phase == .loaded || phase == .loading else { return }
+        lastLiveThreadStateAt = ContinuousClock.now
+        guard let current = state else { return }
+        let turnChanged = thread.promptID != nil && current.turn?.promptID != thread.promptID
+        var turn: SandboxTurnState?
+        if let promptID = thread.promptID, let status = thread.promptStatus {
+            if let existing = current.turn, existing.promptID == promptID {
+                turn = SandboxTurnState(
+                    promptID: promptID, status: status, reason: thread.promptReason,
+                    requestedModel: existing.requestedModel, observedModel: existing.observedModel,
+                    modelSelectionReason: existing.modelSelectionReason,
+                    modelSelectionMessage: existing.modelSelectionMessage,
+                    rateLimit: status.isActive ? existing.rateLimit : nil
+                )
+            } else {
+                turn = SandboxTurnState(promptID: promptID, status: status, reason: thread.promptReason)
+            }
+        }
+        if thread.status == .ready || thread.status == .running {
+            let working = !thread.settled || turn?.status.isActive == true
+            let admission: SandboxState.Admission = (current.expiresAt.map { $0 <= .now } == true) ? .expired : (working ? .turnRunning : .open)
+            let updated = SandboxState(
+                status: thread.status, statusReason: current.statusReason, turn: turn, admission: admission,
+                canStop: true, isWorking: working, expiresAt: current.expiresAt,
+                preservationWarning: current.preservationWarning, failureExplanation: current.failureExplanation
+            )
+            state = updated; memory?.storeState(updated, for: cacheKey)
+            if current.status == .starting || turnChanged { Task { _ = await self.loadState() } }
+        } else if thread.status != current.status {
+            Task { _ = await self.loadState() }
+        }
+    }
+
+    private func recoverUnconfirmedPromptIfNeeded() async throws(ServiceFailure) {
+        if let recovery = service as? any SandboxPromptRecovery, pending.isEmpty,
+           let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID) {
+            pending = [PendingBubble(id: saved.id.uuidString, text: saved.text, intent: .message, sentAt: saved.sentAt, status: .unconfirmed)]
+        }
+        recoveringPrompt = false
     }
 
     /// Returns false when the read was refused or failed before anything was shown.
     private func loadState() async -> Bool {
         do throws(ServiceFailure) {
-            state = try await service.sandboxState(id: sandboxID, orgID: orgID)
-            // Any first successful authorized read can finish recovery, including a refresh after
-            // the initial detail read failed while history loaded in parallel. Never enable send
-            // until local tracking was read successfully.
-            if recoveringPrompt {
-                if let recovery = service as? any SandboxPromptRecovery, pending.isEmpty,
-                   let saved = try await recovery.unconfirmedPrompt(sandboxID: sandboxID, orgID: orgID) {
-                    pending = [PendingBubble(id: saved.id.uuidString, text: saved.text, intent: .message,
-                                             sentAt: saved.sentAt, status: .unconfirmed)]
-                }
-                recoveringPrompt = false
-            }
+            let previousStatus = state?.status
+            let loaded = try await service.sandboxState(id: sandboxID, orgID: orgID)
+            if recoveringPrompt { try await recoverUnconfirmedPromptIfNeeded() }
+            state = loaded; memory?.storeState(loaded, for: cacheKey); lastFullStateAt = ContinuousClock.now
             readIssue = nil
             if phase == .loading { phase = .loaded }
+            if previousStatus == .starting, loaded.status != .starting, loaded.status != .deleted,
+               !feed.hasLoaded, feed.connection == .connecting { followGeneration += 1 }
             if state?.isWorking == false, feed.conversation.running, !isDeleted {
                 Task { try? await self.feed.refresh(self.fetch) }
             }
@@ -353,6 +423,7 @@ final class SandboxConversationModel {
     /// The server refused this conversation: it is no longer shown, nor kept in memory.
     private func refuseAccess(message: String) {
         notice = (message, true)
+        state = nil
         feed.forget()
         phase = .noAccess
     }

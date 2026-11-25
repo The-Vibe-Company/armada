@@ -34,12 +34,17 @@ struct ConversationTranscript: View {
     var onDismissPending: ((PendingBubble) -> Void)?
     /// Older history exists above the first item.
     var hasOlder = false
+    /// An older page request is currently in flight.
+    var isLoadingOlder = false
     /// Changes after every older page read: the top row then asks for the next one if still shown.
     var olderPagesRead = 0
     var onLoadOlder: (() -> Void)?
 
+    private struct ScrollPosition: Equatable { var isNearBottom = true; var isNearTop = false; var canScroll = false }
+
     @State private var toolRoute: ToolRoute?
-    @State private var isNearBottom = true
+    @State private var scrollPosition = ScrollPosition()
+    @State private var isOlderRowVisible = false
     /// The first item shown when older history was requested, kept at the top once it arrives.
     @State private var olderAnchor: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -47,6 +52,11 @@ struct ConversationTranscript: View {
     private struct ToolRoute: Identifiable {
         let id: String
         let activity: ToolActivity
+    }
+
+    private var olderAutoLoadKey: String? {
+        guard hasOlder, onLoadOlder != nil, isOlderRowVisible, scrollPosition.canScroll, scrollPosition.isNearTop else { return nil }
+        return "\(olderPagesRead):\(items.first?.id ?? "")"
     }
 
     var body: some View {
@@ -58,15 +68,20 @@ struct ConversationTranscript: View {
                             .padding(.top, 60)
                     }
                     if hasOlder, let onLoadOlder {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .accessibilityLabel("Loading earlier messages")
-                            // A new row after each page read, so a row still in view reads the next one.
-                            .id("older-\(olderPagesRead)")
-                            .onAppear {
-                                olderAnchor = items.first?.id
-                                onLoadOlder()
+                        Group {
+                            if isLoadingOlder || scrollPosition.canScroll {
+                                ProgressView().frame(maxWidth: .infinity, minHeight: 44).accessibilityLabel("Loading earlier messages")
+                            } else {
+                                Button { olderAnchor = items.first?.id; onLoadOlder() } label: {
+                                    Text("Load earlier messages").font(.footnote.weight(.medium))
+                                        .foregroundStyle(ArmadaTheme.textSecondary).frame(maxWidth: .infinity, minHeight: 44)
+                                }
+                                .buttonStyle(.plain)
                             }
+                        }
+                        .id("older-\(olderPagesRead)")
+                        .onAppear { isOlderRowVisible = true }
+                        .onDisappear { isOlderRowVisible = false }
                     }
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         row(item)
@@ -90,10 +105,21 @@ struct ConversationTranscript: View {
             .scrollIndicators(.hidden)
             // Initial placement belongs to layout; later content changes do not reapply it.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY < 120
-            } action: { _, nearBottom in
-                isNearBottom = nearBottom
+            .onScrollGeometryChange(for: ScrollPosition.self) { geometry in
+                ScrollPosition(
+                    isNearBottom: geometry.contentSize.height - geometry.visibleRect.maxY < 120,
+                    isNearTop: geometry.visibleRect.minY <= 80,
+                    canScroll: geometry.contentSize.height > geometry.visibleRect.height + 24
+                )
+            } action: { _, position in
+                scrollPosition = position
+            }
+            .task(id: olderAutoLoadKey) {
+                guard let key = olderAutoLoadKey, !isLoadingOlder, let onLoadOlder else { return }
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, !isLoadingOlder, olderAutoLoadKey == key else { return }
+                olderAnchor = items.first?.id
+                onLoadOlder()
             }
             .onChange(of: items.first?.id) { _, _ in
                 // Older messages were added above: keep the message the reader was at in place.
@@ -102,7 +128,7 @@ struct ConversationTranscript: View {
                 proxy.scrollTo(anchor, anchor: .top)
             }
             .onChange(of: items.last) { _, _ in
-                guard isNearBottom else { return }
+                guard scrollPosition.isNearBottom else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
@@ -115,7 +141,7 @@ struct ConversationTranscript: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !isNearBottom {
+                if !scrollPosition.isNearBottom {
                     Button {
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
                             proxy.scrollTo("bottom", anchor: .bottom)

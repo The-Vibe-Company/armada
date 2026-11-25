@@ -92,6 +92,25 @@ public enum SandboxPromptAdmission: Sendable, Equatable {
     case open, turnRunning, starting, stopping, failed, deleted, unknownStatus, expired, cannotResume
 }
 
+/// Live thread status optionally returned by `POST /api/v1/logs/read` alongside events.
+public struct SandboxThreadStatus: Decodable, Sendable, Equatable {
+    public let status: String
+    public let statusMessage: String?
+    public let prompt: SandboxTurn?
+    private enum CodingKeys: String, CodingKey { case status, statusMessage, prompt }
+
+    public init(status: String, statusMessage: String? = nil, prompt: SandboxTurn? = nil) {
+        self.status = status; self.statusMessage = statusMessage; self.prompt = prompt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = try c.decode(String.self, forKey: .status)
+        statusMessage = try c.decodeIfPresent(String.self, forKey: .statusMessage)
+        prompt = try? c.decodeIfPresent(SandboxTurn.self, forKey: .prompt)
+    }
+}
+
 /// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada events`).
 /// Cursors are opaque and passed back unchanged; an event read twice keeps its id. `olderCursor`
 /// (backward reads only) continues before the oldest event of the page.
@@ -100,6 +119,8 @@ public struct SandboxEventPage: Decodable, Sendable {
     public let cursor: String?
     public let olderCursor: String?
     public let hasMore: Bool
+    public let settled: Bool?
+    public let threadStatus: SandboxThreadStatus?
 }
 
 /// The server's acceptance of a prompt: `POST /api/v1/sandbox/send` (`armada prompt`).
@@ -201,16 +222,26 @@ extension ArmadaClient {
         return result
     }
 
+    public static let defaultEventPageLimit = 200
+
     /// One page of events in chronological order. Forward (the default) reads after `cursor`, from
     /// the start when nil. Backward reads the latest page when `cursor` is nil, otherwise the page
     /// before it (`olderCursor` of an earlier backward read); its `hasMore` means older events exist
     /// and its `cursor` is the forward frontier to follow from (#812). An indivisible event
     /// above the soft page budget is returned alone, or as an explicit event_truncated gap.
-    public func sandboxEvents(id: String, cursor: String? = nil, backward: Bool = false) async throws -> SandboxEventPage {
-        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String? }
+    /// Defaults to `limit: 200` and `coalesce: true` so a discussion screen loads in one request.
+    public func sandboxEvents(
+        id: String,
+        cursor: String? = nil,
+        backward: Bool = false,
+        limit: Int = ArmadaClient.defaultEventPageLimit,
+        coalesce: Bool = true
+    ) async throws -> SandboxEventPage {
+        struct Read: Encodable, Sendable { let id: String; let org: String; let cursor: String?; let direction: String?; let limit: Int; let coalesce: Bool }
         if let cursor, cursor.isEmpty { throw ArmadaError.invalidResponse }
+        guard (1...500).contains(limit) else { throw ArmadaError.invalidRequest }
         let id = try sandboxID(id), org = try sandboxOrganization()
-        return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil))
+        return try await post("logs/read", Read(id: id, org: org, cursor: cursor, direction: backward ? "backward" : nil, limit: limit, coalesce: coalesce))
     }
 
     /// Sends one prompt as a new turn. Sent once: a failure is classified with

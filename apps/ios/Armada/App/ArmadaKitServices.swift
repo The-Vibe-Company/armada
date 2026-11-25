@@ -46,7 +46,8 @@ struct ArmadaKitServices: SandboxService {
                 events: page.events.map(Self.agentEvent),
                 cursor: page.cursor,
                 hasMore: page.hasMore,
-                olderCursor: page.olderCursor
+                olderCursor: page.olderCursor,
+                threadState: Self.threadState(page)
             )
         } catch {
             throw Self.sandboxReadFailure(error)
@@ -88,11 +89,16 @@ struct ArmadaKitServices: SandboxService {
     }
 
     /// Reads have no revision: a 409 is the sandbox's state, not another person's edit.
+    /// Both 400 and 409 on a sandbox read may be transient while the machine is starting.
     private static func sandboxReadFailure(_ error: any Error) -> ServiceFailure {
-        if ArmadaServerFailure.underlying(error) == .conflict {
-            return Self.explained(.rejected("This sandbox can't be read in its current state. Pull to refresh."), by: error)
+        switch ArmadaServerFailure.underlying(error) {
+        case .conflict:
+            return Self.explained(.rejected("This sandbox can't be read in its current state. Pull to refresh.", transientWhileStarting: true), by: error)
+        case .http(400), .invalidRequest:
+            return Self.explained(.rejected("The request could not be completed.", transientWhileStarting: true), by: error)
+        default:
+            return readFailure(error)
         }
-        return readFailure(error)
     }
 
     private static func sandboxMutationFailure(_ error: any Error, refused: String) -> ServiceFailure {
@@ -197,6 +203,17 @@ struct ArmadaKitServices: SandboxService {
         case .array(let values): .array(values.map(json))
         case .object(let record): .object(record.mapValues(json))
         }
+    }
+
+    private static func threadState(_ page: ArmadaKit.SandboxEventPage) -> ConversationThreadState? {
+        guard let thread = page.threadStatus, let settled = page.settled else { return nil }
+        return ConversationThreadState(
+            status: SandboxStatus(rawValue: thread.status),
+            settled: settled,
+            promptID: thread.prompt?.promptId,
+            promptStatus: thread.prompt.map { PromptStatus(rawValue: $0.state) },
+            promptReason: thread.prompt?.reason
+        )
     }
 
     private static func state(_ value: ArmadaKit.SandboxDetail) -> SandboxState {

@@ -292,3 +292,42 @@ private final class SuspendedPresentation {
     let reopened = await cache.rendered(for: "k", events: snapshot.events) { _ in "complete" }
     #expect(reopened == "complete")
 }
+
+@MainActor
+@Test func cachedStateAndPresentationShareSnapshotLRUAndInvalidation() async {
+    let cache = ConversationCache<Entry>(capacity: 2)
+    let events = [Entry(id: "e1", body: "hello")]
+    cache.storeState("ready-a", for: "a")
+    cache.store(ConversationSnapshot(events: events, cursor: "c1"), for: "a")
+    #expect(cache.state(for: "a", as: String.self) == "ready-a")
+    #expect(await cache.rendered(for: "a", events: events) { _ in "rendered-a" } == "rendered-a")
+    #expect(cache.cachedPresentation(for: "a", events: events) == "rendered-a")
+    cache.storeState("ready-b", for: "b")
+    _ = cache.state(for: "a", as: String.self)
+    cache.storeState("ready-c", for: "c")
+    #expect(cache.keys == ["a", "c"] && cache.state(for: "b", as: String.self) == nil && cache.state(for: "a", as: String.self) == "ready-a")
+    ConversationLoader<Entry>(key: "a", cache: cache).forget()
+    #expect(cache.snapshot(for: "a") == nil && cache.state(for: "a", as: String.self) == nil)
+    #expect(cache.cachedPresentation(for: "a", events: events) as String? == nil)
+    cache.removeAll()
+    #expect(cache.state(for: "c", as: String.self) == nil)
+}
+
+@MainActor
+@Test func startingSandboxRecoversFromTransientRejectionsWithBoundedBackoff() async {
+    let log = Log()
+    var isStarting = true
+    let script = Script([.failure(Stop()), .failure(Stop()), .failure(Stop()), page(["e1"], cursor: "c1", hasMore: false)], log: log)
+    await ConversationLoader<Entry>(key: "starting-sbx", cache: nil).run(
+        clock: RecordingClock(log: log),
+        fetch: { (read) throws(Stop) in try script.fetch(read) },
+        show: { events in log.append("show \(events.map(\.id).joined(separator: ","))") },
+        pollDelay: { .seconds(2) },
+        onRead: { isStarting = false },
+        onFailure: { _, consecutive in ConversationFollowBackoff.startingRejection(consecutiveFailures: consecutive, isStarting: isStarting) }
+    )
+    #expect(log.all == ["read latest", "sleep 2s", "read latest", "sleep 4s", "read latest", "sleep 8s", "read latest", "show e1", "sleep 2s", "read newer c1"])
+    #expect(ConversationFollowBackoff.startingRejection(consecutiveFailures: 4, isStarting: true) == .seconds(15))
+    #expect(ConversationFollowBackoff.startingRejection(consecutiveFailures: ConversationFollowBackoff.maxStartingRejectionRetries + 1, isStarting: true) == nil)
+    #expect(ConversationFollowBackoff.startingRejection(consecutiveFailures: 1, isStarting: false) == nil)
+}

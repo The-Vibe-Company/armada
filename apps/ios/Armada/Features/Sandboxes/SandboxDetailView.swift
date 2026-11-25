@@ -139,40 +139,35 @@ private struct CopyableIDRow: View {
 /// confirmation. The server authorizes every read and action; a refusal is explained, not guessed.
 struct SandboxConversationView: View {
     let sandbox: SandboxSummary
-    var initiallyWorking = false
+    private let initiallyWorking: Bool
 
     @Environment(AppModel.self) private var app
-    @State private var model: SandboxConversationModel?
+    @State private var model: SandboxConversationModel
     @State private var confirmingStop = false
     @State private var showingDetails = false
 
+    init(sandbox: SandboxSummary, app: AppModel, initiallyWorking: Bool = false) {
+        self.sandbox = sandbox
+        self.initiallyWorking = initiallyWorking
+        _model = State(initialValue: Self.makeModel(sandbox: sandbox, app: app, initiallyWorking: initiallyWorking))
+    }
+
     var body: some View {
-        Group {
-            if let model {
-                screen(model)
-            } else {
-                SurfaceStateView(state: .loading("Opening the conversation…"))
-            }
-        }
+        screen(model)
         .background(ArmadaTheme.canvas)
         .navigationTitle(sandbox.displayLabel)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: sandbox.id) {
-            // Keep pending prompts and the draft when the screen reappears.
-            if model?.sandboxID != sandbox.id {
-                model = SandboxConversationModel(
-                    service: app.sandboxes,
-                    sandboxID: sandbox.id,
-                    orgID: sandbox.orgID,
-                    listedStatus: sandbox.status,
-                    listedWorking: initiallyWorking,
-                    memory: app.conversations
-                ) {
-                    app.sessionEnded()
-                }
-            }
-            if model?.phase != .loaded { await model?.open() }
+            if model.sandboxID != sandbox.id { model = Self.makeModel(sandbox: sandbox, app: app, initiallyWorking: initiallyWorking) }
+            await model.open()
         }
+    }
+
+    private static func makeModel(sandbox: SandboxSummary, app: AppModel, initiallyWorking: Bool) -> SandboxConversationModel {
+        SandboxConversationModel(
+            service: app.sandboxes, sandboxID: sandbox.id, orgID: sandbox.orgID,
+            listedStatus: sandbox.status, listedWorking: initiallyWorking, memory: app.conversations
+        ) { app.sessionEnded() }
     }
 
     @ViewBuilder
@@ -207,6 +202,7 @@ struct SandboxConversationView: View {
             onRetryPending: nil,
             onDismissPending: { model.dismiss($0) },
             hasOlder: model.feed.hasOlder,
+            isLoadingOlder: model.feed.isLoadingOlder,
             olderPagesRead: model.feed.olderPagesRead,
             onLoadOlder: { Task { await model.loadOlder() } }
         )
@@ -331,9 +327,10 @@ private struct SandboxHeader: View {
 
 #if DEBUG
 #Preview("Sandbox conversation") {
+    let app = AppModel.preview()
     NavigationStack {
-        SandboxConversationView(sandbox: PreviewData.sandboxes.first { $0.canOpen }!)
+        SandboxConversationView(sandbox: PreviewData.sandboxes.first { $0.canOpen }!, app: app)
     }
-    .environment(AppModel.preview())
+    .environment(app)
 }
 #endif
