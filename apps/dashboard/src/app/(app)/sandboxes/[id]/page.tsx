@@ -51,8 +51,9 @@ import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcom
 import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
-import { costOfRow } from "@/lib/sandbox-cost";
+import { costOfRow, usageFromRow } from "@/lib/sandbox-cost";
 import { sandboxListName } from "@/lib/sandbox-list-name";
+import { displayedSandboxModel } from "@/lib/sandbox-model";
 import { sandboxUsesRuntime } from "@/lib/sandbox-thread";
 import { createClient, type Supabase } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
@@ -198,6 +199,7 @@ async function CloudOverviewFacts({
   const lifecycle = readLifecycle(sandbox);
   const machineSize = describeEvidence(provider, sandbox);
   const launchFact = launchTimingFact(launchTiming);
+  const executedModels = usageFromRow(sandbox).turns.map((turn) => turn.model);
   const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Machine ID", sandbox.provider_sandbox_id ?? "Not assigned"],
@@ -207,7 +209,7 @@ async function CloudOverviewFacts({
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", account.kindLabel ? `${account.name} (${account.kindLabel})` : account.name],
     ["Billing type", account.billing],
-    ["Model", sandbox.model ?? "Provider default"],
+    ["Model", displayedSandboxModel(sandbox.harness, sandbox.model, executedModels) ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ...(repositoryDir ? [["Repository context", repositoryDir] as [string, string]] : []),
     ...(machineSize ? [["Machine size", machineSize] as [string, string]] : []),
@@ -260,6 +262,7 @@ async function DockerOverviewFacts({
   const launchFact = launchTimingFact(launchTiming);
   const lifecycle = readLifecycle(sandbox);
   const image = dockerImageLabel(sandbox.docker_image);
+  const executedModels = usageFromRow(sandbox).turns.map((turn) => turn.model);
   const facts: Fact[] = [
     ["Sandbox ID", sandbox.id],
     ["Org", org],
@@ -270,7 +273,7 @@ async function DockerOverviewFacts({
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
     ["Account", billing.kindLabel ? `${billing.name} (${billing.kindLabel})` : billing.name],
     ["Billing type", billing.billing],
-    ["Model", sandbox.model ?? "Provider default"],
+    ["Model", displayedSandboxModel(sandbox.harness, sandbox.model, executedModels) ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoning_effort ?? "Provider default"],
     ["Owner", displayUser(directory, sandbox.owner_id, viewer.id)],
     ["Created", formatDate(sandbox.created_at)],
@@ -644,7 +647,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
   const facts: [string, string][] = [
     ["Provider", sandboxProviderLabel(sandbox.provider)],
     ["Agent", HARNESS_LABELS[sandbox.harness] ?? sandbox.harness],
-    ["Model", sandbox.model ?? "Provider default"],
+    ["Model", displayedSandboxModel(sandbox.harness, sandbox.model) ?? "Provider default"],
     ["Reasoning effort", sandbox.reasoningEffort ?? "Provider default"],
     ["Machine size", sandbox.machineSize ? machineSizeLabel(sandbox.machineSize) : "Not recorded"],
     ["Owner", owner],
