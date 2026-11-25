@@ -53,10 +53,13 @@ test("the GitHub client reports a broker deadline without exposing the transport
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Trigger the request deadline without elapsed time.
   const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(timeout);
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed the aborted request back at the Unix transport boundary without opening a socket.
-  const transport = spyOn(globalThis, "fetch").mockImplementation((async (_url, options) => {
+  const transport = spyOn(globalThis, "fetch").mockImplementation((async (
+    _url: Parameters<typeof fetch>[0],
+    options?: Parameters<typeof fetch>[1],
+  ) => {
     options?.signal?.throwIfAborted();
     throw Error("expected an aborted request");
-  }) as typeof fetch);
+  }) as unknown as typeof fetch);
   let stderr = "";
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Capture the wrapper's user-facing diagnostic.
   const output = spyOn(process.stderr, "write").mockImplementation((line) => {
