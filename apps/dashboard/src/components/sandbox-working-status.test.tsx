@@ -30,6 +30,9 @@ const orig = {
   document: globalThis.document,
   fetch: globalThis.fetch,
   EventSource: globalThis.EventSource,
+  ResizeObserver: globalThis.ResizeObserver,
+  requestAnimationFrame: globalThis.requestAnimationFrame,
+  cancelAnimationFrame: globalThis.cancelAnimationFrame,
 };
 const noop = () => {};
 const router = {
@@ -413,6 +416,7 @@ function mountChat(
           <ThreadSandboxState viewerOwns status={initialStatus} readyLabel="Ready" />
         </header>
         <SandboxChat
+          key={sandboxId}
           orgId="org-1"
           sandboxId={sandboxId}
           currentConversation="c1"
@@ -766,6 +770,170 @@ test("SandboxChat hydrates synchronously from LRU cache and supports 0ms optimis
     await act(async () => {
       resolveInterrupt({ ok: true, message: "Interrupt requested." });
     });
+  } finally {
+    mock.restore();
+    await act(async () => renderer?.unmount());
+  }
+});
+
+test("SandboxChat observes inner <ol>, stays pinned on tool updates, smoothly collapses ToolGroup with elapsed timer, and supports composer auto-focus, auto-grow and shortcuts", async () => {
+  const [sandboxA, sandboxB, t0] = [
+    "55555555-5555-4555-8555-555555555555",
+    "66666666-6666-4666-8666-666666666666",
+    Date.now() - 4_200,
+  ];
+  const toolEv = (id: string, tools: unknown[], partial = true) =>
+    ({ id, at: t0, kind: "message", text: "", partial, promptId: "p1", conversationId: "c1", tools }) as never;
+  const [observed, streams] = [
+    [] as unknown[],
+    [] as Array<{ onopen?: () => void; onmessage?: (m: { lastEventId: string; data: string }) => void }>,
+  ];
+  let onResize: (() => void) | null = null;
+  setChatCache("org-1", sandboxA, {
+    history: {
+      events: [
+        { id: "ev-1", at: t0, kind: "prompt", text: "Run", status: "running", promptId: "p1", conversationId: "c1" },
+        toolEv("ev-2", [{ id: "tool-1", name: "Bash", input: { command: "bun test" } }]),
+      ],
+      cursor: `ar1_${sandboxA}_2`,
+      olderCursor: null,
+      loaded: true,
+    },
+    status: "running",
+    statusMessage: null,
+    hasLiveStatus: true,
+    idlePaused: false,
+    turnModel: { state: "running", conversationId: "c1" },
+    updatedAt: t0,
+  });
+  const { windowEvents } = installDom(async (input) => {
+    const isB = String(input).includes(sandboxB);
+    return Response.json({
+      status: isB ? "ready" : "running",
+      configured: true,
+      cursor: `ar1_${isB ? sandboxB : sandboxA}_2`,
+      hasMore: false,
+      prompt: { state: isB ? "finished" : "running", conversationId: "c1" },
+      events: [],
+    });
+  });
+  const sent: string[] = [];
+  let interrupts = 0;
+  class FakeRO {
+    constructor(cb: () => void) {
+      onResize = cb;
+    }
+    observe = (t: unknown) => observed.push(t);
+    disconnect = noop;
+  }
+  class FakeES {
+    onopen?: () => void;
+    onmessage?: (m: { lastEventId: string; data: string }) => void;
+    close = noop;
+    constructor() {
+      streams.push(this);
+    }
+  }
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply ResizeObserver, rAF, EventSource and action spies in DOM-free renderer. */
+  Object.assign(globalThis, {
+    ResizeObserver: FakeRO,
+    EventSource: FakeES,
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: noop,
+  });
+  spyOn(sandboxActions, "sendToSandbox").mockImplementation(async (_p, d) => ({
+    ok: true,
+    message: "Sent.",
+    promptId: `p-${sent.push(String(d.get("prompt") ?? ""))}`,
+  }));
+  spyOn(sandboxActions, "interruptSandbox").mockImplementation(async () => ({
+    ok: true,
+    message: `i-${++interrupts}`,
+  }));
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  const [scroller, focusCalls] = [{ scrollTop: 0, scrollHeight: 400, clientHeight: 200 }, [] as unknown[]];
+  const taNode = { style: { height: "", overflowY: "" }, scrollHeight: 88, focus: (o?: unknown) => focusCalls.push(o) };
+  const stubs: Record<string, unknown> = {
+    ol: { tagName: "OL" },
+    form: { elements: { namedItem: () => null }, reset: noop, requestSubmit: noop },
+    textarea: taNode,
+  };
+  const nodeMock = (el: { type: unknown; props?: unknown }) =>
+    el.type === "div" && (el.props as Record<string, unknown> | undefined)?.["data-fit"] === "history-scroll"
+      ? scroller
+      : typeof el.type === "string"
+        ? (stubs[el.type] ?? null)
+        : null;
+  const key = (k: string, x: Record<string, unknown> = {}) =>
+    Object.assign({ key: k, shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, preventDefault: noop }, x);
+
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = mountChat(sandboxA, "running", router, nodeMock);
+    });
+    expect(observed).toEqual(expect.arrayContaining([scroller, stubs.ol]));
+    expect([scroller.scrollTop, focusCalls, taNode.style]).toEqual([
+      400,
+      [{ preventScroll: true }],
+      { height: "88px", overflowY: "hidden" },
+    ]);
+
+    scroller.scrollHeight = 520;
+    await act(async () => onResize?.());
+    expect([
+      scroller.scrollTop,
+      renderer.root.findByProps({ "data-tool-elapsed": true }).children.join(""),
+      renderer.root.findByProps({ "data-tool-group-body": "open" }).props.className.includes("grid-rows-[1fr]"),
+    ]).toEqual([520, expect.stringMatching(/^\d+s$/), true]);
+
+    const ta = () => renderer.root.findByType("textarea");
+    await act(async () => ta().props.onKeyDown(key("Escape")));
+    await act(async () => {
+      windowEvents.dispatchEvent(Object.assign(new Event("keydown", { cancelable: true }), key("Escape")));
+    });
+    expect(interrupts).toBe(2);
+
+    scroller.scrollHeight = 600;
+    const done = toolEv("ev-3", [{ id: "tool-1", name: "Bash", result: { output: "ok", isError: false } }], false);
+    await act(async () => {
+      streams[0]!.onopen?.();
+      streams[0]!.onmessage?.({
+        lastEventId: "3",
+        data: JSON.stringify({ id: "3", sandboxId: sandboxA, sequence: "3", kind: "runtime_event", event: done }),
+      });
+    });
+    expect([
+      scroller.scrollTop,
+      renderer.root.findAllByProps({ "data-tool-elapsed": true }).length,
+      renderer.root.findByProps({ "data-tool-group-body": "closed" }).props.className.includes("grid-rows-[0fr]"),
+    ]).toEqual([600, 0, true]);
+
+    await act(async () => renderer.unmount());
+    await act(async () => {
+      renderer = mountChat(sandboxB, "ready", router, nodeMock);
+    });
+    expect(focusCalls).toHaveLength(2);
+
+    taNode.scrollHeight = 400;
+    await act(async () => ta().props.onChange({ target: { value: "Line 1\nLine 2" } }));
+    expect(taNode.style).toEqual({ height: "240px", overflowY: "auto" });
+
+    let prevented = false;
+    await act(async () =>
+      ta().props.onKeyDown(key("Enter", { shiftKey: true, preventDefault: () => (prevented = true) })),
+    );
+    expect([prevented, sent]).toEqual([false, []]);
+
+    taNode.scrollHeight = 44;
+    await act(async () => ta().props.onKeyDown(key("Enter", { preventDefault: () => (prevented = true) })));
+    expect([prevented, ta().props.value, taNode.style]).toEqual([true, "", { height: "44px", overflowY: "hidden" }]);
+
+    await act(async () => ta().props.onChange({ target: { value: "Second" } }));
+    await act(async () => ta().props.onKeyDown(key("Enter", { metaKey: true })));
+    await act(async () => ta().props.onKeyDown(key("Escape")));
+    expect([sent, interrupts]).toEqual([["Line 1\nLine 2", "Second"], 2]);
   } finally {
     mock.restore();
     await act(async () => renderer?.unmount());

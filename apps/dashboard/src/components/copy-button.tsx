@@ -12,7 +12,17 @@ const CONFIRM_MS = 1600;
  * Copies one value (an id, a command) to the clipboard and says so at once: the icon turns to a check and a polite
  * live region announces it. `label` names what is copied ("Copy sandbox ID"). A refused clipboard says that instead.
  */
-export function CopyButton({ value, label, className }: { value: string; label: string; className?: string }) {
+export function CopyButton({
+  value,
+  label,
+  className,
+  showLabel = false,
+}: {
+  value: string;
+  label: string;
+  className?: string;
+  showLabel?: boolean;
+}) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -32,7 +42,7 @@ export function CopyButton({ value, label, className }: { value: string; label: 
     <Button
       type="button"
       variant="ghost"
-      size="icon-xs"
+      size={showLabel ? "xs" : "icon-xs"}
       onClick={copy}
       aria-label={label}
       title={state === "failed" ? "Copy failed: the browser refused the clipboard" : label}
@@ -50,6 +60,9 @@ export function CopyButton({ value, label, className }: { value: string; label: 
         <XIcon className="animate-in zoom-in-50 duration-150" />
       ) : (
         <CopyIcon />
+      )}
+      {showLabel && (
+        <span aria-hidden="true">{state === "copied" ? "Copied" : state === "failed" ? "Failed" : "Copy"}</span>
       )}
       {/* A polite live region without the status role, so it never stands in for a form's own result. */}
       <span aria-live="polite" className="sr-only">

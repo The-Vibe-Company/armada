@@ -22,6 +22,55 @@ const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
 const NUMBERED = /^\s{0,3}(\d{1,9})[.)]\s+(.*)$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
 
+export function splitMarkdownBlocks(source: string) {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const segments: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    const fence = FENCE.exec(line);
+    if (fence) {
+      const marker = fence[1] ?? "```";
+      index += 1;
+      while (index < lines.length && !(lines[index] ?? "").trimStart().startsWith(marker)) index += 1;
+      index = Math.min(index + 1, lines.length);
+    } else if (isRule(line) || heading(line) !== null) {
+      index += 1;
+    } else if (QUOTE.test(line)) {
+      while (index < lines.length && QUOTE.test(lines[index] ?? "")) index += 1;
+    } else if (BULLET.test(line) || NUMBERED.test(line)) {
+      const pattern = NUMBERED.test(line) ? NUMBERED : BULLET;
+      let hasItems = false;
+      while (index < lines.length) {
+        const current = lines[index] ?? "";
+        if (pattern.test(current)) hasItems = true;
+        else if (!(current.trim() && /^\s+/.test(current) && hasItems)) break;
+        index += 1;
+      }
+    } else {
+      let body = 0;
+      while (index < lines.length) {
+        const current = lines[index] ?? "";
+        if (!current.trim() || FENCE.test(current) || heading(current) !== null || QUOTE.test(current)) break;
+        if (body > 0 && (BULLET.test(current) || NUMBERED.test(current) || isRule(current))) break;
+        body += 1;
+        index += 1;
+      }
+    }
+    segments.push(lines.slice(start, index).join("\n"));
+  }
+  return segments;
+}
+
+export function parseMarkdownBlock(segment: string) {
+  return parseMarkdown(segment)[0] ?? null;
+}
+
 export function parseMarkdown(source: string): Block[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];

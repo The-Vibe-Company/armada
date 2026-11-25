@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseInline, parseMarkdown } from "./markdown.ts";
+import { parseInline, parseMarkdown, parseMarkdownBlock, splitMarkdownBlocks } from "./markdown.ts";
 
 describe("markdown", () => {
   test("only web and mail links keep a target; script and data links and raw HTML stay text", () => {
@@ -42,5 +42,19 @@ describe("markdown", () => {
     expect(parseInline("[https://a.example](https://b.example)")).toEqual([
       { kind: "link", href: "https://b.example/", children: [{ kind: "text", text: "https://a.example" }] },
     ]);
+  });
+
+  test("splitMarkdownBlocks preserves completed prefix segments during streaming and matches parseMarkdown", () => {
+    const doc =
+      "# Summary\r\n\r\nIntro **bold**.\r\n\r\n```ts\r\nconst x = 1;\r\n```\r\n\r\n> Quote\r\n\r\n3. Third\r\n4. Fourth\r\n\r\n---\r\n\r\nTrailing";
+    const segments = splitMarkdownBlocks(doc);
+    expect(segments.map(parseMarkdownBlock)).toEqual(parseMarkdown(doc));
+    const next = splitMarkdownBlocks(`${doc} more`);
+    expect(next.slice(0, -1)).toEqual(segments.slice(0, -1));
+    expect(next.at(-1)).toBe("Trailing more");
+
+    const openFence = "Done.\n\n```sh\necho hi";
+    expect(splitMarkdownBlocks(openFence)).toEqual(["Done.", "```sh\necho hi"]);
+    expect(splitMarkdownBlocks(openFence).map(parseMarkdownBlock)).toEqual(parseMarkdown(openFence));
   });
 });
