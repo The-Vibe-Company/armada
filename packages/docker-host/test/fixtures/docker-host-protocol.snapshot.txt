@@ -149,6 +149,7 @@ export interface GoldenConfig<Branch extends string | undefined = string> {
 
 export interface DockerHostVersionOffer {
     targetVersion?: string;
+    minimumVersion?: string;
 }
 export declare const DOCKER_JOB_FAILURE_REASONS: readonly ["image_unavailable", "snapshot_build_failed", "disk_full"];
 export type DockerJobFailureReason = (typeof DOCKER_JOB_FAILURE_REASONS)[number];
