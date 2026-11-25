@@ -627,7 +627,7 @@
     "packages/mcp-server/src/docker-host-drain.ts": 1,
     "packages/mcp-server/src/docker-host-install.ts": 2,
     "packages/mcp-server/src/docker-host-routes.ts": 24,
-    "packages/mcp-server/src/docker-host-store.ts": 77,
+    "packages/mcp-server/src/docker-host-store.ts": 73,
     "packages/mcp-server/src/docker-launch-account.ts": 1,
     "packages/mcp-server/src/docker-launch-environment.ts": 1,
     "packages/mcp-server/src/docker-launch-identity.ts": 4,

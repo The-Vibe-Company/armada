@@ -25,6 +25,7 @@ import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -36,8 +37,8 @@ import type { ToolContext } from "../src/tools.ts";
 import {
   fixtureMachineId,
   pollMachineBootstrap,
+  queueMachineAllocation,
   queueMachineCreate,
-  queueMailboxCreate,
 } from "./docker-create.fixture.ts";
 import { bindDockerStopFixture, queueMailboxStop, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
@@ -302,7 +303,7 @@ test("normal Docker reads authorize owner/admin with live membership, preserve n
     deleteId = randomUUID();
   await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "delete", requestId: deleteId });
+  await hosts.enqueueCleanup(f.actor, f.sandbox.id, { operation: "delete", requestId: deleteId });
   await hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
   await hosts.revoke(f.admin, f.hostId);
   expect(await invoke(who, "status", { id: f.sandbox.id })).toMatchObject({ status: "deleted", settled: true });
@@ -736,14 +737,14 @@ test("Docker child deletion requires permanent delegated parent deletion before 
   const db = database();
   const f = await fixture(),
     who = caller(f.actor);
-  const parent = await queueMailboxCreate(sql, key, f.actor, {
+  const parent = await queueMachineAllocation(sql, key, f.actor, {
     requestId: randomUUID(),
     hostId: f.hostId,
     image: f.sandbox.image,
     credentialId: f.credentialId,
     credentialVersion: 1,
   });
-  await hosts.complete(f.hostToken, f.installationId, { requestId: parent.id, outcome: "completed" });
+  await hosts.complete(f.hostToken, f.installationId, { requestId: parent.generation, outcome: "completed" });
   for (const id of [parent.id, f.sandbox.id]) {
     const requestId = randomUUID();
     await queueMailboxStop(sql, key, f.actor, id, requestId);
@@ -1011,11 +1012,20 @@ test("reclaimed workspace status and resume report the durable disk cause", asyn
     "update public.sandboxes set status='deleted',deleted_at=now(),status_reason='disk_pressure' where id=$1",
     [f.sandbox.id],
   );
-  const controller = createDockerSandboxControls(sql, key, {
-    resume: async () => {
-      throw Error("Reclaimed workspace must not be resumed.");
-    },
+  const unavailable = async () => {
+    throw Error("Resume must be refused before provider work.");
+  };
+  const resume = createResumeJob({
+    sql,
+    key,
+    commands: commands,
+    turns: createAccountTurnQueue(sql, key),
+    provider: unavailable,
+    prepare: unavailable,
+    prepareMcp: unavailable,
+    restoreScopedAccess: unavailable,
   });
+  const controller = createDockerSandboxControls(sql, key, { resume: resume.resumeDocker });
   const status = await invoke(caller(f.actor), "status", { id: f.sandbox.id }, controller);
   expect(status).toMatchObject({ status: "deleted", statusReason: "disk_pressure" });
   expect(status).toHaveProperty("statusMessage", expect.stringContaining("low on disk space"));

@@ -13,9 +13,10 @@ import { DOCKER_HOST_PREFER_STARTUP_HEADER, type DockerHostPollResponse } from "
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { collectTransactionWakes } from "../src/wake-bus.ts";
-import { queueMailboxCreate } from "./docker-create.fixture.ts";
+import { queueMachineAllocation } from "./docker-create.fixture.ts";
 import { queueMailboxStop, reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 
@@ -217,7 +218,7 @@ test("an authenticated Docker inventory report counts only unknown containers in
     userId,
     new Uint8Array([1]),
   ]);
-  const sandbox = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+  const sandbox = await queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
     requestId: randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -689,13 +690,13 @@ test("only the owner changes a drained capable host; policy reaches admission an
   const rows = [];
   for (let i = 0; i < 3; i++)
     rows.push(
-      await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+      await queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
         ...input,
         requestId: randomUUID(),
       }),
     );
   await expect(
-    queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
+    queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
   ).rejects.toThrow("3/3");
   expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(409);
   const raised = await post(endpoint, "fixture-user-token", { ...body, maxSandboxes: 4 });
@@ -710,9 +711,9 @@ test("only the owner changes a drained capable host; policy reaches admission an
     limits: { cpus: 1, memoryBytes: 2 * 1024 ** 3, pids: 4096 },
   });
   for (const row of rows) {
-    await store.complete(host.hostToken, installationId, { requestId: row.id, outcome: "completed" });
+    await store.complete(host.hostToken, installationId, { requestId: row.generation, outcome: "completed" });
     await reportDockerExpiry(sql, Buffer.alloc(32, 8).toString("base64"), host.hostToken, installationId, {
-      requestId: row.id,
+      requestId: row.generation,
     });
   }
   const reset = await post(endpoint, "fixture-user-token", { ...body, auto: true });
@@ -721,7 +722,7 @@ test("only the owner changes a drained capable host; policy reaches admission an
   await post(endpoint, "fixture-user-token", { ...body, cpus: 4 });
   await store.poll(host.hostToken, installationId, "2.31.0", false, { cpus: 2, memoryBytes: 26 * 1024 ** 3 }, 1);
   await expect(
-    queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
+    queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, { ...input, requestId: randomUUID() }),
   ).rejects.toThrow("Host hardware changed");
   expect((await store.list(actor))[0]?.resources).toBeNull();
   expect((await post(endpoint, "fixture-user-token", { ...body, auto: true })).status).toBe(200);
@@ -762,7 +763,7 @@ test("heartbeat availability is validated and drives the public capacity summary
     new Uint8Array([1]),
   ]);
   const reserve = () =>
-    queueMailboxCreate(
+    queueMachineAllocation(
       sql,
       Buffer.alloc(32, 8).toString("base64"),
       { userId, orgId },
@@ -805,13 +806,16 @@ test("a host reporting many retained deadlines still fits the poll body limit", 
 });
 
 test("physical-only mailbox delivery requires the capability on the current poll", async () => {
-  const { db, userId, orgId, store, post } = await fixture();
+  const { db, sql, userId, orgId, store, post } = await fixture();
   const actor = { userId, orgId };
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
   const sandboxId = randomUUID();
-  const generation = randomUUID();
+  const generation = await createDockerMachineGenerationBindings(sql, { hostId: host.hostId, installationId }).bind({
+    sandboxId,
+    generation: 1,
+  });
   const image = `example/worker@sha256:${"a".repeat(64)}`;
   await db.query(
     `insert into sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
@@ -828,24 +832,23 @@ test("physical-only mailbox delivery requires the capability on the current poll
       image,
     ],
   );
-  const createId = randomUUID();
-  await store.enqueueSandbox(actor, sandboxId, { requestId: createId, operation: "create" });
+  await store.submitMachineCreate(actor, {
+    sandboxId,
+    generation: 1,
+    source: { kind: "image", ref: image },
+    computeTtlSeconds: 3600,
+    size: null,
+  });
   const created = await store.poll(host.hostToken, installationId);
   if (created?.operation !== "create") throw new Error("Expected bound create");
-  await store.complete(host.hostToken, installationId, { requestId: createId, outcome: "completed" });
+  const machineId = "a".repeat(64);
+  await store.complete(host.hostToken, installationId, { requestId: generation, outcome: "completed", machineId });
   await db.query("update sandboxes set status='failed' where id=$1", [sandboxId]);
-  const job = {
-    requestId: randomUUID(),
-    operation: "deletePhysical" as const,
-    machineId: "a".repeat(64),
-    request: created.request,
-  };
-  await store.enqueueSandbox(actor, sandboxId, {
-    requestId: job.requestId,
-    operation: job.operation,
-    machineId: job.machineId,
-    lifecycleGeneration: 1,
-  });
+  const adapter = store.machine({ actor, hostId: host.hostId, installationId });
+  await expect(adapter.delete({ sandboxId, generation: 1, machineId, scope: "physical-only" })).rejects.toThrow(
+    "outcome is pending",
+  );
+  const job = { operation: "deletePhysical", machineId, request: created.request };
   const poll = async (capability?: string) => {
     const response = await post(
       "/api/docker-host/poll",
@@ -900,14 +903,14 @@ test("a held host poll returns a locally enqueued job with the clock frozen", as
       userId,
       new Uint8Array([1]),
     ]);
-    const sandbox = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+    const sandbox = await queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
       requestId: randomUUID(),
       hostId: host.hostId,
       image: `worker@sha256:${"a".repeat(64)}`,
       credentialId,
       credentialVersion: 1,
     });
-    jobId = sandbox.id;
+    jobId = sandbox.generation;
     expect(signal.aborted).toBe(true);
   } finally {
     if (!signal.aborted) delay.reject(new Error("Host poll received no enqueue wake"));
@@ -1041,11 +1044,11 @@ test("a host poll skips work the daemon reports running and hands out another sa
     new Uint8Array([1]),
   ]);
   const input = { hostId: host.hostId, image: `worker@sha256:${"a".repeat(64)}`, credentialId, credentialVersion: 1 };
-  const first = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+  const first = await queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
     ...input,
     requestId: randomUUID(),
   });
-  const second = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+  const second = await queueMachineAllocation(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
     ...input,
     requestId: randomUUID(),
   });
