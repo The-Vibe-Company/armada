@@ -1,5 +1,41 @@
 # Changelog
 
+## [14.0.0](https://github.com/The-Vibe-Company/armada/compare/v13.0.0...v14.0.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launch:** delete the synchronous launch path and bespoke launch workers ([#4248](https://github.com/The-Vibe-Company/armada/issues/4248))
+
+### Features
+
+* **lifecycle:** resume runs as a job ([#4211](https://github.com/The-Vibe-Company/armada/issues/4211)) ([dbaf283](https://github.com/The-Vibe-Company/armada/commit/dbaf2831250c2dacdae7a2830163b721fc90112d))
+* **lifecycle:** resume runs as a job ([#4222](https://github.com/The-Vibe-Company/armada/issues/4222)) ([779413d](https://github.com/The-Vibe-Company/armada/commit/779413d6c7a61c2225cc1e24860f9d4c9ce4d1ad))
+* **lifecycle:** resume runs as a job ([#4244](https://github.com/The-Vibe-Company/armada/issues/4244)) ([bc9cdf3](https://github.com/The-Vibe-Company/armada/commit/bc9cdf3e9e1d253529f6be79b4c6a912d6dc1c8e))
+
+
+### Bug Fixes
+
+* **dashboard:** fix mobile shell SSR double-mount and responsive tables, grids, and popovers ([#4235](https://github.com/The-Vibe-Company/armada/issues/4235)) ([ae80475](https://github.com/The-Vibe-Company/armada/commit/ae804754fd0b4940f92f88ad88cf5162d3107186))
+* **github:** sandbox GitHub credentials not renewed after a long turn or resume ([#4220](https://github.com/The-Vibe-Company/armada/issues/4220)) ([3876b64](https://github.com/The-Vibe-Company/armada/commit/3876b64fa1ebccbd7bc525d9e5e816e13c009232))
+* **lifecycle:** surface confirmed Docker stop retention loss ([#4217](https://github.com/The-Vibe-Company/armada/issues/4217)) ([7dbf599](https://github.com/The-Vibe-Company/armada/commit/7dbf599eb692c21ca1ad963aa28eff9fb1814624))
+* **server:** advertise Boat template MCP proof for effective runtime placement ([#4225](https://github.com/The-Vibe-Company/armada/issues/4225)) ([8c4db98](https://github.com/The-Vibe-Company/armada/commit/8c4db9878309cdbc3a66981b9d6f59312b83d5e2))
+
+
+### Performance Improvements
+
+* **dashboard:** eliminate SSR waterfalls, N+1 account query, and unrendered sandbox-detail fetch ([#4236](https://github.com/The-Vibe-Company/armada/issues/4236)) ([5bb054a](https://github.com/The-Vibe-Company/armada/commit/5bb054a1e3db158602cea5b34b0a67d3bc188156))
+* **dashboard:** stop downloading all historical deleted sandboxes on every /sandboxes load ([#4243](https://github.com/The-Vibe-Company/armada/issues/4243)) ([f5dc68e](https://github.com/The-Vibe-Company/armada/commit/f5dc68ec6befd27af82deaeb1607c3394612b83f))
+* **dashboard:** stream dialog-only data on /snapshots and hoist shared TooltipProvider ([#4239](https://github.com/The-Vibe-Company/armada/issues/4239)) ([f6dbcd3](https://github.com/The-Vibe-Company/armada/commit/f6dbcd3417113e8a2450d8179101f6b7d1726277))
+* **launch:** cut sequential SQL in launch admission ([#4224](https://github.com/The-Vibe-Company/armada/issues/4224)) ([0f2f8ee](https://github.com/The-Vibe-Company/armada/commit/0f2f8ee81c5fe5f761862e7def71a8a615382062))
+* **launch:** cut sequential SQL in launch admission ([#4241](https://github.com/The-Vibe-Company/armada/issues/4241)) ([cca0f20](https://github.com/The-Vibe-Company/armada/commit/cca0f20ee86c38a8c36645866e32cd795b797b6c))
+* **launch:** cut sequential SQL in launch admission ([#4246](https://github.com/The-Vibe-Company/armada/issues/4246)) ([7d1663e](https://github.com/The-Vibe-Company/armada/commit/7d1663e99c5e66b0167d286014b3e12a5ca7778a))
+
+
+### Code Refactoring
+
+* **launch:** delete the synchronous launch path and bespoke launch workers ([#4248](https://github.com/The-Vibe-Company/armada/issues/4248)) ([273e0f9](https://github.com/The-Vibe-Company/armada/commit/273e0f95d4ea44663e5c0a95e1796b10e9c2f7b8))
+
 ## [13.0.0](https://github.com/The-Vibe-Company/armada/compare/v12.0.0...v13.0.0) (2026-11-25)
 
 
