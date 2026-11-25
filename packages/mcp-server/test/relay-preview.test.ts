@@ -180,6 +180,20 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       );
       return;
     }
+    if (text.startsWith("GET /rel ")) {
+      s.sendData(enc.encode("HTTP/1.1 302 Found\r\nLocation: /login?next=/app\r\nContent-Length: 0\r\n\r\n"));
+      return;
+    }
+    if (text.startsWith("GET /ext ")) {
+      s.sendData(
+        enc.encode("HTTP/1.1 302 Found\r\nLocation: https://external.example/auth\r\nContent-Length: 0\r\n\r\n"),
+      );
+      return;
+    }
+    if (text.startsWith("GET /refused ")) {
+      s.close(1000, "refused");
+      return;
+    }
     const big = "A".repeat(70_000);
     const resp = enc.encode(
       `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/plain\r\nConnection: keep-alive, x-hop\r\nX-Hop: drop\r\n\r\n5\r\nhello\r\n${big.length.toString(16)}\r\n${big}\r\n0\r\n\r\n`,
@@ -252,6 +266,12 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       "nosniff",
     ]);
     expect(redir.headers.getSetCookie()).toEqual([`app_sid=xyz; HttpOnly; Path=${scope}`]);
+    const rel = await f.call(`${scope}rel`, { headers: { cookie: cookiePair } });
+    expect([rel.status, rel.headers.get("location")]).toEqual([302, `${scope}login?next=/app`]);
+    const ext = await f.call(`${scope}ext`, { headers: { cookie: cookiePair } });
+    expect([ext.status, ext.headers.get("location")]).toEqual([302, "https://external.example/auth"]);
+    const refused = await f.call(`${scope}refused`, { headers: { cookie: cookiePair } });
+    expect(refused.status).toBe(502);
     expect(seenRequests[0]).toContain("Host: 127.0.0.1:3000\r\n");
     expect(seenRequests[0]).toContain("Cookie: app_theme=dark\r\n");
     for (const leaked of ["no-leak", "armada_preview", "sb-auth", "x-secret-hop"])
@@ -268,8 +288,8 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       "nosniff",
     ]);
     expect(await streamed.text()).toBe(`hello${"A".repeat(70_000)}`);
-    expect(seenRequests[1]).toContain("req-body");
-    expect(seenCredits[1]!.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(65_536);
+    expect(seenRequests.at(-1)).toContain("req-body");
+    expect(seenCredits.at(-1)!.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(65_536);
 
     await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
     expect((await f.call(scope, { headers: { cookie: cookiePair } })).status).toBe(403);

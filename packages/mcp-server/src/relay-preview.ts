@@ -18,6 +18,7 @@ const COOKIE_PREFIX = "armada_prev_";
 const PREVIEW_TTL_MS = 15 * 60_000;
 const TIMEOUT_MS = 30_000;
 const MAX_HEADER_BYTES = 65_536;
+const MAX_ENTER_BYTES = 16_384;
 const MAX_WS_PAYLOAD = 4 * 1024 * 1024;
 const ENTER_PATH = "/api/v1/relay/preview/enter";
 const PREVIEW_RE = /^\/api\/v1\/sandboxes\/([^/]+)\/ports\/([^/]+)(\/.*)?$/;
@@ -83,54 +84,61 @@ const empty = (status: number, extra?: Record<string, string>) =>
   new Response(null, { status, headers: { "cache-control": "no-store", ...extra } });
 const prefixOf = (id: string, port: number) => `/api/v1/sandboxes/${id}/ports/${port}`;
 const safeWsCode = (c: number) => (c >= 1000 && c <= 4999 && c !== 1005 && c !== 1006 && c !== 1015 ? c : 1000);
-const closeStatus = (r: RelayCloseReason) =>
-  r === "revoked" ? 403 : r === "timeout" ? 504 : r === "limit" ? 503 : 502;
-const joinU8 = (a: Uint8Array, b: Uint8Array) => {
+function closeStatus(r: RelayCloseReason) {
+  if (r === "revoked") return 403;
+  if (r === "timeout") return 504;
+  if (r === "limit") return 503;
+  return 502;
+}
+function joinU8(a: Uint8Array, b: Uint8Array) {
   if (!a.byteLength) return b;
   if (!b.byteLength) return a;
   const o = new Uint8Array(a.byteLength + b.byteLength);
   o.set(a, 0);
   o.set(b, a.byteLength);
   return o;
-};
-const findSeq = (buf: Uint8Array, seq: Uint8Array) => {
+}
+function findSeq(buf: Uint8Array, seq: Uint8Array) {
   outer: for (let i = 0; i <= buf.byteLength - seq.byteLength; i++) {
     for (let j = 0; j < seq.byteLength; j++) if (buf[i + j] !== seq[j]) continue outer;
     return i;
   }
   return -1;
-};
-const parsePath = (pathname: string) => {
+}
+function parsePath(pathname: string) {
   const m = PREVIEW_RE.exec(pathname);
   if (!m) return null;
   const port = PORT_RE.test(m[2]!) ? Number(m[2]) : 0;
-  return !UUID_RE.test(m[1]!) || port < 1 || port > 65_535
-    ? { valid: false as const }
-    : { valid: true as const, sandboxId: m[1]!.toLowerCase(), port, rest: m[3] || "/" };
-};
+  if (!UUID_RE.test(m[1]!) || port < 1 || port > 65_535) return { valid: false as const };
+  return { valid: true as const, sandboxId: m[1]!.toLowerCase(), port, rest: m[3] || "/" };
+}
 const isArmadaCookie = (name: string) => /^(?:armada_|__host-armada|__secure-armada|sb-)/i.test(name);
-const parseCookies = (hdr: string | null) =>
-  (hdr ?? "").split(";").flatMap((p) => {
-    const eq = p.indexOf("=");
-    const n = eq > 0 ? p.slice(0, eq).trim() : "";
-    return n ? [[n, p.slice(eq + 1).trim()] as [string, string]] : [];
-  });
-const cleanCookieHdr = (hdr: string | null) =>
-  parseCookies(hdr)
+function parseCookies(hdr: string | null) {
+  const out: [string, string][] = [];
+  for (const part of (hdr ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    const name = eq > 0 ? part.slice(0, eq).trim() : "";
+    if (name) out.push([name, part.slice(eq + 1).trim()]);
+  }
+  return out;
+}
+function cleanCookieHdr(hdr: string | null) {
+  const kept = parseCookies(hdr)
     .filter(([n]) => !isArmadaCookie(n))
-    .map(([n, v]) => `${n}=${v}`)
-    .join("; ") || null;
-const hopSet = (vals: string[]) =>
-  new Set([
-    ...HOP,
-    ...vals.flatMap((v) =>
-      v
-        .split(",")
-        .map((t) => t.trim().toLowerCase())
-        .filter(Boolean),
-    ),
-  ]);
-const rewriteSetCookie = (raw: string, prefix: string) => {
+    .map(([n, v]) => `${n}=${v}`);
+  return kept.length ? kept.join("; ") : null;
+}
+function hopSet(vals: string[]) {
+  const set = new Set(HOP);
+  for (const v of vals) {
+    for (const t of v.split(",")) {
+      const name = t.trim().toLowerCase();
+      if (name) set.add(name);
+    }
+  }
+  return set;
+}
+function rewriteSetCookie(raw: string, prefix: string) {
   const parts = raw
     .split(";")
     .map((p) => p.trim())
@@ -138,21 +146,30 @@ const rewriteSetCookie = (raw: string, prefix: string) => {
   const first = parts[0];
   const eq = first?.indexOf("=") ?? -1;
   if (!first || eq <= 0 || isArmadaCookie(first.slice(0, eq).trim())) return null;
-  return `${first}; ${[...parts.slice(1).filter((a) => !/^(?:path|domain)(?:=|$)/i.test(a)), `Path=${prefix}/`].join("; ")}`;
-};
-const rewriteLocation = (raw: string, id: string, port: number) => {
+  const attrs = parts.slice(1).filter((a) => !/^(?:path|domain)(?:=|$)/i.test(a));
+  attrs.push(`Path=${prefix}/`);
+  return `${first}; ${attrs.join("; ")}`;
+}
+function rewriteLocation(raw: string, id: string, port: number) {
   const prefix = prefixOf(id, port);
-  if (raw.startsWith("/") && !raw.startsWith("//"))
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
     return raw === prefix || raw.startsWith(`${prefix}/`) ? raw : `${prefix}${raw}`;
+  }
   try {
     const u = new URL(raw, `http://127.0.0.1:${port}`);
-    const uPort = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
-    if ((u.protocol === "http:" || u.protocol === "https:") && LOOPBACK.has(u.hostname.toLowerCase()) && uPort === port)
+    const defaultPort = u.protocol === "https:" ? 443 : 80;
+    const uPort = u.port ? Number(u.port) : defaultPort;
+    if (
+      (u.protocol === "http:" || u.protocol === "https:") &&
+      LOOPBACK.has(u.hostname.toLowerCase()) &&
+      uPort === port
+    ) {
       return `${prefix}${u.pathname}${u.search}${u.hash}`;
+    }
   } catch {}
   return raw;
-};
-const parseHead = (buf: Uint8Array) => {
+}
+function parseHead(buf: Uint8Array) {
   const end = findSeq(buf, CRLF2);
   if (end === -1) return buf.byteLength > MAX_HEADER_BYTES ? ("invalid" as const) : ("more" as const);
   if (end > MAX_HEADER_BYTES) return "invalid" as const;
@@ -162,27 +179,34 @@ const parseHead = (buf: Uint8Array) => {
   if (!sm || status < 100 || status > 599) return "invalid" as const;
   const headers: [string, string][] = [];
   for (let i = 1; i < lines.length; i++) {
-    const colon = lines[i]!.indexOf(":");
-    if (colon <= 0 || !TOKEN_RE.test(lines[i]!.slice(0, colon))) return "invalid" as const;
-    headers.push([lines[i]!.slice(0, colon), lines[i]!.slice(colon + 1).trim()]);
+    const line = lines[i]!;
+    const colon = line.indexOf(":");
+    if (colon <= 0 || !TOKEN_RE.test(line.slice(0, colon))) return "invalid" as const;
+    headers.push([line.slice(0, colon), line.slice(colon + 1).trim()]);
   }
   return { status, statusText: sm[2] ?? "", headers, consumed: end + 4 };
-};
-const createWriter = (tcp: LocalTcpStream, win: StreamWindow) => {
+}
+function createWriter(tcp: LocalTcpStream, win: StreamWindow) {
   const q: Uint8Array[] = [];
-  let off = 0,
-    queued = 0,
-    closed = false,
-    wakeFn: (() => void) | undefined;
+  let off = 0;
+  let queued = 0;
+  let closed = false;
+  let wakeFn: (() => void) | undefined;
   const wake = () => {
     const fn = wakeFn;
     wakeFn = undefined;
     fn?.();
   };
+  const close = () => {
+    closed = true;
+    q.length = 0;
+    queued = 0;
+    wake();
+  };
   const flush = () => {
     while (!closed && q.length && win.sendAvailable > 0) {
-      const head = q[0]!,
-        n = Math.min(win.sendAvailable, MAX_DATA_CHUNK, head.byteLength - off);
+      const head = q[0]!;
+      const n = Math.min(win.sendAvailable, MAX_DATA_CHUNK, head.byteLength - off);
       win.consumeSend(n);
       if (!tcp.sendData(off === 0 && n === head.byteLength ? head : head.subarray(off, off + n))) return close();
       off += n;
@@ -194,23 +218,20 @@ const createWriter = (tcp: LocalTcpStream, win: StreamWindow) => {
     }
     if (queued < INITIAL_STREAM_WINDOW) wake();
   };
-  const close = () => {
-    closed = true;
-    q.length = 0;
-    queued = 0;
-    wake();
-  };
   return {
-    write: (b: Uint8Array) => {
-      if (!closed && b.byteLength) {
-        q.push(b);
-        queued += b.byteLength;
-        flush();
-      }
+    write(b: Uint8Array) {
+      if (closed || !b.byteLength) return;
+      q.push(b);
+      queued += b.byteLength;
+      flush();
     },
-    waitDrain: () =>
-      closed || queued < INITIAL_STREAM_WINDOW ? Promise.resolve() : new Promise<void>((r) => (wakeFn = r)),
-    onCredit: (n: number) => {
+    waitDrain() {
+      if (closed || queued < INITIAL_STREAM_WINDOW) return Promise.resolve();
+      return new Promise<void>((r) => {
+        wakeFn = r;
+      });
+    },
+    onCredit(n: number) {
       if (closed) return;
       try {
         win.replenishSend(n);
@@ -225,15 +246,17 @@ const createWriter = (tcp: LocalTcpStream, win: StreamWindow) => {
       return closed;
     },
   };
-};
-const encodeWsFrame = (op: number, payload: Uint8Array) => {
-  const len = payload.byteLength,
-    mask = randomBytes(4),
-    hdr = len < 126 ? 2 : len <= 0xffff ? 4 : 10,
-    out = new Uint8Array(hdr + 4 + len);
+}
+function encodeWsFrame(op: number, payload: Uint8Array) {
+  const len = payload.byteLength;
+  const mask = randomBytes(4);
+  let hdr = 2;
+  if (len >= 126 && len <= 0xffff) hdr = 4;
+  else if (len > 0xffff) hdr = 10;
+  const out = new Uint8Array(hdr + 4 + len);
   out[0] = 0x80 | (op & 0x0f);
-  if (len < 126) out[1] = 0x80 | len;
-  else if (len <= 0xffff) {
+  if (hdr === 2) out[1] = 0x80 | len;
+  else if (hdr === 4) {
     out[1] = 0x80 | 126;
     out[2] = (len >>> 8) & 0xff;
     out[3] = len & 0xff;
@@ -244,25 +267,25 @@ const encodeWsFrame = (op: number, payload: Uint8Array) => {
   out.set(mask, hdr);
   for (let i = 0; i < len; i++) out[hdr + 4 + i] = payload[i]! ^ mask[i & 3]!;
   return out;
-};
-const wsCloseBytes = (code: number, reason = "") => {
-  const safe = safeWsCode(code),
-    t = enc.encode(reason).subarray(0, 123),
-    o = new Uint8Array(2 + t.byteLength);
+}
+function wsCloseBytes(code: number, reason = "") {
+  const safe = safeWsCode(code);
+  const t = enc.encode(reason).subarray(0, 123);
+  const o = new Uint8Array(2 + t.byteLength);
   o[0] = (safe >>> 8) & 0xff;
   o[1] = safe & 0xff;
   o.set(t, 2);
   return o;
-};
-const parseWsFrame = (buf: Uint8Array) => {
+}
+function parseWsFrame(buf: Uint8Array) {
   if (buf.byteLength < 2) return "more" as const;
-  const b0 = buf[0]!,
-    b1 = buf[1]!;
+  const b0 = buf[0]!;
+  const b1 = buf[1]!;
   if ((b0 & 0x70) !== 0 || (b1 & 0x80) !== 0) return "invalid" as const;
-  const fin = (b0 & 0x80) !== 0,
-    opcode = b0 & 0x0f;
-  let len = b1 & 0x7f,
-    off = 2;
+  const fin = (b0 & 0x80) !== 0;
+  const opcode = b0 & 0x0f;
+  let len = b1 & 0x7f;
+  let off = 2;
   if (len === 126) {
     if (buf.byteLength < 4) return "more" as const;
     len = (buf[2]! << 8) | buf[3]!;
@@ -275,10 +298,25 @@ const parseWsFrame = (buf: Uint8Array) => {
     off = 10;
   }
   if (len > MAX_WS_PAYLOAD || (opcode >= 0x8 && (!fin || len > 125))) return "invalid" as const;
-  return buf.byteLength < off + len
-    ? ("more" as const)
-    : { fin, opcode, payload: buf.subarray(off, off + len), consumed: off + len };
-};
+  if (buf.byteLength < off + len) return "more" as const;
+  return { fin, opcode, payload: buf.subarray(off, off + len), consumed: off + len };
+}
+function resolveBodyMode(request: Request) {
+  if (request.method === "GET" || request.method === "HEAD" || request.body === null) return "none" as const;
+  const rawCl = request.headers.get("content-length")?.trim();
+  if (rawCl && /^\d+$/.test(rawCl)) {
+    const n = Number(rawCl);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return "chunked" as const;
+}
+function wsSendSafe(ws: ServerWebSocket<PreviewWsSocketData>, data: string | Uint8Array) {
+  try {
+    return ws.send(data) !== 0;
+  } catch {
+    return false;
+  }
+}
 
 export function createRelayPreview(options: RelayPreviewOptions) {
   const { relayHub, encryptionKey, authenticate } = options;
@@ -294,20 +332,18 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       return () => clearTimeout(t);
     },
   };
-  const bridges = new Map<number, WsBridge>(),
-    activeStreams = new Set<() => void>();
-  let nextBridgeId = 1,
-    stopping = false;
+  const bridges = new Map<number, WsBridge>();
+  const activeStreams = new Set<() => void>();
+  let nextBridgeId = 1;
+  let stopping = false;
 
   async function readCookie(request: Request, sandboxId: string, port: number) {
     if (!encryptionKey) return null;
     const now = clock.now();
     for (const [name, raw] of parseCookies(request.headers.get("cookie"))) {
       if (name !== COOKIE_NAME || !raw.startsWith(COOKIE_PREFIX) || raw.length > 8_192) continue;
-      const plain = await decryptSecret(
-        new Uint8Array(Buffer.from(raw.slice(COOKIE_PREFIX.length), "base64url")),
-        encryptionKey,
-      ).catch(() => null);
+      const bytes = new Uint8Array(Buffer.from(raw.slice(COOKIE_PREFIX.length), "base64url"));
+      const plain = await decryptSecret(bytes, encryptionKey).catch(() => null);
       if (!plain) continue;
       let json: unknown;
       try {
@@ -316,14 +352,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
         continue;
       }
       const parsed = cookieSchema.safeParse(json);
-      if (
-        parsed.success &&
-        parsed.data.sandboxId === sandboxId &&
-        parsed.data.port === port &&
-        parsed.data.exp > now &&
-        parsed.data.exp <= now + PREVIEW_TTL_MS
-      )
-        return parsed.data;
+      if (!parsed.success) continue;
+      const c = parsed.data;
+      if (c.sandboxId === sandboxId && c.port === port && c.exp > now && c.exp <= now + PREVIEW_TTL_MS) return c;
     }
     return null;
   }
@@ -337,13 +368,14 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     if (media !== "application/x-www-form-urlencoded" && media !== "application/json") return empty(415);
     let text: string;
     try {
-      text = await readBoundedText(request, 16_384);
+      text = await readBoundedText(request, MAX_ENTER_BYTES);
     } catch (e) {
       return empty(e instanceof BodyTooLargeError ? 413 : 400);
     }
     let ticket: string | null = null;
-    if (media === "application/x-www-form-urlencoded") ticket = new URLSearchParams(text).get("ticket");
-    else {
+    if (media === "application/x-www-form-urlencoded") {
+      ticket = new URLSearchParams(text).get("ticket");
+    } else {
       try {
         const o = JSON.parse(text) as unknown;
         if (
@@ -351,8 +383,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
           typeof o === "object" &&
           !Array.isArray(o) &&
           typeof (o as Record<string, unknown>).ticket === "string"
-        )
+        ) {
           ticket = (o as Record<string, unknown>).ticket as string;
+        }
       } catch {
         return empty(400);
       }
@@ -363,8 +396,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     if (claims.mode !== "preview" || claims.port === undefined) return empty(403);
     const access = await relayHub.checkAccess(claims.orgIds, claims.userId, claims.sandboxId);
     if (!access.ok) return empty(access.status);
-    if (!access.epoch || access.epoch !== claims.epoch || !relayHub.isConnected(claims.sandboxId, claims.epoch))
+    if (!access.epoch || access.epoch !== claims.epoch || !relayHub.isConnected(claims.sandboxId, claims.epoch)) {
       return empty(503);
+    }
     const cookie: PreviewCookie = {
       purpose: "sandbox-preview-v1",
       sandboxId: claims.sandboxId,
@@ -392,9 +426,10 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     if (cookie) {
       const a = await relayHub.checkAccess(cookie.orgIds, cookie.userId, sandboxId);
       if (!a.ok) return { ok: false as const, response: empty(a.status) };
-      return !a.epoch || a.epoch !== cookie.epoch || !relayHub.isConnected(sandboxId, a.epoch)
-        ? { ok: false as const, response: empty(503) }
-        : { ok: true as const, epoch: a.epoch };
+      if (!a.epoch || a.epoch !== cookie.epoch || !relayHub.isConnected(sandboxId, a.epoch)) {
+        return { ok: false as const, response: empty(503) };
+      }
+      return { ok: true as const, epoch: a.epoch };
     }
     if (!request.headers.get("authorization") || !authenticate) return { ok: false as const, response: empty(401) };
     let auth: CallerResult;
@@ -410,9 +445,8 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       sandboxId,
     );
     if (!a.ok) return { ok: false as const, response: empty(a.status) };
-    return !a.epoch || !relayHub.isConnected(sandboxId, a.epoch)
-      ? { ok: false as const, response: empty(503) }
-      : { ok: true as const, epoch: a.epoch };
+    if (!a.epoch || !relayHub.isConnected(sandboxId, a.epoch)) return { ok: false as const, response: empty(503) };
+    return { ok: true as const, epoch: a.epoch };
   }
 
   async function handleHttpProxy(request: Request, sandboxId: string, port: number, rest: string) {
@@ -423,29 +457,23 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     const auth = await authorizeHttp(request, sandboxId, port);
     if (!auth.ok) return auth.response;
 
-    const rawCl = request.headers.get("content-length"),
-      hasBody = request.method !== "GET" && request.method !== "HEAD" && request.body !== null;
-    const bodyMode: "none" | "chunked" | number = !hasBody
-      ? "none"
-      : rawCl !== null && /^\d+$/.test(rawCl.trim())
-        ? Number(rawCl.trim())
-        : "chunked";
-    const win = new StreamWindow(INITIAL_STREAM_WINDOW, CREDIT_WATERMARK),
-      headDone = Promise.withResolvers<Response>(),
-      pendingOut: { data: Uint8Array; ack: number }[] = [];
-    let opened = false,
-      headResolved = false,
-      cleaned = false,
-      upstreamEnded = false,
-      bodyModeRes: "chunked" | "length" | "eof" = "eof",
-      bodyRem = 0;
-    let chunkState: "size" | "data" | "crlf" | "trailers" | "done" = "size",
-      headerBuf: Uint8Array = EMPTY_U8,
-      chunkBuf: Uint8Array = EMPTY_U8;
-    let upstreamError: Error | undefined,
-      bodyCtrl: ReadableStreamDefaultController<Uint8Array> | undefined,
-      tcp!: LocalTcpStream,
-      writer!: ReturnType<typeof createWriter>;
+    const bodyMode = resolveBodyMode(request);
+    const win = new StreamWindow(INITIAL_STREAM_WINDOW, CREDIT_WATERMARK);
+    const headDone = Promise.withResolvers<Response>();
+    const pendingOut: { data: Uint8Array; ack: number }[] = [];
+    let opened = false;
+    let headResolved = false;
+    let cleaned = false;
+    let upstreamEnded = false;
+    let bodyModeRes: "chunked" | "length" | "eof" = "eof";
+    let bodyRem = 0;
+    let chunkState: "size" | "data" | "crlf" | "trailers" | "done" = "size";
+    let headerBuf: Uint8Array = EMPTY_U8;
+    let chunkBuf: Uint8Array = EMPTY_U8;
+    let upstreamError: Error | undefined;
+    let bodyCtrl: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let tcp!: LocalTcpStream;
+    let writer!: ReturnType<typeof createWriter>;
 
     const ackBytes = (n: number) => {
       if (n <= 0) return;
@@ -472,9 +500,11 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       }
       cleanup(code, reason);
     };
-    const onAbort = () => failOrError(499, "Aborted.", 1000),
-      onStop = () => failOrError(503, "Stopping.", 1012);
-    const cancelTimeout = clock.after(TIMEOUT_MS, () => !headResolved && failOrError(504, "Timeout.", 1001, "timeout"));
+    const onAbort = () => failOrError(499, "Aborted.", 1000);
+    const onStop = () => failOrError(503, "Stopping.", 1012);
+    const cancelTimeout = clock.after(TIMEOUT_MS, () => {
+      if (!headResolved) failOrError(504, "Timeout.", 1001, "timeout");
+    });
     const flushBody = () => {
       if (!bodyCtrl) return;
       while (pendingOut.length && (bodyCtrl.desiredSize ?? 1) > 0) {
@@ -546,8 +576,8 @@ export function createRelayPreview(options: RelayPreviewOptions) {
           consumed += 2;
           chunkState = "size";
         } else {
-          const idx =
-            chunkBuf.byteLength >= 2 && chunkBuf[0] === 13 && chunkBuf[1] === 10 ? 0 : findSeq(chunkBuf, CRLF2);
+          const isEmptyTrailer = chunkBuf.byteLength >= 2 && chunkBuf[0] === 13 && chunkBuf[1] === 10;
+          const idx = isEmptyTrailer ? 0 : findSeq(chunkBuf, CRLF2);
           if (idx === -1) break;
           consumed += chunkBuf.byteLength;
           chunkBuf = EMPTY_U8;
@@ -571,15 +601,16 @@ export function createRelayPreview(options: RelayPreviewOptions) {
           l !== "content-length" &&
           !/[\r\n]/.test(k) &&
           !/[\r\n]/.test(v)
-        )
+        ) {
           lines.push(`${k}: ${v}`);
+        }
       });
       const ck = cleanCookieHdr(request.headers.get("cookie"));
       if (ck) lines.push(`Cookie: ${ck}`);
       if (bodyMode === "chunked") lines.push("Transfer-Encoding: chunked");
       else if (typeof bodyMode === "number") lines.push(`Content-Length: ${bodyMode}`);
       writer.write(enc.encode(`${lines.join("\r\n")}\r\n\r\n`));
-      if (!hasBody || !request.body) return;
+      if (bodyMode === "none" || !request.body) return;
       const reader = request.body.getReader();
       let sent = 0;
       try {
@@ -591,7 +622,7 @@ export function createRelayPreview(options: RelayPreviewOptions) {
             writer.write(enc.encode(`${value.byteLength.toString(16)}\r\n`));
             writer.write(value);
             writer.write(CRLF);
-          } else if (typeof bodyMode === "number") {
+          } else {
             const take = Math.min(value.byteLength, bodyMode - sent);
             if (take > 0) {
               writer.write(take === value.byteLength ? value : value.subarray(0, take));
@@ -613,12 +644,13 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       sandboxId,
       port,
       {
-        onOpen: () => {
+        onOpen() {
           opened = true;
           void sendRequest();
         },
         onCredit: (n) => writer.onCredit(n),
         onData(data) {
+          if (!opened) return failOrError(502, "Unexpected data before open.", 1002);
           if (!win.recordReceived(data.byteLength)) {
             if (!headResolved) return failOrError(502, "Backpressure.", 1008, "backpressure");
             upstreamError = new Error("Backpressure.");
@@ -637,22 +669,24 @@ export function createRelayPreview(options: RelayPreviewOptions) {
               continue;
             }
             const byName = (name: string) => parsed.headers.filter(([k]) => k.toLowerCase() === name).map(([, v]) => v);
-            const hop = hopSet(byName("connection")),
-              te = byName("transfer-encoding")
-                .flatMap((v) => v.split(","))
-                .map((v) => v.trim().toLowerCase())
-                .filter(Boolean),
-              cl = byName("content-length");
+            const hop = hopSet(byName("connection"));
+            const te = byName("transfer-encoding")
+              .flatMap((v) => v.split(","))
+              .map((v) => v.trim().toLowerCase())
+              .filter(Boolean);
+            const cl = byName("content-length");
             if (te.length && (te.length > 1 || te[0] !== "chunked")) return failOrError(502, "Unsupported TE.", 1002);
             const isChunked = te[0] === "chunked";
             let contentLength: number | null = null;
             if (!isChunked && cl.length) {
               const first = cl[0]!.trim();
-              if (!/^\d+$/.test(first) || cl.some((v) => v.trim() !== first)) return failOrError(502, "Bad CL.", 1002);
+              if (!/^\d+$/.test(first) || cl.some((v) => v.trim() !== first)) {
+                return failOrError(502, "Bad CL.", 1002);
+              }
               contentLength = Number(first);
             }
-            const outHeaders = new Headers(),
-              prefix = prefixOf(sandboxId, port);
+            const outHeaders = new Headers();
+            const prefix = prefixOf(sandboxId, port);
             for (const [k, v] of parsed.headers) {
               const l = k.toLowerCase();
               if (hop.has(l) || (l === "content-length" && isChunked)) continue;
@@ -673,7 +707,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
                 new Response(null, { status: parsed.status, statusText: parsed.statusText, headers: outHeaders }),
               );
             }
-            bodyModeRes = isChunked ? "chunked" : contentLength !== null ? "length" : "eof";
+            if (isChunked) bodyModeRes = "chunked";
+            else if (contentLength !== null) bodyModeRes = "length";
+            else bodyModeRes = "eof";
             bodyRem = contentLength ?? 0;
             const initial = headerBuf;
             headerBuf = EMPTY_U8;
@@ -693,9 +729,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
         },
         onClose(_code, reason) {
           if (!headResolved) return failOrError(opened ? 502 : closeStatus(reason), "Closed.", 1000, reason);
-          if (bodyModeRes === "eof" || (bodyModeRes === "length" && bodyRem === 0) || chunkState === "done")
+          if (bodyModeRes === "eof" || (bodyModeRes === "length" && bodyRem === 0) || chunkState === "done") {
             upstreamEnded = true;
-          else upstreamError = new Error("Premature close.");
+          } else upstreamError = new Error("Premature close.");
           flushBody();
         },
       },
@@ -749,8 +785,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       if (f.opcode === 0x1 || f.opcode === 0x2) {
         if (b.fragOp !== 0) return closeBridge(b, 1002);
         if (f.fin) {
-          if (b.ws.send(f.opcode === 0x1 ? dec.decode(f.payload) : new Uint8Array(f.payload)) === 0)
+          if (!wsSendSafe(b.ws, f.opcode === 0x1 ? dec.decode(f.payload) : new Uint8Array(f.payload))) {
             return closeBridge(b, 1012);
+          }
         } else {
           b.fragOp = f.opcode;
           b.fragParts = [new Uint8Array(f.payload)];
@@ -774,7 +811,7 @@ export function createRelayPreview(options: RelayPreviewOptions) {
           b.fragOp = 0;
           b.fragParts = [];
           b.fragBytes = 0;
-          if (b.ws.send(op === 0x1 ? dec.decode(full) : full) === 0) return closeBridge(b, 1012);
+          if (!wsSendSafe(b.ws, op === 0x1 ? dec.decode(full) : full)) return closeBridge(b, 1012);
         }
         continue;
       }
@@ -790,8 +827,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       const a = await relayHub.checkAccess(b.cookie.orgIds, b.cookie.userId, b.cookie.sandboxId);
       if (b.closed || stopping) return;
       if (!a.ok) return closeBridge(b, a.code === "forbidden" ? 4403 : 4401, "", "revoked");
-      if (a.epoch !== b.cookie.epoch || !relayHub.isConnected(b.cookie.sandboxId, b.cookie.epoch))
+      if (a.epoch !== b.cookie.epoch || !relayHub.isConnected(b.cookie.sandboxId, b.cookie.epoch)) {
         return closeBridge(b, 1012, "", null);
+      }
     } catch {
       closeBridge(b, 1012, "", "revoked");
     } finally {
@@ -806,37 +844,38 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     if (stopping) return empty(503);
     if (request.method !== "GET") return empty(405, { allow: "GET" });
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return empty(426, { upgrade: "websocket" });
-    const url = new URL(request.url),
-      parsed = parsePath(url.pathname);
+    const url = new URL(request.url);
+    const parsed = parsePath(url.pathname);
     if (!parsed || !parsed.valid) return empty(400);
     if (request.headers.get("origin") !== expectedOrigin) return empty(403);
     const cookie = await readCookie(request, parsed.sandboxId, parsed.port);
     if (!cookie) return empty(401);
     const access = await relayHub.checkAccess(cookie.orgIds, cookie.userId, parsed.sandboxId);
     if (!access.ok) return empty(access.status);
-    if (!access.epoch || access.epoch !== cookie.epoch || !relayHub.isConnected(parsed.sandboxId, access.epoch))
+    if (!access.epoch || access.epoch !== cookie.epoch || !relayHub.isConnected(parsed.sandboxId, access.epoch)) {
       return empty(503);
+    }
     const upstreamPath = `${parsed.rest}${url.search}`;
     if (/[\r\n]/.test(upstreamPath)) return empty(400);
-    const reqProto = request.headers.get("sec-websocket-protocol"),
-      reqProtos = (reqProto ?? "")
-        .split(",")
-        .map((p) => p.trim())
-        .filter(Boolean);
-    const wsKey = randomBytes(16).toString("base64"),
-      expectedAccept = createHash("sha1")
-        .update(wsKey + WS_GUID)
-        .digest("base64");
+    const reqProto = request.headers.get("sec-websocket-protocol");
+    const reqProtos = (reqProto ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const wsKey = randomBytes(16).toString("base64");
+    const expectedAccept = createHash("sha1")
+      .update(wsKey + WS_GUID)
+      .digest("base64");
     const win = new StreamWindow(INITIAL_STREAM_WINDOW, CREDIT_WATERMARK);
     const handshake = Promise.withResolvers<
       { ok: true; proto?: string; leftover: Uint8Array } | { ok: false; status: number }
     >();
-    let hsDone = false,
-      opened = false,
-      hsBuf: Uint8Array = EMPTY_U8,
-      bridge: WsBridge | undefined,
-      tcp!: LocalTcpStream,
-      writer!: ReturnType<typeof createWriter>;
+    let hsDone = false;
+    let opened = false;
+    let hsBuf: Uint8Array = EMPTY_U8;
+    let bridge: WsBridge | undefined;
+    let tcp!: LocalTcpStream;
+    let writer!: ReturnType<typeof createWriter>;
     const finishHs = (v: { ok: true; proto?: string; leftover: Uint8Array } | { ok: false; status: number }) => {
       if (hsDone) return;
       hsDone = true;
@@ -875,6 +914,10 @@ export function createRelayPreview(options: RelayPreviewOptions) {
         },
         onCredit: (n) => writer.onCredit(n),
         onData(data) {
+          if (!opened) {
+            tcp.close(1002, "eof");
+            return finishHs({ ok: false, status: 502 });
+          }
           if (!win.recordReceived(data.byteLength)) {
             if (!hsDone) {
               tcp.close(1008, "backpressure");
@@ -891,8 +934,8 @@ export function createRelayPreview(options: RelayPreviewOptions) {
               tcp.close(1002, "eof");
               return finishHs({ ok: false, status: 502 });
             }
-            const hdrs = new Map(res.headers.map(([k, v]) => [k.toLowerCase(), v])),
-              chosen = hdrs.get("sec-websocket-protocol")?.trim();
+            const hdrs = new Map(res.headers.map(([k, v]) => [k.toLowerCase(), v]));
+            const chosen = hdrs.get("sec-websocket-protocol")?.trim();
             if (
               hdrs.get("upgrade")?.toLowerCase() !== "websocket" ||
               hdrs.get("sec-websocket-accept") !== expectedAccept ||
@@ -901,8 +944,8 @@ export function createRelayPreview(options: RelayPreviewOptions) {
               tcp.close(1002, "eof");
               return finishHs({ ok: false, status: 502 });
             }
-            const leftover = hsBuf.subarray(res.consumed),
-              grant = win.acknowledgeReceived(res.consumed);
+            const leftover = hsBuf.subarray(res.consumed);
+            const grant = win.acknowledgeReceived(res.consumed);
             if (grant > 0) tcp.sendCredit(grant);
             hsBuf = EMPTY_U8;
             return finishHs({ ok: true, ...(chosen ? { proto: chosen } : {}), leftover });
@@ -974,12 +1017,8 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     message(socket, m) {
       const b = bridges.get(socket.data.id);
       if (!b || b.closed || stopping) return;
-      b.writer.write(
-        encodeWsFrame(
-          typeof m === "string" ? 0x1 : 0x2,
-          typeof m === "string" ? enc.encode(m) : new Uint8Array(m.buffer, m.byteOffset, m.byteLength),
-        ),
-      );
+      const bytes = typeof m === "string" ? enc.encode(m) : new Uint8Array(m.buffer, m.byteOffset, m.byteLength);
+      b.writer.write(encodeWsFrame(typeof m === "string" ? 0x1 : 0x2, bytes));
     },
     close(socket, code, reason) {
       const b = bridges.get(socket.data.id);
@@ -993,11 +1032,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     const pathname = new URL(request.url).pathname;
     if (pathname === ENTER_PATH) return handleEnter(request);
     const parsed = parsePath(pathname);
-    return !parsed
-      ? null
-      : parsed.valid
-        ? handleHttpProxy(request, parsed.sandboxId, parsed.port, parsed.rest)
-        : empty(400);
+    if (!parsed) return null;
+    if (!parsed.valid) return empty(400);
+    return handleHttpProxy(request, parsed.sandboxId, parsed.port, parsed.rest);
   }
 
   async function stop() {
