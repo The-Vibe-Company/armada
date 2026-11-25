@@ -22,15 +22,22 @@ const authMethods = [
   { id: "oauth-personal", name: "Google" },
   { id: "gemini-api-key", name: "Gemini API key" },
 ];
-const configOptions = [
+const modelConfigOptions = (currentValue: string) => [
   {
     id: "model",
     name: "Model",
     type: "select",
-    currentValue: "base",
+    currentValue,
     options: [{ group: "available", name: "Available", options: [{ value: "fixture/model", name: "Fixture" }] }],
   },
 ];
+let currentModelValue = process.env.ACP_INITIAL_MODEL ?? "base";
+const sessionConfig = () => ({
+  ...(profile || process.env.ACP_INITIAL_MODEL !== undefined
+    ? { configOptions: modelConfigOptions(currentModelValue) }
+    : {}),
+  ...(process.env.ACP_MODELS_CURRENT_ID ? { models: { currentModelId: process.env.ACP_MODELS_CURRENT_ID } } : {}),
+});
 let authenticated = false;
 let selectedModel = false;
 let active: number | undefined;
@@ -77,7 +84,7 @@ for await (const line of lines) {
       }
       checkPinnedMcp(m.params.mcpServers);
       if (process.env.EXPECT_PINNED_MCP) sessionId = "new-session";
-      reply({ sessionId, ...(profile ? { configOptions } : {}) });
+      reply({ sessionId, ...sessionConfig() });
       break;
     case "session/load":
       if (profile && !authenticated) throw Error("missing_authentication");
@@ -89,18 +96,19 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "history" } },
         },
       });
-      reply(profile ? { configOptions } : {});
+      reply(sessionConfig());
       break;
     case "session/set_config_option":
       if (
-        !profile ||
+        (!profile && process.env.ACP_INITIAL_MODEL === undefined) ||
         m.params.sessionId !== sessionId ||
         m.params.configId !== "model" ||
         m.params.value !== "fixture/model"
       )
         throw Error("wrong_model_config");
       selectedModel = true;
-      reply({ configOptions });
+      currentModelValue = m.params.value;
+      reply(process.env.ACP_OMIT_SET_CONFIG_OPTIONS ? {} : { configOptions: modelConfigOptions(currentModelValue) });
       break;
     case "session/set_model":
       reply({});
@@ -184,6 +192,38 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "unrelated" } },
         },
       });
+      if (text === "model-update") {
+        send({
+          method: "session/update",
+          params: {
+            sessionId: "unrelated",
+            update: {
+              sessionUpdate: "config_option_update",
+              configOptions: modelConfigOptions("wrong/session-model"),
+            },
+          },
+        });
+        send({
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "config_option_update",
+              configOptions: modelConfigOptions("updated/model"),
+            },
+          },
+        });
+        send({
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "config_option_update",
+              configOptions: modelConfigOptions("default"),
+            },
+          },
+        });
+      }
       if (text === "DOCKER_OK") {
         const command = `echo ${"x".repeat(250)}😀${"y".repeat(155)}`;
         for (const update of [
