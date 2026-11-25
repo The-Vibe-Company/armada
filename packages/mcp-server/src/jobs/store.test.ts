@@ -2915,7 +2915,6 @@ test.each(["dispatch deadline", "lease takeover"] as const)(
       deadline,
       maxAttempts: 3,
     });
-    // Output capture has already completed. The race begins at the provider snapshot.
     await f.db.query("update jobs set outcome=$2 where id=$1", [jobId, { modal_capture_complete: true }]);
 
     const releaseSuccessor = Promise.withResolvers<void>();
@@ -3041,7 +3040,7 @@ test.each(["dispatch deadline", "lease takeover"] as const)(
           deadlineAt: deadline.getTime(),
           write: (work) => f.sql.transaction!(work),
           authorize: async () => {},
-          ticket: async () => undefined,
+          ticket: async () => null,
         });
         expect(
           await resume.resume({
@@ -3049,6 +3048,7 @@ test.each(["dispatch deadline", "lease takeover"] as const)(
             generation: 3,
             predecessor: resume.predecessor,
             computeTtlSeconds: 60,
+            size: null,
             signal,
           }),
         ).toMatchObject({ machineId: replacement.sandboxId });
