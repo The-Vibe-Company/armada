@@ -26,9 +26,13 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
   const control = await viewerAccountControl();
   if (!control) return { state: "not-configured" };
   try {
-    const { accounts: listed, legacy, defaults } = await control.list(selected.org.id);
+    const listedRead = control.list(selected.org.id);
+    const modelsRead = Promise.allSettled([control.connectionModels(selected.org.id)]);
+    const { accounts: listed, legacy, defaults } = await listedRead;
     if (legacy && listed.length === 0) return { state: "legacy" };
-    const models = await control.connectionModels(selected.org.id);
+    const [modelResult] = await modelsRead;
+    if (modelResult.status === "rejected") throw modelResult.reason;
+    const models = modelResult.value;
     const accounts = listed.map((account) => {
       const declared = models.get(account.id);
       return declared ? { ...account, models: declared } : account;
@@ -102,9 +106,18 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
       KIND_INFO[account.kind].billing === "api" &&
       (account.kind !== "opencode" || !!account.models?.length),
   );
-  const reads = await Promise.all(
-    eligible.map((account) =>
-      supabase
+  type Choice = Extract<ConnectionTestChoices, { state: "ready" }>["sandboxes"][number];
+  const candidates = new Map(eligible.map(({ id, version }) => [id, { version, count: 0, choices: [] as Choice[] }]));
+  const ids = [...candidates.keys()];
+  const pageSize = 500;
+  for (let start = 0; start < ids.length; start += 25) {
+    let pending = ids.slice(start, start + 25);
+    let cursor: { id: string; created_at: string } | undefined;
+    while (pending.length > 0) {
+      const versions = pending.map(
+        (id) => `and(credential_id.eq.${id},credential_version.eq.${candidates.get(id)!.version})`,
+      );
+      let query = supabase
         .from("sandboxes")
         .select(
           "id,owner_id,org_id,provider,boat_runtime,status,stop_requested_at,credential_id,credential_version,harness,created_at",
@@ -114,38 +127,46 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
         .in("provider", ["modal", "boat"])
         .or("provider.eq.modal,boat_runtime.eq.true")
         .is("stop_requested_at", null)
-        .eq("credential_id", account.id)
-        .eq("credential_version", account.version)
-        .in("status", ["ready", "running"])
-        .order("created_at", { ascending: false })
-        .limit(50),
-    ),
-  );
-  if (reads.some((read) => read.error)) return { state: "unavailable" };
-  return {
-    state: "ready",
-    sandboxes: reads.flatMap(({ data }, index) =>
-      (data ?? []).flatMap((row) =>
-        isHarness(row.harness) &&
-        matchesConnectionTestSandbox(row, {
-          id: row.id,
-          ownerId: viewer.id,
-          orgId: selected.org.id,
-          accountId: eligible[index]!.id,
-          version: eligible[index]!.version,
-        })
-          ? [
-              {
-                id: row.id,
-                accountId: eligible[index]!.id,
-                version: eligible[index]!.version,
-                provider: row.provider === "boat" ? ("boat" as const) : ("modal" as const),
-                harness: row.harness,
-                createdAt: row.created_at,
-              },
-            ]
-          : [],
-      ),
-    ),
-  };
+        .in("credential_id", pending)
+        .or(versions.join(","))
+        .in("status", ["ready", "running"]);
+      if (cursor) {
+        query = query.or(
+          `created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+        );
+      }
+      const { data, error } = await query.order("created_at", { ascending: false }).order("id").limit(pageSize);
+      if (error) return { state: "unavailable" };
+      for (const row of data ?? []) {
+        const accountId = row.credential_id;
+        if (!accountId) continue;
+        const account = candidates.get(accountId);
+        if (!account || account.count >= 50 || row.credential_version !== account.version) continue;
+        account.count++;
+        if (
+          isHarness(row.harness) &&
+          matchesConnectionTestSandbox(row, {
+            id: row.id,
+            ownerId: viewer.id,
+            orgId: selected.org.id,
+            accountId,
+            version: account.version,
+          })
+        ) {
+          account.choices.push({
+            id: row.id,
+            accountId,
+            version: account.version,
+            provider: row.provider === "boat" ? "boat" : "modal",
+            harness: row.harness,
+            createdAt: row.created_at,
+          });
+        }
+      }
+      if (!data || data.length < pageSize) break;
+      cursor = data.at(-1);
+      pending = pending.filter((id) => candidates.get(id)!.count < 50);
+    }
+  }
+  return { state: "ready", sandboxes: [...candidates.values()].flatMap(({ choices }) => choices) };
 }
