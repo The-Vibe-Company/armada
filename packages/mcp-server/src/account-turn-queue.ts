@@ -474,5 +474,3 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   };
 }
 export type AccountTurnQueue = ReturnType<typeof createAccountTurnQueue>;
-
-export const REFUSE_STOPPED_SANDBOX_TURNS = `refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))`;

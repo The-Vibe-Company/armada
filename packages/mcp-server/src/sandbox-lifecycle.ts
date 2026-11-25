@@ -20,7 +20,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { RELEASE_UPDATED_SANDBOX_RESERVATIONS, releaseAccountCapacity } from "./account-capacity.ts";
-import { REFUSE_STOPPED_SANDBOX_TURNS } from "./account-turn-queue.ts";
+import { REFUSE_STOPPED_SANDBOX_TURNS } from "./account-turn-queue-sql.ts";
 import type { ServerSandboxPatch } from "./data.ts";
 import { DataError } from "./data-error.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
