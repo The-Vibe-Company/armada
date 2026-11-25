@@ -1734,6 +1734,35 @@ test("a daemon incapable of Machine bootstrap cannot receive a Machine launch cr
   expect(f.jobs).toHaveLength(1);
 });
 
+test("stop reconciles an already committed create after the launch worker yields", async () => {
+  const f = await fixture();
+  const server = f.service(sql, true, 10000, officialImage, true);
+  await server.launch(f.caller, f.body);
+  f.setDrive(false);
+  await server.runClaim();
+  expect(f.jobs).toHaveLength(0);
+  const { requestId: sandboxId } = f.body;
+  const requestId = randomUUID();
+  const stop = await hosts.enqueueStop(f.actor, sandboxId, requestId);
+  expect(stop).toBeString();
+  try {
+    await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [sandboxId]);
+    await server.runClaim();
+    await f.step();
+    expect(f.jobs).toEqual([expect.objectContaining({ operation: "create" })]);
+    await runDockerStop(sql, key, sandboxId);
+    await f.step();
+    await runDockerStop(sql, key, sandboxId);
+    expect(f.jobs).toEqual([
+      expect.objectContaining({ operation: "create" }),
+      expect.objectContaining({ operation: "stop" }),
+    ]);
+    expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
+  } finally {
+    await sql.query("delete from jobs where sandbox_id=$1 and kind='stop'", [sandboxId]);
+  }
+});
+
 test("stop after accepted starting launch bypasses queued startup and settles without allocating or prompting", async () => {
   const f = await fixture();
   const server = f.service(sql, true, 10000, officialImage, true);
@@ -1782,6 +1811,7 @@ test.each(["deadline", "uncertain ACK", "owner stop"] as const)(
       const stop = await hosts.enqueueStop(f.actor, f.body.requestId, requestId);
       expect(stop).toBeString();
       expect(await hosts.enqueueStop(f.actor, f.body.requestId, requestId)).toBe(stop);
+      expect(await runDockerStop(sql, key, f.body.requestId)).toMatchObject({ status: "retry", unattempted: true });
       const { runtimeToken, epoch } = f.session()!;
       expect((await createRuntimeCommands(authority, key).next(runtimeToken, epoch)).command?.op).toBe("getPrompt");
     }
@@ -1816,6 +1846,16 @@ test.each(["deadline", "uncertain ACK", "owner stop"] as const)(
         )
       ).rows,
     ).toHaveLength(1);
+    if (cause === "owner stop") {
+      await runDockerStop(sql, key, f.body.requestId);
+      await f.step();
+      await runDockerStop(sql, key, f.body.requestId);
+      expect(await recovered.launch(f.caller, f.body)).toMatchObject({
+        sandbox: { status: "stopped" },
+        promptId: f.receipt.promptId,
+        conversationId: f.receipt.conversationId,
+      });
+    }
   },
 );
 
