@@ -880,13 +880,14 @@ export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
       } = await tx.query<{ member: boolean; credential: boolean }>(
         `with member as materialized (
            select user_id from public.members where org_id=$1 and user_id=$2 for update
-         ), credential as (
-           select 1 from public.credentials where id=$3 and version=$4 and kind=any($5::public.credential_kind[])
-             and status='active' and (expires_at is null or expires_at>clock_timestamp())
-             and (select user_id from member) is not null
-             and ((scope='user' and owner_id=$2) or (scope='org' and owner_id=$1)) for share
+         ), credential as materialized (
+           select version, kind, status, expires_at, scope, owner_id
+           from public.credentials where id=$3 and (select user_id from member) is not null for share
          )
-         select exists(select 1 from member) as member, exists(select 1 from credential) as credential`,
+         select exists(select 1 from member) as member,
+           exists(select 1 from credential where version=$4 and kind=any($5::public.credential_kind[])
+             and status='active' and (expires_at is null or expires_at>clock_timestamp())
+             and ((scope='user' and owner_id=$2) or (scope='org' and owner_id=$1))) as credential`,
         [
           sandbox.orgId,
           sandbox.ownerId,
@@ -1347,37 +1348,46 @@ async function dispatchModalLaunch(
     "result" in job.outcome &&
     job.outcome.result === RECONCILING_ALLOCATION;
   const boat = "boat" in plan;
-  const dispatchTarget = async (tx: Sql, lockLease = false) => {
-    type Target = { provider_sandbox_id: string | null };
-    const statement = (source: string) =>
-      `select s.provider_sandbox_id from ${source}
+  type Target = { provider_sandbox_id: string | null };
+  const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
+  const eligible = `s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+    and s.status='starting' and (s.runtime_transport='dialout' or s.boat_runtime)`;
+  const dispatchTarget = async (tx: Sql, lockLease = false): Promise<Target | undefined> => {
+    let row: Target | undefined;
+    if (lockLease) {
+      const {
+        rows: [locked],
+      } = await queryWithJobLease<Target & { owner_member: boolean }>(
+        tx,
+        job,
+        `select s.provider_sandbox_id, exists (
+           select 1 from public.members m where m.org_id=j.org_id and m.user_id=j.request_owner_id for share of m
+         ) as owner_member
+         from locked_sandbox s join locked_job j on ${ownership}
+         where ${eligible} and s.provider='modal' and j.lease_until>clock_timestamp()`,
+      );
+      if (!locked) return;
+      if (!locked.owner_member) return dispatchTarget(tx);
+      row = locked;
+    } else {
+      const { rows } = await tx.query<Target>(
+        `select s.provider_sandbox_id from public.sandboxes s
+         join public.jobs j on j.id=$2 and ${ownership}
          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
-         where s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-           and s.status='starting'`;
-    const ownership = "j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id";
-    const {
-      rows: [row],
-    } = lockLease
-      ? await queryWithJobLease<Target>(
-          tx,
-          job,
-          `${statement(`locked_sandbox s join locked_job j on ${ownership}`)}
-           and s.provider='modal' and (s.runtime_transport='dialout' or s.boat_runtime) for share of m`,
-        )
-      : await tx.query<Target>(
-          `${statement(`public.sandboxes s join public.jobs j on j.id=$2 and ${ownership}`)}
-           and s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
+         where s.id=$1 and s.provider::text=$3 and ${eligible}
            and (s.provider<>'boat' or exists(
              select 1 from public.credentials c where c.id=s.credential_id and c.version=s.credential_version
                and c.status='active' and (c.expires_at is null or c.expires_at>clock_timestamp())
                and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id))
            )) for share of m`,
-          [sandboxId, job.id, boat ? "boat" : "modal"],
-        );
+        [sandboxId, job.id, boat ? "boat" : "modal"],
+      );
+      row = rows[0];
+    }
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx)) && (await launchAuthorized(tx)))
       return row;
   };
-  const withDispatchTarget = <T>(work: (tx: Sql, row: { provider_sandbox_id: string | null } | undefined) => T) => {
+  const withDispatchTarget = <T>(work: (tx: Sql, row: Target | undefined) => T) => {
     if (boat) return withJobLease(sql, job, async (tx) => work(tx, await dispatchTarget(tx)));
     if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
     return sql.transaction(async (tx) => work(tx, await dispatchTarget(tx, true)));

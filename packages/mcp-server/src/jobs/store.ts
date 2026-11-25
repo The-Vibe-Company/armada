@@ -111,8 +111,7 @@ export function queryWithJobLease<T>(sql: Sql, job: Job, statement: string, para
      ), locked_job as materialized (
        select id, sandbox_id, org_id, request_owner_id, outcome, lease_until
        from public.jobs where sandbox_id=(select id from locked_sandbox)
-         and id=$3 and lease_epoch=$4 and generation=$2 and kind=$5
-         and lease_until>clock_timestamp() for update
+         and id=$3 and lease_epoch=$4 and generation=$2 and kind=$5 for update
      )
      ${statement}`,
     [job.sandbox_id, job.generation, job.id, job.lease_epoch, job.kind, ...params],

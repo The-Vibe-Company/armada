@@ -1881,6 +1881,44 @@ test("Modal admission and deferred enrolment use at most 64 SQL statements", asy
   }
 });
 
+test("Modal launch rechecks membership after the lease lock if its first snapshot misses the owner", async () => {
+  const { f, effects, makeRunner, enrolPending, jobId } = await modalLaunchFixture(await modalAdmissionFixture());
+  let missedMembership = false;
+  const runner = makeRunner(
+    undefined,
+    {
+      ...f.sql,
+      async transaction(work) {
+        return f.sql.transaction!((tx) =>
+          work({
+            ...tx,
+            query<T>(query: string, params?: unknown[]) {
+              if (!missedMembership && query.includes("as owner_member")) {
+                missedMembership = true;
+                query = query.replace(
+                  "m.user_id=j.request_owner_id for share",
+                  "m.user_id=j.request_owner_id and false for share",
+                );
+              }
+              return tx.query<T>(query, params);
+            },
+          }),
+        );
+      },
+    },
+    false,
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(missedMembership).toBe(true);
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  await enrolPending();
+  await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "done" }]);
+});
+
 test("JWT inventory keeps an enrolled Modal sandbox starting while launch setup is queued", async () => {
   const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
   const runner = makeRunner();
@@ -3243,7 +3281,7 @@ test("owner stop after a lost Modal create reply leaves the exact allocation for
           ...tx,
           async query<T>(query: string, params?: unknown[]) {
             if (query.includes("select public.complete_job")) throw new Error("Worker lost before failure settlement");
-            if (observed && query.includes("select s.provider_sandbox_id from") && query.includes("for share of m"))
+            if (observed && query.includes("select s.provider_sandbox_id") && query.includes("for share of m"))
               checkedDispatchAfterObservation = true;
             return tx.query<T>(query, params);
           },
