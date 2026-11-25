@@ -33,6 +33,7 @@ import {
 import type { DockerHostResources } from "../../core/src/docker-resources.ts";
 import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 import {
+  admitDockerCapacity,
   DOCKER_CAPACITY_USAGE_SQL,
   DockerHostDraining,
   DockerHostFull,
@@ -779,16 +780,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!bindings.rows.length) deny();
   }
 
-  async function requireRestoreRunner(tx: Sql, runnerJobId: unknown, logical: Sandbox) {
+  async function requireRestoreRunner(tx: Sql, runnerJobId: unknown, logical: Sandbox, leaseEpoch?: string) {
     id(runnerJobId);
     const { rows } = await tx.query(
       `with locked_runner as materialized (
-         select deadline_at from public.jobs where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
-         and kind='turn_dispatch' and state in ('queued','leased') and attempts <= max_attempts
+         select deadline_at,lease_until,lease_epoch,state from public.jobs
+         where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
+         and kind='resume' and state in ('queued','leased') and attempts <= max_attempts
          for update
        )
-       select 1 from locked_runner where deadline_at > clock_timestamp()`,
-      [runnerJobId, logical.org_id, logical.id, logical.lifecycle_generation],
+       select 1 from locked_runner where deadline_at > clock_timestamp()
+         and ($5::bigint is null or (state='leased' and lease_epoch=$5 and lease_until > clock_timestamp()))`,
+      [runnerJobId, logical.org_id, logical.id, logical.lifecycle_generation, leaseEpoch ?? null],
     );
     if (!rows.length) deny();
   }
@@ -2102,12 +2105,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
         return { kind: "completed", machine: { sandboxId, generation, machineId: existing.result_machine_id } };
       });
     },
-    attachMachineRestore(
+    async attachMachineRestore(
       actor: Actor,
       claim: RestoreClaim,
       intent?: { scope: MachineHost; request: Parameters<Machine["resume"]>[0] },
     ) {
-      return transaction(async (tx) => {
+      const result = await transaction(async (tx) => {
         const { host, row } = await lockSandboxAdmission(
           tx,
           actor,
@@ -2126,7 +2129,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           hostId: host.id,
           installationId: row.docker_installation_id,
         });
-        const requestId = (await bindings.lookup({ sandboxId: row.id, generation })) ?? deny();
+        await requireRestoreRunner(tx, claim.id, row, claim.lease_epoch);
+        const incarnation = { sandboxId: row.id, generation };
+        const requestId = intent ? await bindings.bind(incarnation) : ((await bindings.lookup(incarnation)) ?? deny());
         const receipt = (
           await tx.query<StoredJob>(
             `select * from public.docker_host_jobs
@@ -2134,6 +2139,53 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [requestId, host.id, row.id],
           )
         ).rows[0];
+        if (!receipt && intent) {
+          const { request, scope } = intent;
+          const predecessor = request.predecessor;
+          if (
+            request.sandboxId !== row.id ||
+            request.generation !== generation ||
+            request.size !== null ||
+            request.computeTtlSeconds !== row.effective_ttl_seconds ||
+            predecessor.sandboxId !== row.id ||
+            predecessor.generation >= generation ||
+            predecessor.kind !== "container" ||
+            (await bindings.lookup(predecessor)) !== row.docker_generation ||
+            (await allocationReceipt(tx, row)) !== predecessor.ref
+          )
+            deny();
+          const epoch = await permission(tx, actor, row, "restore");
+          await fenceFreshStartup(tx, row);
+          await refuseDraining(tx, host.id);
+          await admitDockerCapacity(tx, host.id);
+          if (scope.canDispatch && !(await scope.canDispatch(tx, epoch))) deny();
+          const source = await machine(tx, row, "restore");
+          request.signal?.throwIfAborted();
+          await enqueueRestore(
+            tx,
+            row,
+            {
+              operation: "restore",
+              requestId,
+              request: {
+                ...source,
+                generation: requestId,
+                ttlSeconds: request.computeTtlSeconds,
+                expiresAt: new Date(row.expires_at).getTime(),
+              },
+              predecessor: { request: source, machineId: predecessor.ref },
+            },
+            {
+              bound_sandbox_id: row.id,
+              bound_actor_id: actor.userId,
+              bound_actor_epoch: epoch,
+              bound_operation: "restore",
+            },
+            false,
+            claim.id,
+          );
+          return "pending" as const;
+        }
         if (!receipt || receipt.cancelled_at !== null) deny();
         const { job, runnerJobId } = await readStoredJob(receipt, row.lifecycle_generation);
         if (
@@ -2161,9 +2213,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
             source !== job.predecessor.request.generation
           )
             deny();
+          if (intent.scope.canDispatch && !(await intent.scope.canDispatch(tx, String(receipt.bound_actor_epoch))))
+            deny();
           request.signal?.throwIfAborted();
         }
-        if (intent && receipt.outcome === null) throw new DockerMachinePending("pending");
+        if (intent && receipt.outcome === null) return "pending" as const;
         if (intent && receipt.outcome === "completed" && !receipt.result_machine_id)
           throw new DockerMachinePending("unknown");
         if (receipt.outcome !== "completed" || !receipt.result_machine_id) deny();
@@ -2180,6 +2234,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           machineId: receipt.result_machine_id,
         } satisfies MachineIdentity;
       });
+      if (result === "pending") throw new DockerMachinePending("pending");
+      return result;
     },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
       return transaction(async (tx) => {
