@@ -175,7 +175,7 @@ export function requireRuntimeHarness(provider: SandboxProviderId, harness: Harn
     );
 }
 
-export function validateGoldenLaunchRequest(request: LaunchRequest) {
+function validateGoldenLaunchRequest(request: LaunchRequest) {
   validateLaunchSkillPins(request.skills ?? []);
   if (request.skipSkillDefaults !== undefined && typeof request.skipSkillDefaults !== "boolean")
     throw new LaunchError("invalid_request", "skipSkillDefaults must be a boolean.");
@@ -303,7 +303,7 @@ function checkHarness(provider: Provider, harness: string) {
   return harness;
 }
 
-export function validateGoldenLaunchHelpers(golden: GoldenRecord, requestedHelper: string[] | undefined) {
+function validateGoldenLaunchHelpers(golden: GoldenRecord, requestedHelper: string[] | undefined) {
   const helper = negotiateHelper(golden.helperReceipt, golden.providerSnapshotId);
   if (
     requestedHelper !== undefined &&
@@ -325,7 +325,7 @@ export function validateGoldenLaunchHelpers(golden: GoldenRecord, requestedHelpe
     );
 }
 
-export function resolveGoldenLaunchResources(
+function resolveGoldenLaunchResources(
   golden: GoldenRecord,
   request: Pick<LaunchRequest, "ttlSeconds" | "repo" | "size">,
   options: Pick<LaunchOptions, "extensionHeadroomSeconds">,
@@ -365,7 +365,7 @@ function checkTtl(provider: SandboxProviderId, ttlSeconds: number) {
   return ttlSeconds;
 }
 
-export function validateGoldenLaunchPrompt(prompt: string | undefined) {
+function validateGoldenLaunchPrompt(prompt: string | undefined) {
   if (prompt === undefined) return undefined;
   if (prompt.trim() === "") {
     throw new LaunchError("invalid_request", "The prompt is empty. Leave it out to launch an idle sandbox.");

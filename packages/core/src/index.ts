@@ -40,10 +40,8 @@ export * from "./connections.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
-  type AccountConnectionModels,
   type AgentDefault,
   CODEX_AUTH_ENV,
-  CODEX_AUTH_PATH,
   type ConnectionModelInfo,
   CREDENTIAL_KINDS,
   type CredentialReader,
@@ -57,7 +55,6 @@ export {
   parseCredentialKind,
   parseCredentialValue,
   parseModalTokenPair,
-  type ResolvedCredentials,
   redact,
   resolveBoatKey,
   resolveCredentials,
@@ -102,7 +99,6 @@ export type {
   DockerHostVersionOffer,
   DockerLaunchRequest,
   DockerLaunchResult,
-  DockerQueuedPromptReceipt,
   DockerSandboxRecord,
   DockerSandboxStatus,
   LaunchCapabilityName,
@@ -249,17 +245,13 @@ export {
   isModelOutput,
   LAUNCH_STAGE_LABELS,
   LAUNCH_STAGES,
-  type LaunchPercentiles,
   type LaunchStage,
-  type LaunchStageRow,
   type LaunchTiming,
-  launchReadyPercentiles,
-  percentile,
   recordFirstTokenSql,
   recordLaunchStageSql,
   summarizeLaunch,
 } from "./launch-stages.ts";
-export { type LaunchWorkdir, resolveLaunchWorkdir } from "./launch-workdir.ts";
+export { resolveLaunchWorkdir } from "./launch-workdir.ts";
 export * from "./machine-size.ts";
 export { MCP_CATALOG, type McpCatalogId } from "./mcp-catalog.ts";
 export * from "./mcp-launch-selection.ts";
@@ -341,7 +333,6 @@ export {
   type Provider,
   ProviderError,
   type ProviderErrorCode,
-  type ProviderErrorInit,
   type ProviderInventoryMachine,
   type ResumeStageObserver,
   SANDBOX_STATES,
@@ -356,10 +347,7 @@ export {
   type ToolCall,
 } from "./provider.ts";
 export { type ProviderRateLimitDetails, providerRateLimitDetails, providerRateLimitMessage } from "./provider-limit.ts";
-export {
-  goldenResponse,
-  launchGitHubResponse,
-} from "./provider-response.ts";
+export { goldenResponse } from "./provider-response.ts";
 export {
   CONTROL_BODY_MAX_BYTES,
   controlBodyMaxBytes,
@@ -425,7 +413,6 @@ export {
   PROVIDER_LIMITS,
   type ProviderRegistry,
   ProviderRoutingError,
-  type ProviderRoutingErrorCode,
   type ProviderTarget,
   SANDBOX_PLACEMENT_LABELS,
   SANDBOX_PLACEMENT_PROVIDERS,

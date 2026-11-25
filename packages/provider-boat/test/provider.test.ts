@@ -739,3 +739,13 @@ test("the capability probe treats a Bun that exits 0 without the probe answer as
     reason: "collector_unsupported",
   });
 });
+
+test("managed Boat forks use the configured deployment label", async () => {
+  const deploymentId = "production:armada-server";
+  const deploymentLabel = "armada.deployment";
+  const boat = fakeBoat({ status: 202, body: { sandbox: sandbox() } });
+  const provider = createBoatProvider({ apiKey: KEY, deploymentId, fetch: boat.fetch });
+  await provider.fork({ from: "golden", labels: { armada: "sandbox", [deploymentLabel]: "foreign" } });
+  const labels = (boat.requests[0]?.body as { labels: Record<string, string> } | undefined)?.labels ?? {};
+  expect(labels[deploymentLabel]).toBe("e1baae800b32c14f86d994e54558a11aeee43726be9481e54a25ef67195f11f7");
+});

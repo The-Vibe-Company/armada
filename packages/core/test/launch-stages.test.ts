@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatLaunchDuration, launchReadyPercentiles, summarizeLaunch } from "../src/launch-stages.ts";
+import { formatLaunchDuration, summarizeLaunch } from "../src/launch-stages.ts";
 
 const at = (seconds: number) => new Date(Date.UTC(2026, 10, 17, 15, 0, seconds)).toISOString();
 
@@ -41,25 +41,6 @@ test("summary keeps the latest activation in time order with total and slowest s
   ).toMatchObject({ ready: false, totalMs: 5_000, slowest: { stage: "enrolled", ms: 5_000 } });
 });
 
-test("provider percentiles separate launches from resumes and skip unfinished activations", () => {
-  const activation = (sandbox_id: string, provider: string, ready: number | null, activation = "1") => [
-    { sandbox_id, provider, activation, stage: "accepted", at: at(0) },
-    ...(ready === null ? [] : [{ sandbox_id, provider, activation, stage: "harness_ready", at: at(ready) }]),
-  ];
-  expect(
-    launchReadyPercentiles([
-      ...activation("a", "docker", 10),
-      ...activation("b", "docker", 20),
-      ...activation("c", "docker", 30),
-      ...activation("d", "docker", null),
-      ...activation("e", "modal", 5),
-      ...activation("e", "modal", 7, "2"),
-      { sandbox_id: "e", provider: "modal", activation: "3", stage: "harness_ready", at: at(59) },
-    ]),
-  ).toEqual([
-    { provider: "docker", kind: "launch", count: 3, p50Ms: 20_000, p90Ms: 30_000 },
-    { provider: "modal", kind: "launch", count: 1, p50Ms: 5_000, p90Ms: 5_000 },
-    { provider: "modal", kind: "resume", count: 1, p50Ms: 7_000, p90Ms: 7_000 },
-  ]);
+test("formats whole minutes and remaining seconds", () => {
   expect(formatLaunchDuration(95_000)).toBe("1 min 35 s");
 });

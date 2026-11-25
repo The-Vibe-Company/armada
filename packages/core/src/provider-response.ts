@@ -1,5 +1,4 @@
 import type { GoldenRecord } from "./golden.ts";
-import type { GitHubLaunchInfo } from "./golden-launch-admission.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "./snapshot-baseline.ts";
 
 /** Public golden metadata. */
@@ -18,14 +17,5 @@ export function goldenResponse(row: GoldenRecord) {
     modal: row.modal,
     repos: row.config.repos.length,
     config: row.config,
-  };
-}
-
-export function launchGitHubResponse(github: GitHubLaunchInfo) {
-  return {
-    status: github.status,
-    login: github.login ?? null,
-    tokenExpiresAt: github.tokenExpiresAt ?? null,
-    message: github.message ?? null,
   };
 }
