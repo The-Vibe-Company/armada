@@ -93,69 +93,12 @@ export function summarizeLaunch(rows: readonly LaunchStageRow[]): LaunchTiming |
   };
 }
 
-/** Nearest-rank percentile; null for no samples. */
-export function percentile(values: readonly number[], p: number): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))]!;
-}
-
 /** Human duration: "850 ms", "12.4 s", "2 min 5 s". */
 export function formatLaunchDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)} ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
   const seconds = Math.round(ms / 1000);
   return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
-}
-
-export interface LaunchPercentiles {
-  provider: string;
-  kind: "launch" | "resume";
-  count: number;
-  p50Ms: number;
-  p90Ms: number;
-}
-
-/**
- * p50/p90 accepted-to-harness-ready time per provider, launches and resumes apart: only activations with both
- * stages, so unfinished activations never skew the sample.
- */
-export function launchReadyPercentiles(
-  rows: readonly (LaunchStageRow & { sandbox_id: string; provider: string })[],
-): LaunchPercentiles[] {
-  const activations = new Map<
-    string,
-    { provider: string; kind: LaunchPercentiles["kind"]; accepted?: number; ready?: number }
-  >();
-  for (const row of rows) {
-    const at = Date.parse(row.at);
-    if (!Number.isFinite(at) || (row.stage !== "accepted" && row.stage !== "harness_ready")) continue;
-    const key = `${row.sandbox_id}:${row.activation}`;
-    const activation = activations.get(key) ?? {
-      provider: row.provider,
-      kind: String(row.activation) === "1" ? "launch" : "resume",
-    };
-    if (row.stage === "accepted") activation.accepted = at;
-    else activation.ready = at;
-    activations.set(key, activation);
-  }
-  const samples = new Map<string, { provider: string; kind: LaunchPercentiles["kind"]; values: number[] }>();
-  for (const { provider, kind, accepted, ready } of activations.values()) {
-    if (accepted === undefined || ready === undefined) continue;
-    const key = `${provider}:${kind}`;
-    const sample = samples.get(key) ?? { provider, kind, values: [] };
-    sample.values.push(Math.max(0, ready - accepted));
-    samples.set(key, sample);
-  }
-  return [...samples.values()]
-    .map(({ provider, kind, values }) => ({
-      provider,
-      kind,
-      count: values.length,
-      p50Ms: percentile(values, 50)!,
-      p90Ms: percentile(values, 90)!,
-    }))
-    .sort((a, b) => a.provider.localeCompare(b.provider) || a.kind.localeCompare(b.kind));
 }
 
 /**
