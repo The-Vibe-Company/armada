@@ -8,6 +8,7 @@ import {
   type DockerJobFailureReason,
   OUTPUT_DIRECTORY,
   OUTPUT_MAX_READ_BYTES,
+  ProviderError,
   type SandboxStatus,
   type Sql,
 } from "@armada/core";
@@ -135,12 +136,6 @@ type Sandbox = {
   stopped_at?: unknown;
   deleted_at: unknown;
 };
-type Selection = { requestId: string } & (
-  | { operation: "create" | "delete" }
-  | (Omit<RestoreJob, "requestId"> & { lifecycleGeneration: number; runnerJobId: string })
-  | { operation: "deletePhysical"; machineId: string; lifecycleGeneration: number }
-  | { operation: "stop" }
-);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tokenPattern = /^[0-9a-f]{64}$/;
 
@@ -254,6 +249,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         error instanceof DockerHostDraining ||
         error instanceof DockerHostFull ||
         error instanceof DockerLimitsRefused ||
+        error instanceof ProviderError ||
         error instanceof VaultError
       )
         throw error;
@@ -504,7 +500,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     tx: Sql,
     actor: Actor,
     sandboxId: string,
-    operation: Selection["operation"] | "bootstrap",
+    operation: "create" | "stop" | "delete" | "restore" | "deletePhysical" | "bootstrap",
     scope?: MachineHost,
   ) {
     exact(actor, ["userId", "orgId"]);
@@ -662,6 +658,27 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation === "bootstrap" && original.outcome !== "completed") deny();
     return saved.request;
   }
+  async function writeBoundCleanup(
+    tx: Sql,
+    row: Sandbox,
+    operation: MachineCleanupOperation,
+    requestId: string,
+    actorId: string,
+    actorEpoch: string,
+  ) {
+    return insert(
+      tx,
+      row.docker_host_id,
+      { operation, requestId, request: await machine(tx, row, operation) },
+      {
+        bound_sandbox_id: row.id,
+        bound_actor_id: actorId,
+        bound_actor_epoch: actorEpoch,
+        bound_operation: operation,
+      },
+    );
+  }
+
   async function supersededLifecycle(
     tx: Sql,
     job: Pick<StoredJob, "bound_sandbox_id" | "request_id" | "position">,
@@ -770,21 +787,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!rows.length) deny();
   }
 
-  async function enqueueRestore(
-    tx: Sql,
-    row: Sandbox,
-    job: RestoreJob,
-    bound: Bound,
-    known: boolean,
-    runnerJobId: string,
-  ) {
+  async function enqueueRestore(tx: Sql, row: Sandbox, job: RestoreJob, bound: Bound, runnerJobId: string) {
     input(job);
     if (job.requestId !== job.request.generation) deny();
-    if (!known) {
-      if (job.request.ttlSeconds !== row.effective_ttl_seconds) deny();
-      await validateRestoreTarget(tx, row, job);
-      await verifyRestoreSource(tx, row, job);
-    }
+    if (job.request.ttlSeconds !== row.effective_ttl_seconds) deny();
+    await validateRestoreTarget(tx, row, job);
+    await verifyRestoreSource(tx, row, job);
     return insert(tx, row.docker_host_id, job, bound, String(row.lifecycle_generation), runnerJobId);
   }
 
@@ -2158,7 +2166,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
               bound_actor_epoch: epoch,
               bound_operation: "restore",
             },
-            false,
             claim.id,
           );
           return "pending" as const;
@@ -2214,75 +2221,49 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (result === "pending") throw new DockerMachinePending("pending");
       return result;
     },
-    enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
+    enqueueCleanup(
+      actor: Actor,
+      sandboxId: string,
+      selection: { operation: MachineCleanupOperation; requestId?: string | undefined },
+      authorizeDelete?: (tx: Sql) => Promise<void>,
+    ) {
       return transaction(async (tx) => {
-        exact(selection, [
-          "requestId",
-          "operation",
-          ...(selection.operation === "deletePhysical" ? ["machineId", "lifecycleGeneration"] : []),
-          ...(selection.operation === "restore"
-            ? ["request", "predecessor", "lifecycleGeneration", "runnerJobId"]
-            : []),
-        ]);
-        id(selection.requestId);
-        if (!["create", "stop", "delete", "deletePhysical", "restore"].includes(selection.operation)) deny();
-        const admission = await lockSandboxAdmission(tx, actor, sandboxId, selection.operation);
+        const { operation } = selection;
+        if (!isCleanupOperation(operation)) deny();
+        if (operation === "delete")
+          await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+            `docker-cleanup:${sandboxId}:delete`,
+          ]);
+        const admission = await lockSandboxAdmission(tx, actor, sandboxId, operation);
         const { host } = admission;
         let { row } = admission;
-        if (selection.operation === "delete" && (await reconcileRestoreStop(tx, row)))
-          row = await sandbox(tx, sandboxId, host, row.docker_installation_id);
-        if (
-          (selection.operation === "deletePhysical" || selection.operation === "restore") &&
-          (!Number.isSafeInteger(selection.lifecycleGeneration) ||
-            selection.lifecycleGeneration < 1 ||
-            String(selection.lifecycleGeneration) !== String(row.lifecycle_generation))
-        )
-          deny();
-        const epoch = await permission(tx, actor, row, selection.operation);
-        // The host lock serializes admission: observe an existing request only
-        // after waiting, so concurrent lost-response retries reconcile too.
-        const known =
-          (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
-            .length > 0;
-        // A drain refuses new optional work. Keep replay of already-admitted requests
-        // under their original binding so a lost enqueue response is recoverable.
-        if (!known && generationFenced(selection.operation)) {
-          await refuseDraining(tx, host.id);
+        if (operation === "delete") {
+          await authorizeDelete?.(tx);
+          if (await reconcileRestoreStop(tx, row)) row = await sandbox(tx, sandboxId, host, row.docker_installation_id);
         }
-        const bound = {
-          bound_sandbox_id: sandboxId,
-          bound_actor_id: actor.userId,
-          bound_actor_epoch: epoch,
-          bound_operation: selection.operation,
-        };
-        if (!known && ["create", "restore"].includes(selection.operation)) await fenceFreshStartup(tx, row);
-        if (selection.operation === "restore") {
-          const { lifecycleGeneration: _, runnerJobId, ...job } = selection;
-          if (!known) await requireRestoreRunner(tx, runnerJobId, row);
-          return enqueueRestore(tx, row, job, bound, known, runnerJobId);
-        }
-        if (!known) await state(tx, row, selection.operation);
-        const request = await machine(tx, row, selection.operation);
-        const target = { requestId: selection.requestId, request };
-        let job: Job;
-        switch (selection.operation) {
-          case "deletePhysical":
-            job = { ...target, operation: selection.operation, machineId: selection.machineId };
-            break;
-          default:
-            job = { ...target, operation: selection.operation };
-        }
-        input(job);
-        const enqueue = async () =>
-          insert(
-            tx,
-            host.id,
-            job,
-            bound,
-            selection.operation === "deletePhysical" ? String(selection.lifecycleGeneration) : undefined,
+        const epoch = await permission(tx, actor, row, operation);
+        let requestId = selection.requestId;
+        if (operation === "delete") {
+          const {
+            rows: [pending],
+          } = await tx.query<{ request_id: string; bound_actor_id: string }>(
+            `select request_id,bound_actor_id from public.docker_host_jobs where bound_sandbox_id=$1
+             and bound_operation='delete' and outcome is null order by position limit 1`,
+            [sandboxId],
           );
-        if (known) return enqueue();
-        if (host.draining && selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
+          if (pending) {
+            if (!authorizeDelete) return { requestId: pending.request_id };
+            if (pending.bound_actor_id !== actor.userId || (requestId && requestId !== pending.request_id))
+              throw new VaultError("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
+            requestId = pending.request_id;
+          }
+        }
+        requestId ??= randomUUID();
+        id(requestId);
+        const known =
+          (await tx.query("select 1 from public.docker_host_jobs where request_id=$1", [requestId])).rows.length > 0;
+        if (!known) await state(tx, row, operation);
+        if (!known && host.draining && operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
           requireGenerationHeadroom(row.lifecycle_generation, 2);
           const result = await transitionSandbox(tx, {
             sandboxId,
@@ -2295,7 +2276,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           });
           if (result.kind === "conflict") deny();
         }
-        return enqueue();
+        return writeBoundCleanup(tx, row, operation, requestId, actor.userId, epoch);
       });
     },
     async unregister(hostToken: string, installationId: string): Promise<boolean> {
@@ -2354,7 +2335,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const operation = ["stopped", "failed"].includes(row.status) ? "delete" : "stop";
         const hex = createHash("sha256").update(`uninstall:${installationId}:${row.id}:${operation}`).digest("hex");
         const requestId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-        await this.enqueueSandbox({ userId: drain.host.owner_id, orgId: drain.host.org_id }, row.id, {
+        await store.enqueueCleanup({ userId: drain.host.owner_id, orgId: drain.host.org_id }, row.id, {
           operation,
           requestId,
         });
@@ -3091,21 +3072,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 current,
                 "delete",
               );
-              await insert(
-                tx,
-                host.id,
-                {
-                  requestId: randomUUID(),
-                  operation: "delete",
-                  request: await machine(tx, current, "delete"),
-                },
-                {
-                  bound_sandbox_id: current.id,
-                  bound_actor_id: current.owner_id,
-                  bound_actor_epoch: epoch,
-                  bound_operation: "delete",
-                },
-              );
+              await writeBoundCleanup(tx, current, "delete", randomUUID(), current.owner_id, epoch);
             }
           }
         }
