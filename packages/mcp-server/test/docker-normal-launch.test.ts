@@ -52,7 +52,7 @@ import { createDockerLaunchPlacement } from "../src/docker-launch-placement.ts";
 import { createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
-import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
+import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createLaunchJob } from "../src/jobs/launch.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -837,14 +837,14 @@ test("reservation checks the current credential pin before allocating", async ()
       hostId: f.hostId,
       image: officialImage,
     });
-  await expect(reserve({ ...f.actor, userId: f.otherId })).rejects.toBeInstanceOf(DockerSandboxDenied);
-  await expect(reserve(f.actor, 1)).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await expect(reserve({ ...f.actor, userId: f.otherId })).rejects.toThrow("Docker sandbox denied");
+  await expect(reserve(f.actor, 1)).rejects.toThrow("Docker sandbox denied");
   await db.query("update public.credentials set status='revoked' where id=$1", [credentialId]);
-  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await expect(reserve()).rejects.toThrow("Docker sandbox denied");
   await db.query("update public.credentials set status='active',expires_at=now()-interval '1 second' where id=$1", [
     credentialId,
   ]);
-  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await expect(reserve()).rejects.toThrow("Docker sandbox denied");
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
   await db.query("update public.credentials set expires_at=null where id=$1", [credentialId]);
   expect((await reserve()).status).toBe("starting");
@@ -2380,7 +2380,7 @@ test("Docker re-prepares bound MCP grants before follow-up and revokes old lease
       .digest("hex");
   };
   const first = leaseHash(configured()[0]!);
-  await createSqlMcpLeasePort(sql).invalidateSandbox(f.body.requestId);
+  await database().query("update sandboxes set mcp_generation=mcp_generation+1 where id=$1", [f.body.requestId]);
   const sender = createDockerSandboxControls(sql, key, {
     sendEnabled: true,
     clock: f.clock,

@@ -61,22 +61,12 @@ export function registerTool<In extends ToolInput, Out extends ToolInput>(
 }
 
 export function createToolRegistration(
-  server: McpServer | undefined,
   context: ToolContext,
   surface: "mcp" | "rest",
   visible: (sandboxId: string) => Promise<SandboxView>,
-  bind?: ToolBinding,
+  register: ToolBinding,
 ) {
   const { caller, data } = context;
-  const register = <In extends ToolInput, Out extends ToolInput>(
-    name: string,
-    config: ToolContract<In, Out>,
-    invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
-  ) => {
-    bind?.(name, config, invoke);
-    if (server) registerTool(server, name, config, invoke);
-  };
-
   const tool = <In extends ToolInput, Out extends ToolInput>(
     name: string,
     config: ToolContract<In, Out>,

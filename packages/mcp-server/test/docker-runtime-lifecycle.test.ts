@@ -7,7 +7,7 @@ import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
-import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
+import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -93,7 +93,6 @@ async function fixture() {
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function denied(work: Promise<unknown>) {
-  await expect(work).rejects.toBeInstanceOf(DockerRuntimeDenied);
   await expect(work).rejects.toThrow("Docker runtime denied");
 }
 async function complete(session: Awaited<ReturnType<Fixture["enrol"]>>, payload: unknown, status = 200) {

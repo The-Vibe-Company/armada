@@ -425,11 +425,6 @@ async function publishStagedStopOutput(tx: Sql, id: string, stoppedJobId: string
 /** Final captures that outlived their stop deadline and still hang in the provider SDK. */
 const finalLate = new Map<Promise<void>, SandboxPlacementProviderId | undefined>();
 
-/** Settle final captures that outlived their stop deadline (tests); late ones never persist. */
-export async function drainFinalOutputs(): Promise<void> {
-  await Promise.allSettled(finalLate.keys());
-}
-
 export async function stageStopOutputs(
   sql: Sql,
   key: string,

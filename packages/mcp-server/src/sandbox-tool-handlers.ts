@@ -1,6 +1,5 @@
 import { sandboxOperations } from "@armada/core/contract";
 import { LaunchError, redact, type SandboxStatus, VaultError } from "@armada/core/server";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
@@ -35,9 +34,8 @@ const OUTPUT_LIMIT = 20_000;
 export function configureTools(
   context: ToolContext,
   surface: "mcp" | "rest",
-  server?: McpServer,
-  onlyTool?: "list",
-  bind?: ToolBinding,
+  onlyTool: "list" | undefined,
+  bind: ToolBinding,
 ) {
   const { caller, data } = context;
 
@@ -46,7 +44,7 @@ export function configureTools(
     if (!found) throw new ToolError("not_found", `No sandbox with id '${sandboxId}' that you can see.`);
     return found;
   };
-  const { register, tool } = createToolRegistration(server, context, surface, visible, bind);
+  const { register, tool } = createToolRegistration(context, surface, visible, bind);
 
   if (onlyTool === "list") {
     registerListTool(context, tool);

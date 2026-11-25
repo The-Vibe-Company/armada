@@ -1,12 +1,9 @@
 import type { SkillReceipt } from "./delegated-access.ts";
 import { HARNESS_CATALOG, isHarness } from "./harnesses.ts";
 import { shellQuote as quote } from "./shell-quote.ts";
-import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { validateSkillPins } from "./skill-pins.ts";
 
 export { validateSkillPins } from "./skill-pins.ts";
-
-import type { Provider } from "./provider.ts";
 
 function skillpackTool(harness: string): string {
   if (!isHarness(harness)) throw Error("unsupported_harness");
@@ -58,49 +55,6 @@ function parseReceipt(output: string, skill: string, harness: string, workspaceI
     origin: workspace.apiUrl,
   };
   return receipt;
-}
-
-/** Anonymous catalog installation only. Private callers reuse installPrivateSkill from #872. */
-export async function installSkill(
-  provider: Provider,
-  sandboxId: string,
-  projectDir: string,
-  harness: string,
-  skill: string,
-  buildWarnings: readonly string[] = [],
-): Promise<SkillReceipt> {
-  validateSkillPins([skill], true);
-  let reason = "skillpack_transport_failed";
-  try {
-    const commands = {
-      installCommand: skillInstallCommand(skill, projectDir, harness),
-      receiptCommand: `cat ${quote(projectDir + "/.companion/skills.lock.json")}`,
-    };
-    const result = await provider.exec({
-      sandboxId,
-      cwd: projectDir,
-      timeoutSeconds: 300,
-      command: `${commands.installCommand} >/dev/null && ${commands.receiptCommand}`,
-    });
-    if (result.detached) reason = "skillpack_process_failed";
-    else if (result.timedOut) reason = "skillpack_timeout";
-    else if (result.truncated) reason = "skillpack_protocol_invalid";
-    else if ([126, 127].includes(result.exitCode ?? 0)) reason = "skillpack_cli_unavailable";
-    else if ([2, 5].includes(result.exitCode ?? 0)) reason = "skillpack_request_rejected";
-    else if ([3, 4, 7].includes(result.exitCode ?? 0)) reason = "skillpack_skill_unavailable";
-    else if (result.exitCode === 6) reason = "skillpack_install_conflict";
-    else if (result.exitCode === 8) reason = "skillpack_registry_unavailable";
-    else if (result.exitCode !== 0) reason = "skillpack_install_nonzero";
-    else {
-      reason = "skillpack_receipt_invalid";
-      return parseSkillReceipt(result.stdout, skill, harness);
-    }
-  } catch {
-    // Only the closed classification survives; guest output and provider errors do not.
-  }
-  if (reason === "skillpack_cli_unavailable" && buildWarnings.includes("skillpack_download_unavailable"))
-    reason = "skillpack_download_unavailable";
-  throw new Error(skillRefusalMessage(reason));
 }
 
 export function skillInstallCommand(skill: string, projectDir: string, harness: string): string {
