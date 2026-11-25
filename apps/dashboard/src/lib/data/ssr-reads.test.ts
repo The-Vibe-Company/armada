@@ -34,15 +34,16 @@ mock.module("@/lib/supabase/server", () => ({
   createClient: async () =>
     createClient<Database>(origin, "anon", {
       accessToken: async () => viewer.token,
-      global: { fetch: (input, init) => fetch(input, init) },
+      global: { fetch },
     }),
 }));
 
 function recordFetch(reply: (url: URL) => Response | Promise<Response>) {
+  const fetchResponse = async (input: Parameters<typeof fetch>[0]) =>
+    reply(new URL(input instanceof Request ? input.url : String(input)));
+  const fetchFixture = Object.assign(fetchResponse, { preconnect: fetch.preconnect });
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed both real clients HTTP responses and hold the credential response without sockets or timers.
-  return spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    return reply(new URL(input instanceof Request ? input.url : String(input)));
-  });
+  return spyOn(globalThis, "fetch").mockImplementation(fetchFixture);
 }
 
 afterEach(() => mock.restore());
