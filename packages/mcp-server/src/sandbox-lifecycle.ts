@@ -1501,17 +1501,17 @@ export function createSandboxLifecycle(
             }
             const saved = await tx.query(
               `update public.sandboxes set
-               last_observed_at=case when $3::text is null then now() else last_observed_at end,
+               last_observed_at=case when $2::text is null then now() else last_observed_at end,
                activity_lease_id=null,
                activity_until=null,
-               lifecycle_error=$3,
+               lifecycle_error=$2,
                reconcile_after=now()+interval '1 minute',
-               reconcile_lease=case when $4 then reconcile_lease else null end,
-               reconcile_lease_until=case when $4 then reconcile_lease_until else null end
-             where id=$1 and reconcile_lease=$5::uuid and lifecycle_generation=$6
+               reconcile_lease=case when $3 then reconcile_lease else null end,
+               reconcile_lease_until=case when $3 then reconcile_lease_until else null end
+             where id=$1 and reconcile_lease=$4::uuid and lifecycle_generation=$5
                and reconcile_lease_until>clock_timestamp()
              returning id`,
-              [row.id, terminal, error, signal?.aborted ?? false, token, row.lifecycle_generation],
+              [row.id, error, signal?.aborted ?? false, token, row.lifecycle_generation],
             );
             if (!saved.rows.length) throw lostLease;
             if (terminal) await detachBoatExtension(tx, row.id, row.lifecycle_generation);
