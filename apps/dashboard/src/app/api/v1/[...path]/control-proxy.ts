@@ -241,12 +241,12 @@ async function forwardRequest(
     !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
   )
     return fail(404, "Not found.");
-  const authorization =
-    options?.viewerToken !== undefined
-      ? options.viewerToken
-        ? `Bearer ${options.viewerToken}`
-        : null
-      : request.headers.get("authorization")?.trim() || null;
+  let authorization: string | null;
+  if (options?.viewerToken !== undefined) {
+    authorization = options.viewerToken ? `Bearer ${options.viewerToken}` : null;
+  } else {
+    authorization = request.headers.get("authorization")?.trim() || null;
+  }
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
   let body: ArrayBuffer | null = null;
   try {
