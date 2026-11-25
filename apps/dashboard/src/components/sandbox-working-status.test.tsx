@@ -1,12 +1,22 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { MODEL_CATALOG } from "@armada/core";
 import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
-import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
-import { renderToString } from "react-dom/server";
+import { PathnameContext, SearchParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
+import { renderToReadableStream, renderToString } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import SandboxesPage from "@/app/(app)/sandboxes/page";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import * as dockerHosts from "@/lib/data/docker-hosts";
+import * as providerSetup from "@/lib/data/provider-setup";
+import * as sandboxInventory from "@/lib/data/sandbox-inventory";
+import * as sandboxesData from "@/lib/data/sandboxes";
+import * as selectedOrg from "@/lib/data/selected-org";
+import * as viewer from "@/lib/data/viewer";
+import * as env from "@/lib/env";
 import { LIVE_FLEET_REFRESH_EVENT, type LiveSandboxes } from "@/lib/live-sandbox-view";
+import type { SandboxListMetadata } from "@/lib/sandbox-access";
+import * as supabase from "@/lib/supabase/server";
 import { NavLinks } from "./nav-links";
 import { SandboxChat, SandboxThreadStateProvider, ThreadSandboxState } from "./sandbox-chat";
 import { SandboxState } from "./sandbox-state";
@@ -259,4 +269,127 @@ test("ThreadSandboxState live-updates between Working and Ready as turns start a
   expect(JSON.stringify(renderer.toJSON())).not.toContain('"Interrupt"');
   expect(JSON.stringify(renderer.toJSON())).not.toContain("Steer the running turn");
   await act(async () => renderer.unmount());
+});
+
+const CLIPPING_CLASSES = new Set([
+  "truncate",
+  "overflow-hidden",
+  "overflow-x-hidden",
+  "overflow-y-hidden",
+  "overflow-clip",
+]);
+
+function hasClippingClass(className: string | undefined) {
+  return (className ?? "").split(/\s+/).some((token) => CLIPPING_CLASSES.has(token));
+}
+
+function enclosingClassesFor(html: string, marker: string) {
+  const index = html.indexOf(marker);
+  expect(index).toBeGreaterThan(-1);
+  const tagEnd = html.indexOf(">", index);
+  expect(tagEnd).toBeGreaterThan(index);
+  const stack: { tag: string; className: string }[] = [];
+  const tagPattern = /<(\/?)([a-z0-9-]+)([^>]*)>/gi;
+  for (const match of html.slice(0, tagEnd + 1).matchAll(tagPattern)) {
+    const [, closing, tag, attrs] = match;
+    if (!tag || attrs?.endsWith("/")) continue;
+    if (closing) {
+      while (stack.length > 0 && stack.pop()?.tag !== tag) {}
+      continue;
+    }
+    const classMatch = attrs?.match(/\bclass="([^"]*)"/);
+    stack.push({ tag, className: classMatch?.[1] ?? "" });
+  }
+  return stack.map((entry) => entry.className);
+}
+
+test("/sandboxes status cell keeps the pulsing Working halo unclipped while truncating label text and LifecycleHint", async () => {
+  const createdAt = "2025-01-01T00:00:00Z";
+  const org = { id: "org-1", name: "Example", created_at: createdAt };
+  const membership = { org, role: "admin" } as const;
+  const row: SandboxListMetadata = {
+    id: "11111111-1111-4111-8111-111111111111",
+    orgId: org.id,
+    ownerId: "user-1",
+    provider: "modal",
+    providerSandboxId: "sb-working",
+    harness: "codex",
+    model: "gpt-5",
+    reasoningEffort: null,
+    status: "ready",
+    createdAt,
+    stoppedAt: null,
+    expiresAt: "2024-12-31T23:00:00Z",
+    effectiveTtlSeconds: 3600,
+    machineSize: "medium",
+    taskOutcome: null,
+    preservationNote: null,
+    displayLabel: "Working sandbox",
+    canOpen: true,
+    canManage: true,
+  };
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
+  spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
+  spyOn(viewer, "listMemberships").mockResolvedValue([membership]);
+  spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
+  spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
+  spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
+  spyOn(env, "mcpUrl").mockReturnValue(null);
+  spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
+    state: "ready",
+    status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
+  });
+  spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
+  spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
+  spyOn(sandboxInventory, "loadSandboxInventory").mockResolvedValue({
+    rows: [row],
+    total: 1,
+    inventoryTotal: 1,
+    skipped: 0,
+    facets: {
+      status: new Map([["ready", 1]]),
+      provider: new Map([["modal", 1]]),
+      harness: new Map([["codex", 1]]),
+      model: new Map([["gpt-5", 1]]),
+      owner: new Map([["user-1", 1]]),
+      size: new Map([["medium", 1]]),
+    },
+    activity: "all",
+    counts: { all: 1, mine: 1, working: 1, need: 0, stopped: 0, failed: 0, deleted: 0 },
+    page: 1,
+    workingIds: new Set([row.id]),
+    waitingIds: new Set(),
+    now: new Date(createdAt),
+  });
+  spyOn(sandboxesData, "listSandboxEnrichment").mockResolvedValue(new Map());
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  try {
+    const stream = await renderToReadableStream(
+      <AppRouterContext.Provider value={router}>
+        <PathnameContext.Provider value="/sandboxes">
+          <SearchParamsContext.Provider value={new URLSearchParams()}>
+            <SandboxesPage searchParams={Promise.resolve({})} />
+          </SearchParamsContext.Provider>
+        </PathnameContext.Provider>
+      </AppRouterContext.Provider>,
+    );
+    await stream.allReady;
+    const html = await new Response(stream).text();
+    const articleMatch = html.match(/<article\b[\s\S]*?<\/article>/);
+    expect(articleMatch).not.toBeNull();
+    const articleHtml = articleMatch![0];
+
+    expect(articleHtml).toContain('data-pulse="true"');
+    expect(articleHtml).toContain("motion-safe:animate-live");
+    for (const className of enclosingClassesFor(articleHtml, 'data-pulse="true"')) {
+      expect(hasClippingClass(className)).toBe(false);
+    }
+    expect(articleHtml).toMatch(/<span[^>]*class="[^"]*\btruncate\b[^"]*"[^>]*>Working<\/span>/);
+    expect(articleHtml).toMatch(
+      /<p[^>]*class="[^"]*\btruncate\b[^"]*"[^>]*data-lifecycle="overdue"[^>]*>Past deadline<\/p>/,
+    );
+  } finally {
+    mock.restore();
+  }
 });
