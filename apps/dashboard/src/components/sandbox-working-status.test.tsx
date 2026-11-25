@@ -277,10 +277,12 @@ const CLIPPING_CLASSES = new Set([
   "overflow-x-hidden",
   "overflow-y-hidden",
   "overflow-clip",
+  "overflow-x-clip",
+  "overflow-y-clip",
 ]);
 
 function hasClippingClass(className: string | undefined) {
-  return (className ?? "").split(/\s+/).some((token) => CLIPPING_CLASSES.has(token));
+  return (className ?? "").split(/\s+/).some((token) => CLIPPING_CLASSES.has(token.split(":").at(-1) ?? ""));
 }
 
 function enclosingClassesFor(html: string, marker: string) {
@@ -328,43 +330,43 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     canOpen: true,
     canManage: true,
   };
-  /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
-  spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
-  spyOn(viewer, "listMemberships").mockResolvedValue([membership]);
-  spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
-  spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
-  spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
-  spyOn(env, "mcpUrl").mockReturnValue(null);
-  spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
-    state: "ready",
-    status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
-  });
-  spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
-  spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
-  spyOn(sandboxInventory, "loadSandboxInventory").mockResolvedValue({
-    rows: [row],
-    total: 1,
-    inventoryTotal: 1,
-    skipped: 0,
-    facets: {
-      status: new Map([["ready", 1]]),
-      provider: new Map([["modal", 1]]),
-      harness: new Map([["codex", 1]]),
-      model: new Map([["gpt-5", 1]]),
-      owner: new Map([["user-1", 1]]),
-      size: new Map([["medium", 1]]),
-    },
-    activity: "all",
-    counts: { all: 1, mine: 1, working: 1, need: 0, stopped: 0, failed: 0, deleted: 0 },
-    page: 1,
-    workingIds: new Set([row.id]),
-    waitingIds: new Set(),
-    now: new Date(createdAt),
-  });
-  spyOn(sandboxesData, "listSandboxEnrichment").mockResolvedValue(new Map());
-  /* oxlint-enable landmines-testing/no-test-doubles */
-
   try {
+    /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
+    spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
+    spyOn(viewer, "listMemberships").mockResolvedValue([membership]);
+    spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
+    spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
+    spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
+    spyOn(env, "mcpUrl").mockReturnValue(null);
+    spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
+      state: "ready",
+      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
+    });
+    spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
+    spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
+    spyOn(sandboxInventory, "loadSandboxInventory").mockResolvedValue({
+      rows: [row],
+      total: 1,
+      inventoryTotal: 1,
+      skipped: 0,
+      facets: {
+        status: new Map([["ready", 1]]),
+        provider: new Map([["modal", 1]]),
+        harness: new Map([["codex", 1]]),
+        model: new Map([["gpt-5", 1]]),
+        owner: new Map([["user-1", 1]]),
+        size: new Map([["medium", 1]]),
+      },
+      activity: "all",
+      counts: { all: 1, mine: 1, working: 1, need: 0, stopped: 0, failed: 0, deleted: 0 },
+      page: 1,
+      workingIds: new Set([row.id]),
+      waitingIds: new Set(),
+      now: new Date(createdAt),
+    });
+    spyOn(sandboxesData, "listSandboxEnrichment").mockResolvedValue(new Map());
+    /* oxlint-enable landmines-testing/no-test-doubles */
+
     const stream = await renderToReadableStream(
       <AppRouterContext.Provider value={router}>
         <PathnameContext.Provider value="/sandboxes">
