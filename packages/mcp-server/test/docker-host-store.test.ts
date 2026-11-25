@@ -1210,7 +1210,7 @@ test("authenticated restore expiry settles the exact starting generation before 
   ]);
 });
 
-test.each([false, true])(
+test.each(["none", "pending", "settled"] as const)(
   "authenticated restore expiry settles the attached replacement once (stop already admitted: %s)",
   async (stopAdmitted) => {
     const a = await restoreFixture();
@@ -1227,13 +1227,23 @@ test.each([false, true])(
     await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed", machineId: "c".repeat(64) });
     await store.attachMachineRestore(a.owner, claim);
 
-    if (stopAdmitted) {
-      await queueMailboxStop(sql, key, a.owner, a.sandboxId, randomUUID());
+    if (stopAdmitted !== "none") {
+      const stop = await queueMailboxStop(sql, key, a.owner, a.sandboxId, randomUUID());
+      if (stopAdmitted === "settled") {
+        expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(false);
+        await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+        expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(false);
+        await reportDockerExpiry(sql, key, a.hostToken, a.installationId, expiry);
+        expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(true);
+        expect((await lifecycle(a.sandboxId))?.stop_requested_at).not.toBeNull();
+        return;
+      }
     }
-    const before = stopAdmitted
-      ? { status: "stopping", lifecycle_generation: "3" }
-      : { status: "starting", lifecycle_generation: "2" };
-    const stoppedGeneration = stopAdmitted ? "4" : "3";
+    const before =
+      stopAdmitted === "pending"
+        ? { status: "stopping", lifecycle_generation: "3" }
+        : { status: "starting", lifecycle_generation: "2" };
+    const stoppedGeneration = stopAdmitted === "pending" ? "4" : "3";
     expect(await lifecycle(a.sandboxId)).toMatchObject(before);
 
     const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");

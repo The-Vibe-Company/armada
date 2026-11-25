@@ -590,6 +590,7 @@ export function createDockerSandboxControls(
     const actor = { userId: caller.userId, orgId: row.org_id };
     const hosts = createDockerHostStore(sql, key);
     const stop = operation === "stop";
+    if (!stop) await assertDelete(caller, row.id);
     if (stop && onlyIfIdle && row.status === "ready" && !(await status(caller, row)).settled)
       throw failure("conflict", "Wait for the current turn to finish before changing accounts.");
     const done = (current: Row) =>

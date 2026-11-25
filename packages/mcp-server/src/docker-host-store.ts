@@ -2763,7 +2763,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           const sameGeneration = lifecycleGeneration === String(logical.lifecycle_generation);
           const attachedAtNextStopGeneration =
             attached &&
-            logical.status === "stopping" &&
+            ["stopping", "stopped"].includes(logical.status) &&
             BigInt(logical.lifecycle_generation) === BigInt(lifecycleGeneration) + 1n;
           if (!sameGeneration && !attachedAtNextStopGeneration) return;
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
