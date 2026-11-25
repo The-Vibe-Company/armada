@@ -159,21 +159,48 @@ async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuf
 }
 
 type UpstreamFetch = (input: URL, init: RequestInit) => Promise<Response>;
+type ViewerReader = () => Promise<{ token: string | null } | null>;
+type ForwardOptions = { eventStream?: boolean; viewerToken?: string };
 
 /** Server-side, same-origin forwarding to the configured Armada control API. */
 export function forwardControl(request: Request, path: readonly string[], fetchImpl: UpstreamFetch = fetch) {
   return forwardRequest(request, path, fetchImpl);
 }
 
+export async function forwardControlGet(
+  request: Request,
+  path: readonly string[],
+  readViewer: ViewerReader,
+  fetchImpl: UpstreamFetch = fetch,
+) {
+  if (path.length !== 1 || path[0] !== controlRouteKey(streamSandboxEvents.route)) {
+    return forwardControl(request, path, fetchImpl);
+  }
+  if (request.headers.get("authorization")?.trim()) {
+    return forwardRequest(request, path, fetchImpl, { eventStream: true });
+  }
+  const viewer = await readViewer();
+  if (!viewer?.token) {
+    return Response.json(
+      { error: { code: "unauthorized", message: "Sign in again." } },
+      { status: 401, headers: { "cache-control": "private, no-store" } },
+    );
+  }
+  return forwardDashboardEventStream(request, viewer.token, fetchImpl);
+}
+
 export function forwardDashboardEventStream(request: Request, viewerToken: string, fetchImpl: UpstreamFetch = fetch) {
-  return forwardRequest(request, [controlRouteKey(streamSandboxEvents.route)], fetchImpl, viewerToken);
+  return forwardRequest(request, [controlRouteKey(streamSandboxEvents.route)], fetchImpl, {
+    eventStream: true,
+    viewerToken,
+  });
 }
 
 async function forwardRequest(
   request: Request,
   path: readonly string[],
   fetchImpl: UpstreamFetch,
-  viewerToken?: string,
+  options?: ForwardOptions,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");
@@ -183,7 +210,7 @@ async function forwardRequest(
   const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
   const relative = sandboxOutputs ?? path.join("/");
   const eventStream =
-    viewerToken &&
+    Boolean(options?.eventStream) &&
     method === streamSandboxEvents.route.method &&
     relative === controlRouteKey(streamSandboxEvents.route);
   const forwardedHeaders = new Headers();
@@ -214,7 +241,12 @@ async function forwardRequest(
     !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
   )
     return fail(404, "Not found.");
-  const authorization = eventStream ? `Bearer ${viewerToken}` : request.headers.get("authorization");
+  const authorization =
+    options?.viewerToken !== undefined
+      ? options.viewerToken
+        ? `Bearer ${options.viewerToken}`
+        : null
+      : request.headers.get("authorization")?.trim() || null;
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
   let body: ArrayBuffer | null = null;
   try {
