@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo, Sql } from "@armada/core";
 import type { Machine as MachineContract, MachineIdentity } from "@armada/core/server";
 import type { Sandbox } from "modal";
-import { withModalStopSignal } from "./client.ts";
+import { abortable, withModalStopSignal } from "./client.ts";
 import { ModalOperationError, refusal } from "./errors.ts";
 import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
@@ -197,7 +197,7 @@ export function createRuntimeLifecycle({
                           row.info.state = "stopping";
                           await save();
                           if (!row.quiesced) {
-                            await distribution.prepareSnapshot(sb, row);
+                            await abortable(distribution.prepareSnapshot(sb, row), signal);
                             row.quiesced = true;
                             await save();
                           }

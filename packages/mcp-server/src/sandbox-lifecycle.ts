@@ -16,7 +16,7 @@ import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
-import { createJobsStore } from "./jobs/store.ts";
+import { createJobsStore, mergeStopOutcome } from "./jobs/store.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, retainsDiskOnStop } from "./provider-runtime-admission.ts";
@@ -597,7 +597,13 @@ export function unresolvedModalStop(sandbox: string) {
     and j.generation=${sandbox}.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased')))`;
 }
 
-export async function enqueueModalStop(tx: Sql, sandboxId: string, generation: string | number, lease?: string) {
+export async function enqueueModalStop(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  lease?: string,
+  childOperation?: string,
+) {
   const {
     rows: [target],
   } = await tx.query<{ org_id: string }>(
@@ -606,7 +612,7 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, generation: s
     [sandboxId, generation],
   );
   if (!target) return false;
-  await createJobsStore(tx).enqueue(
+  const jobId = await createJobsStore(tx).enqueue(
     "stop",
     sandboxId,
     Number(generation),
@@ -619,6 +625,7 @@ export async function enqueueModalStop(tx: Sql, sandboxId: string, generation: s
     },
     tx,
   );
+  if (childOperation) await mergeStopOutcome(tx, jobId, { modal_child_operation: childOperation });
   if (lease) {
     const result = await tx.query(
       `update public.sandboxes set activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null

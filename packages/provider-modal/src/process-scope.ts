@@ -138,7 +138,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?
   signal?.throwIfAborted();
   const child = await sandbox.exec(
     ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/opt/armada/runtime-bun/bun", "-e", controller],
-    { env: {}, secrets: [], timeoutMs: modalStopTimeout(30_000), stdout: "pipe", stderr: "ignore" },
+    { env: {}, secrets: [], timeoutMs: modalStopTimeout(30_000, 1_000), stdout: "pipe", stderr: "ignore" },
   );
   try {
     signal?.throwIfAborted();

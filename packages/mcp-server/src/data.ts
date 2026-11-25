@@ -84,7 +84,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   ownerStop?: true;
-  queueModalStop?: true;
+  queueModalStop?: true | string;
   ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -1109,7 +1109,14 @@ export function createSqlData(
               });
               if (
                 patch.queueModalStop &&
-                (!patch.activityToken || !(await enqueueModalStop(tx, id, row.generation, patch.activityToken)))
+                (!patch.activityToken ||
+                  !(await enqueueModalStop(
+                    tx,
+                    id,
+                    row.generation,
+                    patch.activityToken,
+                    typeof patch.queueModalStop === "string" ? patch.queueModalStop : undefined,
+                  )))
               )
                 throw new Error("Modal stop admission lost the exact target.");
             }

@@ -21,7 +21,7 @@ for file in /home/user/.armada-runtime/codex/auth.json /home/user/.armada-runtim
 done
 `,
     ],
-    { timeoutMs: modalStopTimeout(30_000), env: {}, secrets: [] },
+    { timeoutMs: modalStopTimeout(30_000, 1_000), env: {}, secrets: [] },
   );
   if ((await process.wait()) !== 0)
     throw refusal("conflict", "SSH could not be quiesced before snapshot.", "ssh_cleanup_failed");

@@ -16,12 +16,13 @@ export function withModalStopSignal<T>(
   return signal ? stopBudget.run({ signal, deadlineAt }, work) : work();
 }
 
-export function modalStopTimeout(maximum: number) {
+export function modalStopTimeout(maximum: number, quantum = 1) {
   const budget = stopBudget.getStore();
   budget?.signal.throwIfAborted();
   const remaining = budget?.deadlineAt === undefined ? maximum : budget.deadlineAt - Date.now();
-  if (remaining <= 0) throw new Error("Modal stop dispatch deadline elapsed.");
-  return Math.min(maximum, remaining);
+  const timeout = Math.floor(Math.min(maximum, remaining) / quantum) * quantum;
+  if (timeout <= 0) throw new Error("Modal stop dispatch deadline elapsed.");
+  return timeout;
 }
 export function modalConnection(options: ModalConnection): ModalClient {
   const supplied = options.tokenId !== undefined || options.tokenSecret !== undefined;
