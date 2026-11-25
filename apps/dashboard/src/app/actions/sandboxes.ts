@@ -198,15 +198,20 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
     if (!chosen.ok) return fail(chosen.error);
     override = chosen.args;
   }
+  let receipt: unknown;
   try {
-    await target.gateway.send(id, prompt, override, requestId);
+    receipt = await target.gateway.send(id, prompt, override, requestId);
   } catch (error) {
     if (error instanceof GatewayError) return drivingFailure(error, target.owner, pinned);
     throw error;
   }
   revalidatePath(`/sandboxes/${id}`);
   revalidatePath("/sandboxes");
-  return done("Sent.");
+  const promptId =
+    typeof receipt === "object" && receipt !== null && "promptId" in receipt && typeof receipt.promptId === "string"
+      ? receipt.promptId
+      : undefined;
+  return { ok: true as const, message: "Sent.", promptId };
 }
 
 export async function steerSandbox(_previous: ActionResult | null, data: FormData) {

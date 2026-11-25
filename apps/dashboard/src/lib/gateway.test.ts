@@ -123,6 +123,15 @@ describe("gateway", () => {
     ]);
   });
 
+  test("queued status can address the accepted prompt before it appears in the journal", async () => {
+    const { calls, gateway } = server((call) => rpc(call.body.id, { structuredContent: { ok: true } }));
+    await sandboxGateway(gateway, unexpectedControl).status("sandbox-9", "request-1");
+    expect(calls.find((call) => call.method === "tools/call")?.body.params).toEqual({
+      name: "status",
+      arguments: { id: "sandbox-9", prompt_id: "request-1" },
+    });
+  });
+
   test("a reply sent as a server-sent event is read too", async () => {
     const { gateway } = server((call) => {
       const message = { jsonrpc: "2.0", id: call.body.id, result: { structuredContent: { ok: true } } };

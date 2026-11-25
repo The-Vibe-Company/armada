@@ -1,7 +1,7 @@
 "use client";
 
 import type { SandboxStatus } from "@armada/core";
-import { PlayIcon, RotateCcwIcon } from "lucide-react";
+import { ClockPlusIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { extendSandbox, sendToSandbox, steerSandbox } from "@/app/actions/sandboxes";
@@ -128,16 +128,39 @@ export function PushSandboxWork({ sandboxId, restarts }: { sandboxId: string; re
   );
 }
 
-export function AddSandboxTime({ sandboxId, label = "Add time" }: { sandboxId: string; label?: string }) {
+export function AddSandboxTime({
+  sandboxId,
+  label = "Add time",
+  compact = false,
+}: {
+  sandboxId: string;
+  label?: string;
+  compact?: boolean;
+}) {
   const [state, action, pending] = useMutationState(extendSandbox);
   return (
-    <form action={action} className="space-y-2">
+    <form action={action} className={compact ? "relative shrink-0" : "space-y-2"}>
       <input type="hidden" name="sandbox" value={sandboxId} />
-      <Button size="sm" variant="outline" disabled={pending}>
-        {pending ? "Adding time…" : label}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        aria-busy={pending}
+        title={compact ? label : undefined}
+        className={compact ? "max-sm:px-2.5" : undefined}
+      >
+        {compact && <ClockPlusIcon className="sm:hidden" aria-hidden />}
+        <span className={compact ? "max-sm:sr-only" : undefined}>{pending && !compact ? "Adding time…" : label}</span>
       </Button>
       {state && (
-        <p role={state.ok ? "status" : "alert"} className="text-xs">
+        <p
+          role={state.ok ? "status" : "alert"}
+          className={
+            compact
+              ? "absolute top-full right-0 z-10 mt-1 w-44 rounded-md border bg-background p-2 text-xs shadow"
+              : "text-xs"
+          }
+        >
           {state.ok ? state.message : state.error}
         </p>
       )}
