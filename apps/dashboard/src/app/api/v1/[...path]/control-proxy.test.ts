@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { forwardControl, forwardDashboardEventStream } from "./control-proxy.ts";
-import { POST } from "./route.ts";
+import { forwardControl, forwardControlGet, forwardDashboardEventStream } from "./control-proxy.ts";
+import { GET, POST } from "./route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -683,4 +683,100 @@ test("streams sandbox events as they arrive and forwards the reconnect cursor", 
   abort.abort();
   expect(upstreamSignal?.aborted).toBe(true);
   await reader.cancel();
+});
+
+test("GET /api/v1/events forwards Bearer auth without readViewer, preserves cookie fallback, and rejects unauthenticated requests", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  try {
+    process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+
+    const seen: Request[] = [];
+    let viewerReads = 0;
+    const bearerResponse = await forwardControlGet(
+      new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=tail`, {
+        headers: {
+          authorization: "Bearer ios-fixture-token",
+          "last-event-id": "42",
+          cookie: "session=must-not-forward",
+        },
+      }),
+      ["events"],
+      async () => {
+        viewerReads++;
+        throw new Error("readViewer must not be called when Authorization header is present");
+      },
+      async (input, init) => {
+        seen.push(new Request(input, init));
+        return new Response('id: 43\ndata: {"id":"43"}\n\n', {
+          status: 200,
+          headers: { "content-type": "text/event-stream", "x-accel-buffering": "no" },
+        });
+      },
+    );
+    expect(viewerReads).toBe(0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe(`https://armada.test/api/v1/events?sandbox=${id}&cursor=tail`);
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer ios-fixture-token");
+    expect(seen[0]?.headers.get("last-event-id")).toBe("42");
+    expect(seen[0]?.headers.get("accept")).toBe("text/event-stream");
+    expect(seen[0]?.headers.get("cookie")).toBeNull();
+    expect(bearerResponse.status).toBe(200);
+    expect(bearerResponse.headers.get("content-type")).toBe("text/event-stream");
+    expect(bearerResponse.headers.get("x-accel-buffering")).toBe("no");
+    expect(bearerResponse.headers.get("cache-control")).toBe("private, no-store");
+    expect(await bearerResponse.text()).toBe('id: 43\ndata: {"id":"43"}\n\n');
+
+    for (const headers of [{}, { authorization: "   " }] as const) {
+      const cookieResponse = await forwardControlGet(
+        new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=tail`, { headers }),
+        ["events"],
+        async () => {
+          viewerReads++;
+          return { token: "cookie-viewer-token" };
+        },
+        async (input, init) => {
+          seen.push(new Request(input, init));
+          return new Response("", {
+            status: 200,
+            headers: { "content-type": "text/event-stream", "x-accel-buffering": "no" },
+          });
+        },
+      );
+      expect(cookieResponse.status).toBe(200);
+      expect(cookieResponse.headers.get("cache-control")).toBe("private, no-store");
+      expect(seen.at(-1)?.headers.get("authorization")).toBe("Bearer cookie-viewer-token");
+      expect(seen.at(-1)?.headers.get("accept")).toBe("text/event-stream");
+    }
+    expect(viewerReads).toBe(2);
+
+    const countBefore = seen.length;
+    for (const viewer of [null, { token: null }] as const) {
+      const unauthenticated = await forwardControlGet(
+        new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=tail`),
+        ["events"],
+        async () => viewer,
+        async () => {
+          throw new Error("Unauthenticated request must not reach upstream");
+        },
+      );
+      expect(unauthenticated.status).toBe(401);
+      expect(unauthenticated.headers.get("cache-control")).toBe("private, no-store");
+      expect(await unauthenticated.json()).toEqual({
+        error: { code: "unauthorized", message: "Sign in again." },
+      });
+    }
+    expect(seen).toHaveLength(countBefore);
+
+    delete process.env.ARMADA_MCP_URL;
+    const routeResponse = await GET(
+      new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=tail`, {
+        headers: { authorization: "Bearer ios-fixture-token" },
+      }),
+      { params: Promise.resolve({ path: ["events"] }) },
+    );
+    expect(routeResponse.status).toBe(503);
+  } finally {
+    if (env === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = env;
+  }
 });
