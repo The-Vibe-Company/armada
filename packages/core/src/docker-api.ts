@@ -248,6 +248,7 @@ export interface DockerSandboxStatus {
   provider: "docker";
   hostId: string;
   image: string;
+  snapshotId?: string;
   id: string;
   golden: null;
   visibility: "private";

@@ -3,13 +3,7 @@ import { cache } from "react";
 import { type AccountControl, createAccountControl } from "@/lib/account-control";
 import { ControlError } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
-import {
-  type AccountList,
-  type AccountUsage,
-  type AuthCapabilities,
-  KIND_INFO,
-  type ModelAccount,
-} from "@/lib/model-accounts";
+import { type AccountList, type AccountUsage, KIND_INFO, type ModelAccount } from "@/lib/model-accounts";
 import { type ConnectionTestChoices, matchesConnectionTestSandbox } from "@/lib/model-connection-check";
 import { createClient } from "@/lib/supabase/server";
 import { selectedOrganization } from "./selected-org";
@@ -51,12 +45,6 @@ export const listSelectedAccounts = cache(async (): Promise<AccountList> => {
     throw error;
   }
 });
-
-/** How accounts can be connected on this deployment, or null (paste only) when the server does not say. */
-export async function readAuthCapabilities(org: string): Promise<AuthCapabilities | null> {
-  const control = await viewerAccountControl();
-  return control ? control.authCapabilities(org) : null;
-}
 
 /** A usage read is metadata: the page does not wait on it for long. */
 const USAGE_TIMEOUT_MS = 5_000;

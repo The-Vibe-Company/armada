@@ -294,8 +294,7 @@ Source deployments require the same GitHub toolchain as published releases:
 `git`, `gh` and `python3`. A missing release pin selects the immutable published
 2.29.0 sandbox image as a toolchain baseline. Runtime and harness selection still
 uses verified artifacts from the current server; the baseline is not a version
-alias. The legacy `DOCKER_DEFAULT_IMAGE` remains available for explicit operator
-preview APIs only. A normal launch's GitHub delivery diagnostic names the
+alias. A normal launch's GitHub delivery diagnostic names the
 `configureGitHub` step; it is not evidence of a missing user grant.
 
 An accepted Docker launch can be followed immediately by `sandbox/send`. While

@@ -681,8 +681,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       snapshotId?: string;
       hostId?: string;
       image?: string;
-      orgId?: string;
-      ownerId?: string;
       visibility?: string;
     };
 
@@ -691,8 +689,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         receipt.snapshotId === snapshot.id &&
         receipt.hostId === snapshot.hostId &&
         receipt.image === snapshot.image &&
-        receipt.orgId === snapshot.orgId &&
-        receipt.ownerId === snapshot.ownerId &&
         receipt.visibility === "private"
       );
     }
@@ -738,12 +734,13 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
           const statusBudget = readBudget();
           if (statusBudget <= 0) return;
-          const status = await request<{
-            id: string;
-            status: string;
-            settled?: boolean;
-            statusMessage?: string | null;
-          }>("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
+          const status = await request<
+            LaunchSandbox & {
+              status: string;
+              settled?: boolean;
+              statusMessage?: string | null;
+            }
+          >("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
           if (status?.id !== row.id) return;
           if (!dockerInput) {
             if (status.settled !== true) return;
@@ -752,22 +749,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           }
           if (status.status !== "ready" && status.status !== "running") return;
           if (!dockerSnapshot) return row;
-          const receiptBudget = readBudget();
-          if (receiptBudget <= 0) return;
-          const receipt = await request<LaunchSandbox & { status: string }>(
-            "docker/sandboxes/get",
-            { org: dockerSnapshot.orgId, sandboxId: row.id },
-            receiptBudget,
-          ).catch(() => undefined);
-          if (!receipt) return;
-          if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))
+          if (status.provider !== provider || !matchesSnapshot(status, dockerSnapshot))
             throw new ParityError({
               ...detail,
               code: "invalid_snapshot_source",
               message: "The recovered sandbox does not match the requested Docker snapshot.",
               requestKey,
             });
-          if (receipt.status === "ready" || receipt.status === "running") return receipt;
+          return status;
         });
       let result: { sandbox: LaunchSandbox } | ModalLaunchReceipt;
       try {

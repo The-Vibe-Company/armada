@@ -3,17 +3,7 @@
 import type { Harness } from "@armada/core";
 import { BracesIcon, LockIcon, LockKeyholeIcon, PencilIcon, PlugIcon, RocketIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
-import {
-  Children,
-  isValidElement,
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
+import { Children, isValidElement, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import {
   createTemplate,
@@ -60,6 +50,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { useMutationState } from "@/components/use-mutation-state";
+import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
@@ -102,25 +93,6 @@ export function NoSecretsNote({ className }: { className?: string }) {
       </span>
     </p>
   );
-}
-
-/**
- * React resets a form after its action returns. A refused publish or launch must keep every choice, including the
- * controlled ones (the model, the machine size) that listen for that reset: the reset is cancelled before any of
- * them hears it, so a retry sends exactly what the person saw.
- */
-function useKeepOnReset(root: RefObject<HTMLFormElement | null>) {
-  useEffect(() => {
-    const form = root.current;
-    if (!form) return;
-    const keep = (event: Event) => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    };
-    // Capture listeners on the target run before the fields' own (bubble) listeners.
-    form.addEventListener("reset", keep, true);
-    return () => form.removeEventListener("reset", keep, true);
-  }, [root]);
 }
 
 /** The form's starting point: a revision being edited, or nothing for a new template. */
@@ -203,11 +175,10 @@ function TemplateForm({
     lookups.accounts?.state === "ready"
       ? launchDefault(lookups.accounts.accounts, harness, lookups.accounts.now).state
       : null;
-  const root = useRef<HTMLFormElement>(null);
+  const preserve = usePreservedActionForm();
   useEffect(() => {
     if (state?.ok) onDone(state.message);
   }, [state, onDone]);
-  useKeepOnReset(root);
   // A list that could not be read would silently drop what the current revision chose from it: no publication.
   const lost = editing ? unreadableSelections(editing.definition, lookups) : null;
   const environments = lookups.goldens.filter((row) => scope === "personal" || row.visibility === "org");
@@ -225,7 +196,7 @@ function TemplateForm({
   const word = "inline-flex h-10 max-w-full rounded-md border bg-muted/30 px-2 align-middle text-sm sm:h-8";
   return (
     <form
-      ref={root}
+      ref={preserve}
       action={formAction}
       className="space-y-4"
       data-template-form
@@ -727,8 +698,7 @@ export function TemplateLaunchForm({
   const [manualProject, setProject] = useState("");
   const defaultProject = useDefaultFolder && target.repositories.length === 1 ? target.repositories[0] : "";
   const project = repositoryFolder ?? (manualProject || defaultProject || "");
-  const root = useRef<HTMLFormElement>(null);
-  useKeepOnReset(root);
+  const preserve = usePreservedActionForm();
   const error = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (state && !state.ok) error.current?.focus();
@@ -773,7 +743,7 @@ export function TemplateLaunchForm({
   );
 
   return (
-    <form ref={root} action={formAction} data-template-launch={target.name}>
+    <form ref={preserve} action={formAction} data-template-launch={target.name}>
       <input type="hidden" name="org" value={target.orgId} />
       <input type="hidden" name="id" value={target.id} />
       <input type="hidden" name="revision" value={target.revision} />

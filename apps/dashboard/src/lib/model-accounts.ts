@@ -11,7 +11,6 @@ import {
   harnessForCredential,
   isRecord as isRow,
   MODEL_CREDENTIAL_KINDS,
-  shellQuote,
 } from "@armada/core";
 
 export const ACCOUNT_KINDS = MODEL_CREDENTIAL_KINDS;
@@ -253,63 +252,6 @@ export function accountsFromList(
       )
     : undefined;
   return { accounts, legacy, ...(defaults ? { defaults } : {}) };
-}
-
-/**
- * How accounts can be connected, as the server reports it (#604 `creds/accounts/auth-capabilities`): whether a
- * hosted browser sign-in exists, and the Armada CLI command that signs a kind in on the person's machine. Only what
- * the server reports is offered; a server that reports nothing offers paste only.
- */
-export type AuthCapabilities = { hostedOAuth: boolean; terminal: Partial<Record<AccountKind, string>> };
-
-/**
- * The only terminal sign-ins the dashboard will show, by kind. A server's command is accepted only when it is one
- * of these exactly, bare or as its documented `--name <name>` template; anything else is not shown.
- */
-const CLI_LOGIN: Partial<Record<AccountKind, string>> = {
-  codex_auth: "armada account login codex",
-  claude_oauth: "armada account login claude",
-};
-
-/** The allowlisted base for a reported command, or null: never a placeholder, an extra flag or arbitrary shell. */
-function loginBase(kind: unknown, command: unknown): string | null {
-  if (!oneOf(ACCOUNT_KINDS, kind) || typeof command !== "string") return null;
-  const base = CLI_LOGIN[kind];
-  const reported = command.trim().replace(/\s+/g, " ");
-  return base && (reported === base || reported === `${base} --name <name>`) ? base : null;
-}
-
-/** #604's `modelAuthCapabilities` names harnesses, not credential kinds. */
-const HARNESS_LOGIN_KIND: Record<string, AccountKind> = { codex: "codex_auth", claude: "claude_oauth" };
-
-/**
- * #604 `creds/accounts/auth-capabilities`: nested `{codex: {login}, claude: {login}}` (login null when there is
- * none), or a `nativeCLI` list or map of kind to command. Import templates (`--file <...>`) are not offered: they
- * name a private path the dashboard cannot fill in.
- */
-export function parseAuthCapabilities(value: unknown): AuthCapabilities | null {
-  if (!isRow(value)) return null;
-  const terminal: AuthCapabilities["terminal"] = {};
-  const entries: [unknown, unknown][] = Array.isArray(value.nativeCLI)
-    ? value.nativeCLI.map((row) => (isRow(row) ? [row.kind, row.command] : [null, null]))
-    : isRow(value.nativeCLI)
-      ? Object.entries(value.nativeCLI)
-      : [];
-  for (const [harness, kind] of Object.entries(HARNESS_LOGIN_KIND)) {
-    const nested = value[harness];
-    if (isRow(nested)) entries.push([kind, nested.login]);
-  }
-  for (const [kind, command] of entries) {
-    const base = loginBase(kind, command);
-    if (base) terminal[kind as AccountKind] = base;
-  }
-  return { hostedOAuth: value.hostedOAuth === true, terminal };
-}
-
-/** The command a person runs to sign a kind in from their terminal, or null when the server offers none. */
-export function terminalLogin(capabilities: AuthCapabilities | null, kind: AccountKind, name: string): string | null {
-  const base = capabilities?.terminal[kind];
-  return base ? `${base} --name ${shellQuote(name.trim() || "Work")}` : null;
 }
 
 /** A name for an account: trimmed, one line, short enough to read in a select. */

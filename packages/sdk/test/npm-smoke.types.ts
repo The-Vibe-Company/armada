@@ -75,4 +75,8 @@ type SandboxListItem = Awaited<ReturnType<Armada["list"]>>["sandboxes"][number];
 export type ListSandboxIdentity = Assert<Equal<SandboxListItem["providerSandboxId"], string | null>>;
 export type ListBoatAliasRemoved = Assert<Equal<Extract<"boatId", keyof SandboxListItem>, never>>;
 
+export type DockerStatusSnapshot = Assert<
+  Equal<Awaited<ReturnType<Armada["status"]>>["snapshotId"], string | undefined>
+>;
+
 export type ModalReceiptFields = Assert<Equal<keyof ModalLaunchReceipt, "sandbox">>;

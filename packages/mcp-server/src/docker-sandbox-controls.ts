@@ -459,6 +459,7 @@ export function createDockerSandboxControls(
       provider: "docker",
       hostId: row.docker_host_id,
       image: row.docker_image,
+      ...(row.docker_snapshot_id ? { snapshotId: row.docker_snapshot_id } : {}),
       id: row.id,
       golden: null,
       visibility: "private",
