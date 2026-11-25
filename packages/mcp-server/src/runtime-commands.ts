@@ -3,6 +3,7 @@ import { PROMPT_STATUSES, type Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
+import { dockerStopPending } from "./jobs/store.ts";
 import {
   currentRequestId,
   noteAdmission,
@@ -292,6 +293,7 @@ export function createRuntimeCommands(
             `select 1 from public.jobs j where j.sandbox_id=$1 and j.generation=$2 and j.kind='launch'
               and j.outcome ? 'docker_actor_epoch' and j.outcome->>'docker_receipt' is null
               and (j.deadline_at<=clock_timestamp() or j.attempts>j.max_attempts or j.state in ('failed','done')
+                or ${dockerStopPending("j.sandbox_id", "j.generation")}
                 or not exists(select 1 from public.mcp_actor_epochs e
                   where e.org_id=j.org_id and e.user_id=j.request_owner_id
                     and e.epoch::text=j.outcome->>'docker_actor_epoch'))`,

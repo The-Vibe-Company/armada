@@ -52,7 +52,7 @@ import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./do
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
 import type { DockerStopIntent } from "./jobs/stop.ts";
-import { createJobsStore, jobRequestKey } from "./jobs/store.ts";
+import { createJobsStore, dockerStopPending, jobRequestKey } from "./jobs/store.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -575,6 +575,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     )
       deny();
     return member.epoch;
+  }
+  async function fenceFreshStartup(tx: Sql, row: Sandbox) {
+    const { rows } = await tx.query(`select 1 where ${dockerStopPending("$1", "$2")}`, [
+      row.id,
+      row.lifecycle_generation,
+    ]);
+    if (rows.length) deny();
   }
   async function state(tx: Sql, row: Sandbox, operation: string) {
     if (operation === "stop") return;
@@ -2039,8 +2046,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         if (existing && existing.request_id !== requestId) deny();
         if (!existing) {
+          await fenceFreshStartup(tx, row);
           await refuseDraining(tx, host.id);
           await state(tx, row, "create");
+          if (scope?.canDispatch && !(await scope.canDispatch(tx, epoch))) deny();
         }
         const allocation = await machine(tx, row, "create");
         if (
@@ -2050,7 +2059,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
             : source.kind !== "image" || source.ref !== allocation.image)
         )
           deny();
-        if (scope?.canDispatch && !(await scope.canDispatch(tx, epoch))) deny();
         signal?.throwIfAborted();
         await insert(
           tx,
@@ -2207,6 +2215,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           bound_actor_epoch: epoch,
           bound_operation: selection.operation,
         };
+        if (!known && ["create", "bootstrap", "resume", "restore"].includes(selection.operation))
+          await fenceFreshStartup(tx, row);
         if (selection.operation === "restore") {
           const { lifecycleGeneration: _, runnerJobId, ...job } = selection;
           if (!known) await requireRestoreRunner(tx, runnerJobId, row);
@@ -3140,6 +3150,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             }
             if (!descriptor || createHash("sha256").update(descriptor.enrolmentToken).digest("hex") !== bindingRef)
               deny();
+            await fenceFreshStartup(tx, row);
             await refuseDraining(tx, hostId);
             await state(tx, row, "bootstrap");
             const prior = await tx.query<StoredJob>(

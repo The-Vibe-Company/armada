@@ -1767,43 +1767,57 @@ test("stop after accepted starting launch bypasses queued startup and settles wi
   expect((await server.launch(f.caller, f.body)).sandbox.status).toBe("stopped");
 });
 
-test.each([false, true])("deadline recovery preserves the first turn (uncertain ACK: %s)", async (uncertain) => {
-  const f = await fixture();
-  const server = f.service(sql, true, 10000, officialImage, true);
-  await server.launch(f.caller, f.body);
-  f.deferFirstPrompt();
-  await server.drain();
-  expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
-  await sql.query(
-    "update jobs set run_after=now(),deadline_at=now()-interval '1 second' where sandbox_id=$1 and kind='launch'",
-    [f.body.requestId],
-  );
-  const recovered = f.service(sql, true, 10000, officialImage, true);
-  await recovered.runClaim();
-  expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
+test.each(["deadline", "uncertain ACK", "owner stop"] as const)(
+  "inactive launch recovery preserves the first turn (%s)",
+  async (cause) => {
+    const uncertain = cause === "uncertain ACK";
+    const f = await fixture();
+    const server = f.service(sql, true, 10000, officialImage, true);
+    await server.launch(f.caller, f.body);
+    f.deferFirstPrompt();
+    await server.drain();
+    expect((f.native as { op: string }[]).filter((c) => c.op === "prompt")).toHaveLength(1);
+    if (cause === "owner stop") {
+      const requestId = randomUUID();
+      const stop = await hosts.enqueueStop(f.actor, f.body.requestId, requestId);
+      expect(stop).toBeString();
+      expect(await hosts.enqueueStop(f.actor, f.body.requestId, requestId)).toBe(stop);
+      const { runtimeToken, epoch } = f.session()!;
+      expect((await createRuntimeCommands(authority, key).next(runtimeToken, epoch)).command?.op).toBe("getPrompt");
+    }
+    await sql.query(
+      `update jobs set run_after=now(),
+      deadline_at=case when $2 then now()-interval '1 second' else deadline_at end
+      where sandbox_id=$1 and kind='launch'`,
+      [f.body.requestId, cause !== "owner stop"],
+    );
+    const recovered = f.service(sql, true, 10000, officialImage, true);
+    await recovered.runClaim();
+    expect((await recovered.launch(f.caller, f.body)).sandbox.status).toBe("starting");
 
-  await f.acknowledgeFirstPrompt(uncertain);
-  await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
-  await recovered.runClaim();
-  const final = await recovered.launch(f.caller, f.body);
-  expect(final.sandbox.status).toBe(uncertain ? "starting" : "running");
-  if (!uncertain) {
-    expect(final.conversationId).toBe(f.receipt.conversationId);
-    expect(final.promptId).toBe(f.receipt.promptId);
+    await f.acknowledgeFirstPrompt(uncertain);
+    await sql.query("update jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
+    await recovered.runClaim();
+    const final = await recovered.launch(f.caller, f.body);
+    expect(final.sandbox.status).toBe(uncertain ? "starting" : "running");
+    if (!uncertain) {
+      expect(final.conversationId).toBe(f.receipt.conversationId);
+      expect(final.promptId).toBe(f.receipt.promptId);
+      expect(
+        (await sql.query("select conversation_ids,task_prompt_id from sandboxes where id=$1", [f.body.requestId])).rows,
+      ).toEqual([{ conversation_ids: [f.receipt.conversationId], task_prompt_id: f.receipt.promptId }]);
+    }
+    expect(await authority.withSession(f.session()!.runtimeToken, f.session()!.epoch, async () => true)).toBe(true);
     expect(
-      (await sql.query("select conversation_ids,task_prompt_id from sandboxes where id=$1", [f.body.requestId])).rows,
-    ).toEqual([{ conversation_ids: [f.receipt.conversationId], task_prompt_id: f.receipt.promptId }]);
-  }
-  expect(await authority.withSession(f.session()!.runtimeToken, f.session()!.epoch, async () => true)).toBe(true);
-  expect(
-    (
-      await sql.query(
-        "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
-        [f.body.requestId],
-      )
-    ).rows,
-  ).toHaveLength(1);
-});
+      (
+        await sql.query(
+          "select request_id from runtime_commands where sandbox_id=$1 and starts_with(request_id,'docker_prompt_')",
+          [f.body.requestId],
+        )
+      ).rows,
+    ).toHaveLength(1);
+  },
+);
 
 test.each(["never delivered", "journaled before restart", "actor revoked", "attempts exhausted"] as const)(
   "an inactive Docker first prompt only reads the existing journal (%s)",
