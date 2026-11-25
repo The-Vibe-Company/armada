@@ -44,7 +44,7 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
   if (scope === "org") return fail(ORG_HOSTING_IN_PROVIDERS);
   // A Modal token is a pair, checked and stored together; every other kind is one pasted value.
   const checked =
-    kind === "modal"
+    credentialKindInfo(kind).format === "token-pair"
       ? checkModalToken(data.get("modal_token_id"), data.get("modal_token_secret"))
       : checkSecretValue(data.get("value"));
   if (!checked.ok) return fail(checked.error);

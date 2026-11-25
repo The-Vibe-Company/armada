@@ -1,6 +1,6 @@
 import type { MemberRole, SandboxProviderId } from "@armada/core";
 import { isRecord, isSandboxProvider, SANDBOX_PROVIDERS } from "@armada/core";
-import { checkModalToken, checkSecretValue, type SecretCheck } from "./credentials.ts";
+import { checkModalToken, checkSecretValue, credentialKindInfo, type SecretCheck } from "./credentials.ts";
 
 /**
  * An organization's sandbox provider onboarding (#576), as the Armada server derives it (`org/provider/status`,
@@ -78,7 +78,8 @@ export function providerSetupValue(
   provider: SandboxProviderId,
   fields: { boatKey: unknown; modalTokenId: unknown; modalTokenSecret: unknown },
 ): SecretCheck {
-  if (provider === "modal") return checkModalToken(fields.modalTokenId, fields.modalTokenSecret);
+  if (credentialKindInfo(provider).format === "token-pair")
+    return checkModalToken(fields.modalTokenId, fields.modalTokenSecret);
   const checked = checkSecretValue(fields.boatKey);
   return checked.ok ? checked : { ok: false, error: checked.error.replace("the value to store", "the Boat API key") };
 }

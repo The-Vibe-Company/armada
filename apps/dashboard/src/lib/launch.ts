@@ -1,5 +1,6 @@
-import { launchFailureHelp } from "@armada/core";
+import { isSandboxPlacementProvider, launchFailureHelp } from "@armada/core";
 import { launchEnvelope, parseLaunchAdmissionReceipt } from "@armada/core/contract";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import type { LaunchArgs } from "./model-choice.ts";
@@ -39,7 +40,8 @@ export async function postSandboxLaunch(
   });
   const admitted = parseLaunchAdmissionReceipt(body.provider, payload);
   if (admitted) return admitted;
-  if (body.provider === "docker") throw invalidReceipt();
+  if (isSandboxPlacementProvider(body.provider) && capabilities(body.provider).launchSource === "host")
+    throw invalidReceipt();
   const receipt = launchEnvelope.safeParse(payload);
   if (!receipt.success || !receipt.data.sandbox.id) throw invalidReceipt();
   return receipt.data;
