@@ -57,3 +57,53 @@ test("scrub failure leaves checkpoint preparing without a receipt", async () => 
     journal.close();
   }
 });
+
+test("emits server-valid tool metadata after literal and short application redaction", async () => {
+  const { createRuntimeEnrolments, RuntimeEnrolmentDenied } = await import("../../mcp-server/src/runtime-enrolment.ts");
+  const { createRuntimeEvents } = await import("../../mcp-server/src/runtime-events.ts");
+  const authority = createRuntimeEnrolments(
+    {
+      query: async () => {
+        throw Error("unexpected database query");
+      },
+    },
+    "test",
+  );
+  const check = createRuntimeEvents(authority, "test");
+  for (const shortMask of [false, true]) {
+    const journal = new Journal(":memory:", (text) => text);
+    try {
+      journal.registerSecrets(["longsecrt"]);
+      if (shortMask) journal.registerApplicationSecrets(["xy"]);
+      const value = `${"a".repeat(254)}😀\0${shortMask ? "xy" : "longsecrt"}`;
+      const expands = `${"a".repeat(247)}${shortMask ? "xy" : "longsecrt"}`;
+      journal.append({
+        id: "evt",
+        at: 1,
+        kind: "message",
+        text: "",
+        partial: false,
+        tools: [
+          { id: expands, name: expands, server: expands },
+          { id: value, name: "", server: "\0" },
+          { id: "other", name: shortMask ? "x\0y" : "long\0secrt" },
+        ],
+      });
+      const events = journal.events();
+      const event = events[0]?.event;
+      if (event?.kind !== "message") throw Error("missing message");
+      await expect(check.append("test", "1", { sandboxId: "s", generation: "1", events })).rejects.toBeInstanceOf(
+        RuntimeEnrolmentDenied,
+      );
+      const redacted = `${"a".repeat(247)}[REDACTED`;
+      expect(event.tools).toEqual([
+        { id: expect.any(String), name: redacted, server: redacted },
+        { id: expect.any(String), name: "tool", server: "tool" },
+        { id: "other", name: "[REDACTED]" },
+      ]);
+      expect(event.tools[0]?.id).not.toBe(event.tools[1]?.id);
+    } finally {
+      journal.close();
+    }
+  }
+});

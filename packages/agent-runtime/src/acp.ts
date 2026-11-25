@@ -3,6 +3,7 @@ import { ChildOwner } from "./children.ts";
 import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
+import { toolCallIdentifier, toolIdentifier } from "./journal.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -37,6 +38,7 @@ export class AcpDriver implements Driver {
       cwd: string;
       env: Record<string, string>;
       args?: string[];
+      redactToolText?(text: string): string;
       observation?: AcpObservation;
       authMethodId?: string;
       authenticationRequiredLine?: string;
@@ -85,6 +87,7 @@ export class AcpDriver implements Driver {
       stopped = false,
       interrupted = false,
       steering = false;
+    const longToolTitles = new Map<string, string>();
     const pending = new Map<
       number,
       {
@@ -201,27 +204,42 @@ export class AcpDriver implements Driver {
             if (
               (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
               typeof u.toolCallId === "string"
-            )
+            ) {
+              const title = typeof u.title === "string" ? u.title : "";
+              const redact = (text: string) => this.options.redactToolText?.(text) ?? text;
+              const redactIdentifier = (text: string) => {
+                const scrubbed = redact(text);
+                return scrubbed.includes("\0") ? redact(scrubbed.replaceAll("\0", "")) : scrubbed;
+              };
+              const label = redactIdentifier(title).trim();
+              const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
+              const id = toolCallIdentifier(redactIdentifier(u.toolCallId));
+              const longTitle = label.length > name.length ? redact(title) : undefined;
+              if (longTitle !== undefined) longToolTitles.set(id, longTitle);
+              const command = longTitle ?? (u.rawInput === undefined ? undefined : longToolTitles.get(id));
+              let input = u.rawInput;
+              if (command !== undefined) {
+                input =
+                  input === null || input === undefined || input === title
+                    ? command
+                    : { title: command, rawInput: input };
+              }
               c.emit({
                 kind: "message",
                 text: "",
                 partial: false,
                 tools: [
                   {
-                    id: u.toolCallId,
-                    name:
-                      typeof u.title === "string"
-                        ? u.title
-                        : u.sessionUpdate === "tool_call_update"
-                          ? "tool_result"
-                          : "tool",
-                    ...(u.rawInput === undefined ? {} : { input: u.rawInput }),
+                    id,
+                    name,
+                    ...(input === undefined ? {} : { input }),
                     ...(u.status === "completed" || u.status === "failed"
                       ? { result: { output: u.rawOutput ?? u.content ?? null, isError: u.status === "failed" } }
                       : {}),
                   },
                 ],
               });
+            }
           }
         } catch {
           failure(new HarnessError("invalid_harness_protocol"));

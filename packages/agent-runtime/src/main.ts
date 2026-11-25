@@ -469,6 +469,7 @@ async function main(dialout = false) {
               root: config.root,
               cwd: config.cwd,
               journal,
+              redactToolText: (text) => journal.redactLiteralText(text),
             }),
           }
         : {}),
@@ -478,6 +479,7 @@ async function main(dialout = false) {
         cwd: config.cwd,
         env: opencodeEnv,
         redact: (text) => journal.redact(text, "transcript"),
+        redactToolText: (text) => journal.redactLiteralText(text),
       }),
       claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
       codex: new CodexDriver({

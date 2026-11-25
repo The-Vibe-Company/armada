@@ -82,6 +82,7 @@ export class AntigravityDriver implements Driver {
     githubTools?: { root: string; home: string };
     readableVariables?: Record<string, string>;
     journal: Pick<Journal, "registerApplicationSecrets">;
+    redactToolText?(text: string): string;
   }) {
     const { credential, root } = options;
     const secrets = antigravitySecrets(credential);
@@ -130,6 +131,10 @@ export class AntigravityDriver implements Driver {
       authMethodId: credential.method === "google" ? "oauth-personal" : "gemini-api-key",
       authenticationRequiredLine: "Open the following link to authenticate the ACP server: ",
       modelSelection: "config-option",
+      redactToolText: (text) => {
+        const scrubbed = redactKnownTokens(text, this.secretForms);
+        return options.redactToolText?.(scrubbed) ?? scrubbed;
+      },
     });
     this.configureReadableVariables(options.readableVariables ?? {});
   }

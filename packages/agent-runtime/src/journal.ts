@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type { AgentEvent, PromptStatus } from "@armada/core";
 import { describePromptFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
@@ -63,6 +64,17 @@ function boundedPreview(text: string, limit: number): string {
   const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
   return text.slice(0, end);
 }
+
+export function toolIdentifier(value: string, fallback = "tool") {
+  return boundedPreview(value.replaceAll("\0", ""), 256) || fallback;
+}
+
+export function toolCallIdentifier(value: string) {
+  if (value.length <= 256) return toolIdentifier(value);
+  const suffix = createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return `${boundedPreview(value, 256 - suffix.length - 1)}-${suffix}`;
+}
+
 function maskText(original: string, scrubbed: string, mask: (text: string) => string) {
   const short = mask(original);
   if (short === original || short === scrubbed) return scrubbed;
@@ -555,18 +567,24 @@ export class Journal {
       scrubbed.kind = event.kind;
       if (event.textMode !== undefined) scrubbed.textMode = event.textMode;
       if (event.responseKind !== undefined) scrubbed.responseKind = event.responseKind;
-      if (!mask) return JSON.stringify(scrubbed);
-      return JSON.stringify({
-        ...scrubbed,
-        text: appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
-        tools: scrubbed.tools.map((tool, index) => ({
+      if (mask)
+        scrubbed.text = appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask);
+      scrubbed.tools = scrubbed.tools.map((tool, index) => {
+        const original = event.tools[index]!;
+        const field = (before: string, after: string) => {
+          const text = mask ? maskText(before, after, mask) : after;
+          return text.includes("\0") ? this.redactLiteralText(text.replaceAll("\0", "")) : text;
+        };
+        return {
           ...tool,
-          name: maskText(event.tools[index]!.name, tool.name, mask),
-          ...(tool.server !== undefined ? { server: maskText(event.tools[index]!.server!, tool.server, mask) } : {}),
-          ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
-          ...(tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
-        })),
+          id: toolCallIdentifier(field(original.id, tool.id)),
+          name: toolIdentifier(field(original.name, tool.name)),
+          ...(tool.server === undefined ? {} : { server: toolIdentifier(field(original.server!, tool.server)) }),
+          ...(mask && tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
+          ...(mask && tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
+        };
       });
+      return JSON.stringify(scrubbed);
     }
     if (event.kind !== "other") return body;
     const scrubbed = { ...JSON.parse(body), kind: event.kind };

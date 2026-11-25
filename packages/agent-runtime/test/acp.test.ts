@@ -76,7 +76,31 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
             ? ["D", "OCK", "ER", "_OK"]
             : [context.request.text],
       );
-      const finals = events.filter((event) => event.kind === "message" && !event.partial);
+      if (action === "finish") {
+        const command = `echo ${"x".repeat(250)}😀${"y".repeat(155)}`;
+        const preview = command.slice(0, 255);
+        const tools = events.flatMap((event) => (event.kind === "message" ? event.tools : []));
+        expect(tools).toEqual([
+          { id: expect.any(String), name: preview, input: command },
+          { id: expect.any(String), name: "tool_result" },
+          { id: expect.any(String), name: "tool_result", input: { title: command, rawInput: { cwd: "/tmp" } } },
+          {
+            id: expect.any(String),
+            name: preview,
+            input: { title: command, rawInput: { cwd: "/tmp" } },
+          },
+          { id: "tool", name: "shell" },
+        ]);
+        expect(tools[0]?.id).toBe(tools[1]?.id);
+        expect(tools[0]?.id).toBe(tools[2]?.id);
+        expect(tools[0]?.id).not.toBe(tools[3]?.id);
+        for (const tool of tools) {
+          expect(tool.id.length).toBeGreaterThan(0);
+          expect(tool.id.length).toBeLessThanOrEqual(256);
+          expect(tool.id).not.toContain("\0");
+        }
+      }
+      const finals = events.filter((event) => event.kind === "message" && !event.partial && !event.tools.length);
       expect(finals.map((event) => (event.kind === "message" ? event.text : ""))).toEqual(
         action === "interrupt" ? [] : [action === "steer" ? "next" : context.request.text],
       );
@@ -333,6 +357,14 @@ antigravityTest(
       expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token, auth_method: "consumer" });
       expect(f.registered).toEqual([token.access_token, token.refresh_token]);
       expect(f.events.some((event) => event.kind === "message" && event.text.includes("***"))).toBe(true);
+      const tools = f.events.flatMap((event) => (event.kind === "message" ? event.tools : []));
+      expect(tools).toEqual([
+        {
+          id: "fixture-tool",
+          name: `${"a".repeat(254)}**`,
+          input: { title: `${"a".repeat(254)}***`, rawInput: { "***": "echo" } },
+        },
+      ]);
       const streamed = f.events
         .flatMap((event) => (event.kind === "message" && event.partial ? [event.text] : []))
         .join("");
