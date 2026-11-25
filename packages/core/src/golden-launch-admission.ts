@@ -86,7 +86,7 @@ export interface LaunchStores {
     ): Promise<{ environment: string[]; org: string[]; personal: string[] }>;
   };
   goldens: GoldenStore;
-  sandboxes: SandboxStore;
+  sandboxes: Pick<SandboxStore, "recordSkills">;
   credentials: LaunchCredentialResolver;
   connections?: {
     renewLifetime?(provider: Provider, sandboxId: string): Promise<void>;

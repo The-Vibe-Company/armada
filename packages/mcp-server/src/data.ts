@@ -35,7 +35,6 @@ import {
   assertGoldenBackendBinding,
   assertSqlGoldenMutation,
   beginSnapshotLaunch,
-  CoreLaunchSettlementConflict,
   failureDiagnostic,
 } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
@@ -57,8 +56,6 @@ import {
   enqueueBoatStop,
   enqueueModalStop,
   expireAfterExtension,
-  finishLaunchFailure,
-  finishLaunchSuccess,
   publishOwnerStop,
   recordObservedProviderState,
   requestStartingModalStop,
@@ -388,7 +385,6 @@ export function createSqlData(
     }
 
     const sandboxes: ServerSandboxStore = {
-      activityOwnership: true,
       async launchTiming(id) {
         const rows = await sql.query<{ activation: string; stage: string; at: string }>(
           `select st.activation::text as activation,st.stage,to_json(st.at)#>>'{}' as at from public.sandbox_launch_stages st
@@ -475,60 +471,6 @@ export function createSqlData(
           [id, caller.userId, JSON.stringify(skills)],
         );
         if (result.rows.length !== 1) throw new DataError("Skill receipts could not be recorded.");
-      },
-      async insert(input) {
-        if (!orgIds.includes(input.orgId) || input.ownerId !== caller.userId) {
-          throw new DataError("A sandbox is recorded for its caller only.");
-        }
-        const result = await sql.query<SandboxViewRow>(
-          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid), inserted as (
-           insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-             reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
-           select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
-             $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text,$24::text,$25::boolean,$26::text::jsonb from visible
-           returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref
-           ), snapshot_reference as (
-             insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
-             select id,$27::text from inserted where $27::text is not null
-             returning sandbox_id
-           ), consumed_intent as (
-             delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
-             where i.sandbox_id=r.sandbox_id
-           )
-           select * from inserted`,
-          [
-            ...scope,
-            input.goldenId,
-            input.id,
-            input.providerSandboxId,
-            input.harness,
-            input.status,
-            input.orgId,
-            input.model,
-            input.reasoningEffort,
-            input.provider,
-            input.repositoryDir ?? null,
-            input.requestedTtlSeconds ?? null,
-            input.effectiveTtlSeconds ?? 14400,
-            input.activityLeaseId ?? null,
-            input.credentialId ?? null,
-            input.credentialVersion ?? null,
-            JSON.stringify(input.machineSize ?? null),
-            JSON.stringify(input.resourceProject ?? null),
-            input.expiresAt ?? null,
-            input.visibility ?? null,
-            input.boatRuntime === true,
-            input.modalTransport ?? null,
-            input.externalRef ?? null,
-            input.stopWhenWorkMerged ?? true,
-            JSON.stringify(input.pullRequestSource ?? null),
-            input.sourceSnapshotId ?? null,
-          ],
-        );
-        const row = result.rows[0];
-        if (!row) throw new DataError("The sandbox could not be recorded.");
-        return mapSandboxRow(row);
       },
       async assertExtensionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "Sandbox not found.");
@@ -801,18 +743,6 @@ export function createSqlData(
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
-        if (patch.finishActivity && patch.status === "failed" && !patch.ownerStop && !patch.providerObservation) {
-          const { expectedGeneration, activityToken } = patch;
-          if (!sql.transaction || expectedGeneration === undefined || !activityToken || typeof reason !== "string")
-            throw new DataError("Launch failure requires its activity generation, token and diagnostic.");
-          const applied = await sql.transaction((tx) =>
-            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason, patch.expectedRuntimeEpoch),
-          );
-          if (applied === "epoch_conflict")
-            throw new CoreLaunchSettlementConflict("Launch failure publication is stale.");
-          if (!applied) throw new DataError("Launch failure publication is stale.", "sandbox_not_ready");
-          return;
-        }
         if (patch.providerObservation !== undefined) {
           if (
             patch.expectedGeneration === undefined ||
@@ -837,34 +767,6 @@ export function createSqlData(
           if (result.kind === "conflict")
             throw new DataError("Provider state observation is stale.", "sandbox_not_ready");
           return;
-        }
-        const initialPrompt =
-          patch.status === "running" && patch.taskPromptId && patch.conversationIds
-            ? { promptId: patch.taskPromptId, conversationIds: patch.conversationIds }
-            : undefined;
-        if (
-          patch.finishActivity &&
-          (patch.status === "ready" || initialPrompt) &&
-          patch.expectedGeneration !== undefined &&
-          patch.activityToken
-        ) {
-          if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
-          const { expectedGeneration, activityToken } = patch;
-          const outcome = await sql.transaction((tx) =>
-            finishLaunchSuccess(
-              tx,
-              scope,
-              id,
-              expectedGeneration,
-              activityToken,
-              patch.expectedRuntimeEpoch,
-              initialPrompt,
-            ),
-          );
-          if (outcome === "applied") return;
-          if (outcome === "epoch_conflict")
-            throw new CoreLaunchSettlementConflict("Runtime readiness publication is stale.");
-          throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
         if (patch.status !== undefined && stopStatus === undefined)
           throw new DataError("Sandbox status changes require a lifecycle transition.");

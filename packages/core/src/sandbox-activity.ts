@@ -1,9 +1,9 @@
-import { CoreLaunchSettlementConflict, type SandboxPatch, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
+import type { SandboxPatch, SandboxRecord, SandboxStore } from "./sandbox.ts";
 
 /** Separate activity ownership from observation leases. Completion advances the generation,
  * invalidating every observation sampled before provider admission completed. */
 export async function sandboxActivity<T>(
-  store: SandboxStore,
+  store: Pick<SandboxStore, "update">,
   sandbox: SandboxRecord,
   admission: SandboxPatch,
   work: (signal: AbortSignal, activityToken: string) => Promise<{ result: T; patch: SandboxPatch }>,
@@ -11,7 +11,7 @@ export async function sandboxActivity<T>(
 ): Promise<T> {
   const token = options.initialLeaseId ?? crypto.randomUUID();
   const generation = sandbox.lifecycleGeneration;
-  // Admission and completion each advance the counter (initial launch already admitted).
+  // Admission and completion each advance the counter (an existing lease has already been admitted).
   // Refuse exhaustion before provider work or a lossy CAS parameter can be produced.
   if (
     generation !== undefined &&
@@ -50,14 +50,12 @@ export async function sandboxActivity<T>(
     await store.update(sandbox.id, { ...patch, finishActivity: true, activityToken: token, ...expected });
     return result;
   } catch (error) {
-    if (!(error instanceof CoreLaunchSettlementConflict) && options.failurePatch) {
+    if (options.failurePatch) {
       const failure = options.failurePatch(error);
       try {
         await store.update(sandbox.id, { ...failure, finishActivity: true, activityToken: token, ...expected });
-      } catch (settlementError) {
-        if (settlementError instanceof CoreLaunchSettlementConflict) throw settlementError;
-        if (failure.expectedRuntimeEpoch)
-          throw new CoreLaunchSettlementConflict("Runtime launch failure settlement could not be confirmed.");
+      } catch {
+        throw error;
       }
     }
     throw error;

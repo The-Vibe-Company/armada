@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createSqlSandboxStore } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
@@ -21,7 +21,7 @@ for (const outcome of ["allocated", "missing", "unavailable"] as const) {
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
     // Persist the registration boundary directly: no catch/finally cleanup or
     // activity renewal has run after the API worker disappeared.
-    const registered = await createSqlSandboxStore(sql).insert({
+    const registered = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "bx_1",

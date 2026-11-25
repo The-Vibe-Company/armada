@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Sql, TurnPriceContext, TurnTokenUsage } from "@armada/core";
 import { createUsagePricingContext, type Provider, priceTurn, resolvePrice } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { collectSandboxUsage } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -31,7 +32,7 @@ async function state(data: Awaited<ReturnType<typeof sharedDatabase>>) {
   if (!golden) throw Error("Missing golden");
   const caller = { userId: p.owner, via: "service" as const, orgs: [{ orgId: p.org, role: "member" as const }] };
   const store = createSqlData(db)(caller).sandboxes;
-  const saved = await store.insert({
+  const saved = await insertSandboxFixture(db, {
     id: crypto.randomUUID(),
     provider: "modal",
     providerSandboxId: "price-native",

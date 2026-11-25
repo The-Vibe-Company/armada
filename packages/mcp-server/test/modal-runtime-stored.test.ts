@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { createSqlVaultStore, encryptSecret, type ProviderTarget, type Sql } from "@armada/core/server";
 import { createSqlModalStore, type Scope } from "@armada/provider-modal";
 import { AppService } from "modal";
-import { createSqlData } from "../src/data.ts";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createModalIntegration } from "../src/modal-integration.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -42,12 +42,7 @@ test("Modal stored observations route stopped dial-out answers through the archi
         [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
       )
     ).rows[0]!;
-    const caller = {
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" as const }],
-      via: "service" as const,
-    };
-    const sandbox = await createSqlData(sql)(caller).sandboxes.insert({
+    const sandbox = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "modal",
       modalTransport: "dialout",

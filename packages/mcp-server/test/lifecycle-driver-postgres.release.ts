@@ -1,3 +1,5 @@
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
+
 // This contract must never silently skip in release validation.
 if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES_URL is required");
 
@@ -48,7 +50,7 @@ test("real Bun.SQL bigint reads complete runtime send and shared stop", async ()
         [owner, await encryptSecret("fixture", key)],
       );
       if (!account) throw Error("Missing fixture account");
-      await data.sandboxes.insert({
+      await insertSandboxFixture(sql, {
         id,
         provider: "boat",
         providerSandboxId: "bx_23456789",

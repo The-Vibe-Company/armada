@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { createSqlGoldenStore, type GoldenActor, goldenForLaunch } from "../src/index.ts";
-import { createSqlSandboxStore } from "../src/sandbox.ts";
+import { insertSandboxFixture } from "./sandbox.fixture.ts";
 import { migratedDatabase } from "./support/database.ts";
 
 const getDatabase = migratedDatabase();
@@ -43,9 +43,9 @@ describe("sandbox provider identity", () => {
           ).rejects.toThrow(/permission denied/);
         }
         await db.exec("set role service_role");
-        let registered: Awaited<ReturnType<ReturnType<typeof createSqlSandboxStore>["insert"]>>;
+        let registered: Awaited<ReturnType<typeof insertSandboxFixture>>;
         try {
-          registered = await createSqlSandboxStore(db).insert({
+          registered = await insertSandboxFixture(db, {
             id: crypto.randomUUID(),
             provider,
             providerSandboxId: `trusted-${provider}`,

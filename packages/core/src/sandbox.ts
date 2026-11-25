@@ -94,7 +94,6 @@ export interface SandboxPatch {
   taskPromptId?: string;
   renewLifecycle?: boolean;
   expectedGeneration?: number;
-  expectedRuntimeEpoch?: string;
   /** Refuse a durable send that stop already cancelled, at activity admission. */
   queueRequestId?: string;
   advanceGeneration?: boolean;
@@ -132,39 +131,6 @@ export interface SandboxStore {
   recordSkills?(id: string, skills: SkillReceipt[]): Promise<void>;
   /** #2560: server-only launch stage of the current activation, `elapsedMs` before now; earliest time wins. */
   recordLaunchStage?(id: string, stage: LaunchStage, elapsedMs?: number, generation?: number): Promise<void>;
-  /** Server store can atomically reserve activity ownership; caller-role stores keep their existing restricted grants. */
-  activityOwnership?: true;
-  insert(input: {
-    /** Trusted routing selection; never a mutable sandbox patch. */
-    boatRuntime?: true;
-    modalTransport?: "dialout";
-    credentialId?: string;
-    credentialVersion?: number;
-    id: string;
-    /** Must be the golden's provider: the database refuses another. */
-    provider: SandboxProviderId;
-    providerSandboxId: string;
-    goldenId: string;
-    sourceSnapshotId?: string;
-    orgId: string;
-    ownerId: string;
-    harness: Harness;
-    status: SandboxStatus;
-    machineSize?: MachineSizeEvidence;
-    resourceProject?: ResourceProject;
-    activityLeaseId?: string;
-    expiresAt?: string;
-    requestedTtlSeconds?: number;
-    effectiveTtlSeconds?: number;
-    repositoryDir?: string | null;
-    model: string;
-    reasoningEffort: string;
-    visibility?: "private" | "org";
-    /** Validated with `isExternalRef` before any provider allocation. */
-    externalRef?: string;
-    stopWhenWorkMerged?: boolean;
-    pullRequestSource?: { connectionEpoch: string; repositories: { url: string; dir: string; branch?: string }[] };
-  }): Promise<SandboxRecord>;
   update(id: string, patch: SandboxPatch): Promise<void>;
 }
 
@@ -211,17 +177,8 @@ export interface SandboxRow {
 /** The longest failure reason kept; a longer one is cut. */
 const MAX_STATUS_REASON_LENGTH = 2000;
 
-const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_outcome, task_prompt_id, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-  conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at, external_ref`;
-
 /** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
-export class CoreLaunchSettlementConflict extends Error {
-  constructor(message = "Core launch settlement is stale.") {
-    super(message);
-  }
-}
-
-export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
+export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): Omit<SandboxStore, "update"> {
   return {
     ...(options.turnModels ? sqlTurnModelStore(sql) : {}),
     async recordSkills(id, skills) {
@@ -230,100 +187,6 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
         [id, JSON.stringify(skills)],
       );
       if (result.rows.length !== 1) throw new Error("Skill receipts could not be recorded.");
-    },
-    async insert(input): Promise<SandboxRecord> {
-      const result = await sql.query<SandboxRow>(
-        `with inserted as (
-         insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
-           reasoning_effort, provider, visibility, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
-         values ($1, $2, $3, $4, $5, $6::public.harness, $7::public.sandbox_status, $8, $9, $10::public.sandbox_provider, $11::public.visibility, $12::text, $13::integer, $14::integer, coalesce($20::timestamptz, now() + $14::integer * interval '1 second'), $15::uuid, case when $15::uuid is not null then now()+interval '2 minutes' else null end, $16::uuid, $17::integer, $18::text::jsonb, $19::text::jsonb, $21::boolean,$22::text,$23::text,$24::boolean,$25::text::jsonb)
-         returning ${COLUMNS}
-        ), snapshot_reference as (
-          insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
-          select id,$26::text from inserted where $26::text is not null
-          returning sandbox_id
-        ), consumed_intent as (
-          delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
-          where i.sandbox_id=r.sandbox_id
-        )
-        select * from inserted`,
-        [
-          input.id,
-          input.providerSandboxId,
-          input.goldenId,
-          input.orgId,
-          input.ownerId,
-          input.harness,
-          input.status,
-          input.model,
-          input.reasoningEffort,
-          input.provider,
-          input.visibility ?? null,
-          input.repositoryDir ?? null,
-          input.requestedTtlSeconds ?? null,
-          input.effectiveTtlSeconds ?? 14400,
-          input.activityLeaseId ?? null,
-          input.credentialId ?? null,
-          input.credentialVersion ?? null,
-          JSON.stringify(input.machineSize ?? null),
-          JSON.stringify(input.resourceProject ?? null),
-          input.expiresAt ?? null,
-          input.boatRuntime === true,
-          input.modalTransport ?? null,
-          input.externalRef ?? null,
-          input.stopWhenWorkMerged ?? true,
-          JSON.stringify(input.pullRequestSource ?? null),
-          input.sourceSnapshotId ?? null,
-        ],
-      );
-      const row = result.rows[0];
-      if (!row) throw new Error("The sandbox could not be recorded.");
-      return mapSandboxRow(row);
-    },
-
-    async update(id, patch): Promise<void> {
-      if (patch.status !== undefined) {
-        if (
-          patch.expectedGeneration === undefined ||
-          (patch.status !== "ready" && patch.status !== "running" && patch.status !== "failed")
-        )
-          throw new Error("Core launch settlement requires a generation and a launch outcome.");
-        const result = await sql.query<{ applied: boolean }>(
-          "select public.settle_unleased_native_launch($1,$2,$3,$4,$5,$6) as applied",
-          [
-            id,
-            patch.expectedGeneration,
-            patch.status,
-            statusReasonOf(patch) ?? null,
-            patch.taskPromptId ?? null,
-            patch.conversationIds ?? null,
-          ],
-        );
-        if (!result.rows[0]?.applied) throw new CoreLaunchSettlementConflict();
-        return;
-      }
-      const sets: string[] = [];
-      const params: unknown[] = [id];
-      const set = (column: string, value: unknown, cast = "") => {
-        params.push(value);
-        sets.push(`${column} = $${params.length}${cast}`);
-      };
-      if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
-      if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
-      if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
-      if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
-      if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
-      if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
-      if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
-      if (patch.effectiveTtlSeconds !== undefined) set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-      const reason = statusReasonOf(patch);
-      if (reason !== undefined) set("status_reason", reason, "::text");
-      if (sets.length === 0) return;
-      const result = await sql.query<{ id: string }>(
-        `update public.sandboxes set ${sets.join(", ")} where id = $1 returning id`,
-        params,
-      );
-      if (!result.rows[0]) throw new Error("The sandbox could not be updated.");
     },
   };
 }
