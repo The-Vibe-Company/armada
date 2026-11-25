@@ -77,7 +77,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   }
   // Lock every source actor in one stable order, before credentials, hosts or sandboxes.
   // The unlocked host owner is only a hint; lockSandbox pins it under the host lock.
-  async function lockSourceMembers(tx: Sql, id: string, ownerId?: string) {
+  async function lockSourceMembers(tx: Sql, target: string | { enrolmentHash: string }, ownerId?: string) {
+    const byToken = typeof target !== "string";
     const members = await tx.query<{
       user_id: string;
       id: string;
@@ -93,8 +94,9 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
        from public.sandboxes s join public.members m on m.org_id=s.org_id
        and (m.user_id=s.owner_id or (s.provider='docker' and m.user_id=(
          select h.owner_id from public.docker_hosts h where h.id=s.docker_host_id and h.org_id=s.org_id)))
-       where s.id=$1 and ($2::uuid is null or s.owner_id=$2) order by m.user_id for share of m`,
-      [id, ownerId ?? null],
+       where s.id=${byToken ? "(select sandbox_id from public.runtime_enrolments where enrolment_hash=$1)" : "$1"}
+         and ($2::uuid is null or s.owner_id=$2) order by m.user_id for share of m`,
+      byToken ? [target.enrolmentHash, null] : [target, ownerId ?? null],
     );
     const candidate = members.rows[0];
     const locked = new Set(members.rows.map((row) => row.user_id));
@@ -278,14 +280,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const runtimeToken = token("runtime");
     const runtimeHash = await sha256Hex(runtimeToken);
     const result = await transaction(async (tx) => {
-      const candidate = (
-        await tx.query<{ sandbox_id: string }>(
-          "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
-          [hash],
-        )
-      ).rows[0];
-      if (!candidate) throw new RuntimeEnrolmentDenied();
-      const sandbox = await lockSandbox(tx, candidate.sandbox_id);
+      const source = await lockSourceMembers(tx, { enrolmentHash: hash });
+      const sandbox = await lockSandbox(tx, source.id, undefined, source);
       const row = (
         await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null; lifecycle_generation: string }>(
           `select case when $5::boolean then configuration_enc end as configuration_enc,lifecycle_generation::text
