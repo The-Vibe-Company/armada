@@ -1,13 +1,11 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
 import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
-  COMPLETED_RUNTIME_WAKE,
-  CONFIRMED_WAKE_WITHOUT_TICKET,
+  ACCEPTED_RUNTIME_RESUME,
   CURRENT_DOCKER_RESUME_JOB,
   DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
   DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE,
-  ENROLLED_PENDING_RUNTIME_WAKE,
   FAILED_DOCKER_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
@@ -134,6 +132,23 @@ export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<s
   ]);
 }
 
+export async function recordBoatRestoreDispatch(tx: Sql, jobId: string, providerAuthority: string) {
+  const { rows } = await tx.query(
+    `update public.jobs set outcome=outcome||jsonb_build_object('boat_restore_dispatched',true,'boat_restore_authority',$2::text)
+      where id=$1 and kind='resume' and not (outcome ? 'boat_restore_dispatched') returning id`,
+    [jobId, providerAuthority],
+  );
+  return rows.length > 0;
+}
+
+export function recordBoatRestoreObserved(tx: Sql, jobId: string) {
+  return tx.query(
+    `update public.jobs set outcome=outcome||'{"boat_restore_observed":true}'::jsonb
+      where id=$1 and kind='resume' and outcome ? 'boat_restore_dispatched'`,
+    [jobId],
+  );
+}
+
 export async function recordResumeAuthority(
   tx: Sql,
   id: string,
@@ -141,13 +156,15 @@ export async function recordResumeAuthority(
   requestId: string,
   expiresAt: string,
   checkpoint: object,
+  boatMachineId?: string,
 ) {
   const { rows } = await tx.query(
     `update public.jobs j set outcome=jsonb_build_object('requestId',$3::text,'expiresAt',$4::text,
        'accountId',s.credential_id,'accountVersion',s.credential_version,'actorEpoch',e.epoch::text,'checkpoint',$5::jsonb)
+       || case when $6::text is not null then jsonb_build_object('boatMachineId',$6::text) else '{}'::jsonb end
      from public.sandboxes s join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
      where s.id=$1 and j.sandbox_id=s.id and j.kind='resume' and j.generation=$2 returning j.id`,
-    [id, generation, requestId, expiresAt, JSON.stringify(checkpoint)],
+    [id, generation, requestId, expiresAt, JSON.stringify(checkpoint), boatMachineId ?? null],
   );
   return rows.length === 1;
 }
@@ -380,8 +397,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                  or (q.state = 'dispatching' and ${RUNTIME_LANE}
                    and s.status in ('starting','ready','running')
                    and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
-                   and (${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
-                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE}
+                   and (${ACCEPTED_RUNTIME_RESUME} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE}
                      or (q.dispatch_until <= clock_timestamp()
                      and (s.activity_lease_id = q.request_id
                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})

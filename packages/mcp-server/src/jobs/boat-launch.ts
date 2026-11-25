@@ -12,6 +12,11 @@ import {
 } from "./modal-launch.ts";
 import type { Job, JobContext } from "./runner.ts";
 
+export const boatLaunchBinding = `select l.generation,l.outcome->'boat_authority' as authority from public.jobs l
+  where l.sandbox_id=s.id and l.org_id=s.org_id and l.kind='launch'
+    and l.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
+  order by l.generation limit 1`;
+
 export function boatLaunchJobs(options: {
   sql: Sql;
   encryptionKey: string;
