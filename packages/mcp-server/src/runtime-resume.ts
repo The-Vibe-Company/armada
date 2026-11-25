@@ -234,6 +234,17 @@ export function createRuntimeResume(
         current.lifecycleGeneration === undefined
       )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
+      if (
+        current.provider === "modal" &&
+        (
+          await tx.query(
+            `select 1 from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
+          and state in ('queued','leased') and outcome ? 'output'`,
+            [found.id, current.lifecycleGeneration],
+          )
+        ).rows.length
+      )
+        throw new VaultError("conflict", "Final stop outputs are awaiting publication. Retry after stop settlement.");
       const proof = (
         await tx.query<{ watermark: string }>(
           `select watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2 and watermark is not null
