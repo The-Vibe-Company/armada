@@ -65,7 +65,6 @@ export async function startServer(env: Record<string, string | undefined>, optio
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
   // Held Docker polls, archive uploads and artifact downloads set their own bounded ingress timeouts.
   configureRequestTimeout = (request, seconds) => server.timeout(ingressRequest(request), seconds);
-  services.configureAccountDispatch();
   const workers = assembly.planWorkers().start();
   installServerShutdown(server, {
     ...assembly.shutdown,

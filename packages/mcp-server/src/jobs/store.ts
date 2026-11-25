@@ -337,8 +337,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     as unrecoverable_dispatch,
                   ${unresolvedResume("s")} as resuming,
                   case when ${unresolvedResume("s")} then (statement_timestamp()+interval '1 second')::text
-                    when ${adjacentRuntimeDispatch()} and s.status in ('ready','running')
-                      and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
+                    when q.state='dispatching' and isfinite(q.dispatch_until)
+                      and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text
                   end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
@@ -645,24 +645,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     async enqueue(...args: Parameters<typeof enqueueWithDisposition>) {
       return (await enqueueWithDisposition(...args)).id;
     },
-    async settleTurnDispatchMirrors() {
-      await sql.query(
-        `with settled as (
-           select j.id from public.jobs j
-           where j.kind='turn_dispatch' and j.state='queued'
-             and not exists (
-               select 1 from public.account_turn_queue q
-               where q.sandbox_id=j.sandbox_id and q.org_id=j.org_id
-                 and q.state in ('queued','dispatching')
-                 and j.idem_key=format('["internal","%s","turn_dispatch","%s",%s,"%s"]',
-                   q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
-             )
-           order by j.run_after,j.id limit 32 for update of j skip locked
-         )
-         update public.jobs j set state='done'
-         from settled where j.id=settled.id`,
-      );
-    },
     async claim(kind, owner, seconds, concurrency) {
       const claimStartedAt = performance.now();
       const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
@@ -828,7 +810,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return complete(sql, job.generation);
     },
   } satisfies JobStore & {
-    settleTurnDispatchMirrors: () => Promise<void>;
     enqueue: (...args: Parameters<typeof enqueueWithDisposition>) => Promise<string>;
     enqueueWithDisposition: typeof enqueueWithDisposition;
     modalLaunchJournal: (job: Job, createIfAuthorized?: AuthorizeJournalCreate) => ModalMachineJournal;
