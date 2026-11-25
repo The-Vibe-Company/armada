@@ -7,7 +7,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { readSelectedSkillpackKeys } from "@/lib/data/skillpack-key";
-import { listSelectedTemplates } from "@/lib/data/templates";
 import { SKILLS_PATH } from "@/lib/skillpack-key";
 
 const TITLE = "Skills";
@@ -19,9 +18,6 @@ const DESCRIPTION = "Instruction packs an agent loads to do a kind of task well.
  * Armada to install skills, so it has its own entry.
  */
 export default async function SkillsContent() {
-  // Template usage is independent of the resource list. Settle speculative failures so
-  // the resource's unavailable/no-org fallback still takes precedence.
-  const templatesRead = Promise.allSettled([listSelectedTemplates()]);
   const [selected, list] = await Promise.all([selectedOrganization(), readSelectedSkillpackKeys()]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
@@ -77,9 +73,6 @@ export default async function SkillsContent() {
       </div>
     );
 
-  const [templateResult] = await templatesRead;
-  if (templateResult.status === "rejected") throw templateResult.reason;
-  const templates = templateResult.value;
   return (
     <div className="mx-auto w-full max-w-[920px] space-y-7">
       <SkillpackKeyView
@@ -91,7 +84,6 @@ export default async function SkillsContent() {
         keys={list.keys}
       />
       <TemplateUsage
-        list={templates}
         uses={(definition) => definition.skills.length > 0}
         title="Templates using skills"
         empty="No visible templates include skills."

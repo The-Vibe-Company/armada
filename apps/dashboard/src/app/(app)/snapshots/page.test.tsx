@@ -102,7 +102,12 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     const settledReadsDrained = new Promise<null>((resolve) => setImmediate(() => resolve(null)));
     const rendering = GoldensPage({ searchParams: Promise.resolve({}) }).then((element) =>
       renderToReadableStream(
-        <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
+        <html lang="en">
+          <head />
+          <body>
+            <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>
+          </body>
+        </html>,
       ),
     );
     const stream = await Promise.race([rendering, settledReadsDrained]);

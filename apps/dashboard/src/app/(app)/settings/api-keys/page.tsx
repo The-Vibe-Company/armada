@@ -51,6 +51,7 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
           )
         }
         empty={result ? "No API keys yet." : null}
+        variant="table"
         columns={["Name and organization", "Created", "Last used", "Expires", "Status"]}
         rows={(result?.tokens ?? []).map((key) => {
           const state = key.revokedAt
@@ -63,7 +64,7 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
             name: key.label,
             search: `${key.label} ${key.orgName}`,
             meta: key.orgName,
-            state,
+            state: null,
             columns: [
               { key: "Created", content: date(key.createdAt) },
               { key: "Last used", content: date(key.lastUsedAt) },

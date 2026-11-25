@@ -1,10 +1,9 @@
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PlugIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CatalogBrowser } from "@/components/catalog-browser";
 import { AddServerDialog, ServiceCatalog, ServiceMark, ToolPanel, ToolRowAction } from "@/components/connections";
 import { Empty, PageHeader } from "@/components/page-header";
-import type { ResourceRow } from "@/components/resource-browser";
+import { ResourceBrowser, type ResourceRow } from "@/components/resource-browser";
 import { StateCell } from "@/components/state-cell";
 import { TemplateUsage } from "@/components/template-usage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -21,7 +20,6 @@ import {
 import { ControlError } from "@/lib/control";
 import { listSelectedCatalog, listSelectedConnections, viewerControl } from "@/lib/data/connections";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { type ToolState, toolFact, toolState } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -45,7 +43,6 @@ export default async function ToolsPage({ searchParams }: Props) {
               return returned ? returnNotice(returned, selected.org.id) : null;
             }),
             listSelectedCatalog(selected.org.id),
-            listSelectedTemplates(),
           ])
         : null,
     () => null,
@@ -109,13 +106,11 @@ export default async function ToolsPage({ searchParams }: Props) {
   }
 
   const isAdmin = selected.role === "admin";
-  const [noticeRead, catalogRead, templatesRead] = (await detailsRead)!;
+  const [noticeRead, catalogRead] = (await detailsRead)!;
   if (noticeRead.status === "rejected") throw noticeRead.reason;
   if (catalogRead.status === "rejected") throw catalogRead.reason;
-  if (templatesRead.status === "rejected") throw templatesRead.reason;
   const { value: notice } = noticeRead;
   const { value: catalog } = catalogRead;
-  const { value: templates } = templatesRead;
   const services = catalog.state === "ready" ? catalog.services : [];
   const org = { orgId: selected.org.id, orgName: selected.org.name, isAdmin };
 
@@ -123,7 +118,7 @@ export default async function ToolsPage({ searchParams }: Props) {
     const canManage = connection.scope === "personal" || isAdmin;
     const serviceLabel = services.find((service) => service.id === connection.catalogId)?.label;
     const state = toolState(connection, canManage);
-    return { ...connectionRow(connection, state, canManage, serviceLabel, templates), status: state, connection };
+    return { ...connectionRow(connection, state, canManage, serviceLabel), status: state, connection };
   });
   const rows = sortResources<ResourceRow & { bucket: Bucket }>(connectionRows);
 
@@ -133,62 +128,61 @@ export default async function ToolsPage({ searchParams }: Props) {
   const initial = requested;
 
   return (
-    <div className="max-sm:[&_[data-connection]>div:first-child]:col-span-full max-sm:[&_[data-connection]>div:nth-child(2)]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-span-full max-sm:[&_[data-connection]>div:last-child]:col-start-1 max-sm:[&_[data-connection]>div:last-child]:row-start-3 max-sm:[&_[data-connection]>div:last-child]:row-span-1 max-sm:[&_[data-connection]>div:last-child]:justify-start">
-      <CatalogBrowser
-        title={TITLE}
-        description={DESCRIPTION}
-        label="Tools"
-        rows={rows}
-        blockers={[]}
-        searchPlaceholder="Search tools"
-        filters={[
-          { key: "connected", label: "Connected" },
-          { key: "attention", label: "Needs attention" },
-        ]}
-        notices={notice}
-        initial={initial}
-        actions={<AddServerDialog {...org} />}
-        footer={
-          <>
-            <p className="text-xs text-muted-foreground">
-              A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch, including
-              on a Docker host.
-            </p>
-            <section aria-labelledby="services-title" className="space-y-3 pt-5">
-              <div className="space-y-0.5">
-                <h2 id="services-title" className="text-base font-semibold tracking-tight">
-                  Services
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  Sign in once with the account Armada should use. For anything else, use Add a tool.
-                </p>
-              </div>
-              {catalog.state === "ready" ? (
-                services.length > 0 ? (
-                  <ServiceCatalog services={services} connections={list.connections} {...org} />
-                ) : (
-                  <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                    No ready-to-connect services are offered here. Use Add a tool to connect another tool.
-                  </p>
-                )
+    <ResourceBrowser
+      variant="grid"
+      title={TITLE}
+      description={DESCRIPTION}
+      label="Tools"
+      rows={rows}
+      blockers={[]}
+      searchPlaceholder="Search tools"
+      filters={[
+        { key: "connected", label: "Connected" },
+        { key: "attention", label: "Needs attention" },
+      ]}
+      notices={notice}
+      initial={initial}
+      actions={<AddServerDialog {...org} />}
+      footer={
+        <>
+          <p className="text-xs text-muted-foreground">
+            A switched-on tool is pre-selected in the launch dialog; you can still remove it for one launch, including
+            on a Docker host.
+          </p>
+          <section aria-labelledby="services-title" className="space-y-3 pt-5">
+            <div className="space-y-0.5">
+              <h2 id="services-title" className="text-base font-semibold tracking-tight">
+                Services
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Sign in once with the account Armada should use. For anything else, use Add a tool.
+              </p>
+            </div>
+            {catalog.state === "ready" ? (
+              services.length > 0 ? (
+                <ServiceCatalog services={services} connections={list.connections} {...org} />
               ) : (
-                <p
-                  className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
-                  data-catalog-unavailable
-                >
-                  Services could not be loaded here. You can still use Add a tool to connect a custom tool.
+                <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                  No ready-to-connect services are offered here. Use Add a tool to connect another tool.
                 </p>
-              )}
-            </section>
-          </>
-        }
-        empty={
-          <Empty title="No tools yet" icon={<PlugIcon />}>
-            Connect a service below or use Add a tool to connect another tool for your agents.
-          </Empty>
-        }
-      />
-    </div>
+              )
+            ) : (
+              <p
+                className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
+                data-catalog-unavailable
+              >
+                Services could not be loaded here. You can still use Add a tool to connect a custom tool.
+              </p>
+            )}
+          </section>
+        </>
+      }
+      empty={
+        <Empty title="No tools yet" icon={<PlugIcon />}>
+          Connect a service below or use Add a tool to connect another tool for your agents.
+        </Empty>
+      }
+    />
   );
 }
 
@@ -198,7 +192,6 @@ function connectionRow(
   state: ToolState,
   canManage: boolean,
   serviceLabel: string | undefined,
-  templates: TemplateList,
 ): ResourceRow & { bucket: Bucket } {
   const remote = connection.transport !== "stdio";
   const where = serviceLabel ?? (remote ? (connection.url ? hostOf(connection.url) : "URL hidden") : undefined);
@@ -235,22 +228,19 @@ function connectionRow(
     meta,
     subtitle: meta,
     state: (
-      <div className="space-y-1">
-        <StateCell
-          tone={state.tone}
-          label={connection.transport === "stdio" && connection.status === "connected" ? "Set up" : state.label}
-          data-connection-status={connection.status}
-        />
-        {explanation && <p className="text-xs text-muted-foreground">{explanation}</p>}
-      </div>
+      <StateCell
+        tone={state.tone}
+        label={connection.transport === "stdio" && connection.status === "connected" ? "Set up" : state.label}
+        data-connection-status={connection.status}
+      />
     ),
-
+    fact: explanation,
     foot: connection.scope === "personal" ? "Only you" : "Organization",
     action: <ToolRowAction connection={connection} canManage={canManage} showDefault={false} />,
     detail: (
       <div className="space-y-4">
         <ToolPanel connection={connection} canManage={canManage} serviceLabel={serviceLabel} />
-        <TemplateUsage list={templates} uses={(definition) => definition.connections.includes(connection.id)} />
+        <TemplateUsage uses={(definition) => definition.connections.includes(connection.id)} />
       </div>
     ),
     attrs: { "data-connection": connection.name },

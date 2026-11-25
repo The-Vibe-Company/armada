@@ -9,7 +9,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { AddVaultDialog, VaultPanel } from "@/components/variables";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { listSelectedTemplates, type TemplateList } from "@/lib/data/templates";
 import { listSelectedVault } from "@/lib/data/variables";
 import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/variables";
@@ -20,9 +19,6 @@ const TITLE = "Variables";
 const DESCRIPTION = "Values handed to the agent in the sandbox, as environment variables.";
 
 export default async function VariablesContent({ searchParams }: Props) {
-  // Template usage is independent of the resource list. Settle speculative failures so
-  // the resource's unavailable/no-org fallback still takes precedence.
-  const templatesRead = Promise.allSettled([listSelectedTemplates()]);
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedVault(), searchParams]);
   const header = <PageHeader title={TITLE} description={DESCRIPTION} />;
 
@@ -88,45 +84,41 @@ export default async function VariablesContent({ searchParams }: Props) {
     );
   }
 
-  const [templateResult] = await templatesRead;
-  if (templateResult.status === "rejected") throw templateResult.reason;
-  const templates = templateResult.value;
   const isAdmin = selected.role === "admin";
   const orgName = selected.org.name;
   const viewer = { userId: list.userId, admin: isAdmin };
   const now = Date.now();
   const rows = sortResources<ResourceRow & { bucket: Bucket; tie: string }>(
-    list.items.map((item) => row(item, orgName, canManage(item, viewer), now, templates)),
+    list.items.map((item) => row(item, orgName, canManage(item, viewer), now)),
   );
   const requested = typeof query[ITEM_PARAM] === "string" ? query[ITEM_PARAM] : null;
 
   return (
-    <div data-variable-table>
-      <ResourceBrowser
-        title={TITLE}
-        description={DESCRIPTION}
-        columns={["Name", "Value", "Kind", "Shared with", "Updated", "Actions"]}
-        label="Settings and secrets"
-        rows={rows}
-        blockers={[]}
-        initial={requested}
-        actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
-        footer={
-          <p className="text-xs text-pretty text-muted-foreground">
-            Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-            {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
-            secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
-            handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
-            access to the sandbox; changing or revoking an entry does not erase copies already delivered.
-          </p>
-        }
-        empty={
-          <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
-            Add a setting or a secret, then attach it to a template.
-          </Empty>
-        }
-      />
-    </div>
+    <ResourceBrowser
+      variant="table"
+      title={TITLE}
+      description={DESCRIPTION}
+      columns={["Name", "Value", "Kind", "Shared with", "Updated", "Actions"]}
+      label="Settings and secrets"
+      rows={rows}
+      blockers={[]}
+      initial={requested}
+      actions={<AddVaultDialog orgId={selected.org.id} orgName={orgName} isAdmin={isAdmin} />}
+      footer={
+        <p className="text-xs text-pretty text-muted-foreground">
+          Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
+          {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
+          secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
+          handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
+          access to the sandbox; changing or revoking an entry does not erase copies already delivered.
+        </p>
+      }
+      empty={
+        <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
+          Add a setting or a secret, then attach it to a template.
+        </Empty>
+      }
+    />
   );
 }
 
@@ -136,7 +128,6 @@ function row(
   orgName: string,
   manage: boolean,
   now: number,
-  templates: TemplateList,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
   const hiddenValue = "Not shown";
@@ -171,13 +162,10 @@ function row(
     meta,
     subtitle: meta,
     state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
-    fact: audience(item, orgName),
-    foot: hiddenValue,
     detail: (
       <div className="space-y-4">
         <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />
         <TemplateUsage
-          list={templates}
           uses={(definition) =>
             item.kind === "variable"
               ? definition.variables.some((binding) => binding.variableId === item.id)

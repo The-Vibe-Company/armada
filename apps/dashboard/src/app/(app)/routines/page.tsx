@@ -13,8 +13,6 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerTemplates } from "@/lib/data/templates";
 import { canManageRoutine, type RoutineItem, scheduleLabel } from "@/lib/routines";
 
-import styles from "./routines.module.css";
-
 export const metadata: Metadata = { title: "Routines" };
 export const dynamic = "force-dynamic";
 const DESCRIPTION = "";
@@ -92,54 +90,46 @@ export default async function RoutinesPage({
       name: item.name,
       search: `${item.name} ${template?.name ?? ""} ${item.scope} ${item.status}`,
       meta: null,
-      state: (
-        <div className="space-y-1 text-sm">
-          {item.pauseReason ? (
+      state: null,
+      columns: [
+        {
+          key: "schedule",
+          content: item.pauseReason ? (
             <>
-              <p className="text-destructive">
+              <span className="text-destructive">
                 {item.pauseReason === "repeated_launch_failures"
                   ? "Paused after 3 failed launches"
                   : routineReasonHelp(item.pauseReason)}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Open its runs to see what failed, fix it, then turn it back on.
-              </p>
+              </span>
+              <span className="block text-xs">See runs to find the cause.</span>
             </>
           ) : (
-            <p>{scheduleLabel(item)}</p>
-          )}
-        </div>
-      ),
-      fact: (
-        <div className={styles.facts}>
-          <span>
-            <span className={styles.mobileLabel}>Template: </span>
-            {template?.name ?? "Unavailable template"}
-          </span>
-          <span className="text-[13px]">
-            <span className={styles.mobileLabel}>Last run: </span>
-            <SelectItem item={item.id} variant="link" size="sm" className="relative z-10 h-auto p-0">
+            scheduleLabel(item)
+          ),
+        },
+        { key: "template", content: template?.name ?? "Unavailable template" },
+        {
+          key: "last-run",
+          content: (
+            <SelectItem item={item.id} variant="link" size="sm" className="h-auto whitespace-nowrap p-0">
               See runs
             </SelectItem>
-          </span>
-          <span className="text-xs">
-            <span className={styles.mobileLabel}>Next: </span>
-            {dueLabel(item)}
-          </span>
-        </div>
-      ),
-      action: (
-        <div className="flex flex-wrap items-center justify-end gap-1">
-          {manage ? (
-            <RoutineToggle item={item} orgId={orgId} />
-          ) : (
-            <span className="text-xs">{item.status === "enabled" ? "On" : "Off"}</span>
-          )}
-          <SelectItem item={item.id} variant="ghost" size="icon" aria-label={`See runs for ${item.name}`}>
-            <HistoryIcon className="size-[15px]" />
-          </SelectItem>
-        </div>
-      ),
+          ),
+        },
+        { key: "next", content: dueLabel(item) },
+        {
+          key: "enabled",
+          content: manage ? <RoutineToggle item={item} orgId={orgId} /> : item.status === "enabled" ? "On" : "Off",
+        },
+        {
+          key: "runs",
+          content: (
+            <SelectItem item={item.id} variant="ghost" size="icon-sm" aria-label={`See runs for ${item.name}`}>
+              <HistoryIcon className="size-[15px]" />
+            </SelectItem>
+          ),
+        },
+      ],
       attrs: { "data-routine": item.name },
       panelAttrs: { "data-routine-panel": item.name },
       subtitle: `${scheduleLabel(item)} · ${item.scope === "org" ? "Organization" : "Personal"}`,
@@ -192,61 +182,48 @@ export default async function RoutinesPage({
     };
   });
   return (
-    <div className={styles.page}>
-      <ResourceBrowser
-        title="Routines"
-        description={DESCRIPTION}
-        label="Routines"
-        rows={rows}
-        blockers={[]}
-        initial={typeof query.item === "string" ? query.item : null}
-        actions={
-          templatesUnavailable ? (
-            <Button asChild variant="outline">
-              <a href="/routines">Reload Routines</a>
-            </Button>
-          ) : templates.length > 0 ? (
-            <CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />
-          ) : (
-            <Button asChild>
-              <Link href="/templates">Create a template</Link>
-            </Button>
-          )
-        }
-        notices={
-          templatesUnavailable ? (
-            <Alert>
-              <AlertDescription>
-                Templates could not be loaded. Existing schedules remain unchanged; use Reload Routines before creating
-                a schedule.
-              </AlertDescription>
-            </Alert>
-          ) : null
-        }
-        empty={
-          <Empty title="No routines yet" icon={<Clock3Icon />}>
-            {templatesUnavailable
-              ? "Reload Routines to check templates before creating a schedule."
-              : templates.length === 0
-                ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
-                : "Choose New routine to schedule a template with a task. New routines stay paused until you enable them."}
-          </Empty>
-        }
-        footer={
-          rows.length > 0 && (
-            <div className={styles.columns} aria-hidden="true">
-              <span>Routine</span>
-              <span>When</span>
-              <span>Template</span>
-              <span>Last run</span>
-              <span>Next (UTC)</span>
-              <span>On</span>
-              <span className="text-right">Runs</span>
-            </div>
-          )
-        }
-      />
-    </div>
+    <ResourceBrowser
+      variant="table"
+      columns={["Routine", "When", "Template", "Last run", "Next (UTC)", "On", "Runs"]}
+      title="Routines"
+      description={DESCRIPTION}
+      label="Routines"
+      rows={rows}
+      blockers={[]}
+      initial={typeof query.item === "string" ? query.item : null}
+      actions={
+        templatesUnavailable ? (
+          <Button asChild variant="outline">
+            <a href="/routines">Reload Routines</a>
+          </Button>
+        ) : templates.length > 0 ? (
+          <CreateRoutineDialog orgId={orgId} isAdmin={admin} templates={templates} />
+        ) : (
+          <Button asChild>
+            <Link href="/templates">Create a template</Link>
+          </Button>
+        )
+      }
+      notices={
+        templatesUnavailable ? (
+          <Alert>
+            <AlertDescription>
+              Templates could not be loaded. Existing schedules remain unchanged; use Reload Routines before creating a
+              schedule.
+            </AlertDescription>
+          </Alert>
+        ) : null
+      }
+      empty={
+        <Empty title="No routines yet" icon={<Clock3Icon />}>
+          {templatesUnavailable
+            ? "Reload Routines to check templates before creating a schedule."
+            : templates.length === 0
+              ? "Create a template first, then return here to schedule it. New routines stay paused until you enable them."
+              : "Choose New routine to schedule a template with a task. New routines stay paused until you enable them."}
+        </Empty>
+      }
+    />
   );
 }
 function dueLabel(item: RoutineItem) {

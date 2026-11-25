@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { renderToString } from "react-dom/server";
 import { ResourceBrowser } from "./resource-browser";
 
-test("column-based resources render a desktop table and selectable mobile cards", () => {
+test("column-based resources render a desktop table and mobile list items", () => {
   const html = renderToString(
     <ResourceBrowser
       title="Variables"
       description="Manage variables"
       label="Settings and secrets"
+      variant="table"
       columns={["Name", "Kind"]}
       rows={[
         {
@@ -27,10 +28,9 @@ test("column-based resources render a desktop table and selectable mobile cards"
     />,
   );
 
-  expect(html).toMatch(/<div class="hidden [^"]*md:block"><table[^>]*aria-label="Settings and secrets"/);
-  expect(html).toMatch(/<ul aria-label="Settings and secrets" class="[^"]*md:hidden[^"]*"><li/);
-  const card = html.slice(html.indexOf("<li"), html.indexOf("</li>"));
-  expect(card).toContain('href="?scope=org&amp;item=region"');
-  expect(card).toContain(">REGION</span>");
-  expect(card).toContain(">Available</div>");
+  expect(html).toMatch(/<table[^>]*aria-label="Settings and secrets"[^>]*md:table/);
+  expect(html).toMatch(/<th[^>]*scope="col"[^>]*>Kind<\/th>/);
+  expect(html).toMatch(/<ul[^>]*aria-label="Settings and secrets"[^>]*md:hidden[^>]*><li/);
+  expect(html.slice(html.indexOf("<li"))).toContain('href="?scope=org&amp;item=region"');
+  expect(html).toContain(">Variable</dd>");
 });
