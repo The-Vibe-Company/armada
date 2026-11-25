@@ -59,18 +59,18 @@ enum MarkdownDocumentRenderer {
 
         let maxConcurrency = min(pending.count, max(2, ProcessInfo.processInfo.activeProcessorCount))
         let newlyRendered = await withTaskGroup(of: (String, CachedMarkdownDocument)?.self, returning: [String: CachedMarkdownDocument].self) { group in
-            func enqueue(_ source: MarkdownDocumentSource) {
+            func enqueue(_ source: MarkdownDocumentSource, into group: inout TaskGroup<(String, CachedMarkdownDocument)?>) {
                 group.addTask(priority: .userInitiated) {
                     guard !Task.isCancelled else { return nil }
                     return (source.eventID, CachedMarkdownDocument(source: source.content, document: MarkdownDocument(markdown: source.content)))
                 }
             }
             var iterator = pending.makeIterator()
-            for _ in 0..<maxConcurrency { if let source = iterator.next() { enqueue(source) } }
+            for _ in 0..<maxConcurrency { if let source = iterator.next() { enqueue(source, into: &group) } }
             var documents = [String: CachedMarkdownDocument](minimumCapacity: pending.count)
             for await result in group {
                 if let (eventID, cached) = result { documents[eventID] = cached }
-                if !Task.isCancelled, let next = iterator.next() { enqueue(next) }
+                if !Task.isCancelled, let next = iterator.next() { enqueue(next, into: &group) }
             }
             return documents
         }

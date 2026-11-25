@@ -226,18 +226,19 @@ final class SandboxConversationModel {
         lastLiveThreadStateAt = ContinuousClock.now
         guard let current = state else { return }
         let turnChanged = thread.promptID != nil && current.turn?.promptID != thread.promptID
-        let turn: SandboxTurnState? = if let promptID = thread.promptID, let status = thread.promptStatus {
+        var turn: SandboxTurnState?
+        if let promptID = thread.promptID, let status = thread.promptStatus {
             if let existing = current.turn, existing.promptID == promptID {
-                SandboxTurnState(
+                turn = SandboxTurnState(
                     promptID: promptID, status: status, reason: thread.promptReason,
                     requestedModel: existing.requestedModel, observedModel: existing.observedModel,
                     modelSelectionReason: existing.modelSelectionReason,
                     modelSelectionMessage: existing.modelSelectionMessage, rateLimit: existing.rateLimit
                 )
             } else {
-                SandboxTurnState(promptID: promptID, status: status, reason: thread.promptReason)
+                turn = SandboxTurnState(promptID: promptID, status: status, reason: thread.promptReason)
             }
-        } else { nil }
+        }
         if thread.status == .ready || thread.status == .running {
             let working = !thread.settled || turn?.status.isActive == true
             let admission: SandboxState.Admission = (current.expiresAt.map { $0 <= .now } == true) ? .expired : (working ? .turnRunning : .open)
