@@ -472,7 +472,7 @@ function ThreadHeader({
 }) {
   const name = sandboxListName({
     providerSandboxId: sandbox.provider_sandbox_id,
-    displayLabel: null,
+    displayLabel: "Sandbox",
     harness: sandbox.harness,
     createdAt: sandbox.created_at,
   });

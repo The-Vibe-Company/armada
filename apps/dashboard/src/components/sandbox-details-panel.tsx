@@ -33,6 +33,7 @@ export function SandboxDetailsPanel({
   usage: ReactNode;
   children: ReactNode;
 }) {
+  // Responsive CSS reserves the rail on first paint; the media query only supplies the toggle state.
   const desktop = useSyncExternalStore(
     subscribeDesktop,
     () => window.matchMedia(DESKTOP).matches,
