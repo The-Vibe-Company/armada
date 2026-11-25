@@ -806,50 +806,6 @@ export type Database = {
           },
         ];
       };
-      docker_launch_requests: {
-        Row: {
-          sandbox_id: string;
-          actor_epoch: number;
-          request_hash: string;
-          request_enc: string;
-          result_enc: string | null;
-          created_at: string;
-          async_launch: boolean;
-          worker_id: string | null;
-          worker_expires_at: string | null;
-        };
-        Insert: {
-          sandbox_id: string;
-          actor_epoch: number;
-          request_hash: string;
-          request_enc: string;
-          result_enc?: string | null;
-          created_at?: string;
-          async_launch?: boolean;
-          worker_id?: string | null;
-          worker_expires_at?: string | null;
-        };
-        Update: {
-          sandbox_id?: string;
-          actor_epoch?: number;
-          request_hash?: string;
-          request_enc?: string;
-          result_enc?: string | null;
-          created_at?: string;
-          async_launch?: boolean;
-          worker_id?: string | null;
-          worker_expires_at?: string | null;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "docker_launch_requests_sandbox_id_fkey";
-            columns: ["sandbox_id"];
-            isOneToOne: true;
-            referencedRelation: "sandboxes";
-            referencedColumns: ["id"];
-          },
-        ];
-      };
       docker_machine_bindings: {
         Row: {
           sandbox_id: string;
@@ -3434,76 +3390,6 @@ export type Database = {
             columns: ["user_id"];
             isOneToOne: true;
             referencedRelation: "users";
-            referencedColumns: ["id"];
-          },
-        ];
-      };
-      provider_launch_requests: {
-        Row: {
-          sandbox_id: string;
-          actor_epoch: number;
-          request_enc: string | null;
-          fence_id: string | null;
-          phase: string;
-          dispatch_deadline: string;
-          next_attempt_at: string;
-          lease_owner: string | null;
-          lease_epoch: number;
-          lease_expires_at: string | null;
-          correlation_id: string;
-          outcome: Json | null;
-          created_at: string;
-        };
-        Insert: {
-          sandbox_id: string;
-          actor_epoch: number;
-          request_enc?: string | null;
-          fence_id?: string | null;
-          phase?: string;
-          dispatch_deadline: string;
-          next_attempt_at?: string;
-          lease_owner?: string | null;
-          lease_epoch?: number;
-          lease_expires_at?: string | null;
-          correlation_id: string;
-          outcome?: Json | null;
-          created_at?: string;
-        };
-        Update: {
-          sandbox_id?: string;
-          actor_epoch?: number;
-          request_enc?: string | null;
-          fence_id?: string | null;
-          phase?: string;
-          dispatch_deadline?: string;
-          next_attempt_at?: string;
-          lease_owner?: string | null;
-          lease_epoch?: number;
-          lease_expires_at?: string | null;
-          correlation_id?: string;
-          outcome?: Json | null;
-          created_at?: string;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "provider_launch_requests_fence_id_fkey";
-            columns: ["fence_id"];
-            isOneToOne: true;
-            referencedRelation: "golden_operation_fences";
-            referencedColumns: ["id"];
-          },
-          {
-            foreignKeyName: "provider_launch_requests_receipt_fkey";
-            columns: ["sandbox_id"];
-            isOneToOne: true;
-            referencedRelation: "ordinary_launch_receipts";
-            referencedColumns: ["id"];
-          },
-          {
-            foreignKeyName: "provider_launch_requests_sandbox_id_fkey";
-            columns: ["sandbox_id"];
-            isOneToOne: true;
-            referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
         ];
